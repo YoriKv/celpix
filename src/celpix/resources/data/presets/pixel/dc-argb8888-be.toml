@@ -1,0 +1,16 @@
+# Big-endian variant of ARGB8888 direct (8x8) — for big-endian ROM data (e.g. N64).
+# See docs/graphics-formats-reference/implementation-guide.md §3 (direct-colour tiles).
+id = "preset.pixel.dc-argb8888-be"
+name = "ARGB8888 direct (8x8) (big-endian)"
+engine_id = "codec.direct-color"
+
+[params]
+bpp = 32
+bytes_per_pixel = 4
+byte_order = "big"
+
+[params.masks]
+a = 0xFF000000
+r = 0x00FF0000
+g = 0x0000FF00
+b = 0x000000FF

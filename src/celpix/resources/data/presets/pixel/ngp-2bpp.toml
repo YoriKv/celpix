@@ -1,0 +1,9 @@
+# Neo Geo Pocket 2bpp — pixel 0 in the high 2 bits, byte 0 = left (Tile Molester LN02).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (packed / linear).
+id = "preset.pixel.ngp-2bpp"
+name = "Neo Geo Pocket 2bpp (8x8)"
+engine_id = "codec.packed"
+
+[params]
+bpp = 2
+msb_first = true

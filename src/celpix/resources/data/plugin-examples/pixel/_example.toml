@@ -1,0 +1,23 @@
+# Example pixel preset. Files starting with "_" are ignored — copy this file,
+# drop the underscore from the name, edit it, and press F5 in Celpix to load it.
+#
+# A preset is pure data: it names a built-in engine and fills in its parameters.
+# Because this file sits in the pixel/ folder it is an interpret-pixel format —
+# no stage field needed.
+
+# Unique id (never shown; keep it stable) and the name the format picker shows.
+id = "preset.pixel.example-2bpp"
+name = "Example 2bpp (GB-style)"
+
+# The engine that interprets [params]. codec.planar decodes 8x8 bitplane
+# formats: bit k of a pixel's index comes from plane k, and plane k's byte for
+# tile row y sits at offset base + stride * y within the tile. See the shipped
+# presets for more engines and layouts (packed, chunky, ...).
+engine_id = "codec.planar"
+
+[params]
+bpp = 2                      # one plane entry per bit
+planes = [
+  { base = 0, stride = 2 },  # plane 0: bytes 0, 2, 4, ... of the 16-byte tile
+  { base = 1, stride = 2 },  # plane 1: bytes 1, 3, 5, ...
+]

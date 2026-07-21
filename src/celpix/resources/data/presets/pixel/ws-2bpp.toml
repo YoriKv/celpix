@@ -1,0 +1,12 @@
+# WonderSwan mono 2bpp — interleaved per row (same layout as Game Boy).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
+id = "preset.pixel.ws-2bpp"
+name = "WonderSwan 2bpp (8x8)"
+engine_id = "codec.planar"
+
+[params]
+bpp = 2
+planes = [
+  { base = 0, stride = 2 },
+  { base = 1, stride = 2 },
+]

@@ -1,0 +1,8 @@
+# 1bpp 16x11 (Final Fantasy 6) — byte-swapped pair per row.
+# See docs/graphics-formats-reference/implementation-guide.md §2.
+id = "preset.pixel.1bpp16-ff6"
+name = "1bpp 16x11 (FF6)"
+engine_id = "codec.wide-1bpp"
+
+[params]
+mode = "ff6"

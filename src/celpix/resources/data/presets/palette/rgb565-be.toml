@@ -1,0 +1,14 @@
+# Big-endian variant of RGB565 — for big-endian palette data.
+# See docs/graphics-formats-reference/implementation-guide.md §4 (packed colour formats).
+id = "preset.palette.rgb565-be"
+name = "RGB565 (big-endian)"
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 2
+byte_order = "big"
+
+[params.masks]
+r = 0xF800
+g = 0x07E0
+b = 0x001F

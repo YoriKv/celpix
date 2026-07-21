@@ -1,0 +1,14 @@
+# R3G3B3 — 9-bit: R=bits 4-6, G=8-10, B=0-2.
+# See docs/graphics-formats-reference/implementation-guide.md §4 (packed colour formats).
+id = "preset.palette.r3g3b3"
+name = "R3G3B3 (9-bit)"
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"
+
+[params.masks]
+r = 0x0070
+g = 0x0700
+b = 0x0007

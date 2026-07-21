@@ -2,7 +2,6 @@
 # See docs/graphics-formats-reference/implementation-guide.md §4.
 id = "preset.palette.rgb888"
 name = "RGB888"
-stage = "interpret-palette"
 engine_id = "codec.color-mask"
 
 [params]

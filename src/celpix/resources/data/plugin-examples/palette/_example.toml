@@ -1,0 +1,24 @@
+# Example palette preset. Files starting with "_" are ignored — copy this file,
+# drop the underscore from the name, edit it, and press F5 in Celpix to load it.
+#
+# A preset is pure data: it names a built-in engine and fills in its parameters.
+# Because this file sits in the palette/ folder it is an interpret-palette
+# format — no stage field needed.
+
+# Unique id (never shown; keep it stable) and the name the format picker shows.
+id = "preset.palette.example-rgb555"
+name = "Example RGB555"
+
+# codec.color-mask decodes fixed-size entries by masking out each channel and
+# scaling it to 8 bits. Masks are plain bit masks over the entry value after
+# byte_order assembly ("little" or "big").
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"
+
+[params.masks]
+r = 0x7C00
+g = 0x03E0
+b = 0x001F

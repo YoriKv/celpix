@@ -1,0 +1,7 @@
+# PC Engine SG 4bpp 16x16 sprite tiles — 4 plane blocks 32 bytes apart.
+# See docs/graphics-formats-reference/implementation-guide.md §2.
+id = "preset.pixel.pce-sg-4bpp"
+name = "PC Engine SG 4bpp 16x16"
+engine_id = "codec.pce-sg"
+
+[params]

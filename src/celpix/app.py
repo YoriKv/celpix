@@ -9,7 +9,7 @@ from PySide6.QtCore import QStandardPaths
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from celpix import __version__
-from celpix.plugins.discovery import load_user_plugins
+from celpix.plugins.discovery import FOLDER_STAGES, load_user_plugins, seed_examples
 from celpix.plugins.registry import default_registry
 from celpix.plugins.trust import PendingCodePlugin, TrustStore
 from celpix.ui.main_window import MainWindow
@@ -60,6 +60,11 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = _app_data_dir()
     plugin_dir = data_dir / "plugins"
     plugin_dir.mkdir(parents=True, exist_ok=True)
+    # Pre-create the typed subfolders so opening the folder shows where each
+    # kind of plugin goes, and seed them with inert _example.* reference files.
+    for sub in FOLDER_STAGES:
+        (plugin_dir / sub).mkdir(exist_ok=True)
+    seed_examples(str(plugin_dir))
     trust = TrustStore(str(data_dir / "trusted-plugins.json"))
 
     def reload_plugins():

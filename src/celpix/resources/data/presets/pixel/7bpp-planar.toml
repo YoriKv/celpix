@@ -1,0 +1,17 @@
+# 7bpp per-row interleaved planar (PL06).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
+id = "preset.pixel.7bpp-planar"
+name = "7bpp planar (per-row)"
+engine_id = "codec.planar"
+
+[params]
+bpp = 7
+planes = [
+  { base = 0, stride = 7 },
+  { base = 1, stride = 7 },
+  { base = 2, stride = 7 },
+  { base = 3, stride = 7 },
+  { base = 4, stride = 7 },
+  { base = 5, stride = 7 },
+  { base = 6, stride = 7 },
+]

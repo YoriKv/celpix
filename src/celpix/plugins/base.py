@@ -34,8 +34,8 @@ class FileRef:
 
     ``offset`` is where the meaningful bytes begin (e.g. past a ROM header);
     ``length`` optionally bounds them (``None`` = to end of file). Generalising to
-    non-file sources (emulator memory) later widens this type — see the MVP plan's
-    open questions.
+    non-file sources (emulator memory) later widens this type — see the open
+    questions in ``docs/design/overview.md`` §9.
     """
 
     path: str
@@ -125,6 +125,12 @@ class ColorCodecPlugin(Plugin, Protocol):
     def encode(
         self, palette: Palette, params: dict[str, Any], ctx: PipelineContext
     ) -> bytes: ...
+
+    def bytes_per_entry(self, params: dict[str, Any]) -> int:
+        """Byte size of one palette entry under ``params`` — the palette-side
+        mirror of :meth:`PixelCodecPlugin.bytes_per_tile`, so the host can size
+        a byte window for a wanted number of entries."""
+        ...
 
 
 @dataclass(frozen=True)

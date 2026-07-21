@@ -1,0 +1,14 @@
+# PC Engine 4bpp CG2 — 4 flat 8-byte planes.
+# See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
+id = "preset.pixel.pce-cg2-4bpp"
+name = "PC Engine CG2 4bpp (8x8)"
+engine_id = "codec.planar"
+
+[params]
+bpp = 4
+planes = [
+  { base = 0, stride = 1 },
+  { base = 8, stride = 1 },
+  { base = 16, stride = 1 },
+  { base = 24, stride = 1 },
+]

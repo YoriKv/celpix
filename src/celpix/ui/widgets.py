@@ -1,4 +1,4 @@
-"""Small reusable UI widgets.
+"""Small reusable UI widgets and shared painting idioms.
 
 Qt lives here (this is the ``ui`` layer); the model stays Qt-free.
 """
@@ -7,8 +7,62 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QLineEdit, QWidget
+from PySide6.QtCore import QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPalette, QPen
+from PySide6.QtWidgets import QComboBox, QLineEdit, QWidget
+
+
+def paint_selection_outline(painter: QPainter, palette: QPalette, rect: QRect) -> None:
+    """The app's shared selection outline: accent ring with a white inset.
+
+    One outline language for every "this is the active thing" highlight (the
+    canvas's tile selection, the palette panel's active subpalette), readable
+    on dark and light content alike. The Active colour group is forced so the
+    outline doesn't dim when focus is elsewhere — the selection itself is the
+    state, not the focus.
+    """
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    accent = palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Highlight)
+    painter.setPen(QPen(accent, 2))
+    painter.drawRect(rect.adjusted(1, 1, -1, -1))
+    painter.setPen(QPen(QColor(255, 255, 255, 220), 1))
+    painter.drawRect(rect.adjusted(2, 2, -2, -2))
+
+
+class CompactComboBox(QComboBox):
+    """A combo box whose closed button is a fraction of its natural width.
+
+    A stock combo reserves the full width of its longest item, which long entry
+    names turn into a lot of dead toolbar space. Scaling the size *hints*
+    (rather than fixing a pixel width) keeps the width proportional to the
+    contents, including after a repopulation — ``AdjustToContents`` makes Qt
+    re-query the hint whenever the model changes. The popup list is given back
+    the full content width, so entries stay readable while choosing.
+    """
+
+    def __init__(self, scale: float, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._scale = scale
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+
+    def _scaled(self, hint: QSize) -> QSize:
+        hint.setWidth(round(hint.width() * self._scale))
+        return hint
+
+    def sizeHint(self) -> QSize:  # Qt override
+        return self._scaled(super().sizeHint())
+
+    def minimumSizeHint(self) -> QSize:  # Qt override
+        return self._scaled(super().minimumSizeHint())
+
+    def showPopup(self) -> None:  # Qt override
+        # The popup would inherit the narrowed button width; re-widen it to the
+        # longest item (plus scrollbar room) so no entry is elided.
+        view = self.view()
+        scrollbar = view.verticalScrollBar()
+        width = view.sizeHintForColumn(0) + scrollbar.sizeHint().width()
+        view.setMinimumWidth(max(self.width(), width))
+        super().showPopup()
 
 
 class CommittingLineEdit(QLineEdit):

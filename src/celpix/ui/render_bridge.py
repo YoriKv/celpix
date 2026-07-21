@@ -15,16 +15,20 @@ from __future__ import annotations
 
 from PySide6.QtGui import QImage
 
-from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
 
 
-def render(grid: IndexGrid, palette: Palette, subpalette_base: int = 0) -> QImage:
-    """Rasterize ``grid`` through ``palette`` (offset by ``subpalette_base``).
+def render(grid, palette: Palette, subpalette_base: int = 0) -> QImage:
+    """Rasterize ``grid`` to a QImage.
 
-    ``subpalette_base`` shifts which palette window indices resolve through, so a
-    tile drawn for palette row *n* renders correctly (``base = n * 2**bpp``).
+    An index grid resolves through ``palette`` (offset by ``subpalette_base``, so a
+    tile drawn for palette row *n* renders correctly, ``base = n * 2**bpp``). A
+    direct-colour :class:`~celpix.core.argb_grid.ArgbGrid` already carries ARGB and
+    is blitted straight to ``Format_ARGB32``, ignoring the palette.
     """
+    if getattr(grid, "bytes_per_pixel", 1) == 4:
+        return _render_argb(grid)
+
     w, h = grid.width, grid.height
     if w == 0 or h == 0:
         return QImage()
@@ -46,4 +50,15 @@ def render(grid: IndexGrid, palette: Palette, subpalette_base: int = 0) -> QImag
     image.setColorTable([palette.color(subpalette_base + i) for i in range(256)])
     # QImage does not copy the Python buffer; return an owning copy so ``buf`` can
     # be freed safely.
+    return image.copy()
+
+
+def _render_argb(grid) -> QImage:
+    """Blit a direct-colour ArgbGrid straight to Format_ARGB32 (no palette)."""
+    w, h = grid.width, grid.height
+    if w == 0 or h == 0:
+        return QImage()
+    # The grid stores little-endian ARGB (B,G,R,A per pixel) = Format_ARGB32's layout;
+    # rows are 4-byte-aligned already (4 bytes/pixel). copy() so we own the buffer.
+    image = QImage(bytes(grid.data), w, h, w * 4, QImage.Format.Format_ARGB32)
     return image.copy()

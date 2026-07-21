@@ -53,6 +53,10 @@ class IndexGrid:
         """The backing index buffer, row-major. Mutable by design (editing)."""
         return self._data
 
+    # One byte per pixel — the constant that lets arrangement/render treat this and
+    # the 4-byte :class:`~celpix.core.argb_grid.ArgbGrid` uniformly.
+    bytes_per_pixel = 1
+
     def get(self, x: int, y: int) -> int:
         return self._data[y * self._width + x]
 

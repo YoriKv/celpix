@@ -1,0 +1,8 @@
+# 1bpp 16x12 (Final Fantasy 5) — the two 8-wide columns are 12 bytes apart.
+# See docs/graphics-formats-reference/implementation-guide.md §2.
+id = "preset.pixel.1bpp16-ff5"
+name = "1bpp 16x12 (FF5)"
+engine_id = "codec.wide-1bpp"
+
+[params]
+mode = "ff5"

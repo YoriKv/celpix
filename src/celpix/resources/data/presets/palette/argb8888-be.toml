@@ -1,0 +1,15 @@
+# Big-endian variant of ARGB8888 (file R,G,B,A) — for big-endian palette data.
+# See docs/graphics-formats-reference/implementation-guide.md §4 (packed colour formats).
+id = "preset.palette.argb8888-be"
+name = "ARGB8888 (file R,G,B,A) (big-endian)"
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 4
+byte_order = "big"
+
+[params.masks]
+a = 0xFF000000
+r = 0x000000FF
+g = 0x0000FF00
+b = 0x00FF0000

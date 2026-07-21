@@ -1,0 +1,10 @@
+# SNES 8bpp whole-bank — the tile is the entire 128x128 bank (16384 bytes).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (chunky).
+id = "preset.pixel.snes-8bpp-bank"
+name = "SNES 8bpp whole-bank (128x128)"
+engine_id = "codec.chunky"
+
+[params]
+bpp = 8
+tile_width = 128
+tile_height = 128

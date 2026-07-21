@@ -1,0 +1,16 @@
+# 6bpp per-row interleaved planar (PL05).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
+id = "preset.pixel.6bpp-planar"
+name = "6bpp planar (per-row)"
+engine_id = "codec.planar"
+
+[params]
+bpp = 6
+planes = [
+  { base = 0, stride = 6 },
+  { base = 1, stride = 6 },
+  { base = 2, stride = 6 },
+  { base = 3, stride = 6 },
+  { base = 4, stride = 6 },
+  { base = 5, stride = 6 },
+]

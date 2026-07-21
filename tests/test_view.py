@@ -40,6 +40,17 @@ def test_compose_window_empty_tiles_is_empty_grid() -> None:
     assert (image.width, image.height) == (0, 0)
 
 
+def test_compose_window_preserves_grid_type_for_argb() -> None:
+    # Direct-colour tiles compose into an ArgbGrid (4 bytes/pixel), not an IndexGrid.
+    from celpix.core.argb_grid import ArgbGrid
+
+    tiles = [ArgbGrid(2, 2, bytes([i]) * 16) for i in range(4)]
+    image = compose_window(tiles, columns=2, first_tile=0, rows=2)
+    assert isinstance(image, ArgbGrid)
+    assert (image.width, image.height) == (4, 4)
+    assert image.get(0, 0) == tiles[0].get(0, 0)
+
+
 _BPT = 4  # bytes per tile in these documents
 
 
@@ -51,7 +62,7 @@ def _doc(n_tiles: int) -> Document:
         bytes_per_tile=_BPT,
         tile_width=2,
         tile_height=2,
-        palette=Palette.grayscale(4),
+        palette=Palette.default(4),
         pixel_config=PathwayConfig(source=FileRef("x"), interpret_preset_id="p"),
         palette_config=PathwayConfig(source=FileRef(""), interpret_preset_id="q"),
     )
@@ -62,6 +73,12 @@ def test_tile_count_derives_from_bytes() -> None:
     assert _doc(0).tile_count == 0
 
 
+def test_tile_count_counts_a_trailing_partial_tile() -> None:
+    doc = _doc(10)
+    doc.pixel_data = doc.pixel_data[:-1]  # 39 bytes: 9 whole tiles + 3 spare bytes
+    assert doc.tile_count == 10
+
+
 def test_window_bytes_slices_the_requested_tiles() -> None:
     doc = _doc(10)  # 40 bytes, 4 per tile
     # 3 tiles from tile 2 -> bytes [8:20].
@@ -70,6 +87,12 @@ def test_window_bytes_slices_the_requested_tiles() -> None:
     assert doc.window_bytes(8, 5) == bytes(range(32, 40))
     # Entirely past the end -> empty.
     assert doc.window_bytes(20, 3) == b""
+
+
+def test_window_bytes_zero_pads_a_trailing_partial_tile() -> None:
+    doc = _doc(10)
+    doc.pixel_data = doc.pixel_data[:-3]  # 37 bytes: tile 9 has only 1 byte
+    assert doc.window_bytes(8, 2) == bytes(range(32, 37)) + bytes(3)
 
 
 def test_clamp_offset_stops_at_the_last_full_page() -> None:
@@ -85,3 +108,19 @@ def test_clamp_offset_small_file_pins_to_zero() -> None:
     doc = _doc(10)
     # A window bigger than the file can only sit at the top.
     assert doc.clamp_offset(5, 8, 8) == 0
+
+
+def test_window_bytes_nudge_shifts_the_grid_and_pads_the_tail() -> None:
+    doc = _doc(10)  # 40 bytes, 4 per tile
+    # The whole grid shifts forward: 3 tiles from tile 2 at nudge 1 -> bytes [9:21].
+    assert doc.window_bytes(2, 3, nudge=1) == bytes(range(9, 21))
+    # Near the end the nudged grid's trailing partial tile is zero-padded to a
+    # whole tile — codecs decode whole tiles only.
+    assert doc.window_bytes(8, 5, nudge=1) == bytes(range(33, 40)) + bytes(1)
+
+
+def test_clamp_offset_accounts_for_the_nudge() -> None:
+    doc = _doc(100)
+    # The nudged grid's trailing partial tile still counts (it renders padded):
+    # 100 usable tiles, last top-left 100 - 16.
+    assert doc.clamp_offset(999, 4, 4, nudge=1) == 84

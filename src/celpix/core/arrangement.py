@@ -17,8 +17,11 @@ from __future__ import annotations
 from celpix.core.index_grid import IndexGrid
 
 
-def compose_linear(tiles: list[IndexGrid], columns: int) -> IndexGrid:
-    """Lay ``tiles`` into a ``columns``-wide grid image (row-major)."""
+def compose_linear(tiles: list, columns: int):
+    """Lay ``tiles`` into a ``columns``-wide grid image (row-major).
+
+    Returns a grid of the same type as the input tiles (index or direct-colour).
+    """
     if not tiles:
         return IndexGrid(0, 0)
     cols = max(1, columns)
@@ -27,15 +30,14 @@ def compose_linear(tiles: list[IndexGrid], columns: int) -> IndexGrid:
     return _compose(tiles, cols, tw, th, first_tile=0, rows=rows)
 
 
-def compose_window(
-    tiles: list[IndexGrid], columns: int, first_tile: int, rows: int
-) -> IndexGrid:
+def compose_window(tiles: list, columns: int, first_tile: int, rows: int):
     """Lay out ``rows`` rows of ``columns`` tiles starting at tile ``first_tile``.
 
-    The image is always ``columns`` × ``rows`` tiles so the canvas size stays
-    stable while navigating; slots outside ``tiles`` (a partial window at the file
-    end, or a negative ``first_tile``) are left blank (index 0). Composing only the
-    visible band is what keeps viewing large files cheap — see the module docstring.
+    The image is always ``columns`` × ``rows`` tiles so the canvas size stays stable
+    while navigating; slots outside ``tiles`` (a partial window at the file end, or a
+    negative ``first_tile``) are left blank. Returns a grid of the same type as the
+    input tiles. Composing only the visible band is what keeps viewing large files
+    cheap — see the module docstring.
     """
     if not tiles:
         return IndexGrid(0, 0)
@@ -46,22 +48,28 @@ def compose_window(
 
 
 def _compose(
-    tiles: list[IndexGrid],
+    tiles: list,
     cols: int,
     tw: int,
     th: int,
     *,
     first_tile: int,
     rows: int,
-) -> IndexGrid:
+):
     """Blit ``cols`` × ``rows`` tiles from ``first_tile`` into one grid, row-major.
 
-    Slots whose tile index falls outside ``tiles`` stay blank, so both a full
-    layout and a partial window at the file's ends share one code path.
+    Slots whose tile index falls outside ``tiles`` stay blank, so both a full layout
+    and a partial window at the file's ends share one code path. Works for either
+    grid type — index (1 byte/pixel) or direct-colour ARGB (4 bytes/pixel) — by
+    blitting in units of the tiles' ``bytes_per_pixel`` and building the output grid
+    of the same type.
     """
-    image = IndexGrid(cols * tw, rows * th)
-    stride = image.width
+    bpx = tiles[0].bytes_per_pixel
+    image = type(tiles[0])(cols * tw, rows * th)
     dst = image.data
+    dst_stride = cols * tw * bpx
+    src_stride = tw * bpx
+    row_bytes = tw * bpx
     for slot in range(cols * rows):
         idx = first_tile + slot
         if idx < 0 or idx >= len(tiles):
@@ -70,7 +78,7 @@ def _compose(
         base_y = (slot // cols) * th
         src = tiles[idx].data
         for y in range(th):
-            d0 = (base_y + y) * stride + base_x
-            s0 = y * tw
-            dst[d0 : d0 + tw] = src[s0 : s0 + tw]
+            d0 = (base_y + y) * dst_stride + base_x * bpx
+            s0 = y * src_stride
+            dst[d0 : d0 + row_bytes] = src[s0 : s0 + row_bytes]
     return image

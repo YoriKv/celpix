@@ -26,6 +26,7 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._tile import check_tile_size, require_whole_tiles
 
 
 class PlanarCodec:
@@ -69,10 +70,7 @@ class PlanarCodec:
     ) -> list[IndexGrid]:
         bpp, planes, tile_bytes = self._geometry(params)
         tile = self.TILE
-        if len(data) % tile_bytes != 0:
-            raise ValueError(
-                f"data length {len(data)} is not a multiple of tile size {tile_bytes}"
-            )
+        require_whole_tiles(len(data), tile_bytes)
 
         tiles: list[IndexGrid] = []
         for addr in range(0, len(data), tile_bytes):
@@ -97,10 +95,7 @@ class PlanarCodec:
         tile = self.TILE
         out = bytearray(len(tiles) * tile_bytes)
         for t, grid in enumerate(tiles):
-            if grid.width != tile or grid.height != tile:
-                raise ValueError(
-                    f"tile {t} is {grid.width}x{grid.height}, expected {tile}x{tile}"
-                )
+            check_tile_size(grid, tile, tile, t)
             addr = t * tile_bytes
             buf = grid.data
             for y in range(tile):

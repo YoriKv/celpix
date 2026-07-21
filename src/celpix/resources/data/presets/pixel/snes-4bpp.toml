@@ -2,7 +2,6 @@
 # Matches *.4bpp.sfc sheets. See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.snes-4bpp"
 name = "SNES 4bpp (8x8)"
-stage = "interpret-pixel"
 engine_id = "codec.planar"
 
 [params]

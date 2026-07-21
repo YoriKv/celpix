@@ -1,0 +1,14 @@
+# MSX/TMS9918 fixed 16-colour palette; entry 0/1 are transparent/black.
+# See docs/graphics-formats-reference/implementation-guide.md §4 (fixed hardware palettes).
+id = "preset.palette.msx-indexed"
+name = "MSX (16-colour indexed)"
+engine_id = "codec.color-indexed"
+
+[params]
+bytes_per_entry = 1
+colors = [
+  0x000000, 0x000000, 0x3EB849, 0x74D07D,
+  0x5955E0, 0x8076F1, 0xB95E51, 0x65DBEF,
+  0xDB6559, 0xFF897D, 0xCCC35E, 0xDED087,
+  0x3AA241, 0xB766B5, 0xCCCCCC, 0xFFFFFF,
+]

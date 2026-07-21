@@ -1,0 +1,50 @@
+"""Example pixel code format. Files starting with "_" are ignored — copy this
+file, drop the underscore from the name, edit it, and press F5 in Celpix to
+load it (code plugins ask for confirmation the first time, since they run with
+the app's privileges).
+
+A code format implements a pixel interpretation directly, for layouts no
+built-in engine's parameters can express. It appears in the format picker like
+any preset. decode/encode must be buffer-relative and stateless: they walk
+whatever bytes they are given one tile at a time, with no notion of where the
+buffer sits in the file — that is what lets Celpix decode just the visible
+window of a large file.
+"""
+
+from celpix.core.index_grid import IndexGrid
+from celpix.plugins import FormatInfo
+
+
+class Chunky4x4:
+    """4x4 tiles, one byte per pixel, rows top-to-bottom."""
+
+    # The id doubles as the picker entry's stable identity; the name is shown.
+    info = FormatInfo(id="format.pixel.example-4x4", name="Example chunky 4x4")
+
+    def decode(self, data, ctx):
+        """bytes -> tiles (whole tiles only; a trailing partial tile is dropped)."""
+        size = self.bytes_per_tile()
+        return [
+            IndexGrid(4, 4, data[at : at + size])
+            for at in range(0, len(data) - size + 1, size)
+        ]
+
+    def encode(self, tiles, ctx):
+        """tiles -> bytes; the exact inverse of decode."""
+        out = bytearray()
+        for tile in tiles:
+            out.extend(tile.data)
+        return bytes(out)
+
+    def bytes_per_tile(self):
+        # How many bytes one tile occupies — Celpix uses this to slice the
+        # visible byte window out of the file.
+        return 16
+
+    def tile_size(self):
+        # Pixel dimensions of one tile: (width, height).
+        return (4, 4)
+
+
+def register(registry):
+    registry.register_format(Chunky4x4())

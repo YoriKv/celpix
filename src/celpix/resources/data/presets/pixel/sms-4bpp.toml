@@ -1,0 +1,14 @@
+# SMS / Game Gear / WonderSwan-colour 4bpp — 4 planes interleaved per row (PL03).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
+id = "preset.pixel.sms-4bpp"
+name = "SMS/GG/WSC 4bpp (8x8)"
+engine_id = "codec.planar"
+
+[params]
+bpp = 4
+planes = [
+  { base = 0, stride = 4 },
+  { base = 1, stride = 4 },
+  { base = 2, stride = 4 },
+  { base = 3, stride = 4 },
+]

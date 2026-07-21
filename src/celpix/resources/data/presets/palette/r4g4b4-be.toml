@@ -1,0 +1,14 @@
+# Big-endian variant of R4G4B4 (12-bit) — for big-endian palette data.
+# See docs/graphics-formats-reference/implementation-guide.md §4 (packed colour formats).
+id = "preset.palette.r4g4b4-be"
+name = "R4G4B4 (12-bit) (big-endian)"
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 2
+byte_order = "big"
+
+[params.masks]
+r = 0x000F
+g = 0x00F0
+b = 0x0F00

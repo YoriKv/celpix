@@ -1,0 +1,14 @@
+# R4G4B4 — 12-bit: R=bits 0-3, G=4-7, B=8-11 (GBA-style).
+# See docs/graphics-formats-reference/implementation-guide.md §4 (packed colour formats).
+id = "preset.palette.r4g4b4"
+name = "R4G4B4 (12-bit)"
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"
+
+[params.masks]
+r = 0x000F
+g = 0x00F0
+b = 0x0F00

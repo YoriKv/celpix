@@ -52,8 +52,8 @@ def load_pixel_data(cfg: PathwayConfig, reg: Registry) -> PixelData:
 
     Returns the raw decompressed bytes plus the codec's atomic geometry, so the view
     can decode only the visible window on demand (:func:`decode_window`) rather than
-    the whole file. The whole-buffer alignment check that ``decode`` would do is done
-    here instead, so a misaligned file still hard-stops at the interpret stage.
+    the whole file. Data whose length isn't a whole number of tiles is fine — the
+    trailing partial tile is zero-padded at decode time (``Document.window_bytes``).
     """
     ctx = PipelineContext()
     data = _read_and_decompress(cfg, ctx, reg, Pathway.PIXEL)
@@ -64,27 +64,28 @@ def load_pixel_data(cfg: PathwayConfig, reg: Registry) -> PixelData:
         Pathway.PIXEL,
         lambda: engine.bytes_per_tile(preset.params),
     )
-    if tile_bytes <= 0 or len(data) % tile_bytes != 0:
+    if tile_bytes <= 0:
         raise PipelineError(
             Stage.INTERPRET_PIXEL,
             Pathway.PIXEL,
-            f"data length {len(data)} is not a multiple of tile size {tile_bytes}",
+            f"tile size {tile_bytes} is not positive",
         )
     tw, th = engine.tile_size(preset.params)
     return PixelData(data, tile_bytes, tw, th, ctx)
 
 
 def decode_window(
-    doc: Document, reg: Registry, first_tile: int, count: int
+    doc: Document, reg: Registry, first_tile: int, count: int, nudge: int = 0
 ) -> list[IndexGrid]:
     """Decode ``count`` tiles starting at tile ``first_tile`` — deferred decode.
 
     Slices the raw pixel bytes to just that window and hands the codec the slice;
     because the codec decodes exactly the tiles in the buffer it is given, no
     whole-file decode is needed. A partial/empty window (near or past the end)
-    decodes to fewer/zero tiles.
+    decodes to fewer/zero tiles. ``nudge`` shifts the tile grid by that many
+    bytes (sub-tile alignment — see :meth:`Document.window_bytes`).
     """
-    window = doc.window_bytes(first_tile, count)
+    window = doc.window_bytes(first_tile, count, nudge)
     if not window:
         return []
     preset = reg.preset(doc.pixel_config.interpret_preset_id)
@@ -109,6 +110,17 @@ def load_palette(cfg: PathwayConfig, reg: Registry) -> tuple[Palette, PipelineCo
         ),
     )
     return colors, ctx
+
+
+def palette_entry_size(preset_id: str, reg: Registry) -> int:
+    """Byte size of one palette entry under the preset — for sizing palette reads."""
+    preset = reg.preset(preset_id)
+    engine = reg.plugin(Stage.INTERPRET_PALETTE, preset.engine_id)
+    return _run(
+        Stage.INTERPRET_PALETTE,
+        Pathway.PALETTE,
+        lambda: engine.bytes_per_entry(preset.params),
+    )
 
 
 def load(pixel: PathwayConfig, palette: PathwayConfig, reg: Registry) -> Document:

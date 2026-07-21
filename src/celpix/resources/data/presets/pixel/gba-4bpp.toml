@@ -1,0 +1,9 @@
+# GBA 4bpp packed nibbles — low nibble = left pixel (LN05).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (packed / linear).
+id = "preset.pixel.gba-4bpp"
+name = "GBA 4bpp (8x8)"
+engine_id = "codec.packed"
+
+[params]
+bpp = 4
+msb_first = false

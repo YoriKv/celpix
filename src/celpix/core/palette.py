@@ -11,9 +11,43 @@ time colours reach this class they are already normalised to ARGB.
 
 from __future__ import annotations
 
+import colorsys
+
 # Rendered for any index that falls outside the loaded palette, so a short or
 # missing palette shows an obvious sentinel instead of crashing the canvas.
 MISSING_COLOR = 0xFFFF00FF  # opaque magenta
+
+# Head of the default palette: hand-picked so every prefix stays maximally
+# distinguishable — 1bpp gets black/white, 2bpp adds red/green, and so on.
+_DEFAULT_HEAD = (
+    0xFF000000,  # black
+    0xFFFFFFFF,  # white
+    0xFFFF0000,  # red
+    0xFF00FF00,  # green
+    0xFF0000FF,  # blue
+    0xFFFFFF00,  # yellow
+    0xFFFF00FF,  # magenta
+    0xFF00FFFF,  # cyan
+    0xFFFF8000,  # orange
+    0xFF8000FF,  # purple
+    0xFF00FF80,  # spring green
+    0xFF800000,  # maroon
+    0xFF008080,  # teal
+    0xFF804000,  # brown
+    0xFF808080,  # mid gray
+    0xFFFF80C0,  # pink
+)
+
+# Tail generation: neighbouring entries must differ in more than hue, so the
+# golden-ratio hue walk cycles through saturation/value tiers as well.
+_TAIL_TIERS = ((0.9, 1.0), (0.6, 1.0), (0.9, 0.55), (0.45, 0.8))
+
+
+def _tail_color(i: int) -> int:
+    h = (i * 0.61803398875) % 1.0
+    s, v = _TAIL_TIERS[i % len(_TAIL_TIERS)]
+    r, g, b = (round(c * 255) for c in colorsys.hsv_to_rgb(h, s, v))
+    return 0xFF000000 | (r << 16) | (g << 8) | b
 
 
 class Palette:
@@ -39,19 +73,14 @@ class Palette:
         return MISSING_COLOR
 
     @staticmethod
-    def grayscale(count: int) -> Palette:
-        """A fallback ramp for viewing pixels before a real palette is loaded."""
+    def default(count: int) -> Palette:
+        """The fallback for viewing pixels before a real palette is loaded:
+        black, white, then contrasting colours. Deterministic in ``count``."""
         if count <= 0:
             return Palette([])
-        if count == 1:
-            return Palette([0xFF000000])
-        step = 255 // (count - 1)
-        return Palette(
-            [
-                0xFF000000 | (v << 16) | (v << 8) | v
-                for v in (i * step for i in range(count))
-            ]
-        )
+        colors = list(_DEFAULT_HEAD[:count])
+        colors.extend(_tail_color(i) for i in range(len(colors), count))
+        return Palette(colors)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Palette):

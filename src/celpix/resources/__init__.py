@@ -10,7 +10,7 @@ source checkout and in a frozen/one-file build (PyInstaller relocates files to a
 temp dir, which ``__file__``-relative lookups miss).
 
     from celpix import resources
-    text = resources.read_text("data", "presets", "snes-4bpp.toml")
+    text = resources.read_text("data", "presets", "pixel", "snes-4bpp.toml")
 """
 
 from __future__ import annotations

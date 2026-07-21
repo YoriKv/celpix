@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from celpix.core.errors import Pathway, PipelineError, Stage
+from celpix.core.context import PipelineContext
+from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef
@@ -50,8 +51,6 @@ def test_load_then_save_is_byte_identical(tmp_path) -> None:
 
 
 def test_decode_window_matches_full_decode(tmp_path) -> None:
-    from celpix.core.context import PipelineContext
-
     reg = default_registry()
     px, pl, pixel_bytes, _ = _make_files(tmp_path)  # 4 SNES 4bpp tiles
     pixel_cfg, palette_cfg = _configs(px, pl)
@@ -89,18 +88,24 @@ def test_palette_write_optional(tmp_path) -> None:
     assert pl.read_bytes() == pal_bytes
 
 
-def test_misaligned_pixel_buffer_hard_stops(tmp_path) -> None:
+def test_misaligned_pixel_buffer_pads_the_last_tile(tmp_path) -> None:
+    # 1.5 tiles' worth of data: the partial tile counts and decodes zero-padded.
     reg = default_registry()
-    px = tmp_path / "bad.4bpp.sfc"
-    px.write_bytes(b"\x00" * 30)  # not a multiple of the 32-byte tile
+    px = tmp_path / "odd.4bpp.sfc"
+    pixel_bytes = bytes((i * 29 + 5) & 0xFF for i in range(48))
+    px.write_bytes(pixel_bytes)
     pl = tmp_path / "p.pal"
     pl.write_bytes(b"\x00" * 32)
     pixel_cfg, palette_cfg = _configs(px, pl)
 
-    with pytest.raises(PipelineError) as excinfo:
-        pipeline.load(pixel_cfg, palette_cfg, reg)
-    assert excinfo.value.stage == Stage.INTERPRET_PIXEL
-    assert excinfo.value.pathway == Pathway.PIXEL
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    assert doc.tile_count == 2
+    assert doc.pixel_data == pixel_bytes  # padding is decode-only, never stored
+
+    preset = reg.preset(pixel_cfg.interpret_preset_id)
+    engine = reg.plugin(Stage.INTERPRET_PIXEL, preset.engine_id)
+    padded = engine.decode(pixel_bytes + bytes(16), preset.params, PipelineContext())
+    assert pipeline.decode_window(doc, reg, 0, 2) == padded
 
 
 def test_missing_source_file_hard_stops(tmp_path) -> None:

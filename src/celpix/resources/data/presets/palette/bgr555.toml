@@ -3,7 +3,6 @@
 # See docs/graphics-formats-reference/implementation-guide.md §4.
 id = "preset.palette.bgr555"
 name = "BGR555 (SNES/GB CGRAM)"
-stage = "interpret-palette"
 engine_id = "codec.color-mask"
 
 [params]

@@ -1,0 +1,9 @@
+# Virtual Boy 2bpp packed — pixel 0 in the low 2 bits, byte 0 = left (LN03).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (packed / linear).
+id = "preset.pixel.vb-2bpp"
+name = "Virtual Boy 2bpp (8x8)"
+engine_id = "codec.packed"
+
+[params]
+bpp = 2
+msb_first = false

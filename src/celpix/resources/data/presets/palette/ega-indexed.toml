@@ -1,0 +1,14 @@
+# EGA fixed 16-colour palette (Tile Molester CF03).
+# See docs/graphics-formats-reference/implementation-guide.md §4 (fixed hardware palettes).
+id = "preset.palette.ega-indexed"
+name = "EGA (16-colour indexed)"
+engine_id = "codec.color-indexed"
+
+[params]
+bytes_per_entry = 1
+colors = [
+  0x000000, 0x990000, 0x009900, 0xCC6600,
+  0x000099, 0x990099, 0x009999, 0xCCCCCC,
+  0x666666, 0xFF6666, 0x66FF66, 0xFFFF66,
+  0x6666FF, 0xFF66FF, 0x66FFFF, 0xFFFFFF,
+]

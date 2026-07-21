@@ -3,7 +3,7 @@
 These make the optional compression stages *first-class* in the pipeline without
 implementing any codec yet: the pixel/palette bytes flow through unchanged. A real
 compression scheme is a drop-in replacement plugin at the same stage — no pipeline
-change (``docs/design/overview.md`` §2; MVP plan §1, "compression-ready").
+change (``docs/design/overview.md`` §2).
 """
 
 from __future__ import annotations

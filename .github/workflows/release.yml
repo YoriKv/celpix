@@ -68,17 +68,30 @@ jobs:
 
       # --windowed: no console window on Win/macOS (a no-op on Linux). PySide6's
       # bundled PyInstaller hooks pull in the Qt plugins automatically.
+      # --collect-data: PyInstaller only follows imports, so the package's data
+      # files (shipped presets, plugin examples under celpix/resources) must be
+      # collected explicitly or the frozen app starts without them.
       # pyinstaller is pulled in ephemerally with --with so it need not live in
       # the dev dependency group / uv.lock.
       - name: Build app
         run: >
           uv run --with pyinstaller pyinstaller
           --name celpix --windowed --noconfirm
+          --collect-data celpix
           src/celpix/__main__.py
 
-      - name: Package artifact
+      # Split by OS: the `shell` key takes no expressions, so we can't pick it with
+      # ${{ runner.os … }}. `if:` does allow the runner context, and only the matching
+      # step runs. Windows packages with PowerShell (Compress-Archive); the rest bash.
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: ${{ matrix.package }}
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+
+      - name: Package artifact (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ${{ matrix.package }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

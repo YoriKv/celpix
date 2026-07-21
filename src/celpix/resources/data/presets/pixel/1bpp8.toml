@@ -1,0 +1,11 @@
+# 1bpp 8x8 — a single bitplane (PL00).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
+id = "preset.pixel.1bpp8"
+name = "1bpp (8x8)"
+engine_id = "codec.planar"
+
+[params]
+bpp = 1
+planes = [
+  { base = 0, stride = 1 },
+]

@@ -1,0 +1,15 @@
+# Direct-colour BGR555 direct (8x8) — Tile Molester DC catalogue (§3).
+# See docs/graphics-formats-reference/implementation-guide.md §3 (direct-colour tiles).
+id = "preset.pixel.dc-bgr555"
+name = "BGR555 direct (8x8)"
+engine_id = "codec.direct-color"
+
+[params]
+bpp = 15
+bytes_per_pixel = 2
+byte_order = "little"
+
+[params.masks]
+r = 0x001F
+g = 0x03E0
+b = 0x7C00

@@ -1,0 +1,16 @@
+# Direct-colour RGBA5551 direct (N64, 8x8) — Tile Molester DC catalogue (§3).
+# See docs/graphics-formats-reference/implementation-guide.md §3 (direct-colour tiles).
+id = "preset.pixel.dc-rgba5551"
+name = "RGBA5551 direct (N64, 8x8)"
+engine_id = "codec.direct-color"
+
+[params]
+bpp = 16
+bytes_per_pixel = 2
+byte_order = "little"
+
+[params.masks]
+a = 0x0001
+r = 0xF800
+g = 0x07C0
+b = 0x003E

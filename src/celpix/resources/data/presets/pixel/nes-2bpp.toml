@@ -2,7 +2,6 @@
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.nes-2bpp"
 name = "NES 2bpp (8x8)"
-stage = "interpret-pixel"
 engine_id = "codec.planar"
 
 [params]

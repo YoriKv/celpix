@@ -1,0 +1,15 @@
+# Big-endian variant of RGB555 direct (8x8) — for big-endian ROM data (e.g. N64).
+# See docs/graphics-formats-reference/implementation-guide.md §3 (direct-colour tiles).
+id = "preset.pixel.dc-rgb555-be"
+name = "RGB555 direct (8x8) (big-endian)"
+engine_id = "codec.direct-color"
+
+[params]
+bpp = 15
+bytes_per_pixel = 2
+byte_order = "big"
+
+[params.masks]
+r = 0x7C00
+g = 0x03E0
+b = 0x001F

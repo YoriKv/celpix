@@ -1,0 +1,18 @@
+# 8bpp per-row interleaved planar (PL07).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
+id = "preset.pixel.8bpp-planar"
+name = "8bpp planar (per-row)"
+engine_id = "codec.planar"
+
+[params]
+bpp = 8
+planes = [
+  { base = 0, stride = 8 },
+  { base = 1, stride = 8 },
+  { base = 2, stride = 8 },
+  { base = 3, stride = 8 },
+  { base = 4, stride = 8 },
+  { base = 5, stride = 8 },
+  { base = 6, stride = 8 },
+  { base = 7, stride = 8 },
+]

@@ -1,0 +1,13 @@
+# SNES 3bpp — one interleaved plane-pair + a flat plane 2 (CP01).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
+id = "preset.pixel.snes-3bpp"
+name = "SNES 3bpp (8x8)"
+engine_id = "codec.planar"
+
+[params]
+bpp = 3
+planes = [
+  { base = 0, stride = 2 },
+  { base = 1, stride = 2 },
+  { base = 16, stride = 1 },
+]
