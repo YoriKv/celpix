@@ -1,0 +1,16 @@
+# BGR555 — SNES/GB/PCE CGRAM: 0BBBBBGGGGGRRRRR, little-endian u16, bit 15 unused.
+# Component masks are hex integers; omit a component (e.g. alpha) to leave it out.
+# See docs/graphics-formats-reference/implementation-guide.md §4.
+id = "preset.palette.bgr555"
+name = "BGR555 (SNES/GB CGRAM)"
+stage = "interpret-palette"
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"
+
+[params.masks]
+r = 0x001F
+g = 0x03E0
+b = 0x7C00

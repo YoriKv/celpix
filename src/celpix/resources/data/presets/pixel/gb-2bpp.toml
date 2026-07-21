@@ -1,0 +1,13 @@
+# GB / GBC / SGB 2bpp tiles — planes interleaved per row (p0 = 2y, p1 = 2y+1).
+# Matches *.2bpp.gb sheets. See docs/graphics-formats-reference/implementation-guide.md §2.
+id = "preset.pixel.gb-2bpp"
+name = "GB 2bpp (8x8)"
+stage = "interpret-pixel"
+engine_id = "codec.planar"
+
+[params]
+bpp = 2
+planes = [
+  { base = 0, stride = 2 },
+  { base = 1, stride = 2 },
+]

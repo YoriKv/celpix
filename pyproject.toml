@@ -1,0 +1,63 @@
+[project]
+name = "celpix"
+description = "A graphics and palette editor for retro-game data."
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Celpix contributors" }]
+# Version is single-sourced from src/celpix/__init__.py (__version__), so the
+# release script bumps exactly one file. See [tool.hatch.version] below.
+dynamic = ["version"]
+dependencies = [
+    "PySide6>=6.8",
+    # TOML reader for data-only plugin presets. Stdlib `tomllib` covers 3.11+;
+    # `tomli` (its backport) covers 3.9/3.10. Read-only — the app never writes TOML.
+    "tomli>=1.1.0; python_version < '3.11'",
+]
+
+[project.scripts]
+# Lets the app be launched as `celpix` once installed (`uv run celpix`), in
+# addition to `python -m celpix`.
+celpix = "celpix.app:main"
+
+[dependency-groups]
+# uv-native dev dependencies (PEP 735). Not shipped in the built wheel.
+dev = [
+    "pytest>=8",
+    "pytest-qt>=4.4",
+    "ruff>=0.6",
+]
+
+[tool.uv]
+# Hardlinking fails when uv's cache (WSL/ext4) and the project's .venv (on a
+# mounted Windows drive under /mnt) sit on different filesystems — the normal
+# setup here — so uv warns and falls back to copying. Ask for copy up front to
+# silence that; the cost is a one-time per-install copy.
+link-mode = "copy"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# Read __version__ straight from the package so pyproject and the runtime agree.
+path = "src/celpix/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/celpix"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# A pragmatic modern default: pyflakes/pycodestyle errors, import sorting,
+# pyupgrade, and bugbear. Expand as the codebase grows.
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Qt tests must never try to open a real window in CI. `offscreen` is forced
+# via tests/conftest.py before Qt is imported; this is a belt-and-suspenders.
+addopts = "-ra"

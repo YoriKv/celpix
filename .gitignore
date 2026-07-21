@@ -1,0 +1,51 @@
+/CLAUDE.md
+/docs/
+/tmp/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# --- Virtual environments / uv ---
+# Virtualenvs hold platform-specific binaries and cannot be shared between
+# Windows and WSL, so this checkout keeps one per OS side by side:
+#   .venv        -> Windows (default name, so PyCharm auto-detects it)
+#   .venv-linux  -> WSL/Linux (selected via UV_PROJECT_ENVIRONMENT=.venv-linux)
+# Never commit either — recreate with `uv sync`. (uv.lock IS committed.)
+.venv/
+.venv-linux/
+venv/
+.uv/
+.envrc
+
+# --- Tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+
+# --- Packaging / release build outputs (for the future CI pipeline) ---
+*.spec
+*.dmg
+*.app/
+*.msi
+*.exe
+
+# --- Qt ---
+# Generated resource/UI modules, if/when we use pyside6-rcc / pyside6-uic.
+*_rc.py
+ui_*.py
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp

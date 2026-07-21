@@ -1,0 +1,13 @@
+# NES / Famicom 2bpp tiles — two flat 8-byte planes (p0 = y, p1 = y+8).
+# See docs/graphics-formats-reference/implementation-guide.md §2.
+id = "preset.pixel.nes-2bpp"
+name = "NES 2bpp (8x8)"
+stage = "interpret-pixel"
+engine_id = "codec.planar"
+
+[params]
+bpp = 2
+planes = [
+  { base = 0, stride = 1 },
+  { base = 8, stride = 1 },
+]
