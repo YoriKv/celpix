@@ -57,6 +57,13 @@ class PlanarCodec:
         tile_bytes = cls.TILE * cls.TILE * bpp // 8
         return bpp, planes, tile_bytes
 
+    def bytes_per_tile(self, params: dict[str, Any]) -> int:
+        _, _, tile_bytes = self._geometry(params)
+        return tile_bytes
+
+    def tile_size(self, params: dict[str, Any]) -> tuple[int, int]:
+        return self.TILE, self.TILE
+
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> list[IndexGrid]:

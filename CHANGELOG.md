@@ -9,5 +9,6 @@
 - Tile & palette format support: planar tile formats (GB 2bpp, SNES 4bpp, NES 2bpp)
   and mask-based palettes (BGR555, RGB888), defined as data-only TOML presets.
 - View-only editor: open pixel and palette data, view the tiles, and save back.
+  Drag a file onto the window to open it as pixel data. Deferred rendering.
 - Extensible via a plugin folder: drop-in TOML presets and Python code plugins,
   with a trust prompt for code and a Refresh (F5) hot-reload for authors.

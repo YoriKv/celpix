@@ -41,12 +41,30 @@ def test_load_then_save_is_byte_identical(tmp_path) -> None:
     pixel_cfg, palette_cfg = _configs(px, pl)
 
     doc = pipeline.load(pixel_cfg, palette_cfg, reg)
-    assert len(doc.pixel_tiles) == 4
+    assert doc.tile_count == 4  # 128 bytes / 32 bytes-per-tile, decoded on demand
     assert len(doc.palette) == 16
 
     pipeline.save(doc, reg)
     assert px.read_bytes() == pixel_bytes
     assert pl.read_bytes() == pal_bytes
+
+
+def test_decode_window_matches_full_decode(tmp_path) -> None:
+    from celpix.core.context import PipelineContext
+
+    reg = default_registry()
+    px, pl, pixel_bytes, _ = _make_files(tmp_path)  # 4 SNES 4bpp tiles
+    pixel_cfg, palette_cfg = _configs(px, pl)
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+
+    preset = reg.preset(pixel_cfg.interpret_preset_id)
+    engine = reg.plugin(Stage.INTERPRET_PIXEL, preset.engine_id)
+    all_tiles = engine.decode(pixel_bytes, preset.params, PipelineContext())
+
+    # A windowed decode returns exactly the same tiles as slicing a full decode.
+    assert pipeline.decode_window(doc, reg, 1, 2) == all_tiles[1:3]
+    # A window running past the end yields only the tiles that exist.
+    assert pipeline.decode_window(doc, reg, 3, 5) == all_tiles[3:4]
 
 
 def test_provenance_recorded(tmp_path) -> None:

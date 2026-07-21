@@ -87,7 +87,15 @@ class PixelCodecPlugin(Plugin, Protocol):
     """The pixel-side view interpretation: bytes ⇄ a list of tiles.
 
     ``params`` is a preset's parameter set (bpp, tile size, plane offsets, …). The
-    engine walks the whole buffer, decoding/encoding one tile at a time.
+    engine walks whatever buffer it is given, decoding/encoding one tile at a time —
+    it is **buffer-relative and stateless**, so handing it a byte *window* (a slice
+    of the file covering just the visible tiles) decodes exactly that window. That is
+    what enables deferred, windowed decoding of large files without ``decode`` having
+    to know the window's size or its position in the file.
+
+    The host, however, must know a tile's **byte size** to cut that window out of the
+    raw bytes; :meth:`bytes_per_tile` exposes it (a pure function of ``params``),
+    keeping the codec the authority on its own atomic geometry.
     """
 
     def decode(
@@ -97,6 +105,14 @@ class PixelCodecPlugin(Plugin, Protocol):
     def encode(
         self, tiles: list[IndexGrid], params: dict[str, Any], ctx: PipelineContext
     ) -> bytes: ...
+
+    def bytes_per_tile(self, params: dict[str, Any]) -> int:
+        """Byte size of one atomic tile under ``params`` (for byte-window slicing)."""
+        ...
+
+    def tile_size(self, params: dict[str, Any]) -> tuple[int, int]:
+        """Pixel dimensions ``(width, height)`` of one atomic tile under ``params``."""
+        ...
 
 
 class ColorCodecPlugin(Plugin, Protocol):

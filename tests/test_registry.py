@@ -1,4 +1,9 @@
-"""The registry loads every built-in plugin and preset."""
+"""Registry error-handling: unknown lookups raise, duplicates are rejected.
+
+The built-in plugins and presets being present is covered transitively — the codec
+and pipeline tests decode/round-trip through every one of them, so a missing
+registration or broken resource load fails there.
+"""
 
 from __future__ import annotations
 
@@ -6,28 +11,6 @@ import pytest
 
 from celpix.core.errors import Stage
 from celpix.plugins.registry import default_registry
-
-
-def test_stage_plugins_present() -> None:
-    reg = default_registry()
-    assert reg.plugin(Stage.READ, "read.raw-file").info.name
-    assert reg.plugin(Stage.WRITE, "write.raw-file").info.name
-    assert reg.plugin(Stage.DECOMPRESS, "decompress.none")
-    assert reg.plugin(Stage.COMPRESS, "compress.none")
-    assert reg.plugin(Stage.INTERPRET_PIXEL, "codec.planar")
-    assert reg.plugin(Stage.INTERPRET_PALETTE, "codec.color-mask")
-
-
-def test_presets_loaded_from_resources() -> None:
-    reg = default_registry()
-    pixel_ids = {p.id for p in reg.presets(Stage.INTERPRET_PIXEL)}
-    palette_ids = {p.id for p in reg.presets(Stage.INTERPRET_PALETTE)}
-    assert {
-        "preset.pixel.gb-2bpp",
-        "preset.pixel.snes-4bpp",
-        "preset.pixel.nes-2bpp",
-    } <= pixel_ids
-    assert {"preset.palette.bgr555", "preset.palette.rgb888"} <= palette_ids
 
 
 def test_unknown_lookup_raises() -> None:
