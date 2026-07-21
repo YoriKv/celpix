@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.0 - unreleased
+## v0.0.1 - unreleased
 
 - **First release**: a cross-platform (Windows/Linux/macOS) retro-graphics tile
   viewer built on Python + PySide6, MIT-licensed, with packaged builds.
