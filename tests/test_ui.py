@@ -335,6 +335,18 @@ def test_bank_setting_edit_diverges_to_custom(qtbot, tmp_path, monkeypatch) -> N
     assert window._offset_edit.text() == "$00:8200"
 
 
+def test_split_preset_hides_bank_settings(qtbot, tmp_path, monkeypatch) -> None:
+    # ExHiROM/ExLoROM are piecewise mappings the three-spin model can't
+    # express: selecting one hides the bank settings entirely and renders
+    # through the split layout; a banked preset brings the settings back.
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
+    _select_address_format(window, "snes-exhirom")
+    assert window._bank_settings.isHidden()
+    assert window._offset_edit.text() == "$C0:0000"
+    _select_address_format(window, "snes-lorom")
+    assert not window._bank_settings.isHidden()
+
+
 def test_bad_hex_offset_reverts(qtbot, tmp_path, monkeypatch) -> None:
     # Invalid input reverts the box to the current offset. The commit path is
     # focus-independent (CommittingLineEdit always re-renders), so this one case
@@ -884,3 +896,107 @@ def test_color_details_show_selected_color(qtbot, tmp_path, monkeypatch) -> None
     window._on_tile_clicked(1)
     window._load_palette_from_selection()
     assert "#FFFFFFFF" not in window._color_details.text()  # index 1 changed
+
+
+def test_compression_overlay_shows_and_hides(qtbot, tmp_path) -> None:
+    from celpix.plugins.builtins import lz_command
+
+    # The file is an LZ2 structure (4 SNES 4bpp tiles) followed by trailing
+    # bytes: the main view keeps showing the raw file; the overlay shows the
+    # decompressed tiles for the current window.
+    tiles = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    packed = lz_command.compress(tiles, big_endian_offsets=True)
+    px = tmp_path / "packed.bin"
+    px.write_bytes(packed + bytes(64))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    assert not window._overlay.isVisible()
+    raw_image = window._canvas._image.copy()
+
+    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
+    assert window._overlay.isVisible()
+    assert not window._overlay._canvas._image.isNull()
+    # The parallel run leaves the main (raw) view untouched.
+    assert window._canvas._image == raw_image
+    assert window._doc.pixel_config.decompress_id == "decompress.none"
+
+    window._compression.setCurrentIndex(window._compression.findData("decompress.none"))
+    assert not window._overlay.isVisible()
+
+
+def test_compression_overlay_hides_on_invalid_data(qtbot, tmp_path) -> None:
+    # A leading backreference into unwritten output can never start a valid
+    # structure, so no compression scheme should claim this window.
+    px = tmp_path / "junk.bin"
+    px.write_bytes(b"\x83\xff\xff" * 22)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
+    assert not window._overlay.isVisible()
+
+
+def test_header_skip_shifts_view_and_offsets(qtbot, tmp_path) -> None:
+    header = bytes(range(16))
+    body = bytes((i * 13 + 1) & 0xFF for i in range(32 * 8))
+    px = tmp_path / "rom.sfc"
+    px.write_bytes(header + body)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    assert bytes(window._doc.pixel_data[:16]) == header  # unchecked: raw file
+
+    window._header_len.setValue(16)  # no re-render while unchecked
+    window._headered.setChecked(True)
+    assert window._doc.pixel_config.source.offset == 16
+    assert bytes(window._doc.pixel_data) == body
+    assert window._doc.tile_count == 8
+
+    window._header_len.setValue(32)  # a length edit re-applies while checked
+    assert bytes(window._doc.pixel_data) == body[16:]
+
+    window._headered.setChecked(False)  # unchecking restores the full file
+    assert bytes(window._doc.pixel_data) == header + body
+
+
+def test_jump_and_scan_navigate_structures(qtbot, tmp_path) -> None:
+    from celpix.plugins.builtins import lz_command
+
+    # Structure A, then a junk region no scheme accepts (backrefs into nothing
+    # interleaved with empty structures), then structure B, then padding.
+    tiles_a = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    tiles_b = bytes((i * 31 + 7) & 0xFF for i in range(32 * 4))
+    packed_a = lz_command.compress(tiles_a, big_endian_offsets=True)
+    packed_b = lz_command.compress(tiles_b, big_endian_offsets=True)
+    junk = (b"\x83\xff\xff" * 40)[:120]
+    px = tmp_path / "packed2.bin"
+    px.write_bytes(packed_a + junk + packed_b + bytes(512))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    # A 4x4 page: big enough (512 B) to hold a whole structure — Jump needs the
+    # end in view — yet small enough that late byte positions aren't clamped.
+    window._columns.setValue(4)
+    window._rows.setValue(4)
+    assert not window._scan_button.isEnabled()  # compression off
+    assert not window._jump_next.isEnabled()
+
+    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
+    assert window._scan_button.isEnabled()
+    assert window._jump_next.isEnabled()  # whole structure A (known end) in view
+    window._on_jump_next()
+    assert window._byte_position() == len(packed_a)
+    # The junk region doesn't decompress: overlay hides, Jump disarms.
+    assert not window._overlay.isVisible()
+    assert not window._jump_next.isEnabled()
+
+    window._on_scan()  # synchronous; walks the junk and lands on structure B
+    assert window._byte_position() == len(packed_a) + len(junk)
+    assert window._overlay.isVisible()
+    assert window._jump_next.isEnabled()
+    assert window._scan_button.text() == "Scan"  # restored after the run

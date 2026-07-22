@@ -52,21 +52,29 @@ from celpix.core.address import (
     BANK_PRESETS,
     BankLayout,
     BankPreset,
+    SplitBankLayout,
     format_hex,
     parse_hex,
 )
 from celpix.core.arrangement import compose_window
-from celpix.core.context import PipelineContext
+from celpix.core.context import (
+    KEY_COMPRESSED_SIZE,
+    KEY_DECOMPRESS_COMPLETE,
+    KEY_DECOMPRESS_PARTIAL,
+    PipelineContext,
+)
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import PipelineError, Stage
 from celpix.core.palette import Palette
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef
+from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS
 from celpix.plugins.discovery import PluginLoadIssue
 from celpix.plugins.registry import Registry, default_registry
 from celpix.ui import render_bridge
 from celpix.ui.canvas import Canvas
+from celpix.ui.decompress_overlay import DecompressOverlay
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.widgets import CommittingLineEdit, CompactComboBox
 
@@ -112,8 +120,15 @@ class MainWindow(QMainWindow):
         # The clicked tile, as an absolute tile index (survives scrolling; the
         # canvas only paints the highlight while it is inside the window).
         self._selected_tile: int | None = None
+        # Compression navigation: byte position right after the structure in
+        # view (the Jump-to-Next target, None = end unknown/invalid), and the
+        # scan interlock (the Scan button doubles as Stop while one runs).
+        self._next_structure: int | None = None
+        self._scanning = False
+        self._scan_stop = False
 
         self._canvas = Canvas()
+        self._overlay = DecompressOverlay(self)
         self._canvas.tile_clicked.connect(self._on_tile_clicked)
         # ClickFocus so clicking the view takes focus off any dropdown/spin box (which
         # would otherwise keep the arrow keys), letting navigation resume. Navigation
@@ -404,41 +419,119 @@ class MainWindow(QMainWindow):
             )
 
     def _build_toolbar(self) -> None:
-        bar = QToolBar("View")
-        self.addToolBar(bar)
+        # Two stacked rows: the codec selects (what the bytes *are*) on top, the
+        # view settings (how they're shown) below. The break keeps the second
+        # bar on its own row instead of flowing after the first.
+        codecs = QToolBar("Codecs")
+        self.addToolBar(codecs)
+        self.addToolBarBreak()
+        view = QToolBar("View")
+        self.addToolBar(view)
+        self._view_toolbar = view  # frozen wholesale during a scan
+        for bar in (codecs, view):
+            bar.layout().setSpacing(10)
 
         self._pixel_preset = self._preset_combo(Stage.INTERPRET_PIXEL, "snes-4bpp")
         self._pixel_preset.currentIndexChanged.connect(self._reload_pixel)
-        bar.addWidget(QLabel(" Pixel: "))
-        bar.addWidget(self._pixel_preset)
+        codecs.addWidget(QLabel("Pixel:"))
+        codecs.addWidget(self._pixel_preset)
 
         self._palette_preset = self._preset_combo(Stage.INTERPRET_PALETTE, "bgr555")
         self._palette_preset.currentIndexChanged.connect(self._reload_palette)
-        bar.addWidget(QLabel(" Palette: "))
-        bar.addWidget(self._palette_preset)
+        codecs.addWidget(QLabel("Palette:"))
+        codecs.addWidget(self._palette_preset)
+
+        # Compression preview: the main view stays raw; the chosen Decompress
+        # plugin runs over the current window and shows in the floating overlay.
+        self._compression = CompactComboBox(0.75)
+        self._populate_compression()
+        self._compression.currentIndexChanged.connect(self._on_view_change)
+        codecs.addWidget(QLabel("Comp:"))
+        codecs.addWidget(self._compression)
+
+        # Structure navigation for contiguously packed compressed data: hop
+        # past the structure in view, or walk forward looking for the next one.
+        self._jump_next = QPushButton("Jump to Next")
+        self._jump_next.setToolTip(
+            "Jump to the byte right after the structure in view "
+            "(assumes structures are packed back-to-back)."
+        )
+        self._jump_next.setEnabled(False)
+        self._jump_next.clicked.connect(self._on_jump_next)
+        codecs.addWidget(self._jump_next)
+        self._scan_button = QPushButton("Scan")
+        self._scan_button.setToolTip(
+            "Scan forward byte-by-byte for the next complete compressed "
+            "structure; turns into Stop while running."
+        )
+        self._scan_button.setEnabled(False)
+        self._scan_button.clicked.connect(self._on_scan)
+        codecs.addWidget(self._scan_button)
+
+        # Manual header skip for headered ROMs: when checked, the first N file
+        # bytes are ignored — the view and every offset start after the header
+        # (so bank-address formats line up with the ROM proper), and saves
+        # splice back after it. 512 B default = copier headers; iNES is 16 B.
+        self._headered = QCheckBox("Header")
+        self._headered.setToolTip(
+            "Skip a file header: view and offsets start after it."
+        )
+        self._headered.toggled.connect(self._on_header_change)
+        view.addWidget(self._headered)
+        self._header_len = self._spin(0, 0x10000, 512, self._on_header_change)
+        self._header_len.setSuffix(" B")
+        # The hint is sized for the 5-digit maximum, but real headers are at
+        # most 3 digits — trim the box so the view row stays compact.
+        self._header_len.setFixedWidth(int(self._header_len.sizeHint().width() * 0.84))
+        view.addWidget(self._header_len)
 
         self._columns = self._spin(1, 64, 16, self._on_view_change)
-        bar.addWidget(QLabel(" Cols: "))
-        bar.addWidget(self._columns)
+        view.addWidget(QLabel("Cols:"))
+        view.addWidget(self._columns)
 
         # How many tile-rows the window shows — the "render N rows" view setting.
         self._rows = self._spin(1, 256, 16, self._on_view_change)
-        bar.addWidget(QLabel(" Rows: "))
-        bar.addWidget(self._rows)
+        view.addWidget(QLabel("Rows:"))
+        view.addWidget(self._rows)
+        # Cols maxes at 2 digits, rows at 3, so their hints differ — pin both
+        # to the rows hint so the pair reads as a matched set.
+        rows_width = self._rows.sizeHint().width()
+        self._columns.setFixedWidth(rows_width)
+        self._rows.setFixedWidth(rows_width)
 
         self._zoom = self._spin(1, 16, 4, self._on_view_change)
-        bar.addWidget(QLabel(" Zoom: "))
-        bar.addWidget(self._zoom)
+        view.addWidget(QLabel("Zoom:"))
+        view.addWidget(self._zoom)
 
         # Range 255: enough rows for a 512-entry palette under a 2-colour (1bpp)
         # index space; the view refresh clamps to the loaded palette anyway.
         self._subpalette = self._spin(0, 255, 0, self._on_view_change)
-        bar.addWidget(QLabel(" Pal row: "))
-        bar.addWidget(self._subpalette)
+        view.addWidget(QLabel("Subpal:"))
+        view.addWidget(self._subpalette)
 
         self._grid = QCheckBox("Grid")
         self._grid.toggled.connect(self._on_view_change)
-        bar.addWidget(self._grid)
+        view.addWidget(self._grid)
+
+    def _header_offset(self) -> int:
+        """File bytes to skip before data begins (0 while 'Header' is unchecked)."""
+        return self._header_len.value() if self._headered.isChecked() else 0
+
+    def _on_header_change(self, *_args) -> None:
+        if self._doc is None:
+            return
+        # A length edit only matters while the skip is armed; unchecking must
+        # reload too, to drop a previously applied skip.
+        if self._headered.isChecked() or self._doc.pixel_config.source.offset:
+            self._reload_pixel()
+
+    def _populate_compression(self) -> None:
+        """Fill the compression combo from the registry, in registration order
+        (the built-ins group naturally: none first, then the LZ family)."""
+        for plugin in self._registry.plugins(Stage.DECOMPRESS):
+            self._compression.addItem(plugin.info.name, plugin.info.id)
+            if plugin.info.id == "decompress.none":
+                self._compression.setCurrentIndex(self._compression.count() - 1)
 
     def _preset_combo(self, stage: Stage, default_suffix: str) -> QComboBox:
         # Compact: preset names are long and two of these share a toolbar row, so
@@ -476,7 +569,8 @@ class MainWindow(QMainWindow):
         reads/writes addresses in the format the
         dropdown next to it selects: flat hex, or a ``bank:offset`` mapping
         parameterized by the three bank-setting spins (a preset fills them; a
-        hand-edit flips the dropdown to Custom).
+        hand-edit flips the dropdown to Custom; the piecewise ExHiROM/ExLoROM
+        presets hide them instead).
         """
         bar = QWidget()
         rows = QVBoxLayout(bar)
@@ -497,6 +591,9 @@ class MainWindow(QMainWindow):
         self._bank_first = self._hex_spin(
             0x0, 0xFF, 0x00, "Bank number of the file's first byte"
         )
+        # The bank anchor is the setting users actually retune (mirror
+        # conventions), so give it room beyond its two-digit size hint.
+        self._bank_first.setFixedWidth(int(self._bank_first.sizeHint().width() * 1.4))
         self._bank_spins = (self._bank_size, self._bank_addr, self._bank_first)
 
         row.addWidget(QLabel("Offset "))
@@ -522,13 +619,20 @@ class MainWindow(QMainWindow):
         row.addWidget(self._offset_edit)
         row.addSpacing(12)
 
+        # The settings live in one container so the piecewise presets
+        # (ExHiROM/ExLoROM), which the three-number model can't express, can
+        # hide them wholesale instead of showing misleading values.
+        self._bank_settings = QWidget()
+        bank_row = QHBoxLayout(self._bank_settings)
+        bank_row.setContentsMargins(0, 0, 0, 0)
         for label, spin in (
             ("Size", self._bank_size),
             ("Addr", self._bank_addr),
             ("Bank", self._bank_first),
         ):
-            row.addWidget(QLabel(f" {label} "))
-            row.addWidget(spin)
+            bank_row.addWidget(QLabel(f" {label} "))
+            bank_row.addWidget(spin)
+        row.addWidget(self._bank_settings)
         row.addStretch(1)
         self._nav_info = QLabel()  # "tile N / M" — right-aligned on the address row
         row.addWidget(self._nav_info)
@@ -713,6 +817,8 @@ class MainWindow(QMainWindow):
         Alt/Meta, so only bare / Shift-ed / Ctrl-ed navigation keys ever act (an
         unregistered Ctrl combo still falls through to the normal shortcuts).
         """
+        if self._scanning:
+            return True  # a running scan owns the view position; swallow keys
         if QApplication.activePopupWidget() is not None:
             return False
         if isinstance(QApplication.focusWidget(), self._ARROW_INPUT_TYPES):
@@ -805,14 +911,19 @@ class MainWindow(QMainWindow):
         )
         self._set_offset(offset, nudge=nudge)
 
-    def _bank_layout(self) -> BankLayout | None:
+    def _bank_layout(self) -> BankLayout | SplitBankLayout | None:
         """The bank mapping in effect, or None when the format is flat hex.
 
-        Built from the bank-setting spins — they are the source of truth, so a
-        preset and Custom read the same way once the preset has filled them.
+        A preset supplies its own layout object — it may fold a mirror anchor
+        or be a piecewise split, neither of which the spins can express. Custom
+        builds a plain three-number layout from the spins (which any hand-edit
+        of a preset's values flips to, so the spins stay the truth there).
         """
-        if self._addr_format.currentData() == "hex":
+        data = self._addr_format.currentData()
+        if data == "hex":
             return None
+        if isinstance(data, BankPreset):
+            return data.layout
         return BankLayout(
             bank_size=self._bank_size.value(),
             addr_base=self._bank_addr.value(),
@@ -845,17 +956,21 @@ class MainWindow(QMainWindow):
     def _on_addr_format_change(self) -> None:
         """Apply a newly chosen format: fill settings from a preset, re-render."""
         data = self._addr_format.currentData()
-        if isinstance(data, BankPreset):
+        layout = data.layout if isinstance(data, BankPreset) else None
+        if isinstance(layout, BankLayout):
             # Block the spins' signals: this programmatic fill is the preset
             # itself, not a divergence, so it must not flip the box to Custom.
             for spin, value in (
-                (self._bank_size, data.layout.bank_size),
-                (self._bank_addr, data.layout.addr_base),
-                (self._bank_first, data.layout.bank_base),
+                (self._bank_size, layout.bank_size),
+                (self._bank_addr, layout.addr_base),
+                (self._bank_first, layout.bank_base),
             ):
                 spin.blockSignals(True)
                 spin.setValue(value)
                 spin.blockSignals(False)
+        # Piecewise (split) layouts have no three-number equivalent — hide the
+        # settings rather than display values that don't describe the mapping.
+        self._bank_settings.setVisible(not isinstance(layout, SplitBankLayout))
         for spin in self._bank_spins:
             spin.setEnabled(data != "hex")
         self._refresh_offset_display()
@@ -1009,7 +1124,8 @@ class MainWindow(QMainWindow):
         handlers below), so a dropped file behaves exactly like an opened one.
         """
         cfg = PathwayConfig(
-            source=FileRef(path), interpret_preset_id=self._pixel_preset_id()
+            source=FileRef(path, offset=self._header_offset()),
+            interpret_preset_id=self._pixel_preset_id(),
         )
         try:
             px = pipeline.load_pixel_data(cfg, self._registry)
@@ -1192,7 +1308,8 @@ class MainWindow(QMainWindow):
         """Load palette data from the open pixel file at ``byte_off`` (Offset mode).
 
         The offset is in the pixel *source's* coordinate space (the same numbers
-        the offset box shows), and the palette pathway re-reads the raw file — for
+        the offset box shows — i.e. after any header skip, which is re-added for
+        the file read), and the palette pathway re-reads the raw file — for
         container/compressed pixel sources the bytes at that offset differ from the
         decoded pixel data. Accepted for now; it mirrors the offset box semantics.
         The palette is view-only (never written back): the "palette file" here is
@@ -1202,7 +1319,9 @@ class MainWindow(QMainWindow):
             return False
         src = self._doc.pixel_config.source
         try:
-            ref = self._selection_palette_source(src.path, byte_off)
+            ref = self._selection_palette_source(
+                src.path, byte_off + self._header_offset()
+            )
         except PipelineError as exc:
             self._report(exc)
             return False
@@ -1258,7 +1377,11 @@ class MainWindow(QMainWindow):
         byte_offset = self._byte_position()
         old_group = self._index_space(self._doc.pixel_config.interpret_preset_id)
         cfg = PathwayConfig(
-            source=self._doc.pixel_config.source,
+            # Same file, current header skip — a toggle re-lands here via
+            # _on_header_change, so the offset must be re-derived, not copied.
+            source=FileRef(
+                self._doc.pixel_config.source.path, offset=self._header_offset()
+            ),
             interpret_preset_id=self._pixel_preset_id(),
         )
         try:
@@ -1365,6 +1488,16 @@ class MainWindow(QMainWindow):
             index = combo.findData(current)
             combo.setCurrentIndex(index if index >= 0 else 0)
             combo.blockSignals(False)
+        # The compression combo lists Decompress *plugins*, not presets, but
+        # refreshes the same way (keep the selection when it survives the reload).
+        current = self._compression.currentData()
+        self._compression.blockSignals(True)
+        self._compression.clear()
+        self._populate_compression()
+        index = self._compression.findData(current)
+        if index >= 0:
+            self._compression.setCurrentIndex(index)
+        self._compression.blockSignals(False)
 
     def _save(self) -> None:
         if self._doc is None:
@@ -1431,6 +1564,167 @@ class MainWindow(QMainWindow):
         # A reload can recolour (or drop) the selected entry under the same index.
         self._update_color_details()
         self._sync_nav()
+        self._refresh_overlay()
+
+    def _refresh_overlay(self) -> None:
+        """Feed the floating decompression preview, or hide it.
+
+        A parallel, view-only run of the pipeline over the current window's raw
+        bytes: Decompress (best-effort — the window may cut a structure short)
+        then the same pixel-interpret and palette paths the main view uses, so
+        the overlay always reflects the active preset, palette row, and zoom.
+        The main document is untouched; failure to decompress means "no
+        structure starts at this offset" and simply hides the preview.
+        """
+        assert self._doc is not None
+        decompress_id = self._compression.currentData() or "decompress.none"
+        active = decompress_id != "decompress.none"
+        self._scan_button.setEnabled(active and not self._scanning)
+        self._next_structure = None
+        try:
+            self._present_overlay(decompress_id if active else None)
+        finally:
+            # Jump is armed only while a whole structure (known end) is in view.
+            self._jump_next.setEnabled(self._next_structure is not None)
+
+    def _present_overlay(self, decompress_id: str | None) -> None:
+        """The overlay body of :meth:`_refresh_overlay` (which owns the button
+        state around every early exit here)."""
+        assert self._doc is not None
+        view = self._doc.view
+        window = self._doc.window_bytes(
+            view.offset, view.columns * view.rows, view.byte_nudge
+        )
+        if decompress_id is None or not window:
+            self._overlay.hide_overlay()
+            return
+        ctx = PipelineContext()
+        ctx.set(KEY_DECOMPRESS_PARTIAL, True)
+        preset = self._registry.preset(self._pixel_preset_id())
+        try:
+            plugin = self._registry.plugin(Stage.DECOMPRESS, decompress_id)
+            raw = plugin.decompress(bytes(window), ctx)
+            engine = self._registry.plugin(Stage.INTERPRET_PIXEL, preset.engine_id)
+            tile_bytes = engine.bytes_per_tile(preset.params)
+            # Zero-pad the trailing partial tile, as the main view's
+            # window slicing does, so short structures still decode.
+            data = raw + bytes(-len(raw) % tile_bytes)
+            tiles = engine.decode(data, preset.params, ctx)
+        except Exception:  # noqa: BLE001 — any failure means "not a structure"
+            self._overlay.hide_overlay()
+            return
+        if not tiles:
+            self._overlay.hide_overlay()
+            return
+        cols = view.columns
+        grid = compose_window(tiles, cols, 0, (len(tiles) + cols - 1) // cols)
+        base = view.subpalette_row * self._index_space()
+        image = render_bridge.render(grid, self._doc.palette, base)
+
+        parts = [f"{len(raw):#x} B raw from {len(window):#x} B window"]
+        consumed = ctx.get(KEY_COMPRESSED_SIZE)
+        if consumed and ctx.get(KEY_DECOMPRESS_COMPLETE):
+            # The structure's own end was inside the window: report its true
+            # extent, and arm Jump-to-Next at the byte right after it.
+            parts.append(f"structure {consumed:#x} B")
+            after = self._byte_position() + consumed
+            if after < len(self._doc.pixel_data):
+                self._next_structure = after
+        rows16 = ctx.get(KEY_LZ16_ROWS)
+        if rows16 is not None:
+            parts.append(f"{rows16} tile row(s)")
+        self._overlay.show_result(
+            image,
+            engine.tile_size(preset.params),
+            view.zoom,
+            view.show_grid,
+            f"Decompressed — {plugin.info.name}",
+            ", ".join(parts),
+        )
+
+    def _on_jump_next(self) -> None:
+        if self._doc is None or self._next_structure is None:
+            return
+        self._set_byte_position(self._next_structure)
+
+    def _on_scan(self) -> None:
+        """Scan forward for the next decodable structure (re-entered by Stop).
+
+        Runs inline, pumping the event loop between batches so Stop stays
+        clickable; everything else is frozen by :meth:`_set_scan_ui`. A hit is
+        a *complete*, non-empty structure under a strict decode — a
+        best-effort partial decode "succeeds" on almost any bytes, so it can't
+        be the criterion (which also means non-self-delimiting schemes like
+        LZ16 are effectively unscannable — there is nothing in the stream to
+        recognise).
+        """
+        if self._scanning:
+            self._scan_stop = True
+            return
+        if self._doc is None:
+            return
+        decompress_id = self._compression.currentData() or "decompress.none"
+        if decompress_id == "decompress.none":
+            return
+        plugin = self._registry.plugin(Stage.DECOMPRESS, decompress_id)
+        data = self._doc.pixel_data
+        window_len = max(
+            1,
+            self._columns.value() * self._rows.value() * self._doc.bytes_per_tile,
+        )
+        pos = self._byte_position() + 1
+        found: int | None = None
+        self._scanning = True
+        self._scan_stop = False
+        self._set_scan_ui(True)
+        try:
+            while pos < len(data):
+                try:
+                    if plugin.decompress(
+                        data[pos : pos + window_len], PipelineContext()
+                    ):
+                        found = pos
+                        break
+                except Exception:  # noqa: BLE001 — not a structure; keep walking
+                    pass
+                pos += 1
+                if pos % 64 == 0:
+                    self.statusBar().showMessage(
+                        f"Scanning… {self._format_offset(pos)}"
+                    )
+                    QApplication.processEvents()
+                    if self._scan_stop:
+                        break
+        finally:
+            self._scanning = False
+            self._set_scan_ui(False)
+        # Land where the scan ended — the hit, or wherever Stop/EOF left it.
+        self._set_byte_position(found if found is not None else min(pos, len(data) - 1))
+        if found is not None:
+            self.statusBar().showMessage(
+                f"Structure found at {self._format_offset(found)}."
+            )
+        elif self._scan_stop:
+            self.statusBar().showMessage("Scan stopped.")
+        else:
+            self.statusBar().showMessage("Scan reached the end without a match.")
+
+    def _set_scan_ui(self, active: bool) -> None:
+        """Swap Scan⇄Stop and freeze the rest of the UI while a scan runs."""
+        self._scan_button.setText("Stop" if active else "Scan")
+        for widget in (
+            self.menuBar(),
+            self.centralWidget(),
+            self._palette_dock,
+            self._view_toolbar,
+            self._pixel_preset,
+            self._palette_preset,
+            self._compression,
+            self._headered,
+            self._header_len,
+            self._jump_next,
+        ):
+            widget.setEnabled(not active)
 
     def _refresh_selection(self, window_tiles: int) -> None:
         """Re-derive the canvas highlight after the window moved or resized.

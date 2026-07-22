@@ -20,6 +20,22 @@ from typing import Any
 # drift on the spelling.
 KEY_SOURCE_PATH = "source.path"  # str: filesystem path the bytes were read from
 KEY_SOURCE_OFFSET = "source.offset"  # int: byte offset within that source
+# int: size of the compressed structure in the source, recorded by Decompress.
+# The Read stage usually over-reads (offset to end-of-file), so this — not the
+# input length — is the slot a save-back has to fit into.
+KEY_COMPRESSED_SIZE = "decompress.compressed-size"
+# bool: set before Decompress by window-preview callers handing in a *bounded*
+# buffer (the visible view window) that may cut a structure short. A
+# decompressor that honours it returns the valid prefix it decoded when the
+# source ends mid-stream instead of raising; structurally corrupt data still
+# raises. Decompressors that don't understand the key just keep strict
+# behaviour.
+KEY_DECOMPRESS_PARTIAL = "decompress.allow-partial"
+# bool: whether Decompress found the structure's own end (terminator / known
+# size) inside the buffer — i.e. KEY_COMPRESSED_SIZE is the structure's true
+# extent, not a truncation point. Distinguishes "the whole structure is in
+# view" from a best-effort partial decode.
+KEY_DECOMPRESS_COMPLETE = "decompress.complete"
 
 
 class PipelineContext:

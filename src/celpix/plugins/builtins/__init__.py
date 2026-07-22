@@ -23,6 +23,8 @@ from .direct_color_codec import DirectColorCodec
 from .indexed_codec import IndexedColorCodec
 from .konami_rle import KonamiNesRleDecompress
 from .linear_codec import LinearBespokeCodec
+from .lz16 import Lz16Compress, Lz16Decompress
+from .lz_command import Lz1Compress, Lz1Decompress, Lz2Compress, Lz2Decompress
 from .packed_codec import PackedCodec
 from .passthrough import PassthroughCompress, PassthroughDecompress
 from .planar_codec import PlanarCodec
@@ -43,6 +45,12 @@ def register_builtins(reg: Registry) -> None:
         PassthroughDecompress(),
         PassthroughCompress(),
         KonamiNesRleDecompress(),
+        Lz1Decompress(),
+        Lz1Compress(),
+        Lz2Decompress(),
+        Lz2Compress(),
+        Lz16Decompress(),
+        Lz16Compress(),
         PlanarCodec(),
         PackedCodec(),
         ChunkyCodec(),

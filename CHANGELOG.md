@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.0.2 - unreleased
+
+- **Address-mapping coverage**: LoROM/HiROM presets in both anchor
+  conventions with mirror folding, plus ExHiROM and ExLoROM for >4 MB carts.
+- **SNES LZ compression**: LZ1, LZ2, and LZ16 codecs, decompress and
+  recompress.
+- **Decompression preview overlay**: live-previews the current view window
+  decompressed; the main view keeps showing the raw bytes. Jump to Next and
+  Scan make it easier to look for more compressed graphics.
+- **Header skip**: hide a file header so offsets line up with the ROM proper.
+
 ## v0.0.1 - 2026-07-21
 
 - **First release**: a cross-platform (Windows/Linux/macOS) retro-graphics tile
