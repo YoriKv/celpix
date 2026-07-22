@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.5 - unreleased
+## v0.0.5 - 2026-07-22
 
 - **Fix**: selecting a pixel format whose bit depth is fixed by its codec no
   longer crashes on load.
