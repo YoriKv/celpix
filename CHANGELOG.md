@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.2 - unreleased
+## v0.0.2 - 2026-07-21
 
 - **Address-mapping coverage**: LoROM/HiROM presets in both anchor
   conventions with mirror folding, plus ExHiROM and ExLoROM for >4 MB carts.
