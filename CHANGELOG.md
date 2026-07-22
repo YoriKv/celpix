@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.4 - unreleased
+## v0.0.4 - 2026-07-22
 
 - **Projects**: save and reopen a session as a `.celpix` file.
 - **Open multiple files with slices**: a Files dock holds several open files;
