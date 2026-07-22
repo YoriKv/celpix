@@ -2,9 +2,10 @@ name: Release
 
 # Push a version tag (e.g. `v0.1.0`) to build the app for Windows, Linux, and
 # macOS with PyInstaller and publish a GitHub Release with the artifacts:
-#   - celpix-<version>-win.zip     (portable Windows app folder, zipped)
-#   - celpix-<version>-linux.tar.gz (portable Linux app folder, tarred)
-#   - celpix-<version>-mac.zip     (macOS .app bundle, zipped)
+#   - celpix-<version>-win.zip       (portable Windows app folder, zipped)
+#   - celpix-<version>-linux.tar.gz  (portable Linux app folder, tarred)
+#   - celpix-<version>-mac-arm64.zip (macOS .app bundle, Apple Silicon)
+#   - celpix-<version>-mac-intel.zip (macOS .app bundle, Intel)
 # The release body is the matching `## v<version>` section of CHANGELOG.md
 # (auto-generated commit notes are appended; if the section is missing, the
 # release falls back to the auto notes alone).
@@ -40,11 +41,19 @@ jobs:
             asset: celpix-linux
             package: tar -czf dist/celpix-linux.tar.gz -C dist celpix
             artifact: dist/celpix-linux.tar.gz
+          # Two native macOS builds. uv's Python is single-arch, so PyInstaller
+          # can't emit a universal2 app — instead each architecture builds on
+          # its own runner. macos-latest is Apple Silicon; macos-15-intel is
+          # GitHub's last x86_64 image (hosted until Aug 2027).
           - os: macos-latest
-            asset: celpix-mac
+            asset: celpix-mac-arm64
             # --windowed produces celpix.app; zip it (ditto preserves bundle bits).
-            package: ditto -c -k --keepParent dist/celpix.app dist/celpix-mac.zip
-            artifact: dist/celpix-mac.zip
+            package: ditto -c -k --keepParent dist/celpix.app dist/celpix-mac-arm64.zip
+            artifact: dist/celpix-mac-arm64.zip
+          - os: macos-15-intel
+            asset: celpix-mac-intel
+            package: ditto -c -k --keepParent dist/celpix.app dist/celpix-mac-intel.zip
+            artifact: dist/celpix-mac-intel.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +88,20 @@ jobs:
           --name celpix --windowed --noconfirm
           --collect-data celpix
           src/celpix/__main__.py
+
+      # PyInstaller stamps LSMinimumSystemVersion from the build Python's own
+      # deployment target (e.g. 11.0 on arm64), but the app's real floor is
+      # Qt's: PySide6 6.10+ wheels are macosx_13_0. Stamp the honest minimum so
+      # older systems get a clear "requires macOS 13" dialog instead of a
+      # launch crash, then re-sign — editing Info.plist invalidates the ad-hoc
+      # signature PyInstaller applied, and arm64 refuses unsigned binaries.
+      - name: Stamp minimum macOS version
+        if: runner.os == 'macOS'
+        run: |
+          PLIST=dist/celpix.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 13.0" "$PLIST" \
+            || /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 13.0" "$PLIST"
+          codesign --force --deep --sign - dist/celpix.app
 
       # Split by OS: the `shell` key takes no expressions, so we can't pick it with
       # ${{ runner.os … }}. `if:` does allow the runner context, and only the matching

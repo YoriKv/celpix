@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.0.3 - unreleased
+
+- **macOS builds for Intel Macs**: releases now ship separate Apple Silicon and
+  Intel apps (macOS 13 or later; previously Apple Silicon only).
+
 ## v0.0.2 - 2026-07-21
 
 - **Address-mapping coverage**: LoROM/HiROM presets in both anchor
