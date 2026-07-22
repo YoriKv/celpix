@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.3 - unreleased
+## v0.0.3 - 2026-07-21
 
 - **macOS builds for Intel Macs**: releases now ship separate Apple Silicon and
   Intel apps (macOS 13 or later; previously Apple Silicon only).
