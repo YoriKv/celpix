@@ -13,6 +13,15 @@ ExLoROM) are piecewise — two windows with different file bases — and get the
 own :class:`SplitBankLayout`. :data:`BANK_PRESETS` names the common layouts;
 anything else is reachable by editing the three settings directly. Qt-free,
 like all of ``core``.
+
+Two deliberate limits of the single-mirror model: HiROM's *other* mirror — the
+upper halves of the system banks (``$00–$3F``/``$80–$BF`` at ``$8000–$FFFF``,
+the spelling behind e.g. ``$00:FF00`` for a reset vector) — would need an
+anchor that also accepts the non-ROM lower halves, so strict parse rejects
+that spelling. And the ``$00``/``$40``-anchored SNES presets format a full
+4 MB image's tail under banks ``$7E``/``$7F``, which the console overlays with
+WRAM; docs write those bytes as ``$FE``/``$FF``, a spelling parse does accept
+via the mirror.
 """
 
 from __future__ import annotations
