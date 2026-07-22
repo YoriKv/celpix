@@ -40,10 +40,21 @@ class CompactComboBox(QComboBox):
     the full content width, so entries stay readable while choosing.
     """
 
+    # Emitted when the box loses focus for real — i.e. the user moved on to
+    # another widget, not merely opened this box's own popup (which also fires a
+    # focus-out, with PopupFocusReason). Lets a screen hold scratch state alive
+    # across consecutive selections and drop it the moment focus leaves.
+    focus_lost = Signal()
+
     def __init__(self, scale: float, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._scale = scale
         self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+
+    def focusOutEvent(self, event) -> None:  # Qt override
+        super().focusOutEvent(event)
+        if event.reason() != Qt.FocusReason.PopupFocusReason:
+            self.focus_lost.emit()
 
     def _scaled(self, hint: QSize) -> QSize:
         hint.setWidth(round(hint.width() * self._scale))

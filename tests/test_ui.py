@@ -527,6 +527,48 @@ def test_switching_codec_preserves_byte_offset(qtbot, tmp_path, monkeypatch) -> 
     assert window._offset == 20  # 320 // 16
 
 
+def test_cycling_pixel_formats_keeps_target_offset_across_whole_bank(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # Cycling the pixel dropdown to eyeball formats must keep re-anchoring on the
+    # position where the run started, even when an intermediate format has tiles
+    # so large the view clamps back to page 0. The whole-bank 8bpp format is one
+    # 16384-byte tile; a 2-bank file holds only ~2 of those, so any multi-tile
+    # window collapses to offset 0 — and the sub-tile remainder it would keep is
+    # NOT the position. Before the target latch, switching back landed there.
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=1024)  # 32768 B = 2 banks
+    window._columns.setValue(16)
+    window._rows.setValue(2)  # 32-tile page, small enough to leave room to scroll
+    window._set_offset(900)  # tile 900 -> byte 28800 (900 * 32), well past bank 0
+    assert window._doc.bytes_per_tile == 32
+    assert window._offset == 900
+
+    # Switch to whole-bank 8bpp (16384 B/tile). byte 28800 -> tile 1 + nudge 12416,
+    # but a 16x2 page needs 32 whole-bank tiles and only 2 exist, so the offset
+    # clamps to 0 — the exact case that used to lose the position. The scratch
+    # target latches the true byte position so the next switch can recover it.
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.snes-8bpp-bank")
+    )
+    assert window._doc.bytes_per_tile == 16384
+    assert window._offset == 0  # clamped away from the real position
+    assert window._pixel_switch_target == 28800  # ...but the target remembers it
+
+    # Switch back to 4bpp mid-run: re-anchoring on the latched 28800 (not the
+    # clamped view) restores tile 900. Before the fix this read the clamped view's
+    # byte 12416 and landed at tile 388 (12416 // 32).
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.snes-4bpp")
+    )
+    assert window._doc.bytes_per_tile == 32
+    assert window._offset == 900  # position survived the round-trip
+
+    # Leaving the dropdown ends the run, so a fresh switch re-anchors on the live
+    # view rather than resurrecting this stale target.
+    window._end_pixel_switch_run()
+    assert window._pixel_switch_target is None
+
+
 def test_nav_keys_act_unless_an_arrow_input_is_focused(
     qtbot, tmp_path, monkeypatch
 ) -> None:
@@ -1169,6 +1211,32 @@ def test_new_slice_from_view_prefills_viewport_extent(
     assert (captured["offset"], captured["length"]) == (0, 192)
 
 
+def test_rows_past_end_of_file_are_not_clamped_or_black_filled(
+    qtbot, tmp_path
+) -> None:
+    small = tmp_path / "small.4bpp.sfc"
+    small.write_bytes(bytes(32 * 6))  # 6 tiles of 32 B (SNES 4bpp)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(small))
+    window._columns.setValue(4)  # tile_count 6 => only ceil(6/4)=2 rows of data
+    window._rows.setValue(8)  # far more rows than the file fills
+
+    # The rows spin is a free display-window height: its max is a fixed 256, not
+    # bound to the data, so a value larger than the file survives instead of being
+    # dragged down to the 2 rows that exist.
+    assert window._rows.value() == 8
+    assert window._rows.maximum() == 256
+
+    # The composed image is narrowed to the rows that actually hold tiles, so the
+    # extra 6 empty rows show the neutral viewport background rather than black
+    # filler tiles: height is 2 data rows * 8 px, not 8 rows * 8 px, and the width
+    # is the 4 columns * 8 px. (SNES 4bpp tiles are 8x8.)
+    assert (window._doc.tile_width, window._doc.tile_height) == (8, 8)
+    assert window._canvas._image.height() == 2 * 8
+    assert window._canvas._image.width() == 4 * 8
+
+
 def test_drag_selects_range_and_new_slice_from_selection(
     qtbot, tmp_path, monkeypatch
 ) -> None:
@@ -1288,3 +1356,72 @@ def test_project_save_and_load_restores_session(qtbot, tmp_path) -> None:
     assert other._offset == 4
     assert other._palette_mode == "offset"
     assert other._doc.palette == saved_palette
+
+
+def _canvas_with_3x2_red(qtbot):
+    """A Canvas holding a 3-col x 2-row image of opaque red 8x8 tiles at zoom 1.
+
+    Red (not the gray backing) so a real tile's pixels are unmistakably distinct
+    from the past-end fill.
+    """
+    from PySide6.QtGui import QImage
+
+    from celpix.ui.canvas import Canvas
+
+    c = Canvas()
+    qtbot.addWidget(c)
+    c.set_tile_size(8, 8)
+    c.set_zoom(1)
+    img = QImage(3 * 8, 2 * 8, QImage.Format.Format_RGB32)
+    img.fill(0xFFFF0000)  # opaque red
+    c.set_image(img)
+    return c
+
+
+def test_past_end_rect_maps_linear_padding_to_last_row_block(qtbot) -> None:
+    from PySide6.QtCore import QRect
+
+    c = _canvas_with_3x2_red(qtbot)
+
+    # 5 of 6 slots filled: the stream ends one slot into the bottom row, so slot 5
+    # (row 1, col 2) is padding. The trailing block is that single last-row cell:
+    # x = col 2 * 8px, y = row 1 * 8px, one column wide, one tile tall.
+    c.set_filled_tiles(5)
+    assert c._past_end_rect() == QRect(2 * 8, 1 * 8, 1 * 8, 8)
+
+    # The rect is in device coords, so it scales with zoom.
+    c.set_zoom(3)
+    assert c._past_end_rect() == QRect(2 * 8 * 3, 1 * 8 * 3, 1 * 8 * 3, 8 * 3)
+    c.set_zoom(1)
+
+    # A full window has no padding; neither does an unset count.
+    c.set_filled_tiles(6)
+    assert c._past_end_rect() is None
+    c.set_filled_tiles(None)
+    assert c._past_end_rect() is None
+
+    # An exactly-full last row (remainder 0) is not padding either: 3 fills the
+    # top row completely, leaving the bottom row entirely absent, not partial.
+    c.set_filled_tiles(3)
+    assert c._past_end_rect() is None
+
+
+def test_canvas_paints_past_end_slots_as_background(qtbot) -> None:
+    from PySide6.QtGui import QColor
+
+    from celpix.ui.canvas import CANVAS_BACKGROUND
+
+    c = _canvas_with_3x2_red(qtbot)
+    c.set_filled_tiles(5)  # slot 5 (bottom-right cell) is padding
+
+    img_out = c.grab().toImage()
+
+    # Sample the centre of the padding cell (col 2, row 1): x = 2*8 + 4 = 20,
+    # y = 1*8 + 4 = 12. It must show the neutral backing, not a black index-0 tile.
+    # Compare RGB only — grab() may carry an alpha the fill colour doesn't.
+    assert img_out.pixelColor(20, 12).rgb() == CANVAS_BACKGROUND.rgb()
+
+    # A real (filled) tile still paints its data: slot 0's centre (4, 4) is red,
+    # and definitely not the gray backing.
+    assert img_out.pixelColor(4, 4).rgb() == QColor(0xFF, 0x00, 0x00).rgb()
+    assert img_out.pixelColor(4, 4).rgb() != CANVAS_BACKGROUND.rgb()

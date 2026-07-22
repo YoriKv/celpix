@@ -123,6 +123,30 @@ def palette_entry_size(preset_id: str, reg: Registry) -> int:
     )
 
 
+def pixel_bpp(preset_id: str, reg: Registry) -> int:
+    """Bits per pixel of a pixel preset, from its resolved engine's geometry.
+
+    Derived (tile bits ÷ tile pixels) rather than read from ``params["bpp"]``: bpp
+    is a property of the codec's tile layout, and not every codec spells it as a
+    preset param — the wide/odd-tile codecs and code formats fix their geometry
+    intrinsically and carry no ``bpp``. Every pixel engine exposes
+    ``bytes_per_tile``/``tile_size``, so deriving it here is uniform and matches
+    whatever the decoder actually produced. Rounded up so a non-whole bit depth
+    still yields an index space wide enough for its largest index.
+    """
+    preset = reg.preset(preset_id)
+    engine = reg.plugin(Stage.INTERPRET_PIXEL, preset.engine_id)
+
+    def _bpp() -> int:
+        w, h = engine.tile_size(preset.params)
+        pixels = w * h
+        if pixels <= 0:
+            raise ValueError(f"tile {w}x{h} has no pixels")
+        return -(-engine.bytes_per_tile(preset.params) * 8 // pixels)
+
+    return _run(Stage.INTERPRET_PIXEL, Pathway.PIXEL, _bpp)
+
+
 def load(pixel: PathwayConfig, palette: PathwayConfig, reg: Registry) -> Document:
     """Read + decompress both pathways into a Document (pixels decode on demand)."""
     px = load_pixel_data(pixel, reg)

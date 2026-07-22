@@ -195,6 +195,54 @@ def test_pixel_write_optional(tmp_path) -> None:
     assert px.read_bytes() == pixel_bytes
 
 
+@pytest.mark.parametrize(
+    "preset_id, expected_bpp",
+    [
+        # Wide/odd-tile codecs fix their geometry intrinsically and carry NO bpp
+        # param — reading params["bpp"] used to KeyError. Deriving from the tile
+        # geometry is the fix these guard, and their bpp isn't the naive tile
+        # width either (e.g. pce-sg is 4bpp over a 16-wide tile).
+        ("preset.pixel.pce-sg-4bpp", 4),
+        ("preset.pixel.pce-2bpp16", 2),
+        ("preset.pixel.1bpp16", 1),
+        # Ordinary param-driven codecs: the derived value must equal declared bpp.
+        ("preset.pixel.snes-4bpp", 4),
+        ("preset.pixel.chunky-8bpp", 8),
+        # Direct-colour storage: params declare bpp=15 but 16 bits are stored per
+        # pixel, so the geometry-derived value pins the "storage bits" semantics.
+        ("preset.pixel.dc-rgb555", 16),
+    ],
+)
+def test_pixel_bpp_derived_from_geometry(preset_id, expected_bpp) -> None:
+    reg = default_registry()
+    assert pipeline.pixel_bpp(preset_id, reg) == expected_bpp
+
+
+def test_pixel_bpp_covers_code_formats() -> None:
+    # A code format has empty preset params: any params["bpp"] read would fail.
+    # 1 byte over a 2x2 tile = 8 bits / 4 pixels = 2bpp.
+    from celpix.plugins import FormatInfo
+    from celpix.plugins.formats import adapt_format
+
+    class _Fmt:
+        info = FormatInfo(id="format.pixel.t", name="t")
+
+        def decode(self, data, ctx): ...
+        def encode(self, tiles, ctx): ...
+        def bytes_per_tile(self):
+            return 1
+
+        def tile_size(self):
+            return (2, 2)
+
+    reg = default_registry()
+    engine, preset = adapt_format(_Fmt(), Stage.INTERPRET_PIXEL)
+    reg.register(engine)
+    reg.register_preset(preset)
+
+    assert pipeline.pixel_bpp("format.pixel.t", reg) == 2
+
+
 def test_missing_source_file_hard_stops(tmp_path) -> None:
     reg = default_registry()
     pixel_cfg = PathwayConfig(

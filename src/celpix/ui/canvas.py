@@ -14,10 +14,16 @@ here later.
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter, QRegion
 from PySide6.QtWidgets import QWidget
 
 from celpix.ui.widgets import paint_selection_outline
+
+# The neutral surround/backing behind the rendered pixels: a fixed mid-gray (not a
+# theme colour) so it never biases how the art's colours read. The scroll viewport
+# paints it around the canvas; the canvas itself paints it over any past-end tiles
+# in a partial last row, so the two meet seamlessly.
+CANVAS_BACKGROUND = QColor(0x80, 0x80, 0x80)
 
 
 class Canvas(QWidget):
@@ -36,11 +42,26 @@ class Canvas(QWidget):
         self._selected_span: tuple[int, int] | None = None
         self._drag_anchor: int | None = None
         self._drag_slot: int | None = None  # last emitted, to skip no-op moves
+        # How many of the image's tile slots hold real data. When the stream ends
+        # mid-row the trailing slots of the bottom row are padding, not tiles, so
+        # they are painted as background rather than drawn (None = the whole image
+        # is data).
+        self._filled_tiles: int | None = None
         self._update_size()
 
     def set_image(self, image: QImage) -> None:
         self._image = image
         self._update_size()
+
+    def set_filled_tiles(self, count: int | None) -> None:
+        """Mark how many leading tile slots of the image are real data.
+
+        The rest — a contiguous run at the end of the bottom row, since tiles are
+        a linear stream — render as empty canvas so they don't imply data past the
+        file's end.
+        """
+        self._filled_tiles = count
+        self.update()
 
     def set_zoom(self, zoom: int) -> None:
         self._zoom = max(1, zoom)
@@ -113,6 +134,29 @@ class Canvas(QWidget):
         )
         self.update()
 
+    def _past_end_rect(self) -> QRect | None:
+        """Device-coord rect of the bottom row's padding slots, or None.
+
+        When the data ends mid-row the missing tiles are one contiguous block at
+        the end of the last row (tiles are a linear stream). None when every slot
+        is data or the last row happens to be exactly full.
+        """
+        if self._filled_tiles is None or self._image.isNull():
+            return None
+        cols = self._columns()
+        remainder = self._filled_tiles % cols
+        rows = max(1, self._image.height() // self._tile_h)
+        row = self._filled_tiles // cols
+        if remainder == 0 or row >= rows:
+            return None
+        z = self._zoom
+        return QRect(
+            remainder * self._tile_w * z,
+            row * self._tile_h * z,
+            (cols - remainder) * self._tile_w * z,
+            self._tile_h * z,
+        )
+
     def paintEvent(self, event) -> None:  # noqa: ARG002 — Qt supplies the event
         if self._image.isNull():
             return
@@ -120,6 +164,15 @@ class Canvas(QWidget):
         # Nearest-neighbour: pixels must stay crisp when magnified.
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         z = self._zoom
+        # Past-end slots in a partial last row are backing, not data: fill them
+        # with the neutral colour and clip them out of the image/grid draw so
+        # nothing (not even a grid line) suggests a tile is there. Clip is set
+        # under the identity transform, so it stays in device coordinates while
+        # the scale below only affects what's drawn.
+        past_end = self._past_end_rect()
+        if past_end is not None:
+            painter.fillRect(past_end, CANVAS_BACKGROUND)
+            painter.setClipRegion(QRegion(self.rect()).subtracted(QRegion(past_end)))
         painter.scale(z, z)
         painter.drawImage(0, 0, self._image)
 

@@ -18,7 +18,6 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, Qt, QUrl
 from PySide6.QtGui import (
     QAction,
-    QColor,
     QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
@@ -85,7 +84,7 @@ from celpix.project.workspace import (
     pixel_config_for,
 )
 from celpix.ui import render_bridge
-from celpix.ui.canvas import Canvas
+from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas
 from celpix.ui.decompress_overlay import DecompressOverlay
 from celpix.ui.file_list_panel import FileListPanel
 from celpix.ui.palette_panel import PalettePanel
@@ -138,6 +137,13 @@ class MainWindow(QMainWindow):
         # for aligning graphics that don't start on a tile boundary. Byte steps
         # (+B/−B) move it; tile/row/page steps leave it alone.
         self._nudge = 0
+        # Scratch byte position for cycling pixel formats to eyeball which one
+        # renders. Captured (in byte space) on the first switch of a run and
+        # reused on every consecutive switch, so a format whose huge tiles force
+        # the offset back to page 0 (e.g. whole-bank) can't drag the position
+        # down and strand later switches there. Cleared when the pixel dropdown
+        # loses focus (see _reload_pixel / the focus_lost hookup).
+        self._pixel_switch_target: int | None = None
         # The selected tile range as absolute, inclusive tile indices (they
         # survive scrolling; the canvas only paints the highlight while it is
         # inside the window). A click selects one tile (first == last); a drag
@@ -170,11 +176,12 @@ class MainWindow(QMainWindow):
         # Pin the (small) window to the top-left; the scroll area only scrolls now
         # when zoom makes the window itself larger than the viewport.
         scroll.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        # Neutral gray around/behind the rendered pixels: a fixed mid-gray (not a
-        # theme colour) so it never biases how the art's colours read.
+        # The neutral surround around the rendered pixels — the same colour the
+        # canvas paints over any past-end tiles, so surround and backing meet
+        # seamlessly.
         viewport = scroll.viewport()
         viewport_palette = viewport.palette()
-        viewport_palette.setColor(QPalette.ColorRole.Window, QColor(0x80, 0x80, 0x80))
+        viewport_palette.setColor(QPalette.ColorRole.Window, CANVAS_BACKGROUND)
         viewport.setPalette(viewport_palette)
         viewport.setAutoFillBackground(True)
 
@@ -452,11 +459,6 @@ class MainWindow(QMainWindow):
             if index >= 0:  # a plugin refresh may have dropped the preset
                 combo.setCurrentIndex(index)
             combo.blockSignals(False)
-        # Undo the outgoing entry's data-bound rows cap before restoring the
-        # incoming value; _refresh_view reapplies the right cap immediately.
-        self._rows.blockSignals(True)
-        self._rows.setMaximum(256)
-        self._rows.blockSignals(False)
         for spin, value in (
             (self._columns, view.columns),
             (self._rows, view.rows),
@@ -839,6 +841,9 @@ class MainWindow(QMainWindow):
 
         self._pixel_preset = self._preset_combo(Stage.INTERPRET_PIXEL, "snes-4bpp")
         self._pixel_preset.currentIndexChanged.connect(self._reload_pixel)
+        # End a format-cycling run when focus leaves the dropdown: the next switch
+        # then re-anchors on the live position rather than the stale target.
+        self._pixel_preset.focus_lost.connect(self._end_pixel_switch_run)
         codecs.addWidget(QLabel("Pixel:"))
         codecs.addWidget(self._pixel_preset)
 
@@ -1478,13 +1483,17 @@ class MainWindow(QMainWindow):
         return self._palette_preset.currentData()
 
     def _pixel_bpp(self) -> int:
-        return int(self._registry.preset(self._pixel_preset_id()).params["bpp"])
+        return pipeline.pixel_bpp(self._pixel_preset_id(), self._registry)
 
     def _index_space(self, preset_id: str | None = None) -> int:
         """The pixel format's colour count — the subpalette row size.
 
         Capped at 256: a direct-colour preset's bpp can be up to 32, and both
-        the palette maths and the fallback palette top out at 256 entries.
+        the palette maths and the fallback palette top out at 256 entries. The
+        bpp comes from the resolved codec's geometry (:func:`pipeline.pixel_bpp`),
+        so a preset with no ``bpp`` param — a wide/odd-tile codec, a code format —
+        is sized correctly rather than crashing on a missing key.
+
         Defaults to the currently selected preset; pass ``preset_id`` to size
         another format's index space (e.g. the outgoing preset in _reload_pixel).
         A stale id (preset removed by a plugin refresh) falls back to the
@@ -1492,9 +1501,9 @@ class MainWindow(QMainWindow):
         """
         if preset_id is not None:
             try:
-                bpp = int(self._registry.preset(preset_id).params["bpp"])
+                bpp = pipeline.pixel_bpp(preset_id, self._registry)
                 return min(256, 1 << bpp)
-            except KeyError:
+            except (KeyError, PipelineError):
                 pass
         return min(256, 1 << self._pixel_bpp())
 
@@ -1899,7 +1908,13 @@ class MainWindow(QMainWindow):
         entry = self._workspace.current
         if self._doc is None or entry is None:
             return
-        byte_offset = self._byte_position()
+        # Anchor on the target from the first switch of this run, if one is live,
+        # so a series of switches all measure from the same intended position
+        # instead of from wherever the previous format's clamping happened to
+        # land. The first switch has none yet, so it seeds it from the live view.
+        if self._pixel_switch_target is None:
+            self._pixel_switch_target = self._byte_position()
+        byte_offset = self._pixel_switch_target
         old_group = self._index_space(self._doc.pixel_config.interpret_preset_id)
         # Rebuild from the entry, not the old config: a slice keeps its bounds
         # and codec ids, and a file re-derives the header skip — a header
@@ -1927,6 +1942,15 @@ class MainWindow(QMainWindow):
         note = self._partial_tile_note()
         if note:
             self.statusBar().showMessage(f"Preset changed — {note}")
+
+    def _end_pixel_switch_run(self) -> None:
+        """Drop the scratch target when the pixel dropdown loses focus.
+
+        The target only spans one uninterrupted bout of format-cycling; once the
+        user moves on, the current view *is* the position, so the next switch
+        should re-anchor there rather than resurrect a stale byte offset.
+        """
+        self._pixel_switch_target = None
 
     def _reload_palette(self) -> None:
         """Re-decode the palette under a newly chosen colour format.
@@ -2293,16 +2317,13 @@ class MainWindow(QMainWindow):
     def _refresh_view(self) -> None:
         assert self._doc is not None
         cols = self._columns.value()
-        # The rows input is bounded by the data: a slice (or small file) with N
-        # tiles offers only ceil(N / cols) rows, so the spin can't ask for a
-        # window that is mostly past the end. Signals blocked — a correction,
-        # not a user change (setMaximum may clamp the value).
-        max_rows = max(1, -(-self._doc.tile_count // max(1, cols)))
-        self._rows.blockSignals(True)
-        self._rows.setMaximum(min(256, max_rows))
-        self._rows.blockSignals(False)
-        # Re-clamp next: a smaller file, or a bigger window (cols/rows), can push
-        # the previous offset past the last page.
+        # Rows is a free display-window height (bounded only by the spin's own 256
+        # cap), not by the data. Asking for more rows than the file fills just
+        # leaves the neutral background showing past the last tile row (see
+        # shown_rows below) instead of clamping the input — so the height survives
+        # switching to a format whose larger tiles leave far fewer rows of data.
+        # Re-clamp the offset next: a smaller file, or a bigger window (cols/rows),
+        # can push the previous offset past the last page.
         self._offset = self._doc.clamp_offset(
             self._offset, cols, self._rows.value(), self._nudge
         )
@@ -2333,11 +2354,12 @@ class MainWindow(QMainWindow):
         tiles = pipeline.decode_window(
             self._doc, self._registry, view.offset, cols * rows, view.byte_nudge
         )
-        # Compose only what the data fills: slots past the end would render as
-        # black filler tiles where the neutral viewport background should show.
-        # A single partial row also narrows the image to its actual tiles; only
-        # the last row of a multi-row window keeps rectangular filler. (The
-        # zero-padded trailing partial *tile* is separate, and stays.)
+        # Compose only what the data fills. Fully-empty rows past the end are
+        # dropped from the image (shown_rows); a single partial row also narrows
+        # to its actual tiles (shown_cols). A partial last row of a multi-row
+        # window keeps a rectangular image, and the canvas paints its trailing
+        # past-end slots as background (set_filled_tiles). (The zero-padded
+        # trailing partial *tile* is real data and stays.)
         shown_cols = min(cols, max(1, len(tiles)))
         shown_rows = min(rows, -(-len(tiles) // max(1, cols)))
         image_grid = compose_window(tiles, shown_cols, 0, shown_rows)
@@ -2347,6 +2369,7 @@ class MainWindow(QMainWindow):
         self._canvas.set_tile_size(tw, th)
         self._canvas.set_zoom(view.zoom)
         self._canvas.set_grid(view.show_grid)
+        self._canvas.set_filled_tiles(len(tiles))
         self._canvas.set_image(image)
         self._refresh_selection(cols * rows)
         self._palette_panel.set_palette(self._doc.palette.colors)

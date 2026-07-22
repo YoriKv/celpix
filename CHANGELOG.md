@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.0.5 - unreleased
+
+- **Fix**: selecting a pixel format whose bit depth is fixed by its codec no
+  longer crashes on load.
+- **Smoother format cycling**: rapidly switching pixel formats to eyeball an
+  offset keeps its position. Row setting no longer clamps.
+
 ## v0.0.4 - 2026-07-22
 
 - **Projects**: save and reopen a session as a `.celpix` file.
