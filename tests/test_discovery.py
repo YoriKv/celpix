@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from celpix.core.context import PipelineContext
+from celpix.core.context import (
+    KEY_COMPRESSED_SIZE,
+    KEY_DECOMPRESS_COMPLETE,
+    PipelineContext,
+)
 from celpix.core.errors import Stage
 from celpix.plugins import discovery
+from celpix.plugins.base import FileRef
 from celpix.plugins.registry import default_registry
 from celpix.plugins.trust import TrustStore
 
@@ -363,6 +368,8 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
 
     seeded = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("_*"))
     assert seeded == [
+        "compression/_example.py",
+        "containers/_example.py",
         "palette/_example.py",
         "palette/_example.toml",
         "pixel/_example.py",
@@ -375,17 +382,66 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     edited.write_text(marker, encoding="utf-8")
     discovery.seed_examples(str(tmp_path))
     assert edited.read_text(encoding="utf-8") == marker
+    # Drop the marker and re-seed so the shipped pixel preset is restored — it,
+    # too, gets decoded below (activating the marker file would just be ignored).
+    edited.unlink()
+    discovery.seed_examples(str(tmp_path))
 
     # Activate every example (drop the underscore) and load for real.
     for path in tmp_path.rglob("_example.*"):
-        if path != edited:
-            path.rename(path.with_name(path.name[1:]))
+        path.rename(path.with_name(path.name[1:]))
     reg = default_registry()
     issues = discovery.load_directory(reg, str(tmp_path), confirm=_ALLOW)
     assert issues == []
-    assert reg.preset("preset.palette.example-rgb555")
-    assert reg.preset("format.pixel.example-4x4")
-    assert reg.preset("format.palette.example-gray4")
+
+    # Registering is necessary but not sufficient: a preset whose params drifted
+    # from its engine, or a code format whose method signatures drifted, still
+    # registers cleanly and only breaks at decode. Round-trip each example
+    # through its stage so that drift fails here, matching this test's promise.
+    ctx = PipelineContext()
+
+    def pixel_round_trips(engine_id: str, params: dict) -> bool:
+        eng = reg.plugin(Stage.INTERPRET_PIXEL, engine_id)
+        data = bytes(range(eng.bytes_per_tile(params)))
+        return eng.encode(eng.decode(data, params, ctx), params, ctx) == data
+
+    def palette_round_trips(engine_id: str, params: dict, data: bytes) -> bool:
+        eng = reg.plugin(Stage.INTERPRET_PALETTE, engine_id)
+        return eng.encode(eng.decode(data, params, ctx), params, ctx) == data
+
+    pixel_preset = reg.preset("preset.pixel.example-2bpp")
+    assert pixel_round_trips(pixel_preset.engine_id, pixel_preset.params)
+    assert pixel_round_trips("format.pixel.example-4x4", {})  # code format
+
+    palette_preset = reg.preset("preset.palette.example-rgb555")
+    # Two BGR555 entries, little-endian; exact bytes so encode must reproduce them.
+    assert palette_round_trips(
+        palette_preset.engine_id, palette_preset.params, bytes([0x1F, 0x7C, 0xE0, 0x03])
+    )
+    # The gray ramp only preserves the top nibble, so feed bytes whose low nibble
+    # is already zero for an exact round-trip.
+    assert palette_round_trips(
+        "format.palette.example-gray4", {}, bytes([0x00, 0x40, 0xF0])
+    )
+
+    # Compression example: compress → decompress restores the bytes, and the
+    # decoder reports the packed structure's true length + completeness via ctx.
+    comp = reg.plugin(Stage.COMPRESS, "compress.example-rle")
+    dec = reg.plugin(Stage.DECOMPRESS, "decompress.example-rle")
+    raw = b"AAAAABBBC" + bytes([0x07]) * 300  # runs (some > 255) plus a literal tail
+    packed = comp.compress(raw, ctx)
+    assert dec.decompress(packed, ctx) == raw
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+
+    # Container example: write wraps the payload in its magic; read strips it back.
+    writer = reg.plugin(Stage.WRITE, "write.example-container")
+    reader = reg.plugin(Stage.READ, "read.example-container")
+    payload = b"tile-bytes-here"
+    blob = tmp_path / "blob.bin"
+    writer.write(payload, FileRef(str(blob)), ctx)
+    assert blob.read_bytes().startswith(b"CELPIXEX")
+    assert reader.read(FileRef(str(blob)), ctx) == payload
 
 
 def test_wrong_shaped_format_is_reported(tmp_path) -> None:

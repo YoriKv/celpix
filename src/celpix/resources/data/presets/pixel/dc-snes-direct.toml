@@ -1,0 +1,19 @@
+# SNES direct-color mode — each 8bpp pixel byte is a BBGGGRRR color, no CGRAM
+# (256-color BGs in modes 3/4/7 with the direct-color bit set). Hardware widens
+# each field into a 15-bit color with low zero bits (plus per-tile "bgr" LSBs
+# from the BG map, taken as 0 here); mask scaling replicates high bits instead,
+# so maximal fields render slightly brighter than hardware. Hardware also draws
+# color 00 as transparent. This covers chunky-stored (Mode 7 style) data; see
+# docs/graphics-formats-reference/snes-hardware-notes.md for the planar case.
+id = "preset.pixel.dc-snes-direct"
+name = "SNES direct color BBGGGRRR (8bpp)"
+engine_id = "codec.direct-color"
+
+[params]
+bytes_per_pixel = 1
+byte_order = "little"
+
+[params.masks]
+r = 0x07
+g = 0x38
+b = 0xC0

@@ -3,14 +3,17 @@
 Deliberately minimal for the MVP — a fixed-size widget the main window drops into
 a scroll area. It owns no model; it is handed a ready :class:`QImage` by the render
 bridge and only scales/paints it. Selection is expressed in **window slot indices**
-(0 .. visible tiles - 1): the canvas reports clicks as slots and paints the slot it
-is told to highlight, while the main window owns which absolute tile is selected.
-Editing (mouse painting) attaches here later.
+(0 .. visible tiles - 1): the canvas reports pressed/dragged slots and paints the
+span it is told to highlight, while the main window owns which absolute tiles are
+selected. A click selects one tile; dragging extends the selection to the linear
+slot range between the press and the pointer (tiles are a linear byte stream, so
+a range is a run of slots, not a rectangle). Editing (mouse painting) attaches
+here later.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtCore import QPointF, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
@@ -18,7 +21,10 @@ from celpix.ui.widgets import paint_selection_outline
 
 
 class Canvas(QWidget):
-    tile_clicked = Signal(int)  # slot index within the current window
+    # (anchor slot, current slot) — emitted on press and whenever a drag
+    # reaches another slot. The anchor stays the pressed slot, so the window
+    # can grow/shrink the range live; a plain click emits (slot, slot).
+    tiles_selected = Signal(int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -27,7 +33,9 @@ class Canvas(QWidget):
         self._show_grid = False
         self._tile_w = 8
         self._tile_h = 8
-        self._selected_slot: int | None = None
+        self._selected_span: tuple[int, int] | None = None
+        self._drag_anchor: int | None = None
+        self._drag_slot: int | None = None  # last emitted, to skip no-op moves
         self._update_size()
 
     def set_image(self, image: QImage) -> None:
@@ -47,9 +55,9 @@ class Canvas(QWidget):
         self._tile_h = max(1, height)
         self.update()
 
-    def set_selection(self, slot: int | None) -> None:
-        """Highlight one window slot (``None`` clears the highlight)."""
-        self._selected_slot = slot
+    def set_selection(self, span: tuple[int, int] | None) -> None:
+        """Highlight an inclusive slot range (``None`` clears the highlight)."""
+        self._selected_span = span
         self.update()
 
     def _columns(self) -> int:
@@ -57,16 +65,47 @@ class Canvas(QWidget):
         # recoverable without the canvas holding view state.
         return max(1, self._image.width() // self._tile_w)
 
+    def _slot_at(self, pos: QPointF, clamp: bool = False) -> int | None:
+        """The window slot under ``pos``; None when outside the image.
+
+        ``clamp`` snaps an outside position to the nearest edge slot instead —
+        a drag that leaves the widget keeps extending to the boundary.
+        """
+        img_x = int(pos.x()) // self._zoom
+        img_y = int(pos.y()) // self._zoom
+        if clamp:
+            img_x = max(0, min(img_x, self._image.width() - 1))
+            img_y = max(0, min(img_y, self._image.height() - 1))
+        elif not (
+            0 <= img_x < self._image.width() and 0 <= img_y < self._image.height()
+        ):
+            return None
+        return (img_y // self._tile_h) * self._columns() + (img_x // self._tile_w)
+
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         if event.button() == Qt.MouseButton.LeftButton and not self._image.isNull():
-            img_x = int(event.position().x()) // self._zoom
-            img_y = int(event.position().y()) // self._zoom
-            if img_x < self._image.width() and img_y < self._image.height():
-                col = img_x // self._tile_w
-                row = img_y // self._tile_h
-                self.tile_clicked.emit(row * self._columns() + col)
+            slot = self._slot_at(event.position())
+            if slot is not None:
+                self._drag_anchor = self._drag_slot = slot
+                self.tiles_selected.emit(slot, slot)
         # Let the default handling run too so ClickFocus keeps focusing us.
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        if (
+            self._drag_anchor is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            slot = self._slot_at(event.position(), clamp=True)
+            if slot is not None and slot != self._drag_slot:
+                self._drag_slot = slot
+                self.tiles_selected.emit(self._drag_anchor, slot)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_anchor = self._drag_slot = None
+        super().mouseReleaseEvent(event)
 
     def _update_size(self) -> None:
         self.setFixedSize(
@@ -99,21 +138,24 @@ class Canvas(QWidget):
         painter.end()
 
     def _paint_selection(self, painter: QPainter) -> None:
-        if self._selected_slot is None:
+        if self._selected_span is None:
             return
+        first, last = self._selected_span
         cols = self._columns()
-        col = self._selected_slot % cols
-        row = self._selected_slot // cols
         z = self._zoom
-        rect = QRect(
-            col * self._tile_w * z,
-            row * self._tile_h * z,
-            self._tile_w * z,
-            self._tile_h * z,
-        )
-        if not rect.intersects(self.rect()):
-            return
-        paint_selection_outline(painter, self.palette(), rect)
+        # A linear slot run isn't a rectangle once it wraps rows — outline each
+        # row's contiguous segment so the shape reads as one selection.
+        for row in range(first // cols, last // cols + 1):
+            seg_first = max(first, row * cols)
+            seg_last = min(last, row * cols + cols - 1)
+            rect = QRect(
+                (seg_first % cols) * self._tile_w * z,
+                row * self._tile_h * z,
+                (seg_last - seg_first + 1) * self._tile_w * z,
+                self._tile_h * z,
+            )
+            if rect.intersects(self.rect()):
+                paint_selection_outline(painter, self.palette(), rect)
 
     def sizeHint(self):  # noqa: ANN201 — Qt override
         return self.size()

@@ -1,10 +1,14 @@
-"""Container Read plugins (iNES / .smd) and the Konami NES RLE decompressor."""
+"""Container Read plugins (iNES / .smd / SNES interleave) and Konami NES RLE."""
 
 from __future__ import annotations
 
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.plugins.base import FileRef
-from celpix.plugins.builtins.container_read import INesReader, SmdReader
+from celpix.plugins.builtins.container_read import (
+    INesReader,
+    SmdReader,
+    SnesInterleavedReader,
+)
 from celpix.plugins.builtins.konami_rle import KonamiNesRleDecompress
 
 
@@ -41,6 +45,32 @@ def test_smd_deinterleaves(tmp_path) -> None:
     assert data == block
 
 
+def test_snes_interleaved_restores_bank_order(tmp_path) -> None:
+    # Two 64 KB HiROM banks. Interleaved layout stores every bank's upper 32 KB
+    # half first, then all the lower halves (the header trick that puts $FFC0 at
+    # file offset 0x7FC0); the reader must reassemble lower+upper per bank.
+    halves = [bytes([n]) * 0x8000 for n in range(4)]  # bank0 = 0,1; bank1 = 2,3
+    f = tmp_path / "rom.smc"
+    f.write_bytes(halves[1] + halves[3] + halves[0] + halves[2])
+
+    ctx = PipelineContext()
+    data = SnesInterleavedReader().read(FileRef(str(f)), ctx)
+    assert data == halves[0] + halves[1] + halves[2] + halves[3]
+    assert ctx.get(KEY_SOURCE_OFFSET) == 0
+
+
+def test_snes_interleaved_skips_copier_header_by_size(tmp_path) -> None:
+    # size % 1024 == 512 marks a 512-byte copier header (carts are whole KiB).
+    upper, lower = b"\x01" * 0x8000, b"\x00" * 0x8000
+    f = tmp_path / "rom.swc"
+    f.write_bytes(bytes(512) + upper + lower)
+
+    ctx = PipelineContext()
+    data = SnesInterleavedReader().read(FileRef(str(f)), ctx)
+    assert data == lower + upper
+    assert ctx.get(KEY_SOURCE_OFFSET) == 512
+
+
 def test_konami_rle_fill_literal_end() -> None:
     # fill 3×0xAA ; literal copy of 2 bytes ; end.
     stream = bytes([0x03, 0xAA, 0x82, 0x11, 0x22, 0xFF, 0x99])
@@ -48,8 +78,11 @@ def test_konami_rle_fill_literal_end() -> None:
     assert out == b"\xaa\xaa\xaa\x11\x22"  # 0x99 after the 0xFF terminator is ignored
 
 
-def test_konami_rle_block_separator_continues() -> None:
-    # 0x7F ends a block but decompression continues into the next.
-    stream = bytes([0x02, 0x01, 0x7F, 0x02, 0x02, 0xFF])
+def test_konami_rle_ppu_address_change_skips_two_bytes() -> None:
+    # 0x7F is a PPU address change: the next 2 bytes are the little-endian
+    # destination (0x1234 here), consumed but not emitted; decoding continues
+    # after them. The address low byte 0x34 must not be read as a fill-52
+    # control — that misread is the Contra-family desync bug this guards.
+    stream = bytes([0x02, 0x01, 0x7F, 0x34, 0x12, 0x02, 0x02, 0xFF])
     out = KonamiNesRleDecompress().decompress(stream, PipelineContext())
     assert out == b"\x01\x01\x02\x02"

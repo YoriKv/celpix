@@ -1,0 +1,13 @@
+# SNES 2bpp tiles — planes interleaved per row (p0 = 2y, p1 = 2y+1); the same
+# layout as GB, named so SNES users find it (all BGs in mode 0, BG3 in mode 1,
+# BG2 in modes 4/5). See docs/graphics-formats-reference/snes-hardware-notes.md.
+id = "preset.pixel.snes-2bpp"
+name = "SNES 2bpp (8x8)"
+engine_id = "codec.planar"
+
+[params]
+bpp = 2
+planes = [
+  { base = 0, stride = 2 },
+  { base = 1, stride = 2 },
+]

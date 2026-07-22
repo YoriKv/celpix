@@ -146,20 +146,28 @@ class BankPreset:
 # switchable banks (the ones docs cite) match convention exactly.
 BANK_PRESETS: tuple[BankPreset, ...] = (
     BankPreset(
-        "snes-lorom", "SNES LoROM ($00)", BankLayout(0x8000, 0x8000, 0x00, 0x80)
+        "snes-lorom",
+        "SNES LoROM, banks $00–$7D",
+        BankLayout(0x8000, 0x8000, 0x00, 0x80),
     ),
     BankPreset(
-        "snes-lorom-80", "SNES LoROM ($80)", BankLayout(0x8000, 0x8000, 0x80, 0x00)
+        "snes-lorom-80",
+        "SNES LoROM, banks $80–$FF (FastROM)",
+        BankLayout(0x8000, 0x8000, 0x80, 0x00),
     ),
     BankPreset(
-        "snes-hirom", "SNES HiROM ($C0)", BankLayout(0x10000, 0x0000, 0xC0, 0x40)
+        "snes-hirom",
+        "SNES HiROM, banks $C0–$FF",
+        BankLayout(0x10000, 0x0000, 0xC0, 0x40),
     ),
     BankPreset(
-        "snes-hirom-40", "SNES HiROM ($40)", BankLayout(0x10000, 0x0000, 0x40, 0xC0)
+        "snes-hirom-40",
+        "SNES HiROM, banks $40–$7D (Super FX)",
+        BankLayout(0x10000, 0x0000, 0x40, 0xC0),
     ),
     BankPreset(
         "snes-exhirom",
-        "SNES ExHiROM",
+        "SNES ExHiROM (>4 MB, $C0 then $40)",
         SplitBankLayout(
             BankLayout(0x10000, 0x0000, 0xC0),
             BankLayout(0x10000, 0x0000, 0x40),
@@ -168,7 +176,7 @@ BANK_PRESETS: tuple[BankPreset, ...] = (
     ),
     BankPreset(
         "snes-exlorom",
-        "SNES ExLoROM",
+        "SNES ExLoROM (>4 MB, $80 then $00)",
         SplitBankLayout(
             BankLayout(0x8000, 0x8000, 0x80), BankLayout(0x8000, 0x8000, 0x00), 0x400000
         ),

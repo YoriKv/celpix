@@ -108,6 +108,93 @@ def test_misaligned_pixel_buffer_pads_the_last_tile(tmp_path) -> None:
     assert pipeline.decode_window(doc, reg, 0, 2) == padded
 
 
+def _slice_configs(px, pl, offset, length):
+    pixel = PathwayConfig(
+        source=FileRef(str(px), offset=offset, length=length),
+        interpret_preset_id="preset.pixel.snes-4bpp",
+    )
+    palette = PathwayConfig(
+        source=FileRef(str(pl)), interpret_preset_id="preset.palette.bgr555"
+    )
+    return pixel, palette
+
+
+def test_slice_round_trip_touches_only_the_slice(tmp_path) -> None:
+    # A bounded source (a slice of the parent) loads just that window and saves
+    # back in place: bytes outside [offset, offset+length) stay byte-identical.
+    reg = default_registry()
+    px, pl, pixel_bytes, _ = _make_files(tmp_path)
+    pixel_cfg, palette_cfg = _slice_configs(px, pl, offset=32, length=64)
+
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    assert doc.tile_count == 2
+    assert doc.pixel_data == pixel_bytes[32:96]
+
+    pipeline.save(doc, reg)
+    assert px.read_bytes() == pixel_bytes
+
+
+class _StubCompress:
+    """Compressor whose output size is dictated by the test."""
+
+    def __init__(self, packed: bytes) -> None:
+        from celpix.plugins.base import PluginInfo
+
+        self.info = PluginInfo(id="compress.stub", name="Stub", stage=Stage.COMPRESS)
+        self._packed = packed
+
+    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        return self._packed
+
+
+def _save_slice_with_stub(tmp_path, packed: bytes):
+    """Save a 64-byte slice at offset 32 through a stub compressor emitting
+    ``packed``; returns (path, original bytes, save thunk)."""
+    reg = default_registry()
+    px, pl, pixel_bytes, _ = _make_files(tmp_path)
+    pixel_cfg, palette_cfg = _slice_configs(px, pl, offset=32, length=64)
+    pixel_cfg.compress_id = "compress.stub"
+    palette_cfg.write_enabled = False
+    reg.register(_StubCompress(packed))
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    return px, pixel_bytes, lambda: pipeline.save(doc, reg)
+
+
+def test_bounded_write_refuses_oversized_result(tmp_path) -> None:
+    px, pixel_bytes, save = _save_slice_with_stub(tmp_path, packed=bytes(65))
+    with pytest.raises(PipelineError) as excinfo:
+        save()
+    assert excinfo.value.stage == Stage.WRITE
+    assert px.read_bytes() == pixel_bytes  # nothing partial written
+
+
+def test_bounded_write_accepts_exact_fit(tmp_path) -> None:
+    px, pixel_bytes, save = _save_slice_with_stub(tmp_path, packed=b"\xab" * 64)
+    save()
+    out = px.read_bytes()
+    assert out[32:96] == b"\xab" * 64
+    assert out[:32] == pixel_bytes[:32] and out[96:] == pixel_bytes[96:]
+
+
+def test_bounded_write_leaves_slot_tail_on_short_result(tmp_path) -> None:
+    px, pixel_bytes, save = _save_slice_with_stub(tmp_path, packed=b"\xab" * 10)
+    save()
+    out = px.read_bytes()
+    assert out[32:42] == b"\xab" * 10
+    assert out[42:96] == pixel_bytes[42:96]  # stale tail deliberately untouched
+
+
+def test_pixel_write_optional(tmp_path) -> None:
+    reg = default_registry()
+    px, pl, pixel_bytes, _ = _make_files(tmp_path)
+    pixel_cfg, palette_cfg = _configs(px, pl)
+    pixel_cfg.write_enabled = False
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    doc.pixel_data = bytes(len(doc.pixel_data))  # zero it; save must not land
+    pipeline.save(doc, reg)
+    assert px.read_bytes() == pixel_bytes
+
+
 def test_missing_source_file_hard_stops(tmp_path) -> None:
     reg = default_registry()
     pixel_cfg = PathwayConfig(

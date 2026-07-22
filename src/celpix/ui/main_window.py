@@ -22,6 +22,7 @@ from PySide6.QtGui import (
     QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
+    QImage,
     QKeySequence,
     QPalette,
 )
@@ -44,6 +45,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStyle,
     QToolBar,
+    QTreeWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -64,7 +66,7 @@ from celpix.core.context import (
     PipelineContext,
 )
 from celpix.core.document import Document, ViewOptions
-from celpix.core.errors import PipelineError, Stage
+from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.palette import Palette
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
@@ -72,10 +74,22 @@ from celpix.plugins.base import FileRef
 from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS
 from celpix.plugins.discovery import PluginLoadIssue
 from celpix.plugins.registry import Registry, default_registry
+from celpix.project import projectfile
+from celpix.project.workspace import (
+    Entry,
+    EntryKind,
+    EntrySession,
+    Workspace,
+    backfill_slice_length,
+    default_slice_name,
+    pixel_config_for,
+)
 from celpix.ui import render_bridge
 from celpix.ui.canvas import Canvas
 from celpix.ui.decompress_overlay import DecompressOverlay
+from celpix.ui.file_list_panel import FileListPanel
 from celpix.ui.palette_panel import PalettePanel
+from celpix.ui.slice_dialog import SliceDialog
 from celpix.ui.widgets import CommittingLineEdit, CompactComboBox
 
 # Rebuilds a registry from built-ins + the current plugin folder, returning it
@@ -105,11 +119,18 @@ class MainWindow(QMainWindow):
         self._plugin_dir = plugin_dir
         self._plugin_issues = plugin_issues or []
         self._reload_plugins = reload_plugins
+        # The open files/slices. self._doc is always the *current* entry's
+        # document (or None with nothing open) — the single-active-view model:
+        # switching entries swaps the document under the one canvas.
+        self._workspace = Workspace()
         self._doc: Document | None = None
-        # Where the palette comes from: "custom" (the generated default),
+        # The .celpix file this session was loaded from / last saved to, so
+        # File ▸ Save Project can rewrite it without re-asking for a path.
+        self._project_path: str | None = None
+        # Where the palette comes from: "default" (the generated fallback),
         # "file" (Open palette…), or "offset" (read from the pixel file). The
         # dock's mode dropdown is a view of this member.
-        self._palette_mode = "custom"
+        self._palette_mode = "default"
         # Top-left tile index of the view window. The scroll area no longer scrolls
         # the whole file; this offset does, and only the window is composed/rendered.
         self._offset = 0
@@ -117,19 +138,29 @@ class MainWindow(QMainWindow):
         # for aligning graphics that don't start on a tile boundary. Byte steps
         # (+B/−B) move it; tile/row/page steps leave it alone.
         self._nudge = 0
-        # The clicked tile, as an absolute tile index (survives scrolling; the
-        # canvas only paints the highlight while it is inside the window).
+        # The selected tile range as absolute, inclusive tile indices (they
+        # survive scrolling; the canvas only paints the highlight while it is
+        # inside the window). A click selects one tile (first == last); a drag
+        # spans the linear run between press and pointer. ``_selected_tile``
+        # is the range start — the single "selected tile" every one-tile
+        # consumer (palette-from-selection, the session) reads.
         self._selected_tile: int | None = None
+        self._selected_last: int | None = None
         # Compression navigation: byte position right after the structure in
         # view (the Jump-to-Next target, None = end unknown/invalid), and the
         # scan interlock (the Scan button doubles as Stop while one runs).
         self._next_structure: int | None = None
+        # The complete structure in view as (start byte position, byte extent)
+        # — the promote-to-slice source. Kept separately from _next_structure,
+        # which is deliberately None when the structure ends at end-of-file
+        # (nowhere to jump) even though promoting it is still valid.
+        self._structure_extent: tuple[int, int] | None = None
         self._scanning = False
         self._scan_stop = False
 
         self._canvas = Canvas()
         self._overlay = DecompressOverlay(self)
-        self._canvas.tile_clicked.connect(self._on_tile_clicked)
+        self._canvas.tiles_selected.connect(self._on_tiles_selected)
         # ClickFocus so clicking the view takes focus off any dropdown/spin box (which
         # would otherwise keep the arrow keys), letting navigation resume. Navigation
         # itself is window-wide via eventFilter, not tied to canvas focus.
@@ -171,7 +202,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_navbar())
         self.setCentralWidget(central)
 
-        self._build_palette_dock()  # before _build_menus: its toggle goes in a menu
+        self._build_files_dock()  # before _build_menus: the toggles go in menus
+        self._build_palette_dock()
         self._build_menus()
         self._build_toolbar()
         # After _build_toolbar: the spin exists only then. setValue clamps to the
@@ -205,7 +237,313 @@ class MainWindow(QMainWindow):
         Derived from the load mode so the two can never diverge; the historical
         name is kept so the pixel/palette reload guards read naturally.
         """
-        return self._palette_mode != "custom"
+        return self._palette_mode != "default"
+
+    def _build_files_dock(self) -> None:
+        """The left-side open-files dock, mirroring the workspace model."""
+        self._files_panel = FileListPanel()
+        self._files_panel.entry_activated.connect(self._activate_entry)
+        self._files_panel.remove_requested.connect(self._remove_entry)
+        self._files_panel.write_requested.connect(self._write_entry_checked)
+        self._files_panel.new_slice_requested.connect(self._new_slice_for)
+        self._files_panel.new_slice_from_view_requested.connect(
+            self._new_slice_from_view_for
+        )
+        self._files_panel.new_slice_from_selection_requested.connect(
+            self._new_slice_from_selection_for
+        )
+        self._files_panel.edit_slice_requested.connect(self._edit_slice)
+        self._files_panel.rename_committed.connect(self._rename_entry)
+        self._files_dock = QDockWidget("Files", self)
+        self._files_dock.setObjectName("files-dock")  # keeps saveState usable
+        self._files_dock.setWidget(self._files_panel)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._files_dock)
+
+        ws = self._workspace
+        ws.on_added.append(self._on_entry_added)
+        ws.on_removed.append(self._files_panel.remove_entry)
+        ws.on_current_changed.append(self._on_current_entry_changed)
+        ws.on_dirty_changed.append(self._on_entry_dirty_changed)
+
+    def _on_entry_added(self, entry: Entry) -> None:
+        # The panel nests a slice under its parent file's item when it's open.
+        self._files_panel.add_entry(entry, self._workspace.parent_of(entry))
+
+    def _on_entry_dirty_changed(self, entry: Entry) -> None:
+        self._files_panel.refresh_entry(entry)
+        self._write_all_action.setEnabled(bool(self._workspace.dirty_entries()))
+
+    def _rename_entry(self, entry: Entry, name: str) -> None:
+        entry.name = name
+        self._files_panel.refresh_entry(entry)
+        if entry is self._workspace.current:
+            self.setWindowTitle(f"Celpix — {name}")
+
+    # -- entry switching -----------------------------------------------------
+    def _activate_entry(self, entry: Entry) -> None:
+        """Switch the view to ``entry`` — every activation path funnels here."""
+        if entry is None or entry is self._workspace.current:
+            return
+        fresh = entry.doc is None
+        if fresh and not self._load_entry(entry):
+            # Load failed (bad codec/vanished file): stay put, and snap the
+            # list highlight back onto the entry actually shown.
+            self._files_panel.set_current(self._workspace.current)
+            return
+        self._capture_session()
+        self._workspace.set_current(entry)  # -> _on_current_entry_changed
+        self._canvas.setFocus()  # arm arrow-key navigation on the fresh view
+        if fresh:
+            message = f"Loaded {entry.doc.tile_count} tiles from {entry.name}"
+            note = self._partial_tile_note()
+            self.statusBar().showMessage(f"{message} — {note}" if note else message)
+
+    def _on_current_entry_changed(self, entry: Entry | None) -> None:
+        self._files_panel.set_current(entry)
+        if entry is None:
+            self._show_empty()
+            return
+        # Already loaded on the _activate_entry path; a close() repointing
+        # current to a never-activated (or invalidated) neighbour lands here.
+        if entry.doc is None and not self._load_entry(entry):
+            self._show_empty()
+            return
+        self._restore_session(entry)
+        self._refresh_view()
+
+    def _load_entry(self, entry: Entry) -> bool:
+        """Load ``entry``'s document through the pipeline; False (reported) on
+        failure. Runs on first activation and again whenever the cached
+        document was invalidated by a save into the same file."""
+        if entry.session is None:
+            entry.session = self._seed_session(entry)
+        session = entry.session
+        header = (
+            session.header_length
+            if entry.kind is EntryKind.FILE and session.headered
+            else 0
+        )
+        cfg = pixel_config_for(entry, session.pixel_preset_id, header, self._registry)
+        try:
+            px = pipeline.load_pixel_data(cfg, self._registry)
+        except PipelineError as exc:
+            self._report(exc)
+            return False
+        if backfill_slice_length(entry, px.ctx):
+            # The decompressor discovered the slice's true extent: rebuild the
+            # config bounded by it, so save-back is slot-enforced from now on.
+            cfg = pixel_config_for(
+                entry, session.pixel_preset_id, header, self._registry
+            )
+            self._files_panel.refresh_entry(entry)
+        entry.doc = Document(
+            pixel_data=px.data,
+            bytes_per_tile=px.bytes_per_tile,
+            tile_width=px.tile_width,
+            tile_height=px.tile_height,
+            palette=Palette.default(self._index_space(session.pixel_preset_id)),
+            pixel_config=cfg,
+            palette_config=self._placeholder_palette_config(session.palette_preset_id),
+            pixel_ctx=px.ctx,
+        )
+        self._apply_restored_state(entry)
+        return True
+
+    def _apply_restored_state(self, entry: Entry) -> None:
+        """Apply project-restored view/palette state on the document's first load.
+
+        One-shot: the pending fields are consumed. A palette that can't be
+        restored (vanished file, bad offset) degrades the entry to the default
+        palette with a status note — a project load never fails on it.
+        """
+        doc, session = entry.doc, entry.session
+        assert doc is not None and session is not None
+        if entry.pending_view is not None:
+            doc.view = entry.pending_view
+            entry.pending_view = None
+        source, entry.pending_palette = entry.pending_palette, None
+        if source is None:
+            return
+        try:
+            if source.colors is not None:
+                doc.palette = Palette(source.colors)
+                return
+            if source.path is not None:  # an external palette file
+                cfg = PathwayConfig(
+                    source=FileRef(source.path, offset=source.offset),
+                    interpret_preset_id=session.palette_preset_id,
+                )
+            else:  # palette bytes at an offset in the entry's own file
+                ref = self._selection_palette_source(
+                    doc.pixel_config.source.path,
+                    source.offset,
+                    session.palette_preset_id,
+                )
+                if ref is None:
+                    raise PipelineError(
+                        Stage.READ,
+                        Pathway.PALETTE,
+                        "not enough data at the palette offset",
+                    )
+                cfg = PathwayConfig(
+                    source=ref,
+                    interpret_preset_id=session.palette_preset_id,
+                    write_enabled=False,
+                )
+            doc.palette, doc.palette_ctx = pipeline.load_palette(cfg, self._registry)
+            doc.palette_config = cfg
+        except (PipelineError, OSError) as exc:
+            session.palette_mode = "default"
+            self.statusBar().showMessage(f"{entry.name}: palette not restored ({exc})")
+
+    def _seed_session(self, entry: Entry) -> EntrySession:
+        """A new entry's starting UI state, seeded from the live toolbar so a
+        freshly opened file keeps the codec the user is working in. A slice's
+        preview combo starts at none — its bytes are already decompressed."""
+        return EntrySession(
+            pixel_preset_id=self._pixel_preset_id(),
+            palette_preset_id=self._palette_preset_id(),
+            compression_id=(
+                "decompress.none"
+                if entry.kind is EntryKind.SLICE
+                else self._compression.currentData() or "decompress.none"
+            ),
+            headered=entry.kind is EntryKind.FILE and self._headered.isChecked(),
+            header_length=self._header_len.value(),
+        )
+
+    def _capture_session(self) -> None:
+        """Snapshot the live toolbar/view state into the current entry, so
+        switching back later restores exactly this setup."""
+        entry = self._workspace.current
+        if entry is None:
+            return
+        if entry.doc is not None:
+            entry.doc.view.offset = self._offset
+            entry.doc.view.byte_nudge = self._nudge
+        entry.session = EntrySession(
+            pixel_preset_id=self._pixel_preset_id(),
+            palette_preset_id=self._palette_preset_id(),
+            palette_mode=self._palette_mode,
+            compression_id=self._compression.currentData() or "decompress.none",
+            headered=self._headered.isChecked(),
+            header_length=self._header_len.value(),
+            selected_tile=self._selected_tile,
+            selected_last=self._selected_last,
+        )
+
+    def _restore_session(self, entry: Entry) -> None:
+        """Push ``entry``'s cached state into the toolbar/nav widgets.
+
+        Every widget is set with its signals blocked (the _repopulate_presets
+        pattern): the restore must be one coherent swap followed by a single
+        _refresh_view, not a cascade of per-widget reloads.
+        """
+        assert entry.doc is not None and entry.session is not None
+        session, view = entry.session, entry.doc.view
+        self._doc = entry.doc
+        for combo, data in (
+            (self._pixel_preset, session.pixel_preset_id),
+            (self._palette_preset, session.palette_preset_id),
+            (self._compression, session.compression_id),
+        ):
+            combo.blockSignals(True)
+            index = combo.findData(data)
+            if index >= 0:  # a plugin refresh may have dropped the preset
+                combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+        # Undo the outgoing entry's data-bound rows cap before restoring the
+        # incoming value; _refresh_view reapplies the right cap immediately.
+        self._rows.blockSignals(True)
+        self._rows.setMaximum(256)
+        self._rows.blockSignals(False)
+        for spin, value in (
+            (self._columns, view.columns),
+            (self._rows, view.rows),
+            (self._zoom, view.zoom),
+            (self._subpalette, view.subpalette_row),
+            (self._header_len, session.header_length),
+        ):
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
+        for check, value in (
+            (self._grid, view.show_grid),
+            (self._headered, session.headered),
+        ):
+            check.blockSignals(True)
+            check.setChecked(value)
+            check.blockSignals(False)
+        # Header skip is FILE display state; a slice's offsets are absolute
+        # file offsets and must not shift under it.
+        is_file = entry.kind is EntryKind.FILE
+        self._headered.setEnabled(is_file)
+        self._header_len.setEnabled(is_file)
+        self._offset, self._nudge = view.offset, view.byte_nudge
+        self._selected_tile = session.selected_tile
+        self._selected_last = (
+            session.selected_last
+            if session.selected_last is not None
+            else session.selected_tile
+        )
+        self._update_selection_actions()
+        self._set_palette_mode(session.palette_mode)
+        self._write_action.setEnabled(entry.doc.pixel_config.write_enabled)
+        # Slices are carved out of raw byte views; a decompressed stream's
+        # positions don't map back to file offsets, so it can't spawn them.
+        can_slice = entry.doc.pixel_config.decompress_id == "decompress.none"
+        self._new_slice_action.setEnabled(can_slice)
+        self._new_slice_from_view_action.setEnabled(can_slice)
+        self.setWindowTitle(f"Celpix — {entry.name}")
+
+    def _show_empty(self) -> None:
+        """Nothing open: clear the canvas, disable everything document-bound."""
+        self._doc = None
+        self._selected_tile = None
+        self._selected_last = None
+        self._canvas.set_selection(None)
+        self._update_selection_actions()
+        self._canvas.set_image(QImage())
+        self._overlay.hide_overlay()
+        self._write_action.setEnabled(False)
+        self._new_slice_action.setEnabled(False)
+        self._new_slice_from_view_action.setEnabled(False)
+        self.setWindowTitle("Celpix")
+        self._sync_nav()
+        self._announce_ready()
+
+    def _remove_entry(self, entry: Entry) -> None:
+        """Remove ``entry`` from the list (a file takes its slices with it),
+        always confirming first — Remove is also on the Delete key, and a slip
+        there costs the entry's whole session setup."""
+        victims = [entry, *self._workspace.slices_of(entry)]
+        dirty = [e.name for e in victims if e.dirty]
+        message = f"Remove {entry.name}?"
+        parts = []
+        if len(victims) > 1:
+            parts.append(f"removes its {len(victims) - 1} slice(s)")
+        if dirty:
+            parts.append(f"discards unsaved changes ({', '.join(dirty)})")
+        if parts:
+            message = f"Remove {entry.name}? This also " + " and ".join(parts) + "."
+        answer = QMessageBox.question(self, "Celpix — remove", message)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._workspace.close(entry)  # current repoints via _on_current_entry_changed
+
+    def closeEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        dirty = self._workspace.dirty_entries()
+        if dirty:
+            names = ", ".join(e.name for e in dirty)
+            answer = QMessageBox.question(
+                self,
+                "Celpix — unsaved changes",
+                f"Discard unsaved changes to {names}?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+        super().closeEvent(event)
 
     def _build_palette_dock(self) -> None:
         """The right-side palette dock: a load-mode header over the swatch grid.
@@ -225,7 +563,7 @@ class MainWindow(QMainWindow):
             "Where the palette comes from: the generated default, a palette "
             "file, or an offset into the open pixel file"
         )
-        for name in ("Custom", "File", "Offset"):
+        for name in ("Default", "File", "Offset"):
             self._palette_mode_combo.addItem(name, name.lower())
         # Connected after population so the addItem calls don't fire it. Qt only
         # emits on index *change*, so re-selecting the current "File" entry
@@ -288,11 +626,74 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        self._save_action = QAction("Save", self)
-        self._save_action.setShortcut(QKeySequence.StandardKey.Save)
-        self._save_action.triggered.connect(self._save)
-        self._save_action.setEnabled(False)
-        file_menu.addAction(self._save_action)
+        open_project = QAction("Open Project…", self)
+        open_project.setToolTip("Resume a saved session from a .celpix project file")
+        open_project.triggered.connect(self._open_project)
+        file_menu.addAction(open_project)
+
+        save_project = QAction("Save Project", self)
+        save_project.setToolTip(
+            "Save the open files/slices and their settings (references, "
+            "never the edited bytes) to a .celpix project file"
+        )
+        save_project.triggered.connect(self._save_project)
+        file_menu.addAction(save_project)
+
+        save_project_as = QAction("Save Project As…", self)
+        save_project_as.triggered.connect(self._save_project_as)
+        file_menu.addAction(save_project_as)
+
+        file_menu.addSeparator()
+
+        self._new_slice_action = QAction("New Slice…", self)
+        self._new_slice_action.setToolTip(
+            "Mark an offset+length region of the current file as its own entry"
+        )
+        self._new_slice_action.triggered.connect(self._new_slice_current)
+        self._new_slice_action.setEnabled(False)
+        file_menu.addAction(self._new_slice_action)
+
+        self._new_slice_from_view_action = QAction("New Slice from View", self)
+        self._new_slice_from_view_action.setToolTip(
+            "New slice covering the current viewport — its position and "
+            "visible extent (or the structure in view, when the compression "
+            "preview found one)"
+        )
+        self._new_slice_from_view_action.triggered.connect(self._new_slice_from_view)
+        self._new_slice_from_view_action.setEnabled(False)
+        file_menu.addAction(self._new_slice_from_view_action)
+
+        self._new_slice_from_selection_action = QAction(
+            "New Slice from Selection", self
+        )
+        self._new_slice_from_selection_action.setToolTip(
+            "New slice covering the selected tile range"
+        )
+        self._new_slice_from_selection_action.triggered.connect(
+            self._new_slice_from_selection
+        )
+        self._new_slice_from_selection_action.setEnabled(False)
+        file_menu.addAction(self._new_slice_from_selection_action)
+
+        file_menu.addSeparator()
+
+        self._write_action = QAction("Write", self)
+        self._write_action.setToolTip(
+            "Write the current file or slice's bytes back to disk"
+        )
+        self._write_action.setShortcut(QKeySequence.StandardKey.Save)
+        self._write_action.triggered.connect(self._write_current)
+        self._write_action.setEnabled(False)
+        file_menu.addAction(self._write_action)
+
+        self._write_all_action = QAction("Write All", self)
+        self._write_all_action.setToolTip(
+            "Write every open file and slice with unsaved changes"
+        )
+        self._write_all_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self._write_all_action.triggered.connect(self._write_all)
+        self._write_all_action.setEnabled(False)  # armed by dirty entries
+        file_menu.addAction(self._write_all_action)
 
         file_menu.addSeparator()
 
@@ -321,8 +722,9 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
-        self._build_palette_menu()
         self._build_view_menu()
+        self._build_palette_menu()
+        self._build_panels_menu()
 
     def _build_palette_menu(self) -> None:
         """Palette ▸ everything palette-flavoured: open, load-from-selection, panel."""
@@ -346,12 +748,6 @@ class MainWindow(QMainWindow):
             Qt.ShortcutContext.WidgetShortcut
         )
         menu.addAction(self._load_selection_action)
-
-        menu.addSeparator()
-
-        toggle = self._palette_dock.toggleViewAction()
-        toggle.setText("Palette Panel")
-        menu.addAction(toggle)
 
     def _build_view_menu(self) -> None:
         """View ▸ the navigation actions — the menu home for every nav key.
@@ -406,6 +802,16 @@ class MainWindow(QMainWindow):
                 action.triggered.connect(handler)
                 menu.addAction(action)
 
+    def _build_panels_menu(self) -> None:
+        """Panels ▸ show/hide the dockable panels (Files, Palette)."""
+        menu = self.menuBar().addMenu("Panels")
+        files_toggle = self._files_dock.toggleViewAction()
+        files_toggle.setText("Files Panel")
+        menu.addAction(files_toggle)
+        palette_toggle = self._palette_dock.toggleViewAction()
+        palette_toggle.setText("Palette Panel")
+        menu.addAction(palette_toggle)
+
     def _open_plugins_folder(self) -> None:
         if self._plugin_dir is None:
             return
@@ -440,13 +846,14 @@ class MainWindow(QMainWindow):
         self._palette_preset.currentIndexChanged.connect(self._reload_palette)
         codecs.addWidget(QLabel("Palette:"))
         codecs.addWidget(self._palette_preset)
+        self._match_preset_widths()
 
         # Compression preview: the main view stays raw; the chosen Decompress
         # plugin runs over the current window and shows in the floating overlay.
         self._compression = CompactComboBox(0.75)
         self._populate_compression()
         self._compression.currentIndexChanged.connect(self._on_view_change)
-        codecs.addWidget(QLabel("Comp:"))
+        codecs.addWidget(QLabel("Compression:"))
         codecs.addWidget(self._compression)
 
         # Structure navigation for contiguously packed compressed data: hop
@@ -467,6 +874,15 @@ class MainWindow(QMainWindow):
         self._scan_button.setEnabled(False)
         self._scan_button.clicked.connect(self._on_scan)
         codecs.addWidget(self._scan_button)
+        # One click promotes the complete structure in view into a decompressed
+        # slice entry in the files list — the overlay preview made editable.
+        self._promote_button = QPushButton("To Slice")
+        self._promote_button.setToolTip(
+            "Add the structure in view to the file list as a decompressed slice"
+        )
+        self._promote_button.setEnabled(False)
+        self._promote_button.clicked.connect(self._on_promote_structure)
+        codecs.addWidget(self._promote_button)
 
         # Manual header skip for headered ROMs: when checked, the first N file
         # bytes are ignored — the view and every offset start after the header
@@ -557,9 +973,9 @@ class MainWindow(QMainWindow):
     def _build_navbar(self) -> QWidget:
         """The strip under the canvas: the current position + tile/row step buttons.
 
-        Two rows — the address row (offset box, format dropdown, bank settings,
-        tile indicator at the right edge) and below it the step-button row — so
-        the bank settings don't push the buttons off-screen at narrow widths.
+        Two rows — the address row (offset box, format dropdown, bank settings)
+        and below it the step-button row — so the bank settings don't push the
+        buttons off-screen at narrow widths.
 
         Up/Down step one tile-row (``columns`` tiles); Left/Right step one tile;
         +B/−B nudge the grid one byte (sub-tile alignment) and 0B clears the
@@ -634,8 +1050,6 @@ class MainWindow(QMainWindow):
             bank_row.addWidget(spin)
         row.addWidget(self._bank_settings)
         row.addStretch(1)
-        self._nav_info = QLabel()  # "tile N / M" — right-aligned on the address row
-        row.addWidget(self._nav_info)
 
         # Arrow steps use the style's standard icons rather than triangle glyphs:
         # the left/right triangles are emoji-capable codepoints, so font fallback
@@ -749,12 +1163,15 @@ class MainWindow(QMainWindow):
     # Input widgets that use the arrow keys themselves; while one of these has focus
     # the navigation keys are left alone so it can cycle options / move the cursor.
     # The palette panel is one: focused (clicked), its Up/Down step subpalettes.
+    # The files tree is another: its arrows walk the open-entries list (selection
+    # is activation, so Up/Down switch the shown file/slice).
     _ARROW_INPUT_TYPES = (
         QComboBox,
         QAbstractSpinBox,
         QLineEdit,
         QAbstractSlider,
         PalettePanel,
+        QTreeWidget,
     )
 
     def _build_nav_keys(self) -> None:
@@ -983,14 +1400,23 @@ class MainWindow(QMainWindow):
         else:
             self._refresh_offset_display()
 
-    def _tile_byte_offset(self, tile: int) -> int:
-        """The file byte offset of ``tile`` on the current (nudged) grid."""
+    def _display_base(self) -> int:
+        """The file byte the view's position 0 corresponds to — display policy.
+
+        Raw sources (no decompressor) show source-file-absolute addresses: the
+        header skip for a whole file, the slice offset for a raw slice — so ROM
+        bank addresses stay meaningful wherever the bytes came from. A
+        decompressed stream has no linear mapping back to file offsets, so it
+        shows its own 0-based positions instead of lying with file addresses.
+        """
         assert self._doc is not None
-        return (
-            self._doc.pixel_config.source.offset
-            + self._nudge
-            + tile * self._doc.bytes_per_tile
-        )
+        cfg = self._doc.pixel_config
+        return cfg.source.offset if cfg.decompress_id == "decompress.none" else 0
+
+    def _tile_byte_offset(self, tile: int) -> int:
+        """The displayed byte offset of ``tile`` on the current (nudged) grid."""
+        assert self._doc is not None
+        return self._display_base() + self._nudge + tile * self._doc.bytes_per_tile
 
     def _offset_text(self) -> str:
         """The current byte offset rendered in the chosen address format.
@@ -1012,17 +1438,15 @@ class MainWindow(QMainWindow):
         """
         if self._doc is None:
             return
-        base = self._doc.pixel_config.source.offset
-        self._set_byte_position(byte_off - base)
+        self._set_byte_position(byte_off - self._display_base())
 
     def _sync_nav(self) -> None:
-        """Mirror the current offset into the hex box, the info label, and the bar."""
+        """Mirror the current offset into the hex box and the position bar."""
         has_doc = self._doc is not None
         self._offset_edit.setEnabled(has_doc)
         self._offset_bar.setEnabled(has_doc)
         if not has_doc:
             self._offset_edit.clear()
-            self._nav_info.setText("No file open")
             self._nudge_info.clear()
             return
 
@@ -1031,7 +1455,6 @@ class MainWindow(QMainWindow):
         # the box itself (CommittingLineEdit.commit), so this guard is safe.
         if not self._offset_edit.hasFocus():
             self._offset_edit.refresh()
-        self._nav_info.setText(f"tile {self._offset:,} / {self._doc.tile_count:,}")
         self._nudge_info.setText(f"+{self._nudge} B" if self._nudge else "")
 
         # Scrollbar spans the whole file: value = offset, page = one window of tiles,
@@ -1085,31 +1508,28 @@ class MainWindow(QMainWindow):
 
     # -- drag & drop -------------------------------------------------------
     @staticmethod
-    def _dropped_path(event: QDragEnterEvent | QDropEvent) -> str | None:
-        """The first local-file path in a drag payload, or None if it has none."""
+    def _dropped_paths(event: QDragEnterEvent | QDropEvent) -> list[str]:
+        """All local-file paths in a drag payload (empty when it has none)."""
         mime = event.mimeData()
         if not mime.hasUrls():
-            return None
-        for url in mime.urls():
-            path = url.toLocalFile()
-            if path:
-                return path
-        return None
+            return []
+        return [path for url in mime.urls() if (path := url.toLocalFile())]
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # Qt override
-        # Only offer to accept when the drag carries a local file; ignore otherwise
+        # Only offer to accept when the drag carries local files; ignore otherwise
         # so the user gets accurate feedback (no drop cursor for non-file drags).
-        if self._dropped_path(event) is not None:
+        if self._dropped_paths(event):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:  # Qt override
-        path = self._dropped_path(event)
-        if path is None:
+        paths = self._dropped_paths(event)
+        if not paths:
             return
         event.acceptProposedAction()
-        self._load_pixel(path)  # a dropped file opens as pixel data
+        for path in paths:  # every file becomes an entry; the last one is shown
+            self._load_pixel(path)
 
     # -- actions -----------------------------------------------------------
     def _open_pixel(self) -> None:
@@ -1118,44 +1538,110 @@ class MainWindow(QMainWindow):
             self._load_pixel(path)
 
     def _load_pixel(self, path: str) -> None:
-        """Decode ``path`` as pixel data under the current preset and show it.
+        """Open ``path`` as a workspace entry and switch the view to it.
 
-        The shared entry point for both File ▸ Open and drag-and-drop (drop
-        handlers below), so a dropped file behaves exactly like an opened one.
+        The shared entry point for both File ▸ Open and drag-and-drop, so a
+        dropped file behaves exactly like an opened one. A file that is
+        already open activates its existing entry — identity is the path.
         """
-        cfg = PathwayConfig(
-            source=FileRef(path, offset=self._header_offset()),
-            interpret_preset_id=self._pixel_preset_id(),
-        )
-        try:
-            px = pipeline.load_pixel_data(cfg, self._registry)
-        except PipelineError as exc:
-            self._report(exc)
-            return
+        self._activate_entry(self._workspace.open_file(path))
 
-        if self._doc is None:
-            self._doc = Document(
-                pixel_data=px.data,
-                bytes_per_tile=px.bytes_per_tile,
-                tile_width=px.tile_width,
-                tile_height=px.tile_height,
-                palette=self._fallback_palette(),
-                pixel_config=cfg,
-                palette_config=self._placeholder_palette_config(),
+    # -- projects ------------------------------------------------------------
+    _PROJECT_FILTER = "Celpix project (*.celpix)"
+
+    def _open_project(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open project", "", self._PROJECT_FILTER
+        )
+        if path:
+            self._load_project(path)
+
+    def _load_project(self, path: str) -> None:
+        """Replace the workspace with the session saved in ``path``.
+
+        Documents stay lazy — nothing is read until an entry is activated — and
+        a per-entry problem (missing file, unknown preset) surfaces on that
+        entry's activation, never as a failure of the load itself.
+        """
+        if not self._resolve_dirty_entries(
+            "Loading a project replaces the current workspace, and the unsaved "
+            "changes with it"
+        ):
+            return
+        try:
+            loaded = projectfile.load_project(path)
+        except projectfile.ProjectError as exc:
+            QMessageBox.warning(self, "Celpix — project", str(exc))
+            return
+        if loaded.version > projectfile.PROJECT_VERSION:
+            QMessageBox.warning(
+                self,
+                "Celpix — project",
+                "This project was saved by a newer Celpix. It opens with what "
+                "this version understands, but saving will rewrite it at "
+                f"version {projectfile.PROJECT_VERSION}, dropping the rest.",
             )
+        self._workspace.replace(loaded.entries, loaded.current)
+        self._project_path = path
+        self.statusBar().showMessage(
+            f"Loaded project {Path(path).name} ({len(loaded.entries)} entries)."
+        )
+
+    def _save_project(self) -> None:
+        if self._project_path is None:
+            self._save_project_as()
         else:
-            self._store_pixel_data(px, cfg)
-        self._doc.pixel_ctx = px.ctx
-        self._offset = 0  # a freshly opened file starts at the top
-        self._nudge = 0  # alignment belongs to the previous file's graphics
-        self._clear_selection()  # a tile index from another file means nothing here
-        self._save_action.setEnabled(True)
-        self.setWindowTitle(f"Celpix — {path}")
-        self._refresh_view()
-        self._canvas.setFocus()  # arm arrow-key navigation on the freshly loaded view
-        message = f"Loaded {self._doc.tile_count} tiles from {path}"
-        note = self._partial_tile_note()
-        self.statusBar().showMessage(f"{message} — {note}" if note else message)
+            self._save_project_to(self._project_path)
+
+    def _save_project_as(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save project", self._project_path or "", self._PROJECT_FILTER
+        )
+        if not path:
+            return
+        if not path.endswith(projectfile.PROJECT_EXTENSION):
+            path += projectfile.PROJECT_EXTENSION
+        self._save_project_to(path)
+
+    def _save_project_to(self, path: str) -> None:
+        if not self._resolve_dirty_entries(
+            "A project stores file references, not bytes, so it can't include "
+            "the unsaved changes"
+        ):
+            return
+        self._capture_session()  # the on-screen entry's snapshot must be fresh
+        try:
+            projectfile.save_project(self._workspace, path)
+        except OSError as exc:
+            QMessageBox.warning(self, "Celpix — project", f"Cannot write {path}: {exc}")
+            return
+        self._project_path = path
+        self.statusBar().showMessage(f"Saved project to {path}.")
+
+    def _resolve_dirty_entries(self, consequence: str) -> bool:
+        """Dirty-entries gate for project save/load; True when OK to proceed.
+
+        A project can't represent unsaved in-memory edits, so the user either
+        writes them to disk first or knowingly continues without them.
+        """
+        dirty = self._workspace.dirty_entries()
+        if not dirty:
+            return True
+        names = ", ".join(e.name for e in dirty)
+        box = QMessageBox(self)
+        box.setWindowTitle("Celpix — unsaved changes")
+        box.setText(f"{consequence} ({names}). Write them to disk first?")
+        write = box.addButton("Write All", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Continue Without", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is cancel:
+            return False
+        if box.clickedButton() is write:
+            self._write_all()
+            # A write that failed left its entry dirty — don't proceed past it.
+            return not self._workspace.dirty_entries()
+        return True
 
     def _store_pixel_data(self, px: pipeline.PixelData, cfg: PathwayConfig) -> None:
         """Update the open document's pixel bytes + geometry from a fresh load."""
@@ -1195,11 +1681,17 @@ class MainWindow(QMainWindow):
         return True
 
     # -- palette load modes ------------------------------------------------
-    def _placeholder_palette_config(self) -> PathwayConfig:
-        """The no-palette-loaded config: empty source, never written back."""
+    def _placeholder_palette_config(
+        self, preset_id: str | None = None
+    ) -> PathwayConfig:
+        """The no-palette-loaded config: empty source, never written back.
+
+        ``preset_id`` overrides the combo when loading a non-current entry,
+        whose session may name a different palette format.
+        """
         return PathwayConfig(
             source=FileRef(""),
-            interpret_preset_id=self._palette_preset_id(),
+            interpret_preset_id=preset_id or self._palette_preset_id(),
             write_enabled=False,
         )
 
@@ -1232,8 +1724,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Open pixel data first.")
             self._set_palette_mode(self._palette_mode)
             return
-        if mode == "custom":
-            self._apply_custom_palette()
+        if mode == "default":
+            self._apply_default_palette()
         elif mode == "file":
             if not self._open_palette():
                 self._set_palette_mode(self._palette_mode)
@@ -1241,13 +1733,13 @@ class MainWindow(QMainWindow):
             if not self._load_palette_at_offset(self._initial_palette_offset()):
                 self._set_palette_mode(self._palette_mode)
 
-    def _apply_custom_palette(self) -> None:
-        """Back to the generated default palette (mode "custom")."""
+    def _apply_default_palette(self) -> None:
+        """Back to the generated default palette (mode "default")."""
         assert self._doc is not None
         self._doc.palette = self._fallback_palette()
         self._doc.palette_config = self._placeholder_palette_config()
         self._doc.palette_ctx = PipelineContext()
-        self._set_palette_mode("custom")
+        self._set_palette_mode("default")
         self._refresh_view()
         self.statusBar().showMessage("Using the default palette.")
 
@@ -1270,34 +1762,63 @@ class MainWindow(QMainWindow):
             self._load_palette_at_offset(byte_off)
 
     # -- tile selection ----------------------------------------------------
-    def _on_tile_clicked(self, slot: int) -> None:
-        """Select the clicked window slot (ignoring blank padding past the file)."""
+    def _on_tiles_selected(self, anchor_slot: int, moving_slot: int) -> None:
+        """Select the pressed slot, or the linear run a drag spans.
+
+        Fired on press (anchor == moving) and again as a drag reaches other
+        slots. Blank padding past the file is clamped out of the range; a
+        press that *starts* there is ignored, as the single click always was.
+        """
         if self._doc is None:
             return
-        absolute = self._offset + slot
-        if absolute >= self._doc.tile_count:
+        count = self._doc.tile_count
+        first = self._offset + min(anchor_slot, moving_slot)
+        last = self._offset + max(anchor_slot, moving_slot)
+        if first >= count:
             return
-        self._selected_tile = absolute
-        self._canvas.set_selection(slot)
-        self._load_selection_action.setEnabled(True)
-        self.statusBar().showMessage(
-            f"Selected tile {absolute:,} at "
-            f"{self._format_offset(self._tile_byte_offset(absolute))}"
-        )
+        last = min(last, count - 1)
+        self._selected_tile, self._selected_last = first, last
+        self._update_selection_actions()
+        self._refresh_selection(self._columns.value() * self._rows.value())
+        at_first = self._format_offset(self._tile_byte_offset(first))
+        if first == last:
+            self.statusBar().showMessage(f"Selected tile {first:,} at {at_first}")
+        else:
+            self.statusBar().showMessage(
+                f"Selected tiles {first:,}–{last:,} ({last - first + 1} tiles) "
+                f"from {at_first}"
+            )
 
     def _clear_selection(self) -> None:
         self._selected_tile = None
+        self._selected_last = None
         self._canvas.set_selection(None)
-        self._load_selection_action.setEnabled(False)
+        self._update_selection_actions()
 
-    def _selection_palette_source(self, path: str, byte_off: int) -> FileRef | None:
+    def _update_selection_actions(self) -> None:
+        """Converge everything gated on 'a selection exists' with the state."""
+        has = self._selected_tile is not None
+        self._load_selection_action.setEnabled(has)
+        can_slice = (
+            self._doc is not None
+            and self._doc.pixel_config.decompress_id == "decompress.none"
+        )
+        self._new_slice_from_selection_action.setEnabled(has and can_slice)
+        self._files_panel.set_has_selection(has)
+
+    def _selection_palette_source(
+        self, path: str, byte_off: int, preset_id: str | None = None
+    ) -> FileRef | None:
         """A read window for up to 256 palette entries at ``byte_off``.
 
         Floored to whole entries — the colour codecs reject a partial trailing
         entry, so clamping at EOF alone is not enough. ``None`` when not even one
-        entry fits.
+        entry fits. ``preset_id`` overrides the combo when sizing entries for a
+        non-current entry's palette format (project restore).
         """
-        bpe = pipeline.palette_entry_size(self._palette_preset_id(), self._registry)
+        bpe = pipeline.palette_entry_size(
+            preset_id or self._palette_preset_id(), self._registry
+        )
         avail = Path(path).stat().st_size - byte_off
         entries = min(256, max(0, avail) // bpe)
         if entries == 0:
@@ -1305,13 +1826,16 @@ class MainWindow(QMainWindow):
         return FileRef(path, offset=byte_off, length=entries * bpe)
 
     def _load_palette_at_offset(self, byte_off: int) -> bool:
-        """Load palette data from the open pixel file at ``byte_off`` (Offset mode).
+        """Load palette data from the pixel source file at ``byte_off`` (Offset mode).
 
         The offset is in the pixel *source's* coordinate space (the same numbers
         the offset box shows — i.e. after any header skip, which is re-added for
         the file read), and the palette pathway re-reads the raw file — for
         container/compressed pixel sources the bytes at that offset differ from the
         decoded pixel data. Accepted for now; it mirrors the offset box semantics.
+        For a **slice**, the source file is the *parent*, so the offset is an
+        absolute parent-file offset — deliberately unbounded by the slice, since
+        a graphics block's palette usually lives elsewhere in the ROM.
         The palette is view-only (never written back): the "palette file" here is
         the pixel file, and saving palette edits into it would clobber tile data.
         """
@@ -1372,17 +1896,16 @@ class MainWindow(QMainWindow):
         new colour count, so it is recomputed from the selected colour (or the
         old base) to keep pointing at the same palette entries.
         """
-        if self._doc is None:
+        entry = self._workspace.current
+        if self._doc is None or entry is None:
             return
         byte_offset = self._byte_position()
         old_group = self._index_space(self._doc.pixel_config.interpret_preset_id)
-        cfg = PathwayConfig(
-            # Same file, current header skip — a toggle re-lands here via
-            # _on_header_change, so the offset must be re-derived, not copied.
-            source=FileRef(
-                self._doc.pixel_config.source.path, offset=self._header_offset()
-            ),
-            interpret_preset_id=self._pixel_preset_id(),
+        # Rebuild from the entry, not the old config: a slice keeps its bounds
+        # and codec ids, and a file re-derives the header skip — a header
+        # toggle re-lands here via _on_header_change, so it can't be copied.
+        cfg = pixel_config_for(
+            entry, self._pixel_preset_id(), self._header_offset(), self._registry
         )
         try:
             px = pipeline.load_pixel_data(cfg, self._registry)
@@ -1498,18 +2021,269 @@ class MainWindow(QMainWindow):
         if index >= 0:
             self._compression.setCurrentIndex(index)
         self._compression.blockSignals(False)
+        self._match_preset_widths()  # new presets may have changed the hint
 
-    def _save(self) -> None:
-        if self._doc is None:
+    def _match_preset_widths(self) -> None:
+        """Pin the pixel combo to the palette combo's width.
+
+        Each compact combo sizes to its own longest entry, which would leave
+        the side-by-side pair ragged — pinning makes them read as a matched
+        set (the columns/rows spin idiom). The palette hint is the anchor
+        (it stays content-sized); re-run after repopulating the combos.
+        """
+        self._pixel_preset.setFixedWidth(self._palette_preset.sizeHint().width())
+
+    # -- writing back --------------------------------------------------------
+    def _write_current(self) -> None:
+        """File ▸ Write: the current file or slice back to disk."""
+        entry = self._workspace.current
+        if entry is None or entry.doc is None:
             return
+        if self._write_entry(entry):
+            # A from-selection palette is view-only — don't claim it was written.
+            wrote = (
+                "pixel + palette"
+                if entry.doc is not None and entry.doc.palette_config.write_enabled
+                else "pixel"
+            )
+            self.statusBar().showMessage(f"Wrote {entry.name} ({wrote}).")
+
+    def _write_all(self) -> None:
+        """File ▸ Write All: every entry with unsaved in-memory changes."""
+        dirty = self._workspace.dirty_entries()
+        written = [e.name for e in dirty if e.doc is not None and self._write_entry(e)]
+        if written:
+            self.statusBar().showMessage(
+                f"Wrote {len(written)} item(s): {', '.join(written)}."
+            )
+
+    def _write_entry_checked(self, entry: Entry) -> None:
+        """The files dock's context-menu Write — guards, then writes."""
+        if entry.doc is None:
+            return
+        if not entry.doc.pixel_config.write_enabled:
+            self.statusBar().showMessage(
+                f"{entry.name} is view-only (its compression has no compressor)."
+            )
+            return
+        if self._write_entry(entry):
+            self.statusBar().showMessage(f"Wrote {entry.name}.")
+
+    def _write_entry(self, entry: Entry) -> bool:
+        """Save one entry through the pipeline; True on success.
+
+        A successful write invalidates the cached documents of other entries on
+        the same file (their bytes are now stale) — including the one on screen
+        when a slice is written back under its parent's feet, which is re-read
+        immediately so the view shows the freshly written bytes.
+        """
+        assert entry.doc is not None
+        self._capture_session()  # keep the current entry's session snapshot fresh
         try:
-            pipeline.save(self._doc, self._registry)
+            pipeline.save(entry.doc, self._registry)
         except PipelineError as exc:
             self._report(exc)
+            return False
+        self._workspace.set_dirty(entry, False)
+        self._workspace.invalidate_path(entry.path, keep=entry)
+        self._refresh_stale_current()
+        return True
+
+    def _refresh_stale_current(self) -> None:
+        """Re-read the active entry if a save into its file dropped its cache,
+        preserving the on-screen view position and palette."""
+        entry = self._workspace.current
+        if entry is None or entry.doc is not None:
             return
-        # A from-selection palette is view-only — don't claim it was written.
-        wrote = "pixel + palette" if self._doc.palette_config.write_enabled else "pixel"
-        self.statusBar().showMessage(f"Saved ({wrote}).")
+        stale = self._doc  # the document still on screen
+        if not self._load_entry(entry):
+            return  # reported; the stale view stays until the next activation
+        if stale is not None:
+            entry.doc.view = stale.view
+            entry.doc.palette = stale.palette
+            entry.doc.palette_config = stale.palette_config
+            entry.doc.palette_ctx = stale.palette_ctx
+        self._doc = entry.doc
+        self._refresh_view()
+
+    # -- slice creation ------------------------------------------------------
+    def _slice_prefill_offset(self) -> int:
+        """The view position as an absolute file offset (raw sources only)."""
+        assert self._doc is not None
+        return self._doc.pixel_config.source.offset + self._byte_position()
+
+    def _new_slice_current(self) -> None:
+        """File ▸ New Slice… on the current entry's file."""
+        entry = self._workspace.current
+        if entry is not None:
+            self._new_slice_for(entry)
+
+    def _new_slice_for(self, entry: Entry) -> None:
+        """Open the slice dialog for ``entry``'s file (dock context menu)."""
+        offset = 0
+        # Prefill from the view only when the dialog targets what's on screen
+        # and the on-screen stream actually maps to file offsets.
+        if (
+            entry is self._workspace.current
+            and self._doc is not None
+            and self._doc.pixel_config.decompress_id == "decompress.none"
+        ):
+            offset = self._slice_prefill_offset()
+        self._create_slice_via_dialog(entry.path, offset=offset)
+
+    def _new_slice_from_view_for(self, entry: Entry) -> None:
+        """The files dock's New Slice from View — only the on-screen entry has
+        a viewport, so anything else (a stale menu) is ignored."""
+        if entry is self._workspace.current:
+            self._new_slice_from_view()
+
+    def _new_slice_from_view(self) -> None:
+        """File ▸ New Slice from View: the dialog prefilled to cover the
+        current viewport — the structure in view when the compression preview
+        found one (its true extent beats the window's), else the visible
+        window's bytes — plus the compression combo."""
+        entry, doc = self._workspace.current, self._doc
+        if (
+            entry is None
+            or doc is None
+            or doc.pixel_config.decompress_id != "decompress.none"
+        ):
+            return
+        length = None
+        if self._structure_extent is not None:
+            start, consumed = self._structure_extent
+            if start == self._byte_position():
+                length = consumed
+        if length is None:
+            # The visible window's byte extent, clamped to the data so a
+            # partially blank last page doesn't slice past the end.
+            page = self._columns.value() * self._rows.value() * doc.bytes_per_tile
+            length = min(page, len(doc.pixel_data) - self._byte_position())
+        self._create_slice_via_dialog(
+            entry.path,
+            offset=self._slice_prefill_offset(),
+            length=length,
+            decompress_id=self._compression.currentData() or "decompress.none",
+        )
+
+    def _new_slice_from_selection_for(self, entry: Entry) -> None:
+        """The files dock's New Slice from Selection — the selection lives on
+        the on-screen entry, so anything else (a stale menu) is ignored."""
+        if entry is self._workspace.current:
+            self._new_slice_from_selection()
+
+    def _new_slice_from_selection(self) -> None:
+        """File ▸ New Slice from Selection: the selected tiles' byte range.
+
+        Raw prefill (no decompressor): the selection is a run of *decoded
+        raw* tiles, so unlike from-view the compression preview combo does
+        not describe it.
+        """
+        entry, doc = self._workspace.current, self._doc
+        if (
+            entry is None
+            or doc is None
+            or self._selected_tile is None
+            or doc.pixel_config.decompress_id != "decompress.none"
+        ):
+            return
+        tb = doc.bytes_per_tile
+        # Selection tiles live on the nudged grid; the trailing (possibly
+        # partial) tile is clamped to the bytes that exist.
+        start = self._nudge + self._selected_tile * tb
+        end = min(len(doc.pixel_data), self._nudge + (self._selected_last + 1) * tb)
+        if end <= start:
+            return
+        self._create_slice_via_dialog(
+            entry.path,
+            offset=doc.pixel_config.source.offset + start,
+            length=end - start,
+        )
+
+    def _edit_slice(self, entry: Entry) -> None:
+        """The files dock's Edit… — rewrite a slice's coordinates in place.
+
+        The same dialog as New Slice, prefilled with the current values; on OK
+        the entry is re-pointed and its cached document dropped, so the region
+        is re-read (immediately when it is on screen, else on activation).
+        """
+        if entry.kind is not EntryKind.SLICE:
+            return
+        if entry.dirty:
+            answer = QMessageBox.question(
+                self,
+                "Celpix — edit slice",
+                f"Editing {entry.name} re-reads it from disk, discarding its "
+                "unsaved changes. Continue?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        params = SliceDialog.get_slice(
+            self,
+            self._registry,
+            path=entry.path,
+            offset=entry.slice_offset,
+            length=entry.slice_length,
+            decompress_id=entry.decompress_id,
+            name=entry.name,
+            title="Edit Slice",
+        )
+        if params is None:
+            return
+        entry.name = params.name
+        entry.slice_offset = params.offset
+        entry.slice_length = params.length
+        entry.decompress_id = params.decompress_id
+        self._workspace.set_dirty(entry, False)  # edits die with the old region
+        entry.doc = None
+        self._files_panel.refresh_entry(entry)
+        if entry is self._workspace.current:
+            self._on_current_entry_changed(entry)  # reload the new region now
+
+    def _create_slice_via_dialog(
+        self,
+        path: str,
+        *,
+        offset: int = 0,
+        length: int | None = None,
+        decompress_id: str = "decompress.none",
+    ) -> None:
+        params = SliceDialog.get_slice(
+            self,
+            self._registry,
+            path=path,
+            offset=offset,
+            length=length,
+            decompress_id=decompress_id,
+        )
+        if params is None:
+            return
+        entry = self._workspace.add_slice(
+            path, params.name, params.offset, params.length, params.decompress_id
+        )
+        self._activate_entry(entry)
+
+    def _on_promote_structure(self) -> None:
+        """One click: the complete structure in view becomes a slice entry."""
+        entry, doc = self._workspace.current, self._doc
+        if (
+            entry is None
+            or doc is None
+            or self._structure_extent is None
+            or doc.pixel_config.decompress_id != "decompress.none"
+        ):
+            return
+        start, consumed = self._structure_extent
+        abs_off = doc.pixel_config.source.offset + start
+        decompress_id = self._compression.currentData() or "decompress.none"
+        slice_entry = self._workspace.add_slice(
+            entry.path,
+            default_slice_name(abs_off, consumed, decompress_id),
+            abs_off,
+            consumed,
+            decompress_id,
+        )
+        self._activate_entry(slice_entry)
 
     # -- view --------------------------------------------------------------
     def _on_view_change(self, *_args) -> None:
@@ -1518,14 +2292,23 @@ class MainWindow(QMainWindow):
 
     def _refresh_view(self) -> None:
         assert self._doc is not None
-        # Re-clamp first: a smaller file, or a bigger window (cols/rows), can push
+        cols = self._columns.value()
+        # The rows input is bounded by the data: a slice (or small file) with N
+        # tiles offers only ceil(N / cols) rows, so the spin can't ask for a
+        # window that is mostly past the end. Signals blocked — a correction,
+        # not a user change (setMaximum may clamp the value).
+        max_rows = max(1, -(-self._doc.tile_count // max(1, cols)))
+        self._rows.blockSignals(True)
+        self._rows.setMaximum(min(256, max_rows))
+        self._rows.blockSignals(False)
+        # Re-clamp next: a smaller file, or a bigger window (cols/rows), can push
         # the previous offset past the last page.
         self._offset = self._doc.clamp_offset(
-            self._offset, self._columns.value(), self._rows.value(), self._nudge
+            self._offset, cols, self._rows.value(), self._nudge
         )
-        cols, rows = self._columns.value(), self._rows.value()
+        rows = self._rows.value()
         # Clamp the subpalette row to the rows the loaded palette actually has —
-        # switching to a smaller palette (e.g. Offset's 16 rows back to Custom's
+        # switching to a smaller palette (e.g. Offset's 16 rows back to Default's
         # one) must not leave the view pointing past it. Signals blocked: this
         # is a correction, not a user change, and must not re-enter here.
         group = self._index_space()  # the subpalette row size
@@ -1550,7 +2333,14 @@ class MainWindow(QMainWindow):
         tiles = pipeline.decode_window(
             self._doc, self._registry, view.offset, cols * rows, view.byte_nudge
         )
-        image_grid = compose_window(tiles, cols, 0, rows)
+        # Compose only what the data fills: slots past the end would render as
+        # black filler tiles where the neutral viewport background should show.
+        # A single partial row also narrows the image to its actual tiles; only
+        # the last row of a multi-row window keeps rectangular filler. (The
+        # zero-padded trailing partial *tile* is separate, and stays.)
+        shown_cols = min(cols, max(1, len(tiles)))
+        shown_rows = min(rows, -(-len(tiles) // max(1, cols)))
+        image_grid = compose_window(tiles, shown_cols, 0, shown_rows)
         base = view.subpalette_row * group
         image = render_bridge.render(image_grid, self._doc.palette, base)
         tw, th = self._pixel_tile_size()
@@ -1581,11 +2371,17 @@ class MainWindow(QMainWindow):
         active = decompress_id != "decompress.none"
         self._scan_button.setEnabled(active and not self._scanning)
         self._next_structure = None
+        self._structure_extent = None
         try:
             self._present_overlay(decompress_id if active else None)
         finally:
-            # Jump is armed only while a whole structure (known end) is in view.
+            # Jump is armed only while a whole structure (known end) is in view;
+            # promote also needs the view's positions to map to file offsets.
             self._jump_next.setEnabled(self._next_structure is not None)
+            self._promote_button.setEnabled(
+                self._structure_extent is not None
+                and self._doc.pixel_config.decompress_id == "decompress.none"
+            )
 
     def _present_overlay(self, decompress_id: str | None) -> None:
         """The overlay body of :meth:`_refresh_overlay` (which owns the button
@@ -1627,6 +2423,7 @@ class MainWindow(QMainWindow):
             # The structure's own end was inside the window: report its true
             # extent, and arm Jump-to-Next at the byte right after it.
             parts.append(f"structure {consumed:#x} B")
+            self._structure_extent = (self._byte_position(), consumed)
             after = self._byte_position() + consumed
             if after < len(self._doc.pixel_data):
                 self._next_structure = after
@@ -1716,6 +2513,7 @@ class MainWindow(QMainWindow):
             self.menuBar(),
             self.centralWidget(),
             self._palette_dock,
+            self._files_dock,
             self._view_toolbar,
             self._pixel_preset,
             self._palette_preset,
@@ -1723,27 +2521,42 @@ class MainWindow(QMainWindow):
             self._headered,
             self._header_len,
             self._jump_next,
+            self._promote_button,
         ):
             widget.setEnabled(not active)
+        # The blanket re-enable above must not resurrect controls that the
+        # current entry keeps off (header skip is a whole-file setting).
+        current = self._workspace.current
+        if not active and current is not None:
+            is_file = current.kind is EntryKind.FILE
+            self._headered.setEnabled(is_file)
+            self._header_len.setEnabled(is_file)
 
     def _refresh_selection(self, window_tiles: int) -> None:
         """Re-derive the canvas highlight after the window moved or resized.
 
         Scrolling away hides the highlight but keeps the selection, so scrolling
-        back restores it; a selection past the file's end (file shrank) is dropped.
+        back restores it; a range half in view paints just its visible part. A
+        selection starting past the file's end (file shrank) is dropped, one
+        merely running past it is trimmed.
         """
         assert self._doc is not None
-        if self._selected_tile is not None and (
-            self._selected_tile >= self._doc.tile_count
-        ):
-            self._clear_selection()
-            return
-        slot: int | None = None
+        span: tuple[int, int] | None = None
         if self._selected_tile is not None:
-            candidate = self._selected_tile - self._offset
-            if 0 <= candidate < window_tiles:
-                slot = candidate
-        self._canvas.set_selection(slot)
+            if self._selected_tile >= self._doc.tile_count:
+                self._clear_selection()
+                return
+            last_abs = (
+                self._selected_last
+                if self._selected_last is not None
+                else self._selected_tile
+            )
+            self._selected_last = min(last_abs, self._doc.tile_count - 1)
+            first = max(self._selected_tile - self._offset, 0)
+            last = min(self._selected_last - self._offset, window_tiles - 1)
+            if first <= last:
+                span = (first, last)
+        self._canvas.set_selection(span)
 
     def _update_color_details(self) -> None:
         """Render the panel's selected colour into the details readout.

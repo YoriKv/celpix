@@ -1,4 +1,5 @@
-"""Container-aware Read plugins: iNES header skip and Sega ``.smd`` deinterleave.
+"""Container-aware Read plugins: iNES header skip, Sega ``.smd`` and SNES
+interleaved-image deinterleave.
 
 Both acquire raw bytes like :class:`~celpix.plugins.builtins.raw_file.RawFileReader`
 but apply a container transform first, so the pixel codec downstream sees contiguous
@@ -77,4 +78,41 @@ class SmdReader:
             for j in range(self._HALF):
                 out[dst + j * 2 + 1] = body[src + j]  # first half → odd positions
                 out[dst + j * 2] = body[src + self._HALF + j]  # second half → even
+        return bytes(out)
+
+
+class SnesInterleavedReader:
+    """Read an interleaved SNES HiROM image, restoring contiguous ROM bytes.
+
+    Game Doctor / Super UFO copiers stored HiROM images with the upper 32 KB
+    half of every 64 KB bank first, then all the lower halves — which is what
+    put the internal header at the LoROM-style file offset 0x7Fxx (see
+    ``docs/graphics-formats-reference/snes-hardware-notes.md``). A 512-byte
+    copier header is skipped first when present; carts are always a whole
+    number of KiB, so a header is present iff ``size % 1024 == 512``. LoROM
+    images were never interleaved. Like the ``.smd`` reader this always
+    deinterleaves — use it only on images known to be interleaved.
+    """
+
+    info = PluginInfo(
+        id="read.snes-interleaved",
+        name="SNES interleaved ROM (deinterleave)",
+        stage=Stage.READ,
+    )
+
+    _HALF = 0x8000  # half of a 64 KB HiROM bank
+
+    def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
+        raw = Path(source.path).read_bytes()
+        ctx.set(KEY_SOURCE_PATH, source.path)
+        header = 512 if len(raw) % 1024 == 512 else 0
+        ctx.set(KEY_SOURCE_OFFSET, header)
+        body = raw[header:]
+        banks = len(body) // (2 * self._HALF)
+        lowers = banks * self._HALF  # the lower-half region starts here
+        out = bytearray()
+        for i in range(banks):
+            lo = body[lowers + i * self._HALF : lowers + (i + 1) * self._HALF]
+            hi = body[i * self._HALF : (i + 1) * self._HALF]
+            out += lo + hi
         return bytes(out)

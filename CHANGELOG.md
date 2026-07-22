@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.0.4 - unreleased
+
+- **Projects**: save and reopen a session as a `.celpix` file.
+- **Open multiple files with slices**: a Files dock holds several open files;
+  mark offset+length regions (raw or compressed) as slices that edit and write
+  back into the parent.
+- **More SNES hardware support**: Mode 7 pixel/map split, direct-color and 2bpp
+  presets, and an interleaved-ROM reader.
+- **Konami RLE**: full round trip compress/decompress and added two variants.
+
 ## v0.0.3 - 2026-07-21
 
 - **macOS builds for Intel Macs**: releases now ship separate Apple Silicon and

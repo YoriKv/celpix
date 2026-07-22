@@ -141,8 +141,13 @@ def load(pixel: PathwayConfig, palette: PathwayConfig, reg: Registry) -> Documen
 
 
 def save(doc: Document, reg: Registry) -> None:
-    """Encode + compress + write both pathways (palette Write is optional)."""
-    _save_pixel(doc, reg)
+    """Encode + compress + write both pathways (each pathway's Write is optional).
+
+    ``write_enabled=False`` on the pixel pathway marks a view-only document — e.g.
+    a decompressed slice whose scheme has no compressor — and skips its write.
+    """
+    if doc.pixel_config.write_enabled:
+        _save_pixel(doc, reg)
     if doc.palette_config.write_enabled:
         _save_palette(doc, reg)
 
@@ -167,7 +172,10 @@ def _save_pixel(doc: Document, reg: Registry) -> None:
     # yet they are unchanged since load, so compress + write them straight back (an
     # edit path will re-encode changed windows into pixel_data before this). Writing
     # the bytes is exactly equivalent to encode(decode(bytes)) for these codecs, and
-    # avoids decoding the whole file just to save it.
+    # avoids decoding the whole file just to save it. Note that a real compressor
+    # may make different encoding choices than the original stream, so saving even
+    # untouched data can rewrite equivalent-but-different bytes inside the slot —
+    # harmless, and moot once dirty tracking arrives with editing.
     _compress_and_write(
         doc.pixel_config, doc.pixel_data, doc.pixel_ctx, reg, Pathway.PIXEL
     )
@@ -193,15 +201,29 @@ def _compress_and_write(
     reg: Registry,
     pathway: Pathway,
 ) -> None:
+    """Compress ``data`` and write it to the config's target.
+
+    A bounded target (``length`` set — a slice of a larger file) is a hard slot:
+    a result that would overflow it raises before anything touches the file. A
+    result *smaller* than the slot is written short, leaving the slot's tail
+    bytes as they were — every supported scheme is self-delimiting, so the stale
+    tail is inert, and not rewriting it keeps the file diff minimal.
+    """
     packed = _run(
         Stage.COMPRESS,
         pathway,
         lambda: reg.plugin(Stage.COMPRESS, cfg.compress_id).compress(data, ctx),
     )
+    target = cfg.write_target()
+    if target.length is not None and len(packed) > target.length:
+        raise PipelineError(
+            Stage.WRITE,
+            pathway,
+            f"result ({len(packed)} bytes) exceeds the {target.length}-byte slot "
+            f"at {target.offset:#x} in {target.path}",
+        )
     _run(
         Stage.WRITE,
         pathway,
-        lambda: reg.plugin(Stage.WRITE, cfg.write_id).write(
-            packed, cfg.write_target(), ctx
-        ),
+        lambda: reg.plugin(Stage.WRITE, cfg.write_id).write(packed, target, ctx),
     )

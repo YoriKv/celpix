@@ -17,13 +17,20 @@ from celpix.core.context import (
     KEY_DECOMPRESS_PARTIAL,
     PipelineContext,
 )
-from celpix.plugins.builtins import lz16, lz_command
+from celpix.plugins.builtins import konami_rle, lz16, lz_command
+from celpix.plugins.builtins.konami_rle import (
+    KonamiFdsRleCompress,
+    KonamiFdsRleDecompress,
+    KonamiNesRleCompress,
+    KonamiNesRleDecompress,
+)
 from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS, Lz16Decompress
 from celpix.plugins.builtins.lz_command import (
     Lz1Decompress,
     Lz2Compress,
     Lz2Decompress,
 )
+from celpix.plugins.builtins.m7_interleave import M7VramCompress, M7VramDecompress
 
 # -- LZ1/LZ2 command stream -------------------------------------------------
 
@@ -229,3 +236,182 @@ def test_lz16_compress_rejects_partial_tile_rows() -> None:
         lz16.compress(bytes(511))
     with pytest.raises(ValueError):
         lz16.compress(b"")
+
+
+# -- SNES Mode 7 VRAM split -------------------------------------------------
+
+
+def test_m7_vram_split_known_vector() -> None:
+    # Interleaved words: map bytes at even offsets, pixel bytes at odd offsets.
+    # The split puts the pixels first, then the map.
+    interleaved = bytes([0xA0, 0x01, 0xA1, 0x02, 0xA2, 0x03])
+    split = M7VramDecompress().decompress(interleaved, PipelineContext())
+    assert split == bytes([0x01, 0x02, 0x03, 0xA0, 0xA1, 0xA2])
+    assert M7VramCompress().compress(split, PipelineContext()) == interleaved
+
+
+def test_m7_vram_split_round_trips_odd_length() -> None:
+    data = bytes((i * 37 + 5) & 0xFF for i in range(129))
+    split = M7VramDecompress().decompress(data, PipelineContext())
+    assert M7VramCompress().compress(split, PipelineContext()) == data
+
+
+# -- Konami NES RLE ---------------------------------------------------------
+
+
+def test_konami_round_trip() -> None:
+    rng = random.Random(4)
+    payloads = [
+        b"",
+        b"\x42",
+        b"\x55" * 300,  # long run: forces multi-chunk fills past the 126 cap
+        bytes(range(256)),  # all distinct: every byte a literal
+        b"\xab" * 125,  # runs bracketing the 126-byte fill boundary
+        b"\xab" * 126,
+        b"\xab" * 127,
+        b"\xcd" * 252,
+        bytes(range(126)),  # literal blocks bracketing the boundary
+        bytes(range(127)),
+        bytes([0x7F, 0x80, 0xFF]) * 40,  # values colliding with control bytes
+        b"\x7f" * 130 + b"\x80" * 3 + b"\xff" * 200,
+        b"AB" * 5 + b"C" * 10 + b"D" + b"EFG" + b"H" * 200,  # mixed short/long
+        bytes(rng.randrange(256) for _ in range(2000)),
+        bytes(rng.choice(b"\x00\x7f\x80\xff") for _ in range(1500)),
+    ]
+    for data in payloads:
+        packed = konami_rle.compress(data)
+        # 0x11 trailing garbage is itself a valid control byte, so this also
+        # checks the terminator — not buffer exhaustion — bounds the read.
+        out, consumed, complete = konami_rle.decompress(packed + b"\x11" * 7)
+        assert out == data
+        assert complete is True
+        assert consumed == len(packed)
+
+
+def test_konami_decode_known_vector() -> None:
+    # One fill, one literal, a 0x7F PPU-address-change (the next 2 bytes are the
+    # little-endian destination 0x1234 — consumed, not emitted), a second fill,
+    # then the 0xFF terminator. Guards the decoder independently of our own
+    # compressor, and pins the address-change skip: the address low byte 0x34
+    # must NOT be mistaken for a fill-52 control (the Contra-family desync bug).
+    stream = bytes([0x03, 0xAA, 0x82, 0x11, 0x22, 0x7F, 0x34, 0x12, 0x02, 0xBB, 0xFF])
+    out, consumed, complete = konami_rle.decompress(stream)
+    assert out == bytes([0xAA, 0xAA, 0xAA, 0x11, 0x22, 0xBB, 0xBB])
+    assert consumed == len(stream)
+    assert complete is True
+
+
+def test_konami_long_run_caps_fill_chunks() -> None:
+    # 300 identical bytes exceed the 126-byte fill ceiling, so the run must
+    # split into three fills (126 + 126 + 48); a single oversized count would
+    # collide with the 0x7F/0xFF control values and decode wrong.
+    packed = konami_rle.compress(b"\x55" * 300)
+    assert len(packed) == 3 * 2 + 1  # three (count, value) fills + terminator
+    out, consumed, complete = konami_rle.decompress(packed)
+    assert out == b"\x55" * 300
+    assert complete is True
+
+
+def test_konami_truncated_stream_decodes_prefix() -> None:
+    # A buffer cut mid-literal (before the terminator) yields the prefix
+    # decoded so far, flagged incomplete — the bounded-window / truncated-dump
+    # case the decoder must survive.
+    data = bytes(range(200))  # all distinct: literal-heavy stream
+    packed = konami_rle.compress(data)
+    cut = packed[: len(packed) - 30]
+    out, consumed, complete = konami_rle.decompress(cut)
+    assert complete is False
+    assert consumed <= len(cut)
+    assert 0 < len(out) < len(data)
+    assert data[: len(out)] == out
+
+
+def test_konami_plugins_record_size_and_round_trip() -> None:
+    data = b"\x00" * 50 + bytes(range(30)) + b"\xff" * 40
+    packed = KonamiNesRleCompress().compress(data, PipelineContext())
+    ctx = PipelineContext()
+    out = KonamiNesRleDecompress().decompress(packed + b"\x5a" * 6, ctx)
+    assert out == data
+    # The terminator position is the structure's byte length; trailing garbage
+    # past it is not counted.
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+
+
+def test_konami_fds_decode_known_vector() -> None:
+    # The FDS reading of the two reserved control bytes: 0x7F is a 127-byte fill
+    # (repeat the next byte 127 times) and 0x80 is a 256-byte literal (copy the
+    # next 256 bytes verbatim, control-valued payload included). Interleaved with
+    # a normal fill and literal, then the shared 0xFF terminator. Guards that
+    # fds=True reads 0x7F/0x80 the GraveyardDuck way rather than as an
+    # address-change / no-op, independently of our own compressor.
+    literal256 = bytes(range(256))  # payload spans 0x7F/0x80/0xFF verbatim
+    stream = (
+        bytes([0x03, 0xAA])  # fill x3
+        + bytes([0x82, 0x11, 0x22])  # literal x2
+        + bytes([0x7F, 0xCC])  # FDS 127-fill of 0xCC
+        + bytes([0x80])
+        + literal256  # FDS 256-byte literal
+        + bytes([0xFF])  # terminator
+    )
+    out, consumed, complete = konami_rle.decompress(stream, fds=True)
+    assert (
+        out
+        == bytes([0xAA]) * 3 + bytes([0x11, 0x22]) + bytes([0xCC]) * 127 + literal256
+    )
+    assert consumed == len(stream)
+    assert complete is True
+
+
+def test_konami_variant_flag_switches_control_semantics() -> None:
+    # One stream, two readings. After a fill both agree on, a 0x7F diverges: the
+    # Contra reading treats it as a PPU address change (skip the next 2 bytes,
+    # emit nothing more, and the trailing 0xFF is a clean terminator), while the
+    # FDS reading treats it as a 127-fill of 0x41 and re-frames the rest — so the
+    # two paths cannot collapse into one.
+    stream = bytes([0x02, 0x30, 0x7F, 0x41, 0x42, 0xFF])
+
+    contra_out, contra_consumed, contra_complete = konami_rle.decompress(
+        stream, fds=False
+    )
+    assert contra_out == bytes([0x30, 0x30])
+    assert contra_consumed == len(stream)
+    assert contra_complete is True
+
+    fds_out, fds_consumed, _ = konami_rle.decompress(stream, fds=True)
+    assert fds_out == bytes([0x30, 0x30]) + bytes([0x41]) * 127 + bytes([0xFF]) * 66
+    assert fds_consumed == len(stream)
+    assert fds_out != contra_out
+
+
+def test_konami_fds_round_trip() -> None:
+    # The shared compressor stays in the unambiguous subset (no 0x7F/0x80), so
+    # the very same packed bytes must also round-trip under the FDS decoder, not
+    # just the Contra one already covered above.
+    rng = random.Random(5)
+    payloads = [
+        b"\x00" * 400,  # long run: multi-chunk fills past the 126 cap
+        bytes(range(256)),  # all distinct: every byte a literal
+        bytes([0x7F, 0x80, 0xFF]) * 60,  # values colliding with control bytes
+        bytes(rng.randrange(256) for _ in range(2000)),
+    ]
+    for data in payloads:
+        packed = konami_rle.compress(data)
+        # 0x11 trailing garbage is a valid control byte, so this also checks the
+        # terminator — not buffer exhaustion — bounds the FDS read.
+        out, consumed, complete = konami_rle.decompress(packed + b"\x11" * 7, fds=True)
+        assert out == data
+        assert complete is True
+        assert consumed == len(packed)
+
+
+def test_konami_fds_plugins_record_size_and_round_trip() -> None:
+    data = b"\x00" * 50 + bytes(range(30)) + b"\xff" * 40
+    packed = KonamiFdsRleCompress().compress(data, PipelineContext())
+    ctx = PipelineContext()
+    out = KonamiFdsRleDecompress().decompress(packed + b"\x5a" * 6, ctx)
+    assert out == data
+    # The terminator position is the structure's byte length; trailing garbage
+    # past it is not counted.
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True

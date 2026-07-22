@@ -255,7 +255,7 @@ def seed_examples(directory: str) -> None:
     because frozen-build data collection excludes ``.py`` files; the suffix is
     dropped here.
     """
-    for folder in PRESET_FOLDER_STAGE:
+    for folder in FOLDER_STAGES:
         dest_dir = Path(directory) / folder
         try:
             entries = list(

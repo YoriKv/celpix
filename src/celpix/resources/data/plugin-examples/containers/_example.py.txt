@@ -1,0 +1,62 @@
+"""Example container format. Files starting with "_" are ignored — copy this
+file, drop the underscore from the name, edit it, and press F5 in Celpix to
+load it (code plugins ask for confirmation the first time, since they run with
+the app's privileges).
+
+A container is a Read/Write *pair*: both halves live in one file because they
+are two ends of one on-disk wrapper. Read acquires the file's bytes and strips
+whatever framing the pixel codec shouldn't see (a header, an interleave, a
+checksum block), handing downstream contiguous tile data; Write is its inverse,
+re-wrapping the edited bytes on save. A read-only container may ship Read alone.
+
+This toy container is a fixed 8-byte magic header (``CELPIXEX``) in front of the
+payload — Read skips it, Write puts it back. Note the two provenance keys Read
+sets: they let a plain Write default the bytes back to exactly where they came
+from, so an unedited open/save round-trips byte-identically.
+"""
+
+from pathlib import Path
+
+from celpix.core.context import KEY_SOURCE_OFFSET, KEY_SOURCE_PATH, PipelineContext
+from celpix.core.errors import Stage
+from celpix.plugins.base import FileRef, PluginInfo
+
+_MAGIC = b"CELPIXEX"  # 8-byte header this toy container wraps its payload in
+
+
+class ExampleContainerReader:
+    info = PluginInfo(
+        id="read.example-container",
+        name="Example container (skip magic)",
+        stage=Stage.READ,
+    )
+
+    def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
+        """Return the payload after the magic header (or the whole file if absent).
+
+        ``source`` carries the path plus an optional offset/length window. Record
+        provenance — the path and the byte offset the returned data starts at —
+        so the writer can splice edits back into the right place.
+        """
+        raw = Path(source.path).read_bytes()
+        ctx.set(KEY_SOURCE_PATH, source.path)
+        start = len(_MAGIC) if raw[: len(_MAGIC)] == _MAGIC else 0
+        ctx.set(KEY_SOURCE_OFFSET, start)
+        return raw[start:]
+
+
+class ExampleContainerWriter:
+    info = PluginInfo(
+        id="write.example-container",
+        name="Example container (add magic)",
+        stage=Stage.WRITE,
+    )
+
+    def write(self, data: bytes, dest: FileRef, ctx: PipelineContext) -> None:
+        """Re-wrap ``data`` in the magic header — the inverse of read."""
+        Path(dest.path).write_bytes(_MAGIC + data)
+
+
+def register(registry):
+    registry.register(ExampleContainerReader())
+    registry.register(ExampleContainerWriter())
