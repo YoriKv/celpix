@@ -3,7 +3,7 @@
 An :class:`IndexGrid` is the codec-neutral "framebuffer" the whole editor works
 in — one **palette index per pixel**, row-major, decoupled from any palette (see
 ``docs/graphics-formats-reference/implementation-guide.md`` §1). Decoding bytes
-produces index grids; rendering turns indices into colour on the ``ui`` side;
+produces index grids; rendering turns indices into color on the ``ui`` side;
 editing paints indices; saving encodes indices back to bytes.
 
 The same class serves as both a single tile (e.g. 8x8) and a composed image made

@@ -10,12 +10,12 @@ Stream shape (full details + provenance:
 ``docs/graphics-formats-reference/implementation-guide.md`` §6):
 
 - **Header** — 4 bytes = 8 nibbles: the first 7 seed the predictor palette
-  ``pred[0..6]`` (4-bit colours); the 8th primes the LSB-first bit stream.
+  ``pred[0..6]`` (4-bit colors); the 8th primes the LSB-first bit stream.
   ``pred[7]`` is a dynamic slot refreshed inline by an escape code.
 - **Rows** — each 128-pixel row starts with one mode bit (0 = pure RLE row,
   1 = delta row edited against a copy of the previous row), then run commands
   walking a cursor right-to-left: a unary-style count followed by one of four
-  ops (fill with a predictor colour / skip unchanged runs / a run grew /
+  ops (fill with a predictor color / skip unchanged runs / a run grew /
   a run shrank).
 - After all rows decode, the row-major pixels transpose into standard SNES
   4bpp planar tiles.
@@ -29,8 +29,8 @@ to end-of-file) defeats it, which is why the plugin lets a context key supply
 the count explicitly.
 
 The compressor mirrors the scheme the original tooling used: encode every row
-both ways (RLE and delta), keep the shorter, and choose the 7 predictor colours
-by ranking. Two rankings are tried — colour-change frequency across the delta
+both ways (RLE and delta), keep the shorter, and choose the 7 predictor colors
+by ranking. Two rankings are tried — color-change frequency across the delta
 encoding (the original's rule) and maximal-run frequency — and the smaller
 result wins. Byte-identity with any particular original blob is a non-goal;
 round-tripping is the contract.
@@ -148,7 +148,7 @@ def _decode_pixel_rows(
 
                 mode = 1 if row_mode == 0 else read_bits_msb(2)
 
-                if mode == 1:  # fill with a predictor colour
+                if mode == 1:  # fill with a predictor color
                     pred_idx = read_bits_msb(3)
                     if pred_idx == 7:
                         pred[7] = read_bits_msb(4)
@@ -166,7 +166,7 @@ def _decode_pixel_rows(
                         cursor -= 1
                         while cursor >= 0 and pixels[base + cursor] == ref:
                             cursor -= 1
-                elif mode == 2:  # run grew: extend, carrying the boundary colour
+                elif mode == 2:  # run grew: extend, carrying the boundary color
                     ref = pixels[base + cursor]
                     cursor -= 1
                     while cursor >= 0 and pixels[base + cursor] == ref:
@@ -299,11 +299,11 @@ def decompress_partial(data: bytes) -> tuple[bytes, int, int]:
 
 
 def _run_length(line: bytearray, x: int) -> int:
-    """Length of the constant-colour run ending at ``x``, walking left."""
-    colour = line[x]
+    """Length of the constant-color run ending at ``x``, walking left."""
+    color = line[x]
     count = 1
     for k in range(x - 1, -1, -1):
-        if line[k] != colour:
+        if line[k] != color:
             break
         count += 1
     return count
@@ -318,16 +318,16 @@ def _emit_number(bits: list[int], value: int) -> None:
     bits.append(0)
 
 
-def _emit_colour_coded(bits: list[int], colour: int, palette: bytearray) -> None:
-    """3-bit predictor index (MSB-first), or index 7 + the raw 4-bit colour."""
+def _emit_color_coded(bits: list[int], color: int, palette: bytearray) -> None:
+    """3-bit predictor index (MSB-first), or index 7 + the raw 4-bit color."""
     idx = 7
     for k in range(7):
-        if palette[k] == colour:
+        if palette[k] == color:
             idx = k
             break
     bits += ((idx >> 2) & 1, (idx >> 1) & 1, idx & 1)
     if idx == 7:
-        bits += ((colour >> 3) & 1, (colour >> 2) & 1, (colour >> 1) & 1, colour & 1)
+        bits += ((color >> 3) & 1, (color >> 2) & 1, (color >> 1) & 1, color & 1)
 
 
 def _encode_rle_row(line: bytearray, palette: bytearray) -> list[int]:
@@ -337,7 +337,7 @@ def _encode_rle_row(line: bytearray, palette: bytearray) -> list[int]:
     while x >= 0:
         count = _run_length(line, x)
         _emit_number(bits, count)
-        _emit_colour_coded(bits, line[x], palette)
+        _emit_color_coded(bits, line[x], palette)
         x -= count
     return bits
 
@@ -351,15 +351,15 @@ def _encode_delta_row(now: bytearray, old: bytearray, palette: bytearray) -> lis
     bits = [1]
     x = ROW_PIXELS - 1
     while x >= 0:
-        now_colour = now[x]
+        now_color = now[x]
         now_cnt = _run_length(now, x)
-        old_colour = old[x]
+        old_color = old[x]
         old_cnt = _run_length(old, x)
 
-        if now_colour != old_colour:  # colour changed
+        if now_color != old_color:  # color changed
             _emit_number(bits, now_cnt)
             bits += (0, 1)  # mode 1, 2 bits LSB-first pairs (flag & 1, flag & 2)
-            _emit_colour_coded(bits, now_colour, palette)
+            _emit_color_coded(bits, now_color, palette)
             x -= now_cnt
             continue
         if now_cnt != old_cnt:
@@ -379,22 +379,22 @@ def _encode_delta_row(now: bytearray, old: bytearray, palette: bytearray) -> lis
             continue
         # runs identical: count how many consecutive runs stay unchanged
         unchanged = 0
-        while now_colour == old_colour and now_cnt == old_cnt:
+        while now_color == old_color and now_cnt == old_cnt:
             unchanged += 1
             x -= now_cnt
             if x < 0:
                 break
-            now_colour = now[x]
+            now_color = now[x]
             now_cnt = _run_length(now, x)
-            old_colour = old[x]
+            old_color = old[x]
             old_cnt = _run_length(old, x)
         _emit_number(bits, unchanged)
         bits += (0, 0)  # mode 0
     return bits
 
 
-def _rank_colours(counts: list[int]) -> bytearray:
-    """Colours sorted by descending count, ties to the lower colour value."""
+def _rank_colors(counts: list[int]) -> bytearray:
+    """Colors sorted by descending count, ties to the lower color value."""
     order = bytearray(range(16))
     for a in range(15):
         for b in range(a + 1, 16):
@@ -403,8 +403,8 @@ def _rank_colours(counts: list[int]) -> bytearray:
     return order
 
 
-def _palette_by_colour_changes(pixels: bytearray, total_rows: int) -> bytearray:
-    """Rank colours by delta-mode colour-change frequency (the original rule).
+def _palette_by_color_changes(pixels: bytearray, total_rows: int) -> bytearray:
+    """Rank colors by delta-mode color-change frequency (the original rule).
 
     Replays the delta walk — including its boundary carries — so the counts
     match what :func:`_encode_delta_row` will actually emit.
@@ -417,12 +417,12 @@ def _palette_by_colour_changes(pixels: bytearray, total_rows: int) -> bytearray:
         now[:] = pixels[row * ROW_PIXELS : (row + 1) * ROW_PIXELS]
         x = ROW_PIXELS - 1
         while x >= 0:
-            now_colour = now[x]
+            now_color = now[x]
             now_cnt = _run_length(now, x)
-            old_colour = old[x]
+            old_color = old[x]
             old_cnt = _run_length(old, x)
-            if now_colour != old_colour:
-                counts[now_colour] += 1
+            if now_color != old_color:
+                counts[now_color] += 1
                 x -= now_cnt
                 continue
             if now_cnt != old_cnt:
@@ -436,41 +436,41 @@ def _palette_by_colour_changes(pixels: bytearray, total_rows: int) -> bytearray:
                     old[x - now_cnt] = old[k] if k >= 0 else 0
                 x -= now_cnt
                 continue
-            while now_colour == old_colour and now_cnt == old_cnt:
+            while now_color == old_color and now_cnt == old_cnt:
                 x -= now_cnt
                 if x < 0:
                     break
-                now_colour = now[x]
+                now_color = now[x]
                 now_cnt = _run_length(now, x)
-                old_colour = old[x]
+                old_color = old[x]
                 old_cnt = _run_length(old, x)
-    return _rank_colours(counts)
+    return _rank_colors(counts)
 
 
 def _palette_by_run_frequency(pixels: bytearray, total_rows: int) -> bytearray:
-    """Rank colours by how many maximal runs each forms — often favours the
-    background colour, which the colour-change ranking under-weights."""
+    """Rank colors by how many maximal runs each forms — often favours the
+    background color, which the color-change ranking under-weights."""
     counts = [0] * 16
     for row in range(total_rows):
         base = row * ROW_PIXELS
         x = 0
         while x < ROW_PIXELS:
-            colour = pixels[base + x]
+            color = pixels[base + x]
             length = 1
-            while x + length < ROW_PIXELS and pixels[base + x + length] == colour:
+            while x + length < ROW_PIXELS and pixels[base + x + length] == color:
                 length += 1
-            counts[colour] += 1
+            counts[color] += 1
             x += length
-    return _rank_colours(counts)
+    return _rank_colors(counts)
 
 
 def _encode_with_palette(
     pixels: bytearray, total_rows: int, palette: bytearray
 ) -> list[int]:
     bits: list[int] = []
-    for k in range(7):  # 28-bit header, each colour LSB-first
-        colour = palette[k]
-        bits += (colour & 1, (colour >> 1) & 1, (colour >> 2) & 1, (colour >> 3) & 1)
+    for k in range(7):  # 28-bit header, each color LSB-first
+        color = palette[k]
+        bits += (color & 1, (color >> 1) & 1, (color >> 2) & 1, (color >> 3) & 1)
     now = bytearray(ROW_PIXELS)
     old = bytearray(ROW_PIXELS)
     for row in range(total_rows):
@@ -495,7 +495,7 @@ def compress(tiles: bytes) -> bytes:
 
     best: list[int] | None = None
     for palette in (
-        _palette_by_colour_changes(pixels, total_rows),
+        _palette_by_color_changes(pixels, total_rows),
         _palette_by_run_frequency(pixels, total_rows),
     ):
         bits = _encode_with_palette(pixels, total_rows, palette)

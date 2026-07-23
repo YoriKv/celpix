@@ -1,11 +1,11 @@
-"""Data-driven mask-based colour codec — native palette entry ⇄ ARGB.
+"""Data-driven mask-based color codec — native palette entry ⇄ ARGB.
 
-A colour codec converts one native palette entry to/from ``0xAARRGGBB`` using
+A color codec converts one native palette entry to/from ``0xAARRGGBB`` using
 component **masks** (see
 ``docs/graphics-formats-reference/implementation-guide.md`` §4). Each entry is
 ``bytes_per_entry`` bytes read with ``byte_order`` into an integer, then each
 component is sliced by its (contiguous) mask and scaled to 8 bits. As with the
-planar codec, a new colour format — BGR555, RGB888, RGB565, … — is a data file,
+planar codec, a new color format — BGR555, RGB888, RGB565, … — is a data file,
 not code.
 
 Round-trip is exact: a field of ``w`` bits decodes to 8 bits by replicating its
@@ -30,11 +30,11 @@ from celpix.plugins.builtins._mask import (
 
 
 class ColorCodec:
-    """Generic mask-based colour codec; behaviour comes from ``params``."""
+    """Generic mask-based color codec; behaviour comes from ``params``."""
 
     info = PluginInfo(
         id="codec.color-mask",
-        name="Mask-based colour codec",
+        name="Mask-based color codec",
         stage=Stage.INTERPRET_PALETTE,
     )
 

@@ -15,6 +15,8 @@ from celpix.core.arrangement import (
     arrangement_preset_for,
     compose_window,
     reflow_2d,
+    split_coverage,
+    split_grid,
 )
 from celpix.core.index_grid import IndexGrid
 
@@ -99,6 +101,38 @@ def test_compose_window_places_tiles_by_block_layout() -> None:
     grid = compose_window(tiles, columns=2, first_tile=0, rows=2, layout=layout)
     assert (grid.get(0, 0), grid.get(0, 1)) == (0, 1)  # column 0 = tiles 0 (top), 1
     assert (grid.get(1, 0), grid.get(1, 1)) == (2, 3)  # column 1 = tiles 2, 3
+
+
+def test_split_grid_inverts_compose_under_every_block_order() -> None:
+    # Copy composes a run into an image and paste cuts it back apart; the pair
+    # must be exact, or a round trip through an image editor scrambles tiles.
+    for order in BLOCK_ORDERS:
+        tiles = [IndexGrid(2, 2, bytes([v] * 4)) for v in range(8)]
+        layout = BlockLayout(
+            columns=4, block_columns=2, block_rows=2, block_order=order
+        )
+        grid = compose_window(tiles, columns=4, first_tile=0, rows=2, layout=layout)
+        assert split_grid(grid, 2, 2, layout) == tiles
+
+
+def test_split_grid_pads_a_partial_edge_tile() -> None:
+    # A 3×3 image on a 2×2 grid: four tiles, the right/bottom edges zero-filled
+    # rather than shrunk, so a codec always gets whole tiles.
+    grid = IndexGrid(3, 3, bytes([7] * 9))
+    tiles = split_grid(grid, 2, 2)
+    assert len(tiles) == 4
+    assert bytes(tiles[1].data) == bytes([7, 0, 7, 0])
+    assert bytes(tiles[3].data) == bytes([7, 0, 0, 0])
+
+
+def test_split_coverage_marks_the_padding_split_grid_invented() -> None:
+    # Parallel to the tiles above: the same 3×3 image says how far it actually
+    # reached, so a write can leave the pad alone instead of stamping it.
+    assert split_coverage(3, 3, 2, 2) == [(2, 2), (1, 2), (2, 1), (1, 1)]
+    # A block layout can send a slot below a one-tile-tall image entirely —
+    # nothing of it is data, so it must read as covering nothing at all.
+    layout = BlockLayout(columns=2, block_rows=2)
+    assert split_coverage(4, 2, 2, 2, layout) == [(2, 2), (0, 0)]
 
 
 def test_reflow_2d_gathers_strided_rows_into_contiguous_tiles() -> None:

@@ -9,7 +9,7 @@ plugin describes only what is unique about it.
 Two extensibility tiers live behind these protocols:
 
 - **Data-first** — a *preset* (:class:`Preset`) is a parameter set a generic
-  engine interprets; shipping a new planar format or colour format is data, not
+  engine interprets; shipping a new planar format or color format is data, not
   code. The engine is a :class:`PixelCodecPlugin` / :class:`ColorCodecPlugin`.
 - **Code** — the escape hatch for behaviour data can't express (a decompressor, a
   bespoke reader) is a plugin class implementing the relevant protocol.
@@ -27,6 +27,15 @@ from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
 
+# The pass-through Decompress/Compress ids. These are the one pair of plugin ids
+# the *host* has to know by name: "no compression" is not merely another scheme
+# but the condition several behaviours key off — a raw byte stream maps linearly
+# to file offsets (so addresses stay meaningful and slices can be carved from the
+# view), and the overlay/scan tools only mean anything once a real decompressor is
+# chosen. Named here, in the contract, rather than spelled out at each test.
+NO_DECOMPRESS = "decompress.none"
+NO_COMPRESS = "compress.none"
+
 
 @dataclass(frozen=True)
 class FileRef:
@@ -39,14 +48,24 @@ class FileRef:
     it *is* the source bytes (still sliced by ``offset``/``length``), so a reader
     yields them without touching disk. This is how a palette pulled out of an
     emulator memory image — bytes that live inside a compressed container, not at
-    a file offset — flows through the ordinary pipeline. ``path`` is still carried
-    for provenance/display. Write destinations never set ``data``.
+    a file offset — flows through the ordinary pipeline, and how a slice reads a
+    dirty parent's unsaved bytes instead of the stale file. ``path`` is still
+    carried for provenance/display. Write destinations never set ``data``.
+
+    ``data_base`` is the file offset ``data[0]`` corresponds to, so ``offset``
+    stays **file-absolute** whether the bytes come from disk or memory. That is
+    what lets an in-memory source keep one set of coordinates for reading, for the
+    write target, and for the addresses the UI displays: a buffer that begins part
+    way into the file (a parent read past its header) declares where it begins
+    rather than forcing every consumer to work in relative offsets. Ignored when
+    ``data`` is None — a file is always its own base.
     """
 
     path: str
     offset: int = 0
     length: int | None = None
     data: bytes | None = None
+    data_base: int = 0
 
 
 @dataclass(frozen=True)
@@ -144,7 +163,7 @@ class Preset:
     """A named, data-only interpretation: which engine to use and its parameters.
 
     This is the concrete form of "plugins as mostly data" for the View stage. A
-    preset targets an ``engine_id`` (a registered pixel or colour codec) and
+    preset targets an ``engine_id`` (a registered pixel or color codec) and
     supplies the ``params`` that engine interprets. ``pathway`` records whether it
     interprets pixel or palette bytes.
     """

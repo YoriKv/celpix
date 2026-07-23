@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from celpix.plugins.base import FileRef
+from celpix.plugins.base import NO_COMPRESS, NO_DECOMPRESS, FileRef
 
 
 @dataclass
@@ -27,8 +27,8 @@ class PathwayConfig:
     source: FileRef
     interpret_preset_id: str
     read_id: str = "read.raw-file"
-    decompress_id: str = "decompress.none"
-    compress_id: str = "compress.none"
+    decompress_id: str = NO_DECOMPRESS
+    compress_id: str = NO_COMPRESS
     write_id: str = "write.raw-file"
     dest: FileRef | None = None
     write_enabled: bool = True

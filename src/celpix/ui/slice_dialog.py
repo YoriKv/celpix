@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from celpix.core.address import format_hex, parse_hex
 from celpix.core.errors import Stage
+from celpix.plugins.base import NO_DECOMPRESS
 from celpix.plugins.registry import Registry
 from celpix.project.workspace import SliceParams, default_slice_name
 
@@ -38,13 +39,13 @@ class SliceDialog(QDialog):
         path: str,
         offset: int = 0,
         length: int | None = None,
-        decompress_id: str = "decompress.none",
+        decompress_id: str = NO_DECOMPRESS,
         name: str = "",
         title: str = "New Slice",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle(f"{title} — {basename(path)}")
+        self.setWindowTitle(f"{title} - {basename(path)}")
         self._path = path
         self._params: SliceParams | None = None
 
@@ -54,7 +55,7 @@ class SliceDialog(QDialog):
         self._length = QLineEdit(format_hex(length) if length is not None else "")
         self._length.setToolTip(
             "Byte length in the file (hex). With a decompressor it may be left "
-            "blank — the structure's own end bounds the slice on first load."
+            "blank - the structure's own end bounds the slice on first load."
         )
 
         self._decompress = QComboBox()
@@ -115,7 +116,7 @@ class SliceDialog(QDialog):
             if length is None or length <= 0:
                 self._fail("Length is not a valid byte count.")
                 return
-        elif decompress_id == "decompress.none":
+        elif decompress_id == NO_DECOMPRESS:
             # A raw slice without an extent is just the file from that offset —
             # require the bound that makes it a slice (and its writes slot-safe).
             self._fail("A raw slice needs a length (compressed ones can discover it).")
@@ -143,7 +144,7 @@ class SliceDialog(QDialog):
         path: str,
         offset: int = 0,
         length: int | None = None,
-        decompress_id: str = "decompress.none",
+        decompress_id: str = NO_DECOMPRESS,
         name: str = "",
         title: str = "New Slice",
     ) -> SliceParams | None:

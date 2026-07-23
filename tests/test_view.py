@@ -41,7 +41,7 @@ def test_compose_window_empty_tiles_is_empty_grid() -> None:
 
 
 def test_compose_window_preserves_grid_type_for_argb() -> None:
-    # Direct-colour tiles compose into an ArgbGrid (4 bytes/pixel), not an IndexGrid.
+    # Direct-color tiles compose into an ArgbGrid (4 bytes/pixel), not an IndexGrid.
     from celpix.core.argb_grid import ArgbGrid
 
     tiles = [ArgbGrid(2, 2, bytes([i]) * 16) for i in range(4)]

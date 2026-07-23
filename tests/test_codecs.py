@@ -49,7 +49,7 @@ def test_palette_preset_reports_entry_size(preset_id: str) -> None:
     assert len(palette) == 3
 
 
-# Index-producing pixel presets are bijective on whole buffers; direct-colour is
+# Index-producing pixel presets are bijective on whole buffers; direct-color is
 # lossy at <8bpp/component, so it's round-tripped separately (idempotency).
 _INDEX_PIXEL_IDS = [
     p for p in _pixel_ids() if _REG.preset(p).engine_id != "codec.direct-color"
@@ -76,7 +76,7 @@ def test_pixel_preset_round_trips(preset_id: str) -> None:
 
 @pytest.mark.parametrize("preset_id", _pixel_ids(engine="codec.direct-color"))
 def test_direct_color_round_trips(preset_id: str) -> None:
-    """Direct-colour presets decode to 8×8 ARGB tiles and round-trip idempotently."""
+    """Direct-color presets decode to 8×8 ARGB tiles and round-trip idempotently."""
     engine, params = _pixel_engine(preset_id)
     data = bytes((i * 61 + 7) & 0xFF for i in range(engine.bytes_per_tile(params) * 2))
     grids = engine.decode(data, params, PipelineContext())
@@ -116,10 +116,10 @@ def test_mask_palette_round_trips(preset_id: str) -> None:
 
 @pytest.mark.parametrize("preset_id", _palette_ids(engine="codec.color-indexed"))
 def test_indexed_palette_round_trips_in_range(preset_id: str) -> None:
-    """Indexed decode→encode recovers the same colours for every table index.
+    """Indexed decode→encode recovers the same colors for every table index.
 
-    Encode picks the nearest table entry; an exact colour resolves to an index with
-    that colour (distance 0), so the decoded palette round-trips even when duplicate
+    Encode picks the nearest table entry; an exact color resolves to an index with
+    that color (distance 0), so the decoded palette round-trips even when duplicate
     slots make the *index* differ.
     """
     engine, params = _color_engine(preset_id)
@@ -135,7 +135,7 @@ def test_indexed_palette_round_trips_in_range(preset_id: str) -> None:
 
 def test_indexed_palette_nearest_encode() -> None:
     engine, params = _color_engine("preset.palette.ega-indexed")
-    # An off-table colour encodes to the nearest table entry (EGA index 0 = black).
+    # An off-table color encodes to the nearest table entry (EGA index 0 = black).
     from celpix.core.palette import Palette
 
     assert engine.encode(Palette([0xFF000001]), params, PipelineContext()) == b"\x00"

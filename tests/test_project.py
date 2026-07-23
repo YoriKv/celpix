@@ -89,6 +89,8 @@ def test_round_trip_preserves_entries_sessions_and_state(tmp_path) -> None:
     assert raw["entries"][0]["path"] == "roms/smw.sfc"
     assert raw["entries"][0]["palette"] == {"path": "roms/smw.pal", "offset": 4}
     assert "slice_offset" not in raw["entries"][0]  # file entries carry no slice keys
+    # The tile selection is session-only state and is deliberately not stored.
+    assert "selected_tile" not in raw["entries"][0]["session"]
 
     loaded = load_project(str(project))
     assert loaded.version == PROJECT_VERSION
@@ -97,7 +99,7 @@ def test_round_trip_preserves_entries_sessions_and_state(tmp_path) -> None:
 
     assert first.kind is EntryKind.FILE
     assert normcase(first.path) == normcase(str(rom))
-    assert first.session == file_entry.session
+    assert first.session == _session(palette_mode="file", headered=True)  # no selection
     assert first.doc is None  # documents stay lazy on load
     assert first.pending_view == file_view
     assert first.pending_palette is not None
@@ -153,12 +155,57 @@ def test_bookmark_round_trips_and_current_index_at_bookmark_degrades(tmp_path) -
     _, restored = loaded.entries
     assert restored.kind is EntryKind.BOOKMARK
     assert restored.slice_offset == 0x140  # "offset" reloads into slice_offset
-    assert restored.session == bookmark.session
+    # Everything but the selection, which no entry kind persists.
+    assert restored.session == _session(palette_mode="offset", headered=True)
     assert restored.pending_view == bookmark.pending_view
     assert restored.pending_palette == PaletteSource(offset=0x140)
 
     # A hand-edited (or v1-degraded) current index naming a bookmark can't be
     # shown, so it loads as no-current rather than trying to activate one.
+    raw["current"] = 1
+    project.write_text(json.dumps(raw), encoding="utf-8")
+    assert load_project(str(project)).current is None
+
+
+def test_palette_entry_round_trips_with_its_import_codec(tmp_path) -> None:
+    rom = tmp_path / "rom.sfc"
+    rom.write_bytes(b"\x00" * 0x400)
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(b"\x00" * 0x20)
+
+    ws = Workspace()
+    file_entry = ws.open_file(str(rom))
+    file_entry.session = _session()
+    palette = Entry(
+        name="colors.pal",
+        kind=EntryKind.PALETTE,
+        path=str(pal),
+        palette_preset_id="preset.palette.rgb888",
+    )
+    ws.insert(palette, len(ws.entries))
+    ws.set_current(file_entry)
+
+    project = tmp_path / "hack.celpix"
+    save_project(ws, str(project))
+
+    # On disk a palette entry carries "kind": "palette" and its import codec,
+    # but none of the session/view/palette sub-dicts a file or slice has.
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert raw["version"] == PROJECT_VERSION
+    stored = raw["entries"][1]
+    assert stored["kind"] == "palette"
+    assert stored["palette_preset_id"] == "preset.palette.rgb888"
+    assert "session" not in stored and "view" not in stored
+    assert "slice_offset" not in stored
+
+    loaded = load_project(str(project))
+    _, restored = loaded.entries
+    assert restored.kind is EntryKind.PALETTE
+    assert restored.palette_preset_id == "preset.palette.rgb888"
+    assert normcase(restored.path) == normcase(str(pal))
+
+    # A hand-edited current index naming a palette can't be shown, so it loads
+    # as no-current rather than trying to activate one.
     raw["current"] = 1
     project.write_text(json.dumps(raw), encoding="utf-8")
     assert load_project(str(project)).current is None
@@ -231,7 +278,11 @@ def test_case_insensitive_path_resolution(tmp_path) -> None:
     )
     loaded = load_project(str(project))
     # A project written under a case-insensitive OS finds its file here too.
-    assert loaded.entries[0].path == str(rom)
+    # The resolved path must point at the real file; its casing depends on the
+    # host filesystem — a case-sensitive OS re-derives the on-disk casing
+    # (roms/rom.sfc), while a case-insensitive one keeps the stored casing since
+    # it already resolves. normcase folds that difference away.
+    assert normcase(loaded.entries[0].path) == normcase(str(rom))
 
 
 def test_tolerant_load_defaults_unknowns_and_garbage(tmp_path) -> None:

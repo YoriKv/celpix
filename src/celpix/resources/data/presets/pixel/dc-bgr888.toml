@@ -1,5 +1,5 @@
-# Direct-colour BGR888 direct (8x8) — Tile Molester DC catalogue (§3).
-# See docs/graphics-formats-reference/implementation-guide.md §3 (direct-colour tiles).
+# Direct-color BGR888 direct (8x8) — Tile Molester DC catalogue (§3).
+# See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
 id = "preset.pixel.dc-bgr888"
 name = "BGR888 direct (8x8)"
 engine_id = "codec.direct-color"

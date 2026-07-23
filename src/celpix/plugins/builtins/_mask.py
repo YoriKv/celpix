@@ -1,11 +1,11 @@
-"""Shared mask-based colour kernel: a native value ⇄ ``0xAARRGGBB``.
+"""Shared mask-based color kernel: a native value ⇄ ``0xAARRGGBB``.
 
 One integer's contiguous R/G/B/A fields are sliced by component **mask**, scaled to
 8 bits (high-bit replication, so the round-trip is exact at the field's precision),
 and packed into ARGB. Used by both the palette-side
 :class:`~celpix.plugins.builtins.color_codec.ColorCodec` and the tile-side
 :class:`~celpix.plugins.builtins.direct_color_codec.DirectColorCodec` — the palette
-entry and the direct-colour pixel are the same problem
+entry and the direct-color pixel are the same problem
 (``docs/graphics-formats-reference/implementation-guide.md`` §4).
 """
 

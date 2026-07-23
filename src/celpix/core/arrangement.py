@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from celpix.core import ceil_div
 from celpix.core.index_grid import IndexGrid
 
 # The tile-fill orders a block-row supports. "row" fills each block row-major,
@@ -199,19 +200,6 @@ class BlockLayout:
         return blockrow * (bpr * bc * br) + rem
 
 
-def compose_linear(tiles: list, columns: int):
-    """Lay ``tiles`` into a ``columns``-wide grid image (row-major).
-
-    Returns a grid of the same type as the input tiles (index or direct-colour).
-    """
-    if not tiles:
-        return IndexGrid(0, 0)
-    cols = max(1, columns)
-    tw, th = tiles[0].width, tiles[0].height
-    rows = (len(tiles) + cols - 1) // cols
-    return _compose(tiles, cols, tw, th, first_tile=0, rows=rows, layout=None)
-
-
 def compose_window(
     tiles: list,
     columns: int,
@@ -254,7 +242,7 @@ def _compose(
     index falls outside ``tiles``, or whose cell falls outside the ``cols`` × ``rows``
     image, stay blank — so a full layout, a partial window, and a block grouping all
     share one path. Works for either grid type — index (1 byte/pixel) or
-    direct-colour ARGB (4 bytes/pixel) — by blitting in units of the tiles'
+    direct-color ARGB (4 bytes/pixel) — by blitting in units of the tiles'
     ``bytes_per_pixel`` and building the output grid of the same type.
     """
     if layout is None:
@@ -280,6 +268,89 @@ def _compose(
             s0 = y * src_stride
             dst[d0 : d0 + row_bytes] = src[s0 : s0 + row_bytes]
     return image
+
+
+def split_grid(
+    grid, tile_width: int, tile_height: int, layout: BlockLayout | None = None
+):
+    """Cut a composed image back into tiles — the inverse of :func:`_compose`.
+
+    Returns one tile per slot of the ``cols`` × ``rows`` cell area the image
+    covers, in **linear slot order**, so ``layout`` undoes exactly the placement
+    that composed it (pass the same one). An image whose size isn't a whole
+    number of tiles is zero-padded at the right/bottom edge, and a slot whose
+    cell falls outside the image yields a blank tile — a block layout can leave
+    such gaps, and dropping them would shift every later tile.
+
+    That padding is a placeholder, not data: :func:`split_coverage` says how much
+    of each tile the image actually reached, so an importer can leave the rest of
+    an edge tile as whatever the file already holds instead of stamping the pad
+    over pixels it has no colors for.
+
+    This is how external pixels (a pasted or imported image) become tiles: the
+    importer quantizes the whole image once, then splits it here.
+    """
+    cols = max(1, ceil_div(grid.width, tile_width))
+    rows = max(1, ceil_div(grid.height, tile_height))
+    if layout is None:
+        layout = BlockLayout(cols)
+    bpx = grid.bytes_per_pixel
+    src = grid.data
+    src_stride = grid.width * bpx
+    row_bytes = tile_width * bpx
+    tiles = []
+    for slot in range(cols * rows):
+        tile_x, tile_y = layout.slot_to_cell(slot)
+        tile = type(grid)(tile_width, tile_height)
+        tiles.append(tile)
+        if tile_x >= cols or tile_y >= rows:
+            continue
+        dst = tile.data
+        base_x, base_y = tile_x * tile_width, tile_y * tile_height
+        for y in range(tile_height):
+            src_y = base_y + y
+            if src_y >= grid.height:
+                break
+            # Clipped at the right edge too: the last column of a non-multiple
+            # image contributes fewer bytes and the rest stays zero.
+            take = max(0, min(row_bytes, src_stride - base_x * bpx))
+            if take <= 0:
+                break
+            s0 = src_y * src_stride + base_x * bpx
+            dst[y * row_bytes : y * row_bytes + take] = src[s0 : s0 + take]
+    return tiles
+
+
+def split_coverage(
+    grid_width: int,
+    grid_height: int,
+    tile_width: int,
+    tile_height: int,
+    layout: BlockLayout | None = None,
+) -> list[tuple[int, int]]:
+    """How many pixels of each :func:`split_grid` tile came from the image.
+
+    Parallel to that function's result — same slot order, same length — as a
+    ``(width, height)`` per tile: the whole tile for an interior one, less at the
+    right/bottom edge of an image that isn't a whole number of tiles, and
+    ``(0, 0)`` for a block-layout gap slot the image never reached. Everything
+    outside that rectangle is padding :func:`split_grid` invented, which a write
+    back into a file must not stamp over real pixels.
+    """
+    cols = max(1, ceil_div(grid_width, tile_width))
+    rows = max(1, ceil_div(grid_height, tile_height))
+    if layout is None:
+        layout = BlockLayout(cols)
+    coverage = []
+    for slot in range(cols * rows):
+        tile_x, tile_y = layout.slot_to_cell(slot)
+        if tile_x >= cols or tile_y >= rows:
+            coverage.append((0, 0))
+            continue
+        width = max(0, min(tile_width, grid_width - tile_x * tile_width))
+        height = max(0, min(tile_height, grid_height - tile_y * tile_height))
+        coverage.append((width, height) if width and height else (0, 0))
+    return coverage
 
 
 def reflow_2d(

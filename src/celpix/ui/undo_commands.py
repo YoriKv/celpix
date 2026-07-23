@@ -8,8 +8,8 @@ stay Qt-free.
 
 One **unified session stack** holds every command in chronological order —
 structural files-pane operations, per-document config changes, view moves,
-and (later) pixel/colour edits — so a single Ctrl+Z always reverts the most
-recent action regardless of which surface made it. Two consequences shape the
+and pixel/color edits — so a single Ctrl+Z always reverts the most recent
+action regardless of which surface made it. Two consequences shape the
 classes here:
 
 - **Document-scoped commands carry their entry and re-activate it** before
@@ -39,7 +39,7 @@ from celpix.core.context import PipelineContext
 from celpix.core.palette import Palette
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.project.workspace import Entry, SliceParams
+from celpix.project.workspace import Entry, PaletteMode, SliceParams
 
 if TYPE_CHECKING:
     from celpix.ui.main_window import MainWindow
@@ -47,23 +47,32 @@ if TYPE_CHECKING:
 # QUndoStack only attempts mergeWith on commands whose id() match (and -1
 # never merges); any other command landing in between breaks the chain.
 OFFSET_MOVE_ID = 1
+COLOR_EDIT_ID = 2
 
 
 @dataclass(frozen=True)
 class PaletteState:
     """Snapshot of a document's palette pathway plus its UI selectors.
 
-    Palettes are small (≤512 entries), so snapshotting the loaded colours is
+    Palettes are small (≤512 entries), so snapshotting the loaded colors is
     cheap and makes undo exact — no fallible re-load from disk. The
-    :class:`Palette` is held by reference: nothing mutates colours in place
-    today; a future palette-editing command must copy.
+    :class:`Palette` is held by reference, which is safe because color edits
+    never mutate in place: :meth:`~celpix.core.palette.Palette.with_color`
+    returns a new palette and the window swaps it in, leaving every captured
+    snapshot intact.
     """
 
     preset_id: str
-    mode: str  # default | file | offset | emulator
+    mode: PaletteMode
     palette: Palette
     config: PathwayConfig
     ctx: PipelineContext
+    # The bytes the palette was read from, and which entries have been edited
+    # since — the splice base a save needs (see Document.palette_bytes). Carried
+    # through undo so reverting a palette change restores the right base, not
+    # just the right colors.
+    data: bytes = b""
+    edits: frozenset[int] = frozenset()
 
 
 class OffsetMoveCommand(QUndoCommand):
@@ -179,6 +188,126 @@ class PaletteCommand(QUndoCommand):
         with self._window._undo_apply():
             if self._window._ensure_current(self._entry):
                 self._window._apply_palette_state(self._before)
+
+
+class ColorEditCommand(QUndoCommand):
+    """One palette entry's color changing, as a before/after ARGB pair.
+
+    Only the edited entry is captured, not the whole palette: consecutive edits
+    to the *same* entry merge, so dragging a channel slider — which emits on
+    every step — collapses into a single undo step rather than flooding the
+    stack. A different entry (or any other command) breaks the run, exactly as
+    it does for :class:`OffsetMoveCommand`.
+
+    Forking a Custom palette off a read-only source is *not* part of this
+    command: the window pushes that separately as a :class:`PaletteCommand`
+    first, so undo peels the edit and the fork apart in the order they happened.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        index: int,
+        *,
+        before: int,
+        after: int,
+    ) -> None:
+        super().__init__(f"edit color {index}")
+        self._window = window
+        self._entry = entry
+        self._index = index
+        self._before = before
+        self._after = after
+        # The palette pathway's revision on either side of this command, so an
+        # undo hands the entry back the exact unsaved-state it had before.
+        self._before_revision = entry.palette_revision
+        self._after_revision = window._workspace.next_revision()
+
+    def id(self) -> int:
+        return COLOR_EDIT_ID
+
+    def mergeWith(self, other: QUndoCommand) -> bool:
+        if (
+            not isinstance(other, ColorEditCommand)
+            or other._entry is not self._entry
+            or other._index != self._index
+        ):
+            return False
+        self._after = other._after
+        self._after_revision = other._after_revision  # other's redo already ran
+        if self._after == self._before:
+            # The run landed back on the original color — drop the empty step,
+            # and with it the dirty mark the swallowed edits stamped on.
+            self.setObsolete(True)
+            self._window._workspace.set_palette_revision(
+                self._entry, self._before_revision
+            )
+        return True
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            if self._window._ensure_current(self._entry):
+                self._window._apply_color_edit(
+                    self._index, self._after, self._after_revision
+                )
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            if self._window._ensure_current(self._entry):
+                self._window._apply_color_edit(
+                    self._index, self._before, self._before_revision
+                )
+
+
+class PixelEditCommand(QUndoCommand):
+    """One pixel edit, as the before/after bytes of the region it rewrote.
+
+    Every graphics edit (paste, cut, clear — later the drawing tools) lands as
+    a byte splice into the document's decompressed pixel data, so one command
+    covers them all: the push site encodes whatever tiles it wants through the
+    codec and hands over the resulting region.
+
+    Bytes rather than tiles, because bytes are the document's source of truth and
+    a codec round-trips *pixels*, not bytes — re-encoding on undo could hand back
+    something merely equivalent. Regions are bounded by the edited run, so the
+    snapshots stay small even on a multi-megabyte ROM.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        text: str,
+        *,
+        start: int,
+        before: bytes,
+        after: bytes,
+    ) -> None:
+        super().__init__(text)
+        self._window = window
+        self._entry = entry
+        self._start = start
+        self._before = before
+        self._after = after
+        # The data pathway's revision on either side of this command, so an
+        # undo hands the entry back the exact unsaved-state it had before.
+        self._before_revision = entry.pixel_revision
+        self._after_revision = window._workspace.next_revision()
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            if self._window._ensure_current(self._entry):
+                self._window._apply_pixel_bytes(
+                    self._start, self._after, self._after_revision
+                )
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            if self._window._ensure_current(self._entry):
+                self._window._apply_pixel_bytes(
+                    self._start, self._before, self._before_revision
+                )
 
 
 class RenameEntryCommand(QUndoCommand):

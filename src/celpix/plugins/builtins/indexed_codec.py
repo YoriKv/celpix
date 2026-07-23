@@ -1,10 +1,10 @@
-"""Indexed colour codec — a fixed hardware palette (NES, EGA, MSX).
+"""Indexed color codec — a fixed hardware palette (NES, EGA, MSX).
 
-Where the console's "colour" is really an index into fixed silicon colours, a
+Where the console's "color" is really an index into fixed silicon colors, a
 palette entry is one byte selecting an ARGB from a precomputed table
 (``docs/graphics-formats-reference/implementation-guide.md`` §4, indexed palettes).
 Decode is a table lookup; encode is **nearest entry by Manhattan RGB distance**
-(the table has no inverse — several slots can share a colour). The table is the
+(the table has no inverse — several slots can share a color). The table is the
 preset's data (``colors`` = a list of ``0xRRGGBB``), so a new fixed palette is a
 data file, not code.
 """
@@ -20,11 +20,11 @@ from celpix.plugins.base import PluginInfo
 
 
 class IndexedColorCodec:
-    """Fixed-palette colour codec; the ARGB table comes from ``params``."""
+    """Fixed-palette color codec; the ARGB table comes from ``params``."""
 
     info = PluginInfo(
         id="codec.color-indexed",
-        name="Indexed (fixed hardware palette) colour codec",
+        name="Indexed (fixed hardware palette) color codec",
         stage=Stage.INTERPRET_PALETTE,
     )
 

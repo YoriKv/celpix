@@ -1,5 +1,5 @@
 # Big-endian variant of RGB565 — for big-endian palette data.
-# See docs/graphics-formats-reference/implementation-guide.md §4 (packed colour formats).
+# See docs/graphics-formats-reference/implementation-guide.md §4 (packed color formats).
 id = "preset.palette.rgb565-be"
 name = "RGB565 (big-endian)"
 engine_id = "codec.color-mask"

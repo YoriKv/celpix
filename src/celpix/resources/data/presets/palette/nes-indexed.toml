@@ -1,7 +1,7 @@
-# NES fixed 64-colour hardware palette; each entry byte indexes this table.
+# NES fixed 64-color hardware palette; each entry byte indexes this table.
 # See docs/graphics-formats-reference/implementation-guide.md §4 (fixed hardware palettes).
 id = "preset.palette.nes-indexed"
-name = "NES/Famicom (64-colour indexed)"
+name = "NES/Famicom (64-color indexed)"
 engine_id = "codec.color-indexed"
 
 [params]

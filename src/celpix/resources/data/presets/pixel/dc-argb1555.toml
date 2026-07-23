@@ -1,5 +1,5 @@
-# Direct-colour ARGB1555 direct (8x8) — Tile Molester DC catalogue (§3).
-# See docs/graphics-formats-reference/implementation-guide.md §3 (direct-colour tiles).
+# Direct-color ARGB1555 direct (8x8) — Tile Molester DC catalogue (§3).
+# See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
 id = "preset.pixel.dc-argb1555"
 name = "ARGB1555 direct (8x8)"
 engine_id = "codec.direct-color"

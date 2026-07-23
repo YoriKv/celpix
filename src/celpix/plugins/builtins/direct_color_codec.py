@@ -1,6 +1,6 @@
-"""Direct-colour (truecolor) tile codec — pixels are colours, no palette.
+"""Direct-color (truecolor) tile codec — pixels are colors, no palette.
 
-The tile-side analogue of the mask-based colour codec: each pixel is
+The tile-side analogue of the mask-based color codec: each pixel is
 ``bytes_per_pixel`` bytes decoded to ``0xAARRGGBB`` via component masks/shifts
 (``docs/graphics-formats-reference/implementation-guide.md`` §3). It decodes to an
 :class:`~celpix.core.argb_grid.ArgbGrid` and skips the palette entirely. The
@@ -32,7 +32,7 @@ class DirectColorCodec:
 
     info = PluginInfo(
         id="codec.direct-color",
-        name="Direct-colour (truecolor) tile codec",
+        name="Direct-color (truecolor) tile codec",
         stage=Stage.INTERPRET_PIXEL,
     )
 

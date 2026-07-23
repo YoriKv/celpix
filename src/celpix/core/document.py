@@ -3,14 +3,16 @@
 A :class:`Document` is the point where the two pathways converge (overview.md §2):
 the **pixel bytes** (decompressed, decoded on demand a window at a time), the
 **palette**, the **view options**, and the two pathway configs + contexts needed to
-round-trip. It is Qt-free and mutable — the editing tools (later) act on it in
-place; for the view-only MVP the UI reads it and never mutates.
+round-trip. It is Qt-free and mutable: the editing tools act on it in place — pixel
+edits splice bytes (:meth:`Document.replace_bytes`), color edits swap in a new
+:class:`~celpix.core.palette.Palette`.
 
 **Deferred decoding.** Large files are never decoded whole: the document holds the
 raw pixel bytes plus the codec's atomic geometry (bytes/tile, tile pixel size), and
 the view decodes only the visible window of tiles on demand (via
-``pipeline.decode_window``). The bytes are the source of truth; an editing path will
-re-encode changed tiles back into them.
+``pipeline.decode_window``). The bytes are the source of truth — an edit encodes the
+changed tiles back into them (``pipeline.encode_tiles``) and Write compresses and
+writes the buffer as it stands.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ class ViewOptions:
 
     ``subpalette_row`` selects which ``2^bpp`` window of a larger palette a tile
     renders through (``base = row * 2**bpp`` — the pixel format's index space
-    sizes the subpalette); the sample ``.pal``s are 256-colour CGRAM dumps, so
+    sizes the subpalette); the sample ``.pal``s are 256-color CGRAM dumps, so
     this matters even for viewing.
 
     Large files are viewed through a fixed **window**: ``rows`` tile-rows starting
@@ -76,6 +78,16 @@ class Document:
     pixel_ctx: PipelineContext = field(default_factory=PipelineContext)
     palette_ctx: PipelineContext = field(default_factory=PipelineContext)
     view: ViewOptions = field(default_factory=ViewOptions)
+    # The palette exactly as it was read, plus which entries have been edited
+    # since. Together these make a palette save **splice** rather than rewrite:
+    # a color codec is not a bijection over its bytes — bits outside its masks
+    # (BGR555's bit 15), and byte values that aren't valid entries at all (an
+    # out-of-range indexed color), do not survive decode+encode. Re-encoding a
+    # whole palette to save one edited color would therefore corrupt every
+    # other entry, so Write reuses these original bytes for anything the user
+    # did not touch (docs/design/palette-editing.md §2).
+    palette_bytes: bytes = b""
+    palette_edits: set[int] = field(default_factory=set)
 
     @property
     def tile_count(self) -> int:
@@ -104,6 +116,23 @@ class Document:
         window = self.pixel_data[start:end]
         pad = -len(window) % tb
         return window + bytes(pad) if pad else window
+
+    def replace_bytes(self, start: int, data: bytes) -> None:
+        """Splice ``data`` into the pixel bytes at ``start`` — the edit primitive.
+
+        The decompressed bytes are the source of truth (see the module
+        docstring), so every pixel edit ends here: tiles are encoded back to
+        bytes and spliced in, and Write then compresses and writes the buffer.
+        Editing never resizes a file — anything past the end is dropped, since
+        the bytes live in a fixed slot in the source.
+        """
+        if start < 0 or not data:
+            return
+        data = data[: max(0, len(self.pixel_data) - start)]
+        if data:
+            self.pixel_data = (
+                self.pixel_data[:start] + data + self.pixel_data[start + len(data) :]
+            )
 
     def clamp_offset(self, offset: int, columns: int, rows: int, nudge: int = 0) -> int:
         """A valid top-left tile offset for a ``columns`` × ``rows`` window.

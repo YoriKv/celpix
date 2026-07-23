@@ -6,7 +6,7 @@ tile is a contiguous ``width × height`` byte block
 SNES Mode 7, Nintendo DS 2D, generic 8bpp (8×8), and the SNES whole-bank 8bpp view
 (a single 128×128 "tile") — the tile size is the only parameter.
 
-Higher-bpp chunky is *direct colour* (truecolor, no palette): a separate concern, not
+Higher-bpp chunky is *direct color* (truecolor, no palette): a separate concern, not
 this index-producing engine.
 """
 

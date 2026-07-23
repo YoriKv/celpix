@@ -1,5 +1,5 @@
 # Genesis 9bpp VDP CRAM — 0000 BBB0 GGG0 RRR0, 3 bits/component, big-endian u16.
-# See docs/graphics-formats-reference/implementation-guide.md §4 (packed colour formats).
+# See docs/graphics-formats-reference/implementation-guide.md §4 (packed color formats).
 id = "preset.palette.genesis-9bpp"
 name = "Genesis 9bpp (VDP CRAM)"
 engine_id = "codec.color-mask"

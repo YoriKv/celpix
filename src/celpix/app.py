@@ -35,7 +35,7 @@ def _confirm_plugin(pending: PendingCodePlugin) -> bool:
     """Ask the user whether to run a not-yet-approved code plugin. Default: No."""
     box = QMessageBox()
     box.setIcon(QMessageBox.Icon.Warning)
-    box.setWindowTitle("Celpix — load code plugin?")
+    box.setWindowTitle("Celpix - load code plugin?")
     box.setText("A code plugin wants to load and will run with Celpix's privileges.")
     box.setInformativeText(
         f"{pending.path}\n\nSHA-256: {pending.digest[:16]}…\n\n"

@@ -5,11 +5,38 @@ Qt lives here (this is the ``ui`` layer); the model stays Qt-free.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from enum import Enum
+from typing import TypeVar
 
-from PySide6.QtCore import QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPalette, QPen
+from PySide6.QtCore import QObject, QRect, QSettings, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QComboBox, QLineEdit, QWidget
+
+_EnumT = TypeVar("_EnumT", bound=Enum)
+
+
+@contextmanager
+def signals_blocked(*widgets: QObject) -> Iterator[None]:
+    """Set widget state without the handlers firing back.
+
+    The recurring need behind it: restoring a session, applying a preset, or
+    correcting a clamped value pushes several widgets at once, and each one's
+    ``valueChanged``/``toggled`` would otherwise trigger its own re-render — so
+    what should be one coherent swap becomes a cascade of partial reloads (and,
+    where a handler writes back, a re-entrant one). The caller re-renders once
+    afterwards instead.
+
+    Each widget's *previous* blocked state is restored rather than assumed
+    ``False``, so nesting this inside an outer block doesn't unblock early.
+    """
+    previous = [widget.blockSignals(True) for widget in widgets]
+    try:
+        yield
+    finally:
+        for widget, was_blocked in zip(widgets, previous):
+            widget.blockSignals(was_blocked)
 
 
 def select_combo_data(combo: QComboBox, data: object) -> None:
@@ -21,28 +48,31 @@ def select_combo_data(combo: QComboBox, data: object) -> None:
     deliberate: a plugin refresh can drop a preset out from under a stored id,
     and a bare ``setCurrentIndex(-1)`` would blank the box instead.
     """
-    combo.blockSignals(True)
-    index = combo.findData(data)
-    if index >= 0:
-        combo.setCurrentIndex(index)
-    combo.blockSignals(False)
+    with signals_blocked(combo):
+        index = combo.findData(data)
+        if index >= 0:
+            combo.setCurrentIndex(index)
 
 
-def paint_selection_outline(painter: QPainter, palette: QPalette, rect: QRect) -> None:
-    """The app's shared selection outline: accent ring with a white inset.
+def paint_selection_outline(painter: QPainter, rect: QRect) -> None:
+    """The app's shared selection outline: a white ring over a black one.
 
     One outline language for every "this is the active thing" highlight (the
-    canvas's tile selection, the palette panel's active subpalette), readable
-    on dark and light content alike. The Active colour group is forced so the
-    outline doesn't dim when focus is elsewhere — the selection itself is the
-    state, not the focus.
+    canvas's tile selection, the palette panel's active subpalette). Two 1px
+    layers rather than one line: whichever color the art under the edge happens
+    to be, the other layer still shows, so the outline never disappears into it.
+    Both are fixed colors — the highlight stays put whatever the theme is and
+    wherever focus is, because the selection is the state, not the focus.
+
+    The white layer sits flush on the selected area's boundary and the black one
+    just inside it, so the whole 2px band lands *within* ``rect``: an aliased
+    ``drawRect`` renders one pixel past its path, hence the -1 insets.
     """
     painter.setBrush(Qt.BrushStyle.NoBrush)
-    accent = palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Highlight)
-    painter.setPen(QPen(accent, 2))
-    painter.drawRect(rect.adjusted(1, 1, -1, -1))
-    painter.setPen(QPen(QColor(255, 255, 255, 220), 1))
-    painter.drawRect(rect.adjusted(2, 2, -2, -2))
+    painter.setPen(QPen(QColor(255, 255, 255), 1))
+    painter.drawRect(rect.adjusted(0, 0, -1, -1))
+    painter.setPen(QPen(QColor(0, 0, 0), 1))
+    painter.drawRect(rect.adjusted(1, 1, -2, -2))
 
 
 class CompactComboBox(QComboBox):
@@ -146,3 +176,19 @@ class CommittingLineEdit(QLineEdit):
         if value is not None:
             self.committed.emit(value)
         self.refresh()
+
+
+def load_enum_setting(key: str, default: _EnumT) -> _EnumT:
+    """An app-wide appearance/interaction preference out of QSettings.
+
+    The app-global preferences (grid style, selection shape) are stored by their
+    enum's string ``value``, so the settings file stays readable and stable. A
+    stored value this build has no member for — an older or newer Celpix wrote
+    the settings — falls back to ``default`` rather than raising: a stale
+    preference is not a reason to fail to start.
+    """
+    stored = QSettings().value(key, default.value)
+    try:
+        return type(default)(stored)
+    except ValueError:
+        return default

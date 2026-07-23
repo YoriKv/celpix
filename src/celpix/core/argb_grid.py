@@ -1,8 +1,8 @@
-"""The direct-colour framebuffer: a grid of packed ARGB pixels.
+"""The direct-color framebuffer: a grid of packed ARGB pixels.
 
 Most pixel codecs decode to palette **indices** (an
 :class:`~celpix.core.index_grid.IndexGrid`) rendered through a palette.
-*Direct-colour* codecs skip the palette and produce a colour per pixel; this is their
+*Direct-color* codecs skip the palette and produce a color per pixel; this is their
 output — one ``0xAARRGGBB`` per pixel, row-major.
 
 It deliberately mirrors ``IndexGrid``'s shape (``width``/``height``/``data``,

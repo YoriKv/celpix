@@ -1,5 +1,5 @@
 # RGB565 — R5 G6 B5, little-endian u16.
-# See docs/graphics-formats-reference/implementation-guide.md §4 (packed colour formats).
+# See docs/graphics-formats-reference/implementation-guide.md §4 (packed color formats).
 id = "preset.palette.rgb565"
 name = "RGB565"
 engine_id = "codec.color-mask"

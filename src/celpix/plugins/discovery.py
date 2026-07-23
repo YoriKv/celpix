@@ -8,7 +8,7 @@ and the folder a file sits in *determines* its type:
   formats. Either kind of file:
 
   - **``*.toml`` — a preset** (zero code). The data-first tier: a parameter set
-    for a built-in engine (a new planar format, a new colour format). Same
+    for a built-in engine (a new planar format, a new color format). Same
     schema as the shipped presets. TOML is chosen for hand-editing — comments,
     hex integers (``0x7C00``), trailing commas.
   - **``*.py`` — a code format** (see :mod:`celpix.plugins.formats`): a
@@ -107,7 +107,7 @@ def preset_from_spec(spec: dict, stage: Stage) -> Preset:
     declared = spec.get("stage")
     if declared is not None and declared != stage.value:
         raise ValueError(
-            f"stage {declared!r} conflicts with the folder's stage {stage.value!r} — "
+            f"stage {declared!r} conflicts with the folder's stage {stage.value!r} - "
             "remove the stage field; the folder determines it"
         )
     return Preset(
@@ -301,7 +301,7 @@ def load_directory(
             issues.append(
                 PluginLoadIssue(
                     str(entry),
-                    "plugins live in typed subfolders — move this file into "
+                    "plugins live in typed subfolders - move this file into "
                     "pixel/, palette/, compression/ or containers/",
                 )
             )

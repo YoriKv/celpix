@@ -11,6 +11,7 @@ package.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from celpix import resources
@@ -80,7 +81,19 @@ def register_builtins(reg: Registry) -> None:
         reg.register_preset(preset_from_toml(text, stage))
 
 
-def _shipped_presets() -> list[tuple[Stage, str]]:
+@lru_cache(maxsize=1)
+def _shipped_presets() -> tuple[tuple[Stage, str], ...]:
+    """Every shipped preset TOML as ``(stage, text)``, read once per process.
+
+    Cached because this is *read-only package data*: the shipped tree cannot
+    change while the app runs, yet the reads are the dominant cost of building a
+    registry — nearly 80 small files, and on a Windows drive mounted into WSL
+    they cost ~0.35 s a pass against ~0.004 s to parse them. Registry building is
+    not a one-off (every window, every plugin refresh, every test), so paying
+    that once instead of every time matters for startup as well as the suite.
+    Only immutable ``(Stage, str)`` pairs are shared; each caller still parses
+    its own :class:`Preset` objects into its own registry.
+    """
     # The shipped tree mirrors the user plugin layout: the folder name gives the
     # stage (the shared PRESET_FOLDER_STAGE map), so preset TOMLs carry none.
     named: list[tuple[str, Stage, str]] = []
@@ -91,4 +104,4 @@ def _shipped_presets() -> list[tuple[Stage, str]]:
                 named.append((entry.name, stage, entry.read_text(encoding="utf-8")))
     # Stable order regardless of filesystem iteration order.
     named.sort(key=lambda item: item[0])
-    return [(stage, text) for _, stage, text in named]
+    return tuple((stage, text) for _, stage, text in named)

@@ -1,8 +1,9 @@
 """The ``.celpix`` project file: save/load the workspace as JSON.
 
 A project stores **references and settings, never the edited bytes** — the open
-entries (files, slices, bookmarks), each one's session settings and view state, and
-where its palette comes from (``docs/design/project-format.md``). Writers emit
+entries (files, slices, bookmarks, palette files), each one's session settings
+and view state, and where its palette comes from
+(``docs/design/project-format.md``). Writers emit
 the current schema ``version``; readers are tolerant — unknown keys are
 ignored, missing optional keys get defaults, and a broken *entry* degrades that
 entry, never the whole load. Plain ``json`` + dataclass mapping, no pickle: a
@@ -34,10 +35,12 @@ from os.path import (
 
 from celpix.core.arrangement import BLOCK_ORDERS
 from celpix.core.document import ViewOptions
+from celpix.plugins.base import NO_DECOMPRESS
 from celpix.project.workspace import (
     Entry,
     EntryKind,
     EntrySession,
+    PaletteMode,
     PaletteSource,
     Workspace,
     palette_source_for,
@@ -45,15 +48,18 @@ from celpix.project.workspace import (
 
 # 2: added the "bookmark" entry kind (v1 readers would misread one as a file,
 # so the bump makes them warn instead of degrading silently).
-PROJECT_VERSION = 2
+# 3: added the "palette" entry kind (same reasoning — a v2 reader would open a
+# palette file as pixel data).
+# 4: added the "custom" palette mode, whose colors live inline in the project.
+# A v3 reader falls back to "default" for the unknown mode and would drop the
+# edited colors on the next save, so the bump makes it warn instead.
+PROJECT_VERSION = 4
 PROJECT_EXTENSION = ".celpix"
 
 # Fallbacks for a hand-authored project that omits preset ids entirely — the
 # same built-ins a fresh window starts on, so a minimal project still renders.
 _DEFAULT_PIXEL_PRESET = "preset.pixel.snes-4bpp"
 _DEFAULT_PALETTE_PRESET = "preset.palette.bgr555"
-
-_PALETTE_MODES = ("default", "file", "offset", "emulator")
 
 
 class ProjectError(Exception):
@@ -79,14 +85,26 @@ class LoadedProject:
 
 
 # -- saving ----------------------------------------------------------------
-def save_project(ws: Workspace, path: str) -> None:
-    """Serialize ``ws`` to ``path`` as a version-stamped ``.celpix`` document."""
+def project_document(ws: Workspace, path: str) -> dict[str, object]:
+    """The version-stamped document ``ws`` would be saved as at ``path``.
+
+    Split out of :func:`save_project` so the UI can also ask *what would be
+    written* without writing it: comparing that against the document last
+    written or loaded is what tells the user their project has unsaved changes.
+    Stored paths are relative to ``path``'s directory, so the same workspace
+    saved to two places is legitimately two different documents.
+    """
     base_dir = dirname(abspath(path))
-    document = {
+    return {
         "version": PROJECT_VERSION,
         "current": ws.entries.index(ws.current) if ws.current is not None else None,
         "entries": [_entry_dict(entry, base_dir) for entry in ws.entries],
     }
+
+
+def save_project(ws: Workspace, path: str) -> None:
+    """Serialize ``ws`` to ``path`` as a version-stamped ``.celpix`` document."""
+    document = project_document(ws, path)
     # LF + trailing newline: projects are meant to live in version control.
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(document, handle, indent=2)
@@ -97,6 +115,7 @@ _KIND_NAMES = {
     EntryKind.FILE: "file",
     EntryKind.SLICE: "slice",
     EntryKind.BOOKMARK: "bookmark",
+    EntryKind.PALETTE: "palette",
 }
 
 
@@ -112,17 +131,22 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
         data["decompress_id"] = entry.decompress_id
     elif entry.kind is EntryKind.BOOKMARK:
         data["offset"] = entry.slice_offset
+    elif entry.kind is EntryKind.PALETTE:
+        # The codec the palette file was last read with — applying the entry
+        # later must decode the same way, whatever the dropdown says then.
+        data["palette_preset_id"] = entry.palette_preset_id
     session = entry.session
     if session is not None:
+        # The tile selection is deliberately absent: it is a transient pointer
+        # at the work, not part of how the entry is set up, and persisting it
+        # would make merely clicking around count as an unsaved project change.
         data["session"] = {
             "pixel_preset_id": session.pixel_preset_id,
             "palette_preset_id": session.palette_preset_id,
-            "palette_mode": session.palette_mode,
+            "palette_mode": session.palette_mode.value,
             "compression_id": session.compression_id,
             "headered": session.headered,
             "header_length": session.header_length,
-            "selected_tile": session.selected_tile,
-            "selected_last": session.selected_last,
         }
     # A loaded document carries the live state; a never-activated entry may
     # still hold state a previous load restored into its pending fields.
@@ -186,8 +210,9 @@ def load_project(path: str) -> LoadedProject:
         and 0 <= index < len(parsed)
         else None
     )
-    if current is not None and current.kind is EntryKind.BOOKMARK:
-        current = None  # a bookmark can't be shown; a hand-edited index degrades
+    if current is not None and current.kind not in (EntryKind.FILE, EntryKind.SLICE):
+        # A bookmark or palette can't be shown; a hand-edited index degrades.
+        current = None
     return LoadedProject(
         version=_int(data.get("version"), 1),
         entries=[entry for entry in parsed if entry is not None],
@@ -206,8 +231,21 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         kind = EntryKind.SLICE
     elif kind_name == "bookmark":
         kind = EntryKind.BOOKMARK
+    elif kind_name == "palette":
+        kind = EntryKind.PALETTE
     else:
         kind = EntryKind.FILE
+    if kind is EntryKind.PALETTE:
+        # A palette entry is just a reference plus its import codec — no
+        # session/view/palette state of its own.
+        return Entry(
+            name=name if isinstance(name, str) and name else basename(path),
+            kind=kind,
+            path=path,
+            palette_preset_id=_str(
+                raw.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET
+            ),
+        )
     offset_key = "offset" if kind is EntryKind.BOOKMARK else "slice_offset"
     return Entry(
         name=name if isinstance(name, str) and name else basename(path),
@@ -215,7 +253,7 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         path=path,
         slice_offset=_int(raw.get(offset_key), 0),
         slice_length=_int(raw.get("slice_length"), None),
-        decompress_id=_str(raw.get("decompress_id"), "decompress.none"),
+        decompress_id=_str(raw.get("decompress_id"), NO_DECOMPRESS),
         session=_session_from(raw.get("session")),
         pending_view=_view_from(raw.get("view")),
         pending_palette=_palette_from(raw.get("palette"), base_dir),
@@ -223,17 +261,18 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
 
 
 def _session_from(raw: object) -> EntrySession:
+    # The session's selection fields stay at their defaults: a project doesn't
+    # store a selection, and one written by an earlier version is read past like
+    # any other key this version doesn't use — an entry opens with nothing
+    # selected either way.
     data = raw if isinstance(raw, dict) else {}
-    mode = data.get("palette_mode")
     return EntrySession(
         pixel_preset_id=_str(data.get("pixel_preset_id"), _DEFAULT_PIXEL_PRESET),
         palette_preset_id=_str(data.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET),
-        palette_mode=mode if mode in _PALETTE_MODES else "default",
-        compression_id=_str(data.get("compression_id"), "decompress.none"),
+        palette_mode=PaletteMode.parse(data.get("palette_mode")),
+        compression_id=_str(data.get("compression_id"), NO_DECOMPRESS),
         headered=bool(data.get("headered", False)),
         header_length=_int(data.get("header_length"), 512),
-        selected_tile=_int(data.get("selected_tile"), None),
-        selected_last=_int(data.get("selected_last"), None),
     )
 
 
@@ -273,7 +312,7 @@ def _palette_from(raw: object, base_dir: str) -> PaletteSource | None:
         try:
             parsed = [int(str(color).lstrip("#"), 16) & 0xFFFFFFFF for color in colors]
         except ValueError:
-            return None  # unparseable colours: fall back to the default palette
+            return None  # unparseable colors: fall back to the default palette
         return PaletteSource(colors=parsed)
     path = raw.get("path")
     if isinstance(path, str) and path:

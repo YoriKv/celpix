@@ -1,5 +1,5 @@
 # Big-endian variant of R3G3B3 (9-bit) — for big-endian palette data.
-# See docs/graphics-formats-reference/implementation-guide.md §4 (packed colour formats).
+# See docs/graphics-formats-reference/implementation-guide.md §4 (packed color formats).
 id = "preset.palette.r3g3b3-be"
 name = "R3G3B3 (9-bit) (big-endian)"
 engine_id = "codec.color-mask"

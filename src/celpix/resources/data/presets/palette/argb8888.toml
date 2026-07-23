@@ -1,5 +1,5 @@
 # ARGB8888 — file byte order R,G,B,A, read as little-endian u32.
-# See docs/graphics-formats-reference/implementation-guide.md §4 (packed colour formats).
+# See docs/graphics-formats-reference/implementation-guide.md §4 (packed color formats).
 id = "preset.palette.argb8888"
 name = "ARGB8888 (file R,G,B,A)"
 engine_id = "codec.color-mask"
