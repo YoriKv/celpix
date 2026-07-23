@@ -1,9 +1,12 @@
-"""The session's open-entries collection: files, and slices of files.
+"""The session's open-entries collection: files, slices, and bookmarks.
 
 A :class:`Workspace` is the model behind the UI's open-files list. It holds an
-ordered list of :class:`Entry` — each either a whole **file** or a **slice**
-(an offset+length region of a parent file, optionally decompressed, that acts
-as its own document) — plus a *current* pointer for the single active view.
+ordered list of :class:`Entry` — a whole **file**, a **slice** (an
+offset+length region of a parent file, optionally decompressed, that acts as
+its own document), or a **bookmark** (an offset into a parent file plus a
+snapshot of settings, with no document or view of its own) — plus a *current*
+pointer for the single active view. Bookmarks are never current: they are
+jumped *through*, reconfiguring their parent, not activated.
 It is session-lifetime only; persisting it is :mod:`celpix.project.projectfile`'s
 job (``docs/design/project-format.md``).
 
@@ -28,7 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from os.path import abspath, normcase
+from os.path import abspath, basename, exists, normcase
 from typing import Callable
 
 from celpix.core.address import format_hex
@@ -47,6 +50,7 @@ from celpix.plugins.registry import Registry
 class EntryKind(Enum):
     FILE = auto()
     SLICE = auto()
+    BOOKMARK = auto()
 
 
 @dataclass
@@ -66,6 +70,21 @@ class PaletteSource:
     offset: int = 0
 
 
+@dataclass(frozen=True)
+class SliceParams:
+    """The four entry fields a slice's coordinates comprise.
+
+    Plain, Qt-free data shared by the slice dialog (which produces it) and the
+    slice-edit undo command (which stores a before/after pair) — one type so a
+    dialog result flows straight into a command without a field-by-field copy.
+    """
+
+    name: str
+    offset: int
+    length: int | None
+    decompress_id: str
+
+
 @dataclass
 class EntrySession:
     """Per-entry snapshot of the UI session — what entry-switching restores.
@@ -78,7 +97,7 @@ class EntrySession:
 
     pixel_preset_id: str
     palette_preset_id: str
-    palette_mode: str = "default"  # default | file | offset
+    palette_mode: str = "default"  # default | file | offset | emulator
     compression_id: str = "decompress.none"  # the preview combo, not a slice codec
     headered: bool = False
     header_length: int = 512
@@ -91,14 +110,25 @@ class EntrySession:
 
 @dataclass(eq=False)  # identity semantics: two slices may share coordinates
 class Entry:
-    """One open item: a whole file, or an offset+length slice of one.
+    """One open item: a whole file, an offset+length slice of one, or a bookmark.
 
     ``path`` is the file itself for FILE entries and the **parent** file for
-    SLICE entries. ``slice_offset`` is an absolute offset from byte 0 of the
-    file — deliberately not header-relative, so a slice never shifts when the
-    parent's header-skip display setting changes. ``slice_length`` may start
-    ``None`` for a decompressed slice ("to be discovered"): the first load
-    backfills it from the structure's true extent so save-back is slot-bounded.
+    SLICE and BOOKMARK entries. **Slices and bookmarks never nest**: both are
+    always anchored to a whole file, never to another slice, so their ``path``
+    always names a FILE and the open-entries list is exactly two levels deep.
+    ``slice_offset`` is an absolute offset from byte 0 of the file —
+    deliberately not header-relative, so a slice or bookmark never shifts when
+    the parent's header-skip display setting changes. ``slice_length`` may
+    start ``None`` for a decompressed slice ("to be discovered"): the first
+    load backfills it from the structure's true extent so save-back is
+    slot-bounded.
+
+    A BOOKMARK is a position marker, not a document: it has no length and is
+    never loaded or made current. It repurposes the restore fields as its
+    permanent settings snapshot — ``session``, ``pending_view`` and
+    ``pending_palette`` hold the parent's state as of the bookmark's creation,
+    and (unlike on a file/slice) are never consumed; jumping copies them back
+    onto the parent.
     """
 
     name: str
@@ -114,6 +144,12 @@ class Entry:
     # consumed on its first load (the live state then lives on the document).
     pending_view: ViewOptions | None = None
     pending_palette: PaletteSource | None = None
+    # Set when an external palette source (file/emulator mode) couldn't be
+    # reached on load: the entry renders on the default palette but keeps its
+    # palette_mode display, and this holds the source so it can be re-pointed
+    # (Locate missing files) and re-saved. None when the palette is healthy or
+    # still unloaded (an unloaded source lives on pending_palette).
+    missing_palette: PaletteSource | None = None
 
 
 class Workspace:
@@ -143,19 +179,29 @@ class Workspace:
         return None
 
     def slices_of(self, entry: Entry) -> list[Entry]:
-        """The SLICE entries carved from ``entry``'s file, in list order."""
+        """The SLICE entries carved from ``entry``'s file, in list order.
+
+        Only a FILE has slices — slices never nest — so this is a single hop,
+        never recursive.
+        """
+        return [e for e in self.children_of(entry) if e.kind is EntryKind.SLICE]
+
+    def children_of(self, entry: Entry) -> list[Entry]:
+        """The SLICE and BOOKMARK entries anchored to ``entry``'s file, in
+        list order (empty unless ``entry`` is a FILE — children never nest)."""
         if entry.kind is not EntryKind.FILE:
             return []
         key = self._path_key(entry.path)
         return [
             e
             for e in self.entries
-            if e.kind is EntryKind.SLICE and self._path_key(e.path) == key
+            if e.kind is not EntryKind.FILE and self._path_key(e.path) == key
         ]
 
     def parent_of(self, entry: Entry) -> Entry | None:
-        """The open FILE entry a SLICE was carved from (None if closed/never open)."""
-        return self.find_file(entry.path) if entry.kind is EntryKind.SLICE else None
+        """The open FILE entry a SLICE or BOOKMARK is anchored to (None for a
+        FILE, or when the parent is closed/never open)."""
+        return None if entry.kind is EntryKind.FILE else self.find_file(entry.path)
 
     def dirty_entries(self) -> list[Entry]:
         return [e for e in self.entries if e.dirty]
@@ -185,6 +231,11 @@ class Workspace:
         length: int | None,
         decompress_id: str = "decompress.none",
     ) -> Entry:
+        """Add a SLICE of the file at ``parent_path``.
+
+        ``parent_path`` is always a whole file: slices never nest, so a slice's
+        parent is a FILE, never another slice.
+        """
         entry = Entry(
             name=name,
             kind=EntryKind.SLICE,
@@ -197,24 +248,35 @@ class Workspace:
         self._notify(self.on_added, entry)
         return entry
 
-    def close(self, entry: Entry) -> list[Entry]:
-        """Remove ``entry`` — and, for a file, the slices carved from it.
+    def insert(self, entry: Entry, index: int) -> None:
+        """Insert an already-constructed entry at ``index`` (undo/redo path:
+        re-adding restores the *same* Entry object, so its document, session
+        and any commands referencing it stay valid)."""
+        self.entries.insert(index, entry)
+        self._notify(self.on_added, entry)
 
-        A slice nested under a closed parent would be an orphan in the list, so
-        the parent takes its slices with it (the UI confirms first). Returns
-        everything removed. If the current entry was among them, ``current``
-        moves to a list neighbour (or None when the list empties).
+    def close(self, entry: Entry) -> list[Entry]:
+        """Remove ``entry`` — and, for a file, the slices/bookmarks under it.
+
+        A slice or bookmark nested under a closed parent would be an orphan in
+        the list, so the parent takes its children with it (the UI confirms
+        first). Returns everything removed. If the current entry was among
+        them, ``current`` moves to a list neighbour — skipping bookmarks,
+        which cannot be current — or None when no candidate remains.
         """
-        removed = [entry, *self.slices_of(entry)]
+        removed = [entry, *self.children_of(entry)]
         anchor = min(self.entries.index(e) for e in removed)
         for e in removed:
             self.entries.remove(e)
             self._notify(self.on_removed, e)
         if self.current in removed:
-            if self.entries:
-                self.set_current(self.entries[min(anchor, len(self.entries) - 1)])
-            else:
-                self.set_current(None)
+            after = self.entries[anchor:]
+            before = reversed(self.entries[:anchor])
+            neighbour = next(
+                (e for e in after if e.kind is not EntryKind.BOOKMARK),
+                next((e for e in before if e.kind is not EntryKind.BOOKMARK), None),
+            )
+            self.set_current(neighbour)
         return removed
 
     def replace(self, entries: list[Entry], current: Entry | None) -> None:
@@ -237,6 +299,8 @@ class Workspace:
         if entry is self.current:
             return
         assert entry is None or entry in self.entries
+        # A bookmark has no document or view of its own — it can never be shown.
+        assert entry is None or entry.kind is not EntryKind.BOOKMARK
         self.current = entry
         self._notify(self.on_current_changed, entry)
 
@@ -303,6 +367,134 @@ def pixel_config_for(
         compress_id=compress_id,
         write_enabled=write_enabled,
     )
+
+
+def palette_source_for(entry: Entry) -> PaletteSource | None:
+    """The entry's live palette as restorable plain data — ``None`` for default.
+
+    Derived from the loaded document (its palette config is the truth for the
+    file/offset modes) plus the session's mode; a never-activated entry has no
+    live state, so its pending source (if any) is returned as-is. This is the
+    inverse of :meth:`_apply_restored_state`'s consumption of ``pending_palette``
+    — it's what both project-save and new-slice seeding read to carry a palette
+    forward. An offset source is an absolute file offset, so it resolves against
+    a slice's parent file exactly as it does for the parent itself.
+    """
+    # A degraded palette (its file went missing) keeps its intended source here
+    # rather than on the live config, so save and new-slice seeding carry the
+    # reference forward even while the entry renders on the default palette.
+    if entry.missing_palette is not None:
+        return entry.missing_palette
+    if entry.doc is None or entry.session is None:
+        return entry.pending_palette
+    mode = entry.session.palette_mode
+    source = entry.doc.palette_config.source
+    if mode == "file":
+        return PaletteSource(path=source.path, offset=source.offset)
+    if mode == "offset":
+        return PaletteSource(offset=source.offset)
+    if mode == "emulator":
+        # Only the state file's path is stored; where the palette sits inside it
+        # (and which console codec decodes it) is re-detected on restore, so a
+        # newer detector or an edited state stays authoritative over stale coords.
+        return PaletteSource(path=source.path)
+    return None
+
+
+# -- missing-reference handling (docs/design/project-format.md §3) ---------
+def data_missing(entry: Entry) -> bool:
+    """Whether the entry's own data file is gone from disk.
+
+    For a slice or bookmark this is the parent file (their ``path``); a missing
+    parent leaves the child unloadable exactly as a missing file does.
+    """
+    return not exists(entry.path)
+
+
+def entry_palette_path(entry: Entry) -> str | None:
+    """The external palette-source file the entry references, or ``None``.
+
+    Only file/emulator modes have an external palette file, and its path is read
+    from wherever the entry currently keeps it: the degraded source (loaded, but
+    its file went missing), the live document config (loaded and healthy), or
+    the pending source (not yet activated).
+    """
+    session = entry.session
+    if session is None or session.palette_mode not in ("file", "emulator"):
+        return None
+    if entry.missing_palette is not None:
+        return entry.missing_palette.path
+    if entry.doc is not None:
+        return entry.doc.palette_config.source.path or None
+    if entry.pending_palette is not None:
+        return entry.pending_palette.path
+    return None
+
+
+def palette_missing(entry: Entry) -> bool:
+    """Whether the entry's external palette file is referenced but gone."""
+    path = entry_palette_path(entry)
+    return path is not None and not exists(path)
+
+
+def entry_reference_missing(entry: Entry) -> bool:
+    """Whether either file the entry references (its data or its palette) is
+    gone — the condition the files list flags with a warning highlight."""
+    return data_missing(entry) or palette_missing(entry)
+
+
+def missing_paths(ws: Workspace) -> list[str]:
+    """Every referenced path not on disk, de-duplicated, in list order.
+
+    Unions each entry's data file with its external palette file, so one shared
+    ROM (a file plus the slices/bookmarks under it) yields a single worklist
+    entry — located once, corrected everywhere.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for entry in ws.entries:
+        candidates = [entry.path] if data_missing(entry) else []
+        if palette_missing(entry):
+            candidates.append(entry_palette_path(entry))
+        for path in candidates:
+            key = Workspace._path_key(path)
+            if key not in seen:
+                seen.add(key)
+                result.append(path)
+    return result
+
+
+def relocate_path(ws: Workspace, old_path: str, new_path: str) -> list[Entry]:
+    """Repoint every reference to ``old_path`` at ``new_path``; return the
+    entries touched.
+
+    Rewrites an entry's data ``path`` and any pending/degraded palette source
+    naming the same file, so relocating a shared ROM fixes the file and its
+    slices/bookmarks (and any palette read from it) together. Pure data — the
+    caller reloads the affected documents/palettes.
+    """
+    key = Workspace._path_key(old_path)
+    new_name = basename(new_path)
+    touched: list[Entry] = []
+    for entry in ws.entries:
+        data_moved = bool(entry.path) and Workspace._path_key(entry.path) == key
+        if data_moved:
+            entry.path = new_path
+            # A FILE's display name mirrors its on-disk basename, so a located
+            # file that was renamed (or re-extensioned) takes the new name;
+            # slices and bookmarks keep the names the user gave them.
+            if entry.kind is EntryKind.FILE:
+                entry.name = new_name
+        changed = data_moved
+        for source in (entry.missing_palette, entry.pending_palette):
+            if source is None or not source.path:
+                continue
+            if Workspace._path_key(source.path) == key:
+                source.path = new_path
+                changed = True
+        if changed:
+            touched.append(entry)
+    return touched
 
 
 def default_slice_name(

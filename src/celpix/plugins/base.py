@@ -33,14 +33,20 @@ class FileRef:
     """A read source / write destination on disk.
 
     ``offset`` is where the meaningful bytes begin (e.g. past a ROM header);
-    ``length`` optionally bounds them (``None`` = to end of file). Generalising to
-    non-file sources (emulator memory) later widens this type — see the open
-    questions in ``docs/design/overview.md`` §9.
+    ``length`` optionally bounds them (``None`` = to end of file).
+
+    ``data`` is the non-file generalisation the design anticipated (§9): when set,
+    it *is* the source bytes (still sliced by ``offset``/``length``), so a reader
+    yields them without touching disk. This is how a palette pulled out of an
+    emulator memory image — bytes that live inside a compressed container, not at
+    a file offset — flows through the ordinary pipeline. ``path`` is still carried
+    for provenance/display. Write destinations never set ``data``.
     """
 
     path: str
     offset: int = 0
     length: int | None = None
+    data: bytes | None = None
 
 
 @dataclass(frozen=True)

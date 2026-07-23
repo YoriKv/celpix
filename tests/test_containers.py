@@ -9,7 +9,6 @@ from celpix.plugins.builtins.container_read import (
     SmdReader,
     SnesInterleavedReader,
 )
-from celpix.plugins.builtins.konami_rle import KonamiNesRleDecompress
 
 
 def test_ines_skips_header_to_chr(tmp_path) -> None:
@@ -71,18 +70,6 @@ def test_snes_interleaved_skips_copier_header_by_size(tmp_path) -> None:
     assert ctx.get(KEY_SOURCE_OFFSET) == 512
 
 
-def test_konami_rle_fill_literal_end() -> None:
-    # fill 3×0xAA ; literal copy of 2 bytes ; end.
-    stream = bytes([0x03, 0xAA, 0x82, 0x11, 0x22, 0xFF, 0x99])
-    out = KonamiNesRleDecompress().decompress(stream, PipelineContext())
-    assert out == b"\xaa\xaa\xaa\x11\x22"  # 0x99 after the 0xFF terminator is ignored
-
-
-def test_konami_rle_ppu_address_change_skips_two_bytes() -> None:
-    # 0x7F is a PPU address change: the next 2 bytes are the little-endian
-    # destination (0x1234 here), consumed but not emitted; decoding continues
-    # after them. The address low byte 0x34 must not be read as a fill-52
-    # control — that misread is the Contra-family desync bug this guards.
-    stream = bytes([0x02, 0x01, 0x7F, 0x34, 0x12, 0x02, 0x02, 0xFF])
-    out = KonamiNesRleDecompress().decompress(stream, PipelineContext())
-    assert out == b"\x01\x01\x02\x02"
+# Konami RLE decoding (fill/literal/terminator, the PPU-address-change desync
+# guard, and plugin context recording) lives in the dedicated, far richer suite
+# in test_compression.py — the container-reader file stays focused on readers.

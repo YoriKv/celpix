@@ -9,9 +9,10 @@ out to mirror that design's major subsystems:
   View & Edit, Compress, Write) across the pixel and palette pathways.
 - :mod:`celpix.plugins` — the plugin API and registry; every built-in stage
   behavior is itself a plugin on this API.
-- :mod:`celpix.undo` — per-launch undo/redo history.
 - :mod:`celpix.project` — resumable project save/load.
-- :mod:`celpix.ui` — the Qt front end (main window, dockers, canvas).
+- :mod:`celpix.ui` — the Qt front end (main window, dockers, canvas). Also
+  home to per-launch undo/redo, which rides Qt's undo framework
+  (``docs/design/undo-redo.md``).
 - :mod:`celpix.resources` — bundled, read-only resources (format data, presets,
   icons, font), resolved so they survive frozen release builds.
 

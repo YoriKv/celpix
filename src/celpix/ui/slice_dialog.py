@@ -11,7 +11,6 @@ with an inline message, so a typo never silently creates a wrong slice.
 from __future__ import annotations
 
 from os.path import basename, getsize
-from typing import NamedTuple
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -26,14 +25,9 @@ from PySide6.QtWidgets import (
 from celpix.core.address import format_hex, parse_hex
 from celpix.core.errors import Stage
 from celpix.plugins.registry import Registry
-from celpix.project.workspace import default_slice_name
+from celpix.project.workspace import SliceParams, default_slice_name
 
-
-class SliceParams(NamedTuple):
-    name: str
-    offset: int
-    length: int | None
-    decompress_id: str
+__all__ = ["SliceDialog", "SliceParams"]
 
 
 class SliceDialog(QDialog):

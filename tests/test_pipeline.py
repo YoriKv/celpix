@@ -66,6 +66,32 @@ def test_decode_window_matches_full_decode(tmp_path) -> None:
     assert pipeline.decode_window(doc, reg, 3, 5) == all_tiles[3:4]
 
 
+def test_decode_window_2d_reflows_the_window_before_decode(tmp_path) -> None:
+    from celpix.core.arrangement import reflow_2d
+
+    reg = default_registry()
+    px, pl, _pixel_bytes, _ = _make_files(tmp_path)  # 4 SNES 4bpp tiles
+    pixel_cfg, palette_cfg = _configs(px, pl)
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    preset = reg.preset(pixel_cfg.interpret_preset_id)
+    engine = reg.plugin(Stage.INTERPRET_PIXEL, preset.engine_id)
+
+    cols = 2  # a 2×2-tile window read as a wide bitmap 2 tiles across
+    window = doc.window_bytes(0, cols * 2)
+    expected = engine.decode(
+        reflow_2d(window, doc.bytes_per_tile, doc.tile_height, cols),
+        preset.params,
+        PipelineContext(),
+    )
+    got = pipeline.decode_window(
+        doc, reg, 0, cols * 2, columns=cols, two_dimensional=True
+    )
+    # 2D decode is exactly the codec run over the reflowed window …
+    assert got == expected
+    # … and a different picture from the 1D walk (proves the flag is applied).
+    assert got != pipeline.decode_window(doc, reg, 0, cols * 2)
+
+
 def test_provenance_recorded(tmp_path) -> None:
     from celpix.core.context import KEY_SOURCE_PATH
 
@@ -256,3 +282,38 @@ def test_missing_source_file_hard_stops(tmp_path) -> None:
     with pytest.raises(PipelineError) as excinfo:
         pipeline.load(pixel_cfg, palette_cfg, reg)
     assert excinfo.value.stage == Stage.READ
+
+
+def test_find_next_structure_locates_reports_and_aborts() -> None:
+    """The Qt-free Scan core: walks past undecodable bytes to a real structure,
+    reports no-match at end-of-data, and honours an on_tick abort."""
+    from celpix.plugins.builtins import lz_command
+
+    plugin = default_registry().plugin(Stage.DECOMPRESS, "decompress.lz2")
+    tiles = bytes((i * 31 + 7) & 0xFF for i in range(32 * 4))
+    packed = lz_command.compress(tiles, big_endian_offsets=True)
+    # A junk lead-in no scheme accepts (backrefs into nothing), then a structure.
+    junk = (b"\x83\xff\xff" * 40)[:120]
+    window_len = 512
+
+    hit = pipeline.find_next_structure(junk + packed + bytes(64), plugin, window_len, 0)
+    assert hit.found == len(junk)
+    assert not hit.stopped
+
+    miss = pipeline.find_next_structure(junk, plugin, window_len, 0)
+    assert miss.found is None
+    assert miss.end == len(junk)
+    assert not miss.stopped
+
+    ticks: list[int] = []
+
+    def _stop(pos: int) -> bool:
+        ticks.append(pos)
+        return True  # abort on the first progress tick
+
+    aborted = pipeline.find_next_structure(
+        junk + packed, plugin, window_len, 0, progress_every=1, on_tick=_stop
+    )
+    assert aborted.found is None
+    assert aborted.stopped
+    assert ticks  # the callback actually ran

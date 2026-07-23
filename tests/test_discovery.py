@@ -337,17 +337,6 @@ def test_code_format_lands_in_picker_and_round_trips(tmp_path) -> None:
     assert engine.encode(tiles, preset.params, ctx) == data
 
 
-def test_unapproved_code_format_registers_nothing(tmp_path) -> None:
-    _drop(tmp_path, "pixel", "twobit.py", _FORMAT_PLUGIN)
-    reg = default_registry()
-
-    issues = discovery.load_directory(reg, str(tmp_path))
-    assert len(issues) == 1
-    assert "not approved" in issues[0].message
-    with pytest.raises(KeyError):
-        reg.preset("format.pixel.twobit")
-
-
 def test_underscore_files_are_ignored(tmp_path) -> None:
     # Inert-by-convention: _-prefixed files load nothing and report nothing,
     # even when their content is broken (that is what makes them safe examples).

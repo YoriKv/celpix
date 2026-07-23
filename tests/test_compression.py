@@ -19,8 +19,6 @@ from celpix.core.context import (
 )
 from celpix.plugins.builtins import konami_rle, lz16, lz_command
 from celpix.plugins.builtins.konami_rle import (
-    KonamiFdsRleCompress,
-    KonamiFdsRleDecompress,
     KonamiNesRleCompress,
     KonamiNesRleDecompress,
 )
@@ -405,13 +403,9 @@ def test_konami_fds_round_trip() -> None:
         assert consumed == len(packed)
 
 
-def test_konami_fds_plugins_record_size_and_round_trip() -> None:
-    data = b"\x00" * 50 + bytes(range(30)) + b"\xff" * 40
-    packed = KonamiFdsRleCompress().compress(data, PipelineContext())
-    ctx = PipelineContext()
-    out = KonamiFdsRleDecompress().decompress(packed + b"\x5a" * 6, ctx)
-    assert out == data
-    # The terminator position is the structure's byte length; trailing garbage
-    # past it is not counted.
-    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
-    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+# The FDS plugin wrapper (KonamiFdsRle*) is a copy of the NES wrapper differing
+# only in the fds flag, and the shared compressor stays in the unambiguous
+# subset — so a plugin round-trip there decodes identically to the NES one and
+# adds nothing over test_konami_plugins_record_size_and_round_trip. The FDS-only
+# decode behaviour is guarded by test_konami_variant_flag_switches_control_
+# semantics and test_konami_fds_round_trip.

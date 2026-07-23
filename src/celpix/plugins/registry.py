@@ -54,6 +54,18 @@ class Registry:
             return list(items)
         return [p for p in items if p.stage == stage]
 
+    # -- convenience -------------------------------------------------------
+    def engine_for(self, preset_id: str) -> tuple[Plugin, Preset]:
+        """The interpret engine a preset resolves to, plus the preset itself.
+
+        A preset names its own interpret stage and an ``engine_id`` within it, so
+        this is the single place that hop is made — callers stop respelling
+        ``plugin(Stage.INTERPRET_*, preset.engine_id)`` (and stop having to know
+        which interpret stage a preset belongs to).
+        """
+        preset = self.preset(preset_id)
+        return self.plugin(preset.stage, preset.engine_id), preset
+
 
 def default_registry() -> Registry:
     """A registry populated with every built-in plugin and preset.

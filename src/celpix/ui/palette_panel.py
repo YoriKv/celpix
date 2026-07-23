@@ -23,6 +23,7 @@ from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
+from celpix.core import ceil_div
 from celpix.ui.widgets import paint_selection_outline
 
 SWATCH = 14  # logical px per swatch; Qt scales logical painting on HiDPI
@@ -76,7 +77,7 @@ class PalettePanel(QWidget):
             self.color_selected.emit(index)
 
     def _update_size(self) -> None:
-        rows = max(1, -(-len(self._colors) // COLUMNS))  # ceil; ≥1 keeps it visible
+        rows = max(1, ceil_div(len(self._colors), COLUMNS))  # ≥1 keeps it visible
         self.setFixedSize(COLUMNS * SWATCH, rows * SWATCH)
         self.update()
 

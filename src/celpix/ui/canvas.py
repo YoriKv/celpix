@@ -1,4 +1,5 @@
-"""The tile canvas: draws the rendered image at integer zoom, optional tile grid.
+"""The tile canvas: draws the rendered image at integer zoom, optional tile grid
+(a two-level grid in a selectable :class:`GridStyle` — see :meth:`Canvas._draw_grid`).
 
 Deliberately minimal for the MVP — a fixed-size widget the main window drops into
 a scroll area. It owns no model; it is handed a ready :class:`QImage` by the render
@@ -13,10 +14,13 @@ here later.
 
 from __future__ import annotations
 
+from enum import Enum
+
 from PySide6.QtCore import QPointF, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QRegion
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QRegion
 from PySide6.QtWidgets import QWidget
 
+from celpix.core.arrangement import BlockLayout
 from celpix.ui.widgets import paint_selection_outline
 
 # The neutral surround/backing behind the rendered pixels: a fixed mid-gray (not a
@@ -24,6 +28,34 @@ from celpix.ui.widgets import paint_selection_outline
 # paints it around the canvas; the canvas itself paints it over any past-end tiles
 # in a partial last row, so the two meet seamlessly.
 CANVAS_BACKGROUND = QColor(0x80, 0x80, 0x80)
+
+
+class GridStyle(Enum):
+    """How the tile grid is drawn (the YY-CHR style set). ``value`` is the stable
+    string persisted in app settings."""
+
+    NONE = "none"
+    POINT = "point"  # a dot at every tile corner, no lines
+    DOT = "dot"  # dotted lines
+    DASH = "dash"  # dashed lines
+    LINE = "line"  # solid lines
+
+
+# Two fixed grid colours: translucent white at two opacities, so the levels stay
+# distinct while tinting the art rather than overwriting it (legible over both
+# light and dark pixels). A stronger line every COARSE_GRID_TILES tiles, a faint
+# one on every tile in between — YY-CHR's default bank-grid ARGB values.
+GRID_COARSE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0x80)  # α128 — every 8 tiles
+GRID_FINE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0x20)  # α32 — per tile
+# The coarse grid falls every N tiles — YY-CHR's 8×8 block convention.
+COARSE_GRID_TILES = 8
+
+# Line styles per drawing style; POINT/NONE are handled separately.
+_GRID_PEN_STYLES = {
+    GridStyle.DOT: Qt.PenStyle.DotLine,
+    GridStyle.DASH: Qt.PenStyle.DashLine,
+    GridStyle.LINE: Qt.PenStyle.SolidLine,
+}
 
 
 class Canvas(QWidget):
@@ -37,8 +69,14 @@ class Canvas(QWidget):
         self._image = QImage()
         self._zoom = 4
         self._show_grid = False
+        self._grid_style = GridStyle.LINE
         self._tile_w = 8
         self._tile_h = 8
+        # Arrangement placement (block grouping / order). 1×1 is plain row-major,
+        # so every mapping below reduces to the simple form.
+        self._block_cols = 1
+        self._block_rows = 1
+        self._block_order = "row"
         self._selected_span: tuple[int, int] | None = None
         self._drag_anchor: int | None = None
         self._drag_slot: int | None = None  # last emitted, to skip no-op moves
@@ -71,9 +109,26 @@ class Canvas(QWidget):
         self._show_grid = on
         self.update()
 
+    def set_grid_style(self, style: GridStyle) -> None:
+        self._grid_style = style
+        self.update()
+
     def set_tile_size(self, width: int, height: int) -> None:
         self._tile_w = max(1, width)
         self._tile_h = max(1, height)
+        self.update()
+
+    def set_arrangement(
+        self, block_columns: int, block_rows: int, block_order: str
+    ) -> None:
+        """Set how linear tile slots map to canvas cells (block grouping).
+
+        Click-mapping, selection, and past-end backgrounding all follow this so a
+        blocked view stays interactive; a 1×1 block is the plain row-major default.
+        """
+        self._block_cols = max(1, block_columns)
+        self._block_rows = max(1, block_rows)
+        self._block_order = block_order
         self.update()
 
     def set_selection(self, span: tuple[int, int] | None) -> None:
@@ -86,8 +141,17 @@ class Canvas(QWidget):
         # recoverable without the canvas holding view state.
         return max(1, self._image.width() // self._tile_w)
 
+    def _rows(self) -> int:
+        return max(1, self._image.height() // self._tile_h)
+
+    def _layout(self) -> BlockLayout:
+        return BlockLayout(
+            self._columns(), self._block_cols, self._block_rows, self._block_order
+        )
+
     def _slot_at(self, pos: QPointF, clamp: bool = False) -> int | None:
-        """The window slot under ``pos``; None when outside the image.
+        """The window slot under ``pos``; None when outside the image (or a
+        block-grid gap cell that holds no tile).
 
         ``clamp`` snaps an outside position to the nearest edge slot instead —
         a drag that leaves the widget keeps extending to the boundary.
@@ -101,7 +165,7 @@ class Canvas(QWidget):
             0 <= img_x < self._image.width() and 0 <= img_y < self._image.height()
         ):
             return None
-        return (img_y // self._tile_h) * self._columns() + (img_x // self._tile_w)
+        return self._layout().cell_to_slot(img_x // self._tile_w, img_y // self._tile_h)
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         if event.button() == Qt.MouseButton.LeftButton and not self._image.isNull():
@@ -134,28 +198,50 @@ class Canvas(QWidget):
         )
         self.update()
 
-    def _past_end_rect(self) -> QRect | None:
-        """Device-coord rect of the bottom row's padding slots, or None.
+    def _cell_rect(self, tile_x: int, tile_y: int) -> QRect:
+        """The device-coord rect of one canvas cell."""
+        z = self._zoom
+        return QRect(
+            tile_x * self._tile_w * z,
+            tile_y * self._tile_h * z,
+            self._tile_w * z,
+            self._tile_h * z,
+        )
 
-        When the data ends mid-row the missing tiles are one contiguous block at
-        the end of the last row (tiles are a linear stream). None when every slot
-        is data or the last row happens to be exactly full.
+    def _background_region(self) -> QRegion | None:
+        """Device-coord region of cells that are backing, not data, or None.
+
+        Cells past the filled tile count (a partial last window) — and, under a
+        block layout, any block-grid gap cell that holds no tile — are painted as
+        the neutral surround so nothing implies a tile is there. Plain row-major
+        keeps the fast path: the padding is one contiguous tail of the last data
+        row (tiles are a linear stream).
         """
         if self._filled_tiles is None or self._image.isNull():
             return None
-        cols = self._columns()
-        remainder = self._filled_tiles % cols
-        rows = max(1, self._image.height() // self._tile_h)
-        row = self._filled_tiles // cols
-        if remainder == 0 or row >= rows:
-            return None
-        z = self._zoom
-        return QRect(
-            remainder * self._tile_w * z,
-            row * self._tile_h * z,
-            (cols - remainder) * self._tile_w * z,
-            self._tile_h * z,
-        )
+        layout = self._layout()
+        cols, rows = self._columns(), self._rows()
+        if layout.is_plain:
+            remainder = self._filled_tiles % cols
+            row = self._filled_tiles // cols
+            if remainder == 0 or row >= rows:
+                return None
+            z = self._zoom
+            return QRegion(
+                QRect(
+                    remainder * self._tile_w * z,
+                    row * self._tile_h * z,
+                    (cols - remainder) * self._tile_w * z,
+                    self._tile_h * z,
+                )
+            )
+        region = QRegion()
+        for tile_y in range(rows):
+            for tile_x in range(cols):
+                slot = layout.cell_to_slot(tile_x, tile_y)
+                if slot is None or slot >= self._filled_tiles:
+                    region = region.united(QRegion(self._cell_rect(tile_x, tile_y)))
+        return region if not region.isEmpty() else None
 
     def paintEvent(self, event) -> None:  # noqa: ARG002 — Qt supplies the event
         if self._image.isNull():
@@ -169,46 +255,83 @@ class Canvas(QWidget):
         # nothing (not even a grid line) suggests a tile is there. Clip is set
         # under the identity transform, so it stays in device coordinates while
         # the scale below only affects what's drawn.
-        past_end = self._past_end_rect()
-        if past_end is not None:
-            painter.fillRect(past_end, CANVAS_BACKGROUND)
-            painter.setClipRegion(QRegion(self.rect()).subtracted(QRegion(past_end)))
+        background = self._background_region()
+        if background is not None:
+            painter.setClipRegion(background)
+            painter.fillRect(self.rect(), CANVAS_BACKGROUND)
+            painter.setClipRegion(QRegion(self.rect()).subtracted(background))
         painter.scale(z, z)
         painter.drawImage(0, 0, self._image)
 
         painter.resetTransform()
-        if self._show_grid and z >= 2:
-            pen = painter.pen()
-            pen.setColor(QColor(0, 0, 0, 96))
-            painter.setPen(pen)
-            w = self._image.width() * z
-            h = self._image.height() * z
-            for gx in range(0, self._image.width() + 1, self._tile_w):
-                painter.drawLine(gx * z, 0, gx * z, h)
-            for gy in range(0, self._image.height() + 1, self._tile_h):
-                painter.drawLine(0, gy * z, w, gy * z)
+        # The grid is a viewing aid, not part of the art: drawn in device pixels
+        # (after resetTransform) so its lines stay 1px crisp at any zoom, and only
+        # once a tile is at least 2px so it never swamps the pixels themselves.
+        if self._show_grid and self._grid_style is not GridStyle.NONE and z >= 2:
+            self._draw_grid(painter, z)
         self._paint_selection(painter)
         painter.end()
+
+    def _draw_grid(self, painter: QPainter, z: int) -> None:
+        """Draw the two-level tile grid in the current style (device coords).
+
+        POINT dots the tile corners in the coarse colour; the line styles draw a
+        fine grid on every tile (grey) with a coarse grid every
+        :data:`COARSE_GRID_TILES` tiles (white) laid over it, so block boundaries
+        stand out from the tile lattice.
+        """
+        img_w, img_h = self._image.width(), self._image.height()
+        w, h = img_w * z, img_h * z
+        if self._grid_style is GridStyle.POINT:
+            painter.setPen(GRID_COARSE_COLOR)
+            for gx in range(self._tile_w, img_w, self._tile_w):
+                for gy in range(self._tile_h, img_h, self._tile_h):
+                    painter.drawPoint(gx * z, gy * z)
+            return
+        pen_style = _GRID_PEN_STYLES[self._grid_style]
+        # Fine first, then coarse over it: shared ×N boundaries read as coarse.
+        levels = ((1, GRID_FINE_COLOR), (COARSE_GRID_TILES, GRID_COARSE_COLOR))
+        for step_tiles, color in levels:
+            pen = QPen(color)
+            pen.setStyle(pen_style)
+            painter.setPen(pen)
+            step_x, step_y = self._tile_w * step_tiles, self._tile_h * step_tiles
+            for gx in range(step_x, img_w, step_x):
+                painter.drawLine(gx * z, 0, gx * z, h)
+            for gy in range(step_y, img_h, step_y):
+                painter.drawLine(0, gy * z, w, gy * z)
 
     def _paint_selection(self, painter: QPainter) -> None:
         if self._selected_span is None:
             return
         first, last = self._selected_span
-        cols = self._columns()
+        layout = self._layout()
+        cols, rows = self._columns(), self._rows()
         z = self._zoom
-        # A linear slot run isn't a rectangle once it wraps rows — outline each
-        # row's contiguous segment so the shape reads as one selection.
-        for row in range(first // cols, last // cols + 1):
-            seg_first = max(first, row * cols)
-            seg_last = min(last, row * cols + cols - 1)
-            rect = QRect(
-                (seg_first % cols) * self._tile_w * z,
-                row * self._tile_h * z,
-                (seg_last - seg_first + 1) * self._tile_w * z,
-                self._tile_h * z,
-            )
-            if rect.intersects(self.rect()):
-                paint_selection_outline(painter, self.palette(), rect)
+        # Map each selected slot to its cell, then outline each row's contiguous
+        # horizontal run: a linear slot run isn't one rectangle once it wraps rows
+        # or spans blocks. This reduces to the per-row segments of a plain view.
+        cells_by_row: dict[int, list[int]] = {}
+        for slot in range(first, last + 1):
+            tile_x, tile_y = layout.slot_to_cell(slot)
+            if 0 <= tile_x < cols and 0 <= tile_y < rows:
+                cells_by_row.setdefault(tile_y, []).append(tile_x)
+        for tile_y, xs in cells_by_row.items():
+            xs.sort()
+            run_start = prev = xs[0]
+            for x in xs[1:] + [-1]:  # -1 sentinel flushes the final run
+                if x == prev + 1:
+                    prev = x
+                    continue
+                rect = QRect(
+                    run_start * self._tile_w * z,
+                    tile_y * self._tile_h * z,
+                    (prev - run_start + 1) * self._tile_w * z,
+                    self._tile_h * z,
+                )
+                if rect.intersects(self.rect()):
+                    paint_selection_outline(painter, self.palette(), rect)
+                run_start = prev = x
 
     def sizeHint(self):  # noqa: ANN201 — Qt override
         return self.size()

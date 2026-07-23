@@ -37,10 +37,14 @@ jobs:
             # PowerShell: zip the onedir output folder.
             package: Compress-Archive -Path dist/celpix/* -DestinationPath dist/celpix-win.zip
             artifact: dist/celpix-win.zip
+            # Embedded into the .exe and shown in Explorer/taskbar.
+            icon: --icon packaging/celpix.ico
           - os: ubuntu-latest
             asset: celpix-linux
             package: tar -czf dist/celpix-linux.tar.gz -C dist celpix
             artifact: dist/celpix-linux.tar.gz
+            # Linux has no build-time icon; the app sets its window icon at runtime.
+            icon: ""
           # Two native macOS builds. uv's Python is single-arch, so PyInstaller
           # can't emit a universal2 app — instead each architecture builds on
           # its own runner. macos-latest is Apple Silicon; macos-15-intel is
@@ -50,16 +54,19 @@ jobs:
             # --windowed produces celpix.app; zip it (ditto preserves bundle bits).
             package: ditto -c -k --keepParent dist/celpix.app dist/celpix-mac-arm64.zip
             artifact: dist/celpix-mac-arm64.zip
+            # Baked into celpix.app's Info.plist and shown in the Dock/Finder.
+            icon: --icon packaging/celpix.icns
           - os: macos-15-intel
             asset: celpix-mac-intel
             package: ditto -c -k --keepParent dist/celpix.app dist/celpix-mac-intel.zip
             artifact: dist/celpix-mac-intel.zip
+            icon: --icon packaging/celpix.icns
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
@@ -87,6 +94,7 @@ jobs:
           uv run --with pyinstaller pyinstaller
           --name celpix --windowed --noconfirm
           --collect-data celpix
+          ${{ matrix.icon }}
           src/celpix/__main__.py
 
       # PyInstaller stamps LSMinimumSystemVersion from the build Python's own
@@ -128,7 +136,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4

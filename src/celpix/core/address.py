@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from celpix.core import ceil_div
+
 
 def parse_hex(text: str) -> int | None:
     """A flat hex offset, accepting ``0x``/``$`` prefixes or a bare number.
@@ -70,7 +72,7 @@ class BankLayout:
     @property
     def addr_digits(self) -> int:
         """Hex digits of the largest in-bank address (min 4, the common width)."""
-        return max(4, -(-(self.addr_base + self.bank_size - 1).bit_length() // 4))
+        return max(4, ceil_div((self.addr_base + self.bank_size - 1).bit_length(), 4))
 
     def format(self, offset: int) -> str:
         bank, in_bank = divmod(offset, self.bank_size)

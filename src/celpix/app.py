@@ -6,9 +6,10 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from celpix import __version__
+from celpix import __version__, resources
 from celpix.plugins.discovery import FOLDER_STAGES, load_user_plugins, seed_examples
 from celpix.plugins.registry import default_registry
 from celpix.plugins.trust import PendingCodePlugin, TrustStore
@@ -52,6 +53,15 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
+    # The window/taskbar/dock icon while running. Loaded from bytes (not a file
+    # path) so it resolves the same in a source checkout and a frozen build,
+    # where resources live inside the bundle. The packaged executables also
+    # embed platform icons at build time (see packaging/ and the release
+    # workflow); this covers every platform's live window and Linux, which has
+    # no build-time icon.
+    icon = QPixmap()
+    icon.loadFromData(resources.read_bytes("icons", "app.png"))
+    app.setWindowIcon(QIcon(icon))
 
     # Built-ins first, then whatever the user has dropped into the plugin folder
     # (plus any CELPIX_PLUGIN_PATH dirs). Code plugins are gated by a confirm

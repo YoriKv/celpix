@@ -10,17 +10,68 @@ the stage + pathway + reason; nothing partial is written
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, NamedTuple, TypeVar
 
+from celpix.core import ceil_div
+from celpix.core.arrangement import reflow_2d
 from celpix.core.context import PipelineContext
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
 from celpix.pipeline.pathway import PathwayConfig
+from celpix.plugins.base import DecompressPlugin
 from celpix.plugins.registry import Registry
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    """Where a forward structure scan ended (:func:`find_next_structure`).
+
+    ``found`` is the hit offset or ``None``; ``end`` is the last offset examined
+    (where the caller lands when there was no hit); ``stopped`` is True when the
+    caller aborted the scan via its tick callback rather than reaching the end.
+    """
+
+    found: int | None
+    end: int
+    stopped: bool
+
+
+def find_next_structure(
+    data: bytes,
+    plugin: DecompressPlugin,
+    window_len: int,
+    start: int,
+    *,
+    progress_every: int = 64,
+    on_tick: Callable[[int], bool] | None = None,
+) -> ScanResult:
+    """The first offset ≥ ``start`` where ``plugin`` decodes a complete structure.
+
+    Walks ``data`` one byte at a time, trying a strict decompress of the
+    ``window_len``-byte window at each offset; a non-empty result is a hit. This
+    is the Qt-free core of the toolbar's *Scan* — a hit is a *complete*, non-empty
+    structure, since a best-effort partial decode "succeeds" on almost any bytes
+    (so non-self-delimiting schemes are effectively unscannable). Every
+    ``progress_every`` bytes ``on_tick(pos)`` is called if given; returning True
+    aborts the scan (the UI pumps its event loop and reports a Stop there).
+    """
+    pos = start
+    n = len(data)
+    while pos < n:
+        try:
+            if plugin.decompress(data[pos : pos + window_len], PipelineContext()):
+                return ScanResult(pos, pos, False)
+        except Exception:  # noqa: BLE001 — not a structure here; keep walking
+            pass
+        pos += 1
+        if on_tick is not None and pos % progress_every == 0 and on_tick(pos):
+            return ScanResult(None, pos, True)
+    return ScanResult(None, pos, False)
 
 
 class PixelData(NamedTuple):
@@ -57,8 +108,7 @@ def load_pixel_data(cfg: PathwayConfig, reg: Registry) -> PixelData:
     """
     ctx = PipelineContext()
     data = _read_and_decompress(cfg, ctx, reg, Pathway.PIXEL)
-    preset = reg.preset(cfg.interpret_preset_id)
-    engine = reg.plugin(Stage.INTERPRET_PIXEL, preset.engine_id)
+    engine, preset = reg.engine_for(cfg.interpret_preset_id)
     tile_bytes = _run(
         Stage.INTERPRET_PIXEL,
         Pathway.PIXEL,
@@ -75,7 +125,14 @@ def load_pixel_data(cfg: PathwayConfig, reg: Registry) -> PixelData:
 
 
 def decode_window(
-    doc: Document, reg: Registry, first_tile: int, count: int, nudge: int = 0
+    doc: Document,
+    reg: Registry,
+    first_tile: int,
+    count: int,
+    nudge: int = 0,
+    *,
+    columns: int | None = None,
+    two_dimensional: bool = False,
 ) -> list[IndexGrid]:
     """Decode ``count`` tiles starting at tile ``first_tile`` — deferred decode.
 
@@ -84,12 +141,17 @@ def decode_window(
     whole-file decode is needed. A partial/empty window (near or past the end)
     decodes to fewer/zero tiles. ``nudge`` shifts the tile grid by that many
     bytes (sub-tile alignment — see :meth:`Document.window_bytes`).
+
+    With ``two_dimensional`` (and the view's ``columns``), the raw window is
+    rewalked from wide-bitmap order into per-tile order before decode
+    (:func:`~celpix.core.arrangement.reflow_2d`) — the codec is unchanged.
     """
     window = doc.window_bytes(first_tile, count, nudge)
     if not window:
         return []
-    preset = reg.preset(doc.pixel_config.interpret_preset_id)
-    engine = reg.plugin(Stage.INTERPRET_PIXEL, preset.engine_id)
+    if two_dimensional and columns:
+        window = reflow_2d(window, doc.bytes_per_tile, doc.tile_height, columns)
+    engine, preset = reg.engine_for(doc.pixel_config.interpret_preset_id)
     return _run(
         Stage.INTERPRET_PIXEL,
         Pathway.PIXEL,
@@ -101,21 +163,18 @@ def load_palette(cfg: PathwayConfig, reg: Registry) -> tuple[Palette, PipelineCo
     """Run the palette pathway forward: Read -> Decompress -> decode to a Palette."""
     ctx = PipelineContext()
     data = _read_and_decompress(cfg, ctx, reg, Pathway.PALETTE)
-    preset = reg.preset(cfg.interpret_preset_id)
+    engine, preset = reg.engine_for(cfg.interpret_preset_id)
     colors = _run(
         Stage.INTERPRET_PALETTE,
         Pathway.PALETTE,
-        lambda: reg.plugin(Stage.INTERPRET_PALETTE, preset.engine_id).decode(
-            data, preset.params, ctx
-        ),
+        lambda: engine.decode(data, preset.params, ctx),
     )
     return colors, ctx
 
 
 def palette_entry_size(preset_id: str, reg: Registry) -> int:
     """Byte size of one palette entry under the preset — for sizing palette reads."""
-    preset = reg.preset(preset_id)
-    engine = reg.plugin(Stage.INTERPRET_PALETTE, preset.engine_id)
+    engine, preset = reg.engine_for(preset_id)
     return _run(
         Stage.INTERPRET_PALETTE,
         Pathway.PALETTE,
@@ -134,15 +193,14 @@ def pixel_bpp(preset_id: str, reg: Registry) -> int:
     whatever the decoder actually produced. Rounded up so a non-whole bit depth
     still yields an index space wide enough for its largest index.
     """
-    preset = reg.preset(preset_id)
-    engine = reg.plugin(Stage.INTERPRET_PIXEL, preset.engine_id)
+    engine, preset = reg.engine_for(preset_id)
 
     def _bpp() -> int:
         w, h = engine.tile_size(preset.params)
         pixels = w * h
         if pixels <= 0:
             raise ValueError(f"tile {w}x{h} has no pixels")
-        return -(-engine.bytes_per_tile(preset.params) * 8 // pixels)
+        return ceil_div(engine.bytes_per_tile(preset.params) * 8, pixels)
 
     return _run(Stage.INTERPRET_PIXEL, Pathway.PIXEL, _bpp)
 
@@ -207,13 +265,11 @@ def _save_pixel(doc: Document, reg: Registry) -> None:
 
 def _save_palette(doc: Document, reg: Registry) -> None:
     cfg = doc.palette_config
-    preset = reg.preset(cfg.interpret_preset_id)
+    engine, preset = reg.engine_for(cfg.interpret_preset_id)
     data = _run(
         Stage.INTERPRET_PALETTE,
         Pathway.PALETTE,
-        lambda: reg.plugin(Stage.INTERPRET_PALETTE, preset.engine_id).encode(
-            doc.palette, preset.params, doc.palette_ctx
-        ),
+        lambda: engine.encode(doc.palette, preset.params, doc.palette_ctx),
     )
     _compress_and_write(cfg, data, doc.palette_ctx, reg, Pathway.PALETTE)
 

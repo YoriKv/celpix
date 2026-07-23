@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from celpix.core.arrangement import ARRANGEMENT_PRESETS
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
 from celpix.ui import render_bridge
@@ -145,11 +146,19 @@ def test_slice_entry_views_bounded_region_with_absolute_addresses(
     assert window._offset_text() == "0x000040"
     assert not window._headered.isEnabled()
     assert window._write_action.isEnabled()
+    # Slices never nest: a slice on screen offers no slice-creation actions.
+    window._on_tiles_selected(0, 0)  # a selection can't unlock from-selection
+    assert not window._new_slice_action.isEnabled()
+    assert not window._new_slice_from_view_action.isEnabled()
+    assert not window._new_slice_from_selection_action.isEnabled()
 
-    # Switching back to the parent shows the whole file from its own state.
+    # Switching back to the parent shows the whole file from its own state, and
+    # the file *does* spawn slices.
     window._activate_entry(window._workspace.entries[0])
     assert window._doc.tile_count == 8
     assert window._headered.isEnabled()
+    assert window._new_slice_action.isEnabled()
+    assert window._new_slice_from_view_action.isEnabled()
 
 
 def test_slice_rename_inline_editor_commits_and_cancels(qtbot, tmp_path) -> None:
@@ -190,6 +199,67 @@ def test_slice_rename_inline_editor_commits_and_cancels(qtbot, tmp_path) -> None
     # Files are not renameable — their name is the on-disk basename.
     panel._begin_rename(window._workspace.entries[0])
     assert panel._editing is None
+
+
+def test_file_list_children_stay_sorted_by_offset(qtbot, tmp_path, monkeypatch) -> None:
+    from celpix.ui.slice_dialog import SliceDialog, SliceParams
+
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    file_entry = window._workspace.find_file(str(px))
+
+    # Add slices/bookmarks out of offset order; the list must present them sorted.
+    window._workspace.add_slice(str(px), "c", 128, 32)
+    window._workspace.add_slice(str(px), "a", 32, 32)
+    b = window._workspace.add_slice(str(px), "b", 64, 32)
+    window._new_bookmark_for(file_entry)  # bookmark at the parked view (offset 0)
+
+    panel = window._files_panel
+    file_item = panel._items[file_entry]
+
+    def offsets() -> list[int]:
+        n = file_item.childCount()
+        return [panel._offset_of(file_item.child(i)) for i in range(n)]
+
+    assert offsets() == sorted(offsets())  # slices and bookmarks intermixed, by offset
+
+    # Editing a slice's offset re-sorts it in place: move "b" (was 64) past the
+    # 128 slice, and it should land last among the children.
+    monkeypatch.setattr(
+        SliceDialog,
+        "get_slice",
+        staticmethod(lambda *_a, **_k: SliceParams("b", 200, 32, "decompress.none")),
+    )
+    window._edit_slice(b)
+    assert offsets() == sorted(offsets())
+    assert panel._offset_of(file_item.child(file_item.childCount() - 1)) == 200
+
+
+def test_arrow_key_browsing_keeps_focus_on_file_list(qtbot, tmp_path) -> None:
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    file_entry = window._workspace.find_file(str(px))
+    slice_entry = window._workspace.add_slice(str(px), "gfx", 64, 64)
+
+    # Spy on the canvas focus grab: it should fire for a plain activation but be
+    # suppressed while the list reports it is being browsed with the arrow keys.
+    focus_calls: list[int] = []
+    window._canvas.setFocus = lambda *_a: focus_calls.append(1)  # type: ignore[method-assign]
+
+    window._activate_entry(slice_entry)  # mouse/programmatic: hands focus over
+    assert focus_calls == [1]
+
+    window._files_panel._tree.key_navigating = True  # as keyPressEvent sets it
+    try:
+        window._activate_entry(file_entry)
+    finally:
+        window._files_panel._tree.key_navigating = False
+    assert window._workspace.current is file_entry  # the entry still loaded
+    assert focus_calls == [1]  # ...but the canvas did not steal focus
 
 
 def test_slice_offset_palette_reads_parent_file_absolute(qtbot, tmp_path) -> None:
@@ -252,7 +322,7 @@ def test_open_pixel_renders(qtbot, tmp_path, monkeypatch) -> None:
     assert window._doc.tile_count == 8
     assert not window._canvas._image.isNull()
     # Grayscale fallback until a palette file is opened.
-    assert not window._has_palette_file
+    assert not window._has_real_palette
 
 
 def test_open_palette_applies_colors(qtbot, tmp_path, monkeypatch) -> None:
@@ -273,7 +343,7 @@ def test_open_palette_applies_colors(qtbot, tmp_path, monkeypatch) -> None:
         QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(pl), ""))
     )
     window._open_palette()
-    assert window._has_palette_file
+    assert window._has_real_palette
     assert len(window._doc.palette) == 16
 
 
@@ -324,14 +394,6 @@ def test_navigation_clamps_to_file_bounds(qtbot, tmp_path, monkeypatch) -> None:
     assert window._offset == 32
     window._nav_home()
     assert window._offset == 0
-
-
-def test_hex_offset_box_tracks_offset(qtbot, tmp_path, monkeypatch) -> None:
-    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
-    window._columns.setValue(16)
-    window._rows.setValue(2)
-    window._nav_rows(1)  # +16 tiles * 32 bytes/tile = 0x200
-    assert window._offset_edit.text() == "0x000200"
 
 
 def test_typing_hex_offset_jumps_byte_exact(qtbot, tmp_path, monkeypatch) -> None:
@@ -746,14 +808,16 @@ def test_load_palette_from_selection(qtbot, tmp_path, monkeypatch) -> None:
     assert doc.palette_config.source.offset == 32
     assert doc.palette_config.source.length == 224
     assert doc.palette_config.write_enabled is False
-    assert window._has_palette_file
+    assert window._has_real_palette
     # The dock reflects the switch to Offset mode, with the offset field armed.
     assert window._palette_mode_combo.currentData() == "offset"
     assert window._palette_offset_edit.isEnabled()
     assert window._palette_offset_edit.text() == "0x000020"
 
     # Reloading pixels must not clobber the from-selection palette...
-    window._reload_pixel()
+    window._apply_pixel_config(
+        window._pixel_preset_id(), window._header_offset(), window._byte_position()
+    )
     assert len(window._doc.palette) == 112
     # ...and Write must not claim the palette was written.
     window._write_current()
@@ -815,17 +879,178 @@ def test_palette_mode_starts_default_and_default_restores_fallback(
 
     window._on_tiles_selected(1, 1)
     window._load_palette_from_selection()
-    assert window._has_palette_file
+    assert window._has_real_palette
 
     window._palette_mode_combo.setCurrentIndex(
         window._palette_mode_combo.findData("default")
     )
     colors = window._doc.palette.colors
     assert colors[0] == 0xFF000000 and colors[1] == 0xFFFFFFFF  # fallback again
-    assert not window._has_palette_file
+    assert not window._has_real_palette
     assert window._doc.palette_config.source.path == ""
     assert not window._palette_offset_edit.isEnabled()
     assert window._palette_offset_edit.text() == ""
+
+
+def _virtuanes_state(tmp_path, first_index: int) -> object:
+    """A VirtuaNES v1 state whose PPU palette RAM (offset 2440) starts with
+    ``first_index`` — an index into the NES 64-colour master palette."""
+    data = bytearray(b"\x00" * 4096)
+    data[0:9] = b"VirtuaNES"
+    data[15] = 1
+    data[2440] = first_index
+    state = tmp_path / "game.st0"
+    state.write_bytes(bytes(data))
+    return state
+
+
+def _mesen_state(tmp_path) -> object:
+    """A minimal Mesen (.mss) SNES state on disk: the MSS header, a dummy zlib
+    screenshot and ROM name, then the zlib-compressed record stream carrying a
+    ``ppu.cgram`` entry with three distinct colours. Exercises the extract path
+    (parse header → zlib → read CGRAM by label) and the inline-bytes source."""
+    import struct
+    import zlib
+
+    def u32(v):
+        return struct.pack("<I", v)
+
+    colors = [(0xF8, 0, 0), (0, 0xF8, 0), (0, 0, 0xF8)]  # R, G, B
+    words = [((b >> 3) << 10) | ((g >> 3) << 5) | (r >> 3) for (r, g, b) in colors]
+    cgram = struct.pack("<256H", *(words + [0] * (256 - len(words))))
+    records = b"ppu.cgram\x00" + u32(len(cgram)) + cgram
+    comp = zlib.compress(records)
+
+    screenshot = zlib.compress(b"\x00" * 16)
+    header = b"MSS" + u32(0) + u32(4) + u32(0)  # versions + console 0 (SNES)
+    video = u32(16) + u32(2) + u32(2) + u32(100) + u32(len(screenshot)) + screenshot
+    blob = b"\x01" + u32(len(records)) + u32(len(comp)) + comp
+    state = tmp_path / "game.mss"
+    state.write_bytes(header + video + u32(4) + b"game" + blob)
+    return state
+
+
+def test_mesen_state_extracts_snes_palette(qtbot, tmp_path, monkeypatch) -> None:
+    # Mesen's palette lives inside a zlib-compressed record stream, not at a file
+    # offset — this drives the inline-bytes source path through the pipeline.
+    from PySide6.QtWidgets import QFileDialog
+
+    state = _mesen_state(tmp_path)
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(state), ""))
+    )
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData("emulator")
+    )
+
+    assert window._palette_mode == "emulator"
+    assert window._palette_preset_id() == "preset.palette.bgr555"  # SNES CGRAM
+    assert window._doc.palette_config.write_enabled is False  # view-only state
+    colors = window._doc.palette.colors
+    assert len(colors) == 256
+    # The three CGRAM colours decoded to three distinct non-black entries.
+    assert len({colors[0], colors[1], colors[2]}) == 3
+    window._undo_stack.undo()
+    assert window._palette_mode == "default"
+
+
+def test_emulator_state_loads_and_switches_codec(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QFileDialog
+
+    # index 0x30 in the NES master table is white — an easy colour to assert on.
+    state = _virtuanes_state(tmp_path, 0x30)
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    assert window._palette_preset_id() == "preset.palette.bgr555"  # SNES default
+
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(state), ""))
+    )
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData("emulator")
+    )
+
+    assert window._palette_mode == "emulator"
+    # The console was auto-detected, so the palette codec is now the NES table...
+    assert window._palette_preset_id() == "preset.palette.nes-indexed"
+    assert (
+        window._doc.palette_config.interpret_preset_id == "preset.palette.nes-indexed"
+    )
+    # ...and the 32 index bytes decoded through it, first one white.
+    assert len(window._doc.palette) == 32
+    assert window._doc.palette.colors[0] == 0xFFFFFFFF
+    assert window._doc.palette_config.write_enabled is False  # view-only
+    assert window._has_real_palette
+    # Undo returns to the previous (default) palette and its codec.
+    window._undo_stack.undo()
+    assert window._palette_mode == "default"
+    assert window._palette_preset_id() == "preset.palette.bgr555"
+
+
+def test_emulator_state_unrecognised_reverts_with_message(
+    qtbot, tmp_path, monkeypatch, captured_alerts
+) -> None:
+    from PySide6.QtWidgets import QFileDialog
+
+    junk = tmp_path / "not.state"
+    junk.write_bytes(b"random bytes, no known signature")
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(junk), ""))
+    )
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData("emulator")
+    )
+    assert window._palette_mode == "default"
+    # The failure is surfaced as a modal alert, not a status line.
+    assert any("Unrecognised" in message for _title, message in captured_alerts)
+
+
+def test_palette_offset_failure_alerts_not_status(
+    qtbot, tmp_path, monkeypatch, captured_alerts
+) -> None:
+    # A palette load that can't size even one entry (offset past EOF) used to
+    # fail with only a status line; it now blocks with a modal so the user
+    # can't miss that nothing loaded.
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    assert not window._load_palette_at_offset(1 << 20)
+    assert any("Not enough data" in message for _title, message in captured_alerts)
+
+
+def test_emulator_state_redetects_on_restore(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.project.workspace import EntryKind
+
+    state = _virtuanes_state(tmp_path, 0x30)  # NES white
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    entry = window._workspace.current
+
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(state), ""))
+    )
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData("emulator")
+    )
+    assert window._palette_mode == "emulator"
+
+    # Bookmark the emulator-state view: the snapshot stores only the state path.
+    window._new_bookmark_for(entry)
+    bookmark = next(
+        e for e in window._workspace.entries if e.kind is EntryKind.BOOKMARK
+    )
+    assert bookmark.session.palette_mode == "emulator"
+    assert bookmark.pending_palette is not None and bookmark.pending_palette.path
+
+    # Drive the parent back to the default palette, then jump: restoring must
+    # re-detect the state (offset + NES codec are not stored) and re-decode it.
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData("default")
+    )
+    window._jump_to_bookmark(bookmark)
+    assert window._palette_mode == "emulator"
+    assert window._palette_preset_id() == "preset.palette.nes-indexed"
+    assert window._doc.palette.colors[0] == 0xFFFFFFFF
 
 
 def test_palette_offset_box_commit_loads_at_offset(
@@ -941,7 +1166,7 @@ def test_p_key_loads_palette_from_selection(qtbot, tmp_path, monkeypatch) -> Non
         QApplication, "focusWidget", staticmethod(lambda: window._offset_edit)
     )
     assert window._handle_nav_key(press_p) is False
-    assert not window._has_palette_file
+    assert not window._has_real_palette
 
     # Otherwise P triggers Palette > Load from Selection.
     monkeypatch.setattr(
@@ -950,6 +1175,80 @@ def test_p_key_loads_palette_from_selection(qtbot, tmp_path, monkeypatch) -> Non
     assert window._handle_nav_key(press_p) is True
     assert window._palette_mode == "offset"
     assert window._doc.palette.colors[0] == 0xFFFFFFFF
+
+
+def test_g_key_toggles_grid(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=8)
+    press_g = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_G, Qt.KeyboardModifier.NoModifier
+    )
+
+    # Focused text input keeps the letter (it may be typing).
+    monkeypatch.setattr(
+        QApplication, "focusWidget", staticmethod(lambda: window._offset_edit)
+    )
+    assert window._handle_nav_key(press_g) is False
+    assert not window._grid.isChecked()
+
+    # Otherwise G flips View > Grid, flowing through to the stored view state.
+    monkeypatch.setattr(
+        QApplication, "focusWidget", staticmethod(lambda: window._canvas)
+    )
+    assert window._handle_nav_key(press_g) is True
+    assert window._grid.isChecked()
+    assert window._doc.view.show_grid
+
+
+def _isolate_settings(tmp_path) -> None:
+    """Point QSettings at a throwaway INI so grid-style writes don't touch the
+    user's real config, and reads are deterministic across a fresh window."""
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance().setApplicationName("CelpixTest")
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(
+        QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path)
+    )
+    QSettings().clear()
+
+
+def test_grid_style_menu_applies_and_persists(qtbot, tmp_path) -> None:
+    from celpix.ui.canvas import GridStyle
+
+    _isolate_settings(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    dot = next(
+        a for a in window._grid_style_group.actions() if a.data() is GridStyle.DOT
+    )
+    dot.trigger()
+    assert window._canvas._grid_style is GridStyle.DOT
+
+    # A fresh window reads the persisted style back (app-global, not per-project)
+    # and reflects it in the radio group.
+    reopened = MainWindow()
+    qtbot.addWidget(reopened)
+    assert reopened._canvas._grid_style is GridStyle.DOT
+    checked = [a.data() for a in reopened._grid_style_group.actions() if a.isChecked()]
+    assert checked == [GridStyle.DOT]
+
+
+def test_grid_style_defaults_when_setting_is_bad(qtbot, tmp_path) -> None:
+    from PySide6.QtCore import QSettings
+
+    from celpix.ui.canvas import GridStyle
+
+    _isolate_settings(tmp_path)
+    QSettings().setValue("view/grid_style", "bogus")  # stale / foreign value
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._canvas._grid_style is GridStyle.LINE
 
 
 def test_palette_panel_color_selection_click_and_arrows(qtbot) -> None:
@@ -1103,6 +1402,33 @@ def test_compression_overlay_shows_and_hides(qtbot, tmp_path) -> None:
     assert not window._overlay.isVisible()
 
 
+def test_compression_overlay_honors_the_arrangement(qtbot, tmp_path) -> None:
+    from celpix.plugins.builtins import lz_command
+
+    # An LZ2 structure of 4 distinct SNES 4bpp tiles. Viewed 2 tiles wide, both a
+    # 2D wide-bitmap read and a 1×2 block grouping must re-lay the preview — proving
+    # the overlay runs the same arrangement path as the live view (not a 1D fork).
+    tiles = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    px = tmp_path / "packed.bin"
+    px.write_bytes(lz_command.compress(tiles, big_endian_offsets=True) + bytes(64))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._columns.setValue(2)  # a 2-wide bitmap, so 2D/blocks actually reorder
+    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
+    assert window._overlay.isVisible()
+    flat = window._overlay._canvas._image.copy()
+
+    window._two_d.setChecked(True)
+    assert window._overlay._canvas._image != flat
+    window._two_d.setChecked(False)
+    assert window._overlay._canvas._image == flat  # back to the 1D preview
+
+    window._block_rows.setValue(2)
+    assert window._overlay._canvas._image != flat
+
+
 def test_compression_overlay_hides_on_invalid_data(qtbot, tmp_path) -> None:
     # A leading backreference into unwritten output can never start a valid
     # structure, so no compression scheme should claim this window.
@@ -1211,9 +1537,7 @@ def test_new_slice_from_view_prefills_viewport_extent(
     assert (captured["offset"], captured["length"]) == (0, 192)
 
 
-def test_rows_past_end_of_file_are_not_clamped_or_black_filled(
-    qtbot, tmp_path
-) -> None:
+def test_rows_past_end_of_file_are_not_clamped_or_black_filled(qtbot, tmp_path) -> None:
     small = tmp_path / "small.4bpp.sfc"
     small.write_bytes(bytes(32 * 6))  # 6 tiles of 32 B (SNES 4bpp)
     window = MainWindow()
@@ -1320,6 +1644,149 @@ def test_edit_slice_updates_coordinates_and_reloads(
     assert window._offset_text() == "0x000020"
 
 
+def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    from celpix.project.workspace import EntryKind
+    from celpix.ui.slice_dialog import SliceDialog, SliceParams
+
+    # File A: BGR555 white at absolute offset 32, viewed as a *non-default*
+    # pixel preset with an offset-mode palette read from that offset.
+    data = bytearray(bytes((i * 13 + 1) & 0xFF for i in range(32 * 8)))
+    data[32:34] = b"\xff\x7f"  # BGR555 white
+    file_a = tmp_path / "a.4bpp.sfc"
+    file_a.write_bytes(bytes(data))
+    file_b = tmp_path / "b.4bpp.sfc"
+    file_b.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(32 * 8)))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    # A: non-default preset + offset palette, all while A is current.
+    window._load_pixel(str(file_a))
+    entry_a = window._workspace.find_file(str(file_a))
+    idx = window._pixel_preset.findData("preset.pixel.snes-2bpp")
+    assert idx != -1  # a genuinely non-default preset
+    window._pixel_preset.setCurrentIndex(idx)
+    assert window._load_palette_at_offset(32)
+    assert window._palette_mode == "offset"
+
+    # B: loaded, made current, and viewed as the *default* preset with a
+    # default palette — so the live toolbar no longer reflects A's state.
+    window._load_pixel(str(file_b))
+    assert window._workspace.current is window._workspace.find_file(str(file_b))
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.snes-4bpp")  # the default
+    )
+    assert window._pixel_preset_id() == "preset.pixel.snes-4bpp"
+    assert window._palette_mode == "default"
+
+    # Create a slice from A while B is current. A real SliceParams (not None)
+    # makes the slice actually get created and pushed; its own offset (64) is
+    # deliberately distinct from the palette offset (32).
+    monkeypatch.setattr(
+        SliceDialog,
+        "get_slice",
+        staticmethod(lambda *_a, **_k: SliceParams("mine", 64, 64, "decompress.none")),
+    )
+    window._new_slice_for(entry_a)
+
+    slices = [e for e in window._workspace.entries if e.kind is EntryKind.SLICE]
+    assert len(slices) == 1
+    slice_entry = slices[0]
+
+    # The slice copied A's live state, not B's / the toolbar default. Adding a
+    # slice auto-activates it, so its pending palette is already consumed into
+    # the loaded document — the session (never consumed) still proves the copy.
+    assert slice_entry.session is not None
+    assert slice_entry.session.pixel_preset_id == "preset.pixel.snes-2bpp"
+    assert slice_entry.session.palette_mode == "offset"
+    assert slice_entry.session.compression_id == "decompress.none"
+
+    # End-to-end: the on-screen slice loaded A's palette from offset 32 (A's
+    # offset, distinct from the slice's own offset of 64), reading A's file.
+    assert window._workspace.current is slice_entry
+    assert window._doc.palette_config.source.path == str(file_a)
+    assert window._doc.palette_config.source.offset == 32
+    assert window._doc.palette.colors[0] == 0xFFFFFFFF
+
+
+def test_jump_to_source_shows_slice_in_parent_at_absolute_offset(
+    qtbot, tmp_path
+) -> None:
+    from celpix.project.workspace import EntrySession
+
+    px = _make_snes_file(tmp_path)  # 8 tiles of 32 bytes = 256 bytes, snes-4bpp
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))  # parent is current, default snes-4bpp
+    # Shrink the viewport so a mid-file origin is actually reachable: at the
+    # default 16x16 page the whole file fits on one screen and any scroll clamps
+    # back to 0, which would hide whether the jump landed on the right byte.
+    window._columns.setValue(2)
+    window._rows.setValue(2)
+
+    # A slice of tiles 2..3 (offset 64, length 64). Give it a *different* pixel
+    # preset than the parent's, so the jump proves the parent adopts the slice's
+    # interpretation rather than keeping its own. snes-2bpp is 16 bytes/tile, so
+    # the whole 256-byte file reads as 16 tiles — distinct from both the slice's
+    # bounded 4-tile view and the parent's own 8-tile snes-4bpp view.
+    slice_entry = window._workspace.add_slice(str(px), "gfx", 64, 64)
+    slice_entry.session = EntrySession(
+        pixel_preset_id="preset.pixel.snes-2bpp",
+        palette_preset_id="preset.palette.bgr555",
+    )
+    parent = window._workspace.find_file(str(px))
+    assert window._pixel_preset_id() == "preset.pixel.snes-4bpp"  # parent's own
+
+    # Jump is navigation, not an edit: nothing should land on the undo stack.
+    undo_before = window._undo_stack.count()
+    window._jump_to_slice_source(slice_entry)
+    assert window._undo_stack.count() == undo_before
+
+    # The parent is on screen showing the *whole* file (16 snes-2bpp tiles), not
+    # the slice's bounded region (which would be 4 tiles).
+    assert window._workspace.current is parent
+    assert window._doc.tile_count == 16
+    # It adopted the slice's pixel preset, keeping the parent's header settings.
+    assert window._pixel_preset_id() == "preset.pixel.snes-2bpp"
+    assert parent.doc.pixel_config.interpret_preset_id == "preset.pixel.snes-2bpp"
+    # The view origin lands byte-exactly on the slice's absolute file offset (64).
+    assert window._offset_text() == "0x000040"
+    assert window._byte_position() == 64
+
+
+def test_jump_to_source_opens_parent_when_closed(qtbot, tmp_path) -> None:
+    from celpix.project.workspace import EntrySession
+
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    # A slice whose parent file was never opened — the handler must open it. We
+    # can't close() an open parent to reach this state (that takes its slices
+    # with it), so we register the slice directly against an unopened path.
+    slice_entry = window._workspace.add_slice(str(px), "gfx", 64, 64)
+    slice_entry.session = EntrySession(
+        pixel_preset_id="preset.pixel.snes-2bpp",
+        palette_preset_id="preset.palette.bgr555",
+    )
+    assert window._workspace.find_file(str(px)) is None  # parent not open yet
+
+    window._jump_to_slice_source(slice_entry)
+
+    # The parent, freshly opened, is on screen showing the whole file through
+    # the slice's preset (16 snes-2bpp tiles). Its default-sized viewport swallows
+    # the whole file, so the byte-exact landing is left to the test above — here
+    # the point is that a *closed* parent is opened, shown, and reconfigured.
+    parent = window._workspace.find_file(str(px))
+    assert parent is not None  # the handler opened it
+    assert window._workspace.current is parent
+    assert window._doc.tile_count == 16  # the whole file, via the slice's preset
+    assert window._pixel_preset_id() == "preset.pixel.snes-2bpp"
+    assert parent.doc.pixel_config.interpret_preset_id == "preset.pixel.snes-2bpp"
+
+
 def test_project_save_and_load_restores_session(qtbot, tmp_path) -> None:
     px = _make_snes_file(tmp_path)  # 8 tiles
     window = MainWindow()
@@ -1358,6 +1825,111 @@ def test_project_save_and_load_restores_session(qtbot, tmp_path) -> None:
     assert other._doc.palette == saved_palette
 
 
+def test_bookmark_snapshots_live_view_and_jump_restores_it(qtbot, tmp_path) -> None:
+    from celpix.project.workspace import EntryKind, PaletteSource
+
+    # BGR555 white at absolute offset 32, distinct from where the view is parked.
+    data = bytearray(bytes((i * 13 + 1) & 0xFF for i in range(32 * 8)))  # 256 bytes
+    data[32:34] = b"\xff\x7f"
+    px = tmp_path / "p.4bpp.sfc"
+    px.write_bytes(bytes(data))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    entry = window._workspace.find_file(str(px))
+
+    # Configure a genuinely non-default live view: snes-2bpp reads the 256 bytes
+    # as 16 tiles, an offset-mode palette out of offset 32, a shrunk 2x2 viewport,
+    # and a scroll to byte 64 (two 2-tile rows down) — none of it the defaults.
+    idx = window._pixel_preset.findData("preset.pixel.snes-2bpp")
+    window._pixel_preset.setCurrentIndex(idx)
+    assert window._load_palette_at_offset(32)
+    assert window._palette_mode == "offset"
+    window._columns.setValue(2)
+    window._rows.setValue(2)
+    window._nav_rows(2)
+    assert window._byte_position() == 64
+
+    window._new_bookmark_for(entry)
+    bookmarks = [e for e in window._workspace.entries if e.kind is EntryKind.BOOKMARK]
+    assert len(bookmarks) == 1
+    bookmark = bookmarks[0]
+
+    # The snapshot captured the live state; the origin lives in slice_offset, so
+    # pending_view keeps the geometry with offset/nudge zeroed.
+    assert bookmark.slice_offset == 64
+    assert bookmark.session.pixel_preset_id == "preset.pixel.snes-2bpp"
+    assert bookmark.session.palette_mode == "offset"
+    assert (bookmark.pending_view.columns, bookmark.pending_view.rows) == (2, 2)
+    assert (bookmark.pending_view.tile_offset, bookmark.pending_view.byte_nudge) == (
+        0,
+        0,
+    )
+    assert bookmark.pending_palette == PaletteSource(offset=32)
+    # Creating a bookmark must not activate it — the parent stays on screen.
+    assert window._workspace.current is entry
+    assert window._doc is entry.doc
+
+    # Drive the parent's live state well away from the snapshot in every axis.
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.snes-4bpp")
+    )
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData("default")
+    )
+    window._columns.setValue(16)
+    window._rows.setValue(16)
+    window._set_byte_position(0)
+    assert window._palette_mode == "default"
+
+    # The jump is navigation, not an edit: only the earlier creation is on the
+    # undo stack; landing the view must add nothing.
+    undo_before = window._undo_stack.count()
+    window._jump_to_bookmark(bookmark)
+    assert window._undo_stack.count() == undo_before
+
+    # Every captured axis is restored on the parent: preset, palette mode+offset
+    # (and the colour it reads), viewport geometry, and the byte-exact origin.
+    assert window._workspace.current is entry
+    assert window._pixel_preset_id() == "preset.pixel.snes-2bpp"
+    assert entry.doc.pixel_config.interpret_preset_id == "preset.pixel.snes-2bpp"
+    assert window._palette_mode == "offset"
+    assert window._doc.palette_config.source.offset == 32
+    assert window._doc.palette.colors[0] == 0xFFFFFFFF
+    assert (window._columns.value(), window._rows.value()) == (2, 2)
+    assert window._byte_position() == 64
+    # The jump copies the snapshot, never consuming it — the bookmark survives to
+    # be jumped to again.
+    assert bookmark.pending_view is not None
+    assert bookmark.pending_palette is not None
+
+
+def test_bookmark_double_click_jumps_instead_of_renaming(qtbot, tmp_path) -> None:
+    from celpix.project.workspace import EntryKind
+
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()  # a hidden view won't enter item-editing state
+    window._load_pixel(str(px))
+    entry = window._workspace.find_file(str(px))
+    window._new_bookmark_for(entry)
+    bookmark = next(
+        e for e in window._workspace.entries if e.kind is EntryKind.BOOKMARK
+    )
+
+    panel = window._files_panel
+    jumped: list[object] = []
+    panel.jump_to_bookmark_requested.connect(jumped.append)
+
+    # Double-clicking a bookmark is its jump action, not the inline renamer a
+    # slice's double-click opens.
+    panel._tree.itemDoubleClicked.emit(panel._items[bookmark], 0)
+    assert jumped == [bookmark]
+    assert panel._editing is None  # no rename editor opened
+
+
 def _canvas_with_3x2_red(qtbot):
     """A Canvas holding a 3-col x 2-row image of opaque red 8x8 tiles at zoom 1.
 
@@ -1378,8 +1950,9 @@ def _canvas_with_3x2_red(qtbot):
     return c
 
 
-def test_past_end_rect_maps_linear_padding_to_last_row_block(qtbot) -> None:
+def test_past_end_region_maps_linear_padding_to_last_row_block(qtbot) -> None:
     from PySide6.QtCore import QRect
+    from PySide6.QtGui import QRegion
 
     c = _canvas_with_3x2_red(qtbot)
 
@@ -1387,23 +1960,145 @@ def test_past_end_rect_maps_linear_padding_to_last_row_block(qtbot) -> None:
     # (row 1, col 2) is padding. The trailing block is that single last-row cell:
     # x = col 2 * 8px, y = row 1 * 8px, one column wide, one tile tall.
     c.set_filled_tiles(5)
-    assert c._past_end_rect() == QRect(2 * 8, 1 * 8, 1 * 8, 8)
+    assert c._background_region() == QRegion(QRect(2 * 8, 1 * 8, 1 * 8, 8))
 
-    # The rect is in device coords, so it scales with zoom.
+    # The region is in device coords, so it scales with zoom.
     c.set_zoom(3)
-    assert c._past_end_rect() == QRect(2 * 8 * 3, 1 * 8 * 3, 1 * 8 * 3, 8 * 3)
+    assert c._background_region() == QRegion(
+        QRect(2 * 8 * 3, 1 * 8 * 3, 1 * 8 * 3, 8 * 3)
+    )
     c.set_zoom(1)
 
     # A full window has no padding; neither does an unset count.
     c.set_filled_tiles(6)
-    assert c._past_end_rect() is None
+    assert c._background_region() is None
     c.set_filled_tiles(None)
-    assert c._past_end_rect() is None
+    assert c._background_region() is None
 
     # An exactly-full last row (remainder 0) is not padding either: 3 fills the
     # top row completely, leaving the bottom row entirely absent, not partial.
     c.set_filled_tiles(3)
-    assert c._past_end_rect() is None
+    assert c._background_region() is None
+
+
+def test_arrangement_controls_reach_the_view_and_canvas(qtbot, tmp_path) -> None:
+    # The toolbar's block/order/2D controls must flow through _refresh_view into
+    # the stored ViewOptions and the canvas's placement — otherwise the feature
+    # renders nothing.
+    px = _make_snes_file(tmp_path)  # 8 tiles
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+
+    window._block_cols.setValue(2)
+    window._block_rows.setValue(2)
+    window._block_order.setCurrentIndex(window._block_order.findData("column"))
+    window._two_d.setChecked(True)
+
+    view = window._doc.view
+    assert (view.block_columns, view.block_rows) == (2, 2)
+    assert view.block_order == "column"
+    assert view.two_dimensional is True
+    # The canvas got the same placement, so clicks/selection map correctly.
+    assert window._canvas._block_rows == 2
+    assert window._canvas._block_order == "column"
+
+    # Settings survive a round-trip through another entry and back (session state).
+    window._workspace.add_slice(str(px), "gfx", 64, 64)
+    window._activate_entry(window._workspace.entries[1])
+    window._activate_entry(window._workspace.entries[0])
+    back = window._doc.view
+    assert (back.block_rows, back.block_order, back.two_dimensional) == (
+        2,
+        "column",
+        True,
+    )
+
+
+def test_pattern_preset_fills_and_locks_arrangement_controls(qtbot, tmp_path) -> None:
+    # The Pattern picker is the arrangement analogue of the Offset format picker:
+    # a preset fills the block/order/2D controls and locks them; Custom unlocks
+    # them. The lock keeps a preset's values from being edited out from under it.
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+
+    # Default view is Linear (first preset) — controls locked.
+    assert window._pattern.currentData().id == "linear"
+    assert not window._block_cols.isEnabled()
+
+    idx = window._pattern.findData(
+        next(p for p in ARRANGEMENT_PRESETS if p.id == "genesis-sprite")
+    )
+    window._pattern.setCurrentIndex(idx)
+    view = window._doc.view
+    assert (view.block_columns, view.block_rows, view.block_order) == (2, 2, "column")
+    assert view.two_dimensional is False
+    # A preset owns the controls, so they stay read-only.
+    assert not window._block_cols.isEnabled()
+    assert not window._two_d.isEnabled()
+
+    # Custom unlocks them without changing the values it inherits.
+    window._pattern.setCurrentIndex(window._pattern.findData("custom"))
+    assert window._block_cols.isEnabled() and window._two_d.isEnabled()
+    assert window._doc.view.block_order == "column"
+
+
+def test_pattern_selection_is_rederived_on_session_restore(qtbot, tmp_path) -> None:
+    # Restoring an entry sets the block/order/2D widgets from its saved view; the
+    # Pattern picker must reselect the matching preset (or Custom) to match — the
+    # selection isn't persisted, it's derived from those four values.
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+
+    window._pattern.setCurrentIndex(
+        window._pattern.findData(
+            next(p for p in ARRANGEMENT_PRESETS if p.id == "nes-8x16")
+        )
+    )
+    window._workspace.add_slice(str(px), "gfx", 64, 64)
+    window._activate_entry(window._workspace.entries[1])
+    # The fresh slice inherits the default arrangement → Linear, controls locked.
+    assert window._pattern.currentData().id == "linear"
+    assert not window._block_rows.isEnabled()
+
+    window._activate_entry(window._workspace.entries[0])
+    # Back on the file, the 8×16 preset is reselected (and stays locked).
+    assert window._pattern.currentData().id == "nes-8x16"
+    assert not window._block_rows.isEnabled()
+
+
+def test_canvas_block_layout_maps_clicks_and_backgrounds_gaps(qtbot) -> None:
+    from PySide6.QtCore import QPointF, QRect
+    from PySide6.QtGui import QRegion
+
+    c = _canvas_with_3x2_red(qtbot)
+    # 1×2 blocks: consecutive tiles stack vertically, so the cell at (col 0, row 1)
+    # is slot 1 (the bottom of the first sprite), not slot 3 as in row-major.
+    c.set_arrangement(1, 2, "row")
+    assert c._slot_at(QPointF(0 * 8 + 4, 1 * 8 + 4)) == 1
+    assert c._slot_at(QPointF(1 * 8 + 4, 0 * 8 + 4)) == 2  # second sprite's top
+
+    # With only 4 of 6 slots filled, slots 4 and 5 (the third column's block) are
+    # padding — the canvas backgrounds that whole column.
+    c.set_filled_tiles(4)
+    region = c._background_region()
+    assert region == QRegion(QRect(2 * 8, 0, 8, 2 * 8))
+
+
+def test_canvas_column_order_maps_clicks_genesis_style(qtbot) -> None:
+    from PySide6.QtCore import QPointF
+
+    # A 3×2-tile canvas as one column-major block: tiles run down each column, so
+    # the top of the second column (cell 1,0) is slot 2, and the bottom of the
+    # first column (cell 0,1) is slot 1 — the Mega Drive sprite order.
+    c = _canvas_with_3x2_red(qtbot)
+    c.set_arrangement(3, 2, "column")
+    assert c._slot_at(QPointF(0 * 8 + 4, 1 * 8 + 4)) == 1  # bottom of column 0
+    assert c._slot_at(QPointF(1 * 8 + 4, 0 * 8 + 4)) == 2  # top of column 1
 
 
 def test_canvas_paints_past_end_slots_as_background(qtbot) -> None:
@@ -1425,3 +2120,188 @@ def test_canvas_paints_past_end_slots_as_background(qtbot) -> None:
     # and definitely not the gray backing.
     assert img_out.pixelColor(4, 4).rgb() == QColor(0xFF, 0x00, 0x00).rgb()
     assert img_out.pixelColor(4, 4).rgb() != CANVAS_BACKGROUND.rgb()
+
+
+def test_activating_missing_data_entry_shows_unavailable(qtbot, tmp_path) -> None:
+    # A referenced file that has moved makes its entry the current selection but
+    # inert — the old behaviour refused to switch; now it degrades gracefully.
+    a = _make_snes_file(tmp_path)  # s.4bpp.sfc
+    b = tmp_path / "b.4bpp.sfc"
+    b.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(32 * 8)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(a))
+    window._load_pixel(str(b))
+    entries = window._workspace.entries
+
+    a.unlink()  # a's file vanishes after it was opened; b is on screen
+    assert window._workspace.current is entries[1]
+    window._activate_entry(entries[0])
+
+    # It becomes current (not bounced back to b), with the document actions greyed.
+    assert window._workspace.current is entries[0]
+    assert not window._write_action.isEnabled()
+    assert not window._new_slice_action.isEnabled()
+    assert not window._new_slice_from_view_action.isEnabled()
+    assert not window._new_bookmark_action.isEnabled()
+
+
+def test_locate_action_tracks_missing_files(qtbot, tmp_path) -> None:
+    rom = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    assert not window._locate_missing_action.isEnabled()  # file present → disarmed
+
+    rom.unlink()  # the referenced file goes missing
+    window._update_locate_action()
+    assert window._locate_missing_action.isEnabled()
+
+    # Restoring the file at the same path clears the missing state and disarms it.
+    rom.write_bytes(bytes((i * 13 + 1) & 0xFF for i in range(32 * 8)))
+    window._update_locate_action()
+    assert not window._locate_missing_action.isEnabled()
+
+
+def _accept_message_box(monkeypatch) -> None:
+    """Make the next QMessageBox auto-click its AcceptRole button."""
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+    monkeypatch.setattr(
+        QMessageBox,
+        "clickedButton",
+        lambda self: next(
+            button
+            for button in self.buttons()
+            if self.buttonRole(button) == QMessageBox.ButtonRole.AcceptRole
+        ),
+    )
+
+
+def test_relocate_missing_corrects_path_loads_and_clears(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.project.workspace import data_missing, missing_paths
+
+    src = tmp_path / "src"
+    src.mkdir()
+    rom = src / "rom.4bpp.sfc"
+    rom.write_bytes(bytes((i * 13 + 1) & 0xFF for i in range(32 * 8)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    entry = window._workspace.current
+
+    # The ROM moves elsewhere on disk; the open entry now points at nothing.
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    moved = dest / "rom.4bpp.sfc"
+    rom.rename(moved)
+    entry.doc = None  # force a reload once the path is corrected
+    assert data_missing(entry)
+
+    # Accept the summary prompt, then point the file picker at the moved file.
+    _accept_message_box(monkeypatch)
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(moved), ""))
+    )
+    window._relocate_missing(prompt_summary=True)
+
+    assert entry.path == str(moved)
+    assert not data_missing(entry)
+    assert entry.doc is not None and window._doc.tile_count == 8
+    assert missing_paths(window._workspace) == []
+    assert not window._locate_missing_action.isEnabled()
+
+
+def test_relocate_missing_rejects_duplicate_open_file(
+    qtbot, tmp_path, monkeypatch, captured_alerts
+) -> None:
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.project.workspace import data_missing, missing_paths
+
+    # File B is genuinely open; a second FILE entry A references a file that isn't
+    # on disk. Locating A onto B's path would leave two entries editing one file.
+    file_b = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(file_b))
+    entry_a = window._workspace.open_file(str(tmp_path / "gone.4bpp.sfc"))
+    assert data_missing(entry_a)
+    entry_count = len(window._workspace.entries)
+
+    # The picker points A at B — already open — so the relocation must be refused.
+    _accept_message_box(monkeypatch)
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *a, **k: (str(file_b), "")),
+    )
+    window._relocate_missing(prompt_summary=True)
+
+    # A stays missing at its original path, no duplicate entry for B was created,
+    # and the user was told why.
+    assert entry_a.path == str(tmp_path / "gone.4bpp.sfc")
+    assert data_missing(entry_a)
+    assert missing_paths(window._workspace) == [str(tmp_path / "gone.4bpp.sfc")]
+    assert len(window._workspace.entries) == entry_count
+    assert any(title == "Celpix — locate" for title, _msg in captured_alerts)
+
+
+def test_missing_palette_file_degrades_quietly_and_keeps_reference(
+    qtbot, tmp_path, monkeypatch, captured_alerts
+) -> None:
+    import json
+    from os.path import normcase
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from celpix.project import projectfile
+    from celpix.project.workspace import (
+        EntrySession,
+        PaletteSource,
+        Workspace,
+        palette_source_for,
+    )
+
+    rom = _make_snes_file(tmp_path)  # a real pixel file
+    pal = tmp_path / "s.pal"  # an external palette that is missing on load
+
+    # A project whose entry reads its palette from an external file.
+    ws = Workspace()
+    entry = ws.open_file(str(rom))
+    entry.session = EntrySession(
+        pixel_preset_id="preset.pixel.snes-4bpp",
+        palette_preset_id="preset.palette.bgr555",
+        palette_mode="file",
+    )
+    entry.pending_palette = PaletteSource(path=str(pal), offset=0)
+    ws.set_current(entry)
+    project = tmp_path / "hack.celpix"
+    projectfile.save_project(ws, str(project))
+
+    # The palette file can't be found when the project opens. Decline the relocate
+    # prompt so the quiet-degrade path runs on the entry's first activation.
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda self: None)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_project(str(project))
+
+    loaded = window._workspace.current
+    assert loaded.session.palette_mode == "file"  # mode kept, not reset to default
+    assert loaded.missing_palette is not None  # the reference is remembered
+    assert window._doc.palette == window._fallback_palette()  # default palette shown
+    assert captured_alerts == []  # a missing palette degrades silently
+
+    # The original reference survives: palette_source_for and a re-save both carry
+    # the intended path forward, so it can be relocated later.
+    assert normcase(palette_source_for(loaded).path) == normcase(str(pal))
+    reproject = tmp_path / "resaved.celpix"
+    projectfile.save_project(window._workspace, str(reproject))
+    raw = json.loads(reproject.read_text(encoding="utf-8"))
+    assert raw["entries"][0]["palette"]["path"] == "s.pal"

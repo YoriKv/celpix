@@ -12,6 +12,22 @@ from PySide6.QtGui import QColor, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QComboBox, QLineEdit, QWidget
 
 
+def select_combo_data(combo: QComboBox, data: object) -> None:
+    """Select the item carrying ``data``, signals blocked, no-op if absent.
+
+    The one signal-safe combo snap used everywhere a selection is set
+    programmatically — session restore, the undo apply-helpers, and every
+    load-failed revert. Leaving the selection unchanged when nothing matches is
+    deliberate: a plugin refresh can drop a preset out from under a stored id,
+    and a bare ``setCurrentIndex(-1)`` would blank the box instead.
+    """
+    combo.blockSignals(True)
+    index = combo.findData(data)
+    if index >= 0:
+        combo.setCurrentIndex(index)
+    combo.blockSignals(False)
+
+
 def paint_selection_outline(painter: QPainter, palette: QPalette, rect: QRect) -> None:
     """The app's shared selection outline: accent ring with a white inset.
 

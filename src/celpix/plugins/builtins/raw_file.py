@@ -24,7 +24,10 @@ class RawFileReader:
     info = PluginInfo(id="read.raw-file", name="Raw binary file", stage=Stage.READ)
 
     def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
-        raw = Path(source.path).read_bytes()
+        # In-memory source (e.g. a palette extracted from an emulator memory
+        # image) reads from source.data; otherwise slice the file on disk. Either
+        # way offset/length bound the window and provenance is recorded.
+        raw = source.data if source.data is not None else Path(source.path).read_bytes()
         start = source.offset
         end = len(raw) if source.length is None else start + source.length
         ctx.set(KEY_SOURCE_PATH, source.path)

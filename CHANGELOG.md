@@ -1,11 +1,24 @@
 # Changelog
 
+## v0.0.6 - unreleased
+
+- **Files panel browsing**: added bookmarks, slices and bookmarks are now sorted
+  by offset, and added icons to differentiate them.
+- **Hex panel**: View raw hex dump alongside the pixels.
+- **Undo/Redo**: Full undo/redo stack.
+- **Tile arrangement**: a picker of named presets for various arrangement patterns.
+- **View improvements**: various view improvements including grid options  and cleanup.
+- **Emulator State palette**: a new palette mode imports the live palette from
+  an emulator save state.
+
 ## v0.0.5 - 2026-07-22
 
 - **Fix**: selecting a pixel format whose bit depth is fixed by its codec no
   longer crashes on load.
 - **Smoother format cycling**: rapidly switching pixel formats to eyeball an
   offset keeps its position. Row setting no longer clamps.
+- **Cleaner end-of-data**: when the stream ends mid-row, the rest of that row
+  shows the neutral background instead of black tiles.
 
 ## v0.0.4 - 2026-07-22
 

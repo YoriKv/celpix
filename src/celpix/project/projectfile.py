@@ -1,7 +1,7 @@
 """The ``.celpix`` project file: save/load the workspace as JSON.
 
 A project stores **references and settings, never the edited bytes** — the open
-entries (files and slices), each one's session settings and view state, and
+entries (files, slices, bookmarks), each one's session settings and view state, and
 where its palette comes from (``docs/design/project-format.md``). Writers emit
 the current schema ``version``; readers are tolerant — unknown keys are
 ignored, missing optional keys get defaults, and a broken *entry* degrades that
@@ -32,6 +32,7 @@ from os.path import (
     split,
 )
 
+from celpix.core.arrangement import BLOCK_ORDERS
 from celpix.core.document import ViewOptions
 from celpix.project.workspace import (
     Entry,
@@ -39,9 +40,12 @@ from celpix.project.workspace import (
     EntrySession,
     PaletteSource,
     Workspace,
+    palette_source_for,
 )
 
-PROJECT_VERSION = 1
+# 2: added the "bookmark" entry kind (v1 readers would misread one as a file,
+# so the bump makes them warn instead of degrading silently).
+PROJECT_VERSION = 2
 PROJECT_EXTENSION = ".celpix"
 
 # Fallbacks for a hand-authored project that omits preset ids entirely — the
@@ -49,7 +53,7 @@ PROJECT_EXTENSION = ".celpix"
 _DEFAULT_PIXEL_PRESET = "preset.pixel.snes-4bpp"
 _DEFAULT_PALETTE_PRESET = "preset.palette.bgr555"
 
-_PALETTE_MODES = ("default", "file", "offset")
+_PALETTE_MODES = ("default", "file", "offset", "emulator")
 
 
 class ProjectError(Exception):
@@ -89,9 +93,16 @@ def save_project(ws: Workspace, path: str) -> None:
         handle.write("\n")
 
 
+_KIND_NAMES = {
+    EntryKind.FILE: "file",
+    EntryKind.SLICE: "slice",
+    EntryKind.BOOKMARK: "bookmark",
+}
+
+
 def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
     data: dict[str, object] = {
-        "kind": "slice" if entry.kind is EntryKind.SLICE else "file",
+        "kind": _KIND_NAMES[entry.kind],
         "name": entry.name,
         "path": _store_path(entry.path, base_dir),
     }
@@ -99,6 +110,8 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
         data["slice_offset"] = entry.slice_offset
         data["slice_length"] = entry.slice_length
         data["decompress_id"] = entry.decompress_id
+    elif entry.kind is EntryKind.BOOKMARK:
+        data["offset"] = entry.slice_offset
     session = entry.session
     if session is not None:
         data["session"] = {
@@ -121,31 +134,17 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
             "zoom": view.zoom,
             "show_grid": view.show_grid,
             "subpalette_row": view.subpalette_row,
-            "offset": view.offset,
+            "offset": view.tile_offset,
             "byte_nudge": view.byte_nudge,
+            "block_columns": view.block_columns,
+            "block_rows": view.block_rows,
+            "block_order": view.block_order,
+            "two_dimensional": view.two_dimensional,
         }
-    palette = _palette_state(entry)
+    palette = palette_source_for(entry)
     if palette is not None:
         data["palette"] = _palette_dict(palette, base_dir)
     return data
-
-
-def _palette_state(entry: Entry) -> PaletteSource | None:
-    """The entry's palette source, in project form — ``None`` for the default.
-
-    Derived from the live document when there is one (its palette config is
-    the truth for file/offset modes); otherwise whatever a previous project
-    load left pending.
-    """
-    if entry.doc is None or entry.session is None:
-        return entry.pending_palette
-    mode = entry.session.palette_mode
-    source = entry.doc.palette_config.source
-    if mode == "file":
-        return PaletteSource(path=source.path, offset=source.offset)
-    if mode == "offset":
-        return PaletteSource(offset=source.offset)
-    return None
 
 
 def _palette_dict(palette: PaletteSource, base_dir: str) -> dict[str, object]:
@@ -187,6 +186,8 @@ def load_project(path: str) -> LoadedProject:
         and 0 <= index < len(parsed)
         else None
     )
+    if current is not None and current.kind is EntryKind.BOOKMARK:
+        current = None  # a bookmark can't be shown; a hand-edited index degrades
     return LoadedProject(
         version=_int(data.get("version"), 1),
         entries=[entry for entry in parsed if entry is not None],
@@ -200,11 +201,19 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         raise ValueError("entry has no usable path")
     path = _resolve_path(path, base_dir)
     name = raw.get("name")
+    kind_name = raw.get("kind")
+    if kind_name == "slice":
+        kind = EntryKind.SLICE
+    elif kind_name == "bookmark":
+        kind = EntryKind.BOOKMARK
+    else:
+        kind = EntryKind.FILE
+    offset_key = "offset" if kind is EntryKind.BOOKMARK else "slice_offset"
     return Entry(
         name=name if isinstance(name, str) and name else basename(path),
-        kind=EntryKind.SLICE if raw.get("kind") == "slice" else EntryKind.FILE,
+        kind=kind,
         path=path,
-        slice_offset=_int(raw.get("slice_offset"), 0),
+        slice_offset=_int(raw.get(offset_key), 0),
         slice_length=_int(raw.get("slice_length"), None),
         decompress_id=_str(raw.get("decompress_id"), "decompress.none"),
         session=_session_from(raw.get("session")),
@@ -238,9 +247,22 @@ def _view_from(raw: object) -> ViewOptions | None:
         zoom=_int(raw.get("zoom"), defaults.zoom),
         show_grid=bool(raw.get("show_grid", defaults.show_grid)),
         subpalette_row=_int(raw.get("subpalette_row"), defaults.subpalette_row),
-        offset=_int(raw.get("offset"), defaults.offset),
+        tile_offset=_int(raw.get("offset"), defaults.tile_offset),
         byte_nudge=_int(raw.get("byte_nudge"), defaults.byte_nudge),
+        block_columns=_int(raw.get("block_columns"), defaults.block_columns),
+        block_rows=_int(raw.get("block_rows"), defaults.block_rows),
+        block_order=_block_order(raw),
+        two_dimensional=bool(raw.get("two_dimensional", defaults.two_dimensional)),
     )
+
+
+def _block_order(raw: dict) -> str:
+    order = raw.get("block_order")
+    if order in BLOCK_ORDERS:
+        return order
+    # Tolerate early v0.0.6 projects that stored a row_interleave bool before the
+    # order selector existed.
+    return "row-interleave" if raw.get("row_interleave") else "row"
 
 
 def _palette_from(raw: object, base_dir: str) -> PaletteSource | None:

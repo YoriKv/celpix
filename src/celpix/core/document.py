@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from celpix.core import ceil_div
 from celpix.core.context import PipelineContext
 from celpix.core.palette import Palette
 from celpix.pipeline.pathway import PathwayConfig
@@ -32,14 +33,22 @@ class ViewOptions:
     this matters even for viewing.
 
     Large files are viewed through a fixed **window**: ``rows`` tile-rows starting
-    at tile ``offset`` (the top-left corner of the view). Navigation moves
-    ``offset`` — ±``columns`` for a row step, ±1 for a tile step — instead of
+    at tile ``tile_offset`` (the top-left corner of the view). Navigation moves
+    ``tile_offset`` — ±``columns`` for a row step, ±1 for a tile step — instead of
     free-scrolling the whole file, so only the window is ever decoded/rendered.
 
     ``byte_nudge`` shifts the whole tile grid forward that many bytes
     (``0 <= nudge < bytes_per_tile``), so graphics that don't start on a tile
     boundary can be aligned; tile navigation stays in whole tiles on the nudged
     grid.
+
+    The **arrangement** axes are pure display placement/addressing (overview.md
+    §4). ``block_columns`` × ``block_rows`` group tiles into blocks (default 1×1 =
+    plain row-major); ``block_order`` fills each block row-major, column-major
+    (Mega Drive / Neo Geo sprites), or row-interleaved (8×16 sprite sheets) — see
+    :data:`~celpix.core.arrangement.BLOCK_ORDERS`. ``two_dimensional`` reads the
+    source as one wide bitmap ``columns`` tiles across instead of back-to-back
+    tiles — a different byte walk applied before decode (arrangement's ``reflow_2d``).
     """
 
     columns: int = 16
@@ -47,8 +56,12 @@ class ViewOptions:
     zoom: int = 4
     show_grid: bool = False
     subpalette_row: int = 0
-    offset: int = 0  # top-left tile index into the pixel bytes
+    tile_offset: int = 0  # top-left tile index into the pixel bytes
     byte_nudge: int = 0  # sub-tile byte shift of the whole grid
+    block_columns: int = 1  # tiles per block, horizontally
+    block_rows: int = 1  # tiles per block, vertically
+    block_order: str = "row"  # fill within a block: row | column | row-interleave
+    two_dimensional: bool = False  # read the source as a wide bitmap, not tiles
 
 
 @dataclass
@@ -68,7 +81,7 @@ class Document:
     def tile_count(self) -> int:
         # Ceiling: a trailing partial tile counts — it's viewable, zero-padded.
         tb = self.bytes_per_tile
-        return -(-len(self.pixel_data) // tb) if tb else 0
+        return ceil_div(len(self.pixel_data), tb) if tb else 0
 
     def window_bytes(self, first_tile: int, count: int, nudge: int = 0) -> bytes:
         """The byte slice for ``count`` tiles starting at tile ``first_tile``.
@@ -103,7 +116,7 @@ class Document:
         """
         page = max(1, columns) * max(1, rows)
         tb = self.bytes_per_tile
-        usable = -(-(len(self.pixel_data) - nudge) // tb) if tb else 0
+        usable = ceil_div(len(self.pixel_data) - nudge, tb) if tb else 0
         return max(0, min(offset, max(0, usable - page)))
 
     def clamp_byte_position(self, pos: int, columns: int, rows: int) -> tuple[int, int]:
