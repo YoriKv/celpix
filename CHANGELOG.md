@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.0 - unreleased
+## v0.1.0 - 2026-07-23
 
 - **Color Palette Editing**: edit colors that get written back to file/offset/etc.
 - **Cut/Copy/Paste Pixels**: both inside the application and to/from external
