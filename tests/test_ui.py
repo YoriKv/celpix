@@ -335,6 +335,13 @@ def test_palette_export_writes_a_pal_and_registers_it(qtbot, tmp_path, monkeypat
     # Registered as what was written, so the double-click round-trips: applying
     # it decodes RGB888 and lands the very colors that were exported.
     assert palettes[0].palette_preset_id == "preset.palette.rgb888"
+
+    # Exporting over an already-registered path re-stamps it: the entry has to
+    # describe the bytes now on disk, not the file they replaced.
+    palettes[0].palette_preset_id = "preset.palette.bgr555"
+    window._export_palette_file()
+    assert palettes[0].palette_preset_id == "preset.palette.rgb888"
+
     window._use_palette_entry(palettes[0])
     assert window._palette_preset_id() == "preset.palette.rgb888"
     assert window._doc.palette.colors == reloaded.palette.colors

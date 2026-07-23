@@ -593,9 +593,7 @@ def export_palette(
     format a reader has to guess should be a deliberate choice, not a side
     effect of how these colors happened to arrive.
     """
-    engine, preset = reg.engine_for(
-        preset_id or doc.palette_config.interpret_preset_id
-    )
+    engine, preset = reg.engine_for(preset_id or doc.palette_config.interpret_preset_id)
     data = _run(
         Stage.INTERPRET_PALETTE,
         Pathway.PALETTE,

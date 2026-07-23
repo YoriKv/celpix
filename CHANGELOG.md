@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.1.0 - unreleased
+
+- **Color Palette Editing**: edit colors that get written back to file/offset/etc.
+- **Cut/Copy/Paste Pixels**: both inside the application and to/from external
+  editors. Rectangle selection mode to support copy pasting.
+- **Export to PNG**: export files and slices as images.
+- **Import from PNG**: import to tile selection position. Works similar to
+  paste but from a PNG file. Supports both indexed color and RGB PNGs. Supports
+  drag and drop.
+- **Palette Files**: show palette files in the Files list; each remembers the
+  color format it was last read with.
+- **Palette from Emulator**: updated emulator state palette import to more modern
+  emulators.
+- Various bug fixes and improvements.
+
 ## v0.0.6 - 2026-07-22
 
 - **Files panel browsing**: added bookmarks, slices and bookmarks are now sorted
@@ -54,7 +69,7 @@
   stage is a plugin — drop-in TOML presets and Python code plugins with a trust
   prompt, plugin-folder discovery, and F5 hot-reload.
 - **Broad format support** covering the YY-CHR / Tile Molester catalogue:
-  planar, packed, chunky, and direct-colour tile formats; mask-based and fixed
+  planar, packed, chunky, and direct-color tile formats; mask-based and fixed
   hardware palettes; little/big-endian variants.
 - **Containers & compression**: iNES header skip, Sega `.smd` deinterleave, and
   view-only Konami NES RLE decompression.
