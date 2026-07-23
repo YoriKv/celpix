@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.6 - unreleased
+## v0.0.6 - 2026-07-22
 
 - **Files panel browsing**: added bookmarks, slices and bookmarks are now sorted
   by offset, and added icons to differentiate them.

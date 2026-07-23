@@ -20,4 +20,4 @@ Only :mod:`celpix.ui` (and the :mod:`celpix.app` bootstrap) may import Qt; every
 other subsystem stays Qt-free so it is testable and reusable headless.
 """
 
-__version__ = "0.0.5"
+__version__ = "0.0.6"
