@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from os.path import normcase
+from os.path import normcase, samefile
 
 from celpix.core.document import Document, ViewOptions
 from celpix.core.palette import Palette
@@ -281,8 +281,9 @@ def test_case_insensitive_path_resolution(tmp_path) -> None:
     # The resolved path must point at the real file; its casing depends on the
     # host filesystem — a case-sensitive OS re-derives the on-disk casing
     # (roms/rom.sfc), while a case-insensitive one keeps the stored casing since
-    # it already resolves. normcase folds that difference away.
-    assert normcase(loaded.entries[0].path) == normcase(str(rom))
+    # it already resolves. Only identity of the target is portable: macOS is
+    # case-insensitive yet its normcase (posix) folds nothing.
+    assert samefile(loaded.entries[0].path, rom)
 
 
 def test_tolerant_load_defaults_unknowns_and_garbage(tmp_path) -> None:

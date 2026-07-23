@@ -440,7 +440,10 @@ def test_dropped_celpix_opens_as_a_project_and_claims_the_drop(qtbot, tmp_path):
     window.dropEvent(event)
 
     # The project loaded, and nothing from the dropped .sfc came with it.
-    assert window._project_path == str(project)
+    # Qt hands back drop URLs with POSIX separators even on Windows, so compare
+    # the file the path names rather than the spelling.
+    assert window._project_path is not None
+    assert Path(window._project_path).samefile(project)
     assert [e.name for e in window._workspace.entries] == [px.name]
 
 
