@@ -1,10 +1,11 @@
 # celPix
 
-**celPix** is a graphics viewer and editor for romhacking and research. It 
-supports a variety of formats, including compression, and has a full plugin
+**celPix** is a cross-platform graphics viewer and editor for romhacking and research.
+It supports a variety of formats, including compression, and has a full plugin
 system with examples to extend to custom and rarer formats.
 
-celPix is built on Python + Qt (PySide6) and runs on Windows, macOS, and Linux.
+If you run into issues or have questions. Submit a github issue or reach out to me
+on Discord with the https://romhack.ing/ Discord server.
 
 ## Features
 
