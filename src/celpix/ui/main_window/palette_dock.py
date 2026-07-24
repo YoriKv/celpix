@@ -59,13 +59,13 @@ class PaletteDockMixin:
     """
 
     def _build_palette_dock(self) -> None:
-        """The right-side palette dock: a load-mode header and a per-mode
-        format row over the swatch grid.
+        """The palette dock: a load-mode header and a per-mode format row over
+        the swatch grid, in the left column under Files.
 
         Built after _build_navbar, whose address-format machinery the offset
-        field here shares (_parse_address / _palette_offset_text), and before
-        _build_toolbar - the palette format combo is created here, not on the
-        codecs toolbar.
+        field here shares (_parse_address / _palette_offset_text), after
+        _build_files_dock, whose dock it splits, and before _build_toolbar - the
+        palette format combo is created here, not on the codecs toolbar.
         """
         self._palette_panel = PalettePanel()
         # A scroll area guards against a pathologically large opened palette;
@@ -78,11 +78,7 @@ class PaletteDockMixin:
         # width - the four mode labels don't need the full width the longest
         # ("Emulator State") reserves.
         self._palette_mode_combo = CompactComboBox(0.7)
-        self._palette_mode_combo.setToolTip(
-            "Where the palette comes from: the generated default, a palette "
-            "file, an offset into the open pixel file, an emulator save state "
-            "(console auto-detected), or a custom palette stored in the project"
-        )
+        self._palette_mode_combo.setToolTip("Where the palette comes from")
         for label, mode in (
             ("Default", PaletteMode.DEFAULT),
             ("File", PaletteMode.FILE),
@@ -108,7 +104,7 @@ class PaletteDockMixin:
         )
         self._palette_offset_edit.setFixedWidth(104)
         self._palette_offset_edit.setToolTip(
-            "Palette offset in the open pixel file - Enter to load"
+            "Palette offset in the pixel file - Enter to load"
         )
         self._palette_offset_edit.hide()
         self._palette_offset_edit.committed.connect(self._on_palette_offset_committed)
@@ -145,9 +141,12 @@ class PaletteDockMixin:
         # _set_palette_mode). Hidden widgets still hold state - the session
         # capture/restore and undo paths read and set them as before.
         self._palette_preset = self._preset_combo(Stage.INTERPRET_PALETTE, "bgr555")
+        self._palette_preset.setToolTip("How palette bytes decode to colors")
         self._palette_preset.currentIndexChanged.connect(self._reload_palette)
         self._palette_preset.hide()
         self._palette_format_label = QLabel("Format:")
+        self._palette_format_label.setToolTip(self._palette_preset.toolTip())
+        self._palette_format_label.setBuddy(self._palette_preset)
         self._palette_format_label.hide()
 
         # The per-mode widgets share one slot whose *minimum* width is fixed and
@@ -179,8 +178,7 @@ class PaletteDockMixin:
         # explicit, one-shot conversion - the dropdown alone only relabels.
         self._quantize_palette_action = QPushButton("Quantize")
         self._quantize_palette_action.setToolTip(
-            "Snap every color to the nearest value the selected format can "
-            "store, keeping them as a Custom palette"
+            "Snap colors to the nearest the format can store"
         )
         self._quantize_palette_action.clicked.connect(self._quantize_custom_palette)
         self._quantize_palette_action.hide()
@@ -222,9 +220,7 @@ class PaletteDockMixin:
         # modes where they exist nowhere else as a palette - see
         # _sync_palette_export_action.
         self._export_palette_action = QPushButton("Export to File…")
-        self._export_palette_action.setToolTip(
-            "Write these colors to a .pal file (RGB888) and add it to the Palettes list"
-        )
+        self._export_palette_action.setToolTip("Write these colors to a .pal file")
         self._export_palette_action.clicked.connect(self._export_palette_file)
         export_row = QHBoxLayout()
         export_row.setContentsMargins(4, 0, 4, 4)
@@ -245,7 +241,25 @@ class PaletteDockMixin:
         self._palette_dock = QDockWidget("Palette", self)
         self._palette_dock.setObjectName("palette-dock")  # keeps saveState usable
         self._palette_dock.setWidget(container)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._palette_dock)
+        # Stacked under the Files dock in the same left column (built first, so it
+        # is there to split), and given an even share of that column's height -
+        # both are browsing panes, and neither earns the space by default.
+        self.splitDockWidget(
+            self._files_dock, self._palette_dock, Qt.Orientation.Vertical
+        )
+        self.resizeDocks(
+            [self._files_dock, self._palette_dock], [1, 1], Qt.Orientation.Vertical
+        )
+        # Sharing a column means one width serves both, and left alone Qt settles
+        # on the palette's *minimum* - which is the width its header can't go
+        # below, not one it reads well at. Ask for its natural width instead; the
+        # canvas still nets space, since the palette no longer holds a column of
+        # its own on the right.
+        self.resizeDocks(
+            [self._palette_dock],
+            [self._palette_dock.sizeHint().width()],
+            Qt.Orientation.Horizontal,
+        )
 
     def _build_palette_menu(self) -> None:
         """Palette ▸ everything palette-flavoured: palette-from-selection,
@@ -254,7 +268,7 @@ class PaletteDockMixin:
 
         self._palette_from_selection_action = QAction("Palette from Selection", self)
         self._palette_from_selection_action.setToolTip(
-            "Read palette data from the open pixel file at the selected tile's offset"
+            "Read a palette from the selected tile's offset"
         )
         self._palette_from_selection_action.triggered.connect(
             self._load_palette_from_selection

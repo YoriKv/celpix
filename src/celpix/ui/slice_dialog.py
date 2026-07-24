@@ -50,15 +50,16 @@ class SliceDialog(QDialog):
         self._params: SliceParams | None = None
 
         self._name = QLineEdit(name)
+        self._name.setToolTip("Name in the Files list; blank uses the placeholder")
         self._offset = QLineEdit(format_hex(offset))
-        self._offset.setToolTip("Absolute file offset (hex; $ and 0x accepted)")
+        self._offset.setToolTip("File offset (hex; $ and 0x accepted)")
         self._length = QLineEdit(format_hex(length) if length is not None else "")
         self._length.setToolTip(
-            "Byte length in the file (hex). With a decompressor it may be left "
-            "blank - the structure's own end bounds the slice on first load."
+            "Byte length (hex); blank lets a decompressor find the end"
         )
 
         self._decompress = QComboBox()
+        self._decompress.setToolTip("Decompress with this codec on load")
         for plugin in registry.plugins(Stage.DECOMPRESS):
             self._decompress.addItem(plugin.info.name, plugin.info.id)
         index = self._decompress.findData(decompress_id)
@@ -82,6 +83,12 @@ class SliceDialog(QDialog):
         form.addRow("Length:", self._length)
         form.addRow("Compression:", self._decompress)
         form.addRow(self._error)
+        # QFormLayout builds the caption widgets itself, so copy each field's
+        # tooltip onto its caption - hovering either half then answers the same.
+        for field in (self._name, self._offset, self._length, self._decompress):
+            label = form.labelForField(field)
+            if label is not None:
+                label.setToolTip(field.toolTip())
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )

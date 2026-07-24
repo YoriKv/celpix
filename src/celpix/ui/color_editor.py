@@ -45,6 +45,9 @@ from celpix.ui.widgets import CommittingLineEdit, signals_blocked
 # Channel order as edited, most significant first — the same order the hex
 # field spells and the ARGB int packs.
 _CHANNELS = (("A", 24), ("R", 16), ("G", 8), ("B", 0))
+# What each channel letter stands for, so the one-letter caption, its slider and
+# its spin can all answer the same question on hover.
+_CHANNEL_NAMES = {"A": "Alpha", "R": "Red", "G": "Green", "B": "Blue"}
 
 
 def _eyedropper_pixmap(color: QColor, size: int, ratio: float) -> QPixmap:
@@ -173,6 +176,10 @@ class ColorEditor(QWidget):
             slider.setRange(0, 255)
             spin = QSpinBox()
             spin.setRange(0, 255)
+            tip = f"{_CHANNEL_NAMES[name]} (0-255)"
+            for widget in (label, slider, spin):
+                widget.setToolTip(tip)
+            label.setBuddy(slider)
             slider.valueChanged.connect(
                 lambda value, n=name: self._on_channel(n, value)
             )
@@ -195,10 +202,7 @@ class ColorEditor(QWidget):
 
         self._pick = QPushButton()
         self._pick.setCheckable(True)
-        self._pick.setToolTip(
-            "Eyedropper: click a pixel on the canvas or a swatch in the palette "
-            "to take its color"
-        )
+        self._pick.setToolTip("Pick a color from the canvas or palette")
         self._pick.toggled.connect(self.pick_toggled)
         self._refresh_pick_icon()
 

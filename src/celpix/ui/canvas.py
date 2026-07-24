@@ -50,13 +50,20 @@ class GridStyle(Enum):
 
 
 # Two fixed grid colors: translucent white at two opacities, so the levels stay
-# distinct while tinting the art rather than overwriting it (legible over both
-# light and dark pixels). A stronger line every COARSE_GRID_TILES tiles, a faint
-# one on every tile in between — YY-CHR's default bank-grid ARGB values.
-GRID_COARSE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0x80)  # α128 — every 8 tiles
-GRID_FINE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0x20)  # α32 — per tile
+# distinct while tinting the art rather than overwriting it. A stronger line every
+# COARSE_GRID_TILES tiles, a lighter one on every tile in between. Both sit well
+# above YY-CHR's original bank-grid alphas (α128/α32), whose fine line all but
+# disappeared over mid-tone art — enough opacity to read as a lattice, still short
+# of opaque so the pixels underneath stay judgeable.
+GRID_COARSE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0xD0)  # α208 — every 8 tiles
+GRID_FINE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0x70)  # α112 — per tile
 # The coarse grid falls every N tiles — YY-CHR's 8×8 block convention.
 COARSE_GRID_TILES = 8
+
+# Outline around the one-pixel paint preview. Translucent white reads against the
+# art without hiding the previewed colour, and matches the grid's idiom of tinting
+# rather than overwriting.
+PREVIEW_OUTLINE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0xC0)
 
 # Line styles per drawing style; POINT/NONE are handled separately.
 _GRID_PEN_STYLES = {
@@ -84,6 +91,17 @@ class Canvas(QWidget):
     pixel_pressed = Signal(int, int, object)  # x, y, Qt.MouseButton
     pixel_moved = Signal(int, int)  # x, y — while the left button is held
     pixel_released = Signal(int, int)  # x, y — the drag's final pixel
+    # A left double-click in pixel mode, at the pixel under the cursor. The
+    # controller decides what it means (the Select tool takes the whole tile).
+    pixel_double_clicked = Signal(int, int)  # x, y
+    # A space-drag pan step, in device pixels: how far to shift the view. The
+    # window feeds it to the scroll bars, which clamp it so the image can't be
+    # dragged off screen. Emitted in either edit mode.
+    pan_requested = Signal(int, int)  # dx, dy
+    # A wheel-zoom request: a signed zoom step and the cursor's device position on
+    # the canvas. The window steps the zoom control and re-anchors the view so the
+    # pixel under the cursor stays put. Emitted in either edit mode.
+    zoom_requested = Signal(int, object)  # steps, QPointF cursor pos (device)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -111,6 +129,11 @@ class Canvas(QWidget):
         self._edit_mode = EditMode.TILE
         self._pixel_dragging = False
         self._last_pixel: tuple[int, int] | None = None  # skip no-op drag emits
+        # Right-button eyedropper drag: while a right press is held it keeps
+        # sampling the color under the cursor (a re-emitted right press per new
+        # pixel), so the picker can be swept rather than clicked pixel by pixel.
+        self._sampling = False
+        self._last_sample: tuple[int, int] | None = None
         # Overlays the controller drives while editing pixels: a pixel-space
         # rectangle marquee, and a floating selection (a lifted image the user is
         # dragging) shown at a pixel position. Both are drawn over the base image.
@@ -122,6 +145,21 @@ class Canvas(QWidget):
         # they are painted as background rather than drawn (None = the whole image
         # is data).
         self._filled_tiles: int | None = None
+        # Space-drag panning (both modes): ``_pan_active`` is space held (a pan is
+        # armed, hand cursor shown); ``_panning`` is a pan drag in progress, with
+        # ``_pan_last`` the last global mouse position the delta is measured from.
+        # Panning takes over the mouse from selecting/painting while armed.
+        self._pan_active = False
+        self._panning = False
+        self._pan_last = QPointF()
+        # Paint preview: the pen color a drawing tool would lay down, shown as a
+        # single pixel under the pointer so the target is visible at any zoom (the
+        # cursor hotspot alone doesn't say *which* pixel). ``None`` while no
+        # drawing tool is armed; the hovered pixel is tracked only while it is set.
+        self._preview_color: QColor | None = None
+        self._hover_pixel: tuple[int, int] | None = None
+        # Hover needs move events with no button held.
+        self.setMouseTracking(True)
         self._update_size()
 
     def set_image(self, image: QImage) -> None:
@@ -193,10 +231,8 @@ class Canvas(QWidget):
             return
         self._eyedropper = on
         if on:
-            self.setCursor(Qt.CursorShape.CrossCursor)
             self._drag_anchor = self._drag_slot = None
-        else:
-            self.unsetCursor()
+        self._apply_cursor()
 
     def set_edit_mode(self, mode: EditMode) -> None:
         """Switch between tile selection and pixel painting.
@@ -210,13 +246,69 @@ class Canvas(QWidget):
         self._edit_mode = mode
         self._pixel_dragging = False
         self._last_pixel = None
-        if mode is EditMode.PIXEL:
+        self._sampling = False
+        self._last_sample = None
+        if mode is not EditMode.PIXEL:
+            self._marquee = None
+            self._float_image = None
+            self._preview_color = None  # nothing paints in tile mode
+            self._hover_pixel = None
+        self._apply_cursor()
+        self.update()
+
+    def set_pan_mode(self, on: bool) -> None:
+        """Arm/disarm space-drag panning (the window drives this off the space key).
+
+        Arming shows the hand cursor; disarming ends any pan drag in progress (the
+        space key can come up mid-drag). Panning is modal over the mouse — while
+        armed a press pans instead of selecting or painting.
+        """
+        if self._pan_active == on:
+            return
+        self._pan_active = on
+        if not on:
+            self._panning = False
+        self._apply_cursor()
+
+    def _apply_cursor(self) -> None:
+        """Set the cursor for the current mode: hand while panning, cross on the
+        paint/eyedrop surface, default otherwise."""
+        if self._panning:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif self._pan_active:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self._edit_mode is EditMode.PIXEL or self._eyedropper:
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
             self.unsetCursor()
-            self._marquee = None
-            self._float_image = None
+
+    def set_paint_preview(self, color: QColor | None) -> None:
+        """Arm the one-pixel paint preview in ``color`` (``None`` disarms it).
+
+        The controller passes the pen's colour whenever a drawing tool is armed, so
+        the canvas need not know which tool is active or how a pen resolves — only
+        what colour to show under the pointer.
+        """
+        if self._preview_color == color:
+            return
+        self._preview_color = color
+        if color is None:
+            self._hover_pixel = None
         self.update()
+
+    def leaveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        # The pointer left the canvas: no pixel is targeted any more.
+        super().leaveEvent(event)
+        if self._hover_pixel is not None:
+            self._hover_pixel = None
+            self.update()
+
+    def _track_hover(self, pos: QPointF) -> None:
+        """Follow the pixel under the pointer while the preview is armed."""
+        pixel = None if self._preview_color is None else self._pixel_at(pos)
+        if pixel != self._hover_pixel:
+            self._hover_pixel = pixel
+            self.update()
 
     def set_marquee(self, rect: QRect | None) -> None:
         """Show a pixel-space rectangle marquee (``None`` clears it)."""
@@ -292,6 +384,14 @@ class Canvas(QWidget):
         return self._layout().cell_to_slot(img_x // self._tile_w, img_y // self._tile_h)
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        # Space-drag panning is modal: while armed a left press grabs the view and
+        # neither selects nor paints. Checked first so it wins over every gesture.
+        if self._pan_active and event.button() == Qt.MouseButton.LeftButton:
+            self._panning = True
+            self._pan_last = event.globalPosition()
+            self._apply_cursor()
+            event.accept()
+            return
         # The color-editor eyedropper (armed from outside) samples a rendered
         # ARGB in either mode and swallows the press — it must reach the canvas
         # even while pixel editing, so it is handled before the mode split.
@@ -325,7 +425,41 @@ class Canvas(QWidget):
         # Let the default handling run too so ClickFocus keeps focusing us.
         super().mousePressEvent(event)
 
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        """Report a left double-click as a pixel, in pixel mode only.
+
+        Qt delivers press → release → *double-click* → release, so a drag is
+        already under way by the time this arrives. It is ended here: the
+        double-click replaces that gesture, and leaving the drag live would let
+        any jitter before the final release resize what the double-click picked.
+        """
+        if (
+            self._edit_mode is EditMode.PIXEL
+            and event.button() == Qt.MouseButton.LeftButton
+            and not self._pan_active
+            and not self._eyedropper
+        ):
+            pixel = self._pixel_at(event.position())
+            if pixel is not None:
+                self._pixel_dragging = False
+                self._last_pixel = None
+                self.pixel_double_clicked.emit(pixel[0], pixel[1])
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        if self._panning:
+            # Move the view by the mouse delta. Global position, not widget-local:
+            # the widget shifts under the cursor as the view scrolls, which would
+            # feed back into a widget-local delta.
+            pos = event.globalPosition()
+            delta = pos - self._pan_last
+            self._pan_last = pos
+            self.pan_requested.emit(round(delta.x()), round(delta.y()))
+            event.accept()
+            return
+        self._track_hover(event.position())
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_move(event)
             super().mouseMoveEvent(event)
@@ -341,6 +475,11 @@ class Canvas(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        if self._panning and event.button() == Qt.MouseButton.LeftButton:
+            self._panning = False
+            self._apply_cursor()  # back to the open hand (space may still be held)
+            event.accept()
+            return
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_release(event)
             super().mouseReleaseEvent(event)
@@ -349,12 +488,34 @@ class Canvas(QWidget):
             self._drag_anchor = self._drag_slot = None
         super().mouseReleaseEvent(event)
 
+    def wheelEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        """**Ctrl**+wheel zooms (both modes); a plain wheel scrolls the view.
+
+        Reports a signed step per notch and the cursor position, leaving the zoom
+        range and the cursor-anchoring to the window; only a zooming wheel is
+        swallowed, so an unmodified one falls through to the scroll area that owns
+        us. With no image there is nothing to zoom.
+        """
+        if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            event.ignore()  # let the scroll area scroll as usual
+            return
+        if self._image.isNull():
+            return
+        dy = event.angleDelta().y()
+        if dy == 0:
+            return
+        # One step per 120-unit notch, but at least one so a high-resolution wheel
+        # sending small deltas still zooms.
+        steps = int(dy / 120) or (1 if dy > 0 else -1)
+        self.zoom_requested.emit(steps, event.position())
+        event.accept()
+
     def _pixel_press(self, event) -> None:  # noqa: ANN001 — Qt event
         """Begin a pixel gesture: report the pressed pixel and its button.
 
         A left press starts a drag (the pen/shape/marquee tools track it); a
-        right press is a one-shot the controller reads as the eyedropper. A press
-        outside the image is ignored, as the tile click always was.
+        right press begins an eyedropper sweep the controller reads as sampling.
+        A press outside the image is ignored, as the tile click always was.
         """
         pixel = self._pixel_at(event.position())
         if pixel is None:
@@ -362,17 +523,32 @@ class Canvas(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self._pixel_dragging = True
             self._last_pixel = pixel
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._sampling = True
+            self._last_sample = pixel
         self.pixel_pressed.emit(pixel[0], pixel[1], event.button())
 
     def _pixel_move(self, event) -> None:  # noqa: ANN001 — Qt event
-        if not (self._pixel_dragging and event.buttons() & Qt.MouseButton.LeftButton):
-            return
-        pixel = self._pixel_at(event.position(), clamp=True)
-        if pixel is not None and pixel != self._last_pixel:
-            self._last_pixel = pixel
-            self.pixel_moved.emit(pixel[0], pixel[1])
+        buttons = event.buttons()
+        if self._pixel_dragging and buttons & Qt.MouseButton.LeftButton:
+            pixel = self._pixel_at(event.position(), clamp=True)
+            if pixel is not None and pixel != self._last_pixel:
+                self._last_pixel = pixel
+                self.pixel_moved.emit(pixel[0], pixel[1])
+        elif self._sampling and buttons & Qt.MouseButton.RightButton:
+            # Continuous eyedropper: re-emit a right press for each new pixel the
+            # sweep reaches so the controller samples it. Not clamped — a sweep
+            # off the image samples nothing rather than the edge color.
+            pixel = self._pixel_at(event.position())
+            if pixel is not None and pixel != self._last_sample:
+                self._last_sample = pixel
+                self.pixel_pressed.emit(pixel[0], pixel[1], Qt.MouseButton.RightButton)
 
     def _pixel_release(self, event) -> None:  # noqa: ANN001 — Qt event
+        if event.button() == Qt.MouseButton.RightButton:
+            self._sampling = False
+            self._last_sample = None
+            return
         if event.button() != Qt.MouseButton.LeftButton or not self._pixel_dragging:
             return
         self._pixel_dragging = False
@@ -468,9 +644,16 @@ class Canvas(QWidget):
         The float goes down first (a lifted image the user is dragging), then its
         outline, then the marquee — a pixel-space rectangle. Both scale by the
         zoom and are drawn in device coordinates, over the base image, so they
-        track the pixels beneath them. Nothing is painted in tile mode, where
-        both stay ``None``.
+        track the pixels beneath them.
+
+        Gated on the mode rather than trusting both to be ``None`` there: undo
+        steps through pixel-mode selections wherever the history is walked, tile
+        mode included, and it restores them by driving these same setters. A
+        pixel rectangle drawn over the tile view is then a stray outline the user
+        has no way to explain or dismiss.
         """
+        if self._edit_mode is not EditMode.PIXEL:
+            return
         z = self._zoom
         if self._float_image is not None:
             fx, fy = self._float_pos
@@ -486,6 +669,28 @@ class Canvas(QWidget):
             m = self._marquee
             rect = QRect(m.x() * z, m.y() * z, m.width() * z, m.height() * z)
             paint_selection_outline(painter, rect)
+        self._paint_pen_preview(painter)
+
+    def _paint_pen_preview(self, painter: QPainter) -> None:
+        """Tint the pixel the pen is aimed at, in the colour it would write.
+
+        Drawn last so it sits above the art and the selection overlays, and while
+        panning it is suppressed — the hand is moving the view, not painting. The
+        pen colour can be indistinguishable from what is already there, so a thin
+        contrasting outline keeps the target visible either way.
+        """
+        if self._preview_color is None or self._hover_pixel is None or self._panning:
+            return
+        z = self._zoom
+        x, y = self._hover_pixel
+        rect = QRect(x * z, y * z, z, z)
+        painter.fillRect(rect, self._preview_color)
+        pen = QPen(PREVIEW_OUTLINE_COLOR)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # adjusted(): a 1px pen straddles the path, so inset to keep it inside.
+        painter.drawRect(rect.adjusted(0, 0, -1, -1))
 
     def _draw_grid(self, painter: QPainter, z: int) -> None:
         """Draw the two-level tile grid in the current style (device coords).

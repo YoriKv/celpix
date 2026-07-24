@@ -368,8 +368,14 @@ class EntriesMixin:
         the same file (their bytes are now stale) - including the one on screen
         when a slice is written back under its parent's feet, which is re-read
         immediately so the view shows the freshly written bytes.
+
+        Pixels still floating over the current entry are set down first: a float
+        is on screen but not in the document, and a file that doesn't match what
+        the user is looking at is not what Write means.
         """
         assert entry.doc is not None
+        if entry is self._workspace.current:
+            self._commit_float()
         self._capture_session()  # keep the current entry's session snapshot fresh
         palette_only = entry.palette_dirty and not entry.pixel_dirty
         try:

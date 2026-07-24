@@ -33,6 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import QRect
 from PySide6.QtGui import QUndoCommand
 
 from celpix.core.context import PipelineContext
@@ -322,6 +323,71 @@ class PixelEditCommand(QUndoCommand):
                 self._window._apply_pixel_bytes(
                     self._start, self._before, self._before_revision
                 )
+
+
+@dataclass(frozen=True)
+class FloatState:
+    """Pixels lifted off the page but not yet set down.
+
+    A floating selection writes nothing until it lands, so the history can put
+    one back simply by handing the grid — and the hole its move still owes
+    (``source``; ``None`` for a paste, which removed nothing) — to the window
+    again. Where it hovers is the selection rectangle the command already
+    carries. The grid is held by reference, which is safe because the float is
+    never mutated in place: a transform replaces it with a new grid.
+    """
+
+    grid: object
+    source: QRect | None = None
+
+
+class PixelSelectionCommand(QUndoCommand):
+    """One pixel-mode interaction that rewrote no bytes, as its before/after
+    selection.
+
+    Making, replacing, moving or dropping a pixel selection is a user action the
+    history should step through, so it lands as its own command even though the
+    document is untouched. The same class absorbs a *painting* gesture that
+    happened to change nothing — both ends are then identical, and undo simply
+    steps past it — so every pixel interaction costs exactly one step whether or
+    not it moved a pixel.
+
+    ``None`` on either end means "no selection". The rectangle is in image-pixel
+    coordinates of the view window, like the live marquee it restores; a
+    :class:`FloatState` alongside it says those pixels were *in the air* at that
+    point, which is a selection state like any other because a float is written
+    only when it lands.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        text: str,
+        *,
+        before: QRect | None,
+        after: QRect | None,
+        before_float: FloatState | None = None,
+        after_float: FloatState | None = None,
+    ) -> None:
+        super().__init__(text)
+        self._window = window
+        self._entry = entry
+        # Copied: the caller's rectangles are the live marquee, which moves on.
+        self._before = None if before is None else QRect(before)
+        self._after = None if after is None else QRect(after)
+        self._before_float = before_float
+        self._after_float = after_float
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            if self._window._ensure_current(self._entry):
+                self._window._apply_marquee(self._after, self._after_float)
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            if self._window._ensure_current(self._entry):
+                self._window._apply_marquee(self._before, self._before_float)
 
 
 class RenameEntryCommand(QUndoCommand):

@@ -63,8 +63,7 @@ class TransferMixin:
 
         self._export_png_action = QAction("Export as PNG…", self)
         self._export_png_action.setToolTip(
-            "Export the current file or slice as an indexed PNG (opens in "
-            "Aseprite as an indexed sprite; index 0 is transparent)"
+            "Export as an indexed PNG - index 0 is transparent"
         )
         self._export_png_action.triggered.connect(
             lambda: self._export_png(self._workspace.current)
@@ -72,10 +71,7 @@ class TransferMixin:
         export_menu.addAction(self._export_png_action)
 
         self._export_raw_action = QAction("Export Raw…", self)
-        self._export_raw_action.setToolTip(
-            "Export the current entry's decoded bytes as a raw binary (its "
-            "decompressed contents - handy for slices)"
-        )
+        self._export_raw_action.setToolTip("Export decoded bytes as a raw binary")
         self._export_raw_action.triggered.connect(
             lambda: self._export_raw(self._workspace.current)
         )
@@ -84,9 +80,7 @@ class TransferMixin:
         export_menu.addSeparator()
 
         self._export_slices_action = QAction("Export File's Slices as PNGs…", self)
-        self._export_slices_action.setToolTip(
-            "Export every slice of the current file as its own PNG into a folder"
-        )
+        self._export_slices_action.setToolTip("Export each slice of this file as a PNG")
         self._export_slices_action.triggered.connect(
             lambda: self._export_file_slices(self._workspace.current)
         )
@@ -94,8 +88,7 @@ class TransferMixin:
 
         self._export_all_action = QAction("Export All as PNGs…", self)
         self._export_all_action.setToolTip(
-            "Export the whole project into a folder: every slice, and every file "
-            "that has no slices, as its own PNG"
+            "Export every slice and unsliced file as a PNG"
         )
         self._export_all_action.triggered.connect(self._export_project)
         export_menu.addAction(self._export_all_action)

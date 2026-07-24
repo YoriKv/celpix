@@ -393,9 +393,7 @@ class PaletteSourceMixin:
         )
         self._push_command(AddEntryCommand(self, entry, f"add palette {entry.name}"))
         if not quiet:
-            self.statusBar().showMessage(
-                f"Added {entry.name} to Palettes - double-click it to apply."
-            )
+            self.statusBar().showMessage(f"Added {entry.name} to Palettes.")
         return True
 
     def _use_palette_entry(self, entry: Entry) -> None:

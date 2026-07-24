@@ -111,6 +111,10 @@ class _TransformGroup:
     def rotates(self) -> tuple[QAction, QAction]:
         return (self.rotate_cw, self.rotate_ccw)
 
+    @property
+    def actions(self) -> tuple[QAction, QAction, QAction, QAction]:
+        return (self.flip_h, self.flip_v, self.rotate_cw, self.rotate_ccw)
+
 
 class TransformMixin:
     """Flip/rotate the selection — per tile or per block — from a canvas toolbar.
@@ -126,26 +130,64 @@ class TransformMixin:
 
         Placed in the layout above the canvas rather than docked at the window
         top like the Codecs/Arrangement/View bars, so it reads as belonging to
-        the editing surface. Two labelled groups — Tile and Block — each start
-        disabled; :meth:`_sync_transform_actions` (driven from the selection
-        convergence) turns them on for what the selection supports.
+        the editing surface. It carries three labelled groups but shows only the
+        ones for the current edit mode: Tile + Block in tile editing, Pixel in
+        pixel editing (:meth:`_sync_transform_bar_mode`). Each starts disabled;
+        :meth:`_sync_transform_actions` (driven from the selection convergence)
+        turns buttons on for what the selection supports.
         """
         bar = QToolBar("Transform")
         bar.setMovable(False)
         bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self._build_selection_shape_combo(bar)
         bar.addSeparator()
-        bar.addWidget(QLabel(" Tile: "))
+        # Tile + Block: the tile-mode transforms. Each group's label and leading
+        # separator are captured alongside its buttons so the whole group hides as
+        # a unit when pixel mode swaps in the Pixel group.
+        tile_label = self._group_caption(bar, " Tile: ", "each tile in place")
         self._tile_group = self._add_transform_group(
-            bar, self._transform_tiles, "each selected tile in place"
+            bar, self._transform_tiles, "each tile in place"
         )
-        bar.addSeparator()
-        bar.addWidget(QLabel(" Block: "))
+        block_sep = bar.addSeparator()
+        block_label = self._group_caption(
+            bar, " Block: ", "the block, tiles and positions"
+        )
         self._block_group = self._add_transform_group(
-            bar, self._transform_block, "the whole block (tiles and their positions)"
+            bar, self._transform_block, "the block, tiles and positions"
         )
+        # Pixel: shown only in pixel mode, flips/rotates the pixel selection (or the
+        # whole window when nothing is lifted) rather than tiles.
+        pixel_label = self._group_caption(
+            bar, " Pixel: ", "the pixel selection, else the whole view"
+        )
+        self._pixel_group = self._add_transform_group(
+            bar,
+            self._transform_pixel_region,
+            "the pixel selection, else the whole view",
+        )
+        self._tile_mode_bar_actions = [
+            tile_label,
+            *self._tile_group.actions,
+            block_sep,
+            block_label,
+            *self._block_group.actions,
+        ]
+        self._pixel_mode_bar_actions = [pixel_label, *self._pixel_group.actions]
         self._build_edit_mode_toggle(bar)
+        self._sync_transform_bar_mode()
+        # Nothing is open yet, and the bar acts on a document; _set_document_ui_enabled
+        # arms it when one is shown.
+        bar.setEnabled(False)
         return bar
+
+    def _sync_transform_bar_mode(self) -> None:
+        """Show the transform groups that match the edit mode — labels, separators
+        and buttons together: Tile + Block for tile editing, Pixel for pixel."""
+        pixel = self._edit_mode is EditMode.PIXEL
+        for action in self._tile_mode_bar_actions:
+            action.setVisible(not pixel)
+        for action in self._pixel_mode_bar_actions:
+            action.setVisible(pixel)
 
     def _build_edit_mode_toggle(self, bar: QToolBar) -> None:
         """The Tile ⇄ Pixel mode toggle, pinned to the toolbar's right edge.
@@ -153,7 +195,7 @@ class TransformMixin:
         An expanding spacer pushes it hard right, away from the transform groups,
         so it reads as a mode switch for the whole editing surface rather than one
         more transform button. Wired to :meth:`_set_edit_mode` (the pixel-edit
-        mixin), which converges the canvas, tools dock and selection shape.
+        mixin), which converges the canvas, tools rail and selection shape.
         """
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -161,10 +203,7 @@ class TransformMixin:
         self._edit_mode_action = QAction("Pixel Mode", self)
         self._edit_mode_action.setCheckable(True)
         self._edit_mode_action.setChecked(self._edit_mode is EditMode.PIXEL)
-        self._edit_mode_action.setToolTip(
-            "Pixel editing mode — draw individual pixels with the Tools panel; "
-            "selection becomes a pixel rectangle. Off is tile editing."
-        )
+        self._edit_mode_action.setToolTip("Draw pixels instead of selecting tiles (E)")
         self._edit_mode_action.toggled.connect(
             lambda on: self._set_edit_mode(EditMode.PIXEL if on else EditMode.TILE)
         )
@@ -188,9 +227,9 @@ class TransformMixin:
         ):
             self._selection_shape.addItem(label, shape)
         self._selection_shape.setToolTip(
-            "What dragging on the canvas selects:\n"
-            "• Linear - the run of tiles between press and pointer (storage order)\n"
-            "• Rectangle - the block of tiles the drag spans on screen"
+            "What a canvas drag selects:\n"
+            "• Linear - the run of tiles in storage order\n"
+            "• Rectangle - the block of tiles on screen"
         )
         select_combo_data(
             self._selection_shape,
@@ -199,8 +238,23 @@ class TransformMixin:
         self._selection_shape.currentIndexChanged.connect(
             self._on_selection_shape_change
         )
-        bar.addWidget(QLabel("Selection: "))
+        shape_label = QLabel("Selection: ")
+        shape_label.setToolTip(self._selection_shape.toolTip())
+        shape_label.setBuddy(self._selection_shape)
+        bar.addWidget(shape_label)
         bar.addWidget(self._selection_shape)
+
+    @staticmethod
+    def _group_caption(bar: QToolBar, text: str, scope: str):
+        """A transform group's caption, tooltipped with what the group acts on.
+
+        The caption is as likely a hover target as the glyph buttons beside it,
+        and on its own " Tile: " says nothing about the distinction from Block -
+        so it repeats the scope its buttons' tooltips end with.
+        """
+        label = QLabel(text)
+        label.setToolTip(f"Flip / rotate {scope}")
+        return bar.addWidget(label)
 
     def _add_transform_group(
         self, bar: QToolBar, handler: Callable[[_TransformOp], None], scope: str
@@ -284,12 +338,9 @@ class TransformMixin:
         Each selected tile passes through the op's pixel transform;
         :meth:`~celpix.ui.main_window.selection.SelectionMixin._map_selected_tiles`
         handles the run bookkeeping (a rectangle's gap tiles ride along unchanged).
+        Tile-mode only — the Tile group is hidden in pixel mode, where the Pixel
+        group drives :meth:`_transform_pixel_region` instead.
         """
-        # In pixel mode the Tile group is repurposed to transform the pixel
-        # region (the floating selection, or the whole window).
-        if self._edit_mode is EditMode.PIXEL:
-            self._transform_pixel_region(op)
-            return
         if self._doc is None or self._selected_tile is None:
             return
         moved = len(self._selection_tiles())
@@ -344,18 +395,17 @@ class TransformMixin:
 
     # -- pixel mode --------------------------------------------------------
     def _sync_pixel_transform_actions(self) -> None:
-        """Enable the Tile group for a pixel-region transform; hide the Block one.
+        """Enable the Pixel group for what the pixel selection supports.
 
-        In pixel mode the Tile group flips/rotates the floating selection (or the
-        whole visible window when nothing is lifted); a rectangle needs to be
-        square to rotate, matching the tile-mode rule. The Block group is hidden.
+        The Pixel group flips/rotates the floating selection (or the whole visible
+        window when nothing is lifted); a rectangle needs to be square to rotate,
+        matching the tile-mode rule. The Tile/Block groups are hidden in pixel mode
+        (see :meth:`_sync_transform_bar_mode`), so only this group is touched.
         """
         region = self._pixel_transform_source()
         has = self._doc is not None and region is not None
         square = has and region.width() == region.height()
-        for action in self._tile_group.flips:
+        for action in self._pixel_group.flips:
             action.setEnabled(has)
-        for action in self._tile_group.rotates:
+        for action in self._pixel_group.rotates:
             action.setEnabled(square)
-        for action in (*self._block_group.flips, *self._block_group.rotates):
-            action.setEnabled(False)

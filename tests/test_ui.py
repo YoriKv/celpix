@@ -4492,3 +4492,46 @@ def test_a_solid_block_of_cells_gets_one_outline() -> None:
     assert Canvas._solid_block({0: [0, 2]}) is None
     assert Canvas._solid_block({0: [0], 2: [0]}) is None
     assert Canvas._solid_block({}) is None
+
+
+def test_every_input_has_a_tooltip_shared_with_its_label(qtbot) -> None:
+    """Every control the user can operate explains itself on hover, and a caption
+    answers with the same text as the input it names.
+
+    A caption is half the hover target of the pair and is often where people
+    point first, so a tooltip on the input alone reads as "no tooltip". Both
+    halves are checked here because they are set at separate call sites and
+    silently drift apart otherwise — the failure is invisible in any screenshot.
+    """
+    from PySide6.QtWidgets import (
+        QAbstractSpinBox,
+        QCheckBox,
+        QComboBox,
+        QLabel,
+        QLineEdit,
+        QSlider,
+    )
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    inputs = (QAbstractSpinBox, QComboBox, QLineEdit, QCheckBox, QSlider)
+
+    # findChildren takes a single type, so sweep everything and filter here.
+    untooltipped = [
+        type(widget).__name__
+        for widget in window.findChildren(object)
+        if isinstance(widget, inputs)
+        # Spin boxes and combos embed their own QLineEdit; that Qt internal is
+        # covered by the tooltip on the control that owns it.
+        and not isinstance(widget.parent(), (QAbstractSpinBox, QComboBox))
+        and not widget.toolTip()
+    ]
+    assert untooltipped == []
+
+    # A caption declares what it names via setBuddy, so the pairing is checkable.
+    mismatched = [
+        label.text()
+        for label in window.findChildren(QLabel)
+        if label.buddy() is not None and label.toolTip() != label.buddy().toolTip()
+    ]
+    assert mismatched == []

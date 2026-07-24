@@ -216,9 +216,7 @@ class ColorEditingMixin:
         self._canvas.set_eyedropper(on)
         self._palette_panel.set_eyedropper(on)
         if on:
-            self.statusBar().showMessage(
-                "Eyedropper: click a pixel on the canvas or a palette swatch."
-            )
+            self.statusBar().showMessage("Eyedropper: click a pixel or a swatch.")
 
     def _on_color_picked(self, argb: int) -> None:
         """A sampled color fills the editor and applies as an ordinary edit."""

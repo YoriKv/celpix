@@ -250,7 +250,13 @@ class MainWindow(
         # would otherwise keep the arrow keys), letting navigation resume. Navigation
         # itself is window-wide via eventFilter, not tied to canvas focus.
         self._canvas.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        scroll = QScrollArea()
+        # Space-drag panning: the canvas emits view deltas, the scroll bars absorb
+        # them (and clamp so the image can't be dragged off screen).
+        self._canvas.pan_requested.connect(self._pan_view)
+        # Wheel zoom (both modes): the canvas reports steps + cursor, the window
+        # drives the zoom control and re-anchors the view under the cursor.
+        self._canvas.zoom_requested.connect(self._on_zoom_requested)
+        scroll = self._scroll = QScrollArea()
         scroll.setWidget(self._canvas)
         # Pin the (small) window to the top-left; the scroll area only scrolls now
         # when zoom makes the window itself larger than the viewport.
@@ -282,7 +288,15 @@ class MainWindow(
         canvas_column.setContentsMargins(0, 0, 0, 0)
         canvas_column.setSpacing(0)
         canvas_column.addWidget(self._transform_toolbar)
-        canvas_column.addWidget(scroll, 1)
+        # The tools rail runs down the right of the paint surface, below the
+        # transform bar; the two frame the canvas as toolbars of the editing
+        # surface. Top-aligned so it hugs the top rather than stretching.
+        canvas_row = QHBoxLayout()
+        canvas_row.setContentsMargins(0, 0, 0, 0)
+        canvas_row.setSpacing(0)
+        canvas_row.addWidget(scroll, 1)
+        canvas_row.addWidget(self._build_tools_bar(), 0, Qt.AlignmentFlag.AlignTop)
+        canvas_column.addLayout(canvas_row, 1)
 
         view_row = QHBoxLayout()
         view_row.setContentsMargins(0, 0, 0, 0)
@@ -300,7 +314,7 @@ class MainWindow(
 
         self._build_files_dock()  # before _build_menus: the toggles go in menus
         self._build_palette_dock()
-        self._build_tools_dock()  # after palette dock: it stacks below it
+        self._connect_pixel_palette()  # after palette dock: needs its swatch grid
         self._build_hex_dock()
         self._build_clipboard_actions()  # before _build_menus: shared with it
         self._build_menus()
@@ -511,6 +525,9 @@ class MainWindow(
             return
         if entry.kind in (EntryKind.BOOKMARK, EntryKind.PALETTE):
             return  # no view of its own - selecting one in the list is inert
+        # Pixels floating over the entry being left belong to it, so they come
+        # down before the view moves on rather than hovering over a stranger.
+        self._commit_float()
         if data_missing(entry):
             # The file moved: make it current anyway, but show the disabled
             # unavailable state (no _load_entry, so no pipeline-error alert -
@@ -757,17 +774,22 @@ class MainWindow(
         A missing (unavailable) entry has no document to drive, so its codec,
         arrangement and view toolbars and the palette dock are disabled until a
         real document is shown again.
+
+        The interpretation bars stay live with *nothing* open — they configure how
+        the next file will be read. The transform bar does not: flip/rotate and the
+        mode toggles act on a document, so it follows ``_doc`` itself, the same
+        gate the Edit ▸ mode toggles use.
         """
         for bar in (
             self._codecs_toolbar,
             self._arrange_toolbar,
             self._view_toolbar,
-            self._transform_toolbar,
         ):
             bar.setEnabled(enabled)
+        self._transform_toolbar.setEnabled(enabled and self._doc is not None)
         self._palette_dock.setEnabled(enabled)
-        # The tools dock is only live in pixel mode with a document to paint on.
-        self._tools_dock.setEnabled(enabled and self._edit_mode is EditMode.PIXEL)
+        # The tools rail is only live in pixel mode with a document to paint on.
+        self._tools_panel.setEnabled(enabled and self._edit_mode is EditMode.PIXEL)
 
     def _show_empty(self) -> None:
         """Nothing open: clear the canvas, disable everything document-bound."""
@@ -790,8 +812,7 @@ class MainWindow(
         self._update_window_title()
         self._sync_nav()
         self.statusBar().showMessage(
-            f"{entry.name}: file not found - File ▸ Locate missing files "
-            "to re-point it."
+            f"{entry.name}: file not found - use File ▸ Locate missing files."
         )
 
     def _remove_entry(self, entry: Entry) -> None:
@@ -949,25 +970,21 @@ class MainWindow(
         file_menu.addAction(open_pixel)
 
         open_palette_data = QAction("Open palette data…", self)
-        open_palette_data.setToolTip(
-            "Add a palette file to the Palettes section of the files list - "
-            "double-click it there to apply it to the view"
-        )
+        open_palette_data.setToolTip("Add a palette file to the Palettes list")
         open_palette_data.triggered.connect(self._prompt_add_palette_file)
         file_menu.addAction(open_palette_data)
 
         file_menu.addSeparator()
 
         open_project = QAction("Open Project…", self)
-        open_project.setToolTip("Resume a saved session from a .celpix project file")
+        open_project.setToolTip("Open a .celpix project")
         open_project.setShortcut(QKeySequence.StandardKey.Open)  # Ctrl+O
         open_project.triggered.connect(self._open_project)
         file_menu.addAction(open_project)
 
         save_project = QAction("Save Project", self)
         save_project.setToolTip(
-            "Save the open files/slices and their settings (references, "
-            "never the edited bytes) to a .celpix project file"
+            "Save the session to a .celpix project - references, not bytes"
         )
         save_project.setShortcut(QKeySequence.StandardKey.Save)  # Ctrl+S
         save_project.triggered.connect(self._save_project)
@@ -979,10 +996,7 @@ class MainWindow(
         file_menu.addAction(save_project_as)
 
         self._locate_missing_action = QAction("Locate missing files…", self)
-        self._locate_missing_action.setToolTip(
-            "Re-point project entries whose referenced file (or palette) has "
-            "moved since the project was saved"
-        )
+        self._locate_missing_action.setToolTip("Re-point entries whose file has moved")
         self._locate_missing_action.triggered.connect(
             lambda: self._relocate_missing(prompt_summary=False)
         )
@@ -992,18 +1006,14 @@ class MainWindow(
         file_menu.addSeparator()
 
         self._new_slice_action = QAction("New Slice…", self)
-        self._new_slice_action.setToolTip(
-            "Mark an offset+length region of the current file as its own entry"
-        )
+        self._new_slice_action.setToolTip("Mark a region of this file as its own entry")
         self._new_slice_action.triggered.connect(self._new_slice_current)
         self._new_slice_action.setEnabled(False)
         file_menu.addAction(self._new_slice_action)
 
         self._new_slice_from_view_action = QAction("New Slice from View", self)
         self._new_slice_from_view_action.setToolTip(
-            "New slice covering the current viewport - its position and "
-            "visible extent (or the structure in view, when the compression "
-            "preview found one)"
+            "New slice covering the current view"
         )
         self._new_slice_from_view_action.triggered.connect(self._new_slice_from_view)
         self._new_slice_from_view_action.setEnabled(False)
@@ -1022,10 +1032,7 @@ class MainWindow(
         file_menu.addAction(self._new_slice_from_selection_action)
 
         self._new_bookmark_action = QAction("New Bookmark", self)
-        self._new_bookmark_action.setToolTip(
-            "Bookmark the current position, with a snapshot of the current "
-            "settings - jumping back restores both"
-        )
+        self._new_bookmark_action.setToolTip("Bookmark this position and its settings")
         self._new_bookmark_action.setShortcut(QKeySequence("Ctrl+B"))
         self._new_bookmark_action.triggered.connect(self._new_bookmark_current)
         self._new_bookmark_action.setEnabled(False)
@@ -1034,18 +1041,14 @@ class MainWindow(
         file_menu.addSeparator()
 
         self._write_action = QAction("Write", self)
-        self._write_action.setToolTip(
-            "Write the current file or slice's bytes back to disk"
-        )
+        self._write_action.setToolTip("Write this file or slice back to disk")
         self._write_action.setShortcut(QKeySequence("Ctrl+W"))
         self._write_action.triggered.connect(self._write_current)
         self._write_action.setEnabled(False)
         file_menu.addAction(self._write_action)
 
         self._write_all_action = QAction("Write All", self)
-        self._write_all_action.setToolTip(
-            "Write every open file and slice with unsaved changes"
-        )
+        self._write_all_action.setToolTip("Write all unsaved files and slices")
         self._write_all_action.setShortcut(QKeySequence("Ctrl+Shift+W"))
         self._write_all_action.triggered.connect(self._write_all)
         self._write_all_action.setEnabled(False)  # armed by dirty entries
@@ -1058,19 +1061,14 @@ class MainWindow(
         file_menu.addSeparator()
 
         open_plugins = QAction("Open plugins folder…", self)
-        open_plugins.setToolTip(
-            "Drop plugins into pixel/, palette/, compression/ or containers/ "
-            "(preset .toml or code .py)"
-        )
+        open_plugins.setToolTip("Drop .toml presets or .py plugins here")
         open_plugins.triggered.connect(self._open_plugins_folder)
         open_plugins.setEnabled(self._plugin_dir is not None)
         file_menu.addAction(open_plugins)
 
         refresh = QAction("Refresh plugins", self)
         refresh.setShortcut(QKeySequence.StandardKey.Refresh)  # F5
-        refresh.setToolTip(
-            "Reload plugins from the folder and re-run on the open file (developer aid)"
-        )
+        refresh.setToolTip("Reload plugins and re-run on the open file")
         refresh.triggered.connect(self._refresh_plugins)
         refresh.setEnabled(self._reload_plugins is not None)
         file_menu.addAction(refresh)
@@ -1097,7 +1095,7 @@ class MainWindow(
         # toggled surface the rest of the code already drives, so the view-state
         # capture/restore paths need no special-casing.
         self._grid = QAction("Grid", self, checkable=True)
-        self._grid.setToolTip("Overlay a per-tile grid (at zoom ≥ 2)")
+        self._grid.setToolTip("Overlay a tile grid (zoom >= 2)")
         self._grid.toggled.connect(self._on_view_change)
         # Display-only shortcut, like Palette ▸ Load from Selection: the bare "G"
         # is routed by the app-wide event filter (_handle_nav_key), which yields
@@ -1106,6 +1104,36 @@ class MainWindow(
         self._grid.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
         menu.addAction(self._grid)
         self._build_grid_style_menu(menu)
+        menu.addSeparator()
+        self._build_zoom_actions(menu)
+
+    def _build_zoom_actions(self, view_menu) -> None:  # noqa: ANN001 - QMenu
+        """View ▸ Zoom In / Zoom Out - the keyboard route to the zoom spin.
+
+        Real shortcuts (not the event-filter kind the bare-key nav uses): the
+        bare +/- are already the byte nudge, so zoom takes the platform's standard
+        Ctrl combos, which nothing routes through the nav map. Ctrl+= joins Zoom
+        In because the standard Ctrl++ needs Shift on most layouts.
+
+        The wheel gesture is what the entries advertise, written into the label
+        after a tab (the Navigate menu's idiom) because no QKeySequence can
+        express a scroll direction. Qt renders that tab text *instead* of the
+        registered shortcut, so the Ctrl combos still fire - they just aren't the
+        thing in the shortcut column, and the tooltip names them so they stay
+        discoverable.
+        """
+        zoom_in = QAction("Zoom In\tCtrl + Scroll Up", self)
+        sequences = QKeySequence.keyBindings(QKeySequence.StandardKey.ZoomIn)
+        sequences.append(QKeySequence("Ctrl+="))
+        zoom_in.setShortcuts(sequences)
+        zoom_in.setToolTip("Zoom in (Ctrl++)")
+        zoom_in.triggered.connect(lambda: self._zoom_steps(1))
+        view_menu.addAction(zoom_in)
+        zoom_out = QAction("Zoom Out\tCtrl + Scroll Down", self)
+        zoom_out.setShortcut(QKeySequence.StandardKey.ZoomOut)
+        zoom_out.setToolTip("Zoom out (Ctrl+-)")
+        zoom_out.triggered.connect(lambda: self._zoom_steps(-1))
+        view_menu.addAction(zoom_out)
 
     def _build_grid_style_menu(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Grid Style ▸ the YY-CHR style set (Point/Dot/Dash/Line).
@@ -1148,8 +1176,11 @@ class MainWindow(
         palette_toggle = self._palette_dock.toggleViewAction()
         palette_toggle.setText("Palette Panel")
         menu.addAction(palette_toggle)
-        tools_toggle = self._tools_dock.toggleViewAction()
-        tools_toggle.setText("Tools Panel")
+        # The tools rail is a plain widget, not a dock, so its toggle is a plain
+        # checkable action driving the widget's visibility.
+        tools_toggle = QAction("Tools Panel", self, checkable=True)
+        tools_toggle.setChecked(self._tools_panel.isVisible())
+        tools_toggle.toggled.connect(self._tools_panel.setVisible)
         menu.addAction(tools_toggle)
         hex_toggle = self._hex_dock.toggleViewAction()
         hex_toggle.setText("Hex Panel")
@@ -1275,6 +1306,9 @@ class MainWindow(
         )
         self._canvas.set_filled_tiles(filled)
         self._canvas.set_image(image)
+        # A lifted float's source is shown blank, never written, so a fresh base
+        # image has to have that hole punched back into it.
+        self._refresh_float_preview()
         self._refresh_selection(cols * rows)
         self._palette_panel.set_palette(self._doc.palette.colors)
         self._palette_panel.set_active_range(base, group)
@@ -1282,6 +1316,9 @@ class MainWindow(
         self._update_color_details()
         self._sync_color_editor()
         self._sync_nav()
+        # The pen's colour can move under the preview without the pen itself
+        # changing (a palette edit, another subpalette row, a new format).
+        self._sync_paint_preview()
         self._refresh_overlay()
         self._refresh_hex()
         # Everything above landed in doc.view, which a project save writes out.

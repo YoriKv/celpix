@@ -1,4 +1,4 @@
-"""Pixel-mode editing: the drawing tools, the pen, and the tools dock.
+"""Pixel-mode editing: the drawing tools, the pen, and the tools rail.
 
 This mixin is the brain of pixel mode. It owns the edit-mode switch, the active
 tool, the pen color, and the machinery that turns a canvas gesture into an
@@ -21,12 +21,22 @@ compositor's inverse, :func:`~celpix.core.arrangement.split_grid`)::
 Only the tiles that actually changed are re-encoded (the min..max touched slot),
 so untouched tiles are never round-tripped and the undo step is the edit, not the
 whole window.
+
+**The float.** A selection whose pixels have been picked up — by a move or a
+paste — is *in the air*: it hides what is under it and shows its source blank,
+but the document is untouched for as long as it hovers. It comes down when the
+selection is cleared or replaced (and on the paths that can't keep it: a drawing
+gesture, leaving pixel mode, switching entry, a write), and only then does one
+edit blank the source and overwrite the destination. Everything else about a
+float is display state, which is why undo can carry one (:class:`FloatState`):
+dropping it back out of the air reveals the pixels exactly where they still are.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QRect, QSettings, Qt
-from PySide6.QtWidgets import QDockWidget
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QApplication
 
 from celpix.core import draw
 from celpix.core.arrangement import compose_window, split_grid
@@ -35,6 +45,7 @@ from celpix.ui import clipboard, render_bridge
 from celpix.ui.main_window.selection import SELECTION_SHAPE_KEY, SelectionShape
 from celpix.ui.tools import TOOL_BY_KEY, TOOL_SPEC, EditMode, Gesture, Tool
 from celpix.ui.tools_panel import ToolsPanel
+from celpix.ui.undo_commands import FloatState, PixelSelectionCommand
 from celpix.ui.widgets import (
     load_enum_setting,
     select_combo_data,
@@ -72,38 +83,49 @@ class PixelEditMixin:
         self._stroke_anchor = (0, 0)
         self._stroke_last = (0, 0)
         # Pixel selection & floating selection. The marquee is a pixel rectangle;
-        # a float is a lifted grid the user drags at ``_float_pos``. ``_float_base``
-        # is the window grid to composite it onto at stamp time, and
-        # ``_float_source_rect`` the hole a *move* leaves (blanked on stamp) — None
-        # for a paste, which removes nothing. ``_float_offset`` is the grab point
-        # within the float while dragging.
+        # a float is a lifted grid hovering at ``_float_pos``, and while one is in
+        # the air it *is* the selection, so the marquee tracks it.
+        # ``_float_source_rect`` is the hole a *move* owes — shown blank while the
+        # pixels are up, written only when they land — and None for a paste, which
+        # removes nothing. ``_float_offset`` is the grab point within the float
+        # while dragging.
         self._marquee: QRect | None = None
         self._marquee_anchor = (0, 0)
+        # The selection as it stood when the current gesture began, so the step it
+        # pushes can put it back (see _marquee_press / _marquee_release).
+        self._marquee_before: QRect | None = None
+        # Whether the press in progress is what lifted the live float (a
+        # double-click discards such a float, but sets down one it merely grabbed).
+        self._lifted_on_press = False
         self._float_grid = None
         self._float_pos = (0, 0)
-        self._float_base = None
         self._float_source_rect: QRect | None = None
         self._float_offset = (0, 0)
 
-    def _build_tools_dock(self) -> None:
-        """The drawing-tools dock, stacked **below** the palette dock.
+    def _build_tools_bar(self) -> ToolsPanel:
+        """The drawing-tools rail down the canvas's right edge.
 
-        Built after the palette dock so ``splitDockWidget`` can put it in the same
-        right-hand column. Disabled until pixel mode with a document is active —
-        the tools have nothing to act on otherwise.
+        A plain widget dropped into the canvas layout beside the transform toolbar
+        (not a dock), so both read as toolbars belonging to the editing surface.
+        Returned for the window to place; disabled until pixel mode with a document
+        is active — the tools have nothing to act on otherwise.
+
+        Tile mode is itself a selection mode, so the rail opens showing Select
+        rather than the saved pixel tool (the window always starts in tile mode).
         """
         self._tools_panel = ToolsPanel()
+        if self._edit_mode is EditMode.TILE:
+            self._tool = Tool.SELECT
         self._tools_panel.set_tool(self._tool)
         self._tools_panel.tool_selected.connect(self._on_tool_selected)
-        self._tools_dock = QDockWidget("Tools", self)
-        self._tools_dock.setObjectName("tools-dock")  # keeps saveState usable
-        self._tools_dock.setWidget(self._tools_panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._tools_dock)
-        self.splitDockWidget(
-            self._palette_dock, self._tools_dock, Qt.Orientation.Vertical
-        )
-        self._tools_dock.setEnabled(False)
-        # Picking a palette swatch takes the pen back from a direct-color eyedrop.
+        self._tools_panel.setEnabled(False)
+        return self._tools_panel
+
+    def _connect_pixel_palette(self) -> None:
+        """Picking a palette swatch takes the pen back from a direct-color eyedrop.
+
+        Wired once the palette dock exists (the rail is built earlier, with the
+        canvas layout, so this connection can't ride along in its builder)."""
         self._palette_panel.color_selected.connect(self._on_pen_color_selected)
 
     def _connect_pixel_canvas(self) -> None:
@@ -112,6 +134,7 @@ class PixelEditMixin:
         self._canvas.pixel_pressed.connect(self._on_pixel_pressed)
         self._canvas.pixel_moved.connect(self._on_pixel_moved)
         self._canvas.pixel_released.connect(self._on_pixel_released)
+        self._canvas.pixel_double_clicked.connect(self._on_pixel_double_clicked)
 
     # -- mode switching ----------------------------------------------------
     def _set_edit_mode(self, mode: EditMode) -> None:
@@ -119,12 +142,15 @@ class PixelEditMixin:
 
         Pixel mode is rectangle-only, so the Selection Shape picker is forced to
         Rectangle and disabled (their saved preference is preserved, restored on
-        the way back); the canvas switches to painting; the tools dock arms; the
+        the way back); the canvas switches to painting; the tools rail arms; the
         Block transform group hides. Any tile selection is dropped so its
-        highlight doesn't linger over the paint surface.
+        highlight doesn't linger over the paint surface — and the status line
+        with it, which otherwise still announces a selection that is gone. Pixels
+        still in the air are set down: the tile surface has nowhere to keep them.
         """
         if mode == self._edit_mode:
             return
+        self._commit_float()
         self._edit_mode = mode
         pixel = mode is EditMode.PIXEL
         with signals_blocked(self._edit_mode_action):
@@ -142,32 +168,39 @@ class PixelEditMixin:
         self._clear_stroke()
         self._clear_float()
         self._clear_selection()
+        self.statusBar().clearMessage()
+        if not pixel:
+            # Tile mode selects rather than paints, so swap to Select: the rail
+            # keeps that button checked (highlighted as the active tool) even while
+            # the whole rail is disabled, so it still reads as what a drag does.
+            self._on_tool_selected(Tool.SELECT)
         self._sync_mode_ui()
         if self._doc is not None:
             self._refresh_view()
 
     def _sync_mode_ui(self) -> None:
-        """Show/hide the mode-dependent transform-bar bits and the tools dock."""
+        """Show/hide the mode-dependent transform-bar groups and the tools rail."""
         pixel = self._edit_mode is EditMode.PIXEL
-        # The Block group has no meaning on a pixel selection; hide it. The Tile
-        # group is repurposed to transform the pixel region (see transform.py).
-        for action in (*self._block_group.flips, *self._block_group.rotates):
-            action.setVisible(not pixel)
-        self._tools_dock.setEnabled(pixel and self._doc is not None)
+        # Swap the visible transform groups: Tile + Block for tile editing, the
+        # dedicated Pixel group for pixel editing (see transform.py).
+        self._sync_transform_bar_mode()
+        self._tools_panel.setEnabled(pixel and self._doc is not None)
+        self._sync_paint_preview()
         self._sync_transform_actions()
 
     def _on_tool_selected(self, tool: Tool) -> None:
-        # Switching tools stamps any live floating selection first, so it can't
-        # straddle two tools.
-        self._commit_float()
+        # Picking a tool leaves a live float alone: a selection is dropped by
+        # clearing it or by making a new one, not by reaching for another tool.
         self._tool = tool
         QSettings().setValue(TOOL_KEY, tool.value)
         self._tools_panel.set_tool(tool)
+        self._sync_paint_preview()  # a different tool may not paint at all
 
     # -- pen ---------------------------------------------------------------
     def _on_pen_color_selected(self, _index: int) -> None:
         """A palette-swatch pick takes the pen back from a direct-color eyedrop."""
         self._pen_argb = None
+        self._sync_paint_preview()
 
     def _pen_value(self) -> int:
         """The value the pen writes into the working grid.
@@ -187,6 +220,37 @@ class PixelEditMixin:
         if selected is None:
             return 0
         return max(0, min(selected - base, space - 1))
+
+    def _sync_paint_preview(self) -> None:
+        """Arm the canvas's one-pixel pen preview for the active drawing tool.
+
+        Only the tools that lay down paint get it — the eyedropper samples and the
+        marquee selects, so neither previews a colour. Called wherever the pen, the
+        tool, the palette or the mode can have moved under it.
+        """
+        drawing = {Gesture.FREEHAND, Gesture.SHAPE, Gesture.FILL}
+        if (
+            self._doc is None
+            or self._edit_mode is not EditMode.PIXEL
+            or TOOL_SPEC[self._tool].gesture not in drawing
+        ):
+            self._canvas.set_paint_preview(None)
+            return
+        self._canvas.set_paint_preview(QColor.fromRgba(self._pen_color_argb()))
+
+    def _pen_color_argb(self) -> int:
+        """The ARGB the pen would write — what the preview shows.
+
+        Direct-colour views carry the ARGB in the pen value itself; indexed views
+        carry an index *within* the active subpalette, so it is rebased to an
+        absolute palette index before the lookup.
+        """
+        assert self._doc is not None
+        value = self._pen_value()
+        if self._is_direct_color():
+            return value
+        base = self._subpalette.value() * self._index_space()
+        return self._doc.palette.color(base + value)
 
     # -- the window-grid round-trip ---------------------------------------
     def _window_grid(self):
@@ -221,7 +285,9 @@ class PixelEditMixin:
         base = self._subpalette.value() * self._index_space()
         self._canvas.set_image(render_bridge.render(grid, self._doc.palette, base))
 
-    def _commit_grid(self, grid, base_grid, text: str) -> int:
+    def _commit_grid(
+        self, grid, base_grid, text: str, *, no_op_step: bool = True
+    ) -> int:
         """Write only the tiles that differ between ``base_grid`` and ``grid``.
 
         Both are split back into storage-order tiles; the changed slots form a
@@ -229,6 +295,11 @@ class PixelEditMixin:
         so untouched tiles are never re-encoded. Always ends with a real
         ``_refresh_view`` — that repaints the committed result, and cleanly
         reverts a transient preview when nothing changed.
+
+        ``no_op_step`` records a gesture that changed nothing as an empty step
+        anyway, so a *painting* interaction always costs one step. Selection
+        gestures pass ``False``: dropping a float back where it started is not an
+        edit, and shouldn't litter the history.
         """
         assert self._doc is not None
         tw, th = self._doc.tile_width, self._doc.tile_height
@@ -242,6 +313,10 @@ class PixelEditMixin:
             written = self._apply_tile_edit(
                 self._offset + lo, new_tiles[lo : hi + 1], text
             )
+        elif no_op_step:
+            # The gesture happened but moved no pixels — still one interaction, so
+            # it takes a step of its own rather than vanishing from the history.
+            self._push_pixel_interaction(self._marquee, self._marquee, text)
         self._refresh_view()
         return written
 
@@ -256,6 +331,11 @@ class PixelEditMixin:
             return
         if button != Qt.MouseButton.LeftButton:
             return
+        if spec.gesture is not Gesture.MARQUEE:
+            # Painting under a live float would paint *beneath* pixels that are
+            # still in the air, against a base captured before the stroke — so a
+            # paint/fill gesture lands the float first.
+            self._commit_float()
         if spec.gesture is Gesture.FILL:
             self._fill_at(x, y)
         elif spec.gesture is Gesture.MARQUEE:
@@ -344,50 +424,178 @@ class PixelEditMixin:
             base = self._subpalette.value() * self._index_space()
             self._palette_panel.select_index(base + value)
             self.statusBar().showMessage(f"Picked color index {value}.")
+        # The direct-colour branch sets the pen behind the palette panel's back,
+        # so the preview is re-armed here rather than off its selection signal.
+        self._sync_paint_preview()
 
     # -- marquee & floating selection --------------------------------------
     def _marquee_press(self, x: int, y: int) -> None:
-        """Press with the Select tool: move an existing selection, else start one.
+        """Press with the Select tool: take hold of the selection, else start one.
 
-        Pressing inside the current marquee lifts its pixels into a floating
-        selection and begins a move (the source shows blanked until the drop);
-        anywhere else stamps any live float and anchors a fresh rectangle the drag
-        grows.
+        Pressing inside the selection picks its pixels up — lifting them into a
+        floating selection the first time, then grabbing that same float on every
+        later press — so a selection can be nudged as often as the user likes
+        before it comes down. Pressing anywhere else **lands** a live float over
+        whatever it hovers on and anchors a fresh rectangle the drag grows.
         """
-        self._commit_float()
+        # The selection as it stood before this gesture — what an undo of the
+        # resulting step puts back (see _marquee_release).
+        self._marquee_before = None if self._marquee is None else QRect(self._marquee)
         if self._marquee is not None and self._marquee.contains(x, y):
-            self._lift_float(cut=True)
+            self._lifted_on_press = self._float_grid is None
+            if self._lifted_on_press:
+                self._lift_float(cut=True)
             if self._float_grid is not None:
                 fx, fy = self._float_pos
                 self._float_offset = (x - fx, y - fy)
             return
+        self._lifted_on_press = False
+        self._commit_float()  # pressing away from the pixels sets them down
         self._marquee_anchor = (x, y)
         self._marquee = QRect(x, y, 1, 1)
         self._canvas.set_marquee(self._marquee)
+
+    def _on_pixel_double_clicked(self, x: int, y: int) -> None:
+        """Double-click with Select: take the whole tile the pixel sits in.
+
+        The press that opened the double-click already began a gesture — a fresh
+        1x1 marquee, or a grab on the selection's pixels. A float that press
+        *lifted* is discarded, since the double-click supersedes it and a lift
+        has written nothing; one that was already in the air is a selection of
+        its own, so it comes down where it hovers first. ``_marquee_before``
+        still holds the selection as it stood before that press, so the
+        re-selection lands as the one undo step a single interaction should.
+        """
+        if self._doc is None or TOOL_SPEC[self._tool].gesture is not Gesture.MARQUEE:
+            return
+        if self._lifted_on_press:
+            self._clear_float()  # also drops the press's marquee
+            self._refresh_view()  # repaint over the blanked-source preview
+        else:
+            self._commit_float()
+        grid = self._window_grid()
+        if grid is None:
+            return
+        tile_w, tile_h = self._doc.tile_width, self._doc.tile_height
+        # Tiles are composed into the window on tile-sized cells whatever the
+        # arrangement, so the cell is a plain floor-divide — and clipping keeps a
+        # partial tile at the window's edge inside the image.
+        rect = QRect(
+            (x // tile_w) * tile_w, (y // tile_h) * tile_h, tile_w, tile_h
+        ).intersected(QRect(0, 0, grid.width, grid.height))
+        if rect.isEmpty():
+            return
+        before = self._marquee_before
+        self._marquee = rect
+        self._marquee_anchor = (rect.x(), rect.y())
+        self._canvas.set_marquee(rect)
+        if before != rect:
+            self._push_pixel_interaction(before, rect, "select tile")
+        self._after_pixel_change()
+        self.statusBar().showMessage(f"Selected the {tile_w}×{tile_h} tile.")
 
     def _marquee_drag(self, x: int, y: int) -> None:
         if self._float_grid is not None:
             ox, oy = self._float_offset
             self._float_pos = (x - ox, y - oy)
+            self._sync_float_marquee()
             self._show_float()
             return
         if self._marquee is None:
             return
         ax, ay = self._marquee_anchor
+        if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
+            x, y = self._square_corner(ax, ay, x, y)
         self._marquee = QRect(min(ax, x), min(ay, y), abs(x - ax) + 1, abs(y - ay) + 1)
         self._canvas.set_marquee(self._marquee)
 
+    def _square_corner(self, ax: int, ay: int, x: int, y: int) -> tuple[int, int]:
+        """Snap the drag corner ``(x, y)`` so the marquee is square (Shift held).
+
+        The side is the larger of the two drag extents, kept in the drag's
+        direction from the anchor, then clamped so the square can't run off the
+        window on either axis — a square that wouldn't fit shrinks to what does.
+        """
+        dx, dy = x - ax, y - ay
+        side = max(abs(dx), abs(dy))
+        if self._doc is not None:
+            win_w = self._columns.value() * self._doc.tile_width
+            win_h = self._rows.value() * self._doc.tile_height
+            room_x = (win_w - 1 - ax) if dx >= 0 else ax
+            room_y = (win_h - 1 - ay) if dy >= 0 else ay
+            side = min(side, room_x, room_y)
+        return ax + (side if dx >= 0 else -side), ay + (side if dy >= 0 else -side)
+
     def _marquee_release(self, x: int, y: int) -> None:
-        # A drawn marquee stays as the selection; a moved float keeps floating
-        # until it is stamped. Refresh the actions gated on "a selection exists".
+        """End a marquee gesture: park a moved float, or treat a bare click as
+        deselect.
+
+        A **move** sets nothing down here (see :meth:`_land_float`): the pixels
+        stay in the air with the selection on them, so they can be dragged on and
+        on — each drag its own undo step — until the selection is cleared or
+        replaced. Releasing without having dragged leaves everything as it was.
+
+        A bare *click* elsewhere — press and release on the same pixel, so the
+        anchor rect never grew past 1×1 — deselects instead. A one-pixel selection
+        is of no use, and clicking off a selection to drop it is what the gesture
+        reads as.
+        """
+        if self._float_grid is not None:
+            self._land_float()
+            self._after_pixel_change()
+            return
+        before = self._marquee_before
+        if (
+            self._marquee is not None
+            and self._marquee.width() == 1
+            and self._marquee.height() == 1
+        ):
+            self._clear_float()  # drops the marquee and its canvas overlay
+        # Making, replacing or dropping a selection is an interaction of its own —
+        # but a click that left the selection exactly as it was is not.
+        if before != self._marquee:
+            self._push_pixel_interaction(before, self._marquee, "select pixels")
         self._after_pixel_change()
+
+    def _land_float(self) -> None:
+        """Park a dragged float: the pixels stay in the air, the selection on them.
+
+        Releasing the mouse writes **nothing**. A move's source is *shown* blank
+        from the first drag onward, so the pixels read as picked up rather than
+        copied — but that hole is only owed, not written, and it stays at the
+        rectangle they were first lifted from however far they travel afterwards.
+        Both halves are settled at once when the pixels come down (see
+        :meth:`_commit_float`), which is what dropping or replacing the selection
+        does.
+
+        The drag is still one interaction, so the selection travelling with the
+        pixels takes one undo step — and because nothing has been written, undoing
+        it simply takes the float back out of the air, revealing the pixels
+        untouched where they came from.
+        """
+        assert self._float_grid is not None
+        before, after = self._marquee_before, self._float_rect()
+        self._sync_float_marquee()
+        if before == after:
+            return
+        state = FloatState(self._float_grid, self._float_source_rect)
+        self._push_pixel_interaction(
+            before,
+            after,
+            "move selection",
+            # The press either lifted this float (so before it there was only a
+            # marquee) or grabbed one already up, which undo has to put back.
+            before_float=None if self._lifted_on_press else state,
+            after_float=state,
+        )
 
     def _lift_float(self, cut: bool) -> None:
         """Lift the marquee's pixels into a floating selection.
 
-        Nothing is committed here — the move becomes a single undo step at stamp
-        time. When ``cut`` the source is shown blanked (a hole) while the float is
-        dragged and blanked for real on the drop; a non-cut lift leaves it intact.
+        Nothing is written here, on the drop, or anywhere in between — the whole
+        move becomes one undoable edit when the pixels land. When ``cut`` the
+        source is *shown* blank for as long as they are in the air (and blanked
+        for real when they come down); a non-cut lift leaves it alone.
         """
         if self._doc is None or self._marquee is None:
             return
@@ -399,32 +607,30 @@ class PixelEditMixin:
             base, rect.x(), rect.y(), rect.width(), rect.height()
         )
         self._float_pos = (rect.x(), rect.y())
-        self._float_base = base
-        self._float_source_rect = rect if cut else None
-        self._marquee = None
-        self._canvas.set_marquee(None)
-        if cut:
-            preview = self._clone_grid(base)
-            self._blank_rect(preview, rect)
-            self._render_preview(preview)
+        # Copied: the hole outlives the marquee it was lifted from, and rides the
+        # undo stack in a FloatState.
+        self._float_source_rect = QRect(rect) if cut else None
+        self._sync_float_marquee()
+        self._refresh_float_preview(base)
         self._show_float()
         self._after_pixel_change()
 
     def _commit_float(self) -> None:
-        """Stamp a live floating selection into the document as one undo step.
+        """Set a floating selection down: its pixels overwrite what they hover on.
 
-        Composites the float onto the base it was lifted/pasted over — blanking a
-        move's source hole first — and commits the net change. A no-op when no
-        float is live, so the drawing tools can call it freely before a new
-        gesture.
+        Composites the float onto the window **as it stands now** — blanking a
+        move's source for real on the way, so the whole move is one undoable edit
+        — and drops the selection with it. A no-op when no float is live, so every
+        "the selection is going away" path (Esc, a click elsewhere, a drawing
+        gesture, leaving pixel mode, a write) can call it freely.
         """
         if self._float_grid is None:
             return
-        base = self._float_base if self._float_base is not None else self._window_grid()
         float_grid = self._float_grid
         fx, fy = self._float_pos
         source = self._float_source_rect
         moved = source is not None
+        base = self._window_grid()
         self._clear_float()
         if base is None:
             return
@@ -432,16 +638,165 @@ class PixelEditMixin:
         if source is not None:
             self._blank_rect(dest, source)
         draw.blit_region(dest, float_grid, fx, fy)
-        self._commit_grid(dest, base, "move pixels" if moved else "paste pixels")
+        # Landing a float is a selection gesture, not a paint: if it never left
+        # home there is nothing to record, so no empty step.
+        self._commit_grid(
+            dest,
+            base,
+            "move pixels" if moved else "paste pixels",
+            no_op_step=False,
+        )
 
-    def _clear_float(self) -> None:
-        """Drop the float and marquee and their canvas overlays (no commit)."""
+    def _discard_float(self, text: str) -> None:
+        """Take the floating pixels out of the air without setting them down.
+
+        What a move already lifted stays gone — the hole it owed is written here —
+        so cutting or clearing a float means "these pixels are deleted", not "put
+        them back". A paste owes no hole, so discarding one writes nothing.
+        """
+        source = self._float_source_rect
+        base = self._window_grid()
+        self._clear_float()
+        if source is None or base is None:
+            if self._doc is not None:
+                self._refresh_view()  # take the float's overlay off the canvas
+            return
+        dest = self._clone_grid(base)
+        self._blank_rect(dest, source)
+        self._commit_grid(dest, base, text, no_op_step=False)
+
+    def _float_rect(self) -> QRect | None:
+        """Where the floating pixels are, or None with nothing in the air."""
+        if self._float_grid is None:
+            return None
+        fx, fy = self._float_pos
+        return QRect(fx, fy, self._float_grid.width, self._float_grid.height)
+
+    def _sync_float_marquee(self) -> None:
+        """Keep the selection on the floating pixels.
+
+        A float *is* the selection while it is up — the clipboard, the transforms
+        and the next press all read it through ``_marquee`` — so the rectangle
+        travels with the pixels instead of staying where they were lifted from.
+        The canvas draws the float's own outline, so it needs no marquee over it.
+        """
+        self._marquee = self._float_rect()
+        if hasattr(self, "_canvas"):
+            self._canvas.set_marquee(None)
+
+    def _refresh_float_preview(self, base=None) -> None:  # noqa: ANN001 — a grid
+        """Show the hole a lifted float owes, over the base image as it stands.
+
+        A move's source is only *shown* blank while the pixels are in the air, so
+        every repaint of the base — a scroll, a palette edit, an undo elsewhere —
+        has to punch it back in. A no-op when nothing is up or the float is a
+        paste, which removed nothing.
+        """
+        if self._float_source_rect is None or self._doc is None:
+            return
+        if base is None:
+            base = self._window_grid()
+            if base is None:
+                return
+        preview = self._clone_grid(base)
+        self._blank_rect(preview, self._float_source_rect)
+        self._render_preview(preview)
+
+    def _clear_selection_on_background(self) -> None:
+        """A click on the canvas surround (off the art) drops the pixel selection.
+
+        Clicking past the edge of the image is the same gesture as clicking away
+        from a selection inside it, so it reads as a deselect. A live float comes
+        down first — "click away to drop" — and a click with nothing selected
+        records nothing.
+        """
+        if self._edit_mode is not EditMode.PIXEL or self._doc is None:
+            return
+        if self._float_grid is not None:
+            self._commit_float()
+            self._after_pixel_change()
+            return
+        before = self._marquee
+        if before is None:
+            return
+        self._clear_float()  # drops the marquee and its canvas overlay
+        self._push_pixel_interaction(before, None, "clear selection")
+        self._after_pixel_change()
+
+    def _apply_marquee(
+        self, rect: QRect | None, float_state: FloatState | None = None
+    ) -> None:
+        """Restore a pixel selection from the undo stack — no commit either way.
+
+        A selection that was **in the air** comes back floating, with the hole its
+        move still owed: a float writes nothing until it lands, so restoring one is
+        pure display state and the pixels it shows are still in the document where
+        they were lifted from. Either end of a float transition repaints the base,
+        which is what puts that blanked source on screen or takes it off again.
+        """
+        had_float = self._float_grid is not None
+        self._clear_float()
+        self._marquee = None if rect is None else QRect(rect)
+        if float_state is not None and rect is not None:
+            self._float_grid = float_state.grid
+            self._float_pos = (rect.x(), rect.y())
+            self._float_source_rect = float_state.source
+        if hasattr(self, "_canvas"):
+            self._canvas.set_marquee(
+                None if self._float_grid is not None else self._marquee
+            )
+        if (had_float or self._float_grid is not None) and self._doc is not None:
+            self._refresh_view()  # re-renders the base, hole preview included
+        self._show_float()
+        self._after_pixel_change()
+
+    def _push_pixel_interaction(
+        self,
+        before: QRect | None,
+        after: QRect | None,
+        text: str,
+        *,
+        before_float: FloatState | None = None,
+        after_float: FloatState | None = None,
+    ) -> None:
+        """Record a pixel interaction that rewrote no bytes as its own undo step.
+
+        Covers a selection made/replaced/moved/dropped and a painting gesture that
+        changed nothing, so every interaction costs one step either way. The float
+        states say which ends of the transition had pixels in the air.
+        """
+        entry = self._workspace.current
+        if entry is None or self._applying_undo:
+            return
+        self._undo_stack.push(
+            PixelSelectionCommand(
+                self,
+                entry,
+                text,
+                before=before,
+                after=after,
+                before_float=before_float,
+                after_float=after_float,
+            )
+        )
+
+    def _drop_float(self) -> None:
+        """Take the floating pixels off the canvas without writing them.
+
+        The marquee is left alone: a float that is dropped rather than landed has
+        changed nothing, so what it hovers over — and what it was lifted from —
+        are both still exactly as the document has them.
+        """
         self._float_grid = None
-        self._float_base = None
         self._float_source_rect = None
-        self._marquee = None
         if hasattr(self, "_canvas"):
             self._canvas.set_float(None)
+
+    def _clear_float(self) -> None:
+        """Drop the float and the selection with it (no commit)."""
+        self._drop_float()
+        self._marquee = None
+        if hasattr(self, "_canvas"):
             self._canvas.set_marquee(None)
 
     def _blank_rect(self, grid, rect: QRect) -> None:
@@ -458,40 +813,59 @@ class PixelEditMixin:
         self._sync_transform_actions()
 
     # -- pixel clipboard (Cut / Copy / Paste / Clear / Select All) ---------
-    def _pixel_copy(self) -> None:
-        rect = self._marquee
-        if self._doc is None or rect is None:
-            self.statusBar().showMessage("Select a pixel rectangle to copy.")
-            return
-        base = self._window_grid()
-        if base is None:
-            return
-        region = draw.extract_region(
+    def _selected_region(self):
+        """The selected pixels themselves: the float when one is in the air, else
+        what the marquee covers in the window."""
+        if self._float_grid is not None:
+            return self._float_grid
+        rect, base = self._marquee, self._window_grid()
+        if rect is None or base is None:
+            return None
+        return draw.extract_region(
             base, rect.x(), rect.y(), rect.width(), rect.height()
         )
+
+    def _pixel_copy(self) -> None:
+        if self._doc is None or self._marquee is None:
+            self.statusBar().showMessage("Select a pixel rectangle to copy.")
+            return
+        region = self._selected_region()
+        if region is None:
+            return
         self._put_pixel_clipboard(region)
-        self.statusBar().showMessage(f"Copied {rect.width()}×{rect.height()} pixels.")
+        self.statusBar().showMessage(f"Copied {region.width}×{region.height} pixels.")
 
     def _pixel_cut(self) -> None:
         rect = self._marquee
         if self._doc is None or rect is None:
             return
+        region = self._selected_region()
+        if region is None:
+            return
+        self._put_pixel_clipboard(region)
+        size = f"{region.width}×{region.height}"
+        if self._float_grid is not None:
+            # Already off the page: cutting is just never setting them down.
+            self._discard_float("cut pixels")
+            self.statusBar().showMessage(f"Cut {size} pixels.")
+            return
         base = self._window_grid()
         if base is None:
             return
-        region = draw.extract_region(
-            base, rect.x(), rect.y(), rect.width(), rect.height()
-        )
-        self._put_pixel_clipboard(region)
         grid = self._clone_grid(base)
         self._blank_rect(grid, rect)
         self._clear_float()
         if self._commit_grid(grid, base, "cut pixels"):
-            self.statusBar().showMessage(f"Cut {rect.width()}×{rect.height()} pixels.")
+            self.statusBar().showMessage(f"Cut {size} pixels.")
 
     def _pixel_clear(self) -> None:
         rect = self._marquee
         if self._doc is None or rect is None:
+            return
+        size = f"{rect.width()}×{rect.height()}"
+        if self._float_grid is not None:
+            self._discard_float("clear pixels")
+            self.statusBar().showMessage(f"Cleared {size} pixels.")
             return
         base = self._window_grid()
         if base is None:
@@ -500,29 +874,60 @@ class PixelEditMixin:
         self._blank_rect(grid, rect)
         self._clear_float()
         if self._commit_grid(grid, base, "clear pixels"):
-            self.statusBar().showMessage(
-                f"Cleared {rect.width()}×{rect.height()} pixels."
-            )
+            self.statusBar().showMessage(f"Cleared {size} pixels.")
 
     def _pixel_paste(self) -> None:
+        """Drop the clipboard in as a floating selection, centred on the view.
+
+        A paste arrives **in the air**: it hides what is under it but writes
+        nothing, so it can be dragged into place — and thrown away again — before
+        it lands, which is what clearing or replacing the selection does. It comes
+        in centred on what is on screen rather than at the origin, so it arrives
+        where the user is looking however far the view is scrolled — and takes the
+        Select tool with it, since a paste that can't be dragged without first
+        reaching for a tool may as well have landed where it fell.
+        """
         if self._doc is None:
             return
         region = self._take_pixel_clipboard()
         if region is None:
             self.statusBar().showMessage("Nothing on the clipboard to paste here.")
             return
-        self._commit_float()  # stamp any live float first
-        at = (self._marquee.x(), self._marquee.y()) if self._marquee else (0, 0)
-        self._marquee = None
-        self._canvas.set_marquee(None)
+        before = None if self._marquee is None else QRect(self._marquee)
+        self._commit_float()  # set any live float down first
         self._float_grid = region
-        self._float_pos = at
-        self._float_base = self._window_grid()
-        self._float_source_rect = None
+        self._float_pos = self._centred_position(region.width, region.height)
+        self._float_source_rect = None  # a paste lifted nothing, so it owes no hole
+        self._sync_float_marquee()
         self._show_float()
+        # Only the Select tool can pick a float up; any other would land it on the
+        # first press, so arm the one the paste is asking to be dragged with.
+        if TOOL_SPEC[self._tool].gesture is not Gesture.MARQUEE:
+            self._on_tool_selected(Tool.SELECT)
+        self._push_pixel_interaction(
+            before,
+            self._marquee,
+            "paste pixels",
+            after_float=FloatState(region),
+        )
         self._after_pixel_change()
         self.statusBar().showMessage(
-            "Pasted a floating selection — drag it, then Esc or click away to drop."
+            "Pasted - drag it; it lands when the selection is cleared."
+        )
+
+    def _centred_position(self, width: int, height: int) -> tuple[int, int]:
+        """Top-left for a ``width``×``height`` region centred on the viewport.
+
+        Clamped so it starts inside the window; a region larger than the window
+        still overhangs its right/bottom edge, which is the only place it can go.
+        """
+        assert self._doc is not None
+        cx, cy = self._viewport_centre_pixel()
+        window_w = self._columns.value() * self._doc.tile_width
+        window_h = self._rows.value() * self._doc.tile_height
+        return (
+            max(0, min(cx - width // 2, window_w - width)),
+            max(0, min(cy - height // 2, window_h - height)),
         )
 
     def _pixel_select_all(self) -> None:
@@ -532,8 +937,10 @@ class PixelEditMixin:
         grid = self._window_grid()
         if grid is None:
             return
+        before = self._marquee
         self._marquee = QRect(0, 0, grid.width, grid.height)
         self._canvas.set_marquee(self._marquee)
+        self._push_pixel_interaction(before, self._marquee, "select all pixels")
         self._after_pixel_change()
 
     def _put_pixel_clipboard(self, region) -> None:
@@ -588,7 +995,7 @@ class PixelEditMixin:
                 return True
         return False
 
-    # -- pixel-region transforms (Tile group in pixel mode) ----------------
+    # -- pixel-region transforms (the Pixel transform group) ---------------
     def _pixel_transform_source(self) -> QRect | None:
         """The pixel rectangle a flip/rotate acts on: the float, else the marquee.
 
@@ -611,6 +1018,7 @@ class PixelEditMixin:
         """
         if self._float_grid is not None:
             self._float_grid = op.pixel_fn(self._float_grid)
+            self._sync_float_marquee()  # a rotate can swap the region's sides
             self._show_float()
             self.statusBar().showMessage(f"{op.past} the floating selection.")
             return

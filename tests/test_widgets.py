@@ -1,4 +1,6 @@
-"""CommittingLineEdit: commit-on-finish, emit-if-valid, always self-normalise."""
+"""Standalone widget behaviour: the committing line edit's commit-on-finish /
+emit-if-valid / self-normalise contract, the checklist popup's clamp spring-back,
+and the geometry of the tool-rail glyphs."""
 
 from __future__ import annotations
 
@@ -60,3 +62,49 @@ def test_checklist_popup_springs_back_when_owner_clamps(qtbot) -> None:
     assert not button._boxes["b"].isChecked()
     button._boxes["a"].setChecked(False)  # would empty the set -> clamped back
     assert button._boxes["a"].isChecked()
+
+
+def test_marquee_glyph_is_centred_like_the_other_tool_shapes() -> None:
+    """The marquee's dashed outline must sit on the same footprint as the shapes
+    it shares the rail with, and be a mirror of itself both ways.
+
+    Two distinct ways it has drifted off-centre, hence two assertions. Its pen is
+    thinner than the other outlines' and lands on an *odd* width (1 px at 1x, 3 px
+    at 2x), where an integer inset spills a pixel past the filled bounds — that
+    moves the footprint. And a dashed rectangle stroked in one pass runs a single
+    phase around the whole perimeter, so it ends mid-pattern and leaves whichever
+    corners it lands on bare — that leaves the bounds correct but the ink
+    lopsided, which only the symmetry check catches. Both scales are tested
+    because the pen parity only trips at one of them.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QPainter, QPixmap
+
+    from celpix.ui.tools_panel import ToolsPanel
+
+    def alpha(shape: str, box: int) -> list[list[int]]:
+        pixmap = QPixmap(box, box)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        ToolsPanel._paint_shape(painter, shape, box)
+        painter.end()
+        image = pixmap.toImage()
+        return [
+            [image.pixelColor(x, y).alpha() for x in range(box)] for y in range(box)
+        ]
+
+    def bounds(rows: list[list[int]]) -> tuple[int, int]:
+        """The first and last columns holding any ink."""
+        box = len(rows)
+        lit = [x for y in range(box) for x in range(box) if rows[y][x]]
+        return min(lit), max(lit)
+
+    for box in (20, 40):  # the 1x and 2x device-pixel-ratio sizes
+        rows = alpha("marquee", box)
+        first, last = bounds(rows)
+        assert first == box - 1 - last  # equal margins either side: centred
+        assert (first, last) == bounds(alpha("rect_filled", box))  # the set's box
+        # Mirrored horizontally and vertically — an unclosed corner shows up here
+        # and nowhere else, since it leaves the bounding box untouched.
+        assert rows == [list(reversed(row)) for row in rows]
+        assert rows == rows[::-1]

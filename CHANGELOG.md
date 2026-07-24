@@ -1,26 +1,17 @@
 # Changelog
 
-## v0.1.1 - unreleased
+## v0.2.0 - unreleased
 
-- **File palettes**: a palette file is now owned by its entry in the Palettes
-  list — editing it marks the palette dirty (not the graphic), one edit updates
-  every graphic using it, and deleting one re-homes those graphics onto custom
-  copies of its colors.
-- **Geometric transforms**: a new toolbar above the canvas flips and rotates the
-  selection. Supports both tile and block/rectangle based flip/rotate.
-- **Pixel editing mode**: a toggle on the transform toolbar switches the canvas
-  into pixel painting — pencil, line, rectangle, ellipse, fill and eyedropper in
-  a new Tools panel, a pixel rectangle selection with a draggable floating
-  selection (cut/copy/paste/clear and flip/rotate act on pixels), every edit one
-  undo step.
-- **Pixel format filter**: filter pixel formats down to shorter list to make it
-  easier to cycle through a small number of potential formats.
-- **Copy/paste palette colors**: Ctrl+C/Ctrl+V copies the selected swatch and
-  Ctrl+Shift+C/V the whole active subpalette; also on a right-click menu. Colors
-  travel as hex, so they move to and from other apps that use hex.
+- **Canvas navigation**: Ctrl+scrollwheel zoom and hold space to pan.
+- **File palettes**: cleaner file palette workflow.
+- **Flip and rotate transforms**: a new toolbar with tile and block based
+  flip/rotate.
+- **Pixel editing mode**: a full pixel editing mode with drawing tools, cut
+  copy paste, and transforms.
+- **Tooltips**: updated and expanded tooltips. Tooltips on labels as well as
+  inputs.
 - **Shortcuts**: shortcut cleanup and adjustments.
-- **Default palette**: the generated palette's second row is now a grayscale ramp.
-- Various small fixes and improvements.
+- **Fixes**: various improvements and fixes.
 
 ## v0.1.0 - 2026-07-23
 

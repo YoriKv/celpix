@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
@@ -114,6 +115,27 @@ def select_combo_data(combo: QComboBox, data: object) -> None:
         index = combo.findData(data)
         if index >= 0:
             combo.setCurrentIndex(index)
+
+
+def add_labelled(layout, text: str, widget: QWidget, tooltip: str) -> QLabel:
+    """Add ``text`` then ``widget`` to ``layout``, tooltipping *both*.
+
+    A caption is half the hover target of the pair it names and reads as part of
+    the same control, so a tooltip that only answers over the input itself is
+    missed exactly where people point first. Routing every labelled control
+    through here is what keeps that from drifting back apart, so prefer it over
+    adding a bare ``QLabel``. The label is also set as the widget's buddy, which
+    is what makes a caption mnemonic focus the input.
+
+    Returns the label, for the few callers that later show/hide or restyle it.
+    """
+    widget.setToolTip(tooltip)
+    label = QLabel(text)
+    label.setToolTip(tooltip)
+    label.setBuddy(widget)
+    layout.addWidget(label)
+    layout.addWidget(widget)
+    return label
 
 
 def paint_selection_outline(painter: QPainter, rect: QRect) -> None:

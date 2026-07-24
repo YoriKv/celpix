@@ -68,7 +68,16 @@ Rasterize = Callable[[int, int, int, int], list[tuple[int, int]]]
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """One tool's fixed description: how it's shown, and how it behaves."""
+    """One tool's fixed description: how it's shown, and how it behaves.
+
+    ``icon`` and ``shape`` are the panel's two ways to draw a tool button, kept
+    here as plain data so this module stays Qt-free. Exactly one is set: ``icon``
+    names a bundled monochrome PNG under ``resources/icons`` (tinted to the theme);
+    ``shape`` names a primitive the panel paints itself for the geometry tools
+    (``"line"``/``"rect"``/``"rect_filled"``/``"ellipse"``/``"ellipse_filled"``/
+    ``"marquee"``), so they share one size and padding. ``label`` remains the
+    accessible name and tooltip lead.
+    """
 
     tool: Tool
     label: str
@@ -76,80 +85,94 @@ class ToolSpec:
     key: str  # the bare number key that selects it (1..9)
     gesture: Gesture
     rasterize: Rasterize | None = None
+    icon: str | None = None
+    shape: str | None = None
 
 
-# Registration order = display order in the panel and the number-key mapping
-# (1..9). The pen and eyedropper come first (the two most-used), then the shape
-# tools grouped outline-before-filled, then fill and the selection marquee.
+# This order is the rail's top-to-bottom order *and* the 1..9 number keys, so a
+# tool's key is always its position in the panel — one list rather than a display
+# order and a key mapping that can drift apart. The marquee leads, then the pen
+# and the two samplers, then the shape tools grouped outline-before-filled.
+# Reordering here moves the buttons and renumbers the keys together; only the
+# ``key`` strings need to stay 1..9 in sequence.
 TOOL_SPECS: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        Tool.SELECT,
+        "Select",
+        "Select a pixel rectangle; Shift for a square",
+        "1",
+        Gesture.MARQUEE,
+        shape="marquee",
+    ),
     ToolSpec(
         Tool.PENCIL,
         "Pencil",
-        "Freehand: left-drag paints the active color, connecting fast strokes",
-        "1",
+        "Freehand paint",
+        "2",
         Gesture.FREEHAND,
         draw.line,
-    ),
-    ToolSpec(
-        Tool.LINE,
-        "Line",
-        "Drag a straight line from press to release",
-        "2",
-        Gesture.SHAPE,
-        draw.line,
-    ),
-    ToolSpec(
-        Tool.RECT,
-        "Rectangle",
-        "Drag a rectangle outline",
-        "3",
-        Gesture.SHAPE,
-        draw.rect_outline,
-    ),
-    ToolSpec(
-        Tool.RECT_FILLED,
-        "Filled Rectangle",
-        "Drag a filled rectangle",
-        "4",
-        Gesture.SHAPE,
-        draw.rect_filled,
-    ),
-    ToolSpec(
-        Tool.ELLIPSE,
-        "Ellipse",
-        "Drag an ellipse outline, inscribed in the box you drag",
-        "5",
-        Gesture.SHAPE,
-        draw.ellipse_outline,
-    ),
-    ToolSpec(
-        Tool.ELLIPSE_FILLED,
-        "Filled Ellipse",
-        "Drag a filled ellipse",
-        "6",
-        Gesture.SHAPE,
-        draw.ellipse_filled,
-    ),
-    ToolSpec(
-        Tool.FILL,
-        "Fill",
-        "Flood-fill the contiguous same-color region under the click",
-        "7",
-        Gesture.FILL,
+        icon="pencil.png",
     ),
     ToolSpec(
         Tool.EYEDROPPER,
         "Eyedropper",
-        "Pick the color under the click (also right-click on any tool)",
-        "8",
+        "Pick a color; right-click does this on any tool",
+        "3",
         Gesture.SAMPLE,
+        icon="eyedropper.png",
     ),
     ToolSpec(
-        Tool.SELECT,
-        "Select",
-        "Drag a pixel rectangle to lift a floating selection (drag it, Esc to drop)",
+        Tool.FILL,
+        "Fill",
+        "Flood-fill the region under the cursor",
+        "4",
+        Gesture.FILL,
+        icon="paint-bucket.png",
+    ),
+    ToolSpec(
+        Tool.LINE,
+        "Line",
+        "Draw a line",
+        "5",
+        Gesture.SHAPE,
+        draw.line,
+        shape="line",
+    ),
+    ToolSpec(
+        Tool.RECT,
+        "Rectangle",
+        "Draw a rectangle outline",
+        "6",
+        Gesture.SHAPE,
+        draw.rect_outline,
+        shape="rect",
+    ),
+    ToolSpec(
+        Tool.RECT_FILLED,
+        "Filled Rectangle",
+        "Draw a filled rectangle",
+        "7",
+        Gesture.SHAPE,
+        draw.rect_filled,
+        shape="rect_filled",
+    ),
+    ToolSpec(
+        Tool.ELLIPSE,
+        "Ellipse",
+        "Draw an ellipse outline",
+        "8",
+        Gesture.SHAPE,
+        draw.ellipse_outline,
+        shape="ellipse",
+    ),
+    ToolSpec(
+        Tool.ELLIPSE_FILLED,
+        "Filled Ellipse",
+        "Draw a filled ellipse",
         "9",
-        Gesture.MARQUEE,
+        Gesture.SHAPE,
+        draw.ellipse_filled,
+        shape="ellipse_filled",
     ),
 )
 

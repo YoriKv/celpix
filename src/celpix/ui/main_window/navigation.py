@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import (
     QAction,
     QPalette,
@@ -54,6 +54,7 @@ from celpix.ui.undo_commands import (
 from celpix.ui.widgets import (
     CommittingLineEdit,
     CompactComboBox,
+    add_labelled,
     signals_blocked,
 )
 
@@ -150,19 +151,22 @@ class NavigationMixin:
         # Bank settings - created before the dropdown whose handler fills them.
         # Hex spin boxes (not line edits) so they clamp and step like the rest of
         # the toolbar; disabled while the flat-hex format needs none of them.
-        self._bank_size = self._hex_spin(0x1, 0x1000000, 0x8000, "Bank size (bytes)")
+        self._bank_size = self._hex_spin(0x1, 0x1000000, 0x8000, "Bank size in bytes")
         self._bank_addr = self._hex_spin(
-            0x0, 0xFFFFFF, 0x8000, "In-bank address of a bank's first byte"
+            0x0, 0xFFFFFF, 0x8000, "Address of a bank's first byte"
         )
         self._bank_first = self._hex_spin(
-            0x0, 0xFF, 0x00, "Bank number of the file's first byte"
+            0x0, 0xFF, 0x00, "Bank of the file's first byte"
         )
         # The bank anchor is the setting users actually retune (mirror
         # conventions), so give it room beyond its two-digit size hint.
         self._bank_first.setFixedWidth(int(self._bank_first.sizeHint().width() * 1.4))
         self._bank_spins = (self._bank_size, self._bank_addr, self._bank_first)
 
-        row.addWidget(QLabel("Offset "))
+        # Kept on self: its tooltip names the live address format, so it is
+        # re-set alongside the box's in _refresh_offset_display.
+        self._offset_label = QLabel("Offset ")
+        row.addWidget(self._offset_label)
         # Half-width closed button (the format names are long), full-width popup -
         # the same compact treatment the pixel/palette pickers get.
         self._addr_format = CompactComboBox(0.5)
@@ -170,7 +174,7 @@ class NavigationMixin:
         for preset in BANK_PRESETS:
             self._addr_format.addItem(preset.name, preset)
         self._addr_format.addItem("Custom", "custom")
-        self._addr_format.setToolTip("Address format for the offset box")
+        self._addr_format.setToolTip("Address format")
         self._addr_format.currentIndexChanged.connect(self._on_addr_format_change)
         row.addWidget(self._addr_format)
 
@@ -183,6 +187,8 @@ class NavigationMixin:
         self._offset_edit = CommittingLineEdit(self._parse_address, self._offset_text)
         self._offset_edit.setFixedWidth(104)
         self._offset_edit.setToolTip(self._offset_edit_tip())
+        self._offset_label.setToolTip(self._offset_edit.toolTip())
+        self._offset_label.setBuddy(self._offset_edit)
         self._offset_edit.committed.connect(self._jump_to_offset)
         row.addWidget(self._offset_edit)
         row.addSpacing(12)
@@ -198,8 +204,9 @@ class NavigationMixin:
             ("Addr", self._bank_addr),
             ("Bank", self._bank_first),
         ):
-            bank_row.addWidget(QLabel(f" {label} "))
-            bank_row.addWidget(spin)
+            # The spin already carries the explanatory tip; the caption repeats it
+            # so hovering either half of the pair answers the same question.
+            add_labelled(bank_row, f" {label} ", spin, spin.toolTip())
         row.addWidget(self._bank_settings)
         row.addStretch(1)
 
@@ -232,19 +239,19 @@ class NavigationMixin:
             (
                 "−B",
                 None,
-                "Back one byte (- or Ctrl+Left) - realign sub-tile",
+                "Nudge back one byte (- or Ctrl+Left)",
                 lambda: self._nav_bytes(-1),
             ),
             (
                 "+B",
                 None,
-                "Forward one byte (+, = or Ctrl+Right) - realign sub-tile",
+                "Nudge forward one byte (+, = or Ctrl+Right)",
                 lambda: self._nav_bytes(1),
             ),
             (
                 "0B",
                 None,
-                "Clear the byte nudge (0) - snap the grid back to tile alignment",
+                "Clear the byte nudge (0)",
                 self._clear_nudge,
             ),
         ):
@@ -275,7 +282,7 @@ class NavigationMixin:
         spin.setPrefix("$")
         spin.setKeyboardTracking(False)
         spin.setEnabled(False)  # the default format (flat hex) has no bank settings
-        spin.setToolTip(f"{tip} - hex")
+        spin.setToolTip(f"{tip} (hex)")
         spin.valueChanged.connect(self._on_bank_setting_change)
         return spin
 
@@ -370,19 +377,130 @@ class NavigationMixin:
             # View ▸ Grid).
             (Qt.Key.Key_P, *no_mod): self._load_palette_from_selection,
             (Qt.Key.Key_G, *no_mod): self._grid.toggle,
+            (Qt.Key.Key_S, *no_mod): self._toggle_selection_mode,
+            (Qt.Key.Key_E, *no_mod): self._toggle_edit_mode,
         }
 
-    def eventFilter(self, obj, event) -> bool:  # noqa: ARG002 - Qt supplies obj
+    def eventFilter(self, obj, event) -> bool:
         # Installed on the QApplication so navigation keys act wherever focus is -
         # unlike a QShortcut, which a focused dropdown would pre-empt. Only while this
         # window is active, and _handle_nav_key defers to arrow-consuming inputs.
+        et = event.type()
+        # A press on the surround *around* the canvas deselects. The position has
+        # to be checked, not just the receiving object: the canvas leaves its own
+        # presses unaccepted (so ClickFocus still works), and Qt then propagates
+        # them up to the viewport - which would otherwise clear the marquee the
+        # press had just anchored, killing every drag-selection. Not consumed, so
+        # the scroll area still does its normal thing.
         if (
-            event.type() == QEvent.Type.KeyPress
+            et == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+            and obj is self._scroll.viewport()
+            and self._scroll.viewport().childAt(event.position().toPoint()) is None
+        ):
+            self._clear_selection_on_background()
+        if (
+            et in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
+            and self.isActiveWindow()
+            and event.key() == Qt.Key.Key_Space
+            and self._handle_space_pan(event)
+        ):
+            return True
+        if (
+            et == QEvent.Type.KeyPress
             and self.isActiveWindow()
             and self._handle_nav_key(event)
         ):
             return True
         return super().eventFilter(obj, event)
+
+    def _handle_space_pan(self, event) -> bool:
+        """Arm/disarm the canvas's space-drag panning; True if the key is consumed.
+
+        Yields to popups and focused text inputs (space types/activates there) and
+        stays inert with no document. Auto-repeat from a held space is swallowed
+        but re-arms nothing.
+        """
+        if QApplication.activePopupWidget() is not None:
+            return False
+        if isinstance(QApplication.focusWidget(), self._ARROW_INPUT_TYPES):
+            return False
+        if self._doc is None:
+            return False
+        if not event.isAutoRepeat():
+            self._canvas.set_pan_mode(event.type() == QEvent.Type.KeyPress)
+        return True
+
+    def _pan_view(self, dx: int, dy: int) -> None:
+        """Shift the scroll view by a space-drag delta (device pixels).
+
+        The scroll bars clamp to the content, so a pan can never push the image off
+        screen; when the view already fits the viewport their range is empty and
+        this is a no-op.
+        """
+        hbar = self._scroll.horizontalScrollBar()
+        vbar = self._scroll.verticalScrollBar()
+        hbar.setValue(hbar.value() - dx)
+        vbar.setValue(vbar.value() - dy)
+
+    def _on_zoom_requested(self, steps: int, pos) -> None:
+        """Wheel-zoom the canvas, keeping the pixel under the cursor stationary.
+
+        Drives the zoom spin (so the change persists per entry and re-renders
+        through the normal view path), then shifts the scroll bars so the image
+        pixel that was under the cursor lands back under it — otherwise a zoom
+        would appear to slide the art out from beneath the pointer. ``pos`` is the
+        cursor in the canvas's device coordinates.
+        """
+        old = self._zoom.value()
+        new = max(self._zoom.minimum(), min(self._zoom.maximum(), old + steps))
+        if new == old:
+            return
+        hbar = self._scroll.horizontalScrollBar()
+        vbar = self._scroll.verticalScrollBar()
+        # The cursor's spot in the viewport, and the image pixel it sits on now.
+        view_x = pos.x() - hbar.value()
+        view_y = pos.y() - vbar.value()
+        img_x, img_y = pos.x() / old, pos.y() / old
+        self._zoom.setValue(new)  # re-renders and resizes the canvas synchronously
+        # Put that same pixel back under the cursor; the scroll bars clamp so the
+        # image can't be pushed off screen (a no-op when the view already fits).
+        hbar.setValue(round(img_x * new - view_x))
+        vbar.setValue(round(img_y * new - view_y))
+
+    def _zoom_steps(self, steps: int) -> None:
+        """Zoom from the View menu or its shortcut, anchored on the viewport centre.
+
+        The wheel has a cursor to keep the art still under; a menu item or key
+        press doesn't, so the middle of what's on screen is the natural fixed
+        point. Reuses the wheel's anchoring by handing it that centre in the
+        canvas's own device coordinates.
+        """
+        hbar = self._scroll.horizontalScrollBar()
+        vbar = self._scroll.verticalScrollBar()
+        viewport = self._scroll.viewport()
+        self._on_zoom_requested(
+            steps,
+            QPointF(
+                hbar.value() + viewport.width() / 2,
+                vbar.value() + viewport.height() / 2,
+            ),
+        )
+
+    def _viewport_centre_pixel(self) -> tuple[int, int]:
+        """The image pixel at the middle of what is on screen.
+
+        The scroll offsets alone don't give it: when the canvas is smaller than
+        the viewport it sits centred inside it and the bars are empty, so the
+        visible extent is the smaller of the two. What a paste centres on.
+        """
+        zoom = max(1, self._zoom.value())
+        viewport = self._scroll.viewport()
+        hbar = self._scroll.horizontalScrollBar()
+        vbar = self._scroll.verticalScrollBar()
+        cx = hbar.value() + min(viewport.width(), self._canvas.width()) / 2
+        cy = vbar.value() + min(viewport.height(), self._canvas.height()) / 2
+        return int(cx // zoom), int(cy // zoom)
 
     def _handle_nav_key(self, event) -> bool:
         """Run the navigation handler for ``event``; return True if it was consumed.
@@ -470,6 +588,9 @@ class NavigationMixin:
             # snap the scrollbar/box back onto the clamped position.
             self._sync_nav()
             return
+        # Floating pixels are positioned against the window they were dropped
+        # over, so they come down before it slides out from under them.
+        self._commit_float()
         entry = self._workspace.current
         assert entry is not None  # a document implies a current entry
         self._push_command(
@@ -538,6 +659,7 @@ class NavigationMixin:
 
     def _refresh_offset_display(self) -> None:
         self._offset_edit.setToolTip(self._offset_edit_tip())
+        self._offset_label.setToolTip(self._offset_edit.toolTip())
         if self._doc is not None and not self._offset_edit.hasFocus():
             self._offset_edit.refresh()
         # The palette offset field shares the address conventions, so a format

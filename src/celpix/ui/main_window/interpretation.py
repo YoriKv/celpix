@@ -46,6 +46,7 @@ from celpix.ui.undo_commands import (
 from celpix.ui.widgets import (
     ChecklistPopupButton,
     CompactComboBox,
+    add_labelled,
     funnel_icon,
     select_combo_data,
     signals_blocked,
@@ -116,7 +117,11 @@ class InterpretationMixin:
         # End a format-cycling run when focus leaves the dropdown: the next switch
         # then re-anchors on the live position rather than the stale target.
         self._pixel_preset.focus_lost.connect(self._end_pixel_switch_run)
-        codecs.addWidget(QLabel("Pixel:"))
+        self._pixel_preset.setToolTip("Tile graphics format")
+        pixel_label = QLabel("Pixel:")
+        pixel_label.setToolTip(self._pixel_preset.toolTip())
+        pixel_label.setBuddy(self._pixel_preset)
+        codecs.addWidget(pixel_label)
         # The combo and its filter button read as one control: grouped in a tight
         # container (no toolbar gap between them), same height, the button a plain
         # funnel icon that picks up the theme's button-text color.
@@ -129,9 +134,7 @@ class InterpretationMixin:
                 ratio=self.devicePixelRatioF(),
             )
         )
-        self._pixel_filter.setToolTip(
-            "Choose which pixel formats appear in the dropdown."
-        )
+        self._pixel_filter.setToolTip("Which formats appear in the dropdown")
         self._pixel_filter.setFixedHeight(self._pixel_preset.sizeHint().height())
         pixel_group = QWidget()
         group = QHBoxLayout(pixel_group)
@@ -148,23 +151,23 @@ class InterpretationMixin:
         self._compression = CompactComboBox(0.60)
         self._populate_compression()
         self._compression.currentIndexChanged.connect(self._on_view_change)
-        codecs.addWidget(QLabel("Compression:"))
-        codecs.addWidget(self._compression)
+        add_labelled(
+            codecs,
+            "Compression:",
+            self._compression,
+            "Preview the window decompressed with this codec",
+        )
 
         # Structure navigation for contiguously packed compressed data: hop
         # past the structure in view, or walk forward looking for the next one.
         self._jump_next = QPushButton("Jump to Next")
-        self._jump_next.setToolTip(
-            "Jump to the byte right after the structure in view "
-            "(assumes structures are packed back-to-back)."
-        )
+        self._jump_next.setToolTip("Jump past the structure in view")
         self._jump_next.setEnabled(False)
         self._jump_next.clicked.connect(self._on_jump_next)
         codecs.addWidget(self._jump_next)
         self._scan_button = QPushButton("Scan")
         self._scan_button.setToolTip(
-            "Scan forward byte-by-byte for the next complete compressed structure. "
-            "Click again to stop."
+            "Scan for the next compressed structure; click again to stop"
         )
         self._scan_button.setEnabled(False)
         self._scan_button.clicked.connect(self._on_scan)
@@ -173,7 +176,7 @@ class InterpretationMixin:
         # slice entry in the files list - the overlay preview made editable.
         self._promote_button = QPushButton("To Slice")
         self._promote_button.setToolTip(
-            "Add the structure in view to the file list as a decompressed slice."
+            "Add the structure in view as a decompressed slice"
         )
         self._promote_button.setEnabled(False)
         self._promote_button.clicked.connect(self._on_promote_structure)
@@ -184,12 +187,11 @@ class InterpretationMixin:
         # (so bank-address formats line up with the ROM proper), and saves
         # splice back after it. 512 B default = copier headers; iNES is 16 B.
         self._headered = QCheckBox("Header")
-        self._headered.setToolTip(
-            "Skip a file header: view and offsets start after it."
-        )
+        self._headered.setToolTip("Skip a file header; offsets start after it")
         self._headered.toggled.connect(self._on_header_change)
         view.addWidget(self._headered)
         self._header_len = self._spin(0, 0x10000, 512, self._on_header_change)
+        self._header_len.setToolTip("Header size (512 = copier, 16 = iNES)")
         self._header_len.setSuffix(" B")
         # The hint is sized for the 5-digit maximum, but real headers are at
         # most 3 digits - trim the box so the view row stays compact.
@@ -197,13 +199,11 @@ class InterpretationMixin:
         view.addWidget(self._header_len)
 
         self._columns = self._spin(1, 64, 16, self._on_view_change)
-        view.addWidget(QLabel("Cols:"))
-        view.addWidget(self._columns)
+        add_labelled(view, "Cols:", self._columns, "Tiles per row")
 
         # How many tile-rows the window shows - the "render N rows" view setting.
         self._rows = self._spin(1, 256, 16, self._on_view_change)
-        view.addWidget(QLabel("Rows:"))
-        view.addWidget(self._rows)
+        add_labelled(view, "Rows:", self._rows, "Tile rows shown")
         # Cols maxes at 2 digits, rows at 3, so their hints differ - pin both
         # to the rows hint so the pair reads as a matched set.
         rows_width = self._rows.sizeHint().width()
@@ -211,14 +211,22 @@ class InterpretationMixin:
         self._rows.setFixedWidth(rows_width)
 
         self._zoom = self._spin(1, 16, 4, self._on_view_change)
-        view.addWidget(QLabel("Zoom:"))
-        view.addWidget(self._zoom)
+        add_labelled(
+            view,
+            "Zoom:",
+            self._zoom,
+            "Screen pixels per image pixel",
+        )
 
         # Range 255: enough rows for a 512-entry palette under a 2-color (1bpp)
         # index space; the view refresh clamps to the loaded palette anyway.
         self._subpalette = self._spin(0, 255, 0, self._on_view_change)
-        view.addWidget(QLabel("Subpal:"))
-        view.addWidget(self._subpalette)
+        add_labelled(
+            view,
+            "Subpal:",
+            self._subpalette,
+            "Which block of palette entries tiles index into",
+        )
 
         # The Selection Shape picker (what a canvas drag selects) lives on the
         # canvas transform toolbar - see :mod:`celpix.ui.main_window.transform` -
@@ -238,29 +246,29 @@ class InterpretationMixin:
             self._pattern.addItem(preset.name, preset)
         self._pattern.addItem("Custom", "custom")
         self._pattern.setToolTip(
-            "Tile arrangement preset - fills the Block / Order / 2D controls.\n"
-            "Pick Custom to edit them yourself."
+            "Arrangement preset; pick Custom to edit these yourself"
         )
         self._pattern.currentIndexChanged.connect(self._on_pattern_change)
-        arrange.addWidget(QLabel("Pattern:"))
-        arrange.addWidget(self._pattern)
+        add_labelled(arrange, "Pattern:", self._pattern, self._pattern.toolTip())
 
         self._block_cols = self._spin(1, 64, 1, self._on_view_change)
         self._block_rows = self._spin(1, 256, 1, self._on_view_change)
         self._block_cols.setFixedWidth(rows_width)
         self._block_rows.setFixedWidth(rows_width)
-        self._block_cols.setToolTip("Tiles per block, horizontally")
-        self._block_rows.setToolTip("Tiles per block, vertically")
-        arrange.addWidget(QLabel("Block:"))
-        arrange.addWidget(self._block_cols)
-        arrange.addWidget(QLabel("×"))
+        self._block_rows.setToolTip("Tiles per block, down")
+        add_labelled(arrange, "Block:", self._block_cols, "Tiles per block, across")
+        # The "x" between the pair belongs to both, so it carries the whole
+        # control's sense rather than either side's half.
+        times = QLabel("\u00d7")
+        times.setToolTip("Block size, in tiles")
+        arrange.addWidget(times)
         arrange.addWidget(self._block_rows)
         self._block_order = QComboBox()
         self._block_order.setToolTip(
             "How each block fills:\n"
-            "• Row - left-to-right, then down\n"
-            "• Column - top-to-bottom, then right (Mega Drive / Neo Geo sprites)\n"
-            "• Row-interleave - a tile-row across every block (8×16 sprite sheets)"
+            "• Row - left to right, then down\n"
+            "• Column - top to bottom, then right\n"
+            "• Row-interleave - a tile-row across every block"
         )
         for label, data in (
             ("Row", "row"),
@@ -269,13 +277,9 @@ class InterpretationMixin:
         ):
             self._block_order.addItem(label, data)
         self._block_order.currentIndexChanged.connect(self._on_view_change)
-        arrange.addWidget(QLabel("Order:"))
-        arrange.addWidget(self._block_order)
+        add_labelled(arrange, "Order:", self._block_order, self._block_order.toolTip())
         self._two_d = QCheckBox("2D")
-        self._two_d.setToolTip(
-            "Read the source as one wide bitmap Cols tiles across, not back-to-back "
-            "tiles (N64/NDS-style)."
-        )
+        self._two_d.setToolTip("Read as one wide bitmap, not back-to-back tiles")
         self._two_d.toggled.connect(self._on_view_change)
         arrange.addWidget(self._two_d)
         # The default view is Linear (the first preset), so start with the block

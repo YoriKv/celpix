@@ -48,6 +48,7 @@ from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
     PixelEditCommand,
 )
+from celpix.ui.widgets import select_combo_data
 
 # QSettings key for the app-wide selection shape: it changes how the mouse is
 # read, not how anything renders, so it is a preference rather than view state.
@@ -106,6 +107,9 @@ class SelectionMixin:
             menu.addAction(action)
         menu.addSeparator()
         menu.addAction(self._select_all_action)
+        menu.addSeparator()
+        menu.addAction(self._toggle_selection_mode_action)
+        menu.addAction(self._toggle_edit_mode_action)
         # Enabled state depends on the clipboard's contents, which any other
         # program can change while we sit idle - so track the signal rather than
         # only recomputing when the menu opens.
@@ -154,6 +158,71 @@ class SelectionMixin:
             action.setEnabled(False)
             setattr(self, attr, action)
             self.addAction(action)
+        self._build_mode_toggle_actions()
+
+    def _build_mode_toggle_actions(self) -> None:
+        """The Edit ▸ mode toggles, on the bare ``S`` and ``E`` keys.
+
+        Display-only shortcuts, like View ▸ Grid: the bare letters are routed by
+        the app-wide event filter (``_handle_nav_key``), which yields to focused
+        text inputs — a live shortcut here would steal them mid-word. Each is
+        enabled only while its swap is available (see :meth:`_sync_edit_actions`).
+        """
+        specs = (
+            (
+                "_toggle_selection_mode_action",
+                "Toggle Selection Mode",
+                "S",
+                "Swap Linear / Rectangle selection",
+                self._toggle_selection_mode,
+            ),
+            (
+                "_toggle_edit_mode_action",
+                "Toggle Edit Mode",
+                "E",
+                "Swap tile / pixel editing",
+                self._toggle_edit_mode,
+            ),
+        )
+        for attr, text, key, tip, slot in specs:
+            action = QAction(text, self)
+            action.setShortcut(QKeySequence(key))
+            action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+            action.setToolTip(f"{tip} ({key})")
+            action.triggered.connect(slot)
+            action.setEnabled(False)
+            setattr(self, attr, action)
+
+    def _toggle_selection_mode(self) -> None:
+        """Swap Linear ⇄ Rectangle, when a swap is available.
+
+        Inert in pixel mode, which forces Rectangle — the combo carries the
+        preference and its change handler does the rest of the work.
+        """
+        if not self._can_toggle_selection_mode():
+            return
+        current = self._selection_shape.currentData()
+        shape = (
+            SelectionShape.LINEAR
+            if current is SelectionShape.RECT
+            else SelectionShape.RECT
+        )
+        select_combo_data(self._selection_shape, shape)
+
+    def _toggle_edit_mode(self) -> None:
+        """Swap tile ⇄ pixel editing, when a document is open to edit."""
+        if not self._can_toggle_edit_mode():
+            return
+        self._set_edit_mode(
+            EditMode.TILE if self._edit_mode is EditMode.PIXEL else EditMode.PIXEL
+        )
+
+    def _can_toggle_selection_mode(self) -> bool:
+        # Pixel mode is rectangle-only, so there is nothing to swap there.
+        return self._doc is not None and self._edit_mode is EditMode.TILE
+
+    def _can_toggle_edit_mode(self) -> bool:
+        return self._doc is not None
 
     def _clipboard_actions(self) -> tuple[QAction, ...]:
         return (
@@ -165,6 +234,8 @@ class SelectionMixin:
 
     def _sync_edit_actions(self) -> None:
         """Converge the clipboard actions with the selection and the clipboard."""
+        self._toggle_selection_mode_action.setEnabled(self._can_toggle_selection_mode())
+        self._toggle_edit_mode_action.setEnabled(self._can_toggle_edit_mode())
         if self._edit_mode is EditMode.PIXEL:
             # Pixel mode gates Cut/Copy/Clear on a pixel marquee, not a tile run.
             has = self._doc is not None and self._marquee is not None
@@ -865,8 +936,12 @@ class SelectionMixin:
 
     def _show_canvas_menu(self, pos: QPoint) -> None:
         """The canvas's right-click menu - the same QActions the Edit, Palette
-        and File menus hold, gathered around what the selection can become."""
-        if self._doc is None:
+        and File menus hold, gathered around what the selection can become.
+
+        Suppressed in pixel mode, where right-click (and a right-drag sweep) is
+        the eyedropper: a popup here would swallow the sample gesture.
+        """
+        if self._doc is None or self._edit_mode is EditMode.PIXEL:
             return
         self._sync_edit_actions()
         menu = QMenu(self)
