@@ -110,17 +110,17 @@ class EntriesMixin:
         self._saved_project = self._project_snapshot()
         # The replace above titled the window from the restored entry (no project
         # path was set yet); now that one is, retitle to name the project file.
-        self._update_window_title()
+        self._refresh_window_title()
         self.statusBar().showMessage(
             f"Loaded project {Path(path).name} ({len(loaded.entries)} entries)."
         )
         # Referenced files may have moved since the project was saved - offer to
         # re-point them straight away, and arm the menu for later.
-        self._update_locate_action()
+        self._sync_locate_action()
         if missing_paths(self._workspace):
             self._relocate_missing(prompt_summary=True)
 
-    def _update_locate_action(self) -> None:
+    def _sync_locate_action(self) -> None:
         """Arm File ▸ Locate missing files iff the project has missing files."""
         self._locate_missing_action.setEnabled(bool(missing_paths(self._workspace)))
 
@@ -174,7 +174,7 @@ class EntriesMixin:
             for entry in relocate_path(self._workspace, old, new):
                 self._reload_relocated_entry(entry)
             relocated += 1
-        self._update_locate_action()
+        self._sync_locate_action()
         # Re-show the current entry: a now-resolvable one loads; one whose picked
         # file was invalid (or still skipped) falls back to the unavailable state.
         self._on_current_entry_changed(self._workspace.current)
@@ -227,7 +227,7 @@ class EntriesMixin:
         self._project_path = path
         self._saved_project = self._project_snapshot()  # the new clean baseline
         # A first Save Project As gives the session a project file - title to it.
-        self._update_window_title()
+        self._refresh_window_title()
         self.statusBar().showMessage(f"Saved project to {path}.")
 
     def _confirm_discard_project(self, action: str) -> bool:

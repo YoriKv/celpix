@@ -56,7 +56,7 @@ from celpix.ui.widgets import (
 # a Custom palette forked off the generated default - free ARGB colors with no
 # console format behind them. The session default follows the last format
 # actually selected from there (:meth:`PaletteSourceMixin._set_session_palette_format`).
-_DEFAULT_SESSION_PALETTE_FORMAT = "preset.palette.rgb888"
+DEFAULT_SESSION_PALETTE_FORMAT = "preset.palette.rgb888"
 
 
 class PaletteSourceMixin:
@@ -1156,6 +1156,6 @@ class PaletteSourceMixin:
         space is asked for (a 4bpp view would stop at 16 — one row, no ramp).
         At full length every subpalette the row spin can reach is populated, so
         single-channel data can be read as a ramp by stepping to row 1, and
-        Default → Custom no longer changes the palette's size.
+        forking Default → Custom keeps the palette exactly the size it was.
         """
         return Palette.default(FULL_PALETTE_COUNT)

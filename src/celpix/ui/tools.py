@@ -177,5 +177,5 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
 )
 
 # By-member and by-key lookups the panel/controller use instead of re-scanning.
-TOOL_SPEC: dict[Tool, ToolSpec] = {spec.tool: spec for spec in TOOL_SPECS}
+SPEC_BY_TOOL: dict[Tool, ToolSpec] = {spec.tool: spec for spec in TOOL_SPECS}
 TOOL_BY_KEY: dict[str, Tool] = {spec.key: spec.tool for spec in TOOL_SPECS}

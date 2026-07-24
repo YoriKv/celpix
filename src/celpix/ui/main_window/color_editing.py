@@ -43,7 +43,7 @@ class ColorEditingMixin:
     package docstring for why these are mixins.
     """
 
-    def _update_color_details(self) -> None:
+    def _refresh_color_details(self) -> None:
         """Render the panel's selected color into the details readout.
 
         The position reads as subpalette + color-within-it (the pixel format's
@@ -77,7 +77,7 @@ class ColorEditingMixin:
         it opened on - clicking through the grid with the editor up is the
         natural way to work through a palette.
         """
-        self._update_color_details()
+        self._refresh_color_details()
         self._sync_color_editor(retarget=True)
 
     def _open_color_editor(self, index: int) -> None:

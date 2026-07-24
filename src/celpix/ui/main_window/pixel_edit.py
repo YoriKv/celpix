@@ -34,7 +34,7 @@ dropping it back out of the air reveals the pixels exactly where they still are.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QSettings, Qt
+from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
@@ -43,11 +43,12 @@ from celpix.core.arrangement import compose_window, split_grid
 from celpix.pipeline import importer
 from celpix.ui import clipboard, render_bridge
 from celpix.ui.main_window.selection import SELECTION_SHAPE_KEY, SelectionShape
-from celpix.ui.tools import TOOL_BY_KEY, TOOL_SPEC, EditMode, Gesture, Tool
+from celpix.ui.tools import SPEC_BY_TOOL, TOOL_BY_KEY, EditMode, Gesture, Tool
 from celpix.ui.tools_panel import ToolsPanel
 from celpix.ui.undo_commands import FloatState, PixelSelectionCommand
 from celpix.ui.widgets import (
     load_enum_setting,
+    save_enum_setting,
     select_combo_data,
     signals_blocked,
 )
@@ -55,7 +56,7 @@ from celpix.ui.widgets import (
 # QSettings key for the active tool (an interaction preference, like the
 # selection shape). The edit *mode* deliberately starts in Tile each launch — a
 # safe default that one toggle click leaves.
-TOOL_KEY = "view/tool"
+CURRENT_TOOL_KEY = "view/tool"
 
 
 class PixelEditMixin:
@@ -70,7 +71,7 @@ class PixelEditMixin:
         """Seed pixel-mode state; called from the window's ``__init__`` before the
         transform toolbar (which reads ``_edit_mode`` to set the toggle) is built."""
         self._edit_mode = EditMode.TILE
-        self._tool = load_enum_setting(TOOL_KEY, Tool.PENCIL)
+        self._tool = load_enum_setting(CURRENT_TOOL_KEY, Tool.PENCIL)
         # A direct-color eyedropper stores its picked ARGB here (indexed views
         # drive the pen off the palette selection instead); cleared when the user
         # picks a palette swatch, so a click always takes the pen back.
@@ -174,11 +175,11 @@ class PixelEditMixin:
             # keeps that button checked (highlighted as the active tool) even while
             # the whole rail is disabled, so it still reads as what a drag does.
             self._on_tool_selected(Tool.SELECT)
-        self._sync_mode_ui()
+        self._sync_edit_mode_ui()
         if self._doc is not None:
             self._refresh_view()
 
-    def _sync_mode_ui(self) -> None:
+    def _sync_edit_mode_ui(self) -> None:
         """Show/hide the mode-dependent transform-bar groups and the tools rail."""
         pixel = self._edit_mode is EditMode.PIXEL
         # Swap the visible transform groups: Tile + Block for tile editing, the
@@ -192,7 +193,7 @@ class PixelEditMixin:
         # Picking a tool leaves a live float alone: a selection is dropped by
         # clearing it or by making a new one, not by reaching for another tool.
         self._tool = tool
-        QSettings().setValue(TOOL_KEY, tool.value)
+        save_enum_setting(CURRENT_TOOL_KEY, tool)
         self._tools_panel.set_tool(tool)
         self._sync_paint_preview()  # a different tool may not paint at all
 
@@ -232,7 +233,7 @@ class PixelEditMixin:
         if (
             self._doc is None
             or self._edit_mode is not EditMode.PIXEL
-            or TOOL_SPEC[self._tool].gesture not in drawing
+            or SPEC_BY_TOOL[self._tool].gesture not in drawing
         ):
             self._canvas.set_paint_preview(None)
             return
@@ -331,7 +332,7 @@ class PixelEditMixin:
     def _on_pixel_pressed(self, x: int, y: int, button) -> None:
         if self._doc is None:
             return
-        spec = TOOL_SPEC[self._tool]
+        spec = SPEC_BY_TOOL[self._tool]
         # Right-click is the eyedropper on every tool (the YY-CHR idiom).
         if button == Qt.MouseButton.RightButton or spec.gesture is Gesture.SAMPLE:
             self._eyedrop_at(x, y)
@@ -386,7 +387,7 @@ class PixelEditMixin:
         the base, so dragging replaces the rubber-banded shape rather than piling
         shapes up.
         """
-        spec = TOOL_SPEC[self._tool]
+        spec = SPEC_BY_TOOL[self._tool]
         assert spec.rasterize is not None
         if spec.gesture is Gesture.FREEHAND:
             lx, ly = self._stroke_last
@@ -401,7 +402,7 @@ class PixelEditMixin:
     def _end_stroke(self, x: int, y: int) -> None:
         self._paint_stroke(x, y)
         grid, base = self._stroke_grid, self._stroke_base_grid
-        text = f"draw {TOOL_SPEC[self._tool].label.lower()}"
+        text = f"draw {SPEC_BY_TOOL[self._tool].label.lower()}"
         self._stroke_active = False
         self._stroke_grid = self._stroke_base_grid = None
         self._commit_grid(grid, base, text)
@@ -479,7 +480,7 @@ class PixelEditMixin:
         still holds the selection as it stood before that press, so the
         re-selection lands as the one undo step a single interaction should.
         """
-        if self._doc is None or TOOL_SPEC[self._tool].gesture is not Gesture.MARQUEE:
+        if self._doc is None or SPEC_BY_TOOL[self._tool].gesture is not Gesture.MARQUEE:
             return
         if self._lifted_on_press:
             self._clear_float()  # also drops the press's marquee
@@ -858,6 +859,27 @@ class PixelEditMixin:
         self._put_pixel_clipboard(region)
         self.statusBar().showMessage(f"Copied {region.width}×{region.height} pixels.")
 
+    def _blank_marquee(self, rect: QRect, text: str, done: str) -> None:
+        """Erase ``rect`` from the view - the tail Cut and Clear share.
+
+        Floating pixels are already off the page, so erasing them is just never
+        setting them down; otherwise the hole is punched into the window grid and
+        committed as one undoable edit under ``text``. ``done`` is the status line
+        on success, which is why the two gestures word it themselves.
+        """
+        if self._float_grid is not None:
+            self._discard_float(text)
+            self.statusBar().showMessage(done)
+            return
+        base = self._window_grid()
+        if base is None:
+            return
+        grid = self._clone_grid(base)
+        self._blank_rect(grid, rect)
+        self._clear_float()
+        if self._commit_grid(grid, base, text):
+            self.statusBar().showMessage(done)
+
     def _pixel_cut(self) -> None:
         rect = self._marquee
         if self._doc is None or rect is None:
@@ -867,37 +889,14 @@ class PixelEditMixin:
             return
         self._put_pixel_clipboard(region)
         size = f"{region.width}×{region.height}"
-        if self._float_grid is not None:
-            # Already off the page: cutting is just never setting them down.
-            self._discard_float("cut pixels")
-            self.statusBar().showMessage(f"Cut {size} pixels.")
-            return
-        base = self._window_grid()
-        if base is None:
-            return
-        grid = self._clone_grid(base)
-        self._blank_rect(grid, rect)
-        self._clear_float()
-        if self._commit_grid(grid, base, "cut pixels"):
-            self.statusBar().showMessage(f"Cut {size} pixels.")
+        self._blank_marquee(rect, "cut pixels", f"Cut {size} pixels.")
 
     def _pixel_clear(self) -> None:
         rect = self._marquee
         if self._doc is None or rect is None:
             return
         size = f"{rect.width()}×{rect.height()}"
-        if self._float_grid is not None:
-            self._discard_float("clear pixels")
-            self.statusBar().showMessage(f"Cleared {size} pixels.")
-            return
-        base = self._window_grid()
-        if base is None:
-            return
-        grid = self._clone_grid(base)
-        self._blank_rect(grid, rect)
-        self._clear_float()
-        if self._commit_grid(grid, base, "clear pixels"):
-            self.statusBar().showMessage(f"Cleared {size} pixels.")
+        self._blank_marquee(rect, "clear pixels", f"Cleared {size} pixels.")
 
     def _pixel_paste(self) -> None:
         """Drop the clipboard in as a floating selection, centred on the view.
@@ -925,7 +924,7 @@ class PixelEditMixin:
         self._show_float()
         # Only the Select tool can pick a float up; any other would land it on the
         # first press, so arm the one the paste is asking to be dragged with.
-        if TOOL_SPEC[self._tool].gesture is not Gesture.MARQUEE:
+        if SPEC_BY_TOOL[self._tool].gesture is not Gesture.MARQUEE:
             self._on_tool_selected(Tool.SELECT)
         self._push_pixel_interaction(
             before,

@@ -38,8 +38,8 @@ from celpix.core import ceil_div
 from celpix.core.palette import FULL_PALETTE_COUNT
 from celpix.ui.widgets import paint_selection_outline, take_editing_shortcut
 
-SWATCH = 14  # logical px per swatch; Qt scales logical painting on HiDPI
-COLUMNS = 16
+SWATCH_SIZE = 14  # logical px per swatch; Qt scales logical painting on HiDPI
+SWATCH_COLUMNS = 16
 
 
 class PalettePanel(QWidget):
@@ -91,10 +91,10 @@ class PalettePanel(QWidget):
 
     def _index_at(self, x_px: float, y_px: float) -> int | None:
         """The entry index under a widget position, or None past the colors."""
-        x = int(x_px) // SWATCH
-        y = int(y_px) // SWATCH
-        index = y * COLUMNS + x
-        if 0 <= x < COLUMNS and 0 <= index < len(self._colors):
+        x = int(x_px) // SWATCH_SIZE
+        y = int(y_px) // SWATCH_SIZE
+        index = y * SWATCH_COLUMNS + x
+        if 0 <= x < SWATCH_COLUMNS and 0 <= index < len(self._colors):
             return index
         return None
 
@@ -108,12 +108,12 @@ class PalettePanel(QWidget):
         """
         if not self._colors:
             return None
-        col = min(max(int(x_px) // SWATCH, 0), COLUMNS - 1)
-        rows = ceil_div(len(self._colors), COLUMNS)
-        row = min(max(int(y_px) // SWATCH, 0), rows - 1)
+        col = min(max(int(x_px) // SWATCH_SIZE, 0), SWATCH_COLUMNS - 1)
+        rows = ceil_div(len(self._colors), SWATCH_COLUMNS)
+        row = min(max(int(y_px) // SWATCH_SIZE, 0), rows - 1)
         # Past the last color (the empty tail of a short final row) lands on the
         # last color — dragging off the end selects the end.
-        return min(row * COLUMNS + col, len(self._colors) - 1)
+        return min(row * SWATCH_COLUMNS + col, len(self._colors) - 1)
 
     def set_palette(self, colors: list[int]) -> None:
         # Called on every view refresh, including pure navigation where the
@@ -159,8 +159,10 @@ class PalettePanel(QWidget):
             self.color_selected.emit(index)
 
     def _update_size(self) -> None:
-        rows = max(1, ceil_div(len(self._colors), COLUMNS))  # ≥1 keeps it visible
-        self.setFixedSize(COLUMNS * SWATCH, rows * SWATCH)
+        rows = max(
+            1, ceil_div(len(self._colors), SWATCH_COLUMNS)
+        )  # ≥1 keeps it visible
+        self.setFixedSize(SWATCH_COLUMNS * SWATCH_SIZE, rows * SWATCH_SIZE)
         self.update()
 
     @staticmethod
@@ -172,7 +174,7 @@ class PalettePanel(QWidget):
         can't be read off the live grid, which is sized to the palette actually
         loaded — nothing at all until one is.
         """
-        return ceil_div(FULL_PALETTE_COUNT, COLUMNS) * SWATCH
+        return ceil_div(FULL_PALETTE_COUNT, SWATCH_COLUMNS) * SWATCH_SIZE
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         if event.button() == Qt.MouseButton.LeftButton:
@@ -270,8 +272,8 @@ class PalettePanel(QWidget):
         deltas = {
             Qt.Key.Key_Left: -1,
             Qt.Key.Key_Right: 1,
-            Qt.Key.Key_Up: -COLUMNS,
-            Qt.Key.Key_Down: COLUMNS,
+            Qt.Key.Key_Up: -SWATCH_COLUMNS,
+            Qt.Key.Key_Down: SWATCH_COLUMNS,
         }
         delta = deltas.get(event.key())
         if delta is None:
@@ -280,7 +282,7 @@ class PalettePanel(QWidget):
         # No selection yet: start from the active subpalette's first entry.
         base = self._selected if self._selected is not None else self._start
         target = base + delta
-        if abs(delta) == COLUMNS and not 0 <= target < len(self._colors):
+        if abs(delta) == SWATCH_COLUMNS and not 0 <= target < len(self._colors):
             # No display row above/below — stay put. (A min/max clamp would
             # yank the selection to the palette's corner, changing its column.)
             event.accept()
@@ -299,7 +301,10 @@ class PalettePanel(QWidget):
         # boundary so they tile with no gap or overlap.
         for i, color in enumerate(self._colors):
             rect = QRect(
-                (i % COLUMNS) * SWATCH, (i // COLUMNS) * SWATCH, SWATCH, SWATCH
+                (i % SWATCH_COLUMNS) * SWATCH_SIZE,
+                (i // SWATCH_COLUMNS) * SWATCH_SIZE,
+                SWATCH_SIZE,
+                SWATCH_SIZE,
             )
             painter.fillRect(rect, QColor.fromRgba(color & 0xFFFFFFFF))
         self._paint_active_range(painter)
@@ -312,19 +317,19 @@ class PalettePanel(QWidget):
         # quarter row) or a whole block of rows (count > 16, e.g. 8bpp = 16
         # rows). Drawn even when the range lies past the loaded colors: a short
         # palette still shows where the active window sits.
-        if self._count <= COLUMNS:
+        if self._count <= SWATCH_COLUMNS:
             rect = QRect(
-                (self._start % COLUMNS) * SWATCH,
-                (self._start // COLUMNS) * SWATCH,
-                self._count * SWATCH,
-                SWATCH,
+                (self._start % SWATCH_COLUMNS) * SWATCH_SIZE,
+                (self._start // SWATCH_COLUMNS) * SWATCH_SIZE,
+                self._count * SWATCH_SIZE,
+                SWATCH_SIZE,
             )
         else:
             rect = QRect(
                 0,
-                (self._start // COLUMNS) * SWATCH,
-                COLUMNS * SWATCH,
-                (self._count // COLUMNS) * SWATCH,
+                (self._start // SWATCH_COLUMNS) * SWATCH_SIZE,
+                SWATCH_COLUMNS * SWATCH_SIZE,
+                (self._count // SWATCH_COLUMNS) * SWATCH_SIZE,
             )
         paint_selection_outline(painter, rect)
 
@@ -332,10 +337,10 @@ class PalettePanel(QWidget):
         if self._selected is None:
             return
         rect = QRect(
-            (self._selected % COLUMNS) * SWATCH,
-            (self._selected // COLUMNS) * SWATCH,
-            SWATCH,
-            SWATCH,
+            (self._selected % SWATCH_COLUMNS) * SWATCH_SIZE,
+            (self._selected // SWATCH_COLUMNS) * SWATCH_SIZE,
+            SWATCH_SIZE,
+            SWATCH_SIZE,
         )
         # The same nested white/black language as the active-range outline
         # (paint_selection_outline), one pixel further in so a one-swatch

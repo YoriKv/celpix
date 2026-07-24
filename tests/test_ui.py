@@ -1108,7 +1108,7 @@ def test_palette_preset_switch_refloors_from_selection_window(
 def test_palette_panel_click_maps_to_subpalette(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtCore import QPoint, Qt
 
-    from celpix.ui.palette_panel import SWATCH, PalettePanel
+    from celpix.ui.palette_panel import SWATCH_SIZE, PalettePanel
 
     panel = PalettePanel()
     qtbot.addWidget(panel)
@@ -1121,7 +1121,7 @@ def test_palette_panel_click_maps_to_subpalette(qtbot, tmp_path, monkeypatch) ->
     qtbot.mouseClick(
         panel,
         Qt.MouseButton.LeftButton,
-        pos=QPoint(8 * SWATCH + 1, 2 * SWATCH + 1),
+        pos=QPoint(8 * SWATCH_SIZE + 1, 2 * SWATCH_SIZE + 1),
     )
     assert got == [10]
 
@@ -1704,7 +1704,7 @@ def test_grid_style_defaults_when_setting_is_bad(qtbot, tmp_path) -> None:
 def test_palette_panel_color_selection_click_and_arrows(qtbot) -> None:
     from PySide6.QtCore import QPoint, Qt
 
-    from celpix.ui.palette_panel import SWATCH, PalettePanel
+    from celpix.ui.palette_panel import SWATCH_SIZE, PalettePanel
 
     panel = PalettePanel()
     qtbot.addWidget(panel)
@@ -1715,7 +1715,9 @@ def test_palette_panel_color_selection_click_and_arrows(qtbot) -> None:
 
     # Click selects the color (and still selects its subpalette — separate signal).
     qtbot.mouseClick(
-        panel, Qt.MouseButton.LeftButton, pos=QPoint(3 * SWATCH + 1, SWATCH + 1)
+        panel,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(3 * SWATCH_SIZE + 1, SWATCH_SIZE + 1),
     )
     assert panel.selected_index() == 19
     assert picked == [19]
@@ -1759,7 +1761,7 @@ def test_palette_panel_drag_scrubs_selection_and_clamps(qtbot) -> None:
     from PySide6.QtCore import QPoint, QPointF, Qt
     from PySide6.QtGui import QMouseEvent, QPointingDevice
 
-    from celpix.ui.palette_panel import SWATCH, PalettePanel
+    from celpix.ui.palette_panel import SWATCH_SIZE, PalettePanel
 
     panel = PalettePanel()
     qtbot.addWidget(panel)
@@ -1788,31 +1790,33 @@ def test_palette_panel_drag_scrubs_selection_and_clamps(qtbot) -> None:
         panel.mouseMoveEvent(move_event(x_px, y_px, held=True))
 
     # Press to start on swatch 2, then drag across the row.
-    qtbot.mouseClick(panel, Qt.MouseButton.LeftButton, pos=QPoint(2 * SWATCH + 1, 1))
+    qtbot.mouseClick(
+        panel, Qt.MouseButton.LeftButton, pos=QPoint(2 * SWATCH_SIZE + 1, 1)
+    )
     assert panel.selected_index() == 2
-    drag_to(5 * SWATCH + 1, 1)  # → swatch 5
-    drag_to(9 * SWATCH + 1, 1)  # → swatch 9
+    drag_to(5 * SWATCH_SIZE + 1, 1)  # → swatch 5
+    drag_to(9 * SWATCH_SIZE + 1, 1)  # → swatch 9
     assert panel.selected_index() == 9
     assert picked == [2, 5, 9]
     assert rows == [0, 1, 2]  # subpalette (index // 4) follows the drag
 
     # Off the right/bottom edge clamps to the nearest real swatch, never None:
     # past the last (short) row lands on the final color.
-    drag_to(100 * SWATCH, 100 * SWATCH)
+    drag_to(100 * SWATCH_SIZE, 100 * SWATCH_SIZE)
     assert panel.selected_index() == 19
     # Off the left/top edge clamps to swatch 0.
     drag_to(-50, -50)
     assert panel.selected_index() == 0
 
     # A drag with no button held does nothing (hover must not select).
-    panel.mouseMoveEvent(move_event(6 * SWATCH + 1, 1, held=False))
+    panel.mouseMoveEvent(move_event(6 * SWATCH_SIZE + 1, 1, held=False))
     assert panel.selected_index() == 0
 
     # The eyedropper stays click-only: a drag neither selects nor samples.
     sampled: list[object] = []
     panel.color_picked.connect(sampled.append)
     panel.set_eyedropper(True)
-    drag_to(6 * SWATCH + 1, 1)
+    drag_to(6 * SWATCH_SIZE + 1, 1)
     assert panel.selected_index() == 0 and sampled == []
 
 
@@ -1861,13 +1865,15 @@ def test_palette_panel_copy_paste_keys_emit(qtbot) -> None:
 def test_palette_panel_right_click_selects(qtbot) -> None:
     from PySide6.QtCore import QPoint, Qt
 
-    from celpix.ui.palette_panel import SWATCH, PalettePanel
+    from celpix.ui.palette_panel import SWATCH_SIZE, PalettePanel
 
     panel = PalettePanel()
     qtbot.addWidget(panel)
     panel.set_palette(list(range(32)))
     # Right-clicking a swatch moves the selection onto it (so the menu acts there).
-    qtbot.mouseClick(panel, Qt.MouseButton.RightButton, pos=QPoint(5 * SWATCH + 1, 1))
+    qtbot.mouseClick(
+        panel, Qt.MouseButton.RightButton, pos=QPoint(5 * SWATCH_SIZE + 1, 1)
+    )
     assert panel.selected_index() == 5
 
 
@@ -3036,12 +3042,12 @@ def test_locate_action_tracks_missing_files(qtbot, tmp_path) -> None:
     assert not window._locate_missing_action.isEnabled()  # file present → disarmed
 
     rom.unlink()  # the referenced file goes missing
-    window._update_locate_action()
+    window._sync_locate_action()
     assert window._locate_missing_action.isEnabled()
 
     # Restoring the file at the same path clears the missing state and disarms it.
     rom.write_bytes(bytes((i * 13 + 1) & 0xFF for i in range(32 * 8)))
-    window._update_locate_action()
+    window._sync_locate_action()
     assert not window._locate_missing_action.isEnabled()
 
 

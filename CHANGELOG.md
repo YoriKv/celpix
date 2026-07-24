@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.2 - unreleased
+
+- Cleanup and bug fixes
+
 ## v0.2.1 - 2026-07-24
 
 - Improved layout and some more tooltip fixes

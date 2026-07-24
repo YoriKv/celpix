@@ -51,14 +51,14 @@ class GridStyle(Enum):
 
 # Two fixed grid colors: translucent white at two opacities, so the levels stay
 # distinct while tinting the art rather than overwriting it. A stronger line every
-# COARSE_GRID_TILES tiles, a lighter one on every tile in between. Both sit well
+# GRID_COARSE_TILES tiles, a lighter one on every tile in between. Both sit well
 # above YY-CHR's original bank-grid alphas (α128/α32), whose fine line all but
 # disappeared over mid-tone art — enough opacity to read as a lattice, still short
 # of opaque so the pixels underneath stay judgeable.
 GRID_COARSE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0xD0)  # α208 — every 8 tiles
 GRID_FINE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0x70)  # α112 — per tile
 # The coarse grid falls every N tiles — YY-CHR's 8×8 block convention.
-COARSE_GRID_TILES = 8
+GRID_COARSE_TILES = 8
 
 # Outline around the one-pixel paint preview. Translucent white reads against the
 # art without hiding the previewed colour, and matches the grid's idiom of tinting
@@ -697,7 +697,7 @@ class Canvas(QWidget):
 
         POINT dots the tile corners in the coarse color; the line styles draw a
         fine grid on every tile (grey) with a coarse grid every
-        :data:`COARSE_GRID_TILES` tiles (white) laid over it, so block boundaries
+        :data:`GRID_COARSE_TILES` tiles (white) laid over it, so block boundaries
         stand out from the tile lattice.
         """
         img_w, img_h = self._image.width(), self._image.height()
@@ -710,7 +710,7 @@ class Canvas(QWidget):
             return
         pen_style = _GRID_PEN_STYLES[self._grid_style]
         # Fine first, then coarse over it: shared ×N boundaries read as coarse.
-        levels = ((1, GRID_FINE_COLOR), (COARSE_GRID_TILES, GRID_COARSE_COLOR))
+        levels = ((1, GRID_FINE_COLOR), (GRID_COARSE_TILES, GRID_COARSE_COLOR))
         for step_tiles, color in levels:
             pen = QPen(color)
             pen.setStyle(pen_style)

@@ -377,14 +377,21 @@ class ChecklistPopupButton(QToolButton):
 def load_enum_setting(key: str, default: _EnumT) -> _EnumT:
     """An app-wide appearance/interaction preference out of QSettings.
 
-    The app-global preferences (grid style, selection shape) are stored by their
-    enum's string ``value``, so the settings file stays readable and stable. A
-    stored value this build has no member for — an older or newer Celpix wrote
-    the settings — falls back to ``default`` rather than raising: a stale
-    preference is not a reason to fail to start.
+    The app-global preferences (grid style, selection shape, active tool) are
+    stored by their enum's string ``value``, so the settings file stays readable
+    and stable. A stored value this build has no member for — an older or newer
+    Celpix wrote the settings — falls back to ``default`` rather than raising: a
+    stale preference is not a reason to fail to start.
     """
     stored = QSettings().value(key, default.value)
     try:
         return type(default)(stored)
     except ValueError:
         return default
+
+
+def save_enum_setting(key: str, value: Enum) -> None:
+    """Persist an app-wide preference — the write half of
+    :func:`load_enum_setting`, storing the enum's ``value`` so the two agree on
+    the on-disk form in one place rather than at each call site."""
+    QSettings().setValue(key, value.value)

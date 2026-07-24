@@ -62,11 +62,11 @@ class _EntryTree(QTreeWidget):
     While the list has focus it is a **shortcut island**: the canvas editing
     shortcuts (Cut/Copy/Paste/Select All/Delete) yield to it via
     :func:`~celpix.ui.widgets.take_editing_shortcut`, so they don't act on the
-    canvas selection from here - and Delete, which the list also binds, no longer
-    overloads ambiguously with Clear (which used to make Qt fire neither, so the
-    key silently did nothing). The only editing key the list acts on is Delete
-    (remove entry); the arrow keys reach the tree's own navigation through the
-    app-wide filter that already yields to this widget.
+    canvas selection from here. That is also what disambiguates Delete, which the
+    list binds too: left to compete with the canvas's Clear, Qt sees two claims on
+    the key and fires neither, so it silently does nothing. The only editing key
+    the list acts on is Delete (remove entry); the arrow keys reach the tree's own
+    navigation through the app-wide filter that already yields to this widget.
     """
 
     delete_pressed = Signal()  # Delete with the list focused - remove the entry

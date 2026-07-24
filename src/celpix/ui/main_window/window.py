@@ -23,7 +23,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -80,7 +80,7 @@ from celpix.ui.main_window.interpretation import InterpretationMixin
 from celpix.ui.main_window.navigation import NavigationMixin
 from celpix.ui.main_window.palette_dock import PaletteDockMixin
 from celpix.ui.main_window.palette_source import (
-    _DEFAULT_SESSION_PALETTE_FORMAT,
+    DEFAULT_SESSION_PALETTE_FORMAT,
     PaletteSourceMixin,
 )
 from celpix.ui.main_window.pixel_edit import PixelEditMixin
@@ -99,6 +99,7 @@ from celpix.ui.undo_commands import (
 )
 from celpix.ui.widgets import (
     load_enum_setting,
+    save_enum_setting,
     select_combo_data,
     signals_blocked,
 )
@@ -138,10 +139,10 @@ class MainWindow(
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Celpix")
-        # Wider than the old 1024: the interpretation bars sit over the canvas
-        # now rather than spanning the window, so they start right of the
-        # Files/Palette column and need that column's width back to keep the
-        # codecs row (the longest) from folding into an overflow chevron.
+        # The interpretation bars sit over the canvas rather than spanning the
+        # window, so they start right of the Files/Palette column. The default
+        # width carries that column on top of what the bars need, keeping the
+        # codecs row (the longest) out of an overflow chevron.
         self.resize(1120, 768)
         self.setAcceptDrops(True)  # drop a file on the window to open it as pixels
 
@@ -192,13 +193,14 @@ class MainWindow(
         # import/re-decode, the format dropdown, or a future ROM file hint - via
         # _set_session_palette_format. Global and session-lifetime: it survives
         # entry switches and is not part of any entry's saved session.
-        self._session_palette_format = _DEFAULT_SESSION_PALETTE_FORMAT
+        self._session_palette_format = DEFAULT_SESSION_PALETTE_FORMAT
         # The shared color editor, while open (None otherwise). One non-modal
         # dialog is reused and retargeted as the palette selection moves, so the
         # eyedropper can reach the canvas and the swatch grid underneath it.
         self._color_editor: ColorEditorDialog | None = None
-        # Top-left tile index of the view window. The scroll area no longer scrolls
-        # the whole file; this offset does, and only the window is composed/rendered.
+        # Top-left tile index of the view window. This offset is what scrolls
+        # through the file - only the window is composed and rendered, so the
+        # scroll area moves nothing but the (zoomed) window inside its viewport.
         self._offset = 0
         # Sub-tile byte shift of the whole tile grid (0 <= nudge < bytes_per_tile),
         # for aligning graphics that don't start on a tile boundary. Byte steps
@@ -387,7 +389,7 @@ class MainWindow(
         ws.on_dirty_changed.append(self._on_entry_dirty_changed)
         # Removing (or restoring, via undo) an entry can change whether any
         # references are missing - keep the Locate menu's enabled state honest.
-        ws.on_removed.append(lambda _entry: self._update_locate_action())
+        ws.on_removed.append(lambda _entry: self._sync_locate_action())
 
     def _on_entry_added(self, entry: Entry) -> None:
         # The panel nests a slice under its parent file's item when it's open.
@@ -440,10 +442,10 @@ class MainWindow(
         entry.name = name
         self._files_panel.refresh_entry(entry)
         if entry is self._workspace.current:
-            self._update_window_title()
+            self._refresh_window_title()
 
-    def _update_window_title(self) -> None:
-        """Set the window title.
+    def _refresh_window_title(self) -> None:
+        """Re-render the window title from what is currently open.
 
         When a project is loaded the title names the **project file**, not the
         graphic on screen: a project is the whole session, so switching entries
@@ -740,7 +742,7 @@ class MainWindow(
             if tiles:
                 self._rect_cells, self._rect_tiles = session.selection_cells, tiles
                 self._selected_last = max(tiles)
-        self._update_selection_actions()
+        self._sync_selection_actions()
         self._set_palette_mode(session.palette_mode)
         self._write_action.setEnabled(entry.doc.pixel_config.write_enabled)
         # Only whole files spawn slices and bookmarks - neither nests (and a
@@ -749,7 +751,7 @@ class MainWindow(
         self._new_slice_action.setEnabled(is_file)
         self._new_slice_from_view_action.setEnabled(is_file)
         self._new_bookmark_action.setEnabled(is_file)
-        self._update_window_title()
+        self._refresh_window_title()
 
     def _clear_document_view(self) -> None:
         """Blank the canvas and disable every document-bound action - shared by
@@ -759,7 +761,7 @@ class MainWindow(
         self._selected_last = None
         self._rect_cells, self._rect_tiles = None, ()
         self._canvas.set_selection(None)
-        self._update_selection_actions()
+        self._sync_selection_actions()
         self._canvas.set_image(QImage())
         self._overlay.hide_overlay()
         self._hex_panel.clear()
@@ -805,7 +807,7 @@ class MainWindow(
         """Nothing open: clear the canvas, disable everything document-bound."""
         self._clear_document_view()
         self._set_document_ui_enabled(True)  # idle, but live for the next open
-        self._update_window_title()
+        self._refresh_window_title()
         self._sync_nav()
         self._announce_ready()
 
@@ -819,7 +821,7 @@ class MainWindow(
         """
         self._clear_document_view()
         self._set_document_ui_enabled(False)
-        self._update_window_title()
+        self._refresh_window_title()
         self._sync_nav()
         self.statusBar().showMessage(
             f"{entry.name}: file not found - use File ▸ Locate missing files."
@@ -917,7 +919,7 @@ class MainWindow(
         for link in users:
             self._convert_user_to_custom(link.entry, colors, preset)
         self._workspace.close(palette)
-        self._resync_current_palette()
+        self._refresh_current_palette()
 
     def _apply_restore_palette_users(
         self, palette: Entry, index: int, users: list[PaletteUserLink]
@@ -926,9 +928,9 @@ class MainWindow(
         self._workspace.insert(palette, index)
         for link in users:
             self._relink_user_to_file_palette(link)
-        self._resync_current_palette()
+        self._refresh_current_palette()
 
-    def _resync_current_palette(self) -> None:
+    def _refresh_current_palette(self) -> None:
         """Re-apply the current entry's (possibly changed) palette to the dock and
         canvas after a re-home, so the on-screen mode/label follow the entry."""
         current = self._workspace.current
@@ -1098,8 +1100,8 @@ class MainWindow(
 
     def _build_view_menu(self) -> None:
         """View ▸ display toggles that change how the pixels are drawn (as
-        opposed to Navigate, which moves the window). Home of the grid toggle,
-        which used to live on the toolbar."""
+        opposed to Navigate, which moves the window): the grid toggle, the
+        app-wide grid style, and the zoom steps."""
         menu = self.menuBar().addMenu("View")
         # A checkable action, not a toolbar checkbox: same isChecked/setChecked/
         # toggled surface the rest of the code already drives, so the view-state
@@ -1174,7 +1176,7 @@ class MainWindow(
 
     def _on_grid_style_change(self, action: QAction) -> None:
         style = action.data()
-        QSettings().setValue(GRID_STYLE_KEY, style.value)
+        save_enum_setting(GRID_STYLE_KEY, style)
         self._canvas.set_grid_style(style)
 
     def _build_panels_menu(self) -> None:
@@ -1323,7 +1325,7 @@ class MainWindow(
         self._palette_panel.set_palette(self._doc.palette.colors)
         self._palette_panel.set_active_range(base, group)
         # A reload can recolor (or drop) the selected entry under the same index.
-        self._update_color_details()
+        self._refresh_color_details()
         self._sync_color_editor()
         self._sync_nav()
         # The pen's colour can move under the preview without the pen itself

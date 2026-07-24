@@ -49,7 +49,7 @@ from celpix.ui.widgets import (
 
 
 @dataclass(frozen=True)
-class _TransformOp:
+class TransformOp:
     """One transform direction: how it moves pixels and, for a block, cells.
 
     ``pixel_fn`` transforms a single decoded tile (from :mod:`celpix.core.transform`).
@@ -68,25 +68,25 @@ class _TransformOp:
 # The four directions. The cell maps invert the pixel transform at tile
 # granularity: a horizontal flip reverses the column axis, a CW rotation
 # transposes (block rotation is only ever applied to a square block, cols == rows).
-_FLIP_H = _TransformOp(
+FLIP_H = TransformOp(
     "flip",
     "Flipped",
     transform.flip_horizontal,
     lambda dx, dy, cols, rows: (cols - 1 - dx, dy),
 )
-_FLIP_V = _TransformOp(
+FLIP_V = TransformOp(
     "flip",
     "Flipped",
     transform.flip_vertical,
     lambda dx, dy, cols, rows: (dx, rows - 1 - dy),
 )
-_ROTATE_CCW = _TransformOp(
+ROTATE_CCW = TransformOp(
     "rotate",
     "Rotated",
     transform.rotate_ccw,
     lambda dx, dy, cols, rows: (cols - 1 - dy, dx),
 )
-_ROTATE_CW = _TransformOp(
+ROTATE_CW = TransformOp(
     "rotate",
     "Rotated",
     transform.rotate_cw,
@@ -257,7 +257,7 @@ class TransformMixin:
         return bar.addWidget(label)
 
     def _add_transform_group(
-        self, bar: QToolBar, handler: Callable[[_TransformOp], None], scope: str
+        self, bar: QToolBar, handler: Callable[[TransformOp], None], scope: str
     ) -> _TransformGroup:
         """Build one flip/rotate group on ``bar``, wired to ``handler``.
 
@@ -267,10 +267,10 @@ class TransformMixin:
         # Left-to-right button order; keyed by field so display order and the
         # dataclass mapping stay independent (clockwise rotate comes first).
         specs = (
-            ("flip_h", "↔", "Flip horizontal", _FLIP_H),
-            ("flip_v", "↕", "Flip vertical", _FLIP_V),
-            ("rotate_cw", "↻", "Rotate 90° right", _ROTATE_CW),
-            ("rotate_ccw", "↺", "Rotate 90° left", _ROTATE_CCW),
+            ("flip_h", "↔", "Flip horizontal", FLIP_H),
+            ("flip_v", "↕", "Flip vertical", FLIP_V),
+            ("rotate_cw", "↻", "Rotate 90° right", ROTATE_CW),
+            ("rotate_ccw", "↺", "Rotate 90° left", ROTATE_CCW),
         )
         actions = {}
         for field, glyph, tip, op in specs:
@@ -332,7 +332,7 @@ class TransformMixin:
             return cols, rows, cx, cy
         return None  # a linear multi-tile run has no 2D block
 
-    def _transform_tiles(self, op: _TransformOp) -> None:
+    def _transform_tiles(self, op: TransformOp) -> None:
         """Transform every selected tile in place — positions unchanged.
 
         Each selected tile passes through the op's pixel transform;
@@ -347,7 +347,7 @@ class TransformMixin:
         if self._map_selected_tiles(op.pixel_fn, f"{op.verb} tiles"):
             self.statusBar().showMessage(f"{op.past} {self._tiles_label(moved)}.")
 
-    def _transform_block(self, op: _TransformOp) -> None:
+    def _transform_block(self, op: TransformOp) -> None:
         """Transform the block: permute the tiles *and* transform each.
 
         The block comes from :meth:`_block_geometry` — the whole rectangle, or the

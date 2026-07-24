@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import Enum
 
-from PySide6.QtCore import QPoint, QSettings, Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import (
     QAction,
     QGuiApplication,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMenu,
 )
 
+from celpix.core import ceil_div
 from celpix.core.argb_grid import ArgbGrid
 from celpix.core.arrangement import (
     BlockLayout,
@@ -48,7 +49,7 @@ from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
     PixelEditCommand,
 )
-from celpix.ui.widgets import select_combo_data
+from celpix.ui.widgets import save_enum_setting, select_combo_data
 
 # QSettings key for the app-wide selection shape: it changes how the mouse is
 # read, not how anything renders, so it is a preference rather than view state.
@@ -270,9 +271,7 @@ class SelectionMixin:
         range would silently select tiles the user never dragged over. Falling
         back to the one tile they are demonstrably on is the honest conversion.
         """
-        QSettings().setValue(
-            SELECTION_SHAPE_KEY, self._selection_shape.currentData().value
-        )
+        save_enum_setting(SELECTION_SHAPE_KEY, self._selection_shape.currentData())
         if self._doc is not None and self._selected_tile is not None:
             self._select_tiles(self._selected_tile, self._selected_tile)
 
@@ -362,7 +361,7 @@ class SelectionMixin:
         self._after_selection_change()
 
     def _after_selection_change(self) -> None:
-        self._update_selection_actions()
+        self._sync_selection_actions()
         self._refresh_selection(self._columns.value() * self._rows.value())
         self._refresh_hex()  # the hex highlight tracks the selection
 
@@ -392,10 +391,10 @@ class SelectionMixin:
         self._selected_last = None
         self._rect_cells, self._rect_tiles = None, ()
         self._canvas.set_selection(None)
-        self._update_selection_actions()
+        self._sync_selection_actions()
         self._refresh_hex()
 
-    def _update_selection_actions(self) -> None:
+    def _sync_selection_actions(self) -> None:
         """Converge everything gated on 'a selection exists' with the state."""
         has = self._selected_tile is not None
         self._sync_edit_actions()
@@ -514,19 +513,27 @@ class SelectionMixin:
         kind = ArgbGrid if self._is_direct_color() else IndexGrid
         return [kind(self._doc.tile_width, self._doc.tile_height) for _ in range(count)]
 
+    def _view_frame(self) -> dict:
+        """The live view's frame, as the keywords ``decode_tiles``/``encode_tiles``
+        take it: byte nudge, column count, 2D reflow and the window's anchor tile.
+
+        Decode and encode must agree on all four or a round-trip lands on
+        different bytes than it read, so they ask one place rather than each
+        assembling the set from the widgets.
+        """
+        return {
+            "nudge": self._nudge,
+            "columns": self._columns.value(),
+            "two_dimensional": self._two_d.isChecked(),
+            "anchor": self._offset,
+        }
+
     def _decode_run(self, first: int, count: int) -> list | None:
         """Decode a tile run in the view's frame; None if the pipeline refuses."""
         assert self._doc is not None
         try:
             return pipeline.decode_tiles(
-                self._doc,
-                self._registry,
-                first,
-                count,
-                nudge=self._nudge,
-                columns=self._columns.value(),
-                two_dimensional=self._two_d.isChecked(),
-                anchor=self._offset,
+                self._doc, self._registry, first, count, **self._view_frame()
             )
         except PipelineError as exc:
             self._report(exc)
@@ -742,7 +749,7 @@ class SelectionMixin:
 
         if not self._edit_run(first, last - first + 1, mutate, text):
             return 0
-        rows = 1 + (len(incoming.tiles) - 1) // columns
+        rows = ceil_div(len(incoming.tiles), columns)
         cells = (columns, rows)
         rect = self._rect_tiles_for(anchor - self._offset, *cells)
         if rect:
@@ -868,14 +875,7 @@ class SelectionMixin:
             return 0
         try:
             start, data = pipeline.encode_tiles(
-                self._doc,
-                self._registry,
-                first,
-                tiles,
-                nudge=self._nudge,
-                columns=self._columns.value(),
-                two_dimensional=self._two_d.isChecked(),
-                anchor=self._offset,
+                self._doc, self._registry, first, tiles, **self._view_frame()
             )
         except PipelineError as exc:
             self._report(exc)
@@ -1020,4 +1020,4 @@ class SelectionMixin:
         ):
             self._selected_last = origin
             self._rect_cells, self._rect_tiles = None, ()
-            self._update_selection_actions()
+            self._sync_selection_actions()

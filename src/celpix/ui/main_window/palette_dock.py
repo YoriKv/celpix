@@ -43,9 +43,9 @@ from celpix.ui.widgets import (
 )
 
 # Floor for the header's mode-specific slot (file name, or offset field plus
-# step arrows). Chosen so the dock's minimum width matches what a file name
-# alone used to ask for - narrow enough that no mode can ratchet the dock
-# wider, wide enough that the offset field is still usable at that width.
+# step arrows). One floor for every mode, so switching modes can't ratchet the
+# dock wider - narrow enough that the widest slot still fits the width a file
+# name alone asks for, wide enough that the offset field stays usable there.
 _SOURCE_SLOT_MIN_WIDTH = 58
 
 
@@ -260,11 +260,11 @@ class PaletteDockMixin:
             [max(1, self.height() - wanted), wanted],
             Qt.Orientation.Vertical,
         )
-        # Sharing a column means one width serves both, and left alone Qt settles
-        # on the palette's *minimum* - which is the width its header can't go
-        # below, not one it reads well at. Ask for its natural width instead; the
-        # canvas still nets space, since the palette no longer holds a column of
-        # its own on the right.
+        # Sharing a column with the Files dock means one width serves both, and
+        # left alone Qt settles on the palette's *minimum* - the width its header
+        # can't go below, not one it reads well at. Ask for its natural width
+        # instead; it costs the canvas nothing, since the palette shares this
+        # column rather than holding one of its own.
         self.resizeDocks(
             [self._palette_dock],
             [self._palette_dock.sizeHint().width()],

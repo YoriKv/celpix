@@ -100,9 +100,9 @@ def preset_from_spec(spec: dict, stage: Stage) -> Preset:
     """Build a :class:`Preset` from a parsed spec (built-in and user presets).
 
     ``stage`` comes from the folder the spec was found in — the folder is
-    authoritative. A leftover ``stage`` field that matches is tolerated (cheap
-    migration from the old self-describing schema); a conflicting one is an
-    error so a preset never silently lands in the wrong pathway.
+    authoritative. A spec may still *state* its stage, which is tolerated when it
+    agrees (a self-describing preset stays readable on its own); a conflicting one
+    is an error, so a preset never silently lands in the wrong pathway.
     """
     declared = spec.get("stage")
     if declared is not None and declared != stage.value:

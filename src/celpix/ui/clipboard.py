@@ -33,23 +33,24 @@ from PySide6.QtGui import QGuiApplication, QImage
 from celpix.core.argb_grid import ArgbGrid
 from celpix.core.index_grid import IndexGrid
 
-# Our own clipboard flavour. The name is a private MIME type — no other program
-# claims it, so its presence proves the copy came from Celpix.
+# Our own clipboard flavours. Both names are private MIME types — no other
+# program claims them, so their presence proves the copy came from Celpix. Each
+# carries a version bumped only on an incompatible payload change; a mismatch is
+# ignored on paste, which falls back on the interchange representation alongside
+# it (an image for tiles, hex text for colors).
 TILES_MIME = "application/x-celpix-tiles"
-# Palette colors travel under their own private type (lossless ARGB) *and* as
+TILES_PAYLOAD_VERSION = 1
+# Palette colors travel under their own type (lossless ARGB) *and* as
 # ``#RRGGBB``/``#AARRGGBB`` text, so a color copies to and pastes from any other
 # program that speaks hex.
 PALETTE_MIME = "application/x-celpix-palette"
 PALETTE_PAYLOAD_VERSION = 1
+
 # A 6- or 8-digit hex run, optionally ``#``-prefixed, not embedded in a longer
 # hex string — how a foreign clipboard's colors are recognised.
 _HEX_COLOR = re.compile(
     r"(?<![0-9A-Fa-f])#?([0-9A-Fa-f]{8}|[0-9A-Fa-f]{6})(?![0-9A-Fa-f])"
 )
-
-# Bumped only on an incompatible payload change; a mismatch is ignored on paste
-# (the image representation is still there to fall back on).
-PAYLOAD_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,7 @@ class TilePayload:
     def to_bytes(self) -> bytes:
         header = json.dumps(
             {
-                "version": PAYLOAD_VERSION,
+                "version": TILES_PAYLOAD_VERSION,
                 "tile_width": self.tile_width,
                 "tile_height": self.tile_height,
                 "count": self.count,
@@ -139,14 +140,14 @@ class TilePayload:
                 return None
             size = int.from_bytes(raw[:4], "little")
             head = json.loads(raw[4 : 4 + size].decode("utf-8"))
-            if head.get("version") != PAYLOAD_VERSION:
+            if head.get("version") != TILES_PAYLOAD_VERSION:
                 return None
             tw, th = int(head["tile_width"]), int(head["tile_height"])
             count = int(head["count"])
             direct = bool(head["direct_color"])
             colors = tuple(int(c) & 0xFFFFFFFF for c in head["colors"])
-            # Optional: a copy from a build that predates block-shaped pastes
-            # reads back as a single row, its old behaviour.
+            # Optional, so a payload without it (any copy that carries no block
+            # shape) reads back as the single row a linear paste stamps.
             columns = int(head.get("columns") or count)
         except (ValueError, KeyError, TypeError, UnicodeDecodeError):
             return None

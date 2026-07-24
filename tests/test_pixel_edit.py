@@ -15,7 +15,7 @@ from PySide6.QtGui import QMouseEvent
 
 from celpix.ui.canvas import Canvas
 from celpix.ui.main_window import MainWindow
-from celpix.ui.main_window.transform import _FLIP_H
+from celpix.ui.main_window.transform import FLIP_H
 from celpix.ui.tools import EditMode, Tool
 
 
@@ -767,7 +767,7 @@ def test_flip_transforms_the_marquee_region(qtbot, tmp_path) -> None:
     window._tool = Tool.SELECT
     row = [_pixel(window, x, 0) for x in range(4)]
     window._marquee = QRect(0, 0, 4, 4)
-    window._transform_pixel_region(_FLIP_H)
+    window._transform_pixel_region(FLIP_H)
     # A horizontal flip reverses each row of the region.
     assert [_pixel(window, x, 0) for x in range(4)] == row[::-1]
 

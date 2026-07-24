@@ -363,8 +363,9 @@ class TransferMixin:
         """A PNG dropped on the window, imported where the canvas menu would.
 
         With nothing open there is no view to fit the image to, so the drop is
-        refused with the reason rather than falling back to adding the PNG to
-        the list - which is the very thing dropping an image no longer does.
+        refused with the reason. Adding the PNG to the list instead would be a
+        different gesture wearing the same drop: an import lands *into* the
+        graphic on screen, it doesn't open one.
         """
         if self._doc is None:
             self.statusBar().showMessage(

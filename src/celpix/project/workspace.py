@@ -69,10 +69,11 @@ class PaletteMode(str, Enum):
     schema is unchanged by this being a type rather than a bare string.
 
     The distinctions between the modes drive several different decisions, and the
-    properties below are the single statement of each — they were previously four
-    separate literal tuples kept in step by hand across the window, the workspace
-    and the project reader. See ``docs/design/palette-editing.md`` for what a
-    color edit can be written back to in each.
+    properties below are the single statement of each — so the window, the
+    workspace and the project reader all branch on one named question rather than
+    each carrying its own literal set of modes to keep in step by hand. See
+    ``docs/design/palette-editing.md`` for what a color edit can be written back
+    to in each.
     """
 
     DEFAULT = "default"  # the generated fallback palette
