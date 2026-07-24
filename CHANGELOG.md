@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 - unreleased
+## v0.2.0 - 2026-07-24
 
 - **Canvas navigation**: Ctrl+scrollwheel zoom and hold space to pan.
 - **File palettes**: cleaner file palette workflow.
