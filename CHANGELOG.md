@@ -2,7 +2,7 @@
 
 ## v0.2.2 - unreleased
 
-- Cleanup and bug fixes
+- Help menu, readme, and name change (celPix)
 
 ## v0.2.1 - 2026-07-24
 

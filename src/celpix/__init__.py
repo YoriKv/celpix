@@ -1,4 +1,4 @@
-"""Celpix — a graphics and palette editor for retro-game data.
+"""celPix — a graphics and palette editor for retro-game data.
 
 The high-level design lives in ``docs/design/overview.md``. The package is laid
 out to mirror that design's major subsystems:

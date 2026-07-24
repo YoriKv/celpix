@@ -5,18 +5,18 @@ one a paste uses decides how faithful it is:
 
 - ``application/x-celpix-tiles`` — the tiles themselves, as indices (or ARGB for
   a direct-color codec) plus the palette they were seen through. Pasting this
-  back into Celpix is lossless: indices are the data, and a same-format paste
+  back into celPix is lossless: indices are the data, and a same-format paste
   moves them verbatim rather than round-tripping them through color.
 - **An image**, so every other program on the machine sees a normal picture. Qt
   converts it to whatever the receiving app asks for (PNG, DIB, …).
 
-Pasting reverses the priority: the Celpix payload if it is there, otherwise any
+Pasting reverses the priority: the celPix payload if it is there, otherwise any
 image on the clipboard, which enters through the Qt-free import pathway
 (:mod:`celpix.pipeline.importer`) and is fitted to the target palette. That is
 what makes "draw a sprite in an image editor, paste it into the ROM" work.
 
 The payload is a small JSON header plus raw pixel bytes, versioned so a future
-Celpix can recognise (or reject) an old clipboard. It is deliberately *not* a
+celPix can recognise (or reject) an old clipboard. It is deliberately *not* a
 pickle: the clipboard is shared with the rest of the machine and must never be
 able to execute anything on paste.
 """
@@ -34,7 +34,7 @@ from celpix.core.argb_grid import ArgbGrid
 from celpix.core.index_grid import IndexGrid
 
 # Our own clipboard flavours. Both names are private MIME types — no other
-# program claims them, so their presence proves the copy came from Celpix. Each
+# program claims them, so their presence proves the copy came from celPix. Each
 # carries a version bumped only on an incompatible payload change; a mismatch is
 # ignored on paste, which falls back on the interchange representation alongside
 # it (an image for tiles, hex text for colors).
@@ -170,7 +170,7 @@ def put(payload: TilePayload | None, image: QImage) -> None:
 
 
 def take_payload() -> TilePayload | None:
-    """The Celpix tile payload on the clipboard, if a Celpix copy put one there."""
+    """The celPix tile payload on the clipboard, if a celPix copy put one there."""
     mime = QGuiApplication.clipboard().mimeData()
     if mime is None or not mime.hasFormat(TILES_MIME):
         return None

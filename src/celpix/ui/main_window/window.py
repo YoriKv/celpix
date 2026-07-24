@@ -1,6 +1,6 @@
 """The application main window: open pixel/palette data, view it, save it back.
 
-Menus (File, Edit, View, Navigate, Palette, Panels) over a two-column body. The
+Menus (File, Edit, View, Navigate, Palette, Panels, Help) over a two-column body. The
 left column is the Files and Palette docks, splitting the window's full height
 between them; the right is the editing surface: four bars stacked over a
 scrollable :class:`~celpix.ui.canvas.Canvas` - codecs (pixel format,
@@ -72,6 +72,7 @@ from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas, GridStyle
 from celpix.ui.color_editor import ColorEditorDialog
 from celpix.ui.decompress_overlay import DecompressOverlay
 from celpix.ui.file_list_panel import FileListPanel
+from celpix.ui.help_dialogs import AboutDialog, ShortcutGuide, shortcut_sections
 from celpix.ui.hex_view_panel import BYTES_PER_ROW, HexViewPanel
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
@@ -138,7 +139,7 @@ class MainWindow(
         reload_plugins: ReloadPlugins | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Celpix")
+        self.setWindowTitle("celPix")
         # The interpretation bars sit over the canvas rather than spanning the
         # window, so they start right of the Files/Palette column. The default
         # width carries that column on top of what the bars need, keeping the
@@ -454,21 +455,21 @@ class MainWindow(
         platform's unsaved marker (a trailing ``*`` here, the close-button dot on
         macOS) while the session differs from the file. With no project open it
         falls back to the current entry's name (``(missing)`` when its file is
-        gone), or a bare ``Celpix`` when nothing is open - and carries no marker,
+        gone), or a bare ``celPix`` when nothing is open - and carries no marker,
         since there is no project file those changes could be saved to.
         """
         if self._project_path is not None:
-            self.setWindowTitle(f"Celpix - {Path(self._project_path).name}[*]")
+            self.setWindowTitle(f"celPix - {Path(self._project_path).name}[*]")
             self._refresh_project_modified()
             return
         self.setWindowModified(False)
         entry = self._workspace.current
         if entry is None:
-            self.setWindowTitle("Celpix")
+            self.setWindowTitle("celPix")
         elif data_missing(entry):
-            self.setWindowTitle(f"Celpix - {entry.name} (missing)")
+            self.setWindowTitle(f"celPix - {entry.name} (missing)")
         else:
-            self.setWindowTitle(f"Celpix - {entry.name}")
+            self.setWindowTitle(f"celPix - {entry.name}")
 
     def _on_undo_index_changed(self, _index: int) -> None:
         self._refresh_project_modified()
@@ -858,7 +859,7 @@ class MainWindow(
             parts.append(f"discards unsaved changes ({', '.join(dirty)})")
         if parts:
             message = f"Remove {entry.name}? This also " + " and ".join(parts) + "."
-        answer = QMessageBox.question(self, "Celpix - remove", message)
+        answer = QMessageBox.question(self, "celPix - remove", message)
         if answer != QMessageBox.StandardButton.Yes:
             return
         entries = self._workspace.entries
@@ -881,7 +882,7 @@ class MainWindow(
         names = ", ".join(u.name for u in users)
         answer = QMessageBox.question(
             self,
-            "Celpix - remove palette",
+            "celPix - remove palette",
             f"Remove {palette.name}? It is used by {len(users)} "
             f"graphic(s): {names}.\n\nEach keeps these colors as its own custom "
             "palette, stored in the project.",
@@ -1088,7 +1089,10 @@ class MainWindow(
         file_menu.addSeparator()
 
         quit_action = QAction("Quit", self)
-        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        # Spelled out rather than StandardKey.Quit: on X11 that role resolves to
+        # the bare "Exit" media key, which most keyboards don't have. Ctrl+Q is
+        # what the menu should promise, and Qt maps Ctrl to Cmd on macOS.
+        quit_action.setShortcut(QKeySequence("Ctrl+Q"))
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
@@ -1097,6 +1101,30 @@ class MainWindow(
         self._build_navigate_menu()
         self._build_palette_menu()
         self._build_panels_menu()
+        self._build_help_menu()
+
+    def _build_help_menu(self) -> None:
+        """Help ▸ the shortcut guide and About.
+
+        Built last so the guide, which reads the finished menu bar, sees every
+        other menu (see :mod:`celpix.ui.help_dialogs`).
+        """
+        menu = self.menuBar().addMenu("Help")
+        shortcuts = QAction("Shortcuts…", self)
+        shortcuts.setToolTip("Every keyboard shortcut in one page")
+        shortcuts.setShortcut(QKeySequence.StandardKey.HelpContents)  # F1
+        shortcuts.triggered.connect(self._show_shortcuts)
+        menu.addAction(shortcuts)
+        menu.addSeparator()
+        about = QAction("About celPix", self)
+        about.triggered.connect(self._show_about)
+        menu.addAction(about)
+
+    def _show_shortcuts(self) -> None:
+        ShortcutGuide(shortcut_sections(self), self).exec()
+
+    def _show_about(self) -> None:
+        AboutDialog(self).exec()
 
     def _build_view_menu(self) -> None:
         """View ▸ display toggles that change how the pixels are drawn (as
@@ -1373,7 +1401,7 @@ class MainWindow(
             self._selection_byte_range(),
         )
 
-    def _alert(self, message: str, *, title: str = "Celpix", detail: str = "") -> None:
+    def _alert(self, message: str, *, title: str = "celPix", detail: str = "") -> None:
         """The one place errors and warnings reach the user, as a modal dialog.
 
         A status-bar line is easy to miss - it's silent and scrolls away - so
@@ -1394,7 +1422,7 @@ class MainWindow(
     def _report(self, exc: PipelineError) -> None:
         """Surface a pipeline failure. Thin wrapper over :meth:`_alert` kept for
         the many call sites that already hold a :class:`PipelineError`."""
-        self._alert(str(exc), title="Celpix - pipeline error")
+        self._alert(str(exc), title="celPix - pipeline error")
 
     def _alert_plugin_issues(self) -> None:
         """Modal listing plugins that failed to load - shown at startup and
@@ -1406,6 +1434,6 @@ class MainWindow(
             f"{len(self._plugin_issues)} plugin(s) failed to load. The rest of "
             "the app works normally; see the details, or File ▸ Open plugins "
             "folder.",
-            title="Celpix - plugin load issues",
+            title="celPix - plugin load issues",
             detail=detail,
         )

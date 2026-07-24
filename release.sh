@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# release.sh — cut a release for Celpix.
+# release.sh — cut a release for celPix.
 #
 # Bumps the version, stamps the changelog, commits, tags, and pushes to the
 # current remote (origin). The tag push triggers the "Release" GitHub Actions

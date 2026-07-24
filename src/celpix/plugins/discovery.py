@@ -1,6 +1,6 @@
 """Load user plugins dropped into a typed plugin directory.
 
-Users extend Celpix by putting files into a plugin directory — no reinstall, no
+Users extend celPix by putting files into a plugin directory — no reinstall, no
 editing package internals. The directory is organised by **what a plugin is**,
 and the folder a file sits in *determines* its type:
 

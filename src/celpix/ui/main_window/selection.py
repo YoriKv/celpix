@@ -92,6 +92,11 @@ class SelectionMixin:
         undo = self._undo_stack.createUndoAction(self)
         undo.setShortcut(QKeySequence.StandardKey.Undo)  # Ctrl+Z
         redo = self._undo_stack.createRedoAction(self)
+        # The stack rewrites these labels to name the pending command ("Undo
+        # Paste"), which reads as noise in the shortcut guide - pin the plain
+        # name for it (see celpix.ui.help_dialogs).
+        undo.setProperty("guideLabel", "Undo")
+        redo.setProperty("guideLabel", "Redo")
         # Ctrl+Shift+Z first (the advertised binding), plus the platform
         # standard (Ctrl+Y on Windows), deduplicated.
         sequences = [QKeySequence("Ctrl+Shift+Z")]
@@ -543,7 +548,7 @@ class SelectionMixin:
         """Put the selected tiles on the clipboard; False if there are none.
 
         Both representations go out at once (see :mod:`celpix.ui.clipboard`):
-        the tiles themselves for a lossless paste back into Celpix, and a
+        the tiles themselves for a lossless paste back into celPix, and a
         rendered image so every other program sees an ordinary picture. A
         rectangle selection copies only its own cells - the enclosing run is
         decoded (the file is linear), then the gap tiles are dropped.
@@ -763,11 +768,11 @@ class SelectionMixin:
 
         Three ways in, in decreasing fidelity:
 
-        1. A Celpix copy of the same tile geometry whose indices fit this
+        1. A celPix copy of the same tile geometry whose indices fit this
            format's index space - used **verbatim**. Indices are the data; a
            copy between two spots in a ROM must move them untouched, whatever
            palette either view happens to render through.
-        2. A Celpix copy that doesn't fit (a 4bpp run into a 2bpp view) - its
+        2. A celPix copy that doesn't fit (a 4bpp run into a 2bpp view) - its
            own palette turns the indices back into colors, which are re-matched
            into this view's subpalette.
         3. Anything else on the clipboard that is an image - the import pathway

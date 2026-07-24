@@ -30,7 +30,7 @@ def captured_alerts(monkeypatch):
     monkeypatch.setattr(
         module.MainWindow,
         "_alert",
-        lambda self, message, *, title="Celpix", detail="": alerts.append(
+        lambda self, message, *, title="celPix", detail="": alerts.append(
             (title, message)
         ),
         raising=False,
@@ -57,6 +57,23 @@ def _destroy_widgets_between_tests():
     app = sys.modules["PySide6.QtWidgets"].QApplication.instance()
     if app is not None:
         app.sendPostedEvents(None, qtcore.QEvent.Type.DeferredDelete)
+
+
+@pytest.fixture(autouse=True)
+def _help_dialogs_never_block(monkeypatch):
+    """Make the Help dialogs' ``exec()`` return instead of blocking forever.
+
+    They are the only modals a test can reach by triggering a menu action, and
+    an ``exec()`` under the offscreen platform never returns — the run would
+    wedge with nothing to blame. Construction still happens, so a test can
+    assert on what the dialog was built from. Guarded like
+    :func:`captured_alerts` so headless suites stay Qt-free.
+    """
+    module = sys.modules.get("celpix.ui.help_dialogs")
+    if module is None:
+        return
+    for dialog in (module.ShortcutGuide, module.AboutDialog):
+        monkeypatch.setattr(dialog, "exec", lambda self: 0, raising=False)
 
 
 @pytest.fixture(autouse=True)

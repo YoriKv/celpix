@@ -247,7 +247,7 @@ class ColorEditingMixin:
     def _copy_palette_color(self) -> None:
         """Copy the selected swatch's color to the system clipboard.
 
-        Goes out both as a lossless Celpix payload and as ``#RRGGBB``/
+        Goes out both as a lossless celPix payload and as ``#RRGGBB``/
         ``#AARRGGBB`` text, so it pastes back verbatim here and into any other
         program that reads hex.
         """

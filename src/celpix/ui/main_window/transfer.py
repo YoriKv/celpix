@@ -227,7 +227,7 @@ class TransferMixin:
         if export.save_png(image, path):
             self.statusBar().showMessage(f"Exported {entry.name} to {path}.")
         else:
-            self._alert(f"Could not write {path}.", title="Celpix - export")
+            self._alert(f"Could not write {path}.", title="celPix - export")
 
     def _export_raw(self, entry: Entry | None) -> None:
         """Export ``entry``'s decoded bytes as a raw binary."""
@@ -242,7 +242,7 @@ class TransferMixin:
         try:
             export.save_raw(entry.doc, path)
         except OSError as exc:
-            self._alert(f"Could not write {path}: {exc}", title="Celpix - export")
+            self._alert(f"Could not write {path}: {exc}", title="celPix - export")
             return
         self.statusBar().showMessage(
             f"Exported {len(entry.doc.pixel_data)} bytes of {entry.name} to {path}."
@@ -309,7 +309,7 @@ class TransferMixin:
             self._alert(
                 f"{len(failed)} item(s) could not be exported (unreadable, or a "
                 "codec that couldn't decode them).",
-                title="Celpix - export",
+                title="celPix - export",
                 detail="\n".join(failed),
             )
 
@@ -398,7 +398,7 @@ class TransferMixin:
         assert self._doc is not None
         image = QImage(path)
         if image.isNull():
-            self._alert(f"Could not read {path} as an image.", title="Celpix - import")
+            self._alert(f"Could not read {path} as an image.", title="celPix - import")
             return
         incoming = importer.import_argb(
             clipboard.image_to_argb(image), self._import_target()

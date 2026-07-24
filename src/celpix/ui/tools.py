@@ -6,7 +6,7 @@ read, so a new tool is added in one place. It is UI-layer but Qt-free — pure d
 plus a reference to the Qt-free rasterizer in :mod:`celpix.core.draw` — so the
 controller can drive a tool without going through a widget.
 
-``EditMode`` is the top-level switch: ``TILE`` is Celpix's original
+``EditMode`` is the top-level switch: ``TILE`` is celPix's original
 tile-granular editing (selection, clipboard, transforms over whole tiles);
 ``PIXEL`` turns the canvas into a paint surface where these tools act on
 individual pixels.

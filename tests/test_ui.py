@@ -188,7 +188,7 @@ def test_slice_rename_inline_editor_commits_and_cancels(qtbot, tmp_path) -> None
     qtbot.keyClick(editor, Qt.Key.Key_Return)
     qtbot.waitUntil(lambda: entry.name == "yoshi gfx")
     assert panel._items[entry].text(0) == "yoshi gfx"
-    assert window.windowTitle() == "Celpix - yoshi gfx"
+    assert window.windowTitle() == "celPix - yoshi gfx"
 
     # Cancel (Escape): nothing changes and the label is restored. The first
     # editor may still await deleteLater — take the newest one.
@@ -1659,7 +1659,7 @@ def _isolate_settings(tmp_path) -> None:
     from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QApplication
 
-    QApplication.instance().setApplicationName("CelpixTest")
+    QApplication.instance().setApplicationName("celPixTest")
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(
         QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path)
@@ -3206,7 +3206,7 @@ def test_relocate_missing_rejects_duplicate_open_file(
     assert data_missing(entry_a)
     assert missing_paths(window._workspace) == [str(tmp_path / "gone.4bpp.sfc")]
     assert len(window._workspace.entries) == entry_count
-    assert any(title == "Celpix - locate" for title, _msg in captured_alerts)
+    assert any(title == "celPix - locate" for title, _msg in captured_alerts)
 
 
 def test_missing_palette_file_degrades_quietly_and_keeps_reference(
@@ -3760,14 +3760,14 @@ def test_window_title_names_project_and_marks_it_unsaved(qtbot, tmp_path):
     window._load_pixel(str(px))
     # No project yet: the title names the current graphic, and carries no
     # unsaved marker - there is no project file to be unsaved against.
-    assert window.windowTitle() == f"Celpix - {px.name}"
+    assert window.windowTitle() == f"celPix - {px.name}"
     assert not window.isWindowModified()
 
     # Saving gives the session a project file: the title names it (with Qt's
     # [*] marker placeholder) and reads clean.
     project = tmp_path / "session.celpix"
     window._save_project_to(str(project))
-    assert window.windowTitle() == "Celpix - session.celpix[*]"
+    assert window.windowTitle() == "celPix - session.celpix[*]"
     assert not window.isWindowModified()
 
     # A view change is part of what a project stores, so it goes unsaved...
@@ -4572,3 +4572,55 @@ def test_default_palette_is_full_length_so_the_gray_ramp_is_reachable(
     # ...and the row is reachable: the spin clamps to the palette's real rows.
     window._subpalette.setValue(1)
     assert window._subpalette.value() == 1
+
+
+def test_shortcut_guide_reads_both_key_styles_off_the_menus(qtbot) -> None:
+    """The guide is generated from the live menu bar, so both key styles must land.
+
+    A real ``QKeySequence`` (Edit ▸ Copy) and the tab-in-the-label form the
+    bare-key nav actions use (Navigate ▸ Next tile) reach it by different
+    routes; Undo's label is pinned because the undo stack renames it at
+    runtime; and an action with no key at all must not become a blank row.
+    """
+    from PySide6.QtGui import QKeySequence
+
+    from celpix.ui.help_dialogs import shortcut_sections
+    from celpix.ui.tools import TOOL_SPECS
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    sections = dict(shortcut_sections(window))
+    copy_keys = QKeySequence(QKeySequence.StandardKey.Copy).toString(
+        QKeySequence.SequenceFormat.NativeText
+    )
+    assert dict(sections["Edit"])["Copy"] == copy_keys
+    assert dict(sections["Navigate"])["Next tile"] == "Right"
+    assert "Undo" in dict(sections["Edit"])  # not "Undo <command name>"
+    assert dict(sections["Pixel Tools"]) == {s.label: s.key for s in TOOL_SPECS}
+    assert all(name and keys for entries in sections.values() for name, keys in entries)
+
+
+def test_help_menu_opens_the_guide_and_about(qtbot) -> None:
+    """Help's two actions build their dialogs (About reads a bundled icon)."""
+    from PySide6.QtWidgets import QLabel
+
+    from celpix import __version__
+    from celpix.ui.help_dialogs import AboutDialog, ShortcutGuide
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    # Hold the menubar's action list: dropping it collects the QAction wrappers,
+    # and the submenu each owns goes with them.
+    bar_actions = window.menuBar().actions()
+    help_menu = next(a.menu() for a in bar_actions if a.text() == "Help")
+    for action in help_menu.actions():
+        if not action.isSeparator():
+            action.trigger()  # conftest stops exec() from blocking
+
+    assert window.findChildren(ShortcutGuide)
+    about = window.findChildren(AboutDialog)
+    assert about
+    blurb = " ".join(label.text() for label in about[0].findChildren(QLabel))
+    assert "Epi" in blurb and __version__ in blurb

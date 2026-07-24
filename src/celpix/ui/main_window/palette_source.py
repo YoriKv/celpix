@@ -278,7 +278,7 @@ class PaletteSourceMixin:
             self._alert(
                 f"{entry.name}: palette not restored, using the default "
                 f"palette instead.\n\n{exc}",
-                title="Celpix - palette",
+                title="celPix - palette",
             )
             return False
 
@@ -346,7 +346,7 @@ class PaletteSourceMixin:
             self._report(exc)
             return
         except OSError as exc:
-            self._alert(f"Cannot write {path}: {exc}", title="Celpix - palette")
+            self._alert(f"Cannot write {path}: {exc}", title="celPix - palette")
             return
         added = self._add_palette_file(
             path, quiet=True, preset_id=self._EXPORT_PRESET_ID
@@ -411,7 +411,7 @@ class PaletteSourceMixin:
             self._alert(
                 f"{entry.name}: file not found - File ▸ Locate missing files "
                 "to re-point it.",
-                title="Celpix - palette",
+                title="celPix - palette",
             )
             return
         self._apply_file_palette(
@@ -538,10 +538,10 @@ class PaletteSourceMixin:
         try:
             fmt, cfg = self._emulator_palette_config(path)
         except emustate.StateError as exc:
-            self._alert(str(exc), title="Celpix - emulator state")
+            self._alert(str(exc), title="celPix - emulator state")
             return False
         except OSError as exc:
-            self._alert(f"Cannot read {path}: {exc}", title="Celpix - emulator state")
+            self._alert(f"Cannot read {path}: {exc}", title="celPix - emulator state")
             return False
         return self._load_and_commit_palette(
             cfg,
@@ -895,7 +895,7 @@ class PaletteSourceMixin:
         try:
             file_size = Path(path).stat().st_size
         except OSError as exc:
-            self._alert(f"Cannot read {path}: {exc}", title="Celpix - palette")
+            self._alert(f"Cannot read {path}: {exc}", title="celPix - palette")
             return
         last = file_size - entry_size  # last offset a whole entry still fits at
         if last < 0:
@@ -964,12 +964,12 @@ class PaletteSourceMixin:
             self._report(exc)
             return False
         except OSError as exc:
-            self._alert(f"Cannot read {src.path}: {exc}", title="Celpix - palette")
+            self._alert(f"Cannot read {src.path}: {exc}", title="celPix - palette")
             return False
         if ref is None:
             self._alert(
                 "Not enough data at that offset for a palette entry.",
-                title="Celpix - palette",
+                title="celPix - palette",
             )
             return False
         # Compression is deliberately ignored on this pathway: the config keeps
@@ -1103,13 +1103,13 @@ class PaletteSourceMixin:
                 return None
             except OSError as exc:
                 self._alert(
-                    f"Cannot read {old.source.path}: {exc}", title="Celpix - palette"
+                    f"Cannot read {old.source.path}: {exc}", title="celPix - palette"
                 )
                 return None
             if source is None:
                 self._alert(
                     "Not enough data at the palette offset for this format.",
-                    title="Celpix - palette",
+                    title="celPix - palette",
                 )
                 return None
         elif source.data is not None:
@@ -1129,7 +1129,7 @@ class PaletteSourceMixin:
             if length <= 0:
                 self._alert(
                     "Not enough palette data for this format.",
-                    title="Celpix - palette",
+                    title="celPix - palette",
                 )
                 return None
             source = FileRef(

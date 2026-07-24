@@ -199,9 +199,9 @@ def load_project(path: str) -> LoadedProject:
     except OSError as exc:
         raise ProjectError(f"Cannot read {path}: {exc}") from exc
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ProjectError(f"Not a Celpix project: {path} ({exc})") from exc
+        raise ProjectError(f"Not a celPix project: {path} ({exc})") from exc
     if not isinstance(data, dict) or not isinstance(data.get("entries", []), list):
-        raise ProjectError(f"Not a Celpix project: {path}")
+        raise ProjectError(f"Not a celPix project: {path}")
 
     base_dir = dirname(abspath(path))
     # Parse positionally (None for a skipped entry) so the stored `current`

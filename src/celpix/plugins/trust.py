@@ -1,6 +1,6 @@
 """Trust gate for code plugins.
 
-A ``*.py`` plugin runs with the app's privileges, so before Celpix executes one it
+A ``*.py`` plugin runs with the app's privileges, so before celPix executes one it
 asks the user to approve it, and remembers the approval so it loads silently next
 time. Trust is keyed on the **content hash**, not the path: approving a plugin
 trusts *that exact code*. If the file's bytes change, the hash changes and the user

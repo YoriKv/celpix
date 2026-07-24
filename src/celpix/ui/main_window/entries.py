@@ -55,7 +55,7 @@ class EntriesMixin:
     """
 
     # -- projects ------------------------------------------------------------
-    _PROJECT_FILTER = "Celpix project (*.celpix)"
+    _PROJECT_FILTER = "celPix project (*.celpix)"
 
     def _open_project(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -81,14 +81,14 @@ class EntriesMixin:
         try:
             loaded = projectfile.load_project(path)
         except projectfile.ProjectError as exc:
-            self._alert(str(exc), title="Celpix - project")
+            self._alert(str(exc), title="celPix - project")
             return
         if loaded.version > projectfile.PROJECT_VERSION:
             self._alert(
-                "This project was saved by a newer Celpix. It opens with what "
+                "This project was saved by a newer celPix. It opens with what "
                 "this version understands, but saving will rewrite it at "
                 f"version {projectfile.PROJECT_VERSION}, dropping the rest.",
-                title="Celpix - project",
+                title="celPix - project",
             )
         # Seed the pixel-format filter before the replace: showing the restored
         # current entry rebuilds the dropdown, which must already read the
@@ -140,7 +140,7 @@ class EntriesMixin:
         if prompt_summary:
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Warning)
-            box.setWindowTitle("Celpix - missing files")
+            box.setWindowTitle("celPix - missing files")
             box.setText(
                 f"This project references {len(paths)} file(s) that couldn't be "
                 "found. Locate them now?"
@@ -168,7 +168,7 @@ class EntriesMixin:
                     f"{Path(new).name} is already open in this project, so "
                     f"{Path(old).name} can't be relocated to it. Pick a "
                     "different file, or close the duplicate first.",
-                    title="Celpix - locate",
+                    title="celPix - locate",
                 )
                 continue
             for entry in relocate_path(self._workspace, old, new):
@@ -222,7 +222,7 @@ class EntriesMixin:
         try:
             projectfile.save_project(self._workspace, path)
         except OSError as exc:
-            self._alert(f"Cannot write {path}: {exc}", title="Celpix - project")
+            self._alert(f"Cannot write {path}: {exc}", title="celPix - project")
             return
         self._project_path = path
         self._saved_project = self._project_snapshot()  # the new clean baseline
@@ -245,7 +245,7 @@ class EntriesMixin:
             return True
         assert self._project_path is not None  # implied by _project_is_dirty
         box = QMessageBox(self)
-        box.setWindowTitle("Celpix - unsaved project")
+        box.setWindowTitle("celPix - unsaved project")
         box.setText(
             f"{action} discards unsaved changes to "
             f"{Path(self._project_path).name}. Save the project first?"
@@ -287,7 +287,7 @@ class EntriesMixin:
             return True
         names = ", ".join(e.name for e in dirty)
         box = QMessageBox(self)
-        box.setWindowTitle("Celpix - unsaved changes")
+        box.setWindowTitle("celPix - unsaved changes")
         box.setText(f"{consequence} ({names}). Write them to disk first?")
         write = box.addButton(write_label, QMessageBox.ButtonRole.AcceptRole)
         box.addButton(skip_label, QMessageBox.ButtonRole.DestructiveRole)
@@ -349,7 +349,7 @@ class EntriesMixin:
             self._alert(
                 f"{entry.name} is view-only (its compression has no compressor), "
                 "so it can't be written back.",
-                title="Celpix - write",
+                title="celPix - write",
             )
             return
         if self._write_entry(entry):
@@ -537,7 +537,7 @@ class EntriesMixin:
         if tiles and sorted(tiles) != list(range(min(tiles), max(tiles) + 1)):
             self._alert(
                 "New Slice from Selection needs a continuous run of tiles.",
-                title="Celpix - new slice",
+                title="celPix - new slice",
                 detail=(
                     "This rectangle's rows are separated in the file, and a "
                     "slice is a single offset and length. Select the tiles as "
@@ -574,7 +574,7 @@ class EntriesMixin:
         if entry.pixel_dirty or entry.palette_dirty:
             answer = QMessageBox.question(
                 self,
-                "Celpix - edit slice",
+                "celPix - edit slice",
                 f"Editing {entry.name} re-reads it from disk, discarding its "
                 "unsaved changes. Continue?",
             )

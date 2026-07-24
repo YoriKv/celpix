@@ -18,13 +18,13 @@ from celpix.ui.main_window import MainWindow
 # Application identifier — backs QSettings and the platform data location. We set
 # *only* the application name (no organization name): QStandardPaths appends both
 # organizationName and applicationName, so setting an org equal to the app would
-# nest the data dir as Celpix/Celpix. Celpix is a single app with no separate org.
-APP_NAME = "Celpix"
+# nest the data dir as celPix/celPix. celPix is a single app with no separate org.
+APP_NAME = "celPix"
 
 
 def _app_data_dir() -> Path:
-    """The platform application-data location (e.g. ``~/.local/share/Celpix`` on
-    Linux, ``%APPDATA%\\Celpix`` on Windows). Choosing paths is a Qt concern and
+    """The platform application-data location (e.g. ``~/.local/share/celPix`` on
+    Linux, ``%APPDATA%\\celPix`` on Windows). Choosing paths is a Qt concern and
     lives here; the plugin scan itself is Qt-free (``celpix.plugins.discovery``)."""
     return Path(
         QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
@@ -35,8 +35,8 @@ def _confirm_plugin(pending: PendingCodePlugin) -> bool:
     """Ask the user whether to run a not-yet-approved code plugin. Default: No."""
     box = QMessageBox()
     box.setIcon(QMessageBox.Icon.Warning)
-    box.setWindowTitle("Celpix - load code plugin?")
-    box.setText("A code plugin wants to load and will run with Celpix's privileges.")
+    box.setWindowTitle("celPix - load code plugin?")
+    box.setText("A code plugin wants to load and will run with celPix's privileges.")
     box.setInformativeText(
         f"{pending.path}\n\nSHA-256: {pending.digest[:16]}…\n\n"
         "Only load plugins you trust. Load it?"

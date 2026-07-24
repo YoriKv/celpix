@@ -56,7 +56,7 @@ class ImportTarget:
     block_rows: int = 1
     block_order: str = "row"
     # Where transparent source pixels land. Index 0 is the retro convention (and
-    # the entry Celpix's PNG export marks transparent); None means "no hole" and
+    # the entry celPix's PNG export marks transparent); None means "no hole" and
     # transparent pixels are matched on color like any other.
     transparent_index: int | None = 0
 

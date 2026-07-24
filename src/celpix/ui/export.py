@@ -1,6 +1,6 @@
 """Exporting interpreted graphics to standalone image / raw files.
 
-Export is a one-way projection *out* of Celpix's model: it renders an entry's
+Export is a one-way projection *out* of celPix's model: it renders an entry's
 whole document — every tile, laid out by its view arrangement — to a PNG, or
 writes the decoded pixel bytes straight out as a raw binary. Unlike Write, it
 never targets the source file; it produces new, self-contained files for use in
@@ -53,7 +53,7 @@ def document_image(doc: Document, registry: Registry) -> QImage:
         256, 1 << pipeline.pixel_bpp(doc.pixel_config.interpret_preset_id, registry)
     )
     base = view.subpalette_row * index_space
-    # Exactly one entry per index the format can produce, in Celpix order — no
+    # Exactly one entry per index the format can produce, in celPix order — no
     # minimizing (Aseprite would otherwise renumber unused leading colors). Every
     # entry keeps the codec's own alpha; index 0 is *not* forced transparent, so a
     # meaningful color 0 exports as the opaque color it is.
