@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.2 - unreleased
+## v0.2.2 - 2026-07-24
 
 - Help menu, readme, and name change (celPix)
 
