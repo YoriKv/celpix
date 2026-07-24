@@ -7,6 +7,8 @@ system with examples to extend to custom and rarer formats.
 If you run into issues or have questions. Submit a github issue or reach out to me
 on Discord with the https://romhack.ing/ Discord server.
 
+celPix is built on Python + Qt (PySide6) and runs on Windows, macOS, and Linux.
+
 ## Features
 
 - **Supported formats** - a wide variety of pixel and palette formats, covering
