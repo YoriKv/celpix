@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from celpix.ui.color_editor import ColorEditor, parse_hex_color
+from celpix.ui.color_editor import ColorEditor, ColorEditorDialog, parse_hex_color
 
 
 @pytest.mark.parametrize(
@@ -93,7 +93,7 @@ def test_revert_returns_to_the_marked_original(qtbot) -> None:
     seen: list[int] = []
     editor.color_changed.connect(seen.append)
 
-    editor._reset.click()
+    editor.revert()
 
     # Revert is a real edit — it emits, so the host records it on the stack.
     assert seen == [0xFF102030]
@@ -179,20 +179,93 @@ def test_typed_alpha_is_ignored_while_alpha_is_off(qtbot) -> None:
     assert editor.color() == 0xFF304050
 
 
-def test_revert_is_disabled_until_the_color_moves(qtbot) -> None:
+def test_revert_is_a_noop_when_nothing_moved(qtbot) -> None:
+    # Cancel calls revert() unconditionally; on an untouched color it must not
+    # push a spurious edit onto the undo stack.
     editor = ColorEditor()
     qtbot.addWidget(editor)
     editor.set_color(0xFF102030, mark_original=True)
-    assert not editor._reset.isEnabled()
+    seen: list[int] = []
+    editor.color_changed.connect(seen.append)
 
-    editor._spins["R"].setValue(0x99)
-    assert editor._reset.isEnabled()
-
-    editor._reset.click()
-    # Back on the original, so there is nothing left to revert to.
+    editor.revert()
+    assert seen == []
     assert editor.color() == 0xFF102030
-    assert not editor._reset.isEnabled()
 
-    # Retargeting re-arms the baseline, so Revert goes quiet again.
-    editor.set_color(0xFF445566, mark_original=True)
-    assert not editor._reset.isEnabled()
+
+def test_dialog_cancel_reverts_to_the_opening_color_and_closes(qtbot) -> None:
+    # Cancel = revert to the marked original, then close (emitting `closed` so
+    # the host cleans up) — the reject path must run both, not a bare hide.
+    dialog = ColorEditorDialog()
+    qtbot.addWidget(dialog)
+    dialog.editor.set_color(0xFF102030, mark_original=True)
+    dialog.editor.set_color(0xFF999999)  # stands in for a live edit
+    seen: list[int] = []
+    closed: list[bool] = []
+    dialog.editor.color_changed.connect(seen.append)
+    dialog.closed.connect(lambda: closed.append(True))
+
+    dialog.reject()
+
+    assert seen == [0xFF102030]
+    assert dialog.editor.color() == 0xFF102030
+    assert closed == [True]
+
+
+def test_dialog_cancel_closes_a_visible_window(qtbot) -> None:
+    # Regression: QDialog.closeEvent calls reject(), so a reject() that closed
+    # via self.close() recursed and left the window open — but only once shown,
+    # since closeEvent's reject() branch is guarded on isVisible().
+    dialog = ColorEditorDialog()
+    qtbot.addWidget(dialog)
+    dialog.editor.set_color(0xFF102030, mark_original=True)
+    dialog.editor.set_color(0xFF999999)
+    closed: list[bool] = []
+    dialog.closed.connect(lambda: closed.append(True))
+    dialog.show()
+    assert dialog.isVisible()
+
+    dialog.reject()
+
+    assert not dialog.isVisible()
+    assert dialog.editor.color() == 0xFF102030
+    assert closed == [True]
+
+
+def test_dialog_close_button_keeps_the_color(qtbot) -> None:
+    # The window's close button keeps the live color (like OK), not reverts —
+    # only the explicit Cancel discards.
+    dialog = ColorEditorDialog()
+    qtbot.addWidget(dialog)
+    dialog.editor.set_color(0xFF102030, mark_original=True)
+    dialog.editor.set_color(0xFF999999)
+    seen: list[int] = []
+    closed: list[bool] = []
+    dialog.editor.color_changed.connect(seen.append)
+    dialog.closed.connect(lambda: closed.append(True))
+    dialog.show()
+
+    dialog.close()
+
+    assert not dialog.isVisible()
+    assert seen == []
+    assert dialog.editor.color() == 0xFF999999
+    assert closed == [True]
+
+
+def test_dialog_ok_keeps_the_current_color_and_closes(qtbot) -> None:
+    # OK keeps whatever the color has become and just closes — no revert emit.
+    dialog = ColorEditorDialog()
+    qtbot.addWidget(dialog)
+    dialog.editor.set_color(0xFF102030, mark_original=True)
+    dialog.editor.set_color(0xFF999999)
+    seen: list[int] = []
+    closed: list[bool] = []
+    dialog.editor.color_changed.connect(seen.append)
+    dialog.closed.connect(lambda: closed.append(True))
+
+    dialog.accept()
+
+    assert seen == []
+    assert dialog.editor.color() == 0xFF999999
+    assert closed == [True]

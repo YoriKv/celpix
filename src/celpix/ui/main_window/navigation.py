@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QStyle,
+    QTextEdit,
     QTreeWidget,
     QVBoxLayout,
     QWidget,
@@ -315,12 +316,16 @@ class NavigationMixin:
     # the navigation keys are left alone so it can cycle options / move the cursor.
     # The palette panel is one: focused (clicked), its Up/Down step subpalettes.
     # The files tree is another: its arrows walk the open-entries list (selection
-    # is activation, so Up/Down switch the shown file/slice).
+    # is activation, so Up/Down switch the shown file/slice). The hex dump's text
+    # area (a QTextEdit) keeps its arrows on the text cursor. These same panels
+    # also claim the canvas editing shortcuts while focused (take_editing_shortcut),
+    # so nav keys and editing keys alike stay theirs - not the canvas's.
     _ARROW_INPUT_TYPES = (
         QComboBox,
         QAbstractSpinBox,
         QLineEdit,
         QAbstractSlider,
+        QTextEdit,
         PalettePanel,
         QTreeWidget,
     )
@@ -399,6 +404,10 @@ class NavigationMixin:
             return False
         shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        # Pixel mode claims the bare number keys (tool select) and Escape (stamp
+        # the float / drop the marquee) before the navigation map sees them.
+        if self._pixel_key(event.key(), shift, ctrl):
+            return True
         handler = self._nav_keys.get((event.key(), shift, ctrl))
         if handler is None:
             return False

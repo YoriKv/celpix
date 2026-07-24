@@ -16,6 +16,7 @@ and pushes one undoable byte splice.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import Enum
 
 from PySide6.QtCore import QPoint, QSettings, Qt
@@ -43,6 +44,7 @@ from celpix.project.workspace import (
     EntryKind,
 )
 from celpix.ui import clipboard, render_bridge
+from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
     PixelEditCommand,
 )
@@ -163,6 +165,16 @@ class SelectionMixin:
 
     def _sync_edit_actions(self) -> None:
         """Converge the clipboard actions with the selection and the clipboard."""
+        if self._edit_mode is EditMode.PIXEL:
+            # Pixel mode gates Cut/Copy/Clear on a pixel marquee, not a tile run.
+            has = self._doc is not None and self._marquee is not None
+            for action in (self._cut_action, self._copy_action, self._clear_action):
+                action.setEnabled(has)
+            self._paste_action.setEnabled(
+                self._doc is not None and clipboard.has_content()
+            )
+            self._select_all_action.setEnabled(self._doc is not None)
+            return
         has_selection = self._doc is not None and self._selected_tile is not None
         for action in (self._cut_action, self._copy_action, self._clear_action):
             action.setEnabled(has_selection)
@@ -213,6 +225,22 @@ class SelectionMixin:
                 if slot is not None:
                     tiles.append(self._offset + slot)
         return tuple(tiles)
+
+    def _cell_tile(self, layout: BlockLayout, cx: int, cy: int) -> int | None:
+        """The absolute tile at canvas cell ``(cx, cy)`` — ``None`` if none lands
+        there: a block-layout gap column, or a slot past the document's end.
+
+        The single place the cell → slot → absolute-tile → in-bounds chain lives,
+        shared by everything that writes through the arrangement (block transforms,
+        block paste). Unlike :meth:`_rect_tiles_for`, it clamps to the document, so
+        callers building a write get only tiles that actually exist.
+        """
+        assert self._doc is not None
+        slot = layout.cell_to_slot(cx, cy)
+        if slot is None:
+            return None
+        tile = self._offset + slot
+        return tile if 0 <= tile < self._doc.tile_count else None
 
     def _on_tiles_selected(self, anchor_slot: int, moving_slot: int) -> None:
         """Select the pressed slot, or what a drag to ``moving_slot`` spans.
@@ -300,6 +328,7 @@ class SelectionMixin:
         """Converge everything gated on 'a selection exists' with the state."""
         has = self._selected_tile is not None
         self._sync_edit_actions()
+        self._sync_transform_actions()
         self._palette_from_selection_action.setEnabled(has)
         # Only whole files spawn slices - slices never nest.
         current = self._workspace.current
@@ -321,6 +350,39 @@ class SelectionMixin:
             return [t for t in self._rect_tiles if 0 <= t < count]
         last = min(self._selected_last or self._selected_tile, count - 1)
         return list(range(self._selected_tile, last + 1))
+
+    def _selection_offscreen(self) -> bool:
+        """Whether the selection's anchor tile has scrolled out of the view.
+
+        The anchor maps to a stamp cell through ``anchor - self._offset``, so a
+        tile outside the visible window resolves to a cell off the grid and an
+        import/paste anchored there lands nothing. Callers pull the selection
+        back on-screen before stamping. False with no document or no selection -
+        there is no off-screen anchor to correct.
+        """
+        if self._doc is None or self._selected_tile is None:
+            return False
+        window_tiles = self._columns.value() * self._rows.value()
+        return not (0 <= self._selected_tile - self._offset < window_tiles)
+
+    def _anchor_tile(self) -> int:
+        """The tile the selection anchors on: the selected tile - the top-left
+        cell of a rectangle - or the view's top-left tile when nothing is
+        selected. Where a paste or an import lands."""
+        return self._selected_tile if self._selected_tile is not None else self._offset
+
+    def _stamp_anchor(self) -> int:
+        """:meth:`_anchor_tile`, guaranteed on-screen.
+
+        A stamp maps its anchor to a cell through ``anchor - self._offset``, so a
+        selection scrolled out of the visible window resolves to a cell off the
+        grid and writes nothing. Snap it onto the visible top-left tile first, so
+        a paste or import lands where the user can see it. The single guard every
+        stamping entry point (paste, Import from PNG, a dropped PNG) goes through.
+        """
+        if self._selection_offscreen():
+            self._select_tiles(self._offset, self._offset)
+        return self._anchor_tile()
 
     def _selection_bounding_run(self) -> tuple[int, int] | None:
         """The selection's *bounding* run as ``(first_tile, count)``.
@@ -408,6 +470,9 @@ class SelectionMixin:
         rectangle selection copies only its own cells - the enclosing run is
         decoded (the file is linear), then the gap tiles are dropped.
         """
+        if self._edit_mode is EditMode.PIXEL:
+            self._pixel_copy()
+            return True
         selected = self._selection_tiles()
         run = self._selection_bounding_run()
         if self._doc is None or run is None:
@@ -491,6 +556,9 @@ class SelectionMixin:
         return sum(1 for tile in selected if tile - first < written)
 
     def _cut_selection(self) -> None:
+        if self._edit_mode is EditMode.PIXEL:
+            self._pixel_cut()
+            return
         if not self._copy_selection():
             return
         written = self._blank_selection("cut tiles")
@@ -498,6 +566,9 @@ class SelectionMixin:
             self.statusBar().showMessage(f"Cut {self._tiles_label(written)}.")
 
     def _clear_pixels(self) -> None:
+        if self._edit_mode is EditMode.PIXEL:
+            self._pixel_clear()
+            return
         written = self._blank_selection("clear tiles")
         if written:
             self.statusBar().showMessage(f"Cleared {self._tiles_label(written)}.")
@@ -507,8 +578,9 @@ class SelectionMixin:
 
         Overwrite, never insert: the bytes sit in a fixed slot in the source
         file, so a paste replaces exactly as many tiles as it carries and is
-        clipped at the end of the data. With nothing selected it lands at the
-        top-left tile of the view.
+        clipped at the end of the data. With nothing selected - or a selection
+        scrolled off-screen (:meth:`_stamp_anchor`) - it lands at the top-left
+        tile of the view.
 
         In **Rectangle** shape the anchor is a *cell*, so the clipboard is
         stamped as a block of its own width down from there - copy a 2×2
@@ -517,7 +589,10 @@ class SelectionMixin:
         """
         if self._doc is None:
             return
-        first = self._selected_tile if self._selected_tile is not None else self._offset
+        if self._edit_mode is EditMode.PIXEL:
+            self._pixel_paste()
+            return
+        first = self._stamp_anchor()
         incoming = self._clipboard_tiles()
         if not incoming.tiles:
             self.statusBar().showMessage("Nothing on the clipboard to paste here.")
@@ -580,24 +655,21 @@ class SelectionMixin:
             covered = incoming.covered(i)
             if covered == (0, 0):
                 continue  # a block-layout gap the image never reached
-            slot = layout.cell_to_slot(x0 + i % columns, y0 + i // columns)
-            if slot is None:
-                continue
-            target = self._offset + slot
-            if 0 <= target < self._doc.tile_count:
+            target = self._cell_tile(layout, x0 + i % columns, y0 + i // columns)
+            if target is not None:
                 placed[target] = (tile, covered)
         if not placed:
             return 0
         first, last = min(placed), max(placed)
-        run = self._decode_run(first, last - first + 1)
-        if not run:
-            return 0
-        for target, (tile, covered) in placed.items():
-            if target - first < len(run):
-                run[target - first] = importer.merge_uncovered(
-                    tile, run[target - first], covered
-                )
-        if not self._apply_tile_edit(first, run, text):
+
+        def mutate(run: list) -> None:
+            for target, (tile, covered) in placed.items():
+                if target - first < len(run):
+                    run[target - first] = importer.merge_uncovered(
+                        tile, run[target - first], covered
+                    )
+
+        if not self._edit_run(first, last - first + 1, mutate, text):
             return 0
         rows = 1 + (len(incoming.tiles) - 1) // columns
         cells = (columns, rows)
@@ -666,6 +738,47 @@ class SelectionMixin:
             f"{report.approximated_colors} of {report.source_colors} "
             "colors approximated"
         )
+
+    def _edit_run(
+        self, first: int, count: int, mutate: Callable[[list], None], text: str
+    ) -> int:
+        """Decode the run at ``first``, let ``mutate`` rewrite it, push one edit.
+
+        The shared spine of every pixel edit that reworks *existing* tiles — a
+        transform, a merged stamp — which differ only in how they mutate the
+        decoded list. Untouched tiles between the edited ones are decoded here and
+        written straight back, so a rectangle's gaps ride along unchanged. Returns
+        how many tiles were written (0 if the run won't decode). ``mutate`` gets the
+        decoded list in place and may read the originals it overwrites — snapshot
+        first if source and destination overlap (a block permutation does).
+        """
+        decoded = self._decode_run(first, count)
+        if not decoded:
+            return 0
+        mutate(decoded)
+        return self._apply_tile_edit(first, decoded, text)
+
+    def _map_selected_tiles(self, fn: Callable[[object], object], text: str) -> int:
+        """Rewrite each selected tile through ``fn(tile) -> tile`` as one edit.
+
+        The write covers the selection's enclosing run — what encodes back to a
+        contiguous byte region — but only the selected tiles pass through ``fn``, so
+        a rectangle's gap tiles are left exactly as they were. Returns how many tiles
+        the edit wrote (0 with nothing selected, or if the run won't decode).
+        """
+        selected = self._selection_tiles()
+        run = self._selection_bounding_run()
+        if run is None:
+            return 0
+        first, count = run
+
+        def mutate(decoded: list) -> None:
+            for tile in selected:
+                idx = tile - first
+                if 0 <= idx < len(decoded):
+                    decoded[idx] = fn(decoded[idx])
+
+        return self._edit_run(first, count, mutate, text)
 
     def _apply_tile_edit(self, first: int, tiles: list, text: str) -> int:
         """Encode ``tiles`` over the run at ``first`` as one undoable edit.
@@ -738,6 +851,9 @@ class SelectionMixin:
         whole thing onto the clipboard.
         """
         if self._doc is None:
+            return
+        if self._edit_mode is EditMode.PIXEL:
+            self._pixel_select_all()
             return
         count = min(
             self._columns.value() * self._rows.value(),

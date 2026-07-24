@@ -20,6 +20,24 @@ def test_default_palette_contract(count: int) -> None:
     assert len(set(head)) == len(head)
 
 
+def test_default_palette_second_row_is_a_grayscale_ramp() -> None:
+    # Row 1 (indices 16..31) is a deliberate grayscale ramp: black, white, then
+    # 14 grays climbing dark→light — the readable choice for single-channel data.
+    row = Palette.default(256).colors[16:32]
+    assert row[0] == 0xFF000000  # black first
+    assert row[1] == 0xFFFFFFFF  # white second
+    ramp = row[2:]
+    for argb in ramp:
+        r, g, b = (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF
+        assert argb >> 24 == 0xFF and r == g == b  # opaque, neutral gray
+    levels = [argb & 0xFF for argb in ramp]
+    assert levels == sorted(levels) and len(set(levels)) == len(
+        levels
+    )  # strictly dark→light
+    # The Custom-from-default fork carries the same ramp as its second row.
+    assert Palette.default(16).resized(FULL_PALETTE_COUNT).colors[16:32] == row
+
+
 def test_default_palette_is_deterministic_and_prefix_stable() -> None:
     assert Palette.default(256).colors == Palette.default(256).colors
     # Smaller counts are prefixes of larger ones (1bpp sees the same black/white).

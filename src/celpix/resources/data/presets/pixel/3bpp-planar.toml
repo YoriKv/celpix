@@ -1,7 +1,7 @@
 # 3bpp per-row interleaved planar — SMS/GG player graphics (PL02).
 # See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
 id = "preset.pixel.3bpp-planar"
-name = "3bpp planar (per-row, SMS gfx)"
+name = "3bpp planar (8x8)"
 engine_id = "codec.planar"
 
 [params]

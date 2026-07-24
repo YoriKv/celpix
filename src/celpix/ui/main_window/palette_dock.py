@@ -42,7 +42,6 @@ from celpix.ui.widgets import (
     select_combo_data,
 )
 
-
 # Floor for the header's mode-specific slot (file name, or offset field plus
 # step arrows). Chosen so the dock's minimum width matches what a file name
 # alone used to ask for - narrow enough that no mode can ratchet the dock
@@ -138,10 +137,11 @@ class PaletteDockMixin:
         self._palette_file_label = QLabel()
         self._palette_file_label.hide()
 
-        # The palette color format, below the mode it qualifies. Relevant only
-        # where raw palette bytes are decoded (File/Offset): Default generates
-        # its colors and an emulator state's console dictates the codec, so
-        # the row hides in those modes (visibility managed by
+        # The palette color format, below the mode it qualifies. Shown for every
+        # real palette - File/Offset/Emulator/Custom, not the generated Default;
+        # live where raw bytes are decoded (File/Offset/Emulator, so the picker
+        # reinterprets them) and read-only for Custom, which stores its own ARGB
+        # and only *carries* a format (visibility and enabled state managed by
         # _set_palette_mode). Hidden widgets still hold state - the session
         # capture/restore and undo paths read and set them as before.
         self._palette_preset = self._preset_combo(Stage.INTERPRET_PALETTE, "bgr555")
@@ -174,11 +174,29 @@ class PaletteDockMixin:
         header.addWidget(source_slot)
         header.addStretch(1)
 
+        # Custom only: snap the stored ARGB colors onto the values the selected
+        # format can hold. A Custom palette keeps colors verbatim, so this is the
+        # explicit, one-shot conversion - the dropdown alone only relabels.
+        self._quantize_palette_action = QPushButton("Quantize")
+        self._quantize_palette_action.setToolTip(
+            "Snap every color to the nearest value the selected format can "
+            "store, keeping them as a Custom palette"
+        )
+        self._quantize_palette_action.clicked.connect(self._quantize_custom_palette)
+        self._quantize_palette_action.hide()
+
         format_row = QHBoxLayout()
         format_row.setContentsMargins(4, 0, 4, 2)
         format_row.addWidget(self._palette_format_label)
         format_row.addWidget(self._palette_preset)
         format_row.addStretch(1)
+
+        # Its own row under Format: it acts *on* the picked format rather than
+        # being part of choosing it, and only Custom shows it at all.
+        quantize_row = QHBoxLayout()
+        quantize_row.setContentsMargins(4, 0, 4, 2)
+        quantize_row.addWidget(self._quantize_palette_action)
+        quantize_row.addStretch(1)
 
         # Details readout for the panel's selected color. Selectable text so
         # values can be copied out.
@@ -192,14 +210,20 @@ class PaletteDockMixin:
         # grid as well as the canvas.
         self._palette_panel.edit_requested.connect(self._open_color_editor)
         self._palette_panel.color_picked.connect(self._on_color_picked)
+        # Copy/paste the selected color (Ctrl+C/V) or the active subpalette
+        # (Ctrl+Shift+C/V) while the grid has focus, or from its right-click menu.
+        self._palette_panel.copy_requested.connect(self._copy_palette_color)
+        self._palette_panel.paste_requested.connect(self._paste_palette_color)
+        self._palette_panel.copy_subpalette_requested.connect(self._copy_subpalette)
+        self._palette_panel.paste_subpalette_requested.connect(self._paste_subpalette)
+        self._palette_panel.customContextMenuRequested.connect(self._show_palette_menu)
 
         # Get the colors on screen out as a file of their own. Armed only in the
         # modes where they exist nowhere else as a palette - see
         # _sync_palette_export_action.
         self._export_palette_action = QPushButton("Export to File…")
         self._export_palette_action.setToolTip(
-            "Write these colors to a .pal file (RGB888) and add it to the "
-            "Palettes list"
+            "Write these colors to a .pal file (RGB888) and add it to the Palettes list"
         )
         self._export_palette_action.clicked.connect(self._export_palette_file)
         export_row = QHBoxLayout()
@@ -213,6 +237,7 @@ class PaletteDockMixin:
         column.setSpacing(2)
         column.addLayout(header)
         column.addLayout(format_row)
+        column.addLayout(quantize_row)
         column.addWidget(holder, 1)
         column.addWidget(self._color_details)
         column.addLayout(export_row)
@@ -223,13 +248,9 @@ class PaletteDockMixin:
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._palette_dock)
 
     def _build_palette_menu(self) -> None:
-        """Palette ▸ everything palette-flavoured: open, palette-from-selection,
+        """Palette ▸ everything palette-flavoured: palette-from-selection,
         panel."""
         menu = self.menuBar().addMenu("Palette")
-
-        open_palette = QAction("Open palette…", self)
-        open_palette.triggered.connect(self._open_palette)
-        menu.addAction(open_palette)
 
         self._palette_from_selection_action = QAction("Palette from Selection", self)
         self._palette_from_selection_action.setToolTip(
@@ -255,10 +276,12 @@ class PaletteDockMixin:
 
         The dock shows only what the mode uses: the offset field in Offset
         mode, the source file's name in the file-backed modes, and the format
-        combo where raw palette bytes are decoded (File/Offset - Default
-        generates its colors, an emulator state's console dictates the
-        codec). Signals are blocked while syncing the combo so programmatic
-        updates never re-enter _on_palette_mode_change.
+        combo for every real palette (all but the generated Default). The combo
+        is live for every real mode: File/Offset/Emulator re-decode their raw
+        bytes under it, and Custom - which has no bytes to reinterpret - rebases
+        its stored ARGB colors into the picked format instead. Signals are
+        blocked while syncing the combo so programmatic updates never re-enter
+        _on_palette_mode_change.
         """
         self._palette_mode = mode
         select_combo_data(self._palette_mode_combo, mode)
@@ -269,8 +292,16 @@ class PaletteDockMixin:
         # Mid-commit the box refreshes itself afterwards; don't fight it.
         if not self._palette_offset_edit.hasFocus():
             self._palette_offset_edit.refresh()
-        self._palette_format_label.setVisible(mode.decodes_raw_bytes)
-        self._palette_preset.setVisible(mode.decodes_raw_bytes)
+        self._palette_format_label.setVisible(mode.is_real)
+        self._palette_preset.setVisible(mode.is_real)
+        # Live for every real palette: the raw-bytes modes re-decode under it,
+        # Custom only relabels (its colors are stored verbatim). Only the
+        # generated Default has no format to pick, and it hides the row outright.
+        self._palette_format_label.setEnabled(mode.is_real)
+        self._palette_preset.setEnabled(mode.is_real)
+        # Quantize applies only to Custom's verbatim colors; the raw-bytes modes
+        # already hold values their format can store, so it would be a no-op.
+        self._quantize_palette_action.setVisible(mode is PaletteMode.CUSTOM)
         self._refresh_palette_file_label()
         self._sync_palette_export_action()
 

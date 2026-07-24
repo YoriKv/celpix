@@ -483,6 +483,26 @@ def quantize_color(argb: int, preset_id: str, reg: Registry) -> int:
     return _run(Stage.INTERPRET_PALETTE, Pathway.PALETTE, _round_trip)
 
 
+def quantize_palette(palette: Palette, preset_id: str, reg: Registry) -> Palette:
+    """``palette`` as it comes back after a round trip through ``preset_id``.
+
+    The whole-palette form of :func:`quantize_color`: encode the colors to the
+    format's bytes and decode them straight back, so every entry lands on a
+    value that format can actually hold. Used to *rebase* a Custom palette when
+    its color format is changed — a Custom palette has no source bytes to
+    reinterpret, so its stored ARGB colors are re-expressed in the new format
+    instead of anything being re-read.
+    """
+    engine, preset = reg.engine_for(preset_id)
+
+    def _round_trip() -> Palette:
+        ctx = PipelineContext()
+        data = engine.encode(palette, preset.params, ctx)
+        return engine.decode(data, preset.params, ctx)
+
+    return _run(Stage.INTERPRET_PALETTE, Pathway.PALETTE, _round_trip)
+
+
 def palette_has_alpha(preset_id: str, reg: Registry) -> bool:
     """Whether ``preset_id`` actually stores an alpha channel.
 

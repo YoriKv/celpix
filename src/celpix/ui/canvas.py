@@ -9,8 +9,13 @@ paints whatever *set* of slots it is told to highlight, while the main window ow
 which absolute tiles are selected and what shape the two gesture slots describe —
 a linear run of slots or a rectangle of cells (`Selection Shape`). Keeping the
 canvas shape-agnostic is why the highlight is a slot set rather than a span: a
-rectangle of cells is not a contiguous slot run. Editing (mouse painting) attaches
-here later.
+rectangle of cells is not a contiguous slot run.
+
+In **pixel mode** (:meth:`Canvas.set_edit_mode`) the same widget becomes a paint
+surface: the mouse reports **image-pixel** coordinates through the ``pixel_*``
+signals instead of tile slots, and it paints two controller-driven overlays — a
+floating selection and a pixel-space marquee. It still owns no model; what a
+gesture *does* is the pixel-edit controller's job on the window side.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QRegion
 from PySide6.QtWidgets import QWidget
 
 from celpix.core.arrangement import BlockLayout
+from celpix.ui.tools import EditMode
 from celpix.ui.widgets import paint_selection_outline
 
 # The neutral surround/backing behind the rendered pixels: a fixed mid-gray (not a
@@ -71,6 +77,13 @@ class Canvas(QWidget):
     # palette at all. ``object``, not ``int``: Qt's int is 32-bit *signed*, and
     # any ARGB with alpha >= 0x80 overflows it.
     color_picked = Signal(object)
+    # Pixel-mode gestures, in **image pixel** coordinates (not tile slots). The
+    # controller (PixelEditMixin) reads the button to tell left-draw from a
+    # right-click eyedropper. Emitted only in EditMode.PIXEL; tile mode still
+    # uses tiles_selected.
+    pixel_pressed = Signal(int, int, object)  # x, y, Qt.MouseButton
+    pixel_moved = Signal(int, int)  # x, y — while the left button is held
+    pixel_released = Signal(int, int)  # x, y — the drag's final pixel
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -92,6 +105,18 @@ class Canvas(QWidget):
         # Eyedropper: while armed, a press samples a color instead of selecting
         # tiles (see :meth:`set_eyedropper`).
         self._eyedropper = False
+        # Pixel-editing mode: while set to PIXEL the mouse paints pixels (via the
+        # pixel_* signals) instead of selecting tiles, and the marquee/float
+        # overlays below are painted. Tile mode is the default and unchanged.
+        self._edit_mode = EditMode.TILE
+        self._pixel_dragging = False
+        self._last_pixel: tuple[int, int] | None = None  # skip no-op drag emits
+        # Overlays the controller drives while editing pixels: a pixel-space
+        # rectangle marquee, and a floating selection (a lifted image the user is
+        # dragging) shown at a pixel position. Both are drawn over the base image.
+        self._marquee: QRect | None = None
+        self._float_image: QImage | None = None
+        self._float_pos = (0, 0)
         # How many of the image's tile slots hold real data. When the stream ends
         # mid-row the trailing slots of the bottom row are padding, not tiles, so
         # they are painted as background rather than drawn (None = the whole image
@@ -173,6 +198,60 @@ class Canvas(QWidget):
         else:
             self.unsetCursor()
 
+    def set_edit_mode(self, mode: EditMode) -> None:
+        """Switch between tile selection and pixel painting.
+
+        Leaving pixel mode drops any transient drag and the overlays, so a
+        half-made stroke or floating selection can't linger under tile editing.
+        The cross cursor marks the paint surface; tile mode restores the default.
+        """
+        if self._edit_mode == mode:
+            return
+        self._edit_mode = mode
+        self._pixel_dragging = False
+        self._last_pixel = None
+        if mode is EditMode.PIXEL:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.unsetCursor()
+            self._marquee = None
+            self._float_image = None
+        self.update()
+
+    def set_marquee(self, rect: QRect | None) -> None:
+        """Show a pixel-space rectangle marquee (``None`` clears it)."""
+        self._marquee = rect
+        self.update()
+
+    def set_float(self, image: QImage | None, x: int = 0, y: int = 0) -> None:
+        """Show a floating selection ``image`` at image-pixel ``(x, y)``.
+
+        The lifted pixels the user is dragging, painted (nearest-neighbour, at
+        the current zoom) over the base image with a selection outline, so the
+        float reads as hovering above the canvas until it is stamped down.
+        """
+        self._float_image = None if (image is None or image.isNull()) else image
+        self._float_pos = (x, y)
+        self.update()
+
+    def _pixel_at(self, pos: QPointF, clamp: bool = False) -> tuple[int, int] | None:
+        """The image pixel under ``pos``; None outside (unless ``clamp``).
+
+        ``clamp`` snaps an outside position to the nearest edge pixel — a drag
+        that leaves the widget keeps painting to the boundary, like the tile
+        selection's own clamp.
+        """
+        if self._image.isNull():
+            return None
+        px = int(pos.x()) // self._zoom
+        py = int(pos.y()) // self._zoom
+        if clamp:
+            px = max(0, min(px, self._image.width() - 1))
+            py = max(0, min(py, self._image.height() - 1))
+        elif not (0 <= px < self._image.width() and 0 <= py < self._image.height()):
+            return None
+        return px, py
+
     def _color_at(self, pos: QPointF) -> int | None:
         """ARGB of the rendered pixel under ``pos``; None outside the image."""
         img_x = int(pos.x()) // self._zoom
@@ -213,11 +292,24 @@ class Canvas(QWidget):
         return self._layout().cell_to_slot(img_x // self._tile_w, img_y // self._tile_h)
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        # The color-editor eyedropper (armed from outside) samples a rendered
+        # ARGB in either mode and swallows the press — it must reach the canvas
+        # even while pixel editing, so it is handled before the mode split.
         if (
-            event.button() == Qt.MouseButton.RightButton
+            self._eyedropper
+            and event.button() == Qt.MouseButton.LeftButton
             and not self._image.isNull()
-            and not self._eyedropper
         ):
+            argb = self._color_at(event.position())
+            if argb is not None:
+                self.color_picked.emit(argb)
+            event.accept()
+            return
+        if self._edit_mode is EditMode.PIXEL:
+            self._pixel_press(event)
+            super().mousePressEvent(event)
+            return
+        if event.button() == Qt.MouseButton.RightButton and not self._image.isNull():
             # The context menu acts on the selection, so a right-click outside
             # it moves the selection there first (the usual file-manager rule);
             # inside it, the existing range is kept so a multi-tile selection
@@ -226,13 +318,6 @@ class Canvas(QWidget):
             if slot is not None and slot not in self._selected_slots:
                 self.tiles_selected.emit(slot, slot)
         if event.button() == Qt.MouseButton.LeftButton and not self._image.isNull():
-            if self._eyedropper:
-                argb = self._color_at(event.position())
-                if argb is not None:
-                    self.color_picked.emit(argb)
-                # Swallow the press: no tile selection while sampling.
-                event.accept()
-                return
             slot = self._slot_at(event.position())
             if slot is not None:
                 self._drag_anchor = self._drag_slot = slot
@@ -241,6 +326,10 @@ class Canvas(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        if self._edit_mode is EditMode.PIXEL:
+            self._pixel_move(event)
+            super().mouseMoveEvent(event)
+            return
         if (
             self._drag_anchor is not None
             and event.buttons() & Qt.MouseButton.LeftButton
@@ -252,9 +341,45 @@ class Canvas(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        if self._edit_mode is EditMode.PIXEL:
+            self._pixel_release(event)
+            super().mouseReleaseEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_anchor = self._drag_slot = None
         super().mouseReleaseEvent(event)
+
+    def _pixel_press(self, event) -> None:  # noqa: ANN001 — Qt event
+        """Begin a pixel gesture: report the pressed pixel and its button.
+
+        A left press starts a drag (the pen/shape/marquee tools track it); a
+        right press is a one-shot the controller reads as the eyedropper. A press
+        outside the image is ignored, as the tile click always was.
+        """
+        pixel = self._pixel_at(event.position())
+        if pixel is None:
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pixel_dragging = True
+            self._last_pixel = pixel
+        self.pixel_pressed.emit(pixel[0], pixel[1], event.button())
+
+    def _pixel_move(self, event) -> None:  # noqa: ANN001 — Qt event
+        if not (self._pixel_dragging and event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        pixel = self._pixel_at(event.position(), clamp=True)
+        if pixel is not None and pixel != self._last_pixel:
+            self._last_pixel = pixel
+            self.pixel_moved.emit(pixel[0], pixel[1])
+
+    def _pixel_release(self, event) -> None:  # noqa: ANN001 — Qt event
+        if event.button() != Qt.MouseButton.LeftButton or not self._pixel_dragging:
+            return
+        self._pixel_dragging = False
+        pixel = self._pixel_at(event.position(), clamp=True) or self._last_pixel
+        self._last_pixel = None
+        if pixel is not None:
+            self.pixel_released.emit(pixel[0], pixel[1])
 
     def _update_size(self) -> None:
         self.setFixedSize(
@@ -334,7 +459,33 @@ class Canvas(QWidget):
         if self._show_grid and self._grid_style is not GridStyle.NONE and z >= 2:
             self._draw_grid(painter, z)
         self._paint_selection(painter)
+        self._paint_pixel_overlays(painter)
         painter.end()
+
+    def _paint_pixel_overlays(self, painter: QPainter) -> None:
+        """Draw the floating selection and the pixel marquee (pixel mode only).
+
+        The float goes down first (a lifted image the user is dragging), then its
+        outline, then the marquee — a pixel-space rectangle. Both scale by the
+        zoom and are drawn in device coordinates, over the base image, so they
+        track the pixels beneath them. Nothing is painted in tile mode, where
+        both stay ``None``.
+        """
+        z = self._zoom
+        if self._float_image is not None:
+            fx, fy = self._float_pos
+            rect = QRect(
+                fx * z,
+                fy * z,
+                self._float_image.width() * z,
+                self._float_image.height() * z,
+            )
+            painter.drawImage(rect, self._float_image)
+            paint_selection_outline(painter, rect)
+        if self._marquee is not None and not self._marquee.isNull():
+            m = self._marquee
+            rect = QRect(m.x() * z, m.y() * z, m.width() * z, m.height() * z)
+            paint_selection_outline(painter, rect)
 
     def _draw_grid(self, painter: QPainter, z: int) -> None:
         """Draw the two-level tile grid in the current style (device coords).

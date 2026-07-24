@@ -23,6 +23,7 @@ from celpix.core import ceil_div
 from celpix.core.context import PipelineContext
 from celpix.core.palette import Palette
 from celpix.pipeline.pathway import PathwayConfig
+from celpix.plugins.base import FileRef
 
 
 @dataclass
@@ -88,6 +89,37 @@ class Document:
     # did not touch (docs/design/palette-editing.md §2).
     palette_bytes: bytes = b""
     palette_edits: set[int] = field(default_factory=set)
+
+    @classmethod
+    def palette_only(
+        cls,
+        palette: Palette,
+        config: PathwayConfig,
+        ctx: PipelineContext,
+        palette_bytes: bytes,
+    ) -> Document:
+        """A Document that carries only a palette — a PALETTE entry's live store.
+
+        A registered palette file owns its colors *here*, rather than on whichever
+        graphic happens to render it, so a color edit dirties the palette entry and
+        Write saves it back to the ``.pal`` — the graphic is never touched
+        (docs/design/palette-editing.md §2). The pixel half is inert: no bytes, zero
+        tile geometry, and a non-writable pixel config, so the tile machinery and
+        the pixel Write have nothing to act on (``tile_count`` is 0).
+        """
+        return cls(
+            pixel_data=b"",
+            bytes_per_tile=0,
+            tile_width=0,
+            tile_height=0,
+            palette=palette,
+            pixel_config=PathwayConfig(
+                source=FileRef(""), interpret_preset_id="", write_enabled=False
+            ),
+            palette_config=config,
+            palette_ctx=ctx,
+            palette_bytes=palette_bytes,
+        )
 
     @property
     def tile_count(self) -> int:

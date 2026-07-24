@@ -18,7 +18,7 @@ the result with :meth:`~celpix.project.workspace.Workspace.replace`.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from os import listdir
 from os.path import (
     abspath,
@@ -53,7 +53,9 @@ from celpix.project.workspace import (
 # 4: added the "custom" palette mode, whose colors live inline in the project.
 # A v3 reader falls back to "default" for the unknown mode and would drop the
 # edited colors on the next save, so the bump makes it warn instead.
-PROJECT_VERSION = 4
+# 5: added the top-level "hidden_pixel_presets" filter. A v4 reader ignores it
+# and would drop it on the next save, so the bump makes it warn instead.
+PROJECT_VERSION = 5
 PROJECT_EXTENSION = ".celpix"
 
 # Fallbacks for a hand-authored project that omits preset ids entirely — the
@@ -82,6 +84,7 @@ class LoadedProject:
     version: int
     entries: list[Entry]
     current: Entry | None
+    hidden_pixel_presets: set[str] = field(default_factory=set)
 
 
 # -- saving ----------------------------------------------------------------
@@ -95,11 +98,18 @@ def project_document(ws: Workspace, path: str) -> dict[str, object]:
     saved to two places is legitimately two different documents.
     """
     base_dir = dirname(abspath(path))
-    return {
+    document: dict[str, object] = {
         "version": PROJECT_VERSION,
         "current": ws.entries.index(ws.current) if ws.current is not None else None,
         "entries": [_entry_dict(entry, base_dir) for entry in ws.entries],
     }
+    # A view-only project setting: which pixel codecs the dropdown lists. Sorted
+    # so the serialized form is stable (the UI diffs documents to spot unsaved
+    # changes); omitted entirely when nothing is hidden, keeping a default
+    # project minimal.
+    if ws.hidden_pixel_presets:
+        document["hidden_pixel_presets"] = sorted(ws.hidden_pixel_presets)
+    return document
 
 
 def save_project(ws: Workspace, path: str) -> None:
@@ -213,10 +223,19 @@ def load_project(path: str) -> LoadedProject:
     if current is not None and current.kind not in (EntryKind.FILE, EntryKind.SLICE):
         # A bookmark or palette can't be shown; a hand-edited index degrades.
         current = None
+    # Tolerate a missing/garbage filter: unknown ids are harmless (they just name
+    # presets this build may not have) and a non-list degrades to no filter.
+    raw_hidden = data.get("hidden_pixel_presets")
+    hidden = (
+        {item for item in raw_hidden if isinstance(item, str)}
+        if isinstance(raw_hidden, list)
+        else set()
+    )
     return LoadedProject(
         version=_int(data.get("version"), 1),
         entries=[entry for entry in parsed if entry is not None],
         current=current,
+        hidden_pixel_presets=hidden,
     )
 
 

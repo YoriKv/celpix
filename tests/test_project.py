@@ -235,6 +235,37 @@ def test_inline_colors_survive_without_activation(tmp_path) -> None:
     assert loaded.entries[0].pending_view == ViewOptions(zoom=8)
 
 
+def test_pixel_format_filter_round_trips(tmp_path) -> None:
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(b"\x00" * 32)
+    ws = Workspace()
+    ws.open_file(str(rom))
+    ws.hidden_pixel_presets = {"preset.pixel.nes-2bpp", "preset.pixel.gb-2bpp"}
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    # Serialized sorted (stable diffs) at the document root, not per entry.
+    assert raw["hidden_pixel_presets"] == [
+        "preset.pixel.gb-2bpp",
+        "preset.pixel.nes-2bpp",
+    ]
+    assert load_project(str(project)).hidden_pixel_presets == ws.hidden_pixel_presets
+
+
+def test_empty_pixel_filter_is_omitted_and_loads_empty(tmp_path) -> None:
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(b"\x00" * 32)
+    ws = Workspace()
+    ws.open_file(str(rom))  # no formats hidden
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert "hidden_pixel_presets" not in raw  # a default project stays minimal
+    assert load_project(str(project)).hidden_pixel_presets == set()
+
+
 def test_emulator_mode_persists_only_the_state_path(tmp_path) -> None:
     roms = tmp_path / "roms"
     roms.mkdir()

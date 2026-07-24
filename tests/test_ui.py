@@ -1327,6 +1327,182 @@ def test_emulator_state_redetects_on_restore(qtbot, tmp_path, monkeypatch) -> No
     assert window._doc.palette.colors[0] == 0xFFFFFFFF
 
 
+def test_emulator_format_row_is_live_and_reinterprets(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # Emulator mode auto-detects the console's codec but still offers the format
+    # dropdown, so the user can reinterpret how the state's palette bytes are read.
+    from PySide6.QtWidgets import QFileDialog
+
+    state = _mesen_state(tmp_path)  # SNES CGRAM: 256 BGR555 colors = 512 bytes
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(state), ""))
+    )
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData(PaletteMode.EMULATOR)
+    )
+    assert window._palette_mode == "emulator"
+    # The row is shown and live (unlike Default, which hides it).
+    assert window._palette_preset.isVisibleTo(window)
+    assert window._palette_preset.isEnabled()
+    assert window._palette_preset_id() == "preset.palette.bgr555"
+    assert len(window._doc.palette) == 256
+
+    # Reinterpret the same 512 bytes as RGB888 (3 bytes/entry): 512 // 3 = 170,
+    # so the inline CGRAM is re-floored to a whole number of entries.
+    window._palette_preset.setCurrentIndex(
+        window._palette_preset.findData("preset.palette.rgb888")
+    )
+    assert window._palette_mode == "emulator"  # still the state, read differently
+    assert window._palette_preset_id() == "preset.palette.rgb888"
+    assert window._doc.palette_config.interpret_preset_id == "preset.palette.rgb888"
+    assert len(window._doc.palette) == 170
+    # Undo restores the console's codec and its 256 colors.
+    window._undo_stack.undo()
+    assert window._palette_preset_id() == "preset.palette.bgr555"
+    assert len(window._doc.palette) == 256
+
+
+def test_custom_carries_a_live_format(qtbot, tmp_path, monkeypatch) -> None:
+    # A Custom palette carries a color format, and the combo is live: picking a
+    # format rebases its colors rather than reinterpreting bytes it doesn't have.
+    # Forked off the generated default it inherits the session default (RGB888).
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    assert window._palette_mode == "default"
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData(PaletteMode.CUSTOM)
+    )
+    assert window._palette_mode == "custom"
+    assert window._palette_preset.isVisibleTo(window)
+    assert window._palette_preset.isEnabled()
+    assert window._palette_preset_id() == "preset.palette.rgb888"
+    assert window._doc.palette_config.interpret_preset_id == "preset.palette.rgb888"
+
+
+def test_custom_format_change_relabels_without_touching_colors(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # A Custom palette stores ARGB verbatim, so picking a format only records the
+    # target the Quantize button would snap to - the colors stay exactly as set.
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData(PaletteMode.CUSTOM)
+    )
+    assert window._palette_preset_id() == "preset.palette.rgb888"
+    window._doc.palette = window._doc.palette.with_color(0, 0xFF010203)
+
+    window._palette_preset.setCurrentIndex(
+        window._palette_preset.findData("preset.palette.bgr555")
+    )
+
+    assert window._palette_mode == "custom"
+    assert window._palette_preset_id() == "preset.palette.bgr555"
+    assert window._doc.palette_config.interpret_preset_id == "preset.palette.bgr555"
+    assert window._doc.palette.colors[0] == 0xFF010203  # unchanged - only relabelled
+
+
+def test_quantize_button_snaps_custom_colors_to_the_selected_format(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # The Quantize button is the explicit one-shot conversion: it snaps the stored
+    # colors onto what the selected format can hold, undoable in one step. Shown
+    # only for Custom, the one mode whose colors are stored raw.
+    from celpix.pipeline import pipeline
+
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData(PaletteMode.CUSTOM)
+    )
+    window._palette_preset.setCurrentIndex(
+        window._palette_preset.findData("preset.palette.bgr555")
+    )
+    assert window._quantize_palette_action.isVisibleTo(window)
+
+    # A color whose low channel bits BGR555 can't keep, so Quantize must move it.
+    window._doc.palette = window._doc.palette.with_color(0, 0xFF010203)
+    expected = pipeline.quantize_color(
+        0xFF010203, "preset.palette.bgr555", window._registry
+    )
+    assert expected != 0xFF010203  # BGR555 really is lossy for this color
+
+    window._quantize_palette_action.click()
+
+    assert window._palette_mode == "custom"  # still project-stored ARGB
+    assert window._doc.palette.colors[0] == expected
+
+    window._undo_stack.undo()  # one step back to the pre-quantize colors
+    assert window._doc.palette.colors[0] == 0xFF010203
+
+
+def test_quantize_that_changes_nothing_pushes_no_undo_step(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # Quantizing colors that already fit the format is a no-op: it must not add a
+    # dead undo entry the user would have to walk back past.
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData(PaletteMode.CUSTOM)
+    )
+    window._palette_preset.setCurrentIndex(
+        window._palette_preset.findData("preset.palette.bgr555")
+    )
+    # Quantize once so every color already sits on a BGR555 value …
+    window._quantize_palette_action.click()
+    depth = window._undo_stack.index()
+
+    window._quantize_palette_action.click()  # … a second pass changes nothing
+
+    assert window._undo_stack.index() == depth  # no new command pushed
+
+
+def test_quantize_button_hidden_outside_custom(qtbot, tmp_path, monkeypatch) -> None:
+    # Raw-bytes palettes already hold values their format can store, so Quantize
+    # would be a no-op there and is hidden.
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    assert window._palette_mode == "default"
+    assert not window._quantize_palette_action.isVisibleTo(window)
+    assert window._load_palette_at_offset(32)  # Offset mode
+    assert not window._quantize_palette_action.isVisibleTo(window)
+
+
+def test_custom_forked_from_offset_keeps_the_source_format(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # A Custom palette forked from a raw-bytes source keeps that source's format
+    # rather than falling back to the session default.
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    assert window._load_palette_at_offset(32)  # decodes BGR555 (the dropdown's default)
+    assert window._palette_mode == "offset"
+    assert window._palette_preset_id() == "preset.palette.bgr555"
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData(PaletteMode.CUSTOM)
+    )
+    assert window._palette_mode == "custom"
+    assert window._palette_preset_id() == "preset.palette.bgr555"
+    assert window._doc.palette_config.interpret_preset_id == "preset.palette.bgr555"
+
+
+def test_session_default_format_follows_the_last_selection(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # The session default a Custom-from-default fork inherits tracks the last
+    # format actually chosen (an import here), not a fixed RGB888.
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    assert window._session_palette_format == "preset.palette.rgb888"  # untouched start
+    assert window._load_palette_at_offset(32)  # a BGR555 import
+    assert window._session_palette_format == "preset.palette.bgr555"
+    # Back to the generated default, then fork Custom: it inherits BGR555 now.
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData(PaletteMode.DEFAULT)
+    )
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData(PaletteMode.CUSTOM)
+    )
+    assert window._palette_mode == "custom"
+    assert window._palette_preset_id() == "preset.palette.bgr555"
+
+
 def test_palette_offset_box_commit_loads_at_offset(
     qtbot, tmp_path, monkeypatch
 ) -> None:
@@ -1579,6 +1755,177 @@ def test_palette_panel_color_selection_click_and_arrows(qtbot) -> None:
     assert panel.selected_index() is None
 
 
+def test_palette_panel_drag_scrubs_selection_and_clamps(qtbot) -> None:
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent, QPointingDevice
+
+    from celpix.ui.palette_panel import SWATCH, PalettePanel
+
+    panel = PalettePanel()
+    qtbot.addWidget(panel)
+    panel.set_palette(list(range(20)))  # row of 16 + a short second row (4)
+    picked: list[int] = []
+    panel.color_selected.connect(picked.append)
+    rows: list[int] = []
+    panel.subpalette_clicked.connect(rows.append)
+    panel.set_active_range(0, 4)  # 4-wide subpalettes, so a drag crosses several
+
+    device = QPointingDevice.primaryPointingDevice()
+
+    def move_event(x_px: float, y_px: float, held: bool) -> QMouseEvent:
+        point = QPointF(x_px, y_px)
+        return QMouseEvent(
+            QMouseEvent.Type.MouseMove,
+            point,
+            point,  # global == local is fine; the handler only reads position()
+            Qt.MouseButton.NoButton,  # no *new* button on a move
+            Qt.MouseButton.LeftButton if held else Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            device,
+        )
+
+    def drag_to(x_px: float, y_px: float) -> None:
+        panel.mouseMoveEvent(move_event(x_px, y_px, held=True))
+
+    # Press to start on swatch 2, then drag across the row.
+    qtbot.mouseClick(panel, Qt.MouseButton.LeftButton, pos=QPoint(2 * SWATCH + 1, 1))
+    assert panel.selected_index() == 2
+    drag_to(5 * SWATCH + 1, 1)  # → swatch 5
+    drag_to(9 * SWATCH + 1, 1)  # → swatch 9
+    assert panel.selected_index() == 9
+    assert picked == [2, 5, 9]
+    assert rows == [0, 1, 2]  # subpalette (index // 4) follows the drag
+
+    # Off the right/bottom edge clamps to the nearest real swatch, never None:
+    # past the last (short) row lands on the final color.
+    drag_to(100 * SWATCH, 100 * SWATCH)
+    assert panel.selected_index() == 19
+    # Off the left/top edge clamps to swatch 0.
+    drag_to(-50, -50)
+    assert panel.selected_index() == 0
+
+    # A drag with no button held does nothing (hover must not select).
+    panel.mouseMoveEvent(move_event(6 * SWATCH + 1, 1, held=False))
+    assert panel.selected_index() == 0
+
+    # The eyedropper stays click-only: a drag neither selects nor samples.
+    sampled: list[object] = []
+    panel.color_picked.connect(sampled.append)
+    panel.set_eyedropper(True)
+    drag_to(6 * SWATCH + 1, 1)
+    assert panel.selected_index() == 0 and sampled == []
+
+
+def test_palette_clipboard_round_trip_and_hex_parsing(qtbot) -> None:
+    from celpix.ui import clipboard
+
+    clipboard.put_colors([0xFF112233, 0x80FF0000])
+    assert clipboard.take_colors() == [0xFF112233, 0x80FF0000]
+    assert clipboard.has_colors()
+    # color_text: opaque drops the alpha, translucent keeps it.
+    assert clipboard.color_text(0xFF112233) == "#112233"
+    assert clipboard.color_text(0x80112233) == "#80112233"
+    # Foreign hex text: 6-digit is opaque, 8-digit carries alpha, junk ignored,
+    # and a longer hex run is not a color token.
+    assert clipboard._parse_hex_colors("#ff0000 00ff00 zz 80112233") == [
+        0xFFFF0000,
+        0xFF00FF00,
+        0x80112233,
+    ]
+    assert clipboard._parse_hex_colors("deadbeefcafe") == []
+
+
+def test_palette_panel_copy_paste_keys_emit(qtbot) -> None:
+    from PySide6.QtCore import Qt
+
+    from celpix.ui.palette_panel import PalettePanel
+
+    panel = PalettePanel()
+    qtbot.addWidget(panel)
+    panel.set_palette(list(range(16)))
+    panel._select(3)
+    events: list[str] = []
+    panel.copy_requested.connect(lambda: events.append("copy"))
+    panel.paste_requested.connect(lambda: events.append("paste"))
+    panel.copy_subpalette_requested.connect(lambda: events.append("copy-sub"))
+    panel.paste_subpalette_requested.connect(lambda: events.append("paste-sub"))
+    ctrl = Qt.KeyboardModifier.ControlModifier
+    ctrl_shift = ctrl | Qt.KeyboardModifier.ShiftModifier
+    qtbot.keyClick(panel, Qt.Key.Key_C, ctrl)
+    qtbot.keyClick(panel, Qt.Key.Key_V, ctrl)
+    qtbot.keyClick(panel, Qt.Key.Key_C, ctrl_shift)  # Ctrl+Shift → subpalette
+    qtbot.keyClick(panel, Qt.Key.Key_V, ctrl_shift)
+    assert events == ["copy", "paste", "copy-sub", "paste-sub"]
+
+
+def test_palette_panel_right_click_selects(qtbot) -> None:
+    from PySide6.QtCore import QPoint, Qt
+
+    from celpix.ui.palette_panel import SWATCH, PalettePanel
+
+    panel = PalettePanel()
+    qtbot.addWidget(panel)
+    panel.set_palette(list(range(32)))
+    # Right-clicking a swatch moves the selection onto it (so the menu acts there).
+    qtbot.mouseClick(panel, Qt.MouseButton.RightButton, pos=QPoint(5 * SWATCH + 1, 1))
+    assert panel.selected_index() == 5
+
+
+def test_palette_copy_paste_color_and_undo(qtbot, tmp_path, monkeypatch) -> None:
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    window._on_tiles_selected(1, 1)
+    window._load_palette_from_selection()  # Offset mode: editable in place
+    panel = window._palette_panel
+
+    # Copy entry 0 (white), paste it onto entry 1.
+    panel._select(0)
+    source = window._doc.palette.color(0)
+    window._copy_palette_color()
+    panel._select(1)
+    before = window._doc.palette.color(1)
+    assert before != source  # the test only means something if they differ
+    window._paste_palette_color()
+    assert window._doc.palette.color(1) == source
+
+    # Paste is one undoable step.
+    window._undo_stack.undo()
+    assert window._doc.palette.color(1) == before
+
+    # Cross-application: a plain hex string on the clipboard pastes too.
+    from PySide6.QtCore import QMimeData
+    from PySide6.QtGui import QGuiApplication
+
+    mime = QMimeData()
+    mime.setText("#123456")
+    QGuiApplication.clipboard().setMimeData(mime)
+    panel._select(2)
+    window._paste_palette_color()
+    assert window._doc.palette.color(2) == 0xFF123456
+
+
+def test_palette_copy_paste_subpalette_and_undo(qtbot, tmp_path, monkeypatch) -> None:
+    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    window._on_tiles_selected(1, 1)
+    window._load_palette_from_selection()  # Offset mode: editable in place
+    space = window._index_space()
+
+    # Copy subpalette 0, paste it over subpalette 1.
+    window._subpalette.setValue(0)
+    source = [window._doc.palette.color(k) for k in range(space)]
+    window._copy_subpalette()
+    window._subpalette.setValue(1)
+    before = [window._doc.palette.color(space + k) for k in range(space)]
+    assert before != source  # the test only means something if they differ
+
+    base = window._undo_stack.count()
+    window._paste_subpalette()
+    assert [window._doc.palette.color(space + k) for k in range(space)] == source
+    # The whole range is one undo step (a macro), not one per color.
+    assert window._undo_stack.count() - base == 1
+    window._undo_stack.undo()
+    assert [window._doc.palette.color(space + k) for k in range(space)] == before
+
+
 def test_mode_switch_resets_row_and_selection_into_palette(
     qtbot, tmp_path, monkeypatch
 ) -> None:
@@ -1598,6 +1945,123 @@ def test_mode_switch_resets_row_and_selection_into_palette(
     assert window._doc.view.subpalette_row == 0
     assert window._palette_panel.selected_index() == 15
     assert "Subpal 0 · Color 15" in window._color_details.text()
+
+
+def test_pixel_filter_prunes_dropdown_but_keeps_current(qtbot, tmp_path) -> None:
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    combo = window._pixel_preset
+    assert combo.count() > 2
+    current = combo.currentData()
+    other = next(
+        combo.itemData(i) for i in range(combo.count()) if combo.itemData(i) != current
+    )
+
+    effective = window._apply_pixel_filter({current, other})
+    assert effective == {current, other}
+    assert {combo.itemData(i) for i in range(combo.count())} == {current, other}
+    assert combo.currentData() == current  # the shown format is untouched
+    # The popup model marks exactly the visible formats checked.
+    assert {key for key, _name, checked in window._pixel_filter_items() if checked} == {
+        current,
+        other,
+    }
+
+
+def test_pixel_filter_unchecking_current_switches_and_is_undoable(
+    qtbot, tmp_path
+) -> None:
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    combo = window._pixel_preset
+    current = combo.currentData()
+    other = next(
+        combo.itemData(i) for i in range(combo.count()) if combo.itemData(i) != current
+    )
+
+    # Unchecking the shown format moves the view to the remaining one.
+    window._apply_pixel_filter({other})
+    assert combo.currentData() == other
+    assert window._doc.pixel_config.interpret_preset_id == other
+    # It is an ordinary undoable switch: undo restores the old format, force-shown
+    # even though the filter had hidden it.
+    window._undo_stack.undo()
+    assert window._doc.pixel_config.interpret_preset_id == current
+    assert combo.currentData() == current
+
+
+def test_pixel_filter_select_none_keeps_current_then_all_restores(
+    qtbot, tmp_path
+) -> None:
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    combo = window._pixel_preset
+    full = combo.count()
+    current = combo.currentData()
+
+    # Select None can't empty the list; it collapses to the current format.
+    assert window._apply_pixel_filter(set()) == {current}
+    assert combo.count() == 1
+    assert combo.currentData() == current
+
+    # Select All brings every format back and clears the filter.
+    all_ids = {p.id for p in window._all_pixel_presets()}
+    window._apply_pixel_filter(all_ids)
+    assert combo.count() == full
+    assert not window._workspace.hidden_pixel_presets
+
+
+def test_pixel_filter_survives_a_plugin_refresh(qtbot, tmp_path) -> None:
+    # A hidden format stays hidden across a repopulation (plugin reload); the
+    # shown format stays shown.
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    combo = window._pixel_preset
+    current = combo.currentData()
+    other = next(
+        combo.itemData(i) for i in range(combo.count()) if combo.itemData(i) != current
+    )
+    window._apply_pixel_filter({current, other})
+
+    window._repopulate_presets()
+    assert {combo.itemData(i) for i in range(combo.count())} == {current, other}
+    assert combo.currentData() == current
+
+
+def test_pixel_filter_is_saved_and_restored_with_the_project(qtbot, tmp_path) -> None:
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    combo = window._pixel_preset
+    current = combo.currentData()
+    other = next(
+        combo.itemData(i) for i in range(combo.count()) if combo.itemData(i) != current
+    )
+    window._apply_pixel_filter({current, other})
+
+    project = tmp_path / "s.celpix"
+    window._save_project_to(str(project))
+    assert not window._project_is_dirty()  # the filter is now part of the baseline
+
+    other_window = MainWindow()
+    qtbot.addWidget(other_window)
+    other_window._load_project(str(project))
+    # The restored project prunes the dropdown to the saved formats.
+    restored = other_window._pixel_preset
+    assert {restored.itemData(i) for i in range(restored.count())} == {current, other}
+    assert other_window._workspace.hidden_pixel_presets == (
+        window._workspace.hidden_pixel_presets
+    )
+    assert not other_window._project_is_dirty()
 
 
 def test_pixel_mode_switch_reanchors_subpalette_on_selection(
@@ -1779,6 +2243,43 @@ def test_jump_and_scan_navigate_structures(qtbot, tmp_path) -> None:
     assert window._scan_button.text() == "Scan"  # restored after the run
 
 
+def test_scan_ui_thaw_does_not_arm_structure_actions(qtbot, tmp_path) -> None:
+    from celpix.plugins.builtins import lz_command
+
+    # Same layout as the jump/scan test: a structure, a junk region no scheme
+    # accepts, another structure, padding. Jumping past the first structure
+    # lands in the junk, where the overlay is hidden and both Jump-to-Next and
+    # promote-to-slice are off.
+    tiles_a = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    tiles_b = bytes((i * 31 + 7) & 0xFF for i in range(32 * 4))
+    packed_a = lz_command.compress(tiles_a, big_endian_offsets=True)
+    packed_b = lz_command.compress(tiles_b, big_endian_offsets=True)
+    junk = (b"\x83\xff\xff" * 40)[:120]
+    px = tmp_path / "packed2.bin"
+    px.write_bytes(packed_a + junk + packed_b + bytes(512))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._columns.setValue(4)
+    window._rows.setValue(4)
+    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
+    window._set_byte_position(len(packed_a))  # into the junk: no structure here
+    assert not window._overlay.isVisible()
+    assert not window._jump_next.isEnabled()
+    assert not window._promote_button.isEnabled()
+
+    # A scan freezes the whole UI then thaws it. The blanket re-enable on thaw
+    # must restore Jump / promote from the overlay's structure state, not switch
+    # them on just because a scan ended (regression: a scan landing back on this
+    # same offset never re-refreshed, so they were left wrongly enabled).
+    window._set_scan_ui(True)
+    window._set_scan_ui(False)
+
+    assert not window._jump_next.isEnabled()
+    assert not window._promote_button.isEnabled()
+
+
 def test_new_slice_from_view_prefills_viewport_extent(
     qtbot, tmp_path, monkeypatch
 ) -> None:
@@ -1888,6 +2389,86 @@ def test_remove_entry_always_confirms(qtbot, tmp_path, monkeypatch) -> None:
     # Through the panel's Delete-shortcut slot, so the wiring is covered too.
     window._files_panel._remove_current()
     assert window._workspace.entries == []
+
+
+def test_delete_key_removes_entry_even_with_a_tile_selection(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # The Delete key in the files list must remove the highlighted entry. It
+    # regressed when a tile selection was active: the canvas's window-wide
+    # Clear (also Delete) overloaded ambiguously with the list's remove, and Qt
+    # fired neither - so Delete silently did nothing. The list now claims the
+    # key while focused, so it works regardless of the canvas selection.
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from celpix.plugins.builtins import lz_command
+    from celpix.project.workspace import EntryKind
+
+    tiles = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    px = tmp_path / "packed.bin"
+    px.write_bytes(lz_command.compress(tiles, big_endian_offsets=True) + bytes(64))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    # A decompressed slice - the case the report was filed against.
+    window._workspace.add_slice(str(px), "packed-slice", 0, None, "decompress.lz2")
+    slice_entry = next(
+        e for e in window._workspace.entries if e.kind is EntryKind.SLICE
+    )
+    window._activate_entry(slice_entry)
+
+    # A live tile selection arms the canvas's Clear (Delete) action - the
+    # ingredient that used to make the list's Delete ambiguous.
+    window._on_tiles_selected(0, 0)
+    window._sync_edit_actions()
+    assert window._clear_action.isEnabled()
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.Yes
+    )
+    # A WindowShortcut only resolves in a shown, active window (see the undo
+    # Ctrl+Z test); the list must hold focus for its own key handling.
+    window.show()
+    QApplication.setActiveWindow(window)
+    tree = window._files_panel._tree
+    tree.setFocus()
+    tree.setCurrentItem(window._files_panel._items[slice_entry])
+
+    qtbot.keyClick(tree, Qt.Key.Key_Delete)
+    assert slice_entry not in window._workspace.entries
+
+
+def test_side_panels_claim_canvas_editing_shortcuts(qtbot) -> None:
+    # The palette grid and the hex dump are shortcut islands: while focused they
+    # claim the canvas editing keys (Cut/Copy/Paste/Select All/Delete) so those
+    # window-wide shortcuts act on the panel (or nothing), never the canvas
+    # selection behind the dock. Accepting the ShortcutOverride is the mechanism.
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+
+    from celpix.ui.hex_view_panel import HexViewPanel
+    from celpix.ui.palette_panel import PalettePanel
+
+    def claims(widget, key, mods=Qt.KeyboardModifier.NoModifier) -> bool:
+        event = QKeyEvent(QEvent.Type.ShortcutOverride, key, mods)
+        QApplication.sendEvent(widget, event)
+        return event.isAccepted()
+
+    palette = PalettePanel()
+    qtbot.addWidget(palette)
+    hex_view = HexViewPanel()
+    qtbot.addWidget(hex_view)
+    ctrl = Qt.KeyboardModifier.ControlModifier
+    for widget in (palette, hex_view._view):
+        assert claims(widget, Qt.Key.Key_C, ctrl)  # Copy
+        assert claims(widget, Qt.Key.Key_X, ctrl)  # Cut
+        assert claims(widget, Qt.Key.Key_A, ctrl)  # Select All
+        assert claims(widget, Qt.Key.Key_Delete)  # Clear/Delete
+        # A key the canvas doesn't bind is left alone, so normal handling stands.
+        assert not claims(widget, Qt.Key.Key_B)
 
 
 def test_edit_slice_updates_coordinates_and_reloads(
@@ -2486,6 +3067,69 @@ def _accept_message_box(monkeypatch) -> None:
     _click_message_box(monkeypatch, QMessageBox.ButtonRole.AcceptRole)
 
 
+def test_unsaved_files_gate_offers_write_discard_cancel(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # The quit-time files prompt (via the shared unsaved-changes gate): three
+    # buttons - Write Changes / Discard / Cancel - with Write Changes the
+    # default. Cancel refuses, Discard proceeds without writing, Write writes.
+    from PySide6.QtWidgets import QMessageBox
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    entry = window._workspace.current
+    # Force the entry dirty without a real edit - the gate keys off dirtiness.
+    window._workspace.set_pixel_revision(entry, window._workspace.next_revision())
+    assert entry.pixel_dirty
+
+    seen: dict = {}
+    monkeypatch.setattr(
+        QMessageBox,
+        "exec",
+        lambda self: (
+            seen.update(
+                labels={b.text().replace("&", "") for b in self.buttons()},
+                default=self.defaultButton().text().replace("&", ""),
+            )
+            or 0
+        ),
+    )
+    clicked = {"role": None}
+    monkeypatch.setattr(
+        QMessageBox,
+        "clickedButton",
+        lambda self: next(
+            (b for b in self.buttons() if self.buttonRole(b) == clicked["role"]), None
+        ),
+    )
+
+    def quit_gate() -> bool:
+        return window._resolve_dirty_entries(
+            "Quitting discards unsaved changes to",
+            write_label="Write Changes",
+            skip_label="Discard",
+            default_write=True,
+        )
+
+    # Cancel: refuse, and the button set / default are exactly as specified.
+    clicked["role"] = QMessageBox.ButtonRole.RejectRole
+    assert quit_gate() is False
+    assert seen["labels"] == {"Write Changes", "Discard", "Cancel"}
+    assert seen["default"] == "Write Changes"
+    assert entry.pixel_dirty  # nothing written
+
+    # Discard: proceed, still without writing.
+    clicked["role"] = QMessageBox.ButtonRole.DestructiveRole
+    assert quit_gate() is True
+    assert entry.pixel_dirty
+
+    # Write Changes: writes to disk first, so the entry goes clean and we proceed.
+    clicked["role"] = QMessageBox.ButtonRole.AcceptRole
+    assert quit_gate() is True
+    assert not entry.pixel_dirty
+
+
 def test_relocate_missing_corrects_path_loads_and_clears(
     qtbot, tmp_path, monkeypatch
 ) -> None:
@@ -2713,10 +3357,15 @@ def test_edit_run_returning_to_its_start_leaves_no_step(
     assert window._doc.palette.color(3) == start
 
 
-def test_editing_a_file_palette_writes_in_place(qtbot, tmp_path, monkeypatch) -> None:
+def test_editing_a_file_palette_dirties_the_palette_entry(
+    qtbot, tmp_path, monkeypatch
+) -> None:
     from PySide6.QtWidgets import QFileDialog
 
+    from celpix.project.workspace import EntryKind
+
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+    graphic = window._workspace.current
     pal = tmp_path / "colors.pal"
     pal.write_bytes(bytes(32))  # 16 BGR555 entries, all black
     monkeypatch.setattr(
@@ -2724,57 +3373,179 @@ def test_editing_a_file_palette_writes_in_place(qtbot, tmp_path, monkeypatch) ->
     )
     assert window._open_palette()
     assert window._palette_mode == "file"
-    window._palette_panel._select(1)
 
+    # Picking a .pal from the dropdown registers it in the Palettes list, linked
+    # to the graphic by path — it is owned there, not by the graphic.
+    palette_entry = window._workspace.find_palette(str(pal))
+    assert palette_entry is not None and palette_entry.kind is EntryKind.PALETTE
+
+    window._palette_panel._select(1)
     window._on_color_changed(0xFFFFFFFF)
 
-    # A file palette is edited in place — no fork, and Write is armed.
+    # A file palette is edited in place — no fork — and the edit belongs to the
+    # PALETTE entry, while the graphic that renders it stays perfectly clean.
     assert window._palette_mode == "file"
-    assert window._doc.palette.color(1) == 0xFFFFFFFF
-    assert window._doc.palette_config.write_enabled is True
-    # Pending on the *palette* pathway — the graphic itself is unchanged.
-    assert window._workspace.current.palette_dirty
-    assert not window._workspace.current.pixel_dirty
+    assert window._doc.palette.color(1) == 0xFFFFFFFF  # the graphic shows it
+    assert palette_entry.doc.palette_config.write_enabled is True
+    assert palette_entry.palette_dirty
+    assert not graphic.palette_dirty and not graphic.pixel_dirty
 
-    window._write_current()
-    # BGR555 white at entry 1 = 0x7FFF little-endian, in the file's second slot.
+    # Write the palette entry back to its own .pal (a graphic Write touches pixels
+    # only). BGR555 white at entry 1 = 0x7FFF little-endian, in the second slot.
+    window._write_entry_checked(palette_entry)
     assert pal.read_bytes()[2:4] == b"\xff\x7f"
-    assert not window._workspace.current.palette_dirty
+    assert not palette_entry.palette_dirty
 
 
-def test_palette_only_edit_does_not_rewrite_the_graphic(
+def test_editing_a_file_palette_leaves_the_graphic_untouched(
     qtbot, tmp_path, monkeypatch
 ) -> None:
-    # The dirt is tracked per pathway, so saving a color edit must leave the
-    # graphic file untouched — it has no pending changes of its own.
+    # A file palette lives in its own file; editing and saving it must never mark
+    # the graphic dirty nor rewrite a single byte of it.
     from PySide6.QtWidgets import QFileDialog
 
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    entry = window._workspace.current
-    graphic = Path(entry.path)
+    graphic_entry = window._workspace.current
+    graphic = Path(graphic_entry.path)
     pal = tmp_path / "colors.pal"
     pal.write_bytes(bytes(32))
     monkeypatch.setattr(
         QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(pal), ""))
     )
     assert window._open_palette()
+    palette_entry = window._workspace.find_palette(str(pal))
     window._palette_panel._select(1)
 
     before = graphic.read_bytes()
     mtime = graphic.stat().st_mtime_ns
     window._on_color_changed(0xFFFFFFFF)
 
-    # The palette is pending; the graphic itself is not.
-    assert entry.palette_dirty
-    assert not entry.pixel_dirty
+    assert palette_entry.palette_dirty
+    assert not graphic_entry.pixel_dirty and not graphic_entry.palette_dirty
 
-    window._write_current()
-    assert "palette" in window.statusBar().currentMessage()
-    assert "pixel" not in window.statusBar().currentMessage()
-    # Byte-identical *and* untouched — no needless rewrite.
+    window._write_entry_checked(palette_entry)
+    # Byte-identical *and* untouched — the graphic was never in the write path.
     assert graphic.read_bytes() == before
     assert graphic.stat().st_mtime_ns == mtime
-    assert not entry.palette_dirty
+    assert not palette_entry.palette_dirty
+
+
+def test_editing_a_file_palette_updates_every_graphic_using_it(qtbot, tmp_path) -> None:
+    from celpix.project.workspace import EntryKind
+
+    pal = tmp_path / "shared.pal"
+    pal.write_bytes(bytes(32))  # 16 BGR555 entries
+    px1 = _make_snes_file(tmp_path)
+    px2 = tmp_path / "second.4bpp.sfc"
+    px2.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(32 * 8)))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px1))
+    window._add_palette_file(str(pal))
+    palette_entry = next(
+        e for e in window._workspace.entries if e.kind is EntryKind.PALETTE
+    )
+    window._use_palette_entry(palette_entry)
+    first = window._workspace.current
+
+    # A second graphic on the very same palette file.
+    window._load_pixel(str(px2))
+    window._use_palette_entry(palette_entry)
+    second = window._workspace.current
+    assert second is not first
+
+    # Editing while viewing the second updates the palette entry - so both graphics
+    # see the new color, including the one scrolled off-screen.
+    window._palette_panel._select(0)
+    window._on_color_changed(0xFFFFFFFF)
+    assert palette_entry.doc.palette.color(0) == 0xFFFFFFFF
+    assert second.doc.palette.color(0) == 0xFFFFFFFF
+    assert first.doc.palette.color(0) == 0xFFFFFFFF
+    assert palette_entry.palette_dirty
+    assert not first.pixel_dirty and not second.pixel_dirty
+
+
+def test_removing_a_used_file_palette_converts_graphics_to_custom(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    from celpix.project.workspace import EntryKind, PaletteMode, palette_source_for
+
+    pal = tmp_path / "shared.pal"
+    pal.write_bytes(bytes(32))
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._add_palette_file(str(pal))
+    palette_entry = next(
+        e for e in window._workspace.entries if e.kind is EntryKind.PALETTE
+    )
+    window._use_palette_entry(palette_entry)
+    graphic = window._workspace.current
+    window._palette_panel._select(0)
+    window._on_color_changed(0xFFFFFFFF)  # an unsaved edit - it rides into the copy
+    colors_before = list(graphic.doc.palette.colors)
+
+    # Confirm the removal; the graphic keeps the colors as its own custom palette.
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    window._remove_entry(palette_entry)
+
+    assert window._workspace.find_palette(str(pal)) is None
+    assert graphic.session.palette_mode is PaletteMode.CUSTOM
+    assert list(graphic.doc.palette.colors) == colors_before
+    # Re-homing the palette is a project change, not an edit to the graphic's bytes.
+    assert not graphic.pixel_dirty
+    src = palette_source_for(graphic)
+    assert src is not None and src.colors is not None
+
+    # Undo re-registers the palette and relinks the graphic back to it.
+    window._undo_stack.undo()
+    restored = window._workspace.find_palette(str(pal))
+    assert restored is not None and restored.kind is EntryKind.PALETTE
+    assert graphic.session.palette_mode is PaletteMode.FILE
+    assert list(graphic.doc.palette.colors) == colors_before
+
+
+def test_project_reload_relinks_a_file_palette_to_its_entry(qtbot, tmp_path) -> None:
+    from celpix.project.workspace import EntryKind
+
+    rom = _make_snes_file(tmp_path)
+    pal = tmp_path / "s.pal"
+    pal.write_bytes(bytes(32))
+
+    # Build the project live: open the graphic, apply the palette (which registers
+    # the PALETTE entry and links the graphic to it), then save.
+    saver = MainWindow()
+    qtbot.addWidget(saver)
+    saver._load_pixel(str(rom))
+    saver._add_palette_file(str(pal))
+    pal_entry = next(e for e in saver._workspace.entries if e.kind is EntryKind.PALETTE)
+    saver._use_palette_entry(pal_entry)
+    saver._capture_session()
+    project = tmp_path / "hack.celpix"
+    saver._save_project_to(str(project))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_project(str(project))
+
+    # The palette entry came back, and the graphic re-links to it in File mode.
+    restored_pal = window._workspace.find_palette(str(pal))
+    assert restored_pal is not None and restored_pal.kind is EntryKind.PALETTE
+    graphic = window._workspace.current
+    assert graphic.session.palette_mode == "file"
+    assert window._palette_mode == "file"
+
+    # And editing the reloaded palette dirties the palette entry, not the graphic.
+    window._palette_panel._select(0)
+    window._on_color_changed(0xFFFFFFFF)
+    assert restored_pal.palette_dirty
+    assert not graphic.pixel_dirty and not graphic.palette_dirty
 
 
 def test_eyedropper_samples_the_canvas_without_moving_the_selection(
@@ -3459,6 +4230,254 @@ def test_dropped_png_imports_onto_the_selection_instead_of_opening(qtbot, tmp_pa
     assert len(window._workspace.entries) == 1  # the PNG did not become an entry
     imported = pipeline.decode_tiles(window._doc, window._registry, 5, 1)
     assert set(imported[0].data) == {5}
+
+
+def test_dropped_png_snaps_an_offscreen_selection_into_view(
+    qtbot, tmp_path, monkeypatch
+):
+    """A drop lands on the selected tile - but if that selection has scrolled
+    off-screen, the anchor resolves off the grid and nothing would import. The
+    drop first snaps the selection to the visible top-left tile, so the image
+    arrives where the user can see it rather than silently landing nothing."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QDropEvent
+
+    from celpix.pipeline import pipeline
+
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
+    window._columns.setValue(8)
+    window._rows.setValue(2)  # a 16-tile window
+    png = _fill_png(tmp_path / "sprite.png", window, 5, 8, 8)
+
+    window._select_tiles(2, 2)  # select a tile …
+    window._set_offset(32)  # … then scroll it off-screen
+    assert window._selection_offscreen()
+    before_at_2 = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
+
+    mime = _drag_payload(png)  # must outlive the event, or Qt reads freed memory
+    event = QDropEvent(
+        QPointF(10, 10),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    window.dropEvent(event)
+
+    # The selection moved onto the visible top-left tile, and the image landed
+    # there - not at the off-screen tile 2, which is left untouched.
+    assert window._selected_tile == 32
+    imported = pipeline.decode_tiles(window._doc, window._registry, 32, 1)
+    assert set(imported[0].data) == {5}
+    unchanged = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
+    assert unchanged[0].data == before_at_2[0].data
+
+
+def test_paste_snaps_an_offscreen_selection_into_view(qtbot, tmp_path, monkeypatch):
+    """Paste shares the drop's on-screen guard: a selection scrolled out of the
+    window is pulled onto the visible top-left tile before the clipboard lands,
+    so a paste is never stamped where it can't be seen (or lands nothing)."""
+    from PySide6.QtGui import QGuiApplication, QImage
+
+    from celpix.pipeline import pipeline
+
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
+    window._columns.setValue(8)
+    window._rows.setValue(2)  # a 16-tile window
+    image = QImage(8, 8, QImage.Format.Format_ARGB32)
+    image.fill(window._doc.palette.color(5))
+    QGuiApplication.clipboard().setImage(image)
+
+    window._select_tiles(2, 2)  # select a tile …
+    window._set_offset(32)  # … then scroll it off-screen
+    assert window._selection_offscreen()
+    before_at_2 = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
+
+    window._paste()
+
+    assert window._selected_tile == 32
+    pasted = pipeline.decode_tiles(window._doc, window._registry, 32, 1)
+    assert set(pasted[0].data) == {5}
+    unchanged = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
+    assert unchanged[0].data == before_at_2[0].data
+
+
+def test_import_png_here_snaps_an_offscreen_selection_into_view(
+    qtbot, tmp_path, monkeypatch
+):
+    """The canvas Import from PNG shares the same guard as paste and the drop."""
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.pipeline import pipeline
+
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
+    window._columns.setValue(8)
+    window._rows.setValue(2)
+    png = _fill_png(tmp_path / "sprite.png", window, 5, 8, 8)
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (png, ""))
+    )
+
+    window._select_tiles(2, 2)  # select a tile …
+    window._set_offset(32)  # … then scroll it off-screen
+    assert window._selection_offscreen()
+    before_at_2 = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
+
+    window._import_png_here()
+
+    assert window._selected_tile == 32
+    imported = pipeline.decode_tiles(window._doc, window._registry, 32, 1)
+    assert set(imported[0].data) == {5}
+    unchanged = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
+    assert unchanged[0].data == before_at_2[0].data
+
+
+def test_tile_and_block_transforms(qtbot, tmp_path) -> None:
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QDropEvent
+
+    from celpix.core import transform as _tf
+    from celpix.pipeline import pipeline
+    from celpix.ui.main_window.selection import SelectionShape
+    from celpix.ui.widgets import select_combo_data
+
+    px = _make_snes_file(tmp_path)  # 8 tiles, 8×8 4bpp (square tiles)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    mime = _drag_payload(px)
+    event = QDropEvent(
+        QPointF(10, 10),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    window.dropEvent(event)
+    window._columns.setValue(4)  # a 4×2 window addresses all 8 tiles
+    window._rows.setValue(2)
+
+    tile, block = window._tile_group, window._block_group
+
+    def decode(first):
+        return pipeline.decode_tiles(window._doc, window._registry, first, 1)[0].data
+
+    # -- Tile group: any selection; a rotate needs square tiles (these are 8×8) --
+    window._select_tiles(0, 0)  # a lone linear tile
+    assert tile.flip_h.isEnabled() and tile.rotate_cw.isEnabled()
+    # A single tile enables block transforms too, in any shape - it expands to its
+    # arrangement block (here 1×1, so the block is just that one tile).
+    assert block.flip_h.isEnabled() and block.rotate_cw.isEnabled()
+
+    # Index-preserving: the flip mirrors palette *indices* exactly - it must never
+    # route through ARGB and quantize back (which could remap indices sharing a
+    # color). The decoded tile stays an IndexGrid, not an ArgbGrid.
+    pre = pipeline.decode_tiles(window._doc, window._registry, 0, 1)[0]
+    assert isinstance(pre, IndexGrid)
+    tile.flip_h.trigger()
+    assert decode(0) == _tf.flip_horizontal(pre).data
+    window._undo_stack.undo()
+
+    # -- A 2×2 Rectangle selection, made the way the canvas makes one --
+    select_combo_data(window._selection_shape, SelectionShape.RECT)
+    window._on_tiles_selected(0, 5)  # cells (0,0)..(1,1) → tiles 0,1,4,5
+    assert window._rect_tiles == (0, 1, 4, 5)
+    assert block.flip_h.isEnabled() and block.rotate_cw.isEnabled()  # square block
+
+    t0, t1 = decode(0), decode(1)
+    # Tile flip over a rectangle leaves positions alone: each tile flips in place.
+    tile.flip_h.trigger()
+    assert decode(0) == _tf.flip_horizontal(pre.__class__(8, 8, t0)).data
+    window._undo_stack.undo()
+
+    # Block flip swaps the two columns *and* flips each tile: tile 0 ← flip(tile 1).
+    block.flip_h.trigger()
+    assert decode(0) == _tf.flip_horizontal(pre.__class__(8, 8, t1)).data
+    assert decode(1) == _tf.flip_horizontal(pre.__class__(8, 8, t0)).data
+    window._undo_stack.undo()  # one step restores the whole block
+    assert decode(0) == t0
+
+    # -- A non-square rectangle: block rotate off, block flip on; tile rotate on --
+    window._on_tiles_selected(0, 1)  # a 2×1 rectangle
+    assert window._rect_cells == (2, 1)
+    assert block.flip_h.isEnabled()
+    assert not block.rotate_cw.isEnabled() and not block.rotate_ccw.isEnabled()
+    assert tile.rotate_cw.isEnabled()
+
+    # -- Nothing selected: every transform is off --
+    window._clear_selection()
+    for action in (*tile.flips, *tile.rotates, *block.flips, *block.rotates):
+        assert not action.isEnabled()
+
+
+def test_block_transform_of_single_tile_uses_arrangement_block(qtbot, tmp_path) -> None:
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QDropEvent
+
+    from celpix.core import transform as _tf
+    from celpix.pipeline import pipeline
+    from celpix.ui.main_window.selection import SelectionShape
+    from celpix.ui.widgets import select_combo_data
+
+    px = _make_snes_file(tmp_path)  # 8 tiles, 8×8 4bpp
+    window = MainWindow()
+    qtbot.addWidget(window)
+    mime = _drag_payload(px)
+    window.dropEvent(
+        QDropEvent(
+            QPointF(10, 10),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+    )
+    window._columns.setValue(4)
+    window._rows.setValue(2)
+    # A 2×2 metatile arrangement: the first block groups tiles 0,1,2,3.
+    window._block_cols.setValue(2)
+    window._block_rows.setValue(2)
+
+    block = window._block_group
+
+    def grid(first):
+        return pipeline.decode_tiles(window._doc, window._registry, first, 1)[0]
+
+    orig = [grid(i) for i in range(4)]
+
+    # Select a single tile in the block; in Rectangle mode that is a 1×1 selection.
+    select_combo_data(window._selection_shape, SelectionShape.RECT)
+    window._on_tiles_selected(0, 0)
+    assert len(window._selection_tiles()) == 1
+    # A square arrangement block means block rotate is available off one tile.
+    assert block.flip_h.isEnabled() and block.rotate_cw.isEnabled()
+
+    # Block flip-H treats the whole 2×2 metatile as selected: the columns swap and
+    # every tile flips. tile0 ← flip(tile1), tile1 ← flip(tile0), tile2 ← flip(tile3).
+    block.flip_h.trigger()
+    assert grid(0).data == _tf.flip_horizontal(orig[1]).data
+    assert grid(1).data == _tf.flip_horizontal(orig[0]).data
+    assert grid(2).data == _tf.flip_horizontal(orig[3]).data
+    assert grid(3).data == _tf.flip_horizontal(orig[2]).data
+    window._undo_stack.undo()  # one step restores all four tiles
+    assert grid(0).data == orig[0].data and grid(3).data == orig[3].data
+
+    # The same works in Linear mode: a lone tile still expands to its 2×2 block.
+    select_combo_data(window._selection_shape, SelectionShape.LINEAR)
+    window._select_tiles(0, 0)
+    assert block.flip_h.isEnabled() and block.rotate_cw.isEnabled()
+    block.flip_h.trigger()
+    assert grid(0).data == _tf.flip_horizontal(orig[1]).data
+    assert grid(1).data == _tf.flip_horizontal(orig[0]).data
+    window._undo_stack.undo()
+    assert grid(0).data == orig[0].data
+
+    # A non-square arrangement block (1×2) can't rotate as a block off one tile,
+    # but a block flip is still fine.
+    window._block_cols.setValue(1)
+    window._block_rows.setValue(2)
+    window._on_tiles_selected(0, 0)
+    assert block.flip_h.isEnabled()
+    assert not block.rotate_cw.isEnabled()
 
 
 def test_a_solid_block_of_cells_gets_one_outline() -> None:

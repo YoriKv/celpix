@@ -1,7 +1,7 @@
 # 1bpp 16x16 — byte 0 = left 8px, byte 1 = right 8px.
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.1bpp16"
-name = "1bpp 16x16"
+name = "1bpp (16x16)"
 engine_id = "codec.wide-1bpp"
 
 [params]

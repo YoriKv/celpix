@@ -111,10 +111,16 @@ class PaletteMode(str, Enum):
 
     @property
     def decodes_raw_bytes(self) -> bool:
-        """Whether a *choice* of color codec applies — the only modes where the
-        format picker means anything. DEFAULT and CUSTOM carry their own colors,
-        and an emulator state's console dictates its codec."""
-        return self in (PaletteMode.FILE, PaletteMode.OFFSET)
+        """Whether the palette is decoded from raw bytes through a color codec,
+        so the format picker can *reinterpret* those bytes.
+
+        FILE and OFFSET read a file; an EMULATOR state's console dictates the
+        initial codec, but the picker still lets the user override how its bytes
+        are read. DEFAULT and CUSTOM carry their own colors (generated, or ARGB
+        stored in the project), so no codec choice applies — CUSTOM shows the
+        format it carries, but read-only.
+        """
+        return self in (PaletteMode.FILE, PaletteMode.OFFSET, PaletteMode.EMULATOR)
 
     @property
     def has_external_file(self) -> bool:
@@ -321,6 +327,10 @@ class Workspace:
     def __init__(self) -> None:
         self.entries: list[Entry] = []
         self.current: Entry | None = None
+        # Project-level (not per-entry) settings the project file persists. The
+        # pixel-format filter is view-only — which codecs the Pixel dropdown
+        # lists — so it rides on the workspace root rather than any one entry.
+        self.hidden_pixel_presets: set[str] = set()
         self.on_added: list[Callable[[Entry], None]] = []
         self.on_removed: list[Callable[[Entry], None]] = []
         self.on_current_changed: list[Callable[[Entry | None], None]] = []
@@ -350,6 +360,69 @@ class Workspace:
             if entry.kind is EntryKind.PALETTE and self._path_key(entry.path) == key:
                 return entry
         return None
+
+    def palette_render_targets(self, path: str) -> list[Entry]:
+        """Loaded FILE/SLICE entries whose document currently renders ``path``.
+
+        Matched on the live palette config, not the saved session mode, so it is
+        reliable *mid-switch* — the graphics to re-mirror the instant a file
+        palette's colors change. Only entries with a document are returned; an
+        unloaded one re-mirrors on its next load.
+        """
+        key = self._path_key(path)
+        out = []
+        for entry in self.entries:
+            if entry.kind not in (EntryKind.FILE, EntryKind.SLICE) or entry.doc is None:
+                continue
+            src = entry.doc.palette_config.source.path
+            if src and self._path_key(src) == key:
+                out.append(entry)
+        return out
+
+    def add_palette(self, path: str, preset_id: str | None) -> Entry:
+        """Append a PALETTE entry for ``path`` (or return the one already there).
+
+        The **non-undoable** registration, like :meth:`open_file` — used by the
+        restore/self-heal path when a graphic references a ``.pal`` the project
+        never registered. Interactive registration goes through an
+        ``AddEntryCommand`` so it can be undone.
+        """
+        existing = self.find_palette(path)
+        if existing is not None:
+            return existing
+        entry = Entry(
+            name=basename(path),
+            kind=EntryKind.PALETTE,
+            path=path,
+            palette_preset_id=preset_id,
+        )
+        self.entries.append(entry)
+        self._notify(self.on_added, entry)
+        return entry
+
+    def palette_users(self, palette: Entry) -> list[Entry]:
+        """The graphics entries whose File-mode palette *is* this PALETTE file.
+
+        The reverse of the file → palette reference: a File-mode graphic records
+        its palette by path (its live config, or its pending source before load),
+        so a shared ``.pal`` is matched by path-identity here — loaded or not.
+        This is what lets removing a palette find, and re-home, every graphic that
+        renders through it. Empty for anything but a PALETTE entry.
+        """
+        if palette.kind is not EntryKind.PALETTE:
+            return []
+        key = self._path_key(palette.path)
+        users = []
+        for entry in self.entries:
+            if entry.kind not in (EntryKind.FILE, EntryKind.SLICE):
+                continue
+            session = entry.session
+            if session is None or session.palette_mode is not PaletteMode.FILE:
+                continue
+            path = entry_palette_path(entry)
+            if path is not None and self._path_key(path) == key:
+                users.append(entry)
+        return users
 
     def slices_of(self, entry: Entry) -> list[Entry]:
         """The SLICE entries carved from ``entry``'s file, in list order.

@@ -1,7 +1,7 @@
 # 8bpp chunky — one byte per pixel (SNES Mode 7, Nintendo DS 2D, generic 8bpp).
 # See docs/graphics-formats-reference/implementation-guide.md §2 (chunky).
 id = "preset.pixel.chunky-8bpp"
-name = "8bpp chunky (8x8, Mode 7 / NDS)"
+name = "8bpp chunky (Mode 7 / NDS, 8x8)"
 engine_id = "codec.chunky"
 
 [params]

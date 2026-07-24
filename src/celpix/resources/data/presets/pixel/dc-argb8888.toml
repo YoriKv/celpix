@@ -1,7 +1,7 @@
 # Direct-color ARGB8888 direct (8x8) — Tile Molester DC catalogue (§3).
 # See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
 id = "preset.pixel.dc-argb8888"
-name = "ARGB8888 direct (8x8)"
+name = "Direct ARGB8888 (8x8)"
 engine_id = "codec.direct-color"
 
 [params]

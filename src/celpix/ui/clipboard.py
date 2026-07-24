@@ -24,6 +24,7 @@ able to execute anything on paste.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 from PySide6.QtCore import QByteArray, QMimeData
@@ -35,6 +36,16 @@ from celpix.core.index_grid import IndexGrid
 # Our own clipboard flavour. The name is a private MIME type — no other program
 # claims it, so its presence proves the copy came from Celpix.
 TILES_MIME = "application/x-celpix-tiles"
+# Palette colors travel under their own private type (lossless ARGB) *and* as
+# ``#RRGGBB``/``#AARRGGBB`` text, so a color copies to and pastes from any other
+# program that speaks hex.
+PALETTE_MIME = "application/x-celpix-palette"
+PALETTE_PAYLOAD_VERSION = 1
+# A 6- or 8-digit hex run, optionally ``#``-prefixed, not embedded in a longer
+# hex string — how a foreign clipboard's colors are recognised.
+_HEX_COLOR = re.compile(
+    r"(?<![0-9A-Fa-f])#?([0-9A-Fa-f]{8}|[0-9A-Fa-f]{6})(?![0-9A-Fa-f])"
+)
 
 # Bumped only on an incompatible payload change; a mismatch is ignored on paste
 # (the image representation is still there to fall back on).
@@ -178,6 +189,82 @@ def has_content() -> bool:
     """Whether a paste could do anything — drives the Paste action's enabled state."""
     mime = QGuiApplication.clipboard().mimeData()
     return mime is not None and (mime.hasFormat(TILES_MIME) or mime.hasImage())
+
+
+# -- palette colors --------------------------------------------------------
+def color_text(argb: int) -> str:
+    """One color as ``#RRGGBB`` (opaque) or ``#AARRGGBB`` (carries alpha)."""
+    argb &= 0xFFFFFFFF
+    if (argb >> 24) == 0xFF:
+        return f"#{argb & 0xFFFFFF:06X}"
+    return f"#{argb:08X}"
+
+
+def put_colors(colors: list[int]) -> None:
+    """Place palette colors on the system clipboard, lossless + as hex text."""
+    mime = QMimeData()
+    payload = json.dumps(
+        {
+            "version": PALETTE_PAYLOAD_VERSION,
+            "colors": [c & 0xFFFFFFFF for c in colors],
+        }
+    ).encode("utf-8")
+    mime.setData(PALETTE_MIME, QByteArray(payload))
+    mime.setText(" ".join(color_text(c) for c in colors))
+    QGuiApplication.clipboard().setMimeData(mime)
+
+
+def _parse_palette_payload(raw: bytes) -> list[int] | None:
+    """Our own palette payload → ARGB list; None for anything malformed."""
+    try:
+        head = json.loads(raw.decode("utf-8"))
+        if head.get("version") != PALETTE_PAYLOAD_VERSION:
+            return None
+        return [int(c) & 0xFFFFFFFF for c in head["colors"]]
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return None
+
+
+def _parse_hex_colors(text: str) -> list[int]:
+    """Every ``#RRGGBB``/``#AARRGGBB`` token in ``text`` as ARGB (6-digit → opaque).
+
+    The cross-application path: a color copied from any editor that writes hex
+    pastes straight in, and a run of them fills consecutive entries.
+    """
+    colors = []
+    for match in _HEX_COLOR.finditer(text):
+        digits = match.group(1)
+        value = int(digits, 16)
+        if len(digits) == 6:
+            value |= 0xFF000000  # no alpha field means fully opaque
+        colors.append(value & 0xFFFFFFFF)
+    return colors
+
+
+def take_colors() -> list[int] | None:
+    """Palette colors from the clipboard: our lossless payload, else hex text."""
+    mime = QGuiApplication.clipboard().mimeData()
+    if mime is None:
+        return None
+    if mime.hasFormat(PALETTE_MIME):
+        colors = _parse_palette_payload(bytes(mime.data(PALETTE_MIME)))
+        if colors:
+            return colors
+    if mime.hasText():
+        colors = _parse_hex_colors(mime.text())
+        if colors:
+            return colors
+    return None
+
+
+def has_colors() -> bool:
+    """Whether a palette paste could do anything — drives the action's enabled state."""
+    mime = QGuiApplication.clipboard().mimeData()
+    if mime is None:
+        return False
+    if mime.hasFormat(PALETTE_MIME):
+        return True
+    return mime.hasText() and bool(_parse_hex_colors(mime.text()))
 
 
 def image_to_argb(image: QImage) -> ArgbGrid:

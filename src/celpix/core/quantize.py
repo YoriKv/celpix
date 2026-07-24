@@ -11,13 +11,22 @@ approximation), which tracks human color judgement far better than a plain
 Euclidean RGB distance at a fraction of the cost of a real Lab conversion:
 greens weigh heaviest, and red/blue trade weight with how red the pair is.
 
-**Alpha is a category, not a channel.** A pixel below ``alpha_threshold`` is
-transparent, and transparency is not "a color that happens to be faint" — it
-snaps to the designated transparent entry (index 0 by the retro convention Celpix
-exports with) rather than to whatever dark color happens to sit nearby. Opaque
-pixels, symmetrically, never match a transparent palette entry while any opaque
-candidate exists, so an opaque black can't land on a transparent slot that merely
-stores black.
+**Alpha is a category, not a channel.** Transparency is binary here — retro
+targets can't store a partial alpha, so a pixel with *any* opacity is a drawn
+color and only a fully clear pixel (alpha 0) is transparent. A transparent pixel
+always resolves to index 0 — the retro convention — unconditionally, so a paste
+from an external editor drops its clear background on the hole regardless of how
+this matcher is configured. Opaque pixels, symmetrically, never match a
+transparent palette entry while any opaque candidate exists, so an opaque black
+can't land on a transparent slot that merely stores black. (The cut is the
+``alpha_threshold`` knob — raised above 1, a band of faint pixels snaps to the
+designated transparent entry instead; the default treats alpha 0 as the only
+hole.)
+
+The exception is a source with *no* alpha anywhere — an editor that ignores the
+channel and leaves every pixel clear. There the zeros carry no meaning, so the
+caller flags ``ignore_alpha`` and each pixel matches by RGB as if opaque; a paste
+that would otherwise vanish onto index 0 lands as its colors instead.
 
 Qt-free: this is model-layer code, shared by the clipboard paste path and PNG
 import — both arrive here through :mod:`celpix.pipeline.importer`.
@@ -29,9 +38,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 # Below this alpha an incoming pixel counts as transparent rather than as a
-# color. Half-opacity is the natural cut for source art that has no partial
-# transparency to begin with (retro targets can't store it either).
-DEFAULT_ALPHA_THRESHOLD = 128
+# color. Retro targets have no partial transparency to store, so any pixel with
+# *any* opacity is a drawn color; only a fully clear pixel (alpha 0) is the hole.
+DEFAULT_ALPHA_THRESHOLD = 1
 
 
 def color_distance(a: int, b: int) -> int:
@@ -64,7 +73,14 @@ class ColorMatcher:
     across thousands of pixels, so the scan over candidates runs once each.
     """
 
-    __slots__ = ("_colors", "_opaque", "_transparent", "_threshold", "_cache")
+    __slots__ = (
+        "_colors",
+        "_opaque",
+        "_transparent",
+        "_threshold",
+        "_ignore_alpha",
+        "_cache",
+    )
 
     def __init__(
         self,
@@ -72,9 +88,15 @@ class ColorMatcher:
         *,
         transparent_index: int | None = 0,
         alpha_threshold: int = DEFAULT_ALPHA_THRESHOLD,
+        ignore_alpha: bool = False,
     ) -> None:
         self._colors = list(colors)
         self._threshold = alpha_threshold
+        # A whole source with no alpha at all comes from an editor that doesn't
+        # write the channel; its zeros are noise, not holes, so every pixel is
+        # taken as opaque and matched by RGB. The caller — which sees all the
+        # pixels — decides this; the matcher only sees one color at a time.
+        self._ignore_alpha = ignore_alpha
         # Candidates an opaque source pixel may match: the transparent entries
         # are excluded so an opaque color can't be swallowed by a slot that is
         # never drawn. If *every* entry is transparent the distinction is
@@ -118,9 +140,17 @@ class ColorMatcher:
     def _match_uncached(self, argb: int) -> tuple[int, bool]:
         if not self._colors:
             return 0, False
-        if (argb >> 24) & 0xFF < self._threshold and self._transparent is not None:
-            # Transparent input: the designated hole, and "exact" only if that
-            # entry really is transparent (otherwise the paste gained a color).
+        alpha = 0xFF if self._ignore_alpha else (argb >> 24) & 0xFF
+        if alpha == 0:
+            # A *fully* transparent source pixel is always index 0 — the retro
+            # convention, and unconditional so it holds even for a matcher with
+            # no designated hole ("no-hole" import) or a threshold that has been
+            # moved. "exact" only if index 0 is itself transparent, else the
+            # paste gained a color there.
+            return 0, (self._colors[0] >> 24) & 0xFF < self._threshold
+        if alpha < self._threshold and self._transparent is not None:
+            # Partly transparent input: the designated hole, and "exact" only if
+            # that entry really is transparent (otherwise the paste gained one).
             entry = self._colors[self._transparent]
             return self._transparent, (entry >> 24) & 0xFF < self._threshold
         rgb = argb & 0xFFFFFF

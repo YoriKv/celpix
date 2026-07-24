@@ -27,14 +27,13 @@ from PySide6.QtGui import (
     QPainter,
     QPalette,
     QPixmap,
-    QShortcut,
 )
 from PySide6.QtWidgets import QMenu, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
 from celpix import resources
 from celpix.core.address import format_hex
 from celpix.project.workspace import Entry, EntryKind, entry_reference_missing
-from celpix.ui.widgets import signals_blocked
+from celpix.ui.widgets import signals_blocked, take_editing_shortcut
 
 # Translucent amber behind an entry whose referenced file (or palette) is
 # missing: reads as a warning over either light or dark row backgrounds without
@@ -49,7 +48,8 @@ _ICON_H = 16
 
 
 class _EntryTree(QTreeWidget):
-    """A tree that records when a selection change is driven by the keyboard.
+    """A tree that records when a selection change is driven by the keyboard,
+    and owns the Delete key while it has focus.
 
     Selecting a row loads it into the view, which normally hands focus to the
     canvas so arrow keys drive the pixels. But while the user is *browsing* the
@@ -58,13 +58,33 @@ class _EntryTree(QTreeWidget):
     key-driven selection change (it wraps the base handler that emits
     ``currentItemChanged``), so the panel can tell an arrow-key move apart from a
     click and keep focus on the list for the former.
+
+    While the list has focus it is a **shortcut island**: the canvas editing
+    shortcuts (Cut/Copy/Paste/Select All/Delete) yield to it via
+    :func:`~celpix.ui.widgets.take_editing_shortcut`, so they don't act on the
+    canvas selection from here - and Delete, which the list also binds, no longer
+    overloads ambiguously with Clear (which used to make Qt fire neither, so the
+    key silently did nothing). The only editing key the list acts on is Delete
+    (remove entry); the arrow keys reach the tree's own navigation through the
+    app-wide filter that already yields to this widget.
     """
+
+    delete_pressed = Signal()  # Delete with the list focused - remove the entry
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.key_navigating = False
 
+    def event(self, event) -> bool:
+        if take_editing_shortcut(event):
+            return True
+        return super().event(event)
+
     def keyPressEvent(self, event) -> None:
+        if event.matches(QKeySequence.StandardKey.Delete):
+            self.delete_pressed.emit()
+            event.accept()
+            return
         self.key_navigating = True
         try:
             super().keyPressEvent(event)  # emits currentItemChanged synchronously
@@ -125,11 +145,10 @@ class FileListPanel(QWidget):
         self._current: Entry | None = None  # mirrors the workspace's pointer
         self._has_selection = False  # mirrors the canvas's tile selection
 
-        # Delete removes the highlighted entry — active only while the tree
-        # itself has focus, so the key can't fire from the canvas or a field.
-        self._remove_shortcut = QShortcut(QKeySequence.StandardKey.Delete, self._tree)
-        self._remove_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
-        self._remove_shortcut.activated.connect(self._remove_current)
+        # Delete removes the highlighted entry - handled by the tree itself (see
+        # _EntryTree) rather than a QShortcut, so it wins the key over the
+        # canvas's window-wide Clear/Delete instead of overloading with it.
+        self._tree.delete_pressed.connect(self._remove_current)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -513,10 +532,15 @@ class FileListPanel(QWidget):
             edit.triggered.connect(lambda: self.edit_slice_requested.emit(entry))
             menu.addSeparator()
         elif entry.kind is EntryKind.PALETTE:
-            # The double-click action, discoverable. No Write/rename: the
-            # palette is read-only here and its name is its basename.
+            # The double-click action, discoverable.
             use = menu.addAction("Use as Current Palette")
             use.triggered.connect(lambda: self.use_palette_requested.emit(entry))
+            # A file palette owns its colors and is edited in place, so it Writes
+            # back to its own .pal from here — offered only with unsaved edits (the
+            # graphic that renders it is never dirtied by a color change).
+            write = menu.addAction("Write")
+            write.triggered.connect(lambda: self.write_requested.emit(entry))
+            write.setEnabled(entry.doc is not None and entry.palette_dirty)
             menu.addSeparator()
         else:
             # The double-click action, discoverable; a bookmark holds no bytes

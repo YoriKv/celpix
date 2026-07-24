@@ -10,11 +10,73 @@ from contextlib import contextmanager
 from enum import Enum
 from typing import TypeVar
 
-from PySide6.QtCore import QObject, QRect, QSettings, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QComboBox, QLineEdit, QWidget
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPointF,
+    QRect,
+    QSettings,
+    QSize,
+    Qt,
+    Signal,
+)
+from PySide6.QtGui import (
+    QColor,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QHBoxLayout,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 _EnumT = TypeVar("_EnumT", bound=Enum)
+
+# The canvas editing shortcuts (Cut/Copy/Paste/Select All/Delete). The main
+# window binds these window-wide (see ``SelectionMixin``), so they otherwise fire
+# wherever focus is - acting on the *canvas* selection even when a side panel has
+# focus. A panel that wants to own its keys claims them with
+# :func:`take_editing_shortcut`. Matched by key sequence, so platform bindings
+# track without hard-coded literals.
+_EDITING_SHORTCUTS = (
+    QKeySequence.StandardKey.Cut,
+    QKeySequence.StandardKey.Copy,
+    QKeySequence.StandardKey.Paste,
+    QKeySequence.StandardKey.SelectAll,
+    QKeySequence.StandardKey.Delete,
+)
+
+
+def take_editing_shortcut(event: QEvent) -> bool:
+    """Claim a canvas editing shortcut for a focused panel; call from ``event()``.
+
+    Returns True (having *accepted* ``event``) when it is a ``ShortcutOverride``
+    for one of :data:`_EDITING_SHORTCUTS`. Accepting the override routes the key
+    to the focused widget as a normal press instead of letting the canvas's
+    window-wide shortcut consume (or, for Delete, ambiguously drop) it - so a
+    panel that has its own key handling isn't shadowed by the editing surface
+    behind it. The widget then handles the resulting key press however it likes
+    (or ignores it, so the key simply does nothing there). Mirrors how the
+    app-wide arrow-key filter yields to these same panels, and how text inputs
+    already claim their editing keys natively.
+    """
+    if event.type() == QEvent.Type.ShortcutOverride and any(
+        event.matches(key) for key in _EDITING_SHORTCUTS
+    ):
+        event.accept()
+        return True
+    return False
 
 
 @contextmanager
@@ -176,6 +238,118 @@ class CommittingLineEdit(QLineEdit):
         if value is not None:
             self.committed.emit(value)
         self.refresh()
+
+
+def funnel_icon(color: QColor, size: int = 16, ratio: float = 1.0) -> QIcon:
+    """A funnel/filter glyph filled with ``color`` — the app's "filter a list" mark.
+
+    Painted rather than bundled so it inherits the current theme's text color and
+    stays crisp at any device-pixel ratio; Qt derives the disabled (greyed) form
+    from it automatically. The silhouette sits in a padded unit box: a wide mouth
+    converging to a short stem.
+    """
+    px = max(1, round(size * ratio))
+    pixmap = QPixmap(px, px)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    unit = [
+        (0.12, 0.18),
+        (0.88, 0.18),
+        (0.58, 0.52),
+        (0.58, 0.86),
+        (0.42, 0.86),
+        (0.42, 0.52),
+    ]
+    painter.drawPolygon(QPolygonF([QPointF(x * px, y * px) for x, y in unit]))
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    return QIcon(pixmap)
+
+
+class ChecklistPopupButton(QToolButton):
+    """A toolbar button that drops down a checkable list, with Select All / None.
+
+    A compact multi-select filter: the owner supplies the current entries each
+    time the popup opens (so a source list that changes — e.g. a plugin refresh
+    adds a preset — stays in sync), and every change is handed to ``apply``,
+    which does the real work and returns the set that ended up in force. The
+    button then re-syncs its checkboxes to that set, so a request the owner had
+    to clamp — you can never hide *everything* — visibly springs back. All of
+    the filtering/selection logic lives with the owner and is unit-tested
+    without driving this view.
+
+    The popup is a top-level ``Qt.Popup``: clicks inside it (the checkboxes, the
+    two buttons) leave it open, and a click anywhere else dismisses it — so the
+    list stays up while several boxes are toggled.
+    """
+
+    def __init__(
+        self,
+        text: str,
+        items: Callable[[], list[tuple[object, str, bool]]],
+        apply: Callable[[set], set],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setText(text)
+        self._items = items
+        self._apply = apply
+        self._boxes: dict[object, QCheckBox] = {}
+        self._popup: QWidget | None = None
+        self.clicked.connect(self._open)
+
+    def _open(self) -> None:
+        popup = QWidget(self, Qt.WindowType.Popup)
+        outer = QVBoxLayout(popup)
+        buttons = QHBoxLayout()
+        select_all = QPushButton("Select All")
+        select_none = QPushButton("Select None")
+        select_all.clicked.connect(lambda: self._bulk(True))
+        select_none.clicked.connect(lambda: self._bulk(False))
+        buttons.addWidget(select_all)
+        buttons.addWidget(select_none)
+        outer.addLayout(buttons)
+
+        # The source list can be long (dozens of codecs); scroll rather than grow
+        # a popup taller than the screen.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(400)
+        inner = QWidget()
+        column = QVBoxLayout(inner)
+        self._boxes = {}
+        for key, label, checked in self._items():
+            box = QCheckBox(label)
+            box.setChecked(checked)
+            box.toggled.connect(self._on_toggle)
+            self._boxes[key] = box
+            column.addWidget(box)
+        column.addStretch(1)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+
+        popup.adjustSize()
+        popup.move(self.mapToGlobal(self.rect().bottomLeft()))
+        popup.show()
+        self._popup = popup  # keep a reference so it isn't collected mid-show
+
+    def _checked_keys(self) -> set:
+        return {key for key, box in self._boxes.items() if box.isChecked()}
+
+    def _on_toggle(self, *_args) -> None:
+        self._sync(self._apply(self._checked_keys()))
+
+    def _bulk(self, checked: bool) -> None:
+        self._sync(self._apply(set(self._boxes) if checked else set()))
+
+    def _sync(self, effective: set) -> None:
+        """Reflect the owner's authoritative set back onto the checkboxes."""
+        for key, box in self._boxes.items():
+            with signals_blocked(box):
+                box.setChecked(key in effective)
 
 
 def load_enum_setting(key: str, default: _EnumT) -> _EnumT:

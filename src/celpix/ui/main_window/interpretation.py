@@ -13,9 +13,11 @@ the entry is, and must load. :func:`_same_bytes` is the test.
 
 from __future__ import annotations
 
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QSpinBox,
@@ -37,17 +39,14 @@ from celpix.project.workspace import (
     EntryKind,
     pixel_config_for,
 )
-from celpix.ui.main_window.selection import (
-    SELECTION_SHAPE_KEY,
-    SelectionShape,
-)
 from celpix.ui.undo_commands import (
     PaletteState,
     PixelConfigCommand,
 )
 from celpix.ui.widgets import (
+    ChecklistPopupButton,
     CompactComboBox,
-    load_enum_setting,
+    funnel_icon,
     select_combo_data,
     signals_blocked,
 )
@@ -108,13 +107,39 @@ class InterpretationMixin:
         for bar in (codecs, arrange, view):
             bar.layout().setSpacing(10)
 
+        # Which pixel presets the dropdown lists lives on the workspace, so the
+        # project file persists it (self._workspace.hidden_pixel_presets); empty
+        # means all. It's view-only — pruning the codec picker to the formats the
+        # user cares about, without touching how any file is read.
         self._pixel_preset = self._preset_combo(Stage.INTERPRET_PIXEL, "snes-4bpp")
         self._pixel_preset.currentIndexChanged.connect(self._on_pixel_preset_change)
         # End a format-cycling run when focus leaves the dropdown: the next switch
         # then re-anchors on the live position rather than the stale target.
         self._pixel_preset.focus_lost.connect(self._end_pixel_switch_run)
         codecs.addWidget(QLabel("Pixel:"))
-        codecs.addWidget(self._pixel_preset)
+        # The combo and its filter button read as one control: grouped in a tight
+        # container (no toolbar gap between them), same height, the button a plain
+        # funnel icon that picks up the theme's button-text color.
+        self._pixel_filter = ChecklistPopupButton(
+            "Filter", self._pixel_filter_items, self._apply_pixel_filter
+        )
+        self._pixel_filter.setIcon(
+            funnel_icon(
+                self.palette().color(QPalette.ColorRole.ButtonText),
+                ratio=self.devicePixelRatioF(),
+            )
+        )
+        self._pixel_filter.setToolTip(
+            "Choose which pixel formats appear in the dropdown."
+        )
+        self._pixel_filter.setFixedHeight(self._pixel_preset.sizeHint().height())
+        pixel_group = QWidget()
+        group = QHBoxLayout(pixel_group)
+        group.setContentsMargins(0, 0, 0, 0)
+        group.setSpacing(2)
+        group.addWidget(self._pixel_preset)
+        group.addWidget(self._pixel_filter)
+        codecs.addWidget(pixel_group)
         # The palette format combo lives in the palette dock's header, next to
         # the mode it qualifies (_build_palette_dock).
 
@@ -195,30 +220,9 @@ class InterpretationMixin:
         view.addWidget(QLabel("Subpal:"))
         view.addWidget(self._subpalette)
 
-        # What a canvas drag selects. Like the grid style this is one app-wide
-        # interaction preference (QSettings), not per-document state: it changes
-        # how the mouse is read, not how anything renders - so it deliberately
-        # does *not* go through _on_view_change.
-        self._selection_shape = CompactComboBox(1.00)
-        for shape, label in (
-            (SelectionShape.LINEAR, "Linear"),
-            (SelectionShape.RECT, "Rectangle"),
-        ):
-            self._selection_shape.addItem(label, shape)
-        self._selection_shape.setToolTip(
-            "What dragging on the canvas selects:\n"
-            "• Linear - the run of tiles between press and pointer (storage order)\n"
-            "• Rectangle - the block of tiles the drag spans on screen"
-        )
-        select_combo_data(
-            self._selection_shape,
-            load_enum_setting(SELECTION_SHAPE_KEY, SelectionShape.LINEAR),
-        )
-        self._selection_shape.currentIndexChanged.connect(
-            self._on_selection_shape_change
-        )
-        view.addWidget(QLabel("Selection Shape:"))
-        view.addWidget(self._selection_shape)
+        # The Selection Shape picker (what a canvas drag selects) lives on the
+        # canvas transform toolbar - see :mod:`celpix.ui.main_window.transform` -
+        # because it gates that bar's block transforms.
 
         # Arrangement (display-only placement/addressing, so these re-render like
         # zoom/grid - not undoable). Block W×H groups tiles into blocks; Order sets
@@ -391,6 +395,84 @@ class InterpretationMixin:
                 combo.setCurrentIndex(combo.count() - 1)
         return combo
 
+    # -- pixel-format filter ----------------------------------------------
+    def _all_pixel_presets(self) -> list:
+        """Every pixel preset the registry offers, name-sorted (the dropdown's
+        natural order and the filter list's order)."""
+        return sorted(
+            self._registry.presets(Stage.INTERPRET_PIXEL), key=lambda p: p.name
+        )
+
+    def _fill_pixel_combo(self, select_id: str) -> None:
+        """Repopulate the pixel dropdown with the un-hidden presets, always
+        keeping ``select_id`` present and selected.
+
+        The selected format is force-included even when the filter hides it: you
+        can't hide the format actually interpreting the file, and every apply
+        path (a switch, an undo, a session restore) lands here so that invariant
+        holds. Signals stay blocked — the caller owns any reinterpretation.
+        """
+        hidden = self._workspace.hidden_pixel_presets
+        visible = [
+            preset
+            for preset in self._all_pixel_presets()
+            if preset.id not in hidden or preset.id == select_id
+        ]
+        with signals_blocked(self._pixel_preset):
+            self._pixel_preset.clear()
+            for preset in visible:
+                self._pixel_preset.addItem(preset.name, preset.id)
+            index = self._pixel_preset.findData(select_id)
+            self._pixel_preset.setCurrentIndex(index if index >= 0 else 0)
+
+    def _pixel_filter_items(self) -> list[tuple[str, str, bool]]:
+        """``(id, name, checked)`` for every pixel preset — the filter popup's
+        model. The format in force always reads as checked (it can't be hidden)."""
+        current = self._pixel_preset_id()
+        hidden = self._workspace.hidden_pixel_presets
+        return [
+            (
+                preset.id,
+                preset.name,
+                preset.id not in hidden or preset.id == current,
+            )
+            for preset in self._all_pixel_presets()
+        ]
+
+    def _apply_pixel_filter(self, desired: set[str]) -> set[str]:
+        """Set which pixel presets the dropdown lists; return the set in force.
+
+        ``desired`` is the ids left checked. The list can never be emptied, so an
+        empty request keeps the current format; unchecking the *current* format
+        switches the view to the first remaining one. When that switch can't take
+        (no document, or the bytes don't fit the new codec) nothing changes. The
+        returned set is what actually ended up checked, so the popup can spring a
+        clamped request back.
+        """
+        all_ids = {preset.id for preset in self._all_pixel_presets()}
+        current = self._pixel_preset_id()
+        desired = (set(desired) & all_ids) or {current}
+        if current not in desired:
+            target = next(
+                (p.id for p in self._all_pixel_presets() if p.id in desired), None
+            )
+            if target is None or not self._try_switch_pixel(target):
+                return all_ids - self._workspace.hidden_pixel_presets  # unchanged
+        self._workspace.hidden_pixel_presets = all_ids - desired
+        self._fill_pixel_combo(self._pixel_preset_id())
+        # The filter is project state now, so changing it can dirty the project.
+        self._refresh_project_modified()
+        return desired
+
+    def _try_switch_pixel(self, target: str) -> bool:
+        """Move the dropdown to ``target`` and reinterpret through it, as an
+        ordinary undoable switch. With no document open there is nothing to read,
+        so it just moves the default selection and reports success."""
+        self._fill_pixel_combo(target)
+        if self._doc is None:
+            return True
+        return self._on_pixel_preset_change()
+
     @staticmethod
     def _spin(low: int, high: int, value: int, on_change) -> QSpinBox:
         spin = QSpinBox()
@@ -463,7 +545,7 @@ class InterpretationMixin:
         if not self._palette_mode.is_real:
             self._doc.palette = self._fallback_palette()
 
-    def _on_pixel_preset_change(self) -> None:
+    def _on_pixel_preset_change(self) -> bool:
         """The pixel combo changed: validate the new interpretation, then push
         one undoable command whose first redo applies the pre-validated load.
 
@@ -471,10 +553,15 @@ class InterpretationMixin:
         so a series of switches all measure from the same intended position
         instead of from wherever the previous format's clamping happened to
         land. The first switch has none yet, so it seeds it from the live view.
+
+        Returns whether the switch went through — False on an early bail (no
+        document) or a load failure (already reported, combo reverted), which
+        the filter uses to leave its own state untouched when a switch it drove
+        can't take.
         """
         entry = self._workspace.current
         if self._doc is None or entry is None or self._applying_undo:
-            return
+            return False
         if self._pixel_switch_target is None:
             self._pixel_switch_target = self._byte_position()
         # The doc still holds the outgoing interpretation here (only the combo
@@ -497,7 +584,7 @@ class InterpretationMixin:
             self._report(exc)
             # The doc never switched - snap the combo back onto its preset.
             select_combo_data(self._pixel_preset, old_preset)
-            return
+            return False
         self._push_command(
             PixelConfigCommand(
                 self,
@@ -511,6 +598,7 @@ class InterpretationMixin:
         note = self._partial_tile_note()
         if note:
             self.statusBar().showMessage(f"Preset changed - {note}")
+        return True
 
     def _pixel_data_for(
         self, cfg: PathwayConfig, *, reload: bool = False
@@ -571,7 +659,9 @@ class InterpretationMixin:
             except PipelineError as exc:
                 self._report(exc)
                 return False
-        select_combo_data(self._pixel_preset, preset_id)
+        # Rebuild rather than a plain select: the applied format may be one the
+        # filter hides, and you can never hide the format actually in force.
+        self._fill_pixel_combo(preset_id)
         if entry.kind is EntryKind.FILE:
             self._sync_header_widgets(header_offset)
         self._store_pixel_data(px, cfg)
@@ -653,21 +743,20 @@ class InterpretationMixin:
     def _repopulate_presets(self) -> None:
         """Rebuild the preset combos from the (reloaded) registry, keeping the
         current selection when it still exists."""
-        for combo, stage in (
-            (self._pixel_preset, Stage.INTERPRET_PIXEL),
-            (self._palette_preset, Stage.INTERPRET_PALETTE),
-        ):
-            current = combo.currentData()
-            # Block signals so repopulating doesn't fire a reload per item; the
-            # refresh does one explicit reload afterwards.
-            with signals_blocked(combo):
-                combo.clear()
-                for preset in sorted(
-                    self._registry.presets(stage), key=lambda p: p.name
-                ):
-                    combo.addItem(preset.name, preset.id)
-                index = combo.findData(current)
-                combo.setCurrentIndex(index if index >= 0 else 0)
+        # The pixel combo goes through the filter (a refresh keeps hidden formats
+        # hidden and lets newly added ones through); the selection is preserved.
+        self._fill_pixel_combo(self._pixel_preset.currentData())
+        current = self._palette_preset.currentData()
+        # Block signals so repopulating doesn't fire a reload per item; the
+        # refresh does one explicit reload afterwards.
+        with signals_blocked(self._palette_preset):
+            self._palette_preset.clear()
+            for preset in sorted(
+                self._registry.presets(Stage.INTERPRET_PALETTE), key=lambda p: p.name
+            ):
+                self._palette_preset.addItem(preset.name, preset.id)
+            index = self._palette_preset.findData(current)
+            self._palette_preset.setCurrentIndex(index if index >= 0 else 0)
         # The compression combo lists Decompress *plugins*, not presets, but
         # refreshes the same way (keep the selection when it survives the reload).
         current = self._compression.currentData()

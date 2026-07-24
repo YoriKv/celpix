@@ -44,6 +44,22 @@ _DEFAULT_HEAD = (
     0xFFFF80C0,  # pink
 )
 
+
+def _gray(level: int) -> int:
+    return 0xFF000000 | (level << 16) | (level << 8) | level
+
+
+# Row 1 of the default palette (indices 16..31): a grayscale ramp, so
+# single-channel data (height maps, masks, Mode-7 index tables) reads as a ramp
+# instead of the golden-ratio confetti the tail generator would give it. Black
+# and white lead — the two most useful references — then 14 grays climb
+# dark→light (0x11..0xEE, evenly spaced strictly between the two).
+_GRAY_RAMP = (
+    _gray(0x00),  # black
+    _gray(0xFF),  # white
+    *(_gray(round((i + 1) * 255 / 15)) for i in range(14)),
+)
+
 # Tail generation: neighbouring entries must differ in more than hue, so the
 # golden-ratio hue walk cycles through saturation/value tiers as well.
 _TAIL_TIERS = ((0.9, 1.0), (0.6, 1.0), (0.9, 0.55), (0.45, 0.8))
@@ -54,6 +70,22 @@ def _tail_color(i: int) -> int:
     s, v = _TAIL_TIERS[i % len(_TAIL_TIERS)]
     r, g, b = (round(c * 255) for c in colorsys.hsv_to_rgb(h, s, v))
     return 0xFF000000 | (r << 16) | (g << 8) | b
+
+
+def _default_color(i: int) -> int:
+    """The default palette's color at absolute index ``i``.
+
+    The swatch grid is 16 wide, so each 16-entry span is one row: row 0 is the
+    hand-picked contrasting head, row 1 the grayscale ramp, and row 2 onward the
+    golden-ratio tail generator. Routing both :meth:`Palette.default` and
+    :meth:`Palette.resized` through here keeps a grown palette identical to one
+    generated at full size up front.
+    """
+    if i < len(_DEFAULT_HEAD):
+        return _DEFAULT_HEAD[i]
+    if i < len(_DEFAULT_HEAD) + len(_GRAY_RAMP):
+        return _GRAY_RAMP[i - len(_DEFAULT_HEAD)]
+    return _tail_color(i)
 
 
 class Palette:
@@ -110,18 +142,17 @@ class Palette:
         if count <= len(self._colors):
             return Palette(self._colors[:count])
         colors = list(self._colors)
-        colors.extend(_tail_color(i) for i in range(len(colors), count))
+        colors.extend(_default_color(i) for i in range(len(colors), count))
         return Palette(colors)
 
     @staticmethod
     def default(count: int) -> Palette:
         """The fallback for viewing pixels before a real palette is loaded:
-        black, white, then contrasting colors. Deterministic in ``count``."""
+        a contrasting first row, a grayscale ramp second, then generated colors.
+        Deterministic in ``count``."""
         if count <= 0:
             return Palette([])
-        colors = list(_DEFAULT_HEAD[:count])
-        colors.extend(_tail_color(i) for i in range(len(colors), count))
-        return Palette(colors)
+        return Palette([_default_color(i) for i in range(count)])
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Palette):

@@ -37,6 +37,24 @@ def test_transparent_source_snaps_to_the_transparent_index() -> None:
     assert opaque_zero.match(0x00FFFFFF) == (0, False)
 
 
+def test_fully_transparent_always_snaps_to_index_zero() -> None:
+    # alpha 0 is the hole unconditionally — even in "no-hole" mode, where a
+    # partly-transparent pixel would be matched by color instead. A pasted
+    # image's transparent background must never bleed onto a real color.
+    matcher = ColorMatcher([WHITE, RED], transparent_index=None)
+    assert matcher.match(0x00FF0000) == (0, False)  # clear red → index 0, gained
+    assert matcher.match(0x40FF0000) == (1, True)  # faint red still reads as red
+
+
+def test_only_alpha_zero_is_transparent() -> None:
+    # The opacity cut is >0: a pixel with even a sliver of alpha is a drawn
+    # color, not a hole. Barely-there red still matches red rather than snapping
+    # to the transparent index at 0.
+    matcher = ColorMatcher([0x00000000, RED], transparent_index=0)
+    assert matcher.match(0x01FF0000) == (1, True)  # alpha 1 → opaque, matched
+    assert matcher.match(0x00FF0000) == (0, True)  # alpha 0 → the clear hole
+
+
 def test_opaque_pixels_never_land_on_a_transparent_entry() -> None:
     # Entry 0 stores black but is transparent; an opaque black has to take the
     # opaque black at index 2, not the invisible slot.
@@ -73,6 +91,22 @@ def test_import_argb_quantizes_and_cuts_into_tiles() -> None:
     assert [bytes(t.data) for t in result.tiles] == [bytes([1] * 4), bytes([2] * 4)]
     assert result.report.lossless
     assert result.report.source_colors == 2
+
+
+def test_import_argb_ignores_alpha_when_no_pixel_has_any() -> None:
+    # An editor that never writes alpha hands over an all-clear image. Read
+    # literally, every pixel would snap to index 0; instead the colors survive
+    # because a whole image without alpha is taken as opaque and matched by RGB.
+    target = importer.ImportTarget(2, 2, colors=(BLACK, RED, GREEN))
+    source = _argb(2, 2, [0x00FF0000, 0x00FF0000, 0x0000FF00, 0x0000FF00])
+    result = importer.import_argb(source, target)
+    assert bytes(result.tiles[0].data) == bytes([1, 1, 2, 2])
+    # One genuinely transparent pixel means alpha *is* meaningful again: the
+    # clear pixels then go to the hole, only the opaque one keeps its color.
+    mixed = _argb(2, 2, [0x00FF0000, 0x00FF0000, 0x00FF0000, GREEN])
+    assert bytes(importer.import_argb(mixed, target).tiles[0].data) == bytes(
+        [0, 0, 0, 2]
+    )
 
 
 def test_import_argb_reports_approximated_colors() -> None:

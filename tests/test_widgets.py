@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from celpix.ui.widgets import CommittingLineEdit
+from celpix.ui.widgets import ChecklistPopupButton, CommittingLineEdit
 
 
 def _int_or_none(text: str) -> int | None:
@@ -41,3 +41,22 @@ def test_invalid_commit_reverts_without_emitting(qtbot) -> None:
 
     assert got == []  # never emitted for invalid input
     assert edit.text() == "=7"  # reverted to current value (refresh path)
+
+
+def test_checklist_popup_springs_back_when_owner_clamps(qtbot) -> None:
+    # The button is view-only: a toggle hands the desired set to the owner and
+    # re-syncs to whatever the owner returns. Here the owner refuses to drop the
+    # last item ("a"), so unchecking it must visibly snap back to checked.
+    def apply(desired: set) -> set:
+        return desired or {"a"}
+
+    button = ChecklistPopupButton(
+        "Filter", lambda: [("a", "A", True), ("b", "B", True)], apply
+    )
+    qtbot.addWidget(button)
+    button._open()  # build the popup + checkboxes without a real click
+
+    button._boxes["b"].setChecked(False)  # allowed -> stays unchecked
+    assert not button._boxes["b"].isChecked()
+    button._boxes["a"].setChecked(False)  # would empty the set -> clamped back
+    assert button._boxes["a"].isChecked()

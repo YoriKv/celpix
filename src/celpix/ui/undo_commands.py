@@ -36,10 +36,11 @@ from typing import TYPE_CHECKING
 from PySide6.QtGui import QUndoCommand
 
 from celpix.core.context import PipelineContext
+from celpix.core.document import Document
 from celpix.core.palette import Palette
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.project.workspace import Entry, PaletteMode, SliceParams
+from celpix.project.workspace import Entry, EntryKind, PaletteMode, SliceParams
 
 if TYPE_CHECKING:
     from celpix.ui.main_window import MainWindow
@@ -193,21 +194,28 @@ class PaletteCommand(QUndoCommand):
 class ColorEditCommand(QUndoCommand):
     """One palette entry's color changing, as a before/after ARGB pair.
 
-    Only the edited entry is captured, not the whole palette: consecutive edits
-    to the *same* entry merge, so dragging a channel slider — which emits on
-    every step — collapses into a single undo step rather than flooding the
-    stack. A different entry (or any other command) breaks the run, exactly as
-    it does for :class:`OffsetMoveCommand`.
+    ``owner`` is the entry whose palette dirt this edit belongs to, and ``doc`` the
+    document that holds the palette: for a *file* palette that is the PALETTE entry
+    and its own document (the graphic only mirrors it); for offset/custom it is the
+    graphic itself. Capturing both keeps the edit anchored to the palette it changed
+    even after the view moves to a different graphic sharing (or not sharing) it.
 
-    Forking a Custom palette off a read-only source is *not* part of this
-    command: the window pushes that separately as a :class:`PaletteCommand`
-    first, so undo peels the edit and the fork apart in the order they happened.
+    Only the edited entry is captured, not the whole palette: consecutive edits to
+    the *same* entry merge, so dragging a channel slider — which emits on every
+    step — collapses into a single undo step rather than flooding the stack. A
+    different entry (or any other command) breaks the run, exactly as it does for
+    :class:`OffsetMoveCommand`.
+
+    Forking a Custom palette off a read-only source is *not* part of this command:
+    the window pushes that separately as a :class:`PaletteCommand` first, so undo
+    peels the edit and the fork apart in the order they happened.
     """
 
     def __init__(
         self,
         window: MainWindow,
-        entry: Entry,
+        owner: Entry,
+        doc: Document,
         index: int,
         *,
         before: int,
@@ -215,13 +223,14 @@ class ColorEditCommand(QUndoCommand):
     ) -> None:
         super().__init__(f"edit color {index}")
         self._window = window
-        self._entry = entry
+        self._owner = owner
+        self._doc = doc
         self._index = index
         self._before = before
         self._after = after
         # The palette pathway's revision on either side of this command, so an
-        # undo hands the entry back the exact unsaved-state it had before.
-        self._before_revision = entry.palette_revision
+        # undo hands the owner back the exact unsaved-state it had before.
+        self._before_revision = owner.palette_revision
         self._after_revision = window._workspace.next_revision()
 
     def id(self) -> int:
@@ -230,7 +239,8 @@ class ColorEditCommand(QUndoCommand):
     def mergeWith(self, other: QUndoCommand) -> bool:
         if (
             not isinstance(other, ColorEditCommand)
-            or other._entry is not self._entry
+            or other._owner is not self._owner
+            or other._doc is not self._doc
             or other._index != self._index
         ):
             return False
@@ -241,22 +251,26 @@ class ColorEditCommand(QUndoCommand):
             # and with it the dirty mark the swallowed edits stamped on.
             self.setObsolete(True)
             self._window._workspace.set_palette_revision(
-                self._entry, self._before_revision
+                self._owner, self._before_revision
             )
         return True
 
     def redo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
-                self._window._apply_color_edit(
-                    self._index, self._after, self._after_revision
-                )
+        self._apply(self._after, self._after_revision)
 
     def undo(self) -> None:
+        self._apply(self._before, self._before_revision)
+
+    def _apply(self, argb: int, revision: int) -> None:
         with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
+            # A PALETTE entry can never be current, so a file-palette edit applies
+            # without switching the view; a graphic-owned edit first returns to the
+            # graphic it happened on, as every document-scoped command does.
+            if self._owner.kind is EntryKind.PALETTE or self._window._ensure_current(
+                self._owner
+            ):
                 self._window._apply_color_edit(
-                    self._index, self._before, self._before_revision
+                    self._owner, self._doc, self._index, argb, revision
                 )
 
 
@@ -415,3 +429,54 @@ class RemoveEntriesCommand(QUndoCommand):
     def undo(self) -> None:
         with self._window._undo_apply():
             self._window._apply_restore_entries(self._victims, self._was_current)
+
+
+@dataclass(frozen=True)
+class PaletteUserLink:
+    """A graphic's File-mode link to a palette, captured before it is re-homed.
+
+    Removing a file palette that graphics use converts each to a Custom copy; this
+    records exactly how to relink it on undo — its path/offset and format, and
+    whether its document was loaded (a loaded graphic re-mirrors from the restored
+    palette; an unloaded one just re-points its pending source).
+    """
+
+    entry: Entry
+    path: str
+    offset: int
+    preset_id: str
+    loaded: bool
+
+
+class RemovePaletteWithUsersCommand(QUndoCommand):
+    """Remove a file palette that graphics use, re-homing each as a Custom copy.
+
+    Deleting a shared palette would strand the graphics that render it, so each
+    keeps the colors as its own Custom palette — project-stored, so this is a
+    change to the *project*, never to the graphic's own bytes. Undo re-registers
+    the palette at its old list position and relinks every graphic back to it.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        palette: Entry,
+        *,
+        index: int,
+        users: list[PaletteUserLink],
+    ) -> None:
+        super().__init__(f'remove "{palette.name}"')
+        self._window = window
+        self._palette = palette
+        self._index = index
+        self._users = users
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            self._window._apply_remove_palette_to_custom(self._palette, self._users)
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            self._window._apply_restore_palette_users(
+                self._palette, self._index, self._users
+            )

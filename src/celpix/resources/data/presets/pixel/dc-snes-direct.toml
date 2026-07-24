@@ -6,7 +6,7 @@
 # color 00 as transparent. This covers chunky-stored (Mode 7 style) data; see
 # docs/graphics-formats-reference/snes-hardware-notes.md for the planar case.
 id = "preset.pixel.dc-snes-direct"
-name = "SNES direct color BBGGGRRR (8bpp)"
+name = "SNES 8bpp direct color (BBGGGRRR)"
 engine_id = "codec.direct-color"
 
 [params]

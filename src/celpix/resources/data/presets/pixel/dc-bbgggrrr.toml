@@ -1,0 +1,17 @@
+# Alias of `dc-snes-direct` that files this format under the Direct-color block
+# too (its own entry names it as an SNES console format). Same codec/params, a
+# distinct id so both listings coexist — the SNES 8bpp direct-color mode, where
+# each pixel byte is a BBGGGRRR color. See dc-snes-direct.toml for the hardware
+# notes.
+id = "preset.pixel.dc-bbgggrrr"
+name = "Direct BBGGGRRR (SNES 8bpp)"
+engine_id = "codec.direct-color"
+
+[params]
+bytes_per_pixel = 1
+byte_order = "little"
+
+[params.masks]
+r = 0x07
+g = 0x38
+b = 0xC0

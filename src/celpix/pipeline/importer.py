@@ -170,9 +170,19 @@ def quantize_grid(
     color counts of what matched exactly, which is what tells the user whether a
     paste landed faithfully or was approximated.
     """
-    matcher = ColorMatcher(target.colors, transparent_index=target.transparent_index)
+    src = source.data
+    # If not a single pixel carries alpha, the source editor doesn't write the
+    # channel — its zeros mean "opaque", not "transparent". Match by RGB so the
+    # whole image doesn't collapse onto the hole. (Alpha byte is index 3 of each
+    # little-endian ARGB pixel; the slice is C-level and short-circuits.)
+    ignore_alpha = not any(src[3::4])
+    matcher = ColorMatcher(
+        target.colors,
+        transparent_index=target.transparent_index,
+        ignore_alpha=ignore_alpha,
+    )
     grid = IndexGrid(source.width, source.height)
-    src, dst = source.data, grid.data
+    dst = grid.data
     exact_pixels = 0
     for i in range(source.width * source.height):
         argb = int.from_bytes(src[i * 4 : i * 4 + 4], "little")

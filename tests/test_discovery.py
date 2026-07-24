@@ -361,6 +361,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         "containers/_example.py",
         "palette/_example.py",
         "palette/_example.toml",
+        "palette/_nes-custom.py",
         "pixel/_example.py",
         "pixel/_example.toml",
     ]
@@ -377,7 +378,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     discovery.seed_examples(str(tmp_path))
 
     # Activate every example (drop the underscore) and load for real.
-    for path in tmp_path.rglob("_example.*"):
+    for path in tmp_path.rglob("_*"):
         path.rename(path.with_name(path.name[1:]))
     reg = default_registry()
     issues = discovery.load_directory(reg, str(tmp_path), confirm=_ALLOW)
@@ -411,6 +412,12 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     # is already zero for an exact round-trip.
     assert palette_round_trips(
         "format.palette.example-gray4", {}, bytes([0x00, 0x40, 0xF0])
+    )
+    # NES-custom code format (no companion .pal, so its baked master palette is
+    # used): index bytes whose colors are unique in that table, so nearest-color
+    # encode maps each straight back to the index it came from.
+    assert palette_round_trips(
+        "format.palette.nes-custom", {}, bytes([0x00, 0x11, 0x16, 0x18, 0x2A])
     )
 
     # Compression example: compress → decompress restores the bytes, and the

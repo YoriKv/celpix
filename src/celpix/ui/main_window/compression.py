@@ -99,13 +99,26 @@ class CompressionMixin:
         try:
             self._present_overlay(decompress_id if active else None)
         finally:
-            # Jump is armed only while a whole structure (known end) is in view;
-            # promote also needs the view's positions to map to file offsets.
-            self._jump_next.setEnabled(self._next_structure is not None)
-            self._promote_button.setEnabled(
-                self._structure_extent is not None
-                and self._doc.pixel_config.decompress_id == NO_DECOMPRESS
-            )
+            self._refresh_structure_actions()
+
+    def _refresh_structure_actions(self) -> None:
+        """Arm Jump-to-Next / promote-to-slice from the overlay's scan state.
+
+        Jump is armed only while a whole structure (known end) is in view;
+        promote also needs the view's positions to map to file offsets, so it
+        stays off while the main view is itself showing decompressed bytes.
+
+        Kept separate from :meth:`_refresh_overlay` because it is the single
+        source of truth for these two buttons: a scan's blanket UI re-enable
+        (:meth:`_set_scan_ui`) must restore their real state through here rather
+        than leave them switched on.
+        """
+        self._jump_next.setEnabled(self._next_structure is not None)
+        self._promote_button.setEnabled(
+            self._structure_extent is not None
+            and self._doc is not None
+            and self._doc.pixel_config.decompress_id == NO_DECOMPRESS
+        )
 
     def _present_overlay(self, decompress_id: str | None) -> None:
         """The overlay body of :meth:`_refresh_overlay` (which owns the button
@@ -236,6 +249,7 @@ class CompressionMixin:
             self._arrange_toolbar,
             self._view_toolbar,
             self._pixel_preset,
+            self._pixel_filter,
             self._compression,
             self._headered,
             self._header_len,
@@ -245,10 +259,13 @@ class CompressionMixin:
             widget.setEnabled(not active)
         # The blanket re-enable above must not resurrect controls that the
         # current entry keeps off (header skip is a whole-file setting; the block
-        # controls stay locked unless the Pattern picker is on Custom).
+        # controls stay locked unless the Pattern picker is on Custom; and Jump /
+        # promote are armed only by the overlay's structure state, not by a scan
+        # ending).
         current = self._workspace.current
         if not active and current is not None:
             is_file = current.kind is EntryKind.FILE
             self._headered.setEnabled(is_file)
             self._header_len.setEnabled(is_file)
             self._apply_pattern_lock()
+            self._refresh_structure_actions()

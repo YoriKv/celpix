@@ -1,7 +1,7 @@
 # Big-endian variant of BGR888 direct (8x8) — for big-endian ROM data (e.g. N64).
 # See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
 id = "preset.pixel.dc-bgr888-be"
-name = "BGR888 direct (8x8) (big-endian)"
+name = "Direct BGR888 (8x8, big-endian)"
 engine_id = "codec.direct-color"
 
 [params]

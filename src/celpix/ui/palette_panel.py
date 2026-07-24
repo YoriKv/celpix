@@ -15,6 +15,11 @@ the details readout below the grid.
 sampling surfaces, and while armed a click reports the swatch's color instead
 of selecting it — the selected swatch is the one being *edited*, so moving it
 would retarget the editor mid-pick (``docs/design/palette-editing.md``).
+Copy/Paste — from the keyboard (Ctrl+C/V for the selected color, Ctrl+Shift+C/V
+for the whole active subpalette) or a right-click menu — move colors through the
+system clipboard as hex text. The panel only reports the intent (the
+``*_requested`` signals and ``customContextMenuRequested``); the window owns the
+clipboard, the menu, and the undoable write-back.
 
 The display is always 16 swatches wide, purely a wrap — the *subpalette row* is
 the active range (:meth:`set_active_range`), sized by the pixel format's index
@@ -26,11 +31,11 @@ in one 256-entry block.
 from __future__ import annotations
 
 from PySide6.QtCore import QRect, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from celpix.core import ceil_div
-from celpix.ui.widgets import paint_selection_outline
+from celpix.ui.widgets import paint_selection_outline, take_editing_shortcut
 
 SWATCH = 14  # logical px per swatch; Qt scales logical painting on HiDPI
 COLUMNS = 16
@@ -43,6 +48,13 @@ class PalettePanel(QWidget):
     # ARGB sampled while the eyedropper is armed. ``object``, not ``int``: Qt's
     # int is 32-bit *signed*, and any ARGB with alpha >= 0x80 overflows it.
     color_picked = Signal(object)
+    # Copy/paste the selected color (Ctrl+C/V) or the whole active subpalette
+    # (Ctrl+Shift+C/V), when the grid holds focus. The panel just reports intent;
+    # the window owns the clipboard and the undoable write-back.
+    copy_requested = Signal()
+    paste_requested = Signal()
+    copy_subpalette_requested = Signal()
+    paste_subpalette_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -56,6 +68,9 @@ class PalettePanel(QWidget):
         # ClickFocus (the canvas's idiom): clicking a swatch also arms the
         # arrow-key stepping below.
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        # Right-click opens the copy/paste menu (built by the window, which knows
+        # the clipboard state); the press below first moves the selection there.
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._update_size()
 
     def set_eyedropper(self, on: bool) -> None:
@@ -82,6 +97,23 @@ class PalettePanel(QWidget):
             return index
         return None
 
+    def _index_near(self, x_px: float, y_px: float) -> int | None:
+        """The entry index nearest a widget position, clamped into the grid.
+
+        Unlike :meth:`_index_at` a miss never reads as None: a drag that runs off
+        an edge — or past the last, partly filled row — snaps to the closest
+        swatch so the selection keeps following the pointer. ``None`` only when
+        there are no colors at all.
+        """
+        if not self._colors:
+            return None
+        col = min(max(int(x_px) // SWATCH, 0), COLUMNS - 1)
+        rows = ceil_div(len(self._colors), COLUMNS)
+        row = min(max(int(y_px) // SWATCH, 0), rows - 1)
+        # Past the last color (the empty tail of a short final row) lands on the
+        # last color — dragging off the end selects the end.
+        return min(row * COLUMNS + col, len(self._colors) - 1)
+
     def set_palette(self, colors: list[int]) -> None:
         # Called on every view refresh, including pure navigation where the
         # palette hasn't changed — skip the copy and repaint then.
@@ -107,6 +139,18 @@ class PalettePanel(QWidget):
         """The selected color's entry index, or ``None``."""
         return self._selected
 
+    def select_index(self, index: int) -> None:
+        """Select entry ``index`` and move the active subpalette to it.
+
+        The programmatic equivalent of clicking a swatch — used by the pixel
+        eyedropper to make the picked color the active drawing color. Emits the
+        same ``color_selected`` / ``subpalette_clicked`` signals a click does, so
+        the readout and the view follow. Ignored for an out-of-range index.
+        """
+        if 0 <= index < len(self._colors):
+            self._select(index)
+            self.subpalette_clicked.emit(index // self._count)
+
     def _select(self, index: int) -> None:
         if index != self._selected:
             self._selected = index
@@ -128,7 +172,33 @@ class PalettePanel(QWidget):
                     return
                 self._select(index)
                 self.subpalette_clicked.emit(index // self._count)
+        elif event.button() == Qt.MouseButton.RightButton and not self._eyedropper:
+            # Move the selection (and the active subpalette with it) onto the
+            # right-clicked swatch, so the menu that follows acts on it — the
+            # file-manager rule the canvas uses. An already-selected swatch stays.
+            index = self._index_at(event.position().x(), event.position().y())
+            if index is not None and index != self._selected:
+                self._select(index)
+                self.subpalette_clicked.emit(index // self._count)
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        """Drag to scrub the selection: while the left button is held the color
+        under (or nearest) the pointer becomes selected, edges included — the
+        same move a press or an arrow key makes.
+
+        The eyedropper is left to discrete clicks: a drag over the grid must not
+        spray the editor with every color it crosses.
+        """
+        held = bool(event.buttons() & Qt.MouseButton.LeftButton)
+        if self._eyedropper or not held:
+            super().mouseMoveEvent(event)
+            return
+        index = self._index_near(event.position().x(), event.position().y())
+        if index is not None and index != self._selected:
+            self._select(index)
+            self.subpalette_clicked.emit(index // self._count)
+        event.accept()
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         """Double-click opens the color editor on that entry (the Tile
@@ -142,12 +212,46 @@ class PalettePanel(QWidget):
                 return
         super().mouseDoubleClickEvent(event)
 
+    def event(self, event) -> bool:  # noqa: ANN001 — Qt override
+        # A shortcut island while focused: the canvas editing shortcuts
+        # (Cut/Copy/Paste/Select All/Delete) yield here rather than acting on the
+        # canvas selection behind the dock. Copy/Paste act on the selected color
+        # (see :meth:`keyPressEvent`); the rest have no meaning here and simply do
+        # nothing. Its other keys are the arrow-step selection below.
+        if take_editing_shortcut(event):
+            return True
+        return super().event(event)
+
     def keyPressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        """Arrows move the color selection through the grid — Left/Right by
-        one entry (crossing display rows), Up/Down by one display row — and the
-        active subpalette *follows the selection* (the same signal a swatch
-        click emits), rather than the selection riding a subpalette step. All
-        movement clamps to the loaded colors."""
+        """Copy/paste the selected color, and arrows move the color selection
+        through the grid — Left/Right by one entry (crossing display rows),
+        Up/Down by one display row — with the active subpalette *following the
+        selection* (the same signal a swatch click emits), rather than the
+        selection riding a subpalette step. All movement clamps to the loaded
+        colors."""
+        # Copy/Paste reach here as key presses because ``event()`` claimed their
+        # shortcut override; the window does the actual clipboard + write-back.
+        # Ctrl+Shift+C/V (whole subpalette) aren't standard sequences, so they're
+        # matched by hand; check them first, as they subsume the plain ones.
+        ctrl_shift = (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        )
+        if event.modifiers() == ctrl_shift and event.key() == Qt.Key.Key_C:
+            self.copy_subpalette_requested.emit()
+            event.accept()
+            return
+        if event.modifiers() == ctrl_shift and event.key() == Qt.Key.Key_V:
+            self.paste_subpalette_requested.emit()
+            event.accept()
+            return
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self.copy_requested.emit()
+            event.accept()
+            return
+        if event.matches(QKeySequence.StandardKey.Paste):
+            self.paste_requested.emit()
+            event.accept()
+            return
         if not self._colors:
             super().keyPressEvent(event)
             return
@@ -176,14 +280,16 @@ class PalettePanel(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: ARG002 — Qt supplies the event
         painter = QPainter(self)
-        # Hairline cell edge so equal neighbours read as cells; one pen for all.
-        painter.setPen(QColor(0, 0, 0, 60))
+        # No grid lines: the swatches are pure squares of color, contiguously
+        # connected, with only the active-range and selection outlines drawn over
+        # them. Aliased fillRect keeps every edge hard at any display scale (it
+        # rounds to whole device pixels), and adjacent cells share a logical
+        # boundary so they tile with no gap or overlap.
         for i, color in enumerate(self._colors):
             rect = QRect(
                 (i % COLUMNS) * SWATCH, (i // COLUMNS) * SWATCH, SWATCH, SWATCH
             )
             painter.fillRect(rect, QColor.fromRgba(color & 0xFFFFFFFF))
-            painter.drawRect(rect.adjusted(0, 0, -1, -1))
         self._paint_active_range(painter)
         self._paint_selection(painter)
         painter.end()

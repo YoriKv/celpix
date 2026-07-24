@@ -90,7 +90,13 @@ class EntriesMixin:
                 f"version {projectfile.PROJECT_VERSION}, dropping the rest.",
                 title="Celpix - project",
             )
+        # Seed the pixel-format filter before the replace: showing the restored
+        # current entry rebuilds the dropdown, which must already read the
+        # project's filter. A rebuild also happens explicitly below for a project
+        # with no shown entry.
+        self._workspace.hidden_pixel_presets = set(loaded.hidden_pixel_presets)
         self._workspace.replace(loaded.entries, loaded.current)
+        self._fill_pixel_combo(self._pixel_preset_id())
         # The one entry-lifecycle change that bypasses the undo stack: older
         # commands would reference entries the replace discarded, so the
         # history goes with them.
@@ -257,11 +263,24 @@ class EntriesMixin:
             return not self._project_is_dirty()
         return True
 
-    def _resolve_dirty_entries(self, consequence: str) -> bool:
-        """Dirty-entries gate for project save/load; True when OK to proceed.
+    def _resolve_dirty_entries(
+        self,
+        consequence: str,
+        *,
+        write_label: str = "Write All",
+        skip_label: str = "Continue Without",
+        default_write: bool = False,
+    ) -> bool:
+        """Unsaved-file-changes gate; True when OK to proceed.
 
-        A project can't represent unsaved in-memory edits, so the user either
-        writes them to disk first or knowingly continues without them.
+        The one prompt for "there are unsaved edits in memory": write them to
+        disk first (Accept), go ahead without doing so (Destructive), or cancel
+        the whole action. The middle option's meaning - and so its label - is the
+        caller's: project save/load *keeps* the edits in memory for later
+        ("Continue Without"), while quitting drops them for good ("Discard"), so
+        that path also defaults to writing, the least-lossy choice when Enter is
+        hit blind. A project can't represent unsaved bytes either way, which is
+        why saving/loading one has to resolve them first.
         """
         dirty = self._workspace.dirty_entries()
         if not dirty:
@@ -270,9 +289,11 @@ class EntriesMixin:
         box = QMessageBox(self)
         box.setWindowTitle("Celpix - unsaved changes")
         box.setText(f"{consequence} ({names}). Write them to disk first?")
-        write = box.addButton("Write All", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Continue Without", QMessageBox.ButtonRole.DestructiveRole)
+        write = box.addButton(write_label, QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(skip_label, QMessageBox.ButtonRole.DestructiveRole)
         cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        if default_write:
+            box.setDefaultButton(write)
         box.exec()
         if box.clickedButton() is cancel:
             return False
@@ -317,7 +338,14 @@ class EntriesMixin:
         """The files dock's context-menu Write - guards, then writes."""
         if entry.doc is None:
             return
-        if not entry.doc.pixel_config.write_enabled:
+        # A PALETTE entry writes its own .pal (its pixel half is inert); every
+        # other entry writes its graphic, which is view-only without a compressor.
+        writable = (
+            entry.doc.palette_config.write_enabled
+            if entry.kind is EntryKind.PALETTE
+            else entry.doc.pixel_config.write_enabled
+        )
+        if not writable:
             self._alert(
                 f"{entry.name} is view-only (its compression has no compressor), "
                 "so it can't be written back.",

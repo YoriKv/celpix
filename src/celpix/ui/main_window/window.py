@@ -62,6 +62,7 @@ from celpix.project.workspace import (
     Workspace,
     backfill_slice_length,
     data_missing,
+    palette_source_for,
 )
 from celpix.ui import render_bridge
 from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas, GridStyle
@@ -75,14 +76,22 @@ from celpix.ui.main_window.entries import EntriesMixin
 from celpix.ui.main_window.interpretation import InterpretationMixin
 from celpix.ui.main_window.navigation import NavigationMixin
 from celpix.ui.main_window.palette_dock import PaletteDockMixin
-from celpix.ui.main_window.palette_source import PaletteSourceMixin
+from celpix.ui.main_window.palette_source import (
+    _DEFAULT_SESSION_PALETTE_FORMAT,
+    PaletteSourceMixin,
+)
+from celpix.ui.main_window.pixel_edit import PixelEditMixin
 from celpix.ui.main_window.selection import (
     SelectionMixin,
 )
 from celpix.ui.main_window.transfer import TransferMixin
+from celpix.ui.main_window.transform import TransformMixin
+from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
     AddEntryCommand,
+    PaletteUserLink,
     RemoveEntriesCommand,
+    RemovePaletteWithUsersCommand,
     RenameEntryCommand,
 )
 from celpix.ui.widgets import (
@@ -108,6 +117,8 @@ class MainWindow(
     PaletteDockMixin,
     ColorEditingMixin,
     SelectionMixin,
+    TransformMixin,
+    PixelEditMixin,
     EntriesMixin,
     TransferMixin,
     CompressionMixin,
@@ -168,6 +179,13 @@ class MainWindow(
         # is_exportable - are what the window branches on, rather than
         # re-listing which modes mean what at each site.
         self._palette_mode = PaletteMode.DEFAULT
+        # The session's default palette color format, inherited by a Custom
+        # palette forked off the generated default (which has no format of its
+        # own). Starts RGB888 and follows the last format actually chosen - an
+        # import/re-decode, the format dropdown, or a future ROM file hint - via
+        # _set_session_palette_format. Global and session-lifetime: it survives
+        # entry switches and is not part of any entry's saved session.
+        self._session_palette_format = _DEFAULT_SESSION_PALETTE_FORMAT
         # The shared color editor, while open (None otherwise). One non-modal
         # dialog is reused and retargeted as the palette selection moves, so the
         # eyedropper can reach the canvas and the swatch grid underneath it.
@@ -215,10 +233,15 @@ class MainWindow(
         self._scanning = False
         self._scan_stop = False
 
+        # Pixel-edit state (mode, tool, pen, stroke/float scratch) must exist
+        # before the transform toolbar builds its mode toggle off _edit_mode.
+        self._init_pixel_edit()
+
         self._canvas = Canvas()
         self._overlay = DecompressOverlay(self)
         self._canvas.tiles_selected.connect(self._on_tiles_selected)
         self._canvas.color_picked.connect(self._on_color_picked)
+        self._connect_pixel_canvas()
         # Right-click the canvas for the clipboard actions (the canvas selects
         # the tile under the cursor first, unless it is already in the run).
         self._canvas.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -251,11 +274,21 @@ class MainWindow(
         self._offset_bar.setStyleSheet(self._offset_bar_style())
         self._offset_bar.valueChanged.connect(self._set_offset)
 
+        # The transform toolbar sits directly on top of the canvas (not docked at
+        # the window top like the interpretation bars), so it reads as part of the
+        # editing surface. It spans the canvas column, right of the offset rail.
+        self._transform_toolbar = self._build_transform_toolbar()
+        canvas_column = QVBoxLayout()
+        canvas_column.setContentsMargins(0, 0, 0, 0)
+        canvas_column.setSpacing(0)
+        canvas_column.addWidget(self._transform_toolbar)
+        canvas_column.addWidget(scroll, 1)
+
         view_row = QHBoxLayout()
         view_row.setContentsMargins(0, 0, 0, 0)
         view_row.setSpacing(0)
         view_row.addWidget(self._offset_bar)
-        view_row.addWidget(scroll, 1)
+        view_row.addLayout(canvas_column, 1)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -267,6 +300,7 @@ class MainWindow(
 
         self._build_files_dock()  # before _build_menus: the toggles go in menus
         self._build_palette_dock()
+        self._build_tools_dock()  # after palette dock: it stacks below it
         self._build_hex_dock()
         self._build_clipboard_actions()  # before _build_menus: shared with it
         self._build_menus()
@@ -626,8 +660,10 @@ class MainWindow(
         self._doc = entry.doc
         # Undo any disabling from a previously shown missing entry.
         self._set_document_ui_enabled(True)
+        # The pixel combo goes through the filter, which force-shows the restored
+        # format even when hidden (you can't hide the format in force).
+        self._fill_pixel_combo(session.pixel_preset_id)
         for combo, data in (
-            (self._pixel_preset, session.pixel_preset_id),
             (self._palette_preset, session.palette_preset_id),
             (self._compression, session.compression_id),
             (self._block_order, view.block_order),
@@ -722,9 +758,16 @@ class MainWindow(
         arrangement and view toolbars and the palette dock are disabled until a
         real document is shown again.
         """
-        for bar in (self._codecs_toolbar, self._arrange_toolbar, self._view_toolbar):
+        for bar in (
+            self._codecs_toolbar,
+            self._arrange_toolbar,
+            self._view_toolbar,
+            self._transform_toolbar,
+        ):
             bar.setEnabled(enabled)
         self._palette_dock.setEnabled(enabled)
+        # The tools dock is only live in pixel mode with a document to paint on.
+        self._tools_dock.setEnabled(enabled and self._edit_mode is EditMode.PIXEL)
 
     def _show_empty(self) -> None:
         """Nothing open: clear the canvas, disable everything document-bound."""
@@ -755,6 +798,15 @@ class MainWindow(
         """Remove ``entry`` from the list (a file takes its slices and
         bookmarks with it), always confirming first - Remove is also on the
         Delete key, and a slip there costs the entry's whole session setup."""
+        if entry.kind is EntryKind.PALETTE:
+            # The current graphic's palette mode is only written to its session on
+            # a switch, so snapshot it first - otherwise a palette in use *right
+            # now* looks unused and would be dropped without re-homing it.
+            self._capture_session()
+            users = self._workspace.palette_users(entry)
+            if users:
+                self._remove_used_palette(entry, users)
+                return
         victims = [entry, *self._workspace.children_of(entry)]
         dirty = [e.name for e in victims if e.pixel_dirty or e.palette_dirty]
         message = f"Remove {entry.name}?"
@@ -786,6 +838,73 @@ class MainWindow(
             )
         )
 
+    def _remove_used_palette(self, palette: Entry, users: list[Entry]) -> None:
+        """Confirm, then remove a file palette that graphics use - re-homing each
+        graphic onto a Custom copy so none is left rendering a palette that's gone.
+
+        The user is told exactly where it is used before the colors are frozen into
+        each graphic's own Custom palette. Undoable as one step.
+        """
+        names = ", ".join(u.name for u in users)
+        answer = QMessageBox.question(
+            self,
+            "Celpix - remove palette",
+            f"Remove {palette.name}? It is used by {len(users)} "
+            f"graphic(s): {names}.\n\nEach keeps these colors as its own custom "
+            "palette, stored in the project.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        index = self._workspace.entries.index(palette)
+        links = []
+        for user in users:
+            src = palette_source_for(user)
+            links.append(
+                PaletteUserLink(
+                    entry=user,
+                    path=src.path if src and src.path else palette.path,
+                    offset=src.offset if src else 0,
+                    preset_id=(
+                        user.session.palette_preset_id
+                        if user.session is not None
+                        else self._palette_preset_id()
+                    ),
+                    loaded=user.doc is not None,
+                )
+            )
+        self._push_command(
+            RemovePaletteWithUsersCommand(self, palette, index=index, users=links)
+        )
+
+    def _apply_remove_palette_to_custom(
+        self, palette: Entry, users: list[PaletteUserLink]
+    ) -> None:
+        """Freeze the palette's colors into each user as a Custom copy, then drop
+        the palette from the list - :class:`RemovePaletteWithUsersCommand`'s redo."""
+        colors = self._file_palette_colors(palette)
+        preset = palette.palette_preset_id or self._palette_preset_id()
+        for link in users:
+            self._convert_user_to_custom(link.entry, colors, preset)
+        self._workspace.close(palette)
+        self._resync_current_palette()
+
+    def _apply_restore_palette_users(
+        self, palette: Entry, index: int, users: list[PaletteUserLink]
+    ) -> None:
+        """Re-register the palette and relink every user - the command's undo."""
+        self._workspace.insert(palette, index)
+        for link in users:
+            self._relink_user_to_file_palette(link)
+        self._resync_current_palette()
+
+    def _resync_current_palette(self) -> None:
+        """Re-apply the current entry's (possibly changed) palette to the dock and
+        canvas after a re-home, so the on-screen mode/label follow the entry."""
+        current = self._workspace.current
+        if current is not None and current.doc is not None:
+            self._restore_session(current)
+        self._refresh_view()
+
     def closeEvent(self, event) -> None:  # noqa: ANN001 - Qt override
         """Quit, having asked about both kinds of unsaved work.
 
@@ -796,17 +915,17 @@ class MainWindow(
         if not self._confirm_discard_project("Quitting"):
             event.ignore()
             return
-        dirty = self._workspace.dirty_entries()
-        if dirty:
-            names = ", ".join(e.name for e in dirty)
-            answer = QMessageBox.question(
-                self,
-                "Celpix - unsaved changes",
-                f"Discard unsaved changes to {names}?",
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
+        # The files gate, via the shared unsaved-changes prompt: on quit the
+        # edits are lost for good, so its middle option is "Discard" (not the
+        # project paths' "Continue Without"), and Enter defaults to writing.
+        if not self._resolve_dirty_entries(
+            "Quitting discards unsaved changes to",
+            write_label="Write Changes",
+            skip_label="Discard",
+            default_write=True,
+        ):
+            event.ignore()
+            return
         super().closeEvent(event)
 
     def _build_hex_dock(self) -> None:
@@ -826,7 +945,6 @@ class MainWindow(
         file_menu = self.menuBar().addMenu("File")
 
         open_pixel = QAction("Open pixel data…", self)
-        open_pixel.setShortcut(QKeySequence.StandardKey.Open)
         open_pixel.triggered.connect(self._open_pixel)
         file_menu.addAction(open_pixel)
 
@@ -842,6 +960,7 @@ class MainWindow(
 
         open_project = QAction("Open Project…", self)
         open_project.setToolTip("Resume a saved session from a .celpix project file")
+        open_project.setShortcut(QKeySequence.StandardKey.Open)  # Ctrl+O
         open_project.triggered.connect(self._open_project)
         file_menu.addAction(open_project)
 
@@ -850,10 +969,12 @@ class MainWindow(
             "Save the open files/slices and their settings (references, "
             "never the edited bytes) to a .celpix project file"
         )
+        save_project.setShortcut(QKeySequence.StandardKey.Save)  # Ctrl+S
         save_project.triggered.connect(self._save_project)
         file_menu.addAction(save_project)
 
         save_project_as = QAction("Save Project As…", self)
+        save_project_as.setShortcut(QKeySequence.StandardKey.SaveAs)  # Ctrl+Shift+S
         save_project_as.triggered.connect(self._save_project_as)
         file_menu.addAction(save_project_as)
 
@@ -916,7 +1037,7 @@ class MainWindow(
         self._write_action.setToolTip(
             "Write the current file or slice's bytes back to disk"
         )
-        self._write_action.setShortcut(QKeySequence.StandardKey.Save)
+        self._write_action.setShortcut(QKeySequence("Ctrl+W"))
         self._write_action.triggered.connect(self._write_current)
         self._write_action.setEnabled(False)
         file_menu.addAction(self._write_action)
@@ -925,7 +1046,7 @@ class MainWindow(
         self._write_all_action.setToolTip(
             "Write every open file and slice with unsaved changes"
         )
-        self._write_all_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self._write_all_action.setShortcut(QKeySequence("Ctrl+Shift+W"))
         self._write_all_action.triggered.connect(self._write_all)
         self._write_all_action.setEnabled(False)  # armed by dirty entries
         file_menu.addAction(self._write_all_action)
@@ -987,7 +1108,7 @@ class MainWindow(
         self._build_grid_style_menu(menu)
 
     def _build_grid_style_menu(self, view_menu) -> None:  # noqa: ANN001 - QMenu
-        """View ▸ Grid Style ▸ the YY-CHR style set (None/Point/Dot/Dash/Line).
+        """View ▸ Grid Style ▸ the YY-CHR style set (Point/Dot/Dash/Line).
 
         Unlike the Grid toggle (per-view session state), the style is one
         app-wide appearance choice persisted in QSettings - remembered across
@@ -1000,7 +1121,6 @@ class MainWindow(
         group = QActionGroup(self)  # exclusive: one style checked at a time
         self._grid_style_group = group
         labels = (
-            (GridStyle.NONE, "None"),
             (GridStyle.POINT, "Point"),
             (GridStyle.DOT, "Dot"),
             (GridStyle.DASH, "Dash"),
@@ -1028,6 +1148,9 @@ class MainWindow(
         palette_toggle = self._palette_dock.toggleViewAction()
         palette_toggle.setText("Palette Panel")
         menu.addAction(palette_toggle)
+        tools_toggle = self._tools_dock.toggleViewAction()
+        tools_toggle.setText("Tools Panel")
+        menu.addAction(tools_toggle)
         hex_toggle = self._hex_dock.toggleViewAction()
         hex_toggle.setText("Hex Panel")
         menu.addAction(hex_toggle)

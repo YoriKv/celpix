@@ -16,11 +16,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PySide6.QtGui import QKeySequence
+from PySide6.QtWidgets import QMenu
+
+from celpix.core.document import Document
 from celpix.core.errors import PipelineError
 from celpix.pipeline import pipeline
 from celpix.project.workspace import (
+    Entry,
+    EntryKind,
     PaletteMode,
 )
+from celpix.ui import clipboard
 from celpix.ui.color_editor import ColorEditorDialog
 from celpix.ui.undo_commands import (
     ColorEditCommand,
@@ -147,45 +154,61 @@ class ColorEditingMixin:
         return lambda argb: pipeline.quantize_color(argb, preset_id, registry)
 
     def _on_color_changed(self, argb: int) -> None:
-        """The editor moved a color - fork if needed, then push the edit."""
-        entry = self._workspace.current
-        if self._doc is None or entry is None or self._applying_undo:
+        """The editor moved a color - fork if needed, then push the edit.
+
+        The edit targets whatever *owns* the on-screen palette: the linked PALETTE
+        entry (and its document) in File mode, or the current graphic in every
+        other mode. So editing a file palette dirties the palette entry, not the
+        graphic that happens to render it.
+        """
+        if self._doc is None or self._workspace.current is None or self._applying_undo:
             return
         index = self._palette_panel.selected_index()
-        if index is None or index >= len(self._doc.palette):
+        if index is None:
             return
         # Default and Emulator palettes can't hold an edit; forking to Custom
         # first is what makes the edit land somewhere (and is its own undo step).
         if self._palette_mode in (PaletteMode.DEFAULT, PaletteMode.EMULATOR):
             self._fork_custom_palette()
-        before = self._doc.palette.color(index)
+        owner = self._palette_owner_entry()
+        doc = self._palette_doc()
+        if owner is None or doc is None or index >= len(doc.palette):
+            return
+        before = doc.palette.color(index)
         if before == argb:
             return
         self._push_command(
-            ColorEditCommand(self, entry, index, before=before, after=argb)
+            ColorEditCommand(self, owner, doc, index, before=before, after=argb)
         )
 
-    def _apply_color_edit(self, index: int, argb: int, revision: int) -> None:
-        """Land one color on the document - :class:`ColorEditCommand`'s apply.
+    def _apply_color_edit(
+        self, owner: Entry, doc: Document, index: int, argb: int, revision: int
+    ) -> None:
+        """Land one color on ``doc`` - :class:`ColorEditCommand`'s apply.
 
-        Never mutates in place: undo snapshots hold the palette by reference, so
-        the edit swaps in a new one (:meth:`Palette.with_color`).
+        ``doc`` is the palette's *owning* document (a PALETTE entry's in File mode,
+        else the graphic's own). Never mutates in place: undo snapshots hold the
+        palette by reference, so the edit swaps in a new one
+        (:meth:`Palette.with_color`).
         """
-        if self._doc is None:
-            return
-        self._doc.palette = self._doc.palette.with_color(index, argb)
+        doc.palette = doc.palette.with_color(index, argb)
         # Mark the entry so Write splices just this one back, leaving every
         # other entry's bytes exactly as they were read (a color codec doesn't
         # round-trip bytes - see Document.palette_bytes). The mark survives an
         # undo: re-encoding an unchanged color is harmless, and the entry is
         # clean again anyway once its revision walks back to the saved one.
-        self._doc.palette_edits.add(index)
-        entry = self._workspace.current
-        # A file-backed palette now differs from its bytes on disk - stamped on
-        # the *palette* pathway, so Write doesn't also rewrite the graphic. A
-        # custom palette is saved with the project, so it dirties nothing.
-        if entry is not None and self._doc.palette_config.write_enabled:
-            self._workspace.set_palette_revision(entry, revision)
+        doc.palette_edits.add(index)
+        # A file/offset palette now differs from its bytes on disk - dirt on the
+        # *palette* pathway of its owner (the PALETTE entry for a file palette, the
+        # graphic itself for an offset one), so a graphic Write never rewrites the
+        # picture for a color edit. A custom palette is saved with the project, so
+        # write_enabled is off and it dirties nothing.
+        if doc.palette_config.write_enabled:
+            self._workspace.set_palette_revision(owner, revision)
+        # A file palette is shown by every graphic that references it: push the new
+        # colors onto all of them so one edit updates them together.
+        if owner.kind is EntryKind.PALETTE:
+            self._mirror_palette(owner)
         self._refresh_view()  # also re-syncs the open editor
 
     def _set_pick_mode(self, on: bool) -> None:
@@ -211,3 +234,158 @@ class ColorEditingMixin:
     def _on_color_editor_closed(self) -> None:
         self._color_editor = None
         self._set_pick_mode(False)
+
+    # -- clipboard --------------------------------------------------------
+    def _active_subpalette(self) -> tuple[int, int]:
+        """``(start, count)`` of the subpalette the view is indexing right now.
+
+        The window into the palette a tile's indices actually reference — the
+        subpalette row times the format's index space — the unit Copy/Paste
+        Subpalette work on.
+        """
+        count = self._index_space()
+        return self._subpalette.value() * count, count
+
+    def _copy_palette_color(self) -> None:
+        """Copy the selected swatch's color to the system clipboard.
+
+        Goes out both as a lossless Celpix payload and as ``#RRGGBB``/
+        ``#AARRGGBB`` text, so it pastes back verbatim here and into any other
+        program that reads hex.
+        """
+        index = self._palette_panel.selected_index()
+        if self._doc is None or index is None:
+            return
+        color = self._doc.palette.color(index)
+        clipboard.put_colors([color])
+        self.statusBar().showMessage(f"Copied color {clipboard.color_text(color)}.")
+
+    def _copy_subpalette(self) -> None:
+        """Copy the whole active subpalette's colors to the clipboard."""
+        if self._doc is None:
+            return
+        start, count = self._active_subpalette()
+        palette = self._doc.palette
+        n = max(0, min(count, len(palette) - start))
+        if n == 0:
+            self.statusBar().showMessage("No subpalette colors to copy.")
+            return
+        clipboard.put_colors([palette.color(start + k) for k in range(n)])
+        self.statusBar().showMessage(f"Copied subpalette ({n} colors).")
+
+    def _paste_palette_color(self) -> None:
+        """Write the clipboard's color onto the selected swatch, as one undo step.
+
+        A run of clipboard colors pastes only its first here: the grid selects
+        one entry at a time (Paste Subpalette fills a range).
+        """
+        if self._doc is None or self._workspace.current is None or self._applying_undo:
+            return
+        index = self._palette_panel.selected_index()
+        if index is None:
+            self.statusBar().showMessage("Select a swatch to paste a color onto.")
+            return
+        colors = clipboard.take_colors()
+        if not colors:
+            self.statusBar().showMessage("No color on the clipboard to paste.")
+            return
+        if self._paste_colors_at(index, colors, 1, "color"):
+            self.statusBar().showMessage(
+                f"Pasted color {clipboard.color_text(colors[0])}."
+            )
+        else:
+            self.statusBar().showMessage("Clipboard color matches the selection.")
+
+    def _paste_subpalette(self) -> None:
+        """Fill the active subpalette with the clipboard's colors, as one undo step."""
+        if self._doc is None or self._workspace.current is None or self._applying_undo:
+            return
+        colors = clipboard.take_colors()
+        if not colors:
+            self.statusBar().showMessage("No colors on the clipboard to paste.")
+            return
+        start, count = self._active_subpalette()
+        if self._paste_colors_at(start, colors, count, "subpalette"):
+            self.statusBar().showMessage("Pasted colors into the subpalette.")
+        else:
+            self.statusBar().showMessage("Clipboard colors match the subpalette.")
+
+    def _paste_colors_at(
+        self, start: int, colors: list[int], limit: int, label: str
+    ) -> bool:
+        """Write ``colors`` onto entries ``[start, start+limit)``; True if any changed.
+
+        Clamped to both the clipboard run and the palette's end, and only the
+        entries that actually differ are written, so an identical paste is a no-op.
+        The edits take the same write-back as an editor edit — forking a read-only
+        source to a Custom palette first — and, when more than one lands, are
+        grouped in a macro so the whole paste undoes in a single step.
+        """
+        assert self._doc is not None
+        palette = self._doc.palette
+        span = max(0, min(len(colors), limit, len(palette) - start))
+        changed = [
+            (start + k, colors[k])
+            for k in range(span)
+            if palette.color(start + k) != colors[k]
+        ]
+        if not changed:
+            return False
+        grouped = len(changed) > 1
+        if grouped:
+            self._undo_stack.beginMacro(f"paste {label}")
+        # Default/Emulator palettes can't hold an edit; forking to Custom first is
+        # what makes it land (inside the macro, so undo peels it with the edits).
+        if self._palette_mode in (PaletteMode.DEFAULT, PaletteMode.EMULATOR):
+            self._fork_custom_palette()
+        owner = self._palette_owner_entry()
+        doc = self._palette_doc()
+        if owner is not None and doc is not None:
+            for index, argb in changed:
+                before = doc.palette.color(index)
+                if before != argb:
+                    self._push_command(
+                        ColorEditCommand(
+                            self, owner, doc, index, before=before, after=argb
+                        )
+                    )
+        if grouped:
+            self._undo_stack.endMacro()
+        return True
+
+    def _show_palette_menu(self, pos) -> None:  # noqa: ANN001 — Qt supplies a QPoint
+        """The palette grid's right-click menu: copy/paste a color or the subpalette.
+
+        Built on demand (like the canvas menu) so Paste reflects the live
+        clipboard. The shortcuts shown mirror what the grid handles itself.
+        """
+        if self._doc is None:
+            return
+        has_selection = self._palette_panel.selected_index() is not None
+        can_paste = clipboard.has_colors()
+        menu = QMenu(self)
+        for label, slot, shortcut, enabled in (
+            (
+                "Copy Color",
+                self._copy_palette_color,
+                QKeySequence.StandardKey.Copy,
+                has_selection,
+            ),
+            (
+                "Paste Color",
+                self._paste_palette_color,
+                QKeySequence.StandardKey.Paste,
+                has_selection and can_paste,
+            ),
+            (None, None, None, None),  # separator
+            ("Copy Subpalette", self._copy_subpalette, "Ctrl+Shift+C", True),
+            ("Paste Subpalette", self._paste_subpalette, "Ctrl+Shift+V", can_paste),
+        ):
+            if label is None:
+                menu.addSeparator()
+                continue
+            action = menu.addAction(label)
+            action.setShortcut(shortcut)
+            action.setEnabled(enabled)
+            action.triggered.connect(slot)
+        menu.exec(self._palette_panel.mapToGlobal(pos))

@@ -16,6 +16,7 @@ persists (``docs/design/palette-editing.md``).
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -26,6 +27,7 @@ from celpix.core import emustate
 from celpix.core.context import (
     PipelineContext,
 )
+from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.palette import FULL_PALETTE_COUNT, Palette
 from celpix.pipeline import pipeline
@@ -43,10 +45,18 @@ from celpix.ui.undo_commands import (
     AddEntryCommand,
     PaletteCommand,
     PaletteState,
+    PaletteUserLink,
 )
 from celpix.ui.widgets import (
     select_combo_data,
 )
+
+# The session's palette format before any real one has been chosen. RGB888 is
+# the plainest, most widely understood encoding, and the right neutral basis for
+# a Custom palette forked off the generated default - free ARGB colors with no
+# console format behind them. The session default follows the last format
+# actually selected from there (:meth:`PaletteSourceMixin._set_session_palette_format`).
+_DEFAULT_SESSION_PALETTE_FORMAT = "preset.palette.rgb888"
 
 
 class PaletteSourceMixin:
@@ -57,6 +67,149 @@ class PaletteSourceMixin:
     single live ``_doc``. See the module docstring for what it owns, and the
     package docstring for why these are mixins.
     """
+
+    # -- File-palette ownership --------------------------------------------
+    # A File-mode palette is owned by its PALETTE entry, not by the graphic that
+    # renders it: the entry holds the live colors, and a color edit dirties *it*
+    # and writes back to the .pal. Graphics show the palette **by reference** — a
+    # mirror kept on each graphic's own ``doc.palette`` (write-disabled, so a
+    # graphic Write never touches the palette). See docs/design/palette-editing.md.
+    def _linked_palette_entry(self) -> Entry | None:
+        """The registered PALETTE entry backing the current File-mode palette."""
+        if self._doc is None or self._palette_mode is not PaletteMode.FILE:
+            return None
+        path = self._doc.palette_config.source.path
+        return self._workspace.find_palette(path) if path else None
+
+    def _palette_doc(self) -> Document | None:
+        """The document that *owns* the palette on screen.
+
+        The linked PALETTE entry's document in File mode — so an edit, a format
+        re-decode, or a save acts on the palette rather than the graphic — and the
+        current graphic's own document in every other mode (offset lives in the
+        graphic's bytes; custom/default in the graphic/project).
+        """
+        entry = self._linked_palette_entry()
+        if entry is not None and entry.doc is not None:
+            return entry.doc
+        return self._doc
+
+    def _palette_owner_entry(self) -> Entry | None:
+        """Whose dirt a palette edit belongs to: the PALETTE entry in File mode,
+        else the current graphics entry (offset writes the graphic's own bytes)."""
+        entry = self._linked_palette_entry()
+        return entry if entry is not None else self._workspace.current
+
+    def _mirror_palette(self, palette_entry: Entry) -> None:
+        """Copy a PALETTE entry's live colors onto every graphic that renders it.
+
+        The palette entry owns the colors; each graphic shows them through its own
+        ``doc.palette`` so the codec/rendering path is unchanged. One color edit
+        therefore updates every open graphic using the file at once. The mirrored
+        config is write-disabled: a graphic never writes the palette back (that is
+        the palette entry's Write).
+        """
+        src = palette_entry.doc
+        if src is None:
+            return
+        mirror_cfg = replace(src.palette_config, write_enabled=False)
+        for entry in self._workspace.palette_render_targets(palette_entry.path):
+            entry.doc.palette = src.palette
+            entry.doc.palette_ctx = src.palette_ctx
+            entry.doc.palette_config = mirror_cfg
+
+    def _link_file_palette(
+        self, graphics: Entry, path: str, offset: int, preset_id: str
+    ) -> bool:
+        """Point ``graphics`` at the PALETTE entry for ``path``, loading it once.
+
+        Registers the palette entry if the project never had one (a hand-authored
+        or older file), builds its live document on first use, then mirrors the
+        colors onto ``graphics``. Raising on a bad load is deliberate: the caller
+        (:meth:`_restore_palette_source`) degrades to the default palette.
+        """
+        assert graphics.doc is not None
+        entry = self._workspace.find_palette(path)
+        if entry is None:
+            entry = self._workspace.add_palette(path, preset_id)
+        if entry.doc is None:
+            cfg = self._file_palette_config(
+                path, offset, entry.palette_preset_id or preset_id
+            )
+            loaded = pipeline.load_palette(cfg, self._registry)
+            entry.doc = Document.palette_only(
+                loaded.palette, cfg, loaded.ctx, loaded.data
+            )
+        graphics.doc.palette = entry.doc.palette
+        graphics.doc.palette_ctx = entry.doc.palette_ctx
+        graphics.doc.palette_config = replace(
+            entry.doc.palette_config, write_enabled=False
+        )
+        graphics.missing_palette = None
+        return True
+
+    @staticmethod
+    def _file_palette_config(path: str, offset: int, preset_id: str) -> PathwayConfig:
+        """The writable pathway a PALETTE entry reads and writes its ``.pal`` with.
+
+        Source and dest are the same file, so a color edit re-encodes into exactly
+        the bytes it was read from (the whole file for a plain ``.pal``).
+        """
+        return PathwayConfig(
+            source=FileRef(path, offset=offset),
+            dest=FileRef(path, offset=offset),
+            interpret_preset_id=preset_id,
+        )
+
+    def _file_palette_colors(self, palette: Entry) -> list[int]:
+        """The colors a removed file palette hands each graphic as a custom copy.
+
+        Its live (possibly edited) colors when the palette is loaded; otherwise the
+        file's own, read on demand; an empty list if even that fails, so a removal
+        never dead-ends on an unreadable file.
+        """
+        if palette.doc is not None:
+            return list(palette.doc.palette.colors)
+        preset = palette.palette_preset_id or self._palette_preset_id()
+        try:
+            loaded = pipeline.load_palette(
+                self._file_palette_config(palette.path, 0, preset), self._registry
+            )
+        except (PipelineError, OSError):
+            return []
+        return list(loaded.palette.colors)
+
+    def _convert_user_to_custom(
+        self, entry: Entry, colors: list[int], preset_id: str
+    ) -> None:
+        """Re-home a graphic onto a Custom palette of ``colors`` - what removing a
+        file palette leaves behind. This is a **project** change, not a graphic
+        edit: only the record of which palette the graphic uses changes, so its
+        pixel bytes and dirt are untouched (docs/design/palette-editing.md).
+        """
+        if entry.session is not None:
+            entry.session.palette_mode = PaletteMode.CUSTOM
+        entry.missing_palette = None
+        if entry.doc is not None:
+            entry.doc.palette = Palette(list(colors))
+            entry.doc.palette_config = self._placeholder_palette_config(preset_id)
+            entry.doc.palette_bytes = b""
+            entry.doc.palette_edits = set()
+            entry.pending_palette = None
+        else:
+            # Never loaded: seed the custom colors as the restore a first load reads.
+            entry.pending_palette = PaletteSource(colors=list(colors))
+
+    def _relink_user_to_file_palette(self, link: PaletteUserLink) -> None:
+        """Undo of :meth:`_convert_user_to_custom`: point the graphic back at the
+        (restored) file palette, re-mirroring its colors when it is loaded."""
+        entry = link.entry
+        if entry.session is not None:
+            entry.session.palette_mode = PaletteMode.FILE
+        if link.loaded and entry.doc is not None:
+            self._link_file_palette(entry, link.path, link.offset, link.preset_id)
+        else:
+            entry.pending_palette = PaletteSource(path=link.path, offset=link.offset)
 
     def _restore_palette_source(self, entry: Entry, source: PaletteSource) -> bool:
         """Load ``source`` onto ``entry``'s document palette; True on success.
@@ -81,6 +234,12 @@ class PaletteSourceMixin:
             doc.palette = self._fallback_palette()
             return False
         try:
+            if session.palette_mode is PaletteMode.FILE and source.path is not None:
+                # A file palette is owned by its PALETTE entry; register/load it
+                # and mirror onto this graphic rather than loading colours here.
+                return self._link_file_palette(
+                    entry, source.path, source.offset, session.palette_preset_id
+                )
             if session.palette_mode is PaletteMode.EMULATOR and source.path is not None:
                 # Re-detect the save state: the palette offset and the console's
                 # codec are derived from the file, not carried in the project.
@@ -140,9 +299,11 @@ class PaletteSourceMixin:
     _EXPORT_PRESET_ID = "preset.palette.rgb888"
 
     def _prompt_add_palette_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open palette data", "", self._PALETTE_FILTER
-        )
+        # No .pal filter: palette data is just bytes reinterpreted through the
+        # chosen color format, so any file can hold it - a ROM, a save state, a
+        # raw dump. Opens any file, like the panel's File source (_open_palette),
+        # rather than hiding everything that isn't already named .pal.
+        path, _ = QFileDialog.getOpenFileName(self, "Open palette data")
         if path:
             self._add_palette_file(path)
 
@@ -255,10 +416,9 @@ class PaletteSourceMixin:
                 title="Celpix - palette",
             )
             return
-        preset_id = entry.palette_preset_id or self._palette_preset_id()
-        self._load_and_commit_palette(
-            PathwayConfig(source=FileRef(entry.path), interpret_preset_id=preset_id),
-            mode=PaletteMode.FILE,
+        self._apply_file_palette(
+            entry.path,
+            preset_id=entry.palette_preset_id or self._palette_preset_id(),
             label=f"use palette {entry.name}",
             status=lambda n: f"Loaded {n} colors from {entry.name}",
         )
@@ -272,14 +432,66 @@ class PaletteSourceMixin:
         path, _ = QFileDialog.getOpenFileName(self, "Open palette")
         if not path:
             return False
-        return self._load_and_commit_palette(
-            PathwayConfig(
-                source=FileRef(path), interpret_preset_id=self._palette_preset_id()
-            ),
-            mode=PaletteMode.FILE,
+        return self._apply_file_palette(
+            path,
+            preset_id=self._palette_preset_id(),
             label=f"load palette from {Path(path).name}",
             status=lambda n: f"Loaded {n} colors from {path}",
         )
+
+    def _apply_file_palette(
+        self,
+        path: str,
+        *,
+        preset_id: str,
+        label: str,
+        status: Callable[[int], str],
+    ) -> bool:
+        """Register, load, and switch the graphic to the file palette at ``path``.
+
+        The single path behind both the mode dropdown's *File* pick and a Palettes
+        double-click. The file is registered in the Palettes list so it has a
+        stable home (a no-op if already there); its live document is the source of
+        truth, **reused** when it exists so unsaved edits survive a re-apply, and
+        loaded from disk under ``preset_id`` only on first use. Then the graphic is
+        switched to File mode pointing at it - one undoable palette change; a bad
+        load reports and returns ``False`` so the mode dropdown can revert.
+        """
+        if self._doc is None:
+            self.statusBar().showMessage("Open pixel data first.")
+            return False
+        self._add_palette_file(path, quiet=True)  # register if the list lacks it
+        entry = self._workspace.find_palette(path)
+        assert entry is not None
+        if entry.doc is not None:
+            # Already live (maybe with unsaved edits): reuse rather than re-reading
+            # the file, which would discard them. The entry owns the colors now.
+            doc = entry.doc
+            loaded = pipeline.PaletteData(
+                doc.palette, doc.palette_ctx, doc.palette_bytes
+            )
+            cfg = doc.palette_config
+            edits = frozenset(doc.palette_edits)
+        else:
+            cfg = self._file_palette_config(path, 0, preset_id)
+            try:
+                loaded = pipeline.load_palette(cfg, self._registry)
+            except PipelineError as exc:
+                self._report(exc)
+                return False
+            entry.doc = Document.palette_only(
+                loaded.palette, cfg, loaded.ctx, loaded.data
+            )
+            edits = frozenset()
+        self._commit_palette(
+            cfg,
+            loaded,
+            mode=PaletteMode.FILE,
+            label=label,
+            status=status(len(loaded.palette)),
+            edits=edits,
+        )
+        return True
 
     def _emulator_palette_config(
         self, path: str
@@ -365,33 +577,76 @@ class PaletteSourceMixin:
         the config still holds the outgoing format (the _on_pixel_preset_change
         trick), so undo can restore the combo correctly.
         """
-        assert self._doc is not None
+        doc = self._palette_doc()
+        assert doc is not None
         return PaletteState(
-            preset_id=self._doc.palette_config.interpret_preset_id,
+            preset_id=doc.palette_config.interpret_preset_id,
             mode=self._palette_mode,
-            palette=self._doc.palette,
-            config=self._doc.palette_config,
-            ctx=self._doc.palette_ctx,
-            data=self._doc.palette_bytes,
-            edits=frozenset(self._doc.palette_edits),
+            palette=doc.palette,
+            config=doc.palette_config,
+            ctx=doc.palette_ctx,
+            data=doc.palette_bytes,
+            edits=frozenset(doc.palette_edits),
         )
 
     def _apply_palette_state(self, state: PaletteState) -> None:
         """Land a :class:`PaletteState` on the document and its widgets - the
         one application path for palette commands and plugin refreshes; never
-        pushes, and stays silent (status messages belong to the gestures)."""
+        pushes, and stays silent (status messages belong to the gestures).
+
+        In File mode the palette lives on its PALETTE entry and the graphic only
+        mirrors it (:meth:`_apply_file_palette_state`); every other mode lands the
+        colors straight on the current graphic's document.
+        """
         assert self._doc is not None
         select_combo_data(self._palette_preset, state.preset_id)
-        self._doc.palette = state.palette
-        self._doc.palette_config = state.config
-        self._doc.palette_ctx = state.ctx
-        # The splice base travels with the colors: a fresh load resets it (no
-        # entry is edited yet), and an undo restores whatever it was before.
-        self._doc.palette_bytes = state.data
-        self._doc.palette_edits = set(state.edits)
+        if state.mode is PaletteMode.FILE:
+            self._apply_file_palette_state(state)
+        else:
+            self._doc.palette = state.palette
+            self._doc.palette_config = state.config
+            self._doc.palette_ctx = state.ctx
+            # The splice base travels with the colors: a fresh load resets it (no
+            # entry is edited yet), and an undo restores whatever it was before.
+            self._doc.palette_bytes = state.data
+            self._doc.palette_edits = set(state.edits)
         self._set_palette_mode(state.mode)  # already signal-safe
         self._sync_palette_entry_format(state)
         self._refresh_view()
+
+    def _apply_file_palette_state(self, state: PaletteState) -> None:
+        """Land a File-mode state: the PALETTE entry owns it, the graphic mirrors.
+
+        The palette entry's document is the source of truth for the colors, splice
+        base and touched-entry set, so undo/redo restore *it* exactly; the graphic
+        then shows those colors by reference. The entry is registered on the fly if
+        the history predates its registration (a project without it).
+        """
+        assert self._doc is not None
+        path = state.config.source.path
+        entry = self._workspace.find_palette(path) if path else None
+        if entry is None and path:
+            entry = self._workspace.add_palette(path, state.preset_id)
+        if entry is None:
+            return
+        if entry.doc is None:
+            entry.doc = Document.palette_only(
+                state.palette, state.config, state.ctx, state.data
+            )
+        else:
+            entry.doc.palette = state.palette
+            entry.doc.palette_config = state.config
+            entry.doc.palette_ctx = state.ctx
+            entry.doc.palette_bytes = state.data
+            entry.doc.palette_edits = set(state.edits)
+        self._mirror_palette(entry)
+        # Mid-switch the current graphic still names its old palette source, so it
+        # isn't a render target yet; point it at the palette entry directly.
+        self._doc.palette = entry.doc.palette
+        self._doc.palette_ctx = entry.doc.palette_ctx
+        self._doc.palette_config = replace(
+            entry.doc.palette_config, write_enabled=False
+        )
 
     def _sync_palette_entry_format(self, state: PaletteState) -> None:
         """Write a File-mode palette's format back onto its registered entry.
@@ -426,6 +681,7 @@ class PaletteSourceMixin:
         mode: PaletteMode,
         label: str,
         status: str | None = None,
+        edits: frozenset[int] = frozenset(),
     ) -> None:
         """Push one palette-source change (before→after) and optionally note it.
 
@@ -436,9 +692,20 @@ class PaletteSourceMixin:
         caller keeps its own source-specific load and error reporting; only this
         uniform push/report is shared.
 
-        The new state starts with **no edits**: its bytes are what is on disk,
-        so a save has nothing to splice until the user changes a color.
+        The new state usually starts with **no edits** - its bytes are what is on
+        disk, so a save has nothing to splice until a color changes. Re-applying an
+        already-edited file palette passes its live ``edits`` so the switch doesn't
+        forget which entries are outstanding.
+
+        A commit that decodes raw bytes (a File/Offset/Emulator import, or a
+        format re-decode) is a format being *chosen*, so it advances the session
+        default the next Custom-from-default fork will inherit. Default and
+        Custom commits carry no such choice and leave it alone. Only forward
+        gestures reach here; undo/redo replay through _apply_palette_state, so
+        the session default stays put when history is walked.
         """
+        if mode.decodes_raw_bytes:
+            self._set_session_palette_format(cfg.interpret_preset_id)
         self._push_command(
             PaletteCommand(
                 self,
@@ -452,6 +719,7 @@ class PaletteSourceMixin:
                     cfg,
                     loaded.ctx,
                     data=loaded.data,
+                    edits=edits,
                 ),
             )
         )
@@ -537,6 +805,18 @@ class PaletteSourceMixin:
             status="Using the default palette.",
         )
 
+    def _set_session_palette_format(self, preset_id: str) -> None:
+        """Record ``preset_id`` as the session's default palette format.
+
+        The sticky, global format a Custom-from-default fork inherits when it has
+        none of its own. Advanced whenever a format is actually chosen - a
+        File/Offset/Emulator import or a format re-decode (via _commit_palette),
+        the format dropdown, and, in future, a ROM file hint. Global and
+        session-lifetime, so it survives entry switches and is not part of any
+        entry's saved session.
+        """
+        self._session_palette_format = preset_id
+
     def _fork_custom_palette(self) -> None:
         """Copy the palette on screen into a project-stored Custom one.
 
@@ -550,15 +830,25 @@ class PaletteSourceMixin:
         is only ever generated at the current format's index space (16 colors
         at 4bpp), and a custom palette the user is going to edit should offer
         every subpalette row, not just the one the format happens to index.
+
+        The Custom palette *carries* a color format (shown read-only in the
+        dock). A fork off a source that decodes raw bytes keeps that source's
+        format - the one on the live dropdown; a fork off the generated default
+        has no format to inherit, so it takes the session default instead.
         """
         assert self._doc is not None
         palette = self._doc.palette
-        expanded = self._palette_mode is PaletteMode.DEFAULT
-        palette = palette.resized(FULL_PALETTE_COUNT) if expanded else palette.copy()
+        from_default = self._palette_mode is PaletteMode.DEFAULT
+        palette = (
+            palette.resized(FULL_PALETTE_COUNT) if from_default else palette.copy()
+        )
+        preset_id = (
+            self._session_palette_format if from_default else self._palette_preset_id()
+        )
         self._commit_palette(
             # No file behind it: a custom palette is written by saving the
             # project, never by the palette pathway's Write - so no splice base.
-            self._placeholder_palette_config(),
+            self._placeholder_palette_config(preset_id),
             pipeline.PaletteData(palette, PipelineContext(), b""),
             mode=PaletteMode.CUSTOM,
             label="create custom palette",
@@ -572,8 +862,8 @@ class PaletteSourceMixin:
         """Where Offset mode starts: the selected tile, else the window top-left
         - the same byte numbers the offset box and status bar already show."""
         assert self._doc is not None
-        tile = self._selected_tile if self._selected_tile is not None else self._offset
-        return self._tile_byte_offset(tile)
+        # No stamp here, so no on-screen snap - this only reads a byte offset.
+        return self._tile_byte_offset(self._anchor_tile())
 
     def _palette_offset_text(self) -> str:
         """The palette offset field's text provider; safe with no document."""
@@ -706,13 +996,20 @@ class PaletteSourceMixin:
         self._load_palette_at_offset(self._tile_byte_offset(self._selected_tile))
 
     def _reload_palette(self) -> None:
-        """The palette combo changed: re-decode under the new color format,
-        as one undoable command (a failed decode reverts the combo)."""
-        if (
-            self._doc is None
-            or not self._palette_mode.has_source
-            or self._applying_undo
-        ):
+        """The palette combo changed: re-express the palette under the new format,
+        as one undoable command (a failure reverts the combo).
+
+        The raw-bytes modes re-decode their source. A Custom palette stores its
+        colors verbatim and has no source to re-read, so the combo only *relabels*
+        it - recording the target format without touching a color. The one-shot
+        conversion is the separate Quantize button (:meth:`_quantize_custom_palette`).
+        """
+        if self._doc is None or self._applying_undo:
+            return
+        if self._palette_mode is PaletteMode.CUSTOM:
+            self._relabel_custom_format()
+            return
+        if not self._palette_mode.has_source:
             return
         before = self._capture_palette_state()
         result = self._reinterpret_palette()
@@ -725,6 +1022,60 @@ class PaletteSourceMixin:
             cfg, loaded, mode=self._palette_mode, label="change palette format"
         )
 
+    def _relabel_custom_format(self) -> None:
+        """Record a new target format on a Custom palette, colors untouched.
+
+        A Custom palette holds ARGB verbatim, so a format is only a label here -
+        the target the Quantize button snaps colors to, and what the dock shows.
+        Committed (so it persists and undoes) but leaving every color exactly as
+        it is; converting is the explicit Quantize gesture, not a side effect.
+        """
+        assert self._doc is not None
+        preset_id = self._palette_preset_id()
+        self._commit_palette(
+            self._placeholder_palette_config(preset_id),
+            pipeline.PaletteData(self._doc.palette, PipelineContext(), b""),
+            mode=PaletteMode.CUSTOM,
+            label="change palette format",
+        )
+
+    def _quantize_custom_palette(self) -> None:
+        """Snap a Custom palette's stored colors onto the selected format's values.
+
+        The explicit one-shot conversion behind the dock's Quantize button: each
+        color is run through the format's round trip (BGR555 drops each channel's
+        low bits, an indexed format snaps to its nearest hardware color), so the
+        palette lands on values the format can actually hold. Stays Custom - the
+        colors remain project-stored ARGB, now merely already-quantized. One
+        undoable command; a codec that can't encode is reported and changes
+        nothing.
+        """
+        if self._doc is None or self._palette_mode is not PaletteMode.CUSTOM:
+            return
+        preset_id = self._palette_preset_id()
+        try:
+            quantized = pipeline.quantize_palette(
+                self._doc.palette, preset_id, self._registry
+            )
+        except PipelineError as exc:
+            self._report(exc)
+            return
+        format_name = self._palette_preset.currentText()
+        if quantized == self._doc.palette:
+            # Every color already sits on a value the format can hold - nothing to
+            # convert, so leave the undo stack alone rather than push a no-op step.
+            self.statusBar().showMessage(
+                f"All colors already fit {format_name}; nothing to quantize."
+            )
+            return
+        self._commit_palette(
+            self._placeholder_palette_config(preset_id),
+            pipeline.PaletteData(quantized, PipelineContext(), b""),
+            mode=PaletteMode.CUSTOM,
+            label="quantize custom palette",
+            status=f"Quantized {len(quantized)} colors to {format_name}.",
+        )
+
     def _reinterpret_palette(
         self,
     ) -> tuple[pipeline.PaletteData, PathwayConfig] | None:
@@ -733,14 +1084,18 @@ class PaletteSourceMixin:
 
         A **bounded** read window - Offset mode's length-limited ref into the
         pixel file - is re-floored for the new preset, since the new entry size
-        need not divide the old window's byte length. A whole palette file is
-        unbounded and needs none; an inline-data ref (an emulator state's
-        extracted CGRAM) carries its own bytes and must not be re-read from
-        disk. ``write_enabled`` carries over untouched: where a Save lands is
-        the load mode's decision, not this re-decode's.
+        need not divide the old window's byte length. An inline-data ref (an
+        emulator state's extracted CGRAM) carries its own bytes rather than being
+        re-read from disk, but is re-floored the same way, so a wider/narrower
+        format reads a whole number of entries out of it. A whole palette file is
+        unbounded and needs none. ``write_enabled`` carries over untouched: where
+        a Save lands is the load mode's decision, not this re-decode's.
         """
-        assert self._doc is not None
-        old = self._doc.palette_config
+        # In File mode the palette lives on its PALETTE entry, so re-decode *its*
+        # bytes/config, not the graphic's mirror.
+        pal_doc = self._palette_doc()
+        assert pal_doc is not None
+        old = pal_doc.palette_config
         source = old.source
         if source.length is not None and source.data is None:
             try:
@@ -759,6 +1114,29 @@ class PaletteSourceMixin:
                     title="Celpix - palette",
                 )
                 return None
+        elif source.data is not None:
+            # Inline bytes (an emulator state's extracted palette RAM): re-floor
+            # the byte length to a whole number of entries under the new format,
+            # since the console's own entry size need not divide it. Reading past
+            # what the extracted bytes hold makes no sense, so keep the data.
+            try:
+                entry_size = pipeline.palette_entry_size(
+                    self._palette_preset_id(), self._registry
+                )
+            except PipelineError as exc:
+                self._report(exc)
+                return None
+            avail = len(source.data) - source.offset
+            length = avail - (avail % entry_size)
+            if length <= 0:
+                self._alert(
+                    "Not enough palette data for this format.",
+                    title="Celpix - palette",
+                )
+                return None
+            source = FileRef(
+                source.path, offset=source.offset, length=length, data=source.data
+            )
         cfg = PathwayConfig(
             source=source,
             interpret_preset_id=self._palette_preset_id(),

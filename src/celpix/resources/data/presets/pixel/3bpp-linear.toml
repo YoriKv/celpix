@@ -1,7 +1,7 @@
 # 3bpp linear bespoke packing — Tile Molester LN98.
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.3bpp-linear"
-name = "3bpp linear packed (8x8)"
+name = "3bpp linear (8x8)"
 engine_id = "codec.linear-bespoke"
 
 [params]

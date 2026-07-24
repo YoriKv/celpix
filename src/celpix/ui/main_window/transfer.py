@@ -364,7 +364,7 @@ class TransferMixin:
         path = self._choose_import_png()
         if path is None:
             return
-        self._import_png_at(self._import_anchor(), path)
+        self._import_png_at(self._stamp_anchor(), path)
 
     def _import_dropped_png(self, path: str) -> None:
         """A PNG dropped on the window, imported where the canvas menu would.
@@ -379,13 +379,7 @@ class TransferMixin:
                 "the graphic on screen, not added to the list."
             )
             return
-        self._import_png_at(self._import_anchor(), path)
-
-    def _import_anchor(self) -> int:
-        """Where an import lands: the selected tile - the top-left cell of a
-        rectangle selection - or the top-left tile of the view when nothing is
-        selected, the same place a paste would go."""
-        return self._selected_tile if self._selected_tile is not None else self._offset
+        self._import_png_at(self._stamp_anchor(), path)
 
     def _choose_import_png(self) -> str | None:
         """Ask for the image to import; None if the dialog was cancelled."""

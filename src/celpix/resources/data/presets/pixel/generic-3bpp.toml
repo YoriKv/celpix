@@ -1,7 +1,7 @@
 # Generic 3bpp — 3 flat 8-byte planes (NES-style).
 # See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
 id = "preset.pixel.generic-3bpp"
-name = "Generic 3bpp (8x8, flat planes)"
+name = "3bpp planar flat (8x8)"
 engine_id = "codec.planar"
 
 [params]

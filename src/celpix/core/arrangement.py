@@ -77,8 +77,8 @@ class ArrangementPreset:
 # out in docs/design-reference/navigation-and-preview.md and the tests in
 # tests/test_arrangement.py. "Linear" is the default plain back-to-back walk.
 ARRANGEMENT_PRESETS: tuple[ArrangementPreset, ...] = (
-    ArrangementPreset("linear", "Default 1D - Linear"),
-    ArrangementPreset("2d", "2D - wide bitmap (N64/NDS)", two_dimensional=True),
+    ArrangementPreset("linear", "1D Default - Linear"),
+    ArrangementPreset("2d", "2D - Wide bitmap (N64/NDS)", two_dimensional=True),
     # 8×16 NES/GB sprites: tile i (top) stacked over tile i+1 (bottom), the next
     # sprite in the next column — a 1×2 block filled block-by-block.
     ArrangementPreset("nes-8x16", "8×16 sprites, stacked (NES/GB)", block_rows=2),

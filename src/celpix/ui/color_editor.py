@@ -24,10 +24,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
+    QDialogButtonBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -38,11 +39,46 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from celpix import resources
 from celpix.ui.widgets import CommittingLineEdit, signals_blocked
 
 # Channel order as edited, most significant first — the same order the hex
 # field spells and the ARGB int packs.
 _CHANNELS = (("A", 24), ("R", 16), ("G", 8), ("B", 0))
+
+
+def _eyedropper_pixmap(color: QColor, size: int, ratio: float) -> QPixmap:
+    """The bundled eyedropper glyph, recolored to ``color`` at device resolution.
+
+    The art ships as a solid silhouette cropped to its opaque bounds; SourceIn
+    keeps only its alpha and stamps the tint through, so one glyph tracks the
+    theme in light and dark. Rasterized at ``ratio`` (the pixmap then reports
+    ``size`` logical units) so a scaled display gets crisp edges rather than a
+    stretched 1x bitmap, and centred in the square box since the glyph is taller
+    than it is wide.
+    """
+    source = QImage.fromData(resources.read_bytes("icons", "eyedropper.png"))
+    glyph = source.convertToFormat(QImage.Format.Format_ARGB32)
+    tinting = QPainter(glyph)
+    tinting.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    tinting.fillRect(glyph.rect(), color)
+    tinting.end()
+    box = round(size * ratio)
+    scaled = QPixmap.fromImage(glyph).scaled(
+        box,
+        box,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    canvas = QPixmap(box, box)
+    canvas.fill(Qt.GlobalColor.transparent)
+    placing = QPainter(canvas)
+    placing.drawPixmap(
+        (box - scaled.width()) // 2, (box - scaled.height()) // 2, scaled
+    )
+    placing.end()
+    canvas.setDevicePixelRatio(ratio)
+    return canvas
 
 
 def parse_hex_color(text: str) -> int | None:
@@ -157,17 +193,14 @@ class ColorEditor(QWidget):
         self._hex.setToolTip("#AARRGGBB, or #RRGGBB for an opaque color")
         self._hex.committed.connect(self._on_hex)
 
-        self._pick = QPushButton("Pick color")
+        self._pick = QPushButton()
         self._pick.setCheckable(True)
         self._pick.setToolTip(
             "Eyedropper: click a pixel on the canvas or a swatch in the palette "
             "to take its color"
         )
         self._pick.toggled.connect(self.pick_toggled)
-
-        self._reset = QPushButton("Revert")
-        self._reset.setToolTip("Back to the color this editor opened on")
-        self._reset.clicked.connect(self._on_reset)
+        self._refresh_pick_icon()
 
         # Both previews sit in identically-shaped columns so their swatches line
         # up, and the pair is centred (stretch on both sides) — with the stored
@@ -192,24 +225,37 @@ class ColorEditor(QWidget):
         previews.addLayout(stored_column)
         previews.addStretch(1)
 
+        # The eyedropper sits right of the hex field — a compact icon toggle
+        # beside the value it fills in, not a labelled button of its own.
         hex_row = QHBoxLayout()
         hex_row.addWidget(QLabel("Hex:"))
         hex_row.addWidget(self._hex)
+        hex_row.addWidget(self._pick)
         hex_row.addStretch(1)
-
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        buttons.addWidget(self._pick)
-        buttons.addWidget(self._reset)
-        buttons.addStretch(1)
 
         column = QVBoxLayout(self)
         column.addLayout(previews)
         column.addLayout(grid)
         column.addLayout(hex_row)
-        column.addLayout(buttons)
 
         self._refresh_inputs()
+
+    def _refresh_pick_icon(self) -> None:
+        """(Re)paint the eyedropper mark in the current theme's button color."""
+        color = self.palette().color(
+            QPalette.ColorGroup.Active, QPalette.ColorRole.ButtonText
+        )
+        self._pick.setIcon(
+            QIcon(_eyedropper_pixmap(color, 16, self.devicePixelRatioF()))
+        )
+        self._pick.setIconSize(QSize(16, 16))
+
+    def changeEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        # The eyedropper glyph is a pixmap baked in the old palette's color; a
+        # theme switch has to re-render it or it keeps yesterday's tint.
+        super().changeEvent(event)
+        if event.type() is QEvent.Type.PaletteChange:
+            self._refresh_pick_icon()
 
     # -- state -------------------------------------------------------------
     def color(self) -> int:
@@ -276,7 +322,13 @@ class ColorEditor(QWidget):
         if not self._updating:
             self._apply(int(argb))
 
-    def _on_reset(self) -> None:
+    def revert(self) -> None:
+        """Return to the color the editor opened on (the marked original).
+
+        A real edit — it emits :attr:`color_changed`, so the host records the
+        undo back to the baseline — and a no-op when nothing has moved. The
+        dialog's Cancel drives this before it closes.
+        """
         if self._original != self._color:
             self._apply(self._original)
 
@@ -303,8 +355,6 @@ class ColorEditor(QWidget):
         self._hex.refresh()
         self._updating = False
         self._preview.set_color(self._color)
-        # Nothing to revert *to* until the color has actually moved.
-        self._reset.setEnabled(self._color != self._original)
         self._refresh_stored()
 
     def _refresh_stored(self) -> None:
@@ -341,8 +391,17 @@ class ColorEditorDialog(QDialog):
 
     Non-modal on purpose: the eyedropper picks from the canvas and the palette
     grid, which a modal dialog would lock out. It stays on top of the main
-    window as a tool window, and edits apply live — there is no OK/Cancel,
-    because undo is the app's commit model (``docs/design/undo-redo.md``).
+    window as a tool window, and edits apply live (undo is the app's commit
+    model — ``docs/design/undo-redo.md``). OK/Cancel only decide the window's
+    parting move: OK closes on whatever the color has become, Cancel reverts to
+    the color the editor opened on first. Esc maps to Cancel; the window's close
+    button keeps the color (like OK), since the edits are already live.
+
+    Closing runs through Qt's own :meth:`accept`/:meth:`reject`/:meth:`done`,
+    and :attr:`closed` is emitted from ``done`` — the one choke point every
+    route funnels through — so the host always drops its reference and disarms
+    the eyedropper. (Rerouting close through :meth:`QWidget.close` instead would
+    recurse: :meth:`QDialog.closeEvent` itself calls ``reject``.)
     """
 
     # Emitted when the window closes, so the host can drop its reference and
@@ -355,14 +414,39 @@ class ColorEditorDialog(QDialog):
         # Tool: floats above its parent without taking a taskbar slot.
         self.setWindowFlag(Qt.WindowType.Tool, True)
         self.editor = ColorEditor(self)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.setCenterButtons(True)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.addWidget(self.editor)
+        layout.addWidget(buttons)
 
     def set_entry(self, label: str) -> None:
         """Name the palette entry being edited in the title bar."""
         self.setWindowTitle(f"Edit color - {label}")
 
+    def reject(self) -> None:  # Qt override
+        # Cancel (and Esc): undo back to the opening color, then close. Routed
+        # through revert so it lands as an ordinary edit on the undo stack,
+        # matching the live edits. super().reject() hides via done().
+        self.editor.revert()
+        super().reject()
+
     def closeEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        super().closeEvent(event)
+        # The window's close button keeps the live-applied color rather than
+        # reverting — only the explicit Cancel discards. QDialog's own
+        # closeEvent would call reject() (and revert); accept() instead keeps it
+        # and still funnels through done() for the single `closed` emit.
+        self.accept()
+        event.accept()
+
+    def done(self, result: int) -> None:  # Qt override
+        # The single exit every route funnels through — OK's accept(), Cancel's
+        # reject(), Esc, the close button. Emit `closed` here so the host always
+        # cleans up, whichever one fired.
+        super().done(result)
         self.closed.emit()
