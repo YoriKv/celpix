@@ -1148,4 +1148,14 @@ class PaletteSourceMixin:
         return loaded, cfg
 
     def _fallback_palette(self) -> Palette:
-        return Palette.default(self._index_space())
+        """The generated palette shown until a real one is loaded — full length.
+
+        Sized to the whole 256 rather than one subpalette's worth: the generator
+        puts a contrasting row first, a **grayscale ramp second** and distinct
+        colors after, none of which exists at all if only the format's index
+        space is asked for (a 4bpp view would stop at 16 — one row, no ramp).
+        At full length every subpalette the row spin can reach is populated, so
+        single-channel data can be read as a ramp by stepping to row 1, and
+        Default → Custom no longer changes the palette's size.
+        """
+        return Palette.default(FULL_PALETTE_COUNT)

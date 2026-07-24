@@ -128,8 +128,8 @@ class TransformMixin:
     def _build_transform_toolbar(self) -> QToolBar:
         """The canvas-top transform bar (a plain widget, not ``addToolBar``).
 
-        Placed in the layout above the canvas rather than docked at the window
-        top like the Codecs/Arrangement/View bars, so it reads as belonging to
+        The last of the four bars stacked over the canvas, directly on top of it
+        and below the Codecs/Arrangement/View rows, so it reads as belonging to
         the editing surface. It carries three labelled groups but shows only the
         ones for the current edit mode: Tile + Block in tile editing, Pixel in
         pixel editing (:meth:`_sync_transform_bar_mode`). Each starts disabled;
@@ -227,7 +227,7 @@ class TransformMixin:
         ):
             self._selection_shape.addItem(label, shape)
         self._selection_shape.setToolTip(
-            "What a canvas drag selects:\n"
+            "What a canvas drag selects (S swaps):\n"
             "• Linear - the run of tiles in storage order\n"
             "• Rectangle - the block of tiles on screen"
         )

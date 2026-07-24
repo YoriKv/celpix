@@ -170,6 +170,35 @@ def test_fill_floods_a_region(qtbot, tmp_path) -> None:
     assert _pixel(window, 0, 0) == 5 and _pixel(window, 3, 3) == 5
 
 
+def test_a_selection_masks_the_drawing_tools(qtbot, tmp_path) -> None:
+    """A marquee is a mask: a stroke run across its edge changes only what is
+    inside it, so the art beyond the selection is safe from an overrun."""
+    window = _window(qtbot, tmp_path)
+    window._marquee = QRect(0, 0, 4, 4)
+    window._canvas.set_marquee(window._marquee)
+    window._tool = Tool.PENCIL
+    beyond = [_pixel(window, x, 0) for x in range(4, 8)]
+    window._on_pixel_pressed(0, 0, Qt.MouseButton.LeftButton)
+    window._on_pixel_moved(7, 0)  # drag straight out of the selection
+    window._on_pixel_released(7, 0)
+    assert all(_pixel(window, x, 0) == 5 for x in range(4))
+    assert [_pixel(window, x, 0) for x in range(4, 8)] == beyond
+
+
+def test_a_selection_confines_a_fill(qtbot, tmp_path) -> None:
+    window = _window(qtbot, tmp_path)
+    window._tool = Tool.SELECT
+    window._marquee = QRect(0, 0, 8, 8)
+    window._pixel_clear()  # one flat region to flood
+    window._marquee = QRect(0, 0, 4, 4)
+    window._tool = Tool.FILL
+    window._on_pixel_pressed(1, 1, Qt.MouseButton.LeftButton)
+    assert _pixel(window, 3, 3) == 5  # inside the selection
+    assert _pixel(window, 5, 5) == 0  # the same flat region, but outside it
+    window._on_pixel_pressed(5, 5, Qt.MouseButton.LeftButton)  # seed outside
+    assert _pixel(window, 5, 5) == 0  # ...fills nothing
+
+
 def test_right_click_eyedropper_sets_pen(qtbot, tmp_path) -> None:
     window = _window(qtbot, tmp_path)
     # Paint index 5 somewhere, move the pen off it, then sample it back.

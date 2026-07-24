@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.1 - unreleased
+
+- Improved layout and some more tooltip fixes
+
 ## v0.2.0 - 2026-07-24
 
 - **Canvas navigation**: Ctrl+scrollwheel zoom and hold space to pan.

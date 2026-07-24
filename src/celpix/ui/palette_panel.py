@@ -35,6 +35,7 @@ from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from celpix.core import ceil_div
+from celpix.core.palette import FULL_PALETTE_COUNT
 from celpix.ui.widgets import paint_selection_outline, take_editing_shortcut
 
 SWATCH = 14  # logical px per swatch; Qt scales logical painting on HiDPI
@@ -161,6 +162,17 @@ class PalettePanel(QWidget):
         rows = max(1, ceil_div(len(self._colors), COLUMNS))  # ≥1 keeps it visible
         self.setFixedSize(COLUMNS * SWATCH, rows * SWATCH)
         self.update()
+
+    @staticmethod
+    def full_grid_height() -> int:
+        """How tall the grid stands at a **full** palette's worth of rows.
+
+        The dock opens tall enough to show that much without scrolling, since a
+        full-length palette is the common case (Default and Custom both are). It
+        can't be read off the live grid, which is sized to the palette actually
+        loaded — nothing at all until one is.
+        """
+        return ceil_div(FULL_PALETTE_COUNT, COLUMNS) * SWATCH
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         if event.button() == Qt.MouseButton.LeftButton:

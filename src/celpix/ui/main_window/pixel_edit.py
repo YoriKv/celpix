@@ -271,12 +271,19 @@ class PixelEditMixin:
         return type(grid)(grid.width, grid.height, bytes(grid.data))
 
     def _paint_pixels(self, grid, pixels, value: int | None = None) -> None:
-        """Set ``pixels`` on ``grid`` to the pen (or ``value``), clipped to bounds."""
+        """Set ``pixels`` on ``grid`` to the pen (or ``value``), clipped to bounds.
+
+        **A selection is a mask**: while a marquee is up, every tool paints only
+        inside it, so a stroke can be run right across an edge without touching
+        what is beyond it. The single choke point every tool's paint goes through,
+        so none of them can be clipped and the rest not.
+        """
         if value is None:
             value = self._pen_value()
         w, h = grid.width, grid.height
+        mask = self._marquee
         for px, py in pixels:
-            if 0 <= px < w and 0 <= py < h:
+            if 0 <= px < w and 0 <= py < h and (mask is None or mask.contains(px, py)):
                 grid.set(px, py, value)
 
     def _render_preview(self, grid) -> None:
@@ -334,8 +341,9 @@ class PixelEditMixin:
         if spec.gesture is not Gesture.MARQUEE:
             # Painting under a live float would paint *beneath* pixels that are
             # still in the air, against a base captured before the stroke — so a
-            # paint/fill gesture lands the float first.
-            self._commit_float()
+            # paint/fill gesture lands the float first, keeping the selection it
+            # is about to paint through.
+            self._commit_float(keep_selection=True)
         if spec.gesture is Gesture.FILL:
             self._fill_at(x, y)
         elif spec.gesture is Gesture.MARQUEE:
@@ -404,11 +412,16 @@ class PixelEditMixin:
 
     # -- fill & eyedropper -------------------------------------------------
     def _fill_at(self, x: int, y: int) -> None:
+        """Flood the region under ``(x, y)``, confined to the selection if any."""
         base = self._window_grid()
         if base is None:
             return
         grid = self._clone_grid(base)
-        self._paint_pixels(grid, draw.flood_fill(grid, x, y))
+        mask = self._marquee
+        bounds = None
+        if mask is not None:
+            bounds = (mask.x(), mask.y(), mask.right(), mask.bottom())
+        self._paint_pixels(grid, draw.flood_fill(grid, x, y, bounds))
         if self._commit_grid(grid, base, "fill"):
             self.statusBar().showMessage("Filled a region.")
 
@@ -615,7 +628,7 @@ class PixelEditMixin:
         self._show_float()
         self._after_pixel_change()
 
-    def _commit_float(self) -> None:
+    def _commit_float(self, *, keep_selection: bool = False) -> None:
         """Set a floating selection down: its pixels overwrite what they hover on.
 
         Composites the float onto the window **as it stands now** — blanking a
@@ -623,6 +636,11 @@ class PixelEditMixin:
         — and drops the selection with it. A no-op when no float is live, so every
         "the selection is going away" path (Esc, a click elsewhere, a drawing
         gesture, leaving pixel mode, a write) can call it freely.
+
+        ``keep_selection`` leaves the marquee on the pixels where they landed, for
+        the caller that isn't deselecting at all: a drawing gesture has to set the
+        float down before it can paint, but the selection it paints through must
+        survive that (see :meth:`_paint_pixels`).
         """
         if self._float_grid is None:
             return
@@ -630,8 +648,13 @@ class PixelEditMixin:
         fx, fy = self._float_pos
         source = self._float_source_rect
         moved = source is not None
+        landed = self._float_rect()
         base = self._window_grid()
         self._clear_float()
+        if keep_selection:
+            self._marquee = landed
+            if hasattr(self, "_canvas"):
+                self._canvas.set_marquee(landed)
         if base is None:
             return
         dest = self._clone_grid(base)

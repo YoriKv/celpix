@@ -1,13 +1,17 @@
 """The application main window: open pixel/palette data, view it, save it back.
 
-Menus (File, Edit, View, Navigate, Palette, Panels), a control strip (pixel
-format, columns, rows, zoom, subpalette row - the palette format lives in the
-palette dock) plus an arrangement
-strip (Pattern presets, block grouping, fill order, 2D), a scrollable
-:class:`~celpix.ui.canvas.Canvas` showing a windowed view with tile-range
-selection, a navigation bar with the address/bank readout, and docks for the
-files list, palette, and an optional hex view. Undo/redo spans one session-wide
-history, and a compression scan/preview overlays decodable structures.
+Menus (File, Edit, View, Navigate, Palette, Panels) over a two-column body. The
+left column is the Files and Palette docks, splitting the window's full height
+between them; the right is the editing surface: four bars stacked over a
+scrollable :class:`~celpix.ui.canvas.Canvas` - codecs (pixel format,
+compression), arrangement (Pattern presets, block grouping, fill order, 2D),
+view (columns, rows, zoom, subpalette row - the palette format lives in the
+palette dock) and transform - with the canvas showing a windowed view with
+tile-range selection and a navigation bar under it carrying the address/bank
+readout. None of those bars is a QMainWindow toolbar: that area spans the whole
+window width and would cut across the top of the left column. An optional hex
+view docks at the bottom. Undo/redo spans one session-wide history, and a
+compression scan/preview overlays decodable structures.
 
 It drives the Qt-free pipeline through the plugin registry and never interprets
 bytes itself; all decode/encode goes through ``pipeline``.
@@ -48,7 +52,6 @@ from celpix.core.arrangement import (
 )
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import PipelineError
-from celpix.core.palette import Palette
 from celpix.pipeline import pipeline
 from celpix.plugins.base import NO_DECOMPRESS
 from celpix.plugins.discovery import PluginLoadIssue
@@ -135,7 +138,11 @@ class MainWindow(
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Celpix")
-        self.resize(1024, 768)
+        # Wider than the old 1024: the interpretation bars sit over the canvas
+        # now rather than spanning the window, so they start right of the
+        # Files/Palette column and need that column's width back to keep the
+        # codecs row (the longest) from folding into an overflow chevron.
+        self.resize(1120, 768)
         self.setAcceptDrops(True)  # drop a file on the window to open it as pixels
 
         # The app bootstrap builds a registry (built-ins + user plugins) and passes
@@ -280,11 +287,14 @@ class MainWindow(
         self._offset_bar.setStyleSheet(self._offset_bar_style())
         self._offset_bar.valueChanged.connect(self._set_offset)
 
-        # The transform toolbar sits directly on top of the canvas (not docked at
-        # the window top like the interpretation bars), so it reads as part of the
-        # editing surface. It spans the canvas column, right of the offset rail.
+        # Every bar lives in this column rather than in QMainWindow's toolbar
+        # area: that area spans the whole window width and would cut across the
+        # top of the docks, so the interpretation bars are stacked in here above
+        # the canvas instead and the left column runs the window's full height.
+        # Kept on self because _build_toolbar runs later (it needs the palette
+        # dock) and inserts its three rows above the transform bar.
         self._transform_toolbar = self._build_transform_toolbar()
-        canvas_column = QVBoxLayout()
+        canvas_column = self._canvas_column = QVBoxLayout()
         canvas_column.setContentsMargins(0, 0, 0, 0)
         canvas_column.setSpacing(0)
         canvas_column.addWidget(self._transform_toolbar)
@@ -602,7 +612,7 @@ class MainWindow(
             bytes_per_tile=px.bytes_per_tile,
             tile_width=px.tile_width,
             tile_height=px.tile_height,
-            palette=Palette.default(self._index_space(session.pixel_preset_id)),
+            palette=self._fallback_palette(),
             pixel_config=cfg,
             palette_config=self._placeholder_palette_config(session.palette_preset_id),
             pixel_ctx=px.ctx,
@@ -1260,8 +1270,8 @@ class MainWindow(
         )
         rows = self._rows.value()
         # Clamp the subpalette row to the rows the loaded palette actually has -
-        # switching to a smaller palette (e.g. Offset's 16 rows back to Default's
-        # one) must not leave the view pointing past it. Signals blocked: this
+        # switching to a shorter palette (a File palette holding a single row,
+        # say) must not leave the view pointing past it. Signals blocked: this
         # is a correction, not a user change, and must not re-enter here.
         group = self._index_space()  # the subpalette row size
         max_row = max(0, len(self._doc.palette) - 1) // group

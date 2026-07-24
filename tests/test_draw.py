@@ -132,6 +132,22 @@ def test_flood_fill_out_of_bounds_is_empty() -> None:
     assert draw.flood_fill(IndexGrid(2, 2), 5, 5) == []
 
 
+def test_flood_fill_bounds_confine_the_walk_not_just_the_result() -> None:
+    """A selection confines the *spread*: the region is what's reachable inside
+    the box, so an arm connected only by a path outside it stays unfilled."""
+    grid = _grid(
+        [
+            [0, 1, 0],  # the two 0 columns meet only through the bottom row,
+            [0, 1, 0],  # which the box below cuts off
+            [0, 0, 0],
+        ]
+    )
+    region = set(draw.flood_fill(grid, 0, 0, (0, 0, 2, 1)))
+    assert region == {(0, 0), (0, 1)}  # not the right column, reachable only below
+    # A seed outside the box fills nothing at all.
+    assert draw.flood_fill(grid, 2, 2, (0, 0, 1, 1)) == []
+
+
 # -- region copy / blit ----------------------------------------------------
 def test_extract_region_copies_the_block() -> None:
     grid = _grid(

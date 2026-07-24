@@ -150,7 +150,9 @@ def ellipse_filled(x0: int, y0: int, x1: int, y1: int) -> list[Coord]:
     return pixels
 
 
-def flood_fill(grid: Grid, x: int, y: int) -> list[Coord]:
+def flood_fill(
+    grid: Grid, x: int, y: int, bounds: tuple[int, int, int, int] | None = None
+) -> list[Coord]:
     """Every pixel of the 4-connected region of ``grid`` that matches ``(x, y)``.
 
     A scanline seed fill (span-based, not per-pixel recursion, so a large flat
@@ -158,9 +160,17 @@ def flood_fill(grid: Grid, x: int, y: int) -> list[Coord]:
     the contiguous run of equal-valued pixels reachable from it. It does not
     mutate — the caller paints the returned pixels with the pen, which is what
     lets a fill be one undoable edit and lets a fill with the same color no-op.
+
+    ``bounds`` (inclusive ``(x0, y0, x1, y1)``, clamped to the grid) confines the
+    spread — what a selection does to a fill. The region is what is reachable
+    *within* the box, so a shape that leaves it and comes back doesn't drag the
+    part outside in, and a seed outside it fills nothing at all.
     """
     w, h = grid.width, grid.height
-    if not (0 <= x < w and 0 <= y < h):
+    x0, y0, x1, y1 = bounds if bounds is not None else (0, 0, w - 1, h - 1)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w - 1, x1), min(h - 1, y1)
+    if not (x0 <= x <= x1 and y0 <= y <= y1):
         return []
     target = grid.get(x, y)
     visited = bytearray(w * h)
@@ -172,14 +182,14 @@ def flood_fill(grid: Grid, x: int, y: int) -> list[Coord]:
             continue
         left = sx
         while (
-            left > 0
+            left > x0
             and not visited[sy * w + left - 1]
             and grid.get(left - 1, sy) == target
         ):
             left -= 1
         right = sx
         while (
-            right < w - 1
+            right < x1
             and not visited[sy * w + right + 1]
             and grid.get(right + 1, sy) == target
         ):
@@ -191,7 +201,7 @@ def flood_fill(grid: Grid, x: int, y: int) -> list[Coord]:
         for px in range(left, right + 1):
             for ny in (sy - 1, sy + 1):
                 if (
-                    0 <= ny < h
+                    y0 <= ny <= y1
                     and not visited[ny * w + px]
                     and grid.get(px, ny) == target
                 ):

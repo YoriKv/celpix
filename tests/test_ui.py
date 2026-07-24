@@ -1930,21 +1930,21 @@ def test_mode_switch_resets_row_and_selection_into_palette(
     qtbot, tmp_path, monkeypatch
 ) -> None:
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    window._on_tiles_selected(0, 0)
-    window._load_palette_from_selection()  # 128 colors = subpalette rows 0..7
-    window._subpalette.setValue(6)
-    window._palette_panel._select(100)
-    assert window._doc.view.subpalette_row == 6
+    # The generated default runs the full 256, so it is the *longest* palette a
+    # session sees - which is what leaves a row to clamp on the way to any other.
+    assert len(window._doc.palette) == 256  # 16 subpalette rows at 4bpp
+    window._subpalette.setValue(12)
+    window._palette_panel._select(200)
 
-    # Back to Default: 16 fallback colors = one row. Row and color selection
-    # both land back inside the palette.
-    window._palette_mode_combo.setCurrentIndex(
-        window._palette_mode_combo.findData(PaletteMode.DEFAULT)
-    )
-    assert window._subpalette.value() == 0
-    assert window._doc.view.subpalette_row == 0
-    assert window._palette_panel.selected_index() == 15
-    assert "Subpal 0 · Color 15" in window._color_details.text()
+    # Switching to a shorter palette (128 colors = rows 0..7) has to pull both
+    # the row and the swatch selection back inside it.
+    window._on_tiles_selected(0, 0)
+    window._load_palette_from_selection()
+    assert len(window._doc.palette) == 128
+    assert window._subpalette.value() == 7
+    assert window._doc.view.subpalette_row == 7
+    assert window._palette_panel.selected_index() == 127
+    assert "Subpal 7 · Color 15" in window._color_details.text()
 
 
 def test_pixel_filter_prunes_dropdown_but_keeps_current(qtbot, tmp_path) -> None:
@@ -3272,11 +3272,12 @@ def test_editing_the_default_palette_forks_a_custom_one(
     window = _open_for_color_edit(qtbot, tmp_path, monkeypatch)
     assert window._palette_mode == "default"
     before_len = len(window._doc.palette)
-    assert before_len == 16  # 4bpp index space
+    assert before_len == 256  # the generated default is always full length
 
     window._on_color_changed(0xFF123456)
 
-    # The edit forked to a project-stored Custom palette expanded to 16 rows,
+    # The edit forked to a project-stored Custom palette - full length like the
+    # default it forked from, so the fork changes the palette's size not at all -
     # and landed on the selected entry.
     assert window._palette_mode == "custom"
     assert window._palette_mode_combo.currentData() == "custom"
@@ -3304,7 +3305,7 @@ def test_custom_fork_undo_peels_the_edit_then_the_fork(
 
     stack.undo()  # the fork itself
     assert window._palette_mode == "default"
-    assert len(window._doc.palette) == 16
+    assert len(window._doc.palette) == 256
 
     stack.redo()
     stack.redo()
@@ -4535,3 +4536,33 @@ def test_every_input_has_a_tooltip_shared_with_its_label(qtbot) -> None:
         if label.buddy() is not None and label.toolTip() != label.buddy().toolTip()
     ]
     assert mismatched == []
+
+
+def test_default_palette_is_full_length_so_the_gray_ramp_is_reachable(
+    qtbot, tmp_path
+) -> None:
+    """The generated default runs the full 256 whatever the format's index space.
+
+    Sized to one subpalette instead (16 at 4bpp), the generator's second row —
+    the grayscale ramp that makes single-channel data readable — is never
+    produced at all, and the subpalette spin has nowhere to step to.
+    """
+    from celpix.core.palette import FULL_PALETTE_COUNT
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+
+    palette = window._doc.palette
+    assert window._index_space() == 16  # 4bpp: one row would have stopped here
+    assert len(palette) == FULL_PALETTE_COUNT
+    # Row 1 is the ramp: black, white, then 14 grays climbing dark to light.
+    ramp = [palette.color(i) for i in range(16, 32)]
+    assert all((c >> 16 & 0xFF) == (c >> 8 & 0xFF) == (c & 0xFF) for c in ramp), (
+        "row 1 must be neutral grays"
+    )
+    assert ramp[0] == 0xFF000000 and ramp[1] == 0xFFFFFFFF
+    assert [c & 0xFF for c in ramp[2:]] == sorted(c & 0xFF for c in ramp[2:])
+    # ...and the row is reachable: the spin clamps to the palette's real rows.
+    window._subpalette.setValue(1)
+    assert window._subpalette.value() == 1

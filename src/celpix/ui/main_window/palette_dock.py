@@ -242,13 +242,23 @@ class PaletteDockMixin:
         self._palette_dock.setObjectName("palette-dock")  # keeps saveState usable
         self._palette_dock.setWidget(container)
         # Stacked under the Files dock in the same left column (built first, so it
-        # is there to split), and given an even share of that column's height -
-        # both are browsing panes, and neither earns the space by default.
+        # is there to split), and opened tall enough to show a full palette's rows
+        # of swatches without scrolling - Default and Custom are both full length,
+        # so that is the common case. The column's own natural height already
+        # covers the header, readout and buttons; only the grid has to be traded
+        # up, since it is still empty here and asks for a single row. Files takes
+        # what is left, and either can be dragged from there.
         self.splitDockWidget(
             self._files_dock, self._palette_dock, Qt.Orientation.Vertical
         )
+        grid = self._palette_panel.full_grid_height() + 2 * holder.frameWidth()
+        wanted = (
+            self._palette_dock.sizeHint().height() - holder.sizeHint().height() + grid
+        )
         self.resizeDocks(
-            [self._files_dock, self._palette_dock], [1, 1], Qt.Orientation.Vertical
+            [self._files_dock, self._palette_dock],
+            [max(1, self.height() - wanted), wanted],
+            Qt.Orientation.Vertical,
         )
         # Sharing a column means one width serves both, and left alone Qt settles
         # on the palette's *minimum* - which is the width its header can't go

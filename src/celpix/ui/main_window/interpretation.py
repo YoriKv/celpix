@@ -91,22 +91,24 @@ class InterpretationMixin:
     def _build_toolbar(self) -> None:
         # Three stacked rows: the codec selects (what the bytes *are*) on top, the
         # tile arrangement (how those tiles are grouped/addressed) directly below
-        # it, and the view settings (how they're shown) at the bottom. Each break
-        # drops the following bar onto its own row instead of flowing after the
-        # previous one.
+        # it, and the view settings (how they're shown) at the bottom.
+        #
+        # Placed in the canvas column (above the transform bar) rather than with
+        # ``addToolBar``: QMainWindow's toolbar area spans the whole window width,
+        # which would cut across the top of the Files/Palette column. Inserting
+        # them here keeps every bar over the canvas it describes and leaves the
+        # docks the window's full height. Immovable for the same reason the
+        # transform bar is — there is no toolbar area to drag them to.
         codecs = QToolBar("Codecs")
-        self.addToolBar(codecs)
         self._codecs_toolbar = codecs  # greyed out wholesale for a missing entry
-        self.addToolBarBreak()
         arrange = QToolBar("Arrangement")
-        self.addToolBar(arrange)
         self._arrange_toolbar = arrange  # frozen wholesale during a scan
-        self.addToolBarBreak()
         view = QToolBar("View")
-        self.addToolBar(view)
         self._view_toolbar = view  # frozen wholesale during a scan
-        for bar in (codecs, arrange, view):
+        for index, bar in enumerate((codecs, arrange, view)):
+            bar.setMovable(False)
             bar.layout().setSpacing(10)
+            self._canvas_column.insertWidget(index, bar)
 
         # Which pixel presets the dropdown lists lives on the workspace, so the
         # project file persists it (self._workspace.hidden_pixel_presets); empty
