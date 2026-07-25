@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.4 - unreleased
+## v0.2.4 - 2026-07-24
 
 - **Rearrange tool**: drag and mirror tiles into a readable order for
   editing, without changing the file. Still in development.
