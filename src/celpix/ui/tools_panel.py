@@ -19,7 +19,7 @@ theme and the display's pixel ratio — see :meth:`_rebuild_icons`.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QIcon, QImage, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -96,11 +96,20 @@ class ToolsPanel(QWidget):
 
     # -- icons ---------------------------------------------------------------
     def changeEvent(self, event: QEvent) -> None:  # Qt override
-        # A theme switch swaps the palette out from under the baked-in tint;
-        # re-render so the glyphs adopt the new text color rather than keeping
-        # the old one until the panel is rebuilt.
+        # Both bakes are invalidated from outside: a theme switch swaps the
+        # palette out from under the tint, and a move to a differently scaled
+        # display invalidates the resolution. The second one matters more than
+        # it looks: the glyphs are laid out on exact integer pixels (the
+        # marquee's ants especially), so a pixmap baked at the wrong ratio is
+        # *smooth-scaled* by Qt to fit - blurring the dashes and drifting them
+        # off the centre they were placed on. The panel is built before the
+        # window is shown, so this is also how it picks up the real ratio.
         super().changeEvent(event)
-        if event.type() is QEvent.Type.PaletteChange:
+        if event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.DevicePixelRatioChange,
+            QEvent.Type.ScreenChangeInternal,
+        ):
             self._rebuild_icons()
 
     def _rebuild_icons(self) -> None:
@@ -171,21 +180,37 @@ class ToolsPanel(QWidget):
         pen = QPen(Qt.GlobalColor.black, stroke)
         pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        # Every stroked shape follows this path, not `rect` itself. A pen is
+        # centred on its path and spreads half its width either side, so a shape
+        # drawn on `rect` would ink half a stroke *outside* the bounds the filled
+        # variants fill. Insetting by exactly half - in float, which is the whole
+        # point: `stroke // 2` is right only for even widths and leaves an odd
+        # one half a pixel proud, which rasterizes as one extra pixel on one side
+        # and reads as a glyph that has slid down and right. Inset properly, the
+        # ink lands on `rect` at every stroke width and every display scale.
+        half = stroke / 2
+        path = QRectF(
+            rect.x() + half,
+            rect.y() + half,
+            rect.width() - stroke,
+            rect.height() - stroke,
+        )
         if shape == "line":
             painter.setPen(pen)
-            painter.drawLine(rect.bottomLeft(), rect.topRight())
+            painter.drawLine(path.bottomLeft(), path.topRight())
         elif shape == "marquee":
-            # The selection marquee reads as marching ants: a thin dashed outline,
-            # not a solid one. Flat caps keep the dashes as clean segments (round
-            # caps would swell them into a dotted look), and antialiasing off keeps
-            # the short dashes crisp rather than smeared to gray.
+            # The selection marquee reads as marching ants: a dashed outline, not
+            # a solid one. It carries the same stroke width as the rest of the
+            # set, though - a lighter one rasterized to a single pixel at 100%
+            # scaling next to everything else's two, and the rail read as if this
+            # glyph had faded.
             # The ants are laid out and filled by hand rather than stroked with a
             # dashed pen. A dashed drawRect runs one phase around the whole
             # perimeter: it ends mid-pattern, so whichever corners it lands on are
             # left bare and the glyph reads lopsided even though its bounding box
             # is centred. Fractional dash lengths then rasterize to uneven runs on
             # top of that. Integer dashes placed per edge avoid both.
-            thin = max(1, round(box * 0.07))
+            thin = stroke
             length = rect.width()
             # Three dashes and two equal gaps exactly fill an edge (3a + 2g = L),
             # which puts a dash at both ends of every edge — so all four corners
@@ -212,10 +237,7 @@ class ToolsPanel(QWidget):
         else:  # "rect" / "ellipse" outlines: keep the stroke within `rect`
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            inset = rect.adjusted(
-                stroke // 2, stroke // 2, -(stroke // 2), -(stroke // 2)
-            )
             if shape == "rect":
-                painter.drawRect(inset)
+                painter.drawRect(path)
             else:
-                painter.drawEllipse(inset)
+                painter.drawEllipse(path)

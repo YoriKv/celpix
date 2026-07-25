@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.4 - unreleased
+
+- Various fixes
+
 ## v0.2.3 - 2026-07-24
 
 - Fixed a bug with floating selection and undo

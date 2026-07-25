@@ -99,12 +99,22 @@ def test_marquee_glyph_is_centred_like_the_other_tool_shapes() -> None:
         lit = [x for y in range(box) for x in range(box) if rows[y][x]]
         return min(lit), max(lit)
 
-    for box in (20, 40):  # the 1x and 2x device-pixel-ratio sizes
+    # Every ratio a real display hands out, not just 1x/2x: the pen widths and
+    # paddings are rounded off `box`, so a parity trip can hide at one scale and
+    # show at the next.
+    for box in (20, 25, 30, 35, 40, 50, 60):
+        footprint = bounds(alpha("rect_filled", box))
+        # Every painted glyph, not just the marquee: the line drifted a pixel
+        # down-right for want of this, because a stroke centred on Qt's integer
+        # coordinates - which sit *between* pixels - rasterizes wider on one side.
+        for shape in ("marquee", "line", "rect", "ellipse", "ellipse_filled"):
+            rows = alpha(shape, box)
+            first, last = bounds(rows)
+            assert first == box - 1 - last, (shape, box)  # equal margins: centred
+            assert (first, last) == footprint, (shape, box)  # the set's box
+        # The marquee alone is mirrored both ways — an unclosed corner shows up
+        # here and nowhere else, since it leaves the bounding box untouched. (The
+        # line is a diagonal, so it is symmetric only under transposition.)
         rows = alpha("marquee", box)
-        first, last = bounds(rows)
-        assert first == box - 1 - last  # equal margins either side: centred
-        assert (first, last) == bounds(alpha("rect_filled", box))  # the set's box
-        # Mirrored horizontally and vertically — an unclosed corner shows up here
-        # and nowhere else, since it leaves the bounding box untouched.
         assert rows == [list(reversed(row)) for row in rows]
         assert rows == rows[::-1]

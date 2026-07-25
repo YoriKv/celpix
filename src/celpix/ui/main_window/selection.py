@@ -963,6 +963,10 @@ class SelectionMixin:
         menu.addSeparator()
         menu.addAction(self._palette_from_selection_action)
         menu.addAction(self._new_slice_from_selection_action)
+        # A bookmark records the *view position* rather than the selection, but
+        # it belongs to the same "make something out of where I am" group - and
+        # the canvas is where the user is when they decide to mark the spot.
+        menu.addAction(self._new_bookmark_action)
         menu.exec(self._canvas.mapToGlobal(pos))
 
     def _selection_byte_range(self) -> tuple[int, int] | None:

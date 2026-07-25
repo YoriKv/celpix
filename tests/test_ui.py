@@ -2561,6 +2561,9 @@ def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
     window._pixel_preset.setCurrentIndex(idx)
     assert window._load_palette_at_offset(32)
     assert window._palette_mode == "offset"
+    # A non-default subpalette row: it picks which colors the tiles index, so a
+    # slice that opened back on row 0 would render in the wrong ones.
+    window._subpalette.setValue(3)
 
     # B: loaded, made current, and viewed as the *default* preset with a
     # default palette — so the live toolbar no longer reflects A's state.
@@ -2593,6 +2596,10 @@ def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
     assert slice_entry.session.pixel_preset_id == "preset.pixel.snes-2bpp"
     assert slice_entry.session.palette_mode == "offset"
     assert slice_entry.session.compression_id == "decompress.none"
+    # The subpalette row rides on the view options rather than the session, so
+    # it takes a hand-off of its own to come across.
+    assert slice_entry.doc.view.subpalette_row == 3
+    assert window._subpalette.value() == 3
 
     # End-to-end: the on-screen slice loaded A's palette from offset 32 (A's
     # offset, distinct from the slice's own offset of 64), reading A's file.
@@ -3510,7 +3517,11 @@ def test_the_dock_previews_a_palette_file_read_only_with_nothing_open(
     entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
     assert window._preview_palette is entry
     assert window._palette_panel._colors == list(entry.doc.palette.colors)
-    assert window._palette_file_label.text() == "standalone.pal"
+    # The label is middle-elided to a fixed pixel width, so the visible text is
+    # font-dependent (a wider system font chops this name); the tooltip carries
+    # the whole path either way.
+    assert window._palette_file_label.isVisibleTo(window)
+    assert Path(window._palette_file_label.toolTip()).name == "standalone.pal"
     # Previewing is display state: no undo step, and it never becomes current.
     assert window._workspace.current is None
     assert window._undo_stack.undoText() == "add palette standalone.pal"
