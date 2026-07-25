@@ -4982,7 +4982,11 @@ def test_shortcut_guide_reads_both_key_styles_off_the_menus(qtbot) -> None:
     # An action carrying both routes lists both; the toolbar's own switches are
     # documented because they were given a menu home.
     assert dict(sections["View"])["Zoom In"].endswith("/ Ctrl + Scroll Up")
-    assert dict(sections["Edit"])["Rearranged View"] == "Shift+R"
+    # Keys are rendered as native text, so the spelling is platform-dependent
+    # ("Shift+R" everywhere, "⇧R" on macOS).
+    assert dict(sections["Edit"])["Rearranged View"] == QKeySequence(
+        "Shift+R"
+    ).toString(QKeySequence.SequenceFormat.NativeText)
     assert dict(sections["Pixel Tools"]) == {s.label: s.key for s in TOOL_SPECS}
     transform_keys = dict(sections["Transform"])
     assert all(transform_keys[s.label] == s.key for s in TRANSFORM_SPECS)
