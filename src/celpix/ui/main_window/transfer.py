@@ -167,7 +167,7 @@ class TransferMixin:
             # A .pal is palette data, not pixels - it lands in the Palettes
             # section (open it via the dialog to force the pixel reading).
             if path.lower().endswith(".pal"):
-                self._add_palette_file(path)
+                self._open_palette_data(path)
             else:
                 self._load_pixel(path)
 

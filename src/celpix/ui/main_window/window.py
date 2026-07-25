@@ -52,6 +52,7 @@ from celpix.core.arrangement import (
 )
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import PipelineError
+from celpix.core.palette import Palette
 from celpix.pipeline import pipeline
 from celpix.plugins.base import NO_DECOMPRESS
 from celpix.plugins.discovery import PluginLoadIssue
@@ -195,6 +196,15 @@ class MainWindow(
         # _set_session_palette_format. Global and session-lifetime: it survives
         # entry switches and is not part of any entry's saved session.
         self._session_palette_format = DEFAULT_SESSION_PALETTE_FORMAT
+        # The generated palette the dock shows while nothing at all is open -
+        # built on first use (see _idle_palette) and never edited, so one
+        # instance serves the whole session.
+        self._idle_palette_cache: Palette | None = None
+        # A registered .pal being *previewed* in the dock, or None. Only ever set
+        # with no document open: with nowhere to write an edit back to, the dock
+        # shows a palette file's colors rather than editing them, so this is
+        # display state and nothing more (see _preview_palette_file).
+        self._preview_palette: Entry | None = None
         # The shared color editor, while open (None otherwise). One non-modal
         # dialog is reused and retargeted as the palette selection moves, so the
         # eyedropper can reach the canvas and the swatch grid underneath it.
@@ -343,7 +353,10 @@ class MainWindow(
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
-        self._announce_ready()
+        # A fresh window *is* the nothing-open state, so it is entered through
+        # the same path a close lands on rather than being half-assembled here -
+        # which is what puts the read-only default palette in the dock.
+        self._show_empty()
 
     def _announce_ready(self) -> None:
         self.statusBar().showMessage("Open pixel data to begin.")
@@ -430,6 +443,25 @@ class MainWindow(
             self._activate_entry(entry)
         return self._workspace.current is entry
 
+    def _ensure_edit_context(self, entry: Entry, mode: EditMode) -> bool:
+        """Return to the entry *and* the edit mode an editing command was made in.
+
+        Tile and pixel editing are two views of the same bytes: a tile paste
+        reverting while the user is painting pixels — or a pixel stroke reverting
+        under the tile grid — lands somewhere the gesture couldn't have happened,
+        and a pixel step's selection has nowhere to go in tile mode. So a step is
+        always undone where it was made, the same reasoning that takes the view
+        back to the entry it happened in.
+
+        Switching modes sets a live float down (it can't push mid-apply, so those
+        pixels are simply taken back out of the air, writing nothing) and drops
+        the selection — which the command is about to restore anyway.
+        """
+        if not self._ensure_current(entry):
+            return False
+        self._set_edit_mode(mode)  # a no-op when the window is already there
+        return True
+
     def _on_entry_dirty_changed(self, entry: Entry) -> None:
         self._files_panel.refresh_entry(entry)
         self._write_all_action.setEnabled(bool(self._workspace.dirty_entries()))
@@ -444,6 +476,22 @@ class MainWindow(
         self._files_panel.refresh_entry(entry)
         if entry is self._workspace.current:
             self._refresh_window_title()
+
+    def _sync_write_action(self) -> None:
+        """Arm File ▸ Write for whatever the current view can actually save.
+
+        The graphic's own bytes when its pathway is writable, and *also* the file
+        palette it renders - so a view-only graphic (a decompressed slice with no
+        compressor) can still save the ``.pal`` it is showing, which is the one
+        thing about it Ctrl+W has to offer. Re-run from _set_palette_mode, since
+        loading or dropping a file palette changes the answer mid-entry.
+        """
+        entry = self._workspace.current
+        doc = entry.doc if entry is not None else None
+        writable = doc is not None and doc.pixel_config.write_enabled
+        self._write_action.setEnabled(
+            writable or self._linked_palette_entry() is not None
+        )
 
     def _refresh_window_title(self) -> None:
         """Re-render the window title from what is currently open.
@@ -506,8 +554,9 @@ class MainWindow(
     def _apply_add_entry(self, entry: Entry) -> None:
         """Append ``entry`` to the workspace and show it - the application
         path for open-file/new-slice/new-bookmark/add-palette commands and
-        their redos. A bookmark or palette only lands in the list; there is
-        nothing of it to show."""
+        their redos. A bookmark or palette only lands in the list; previewing
+        one in the dock is the opening gesture's call, not the add's
+        (:meth:`_open_palette_data`)."""
         self._workspace.insert(entry, len(self._workspace.entries))
         if entry.kind in (EntryKind.FILE, EntryKind.SLICE):
             self._activate_entry(entry)
@@ -688,6 +737,9 @@ class MainWindow(
         assert entry.doc is not None and entry.session is not None
         session, view = entry.session, entry.doc.view
         self._doc = entry.doc
+        # The dock follows what is on screen: a document's own palette takes over
+        # from any .pal that was filling an otherwise empty dock.
+        self._clear_palette_preview()
         # Undo any disabling from a previously shown missing entry.
         self._set_document_ui_enabled(True)
         # The pixel combo goes through the filter, which force-shows the restored
@@ -744,8 +796,7 @@ class MainWindow(
                 self._rect_cells, self._rect_tiles = session.selection_cells, tiles
                 self._selected_last = max(tiles)
         self._sync_selection_actions()
-        self._set_palette_mode(session.palette_mode)
-        self._write_action.setEnabled(entry.doc.pixel_config.write_enabled)
+        self._set_palette_mode(session.palette_mode)  # also arms Write
         # Only whole files spawn slices and bookmarks - neither nests (and a
         # file's byte stream is always raw, so its positions map straight to
         # file offsets).
@@ -776,6 +827,7 @@ class MainWindow(
         self._palette_format_label.hide()
         self._palette_preset.hide()
         self._sync_palette_export_action()  # no document, nothing to export
+        self._sync_palette_mode_items()  # ...and only File left to load
         self._write_action.setEnabled(False)
         self._new_slice_action.setEnabled(False)
         self._new_slice_from_view_action.setEnabled(False)
@@ -805,9 +857,17 @@ class MainWindow(
         self._tools_panel.setEnabled(enabled and self._edit_mode is EditMode.PIXEL)
 
     def _show_empty(self) -> None:
-        """Nothing open: clear the canvas, disable everything document-bound."""
+        """Nothing open: clear the canvas, disable everything document-bound.
+
+        The palette dock stays live rather than blank - it shows the generated
+        default read-only, which is what a file would open on anyway, and the
+        modes that need a graphic are the ones disabled (see
+        :meth:`_sync_palette_mode_items`).
+        """
         self._clear_document_view()
         self._set_document_ui_enabled(True)  # idle, but live for the next open
+        self._set_palette_mode(PaletteMode.DEFAULT)
+        self._refresh_palette_dock()
         self._refresh_window_title()
         self._sync_nav()
         self._announce_ready()
@@ -1299,15 +1359,7 @@ class MainWindow(
             self._offset, cols, self._rows.value(), self._nudge
         )
         rows = self._rows.value()
-        # Clamp the subpalette row to the rows the loaded palette actually has -
-        # switching to a shorter palette (a File palette holding a single row,
-        # say) must not leave the view pointing past it. Signals blocked: this
-        # is a correction, not a user change, and must not re-enter here.
-        group = self._index_space()  # the subpalette row size
-        max_row = max(0, len(self._doc.palette) - 1) // group
-        if self._subpalette.value() > max_row:
-            with signals_blocked(self._subpalette):
-                self._subpalette.setValue(max_row)
+        self._clamp_subpalette(self._doc.palette)
         self._doc.view = ViewOptions(
             columns=cols,
             rows=rows,
@@ -1336,7 +1388,6 @@ class MainWindow(
         image, filled = self._render_arrangement(
             window, engine, preset.params, layout, view.two_dimensional, max_rows=rows
         )
-        base = view.subpalette_row * group
         tw, th = self._pixel_tile_size()
         self._canvas.set_tile_size(tw, th)
         self._canvas.set_zoom(view.zoom)
@@ -1350,11 +1401,7 @@ class MainWindow(
         # image has to have that hole punched back into it.
         self._refresh_float_preview()
         self._refresh_selection(cols * rows)
-        self._palette_panel.set_palette(self._doc.palette.colors)
-        self._palette_panel.set_active_range(base, group)
-        # A reload can recolor (or drop) the selected entry under the same index.
-        self._refresh_color_details()
-        self._sync_color_editor()
+        self._refresh_palette_dock()
         self._sync_nav()
         # The pen's colour can move under the preview without the pen itself
         # changing (a palette edit, another subpalette row, a new format).
@@ -1363,6 +1410,36 @@ class MainWindow(
         self._refresh_hex()
         # Everything above landed in doc.view, which a project save writes out.
         self._refresh_project_modified()
+
+    def _clamp_subpalette(self, palette: Palette) -> int:
+        """Hold the subpalette row inside ``palette``; returns the row size.
+
+        Switching to a shorter palette - a File palette holding a single row,
+        say - must not leave the view pointing past it. Signals are blocked
+        because this is a correction, not a user change, and must not re-enter
+        the refresh that called it.
+        """
+        group = self._index_space()
+        max_row = max(0, len(palette) - 1) // group
+        if self._subpalette.value() > max_row:
+            with signals_blocked(self._subpalette):
+                self._subpalette.setValue(max_row)
+        return group
+
+    def _refresh_palette_dock(self) -> None:
+        """Put the palette on screen into the swatch grid, readout and editor.
+
+        Shared by the graphics view and the two document-less states - a palette
+        file shown on its own, and the idle default - so the dock is filled the
+        same way whatever is driving it, and a reload that recolors (or drops)
+        the selected entry is picked up in all three.
+        """
+        palette = self._shown_palette()
+        group = self._clamp_subpalette(palette)
+        self._palette_panel.set_palette(palette.colors)
+        self._palette_panel.set_active_range(self._subpalette.value() * group, group)
+        self._refresh_color_details()
+        self._sync_color_editor()
 
     def _refresh_hex(self) -> None:
         """Feed the hex panel a dump of the file bytes at the current offset.

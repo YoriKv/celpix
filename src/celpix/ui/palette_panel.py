@@ -30,7 +30,7 @@ in one 256-entry block.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtCore import QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -166,15 +166,17 @@ class PalettePanel(QWidget):
         self.update()
 
     @staticmethod
-    def full_grid_height() -> int:
-        """How tall the grid stands at a **full** palette's worth of rows.
+    def full_grid_size() -> QSize:
+        """How much room the grid takes at a **full** palette's worth of rows.
 
-        The dock opens tall enough to show that much without scrolling, since a
-        full-length palette is the common case (Default and Custom both are). It
-        can't be read off the live grid, which is sized to the palette actually
-        loaded — nothing at all until one is.
+        The dock reserves that much whatever is loaded, so a full-length palette
+        — the common case, Default and Custom both being one — is always on
+        screen entire and never scrolls. It can't be read off the live grid,
+        which is sized to the palette actually loaded — nothing at all until
+        one is.
         """
-        return ceil_div(FULL_PALETTE_COUNT, SWATCH_COLUMNS) * SWATCH_SIZE
+        rows = ceil_div(FULL_PALETTE_COUNT, SWATCH_COLUMNS)
+        return QSize(SWATCH_COLUMNS * SWATCH_SIZE, rows * SWATCH_SIZE)
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         if event.button() == Qt.MouseButton.LeftButton:

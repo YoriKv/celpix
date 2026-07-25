@@ -81,6 +81,37 @@ class PaletteSourceMixin:
         path = self._doc.palette_config.source.path
         return self._workspace.find_palette(path) if path else None
 
+    def _idle_palette(self) -> Palette:
+        """The generated default, shown read-only when nothing at all is open.
+
+        A dock with an empty grid reads as broken rather than idle, and the
+        default palette is exactly what a file *would* open on, so it is what
+        the panel sits on until something real arrives. Cached because the
+        readout re-reads it on every refresh.
+        """
+        if self._idle_palette_cache is None:
+            self._idle_palette_cache = self._fallback_palette()
+        return self._idle_palette_cache
+
+    def _shown_palette(self) -> Palette:
+        """The colors the dock is showing, whatever is (or isn't) open.
+
+        With a document open this is its palette. With none, it is whichever
+        ``.pal`` is being previewed, else the idle default — neither of which
+        any edit can reach, since a palette needs a document to be written back
+        through. That split is the point of having two accessors: **reads** of
+        what is on screen come through here, **writes** through
+        :meth:`_palette_doc`, which is ``None`` exactly when nothing on screen
+        can hold an edit.
+        """
+        doc = self._palette_doc()
+        if doc is not None:
+            return doc.palette
+        preview = self._preview_palette
+        if preview is not None and preview.doc is not None:
+            return preview.doc.palette
+        return self._idle_palette()
+
     def _palette_doc(self) -> Document | None:
         """The document that *owns* the palette on screen.
 
@@ -147,6 +178,78 @@ class PaletteSourceMixin:
         )
         graphics.missing_palette = None
         return True
+
+    # -- previewing a palette file with nothing open ------------------------
+    # The dock is never dead: with no document it shows the generated default,
+    # or a registered .pal the user opened. Both are read-only - every mode
+    # writes an edit back through a document, so with none there is nowhere to
+    # put one - and the load modes that need a document are disabled
+    # (_sync_palette_mode_items).
+    def _load_palette_entry(self, entry: Entry) -> bool:
+        """Read a PALETTE entry's file into its own palette-only document.
+
+        The same load :meth:`_link_file_palette` performs for a graphic, minus
+        the mirroring - but reporting rather than raising, since the callers here
+        are gestures that should leave the view alone on a bad file.
+        """
+        cfg = self._file_palette_config(
+            entry.path, 0, entry.palette_preset_id or self._palette_preset_id()
+        )
+        try:
+            loaded = pipeline.load_palette(cfg, self._registry)
+        except PipelineError as exc:
+            self._report(exc)
+            return False
+        except OSError as exc:
+            self._alert(f"Cannot read {entry.path}: {exc}", title="celPix - palette")
+            return False
+        entry.doc = Document.palette_only(loaded.palette, cfg, loaded.ctx, loaded.data)
+        return True
+
+    def _preview_palette_file(self, entry: Entry) -> bool:
+        """Show a registered ``.pal``'s colors in the dock; False if it won't load.
+
+        **Read-only, and only with no document open.** A palette is written back
+        through the document that owns it, so with nothing open there is nowhere
+        for an edit to go - the dock shows the file's colors, the readout names
+        them and Copy takes them, and every write path stays shut because
+        :meth:`_palette_doc` is ``None``. Opening a graphic takes the dock back
+        to that graphic's palette.
+
+        Display state, so nothing is pushed onto the undo stack and the entry
+        never becomes current: the ``.pal`` is being looked at, not edited.
+        """
+        if data_missing(entry):
+            self._alert(
+                f"{entry.name}: file not found - File ▸ Locate missing files "
+                "to re-point it.",
+                title="celPix - palette",
+            )
+            return False
+        if entry.doc is None and not self._load_palette_entry(entry):
+            return False
+        self._preview_palette = entry
+        self._set_palette_mode(PaletteMode.FILE)
+        self._refresh_palette_dock()
+        self.statusBar().showMessage(
+            f"{entry.name}: {len(entry.doc.palette)} colors - open pixel data to "
+            "edit them."
+        )
+        return True
+
+    def _clear_palette_preview(self) -> None:
+        """Put a previewed ``.pal`` away: back to the generated default.
+
+        Also the hand-off when a document arrives - the dock follows whatever is
+        on screen, and a graphic's own palette takes over from a preview that was
+        only filling an otherwise empty dock.
+        """
+        if self._preview_palette is None:
+            return
+        self._preview_palette = None
+        if self._doc is None:
+            self._set_palette_mode(PaletteMode.DEFAULT)
+            self._refresh_palette_dock()
 
     @staticmethod
     def _file_palette_config(path: str, offset: int, preset_id: str) -> PathwayConfig:
@@ -305,7 +408,22 @@ class PaletteSourceMixin:
         # rather than hiding everything that isn't already named .pal.
         path, _ = QFileDialog.getOpenFileName(self, "Open palette data")
         if path:
-            self._add_palette_file(path)
+            self._open_palette_data(path)
+
+    def _open_palette_data(self, path: str) -> bool:
+        """Register ``path`` in Palettes, and preview it when nothing is open.
+
+        The one funnel behind every "open a palette file" gesture - File ▸ Open
+        palette data, a dropped ``.pal``, and the dock's File mode when there is
+        no document to apply a palette *to*. Returns whether it ended up in the
+        dock: with a document open it is registered and nothing more, since the
+        Palettes list is then a source of palettes for that view.
+        """
+        self._add_palette_file(path)
+        entry = self._workspace.find_palette(path)
+        if entry is None or self._doc is not None:
+            return False
+        return self._preview_palette_file(entry)
 
     def _export_palette_file(self) -> None:
         """Palette dock ▸ Export to File…: write the live colors out as a ``.pal``.
@@ -324,7 +442,8 @@ class PaletteSourceMixin:
         whatever it was last left on - an invisible setting silently deciding
         the encoding of a file meant to be shared.
         """
-        if self._doc is None or not self._palette_mode.is_exportable:
+        doc = self._palette_doc()
+        if doc is None or not self._palette_mode.is_exportable:
             return
         entry = self._workspace.current
         suggested = f"{export_basename(entry)}.pal" if entry is not None else "palette"
@@ -339,9 +458,7 @@ class PaletteSourceMixin:
         if not path.lower().endswith(".pal"):
             path += ".pal"
         try:
-            pipeline.export_palette(
-                self._doc, path, self._registry, self._EXPORT_PRESET_ID
-            )
+            pipeline.export_palette(doc, path, self._registry, self._EXPORT_PRESET_ID)
         except PipelineError as exc:
             self._report(exc)
             return
@@ -364,8 +481,9 @@ class PaletteSourceMixin:
         already was.
 
         The shared entry point for File ▸ Open palette data, a dropped ``.pal``
-        and the dock's palette export. Registration only - applying it to the
-        view is the list's double-click. The entry starts on the palette format
+        and the dock's palette export. Registration only - putting one on screen
+        is :meth:`_open_palette_data`, applying it to a graphic is the list's
+        double-click. The entry starts on the palette format
         the dropdown is on right now - or ``preset_id``, for a caller that knows
         the file's encoding because it just wrote it - and tracks the dropdown
         from then on whenever this file is the palette on screen
@@ -402,10 +520,11 @@ class PaletteSourceMixin:
 
         Decodes with the codec the *entry* remembers, not wherever the format
         dropdown has moved since; the commit then snaps the dropdown onto that
-        codec, so the two agree afterwards.
+        codec, so the two agree afterwards. With nothing open there is nothing
+        to apply it *to*, so the same gesture previews its colors instead.
         """
         if self._doc is None:
-            self.statusBar().showMessage("Open pixel data first.")
+            self._preview_palette_file(entry)
             return
         if data_missing(entry):
             self._alert(
@@ -423,13 +542,16 @@ class PaletteSourceMixin:
 
     def _open_palette(self) -> bool:
         """Load a palette from a separate file; ``False`` on cancel/failure so
-        the mode dropdown can revert instead of lying about the source."""
-        if self._doc is None:
-            self.statusBar().showMessage("Open pixel data first.")
-            return False
+        the mode dropdown can revert instead of lying about the source.
+
+        With nothing open the file is registered and previewed read-only rather
+        than applied to anything.
+        """
         path, _ = QFileDialog.getOpenFileName(self, "Open palette")
         if not path:
             return False
+        if self._doc is None:
+            return self._open_palette_data(path)
         return self._apply_file_palette(
             path,
             preset_id=self._palette_preset_id(),
@@ -771,7 +893,15 @@ class PaletteSourceMixin:
         if mode is self._palette_mode or self._applying_undo:
             return
         if self._doc is None:
-            self.statusBar().showMessage("Open pixel data first.")
+            # Nothing open: File previews a .pal read-only and Default goes back
+            # to the generated one. The rest read out of (or write into) a
+            # document, and their dropdown items are disabled
+            # (_sync_palette_mode_items), so this is only a backstop.
+            if mode is PaletteMode.FILE and self._open_palette():
+                return
+            if mode is PaletteMode.DEFAULT:
+                self._clear_palette_preview()
+                return
             self._set_palette_mode(self._palette_mode)
             return
         if mode is PaletteMode.DEFAULT:

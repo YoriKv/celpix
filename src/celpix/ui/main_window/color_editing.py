@@ -51,11 +51,12 @@ class ColorEditingMixin:
         the entry - not as a flat palette index.
         """
         index = self._palette_panel.selected_index()
-        if self._doc is None or index is None:
+        palette = self._shown_palette()
+        if index is None or index >= len(palette):
             text = "No color selected"
         else:
             subpal, color = divmod(index, self._index_space())
-            argb = self._doc.palette.color(index)
+            argb = palette.color(index)
             a = (argb >> 24) & 0xFF
             r = (argb >> 16) & 0xFF
             g = (argb >> 8) & 0xFF
@@ -82,7 +83,11 @@ class ColorEditingMixin:
 
     def _open_color_editor(self, index: int) -> None:
         """Open (or raise) the shared color editor on palette entry ``index``."""
-        if self._doc is None or index >= len(self._doc.palette):
+        # Editing needs somewhere to put the color: a graphic's palette, or a
+        # .pal shown on its own. The idle default has nowhere, so it stays a
+        # read-only display rather than opening an editor that can't apply.
+        doc = self._palette_doc()
+        if doc is None or index >= len(doc.palette):
             return
         dialog = self._color_editor
         if dialog is None:
@@ -105,12 +110,13 @@ class ColorEditingMixin:
         stored-as quantizer for the current mode, and re-arms Revert.
         """
         dialog = self._color_editor
-        if dialog is None or self._doc is None:
+        doc = self._palette_doc()
+        if dialog is None or doc is None:
             return
         index = self._palette_panel.selected_index()
-        if index is None:
+        if index is None or index >= len(doc.palette):
             return
-        color = self._doc.palette.color(index)
+        color = doc.palette.color(index)
         if retarget:
             dialog.set_entry(self._color_entry_label(index))
             dialog.editor.set_alpha_enabled(self._palette_stores_alpha())
@@ -130,11 +136,12 @@ class ColorEditingMixin:
         their colors come from opaque sources, so alpha stays hidden there too
         rather than inviting edits nothing downstream honours.
         """
-        if self._doc is None or not self._palette_mode.has_source:
+        doc = self._palette_doc()
+        if doc is None or not self._palette_mode.has_source:
             return False
         try:
             return pipeline.palette_has_alpha(
-                self._doc.palette_config.interpret_preset_id, self._registry
+                doc.palette_config.interpret_preset_id, self._registry
             )
         except PipelineError:
             return False
@@ -147,9 +154,10 @@ class ColorEditingMixin:
         never written at all, so neither can lose precision - showing them a
         lossless preview would just be noise.
         """
-        if self._doc is None or not self._palette_mode.has_source:
+        doc = self._palette_doc()
+        if doc is None or not self._palette_mode.has_source:
             return None
-        preset_id = self._doc.palette_config.interpret_preset_id
+        preset_id = doc.palette_config.interpret_preset_id
         registry = self._registry
         return lambda argb: pipeline.quantize_color(argb, preset_id, registry)
 
@@ -161,7 +169,7 @@ class ColorEditingMixin:
         other mode. So editing a file palette dirties the palette entry, not the
         graphic that happens to render it.
         """
-        if self._doc is None or self._workspace.current is None or self._applying_undo:
+        if self._workspace.current is None or self._applying_undo:
             return
         index = self._palette_panel.selected_index()
         if index is None:
@@ -252,18 +260,17 @@ class ColorEditingMixin:
         program that reads hex.
         """
         index = self._palette_panel.selected_index()
-        if self._doc is None or index is None:
+        palette = self._shown_palette()
+        if index is None or index >= len(palette):
             return
-        color = self._doc.palette.color(index)
+        color = palette.color(index)
         clipboard.put_colors([color])
         self.statusBar().showMessage(f"Copied color {clipboard.color_text(color)}.")
 
     def _copy_subpalette(self) -> None:
         """Copy the whole active subpalette's colors to the clipboard."""
-        if self._doc is None:
-            return
         start, count = self._active_subpalette()
-        palette = self._doc.palette
+        palette = self._shown_palette()
         n = max(0, min(count, len(palette) - start))
         if n == 0:
             self.statusBar().showMessage("No subpalette colors to copy.")
@@ -277,7 +284,7 @@ class ColorEditingMixin:
         A run of clipboard colors pastes only its first here: the grid selects
         one entry at a time (Paste Subpalette fills a range).
         """
-        if self._doc is None or self._workspace.current is None or self._applying_undo:
+        if self._palette_doc() is None or self._applying_undo:
             return
         index = self._palette_panel.selected_index()
         if index is None:
@@ -296,7 +303,7 @@ class ColorEditingMixin:
 
     def _paste_subpalette(self) -> None:
         """Fill the active subpalette with the clipboard's colors, as one undo step."""
-        if self._doc is None or self._workspace.current is None or self._applying_undo:
+        if self._palette_doc() is None or self._applying_undo:
             return
         colors = clipboard.take_colors()
         if not colors:
@@ -319,8 +326,7 @@ class ColorEditingMixin:
         source to a Custom palette first — and, when more than one lands, are
         grouped in a macro so the whole paste undoes in a single step.
         """
-        assert self._doc is not None
-        palette = self._doc.palette
+        palette = self._shown_palette()
         span = max(0, min(len(colors), limit, len(palette) - start))
         changed = [
             (start + k, colors[k])
@@ -356,11 +362,12 @@ class ColorEditingMixin:
 
         Built on demand (like the canvas menu) so Paste reflects the live
         clipboard. The shortcuts shown mirror what the grid handles itself.
+        Copying works off whatever is displayed; pasting needs a palette that
+        can hold the colors, which the read-only idle default is not.
         """
-        if self._doc is None:
-            return
+        editable = self._palette_doc() is not None
         has_selection = self._palette_panel.selected_index() is not None
-        can_paste = clipboard.has_colors()
+        can_paste = editable and clipboard.has_colors()
         menu = QMenu(self)
         for label, slot, shortcut, enabled in (
             (

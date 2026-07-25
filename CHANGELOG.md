@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.3 - unreleased
+
+- Fixed a bug with floating selection and undo
+- Undo/redo and palette grid cleanup
+
 ## v0.2.2 - 2026-07-24
 
 - Help menu, readme, and name change (celPix)

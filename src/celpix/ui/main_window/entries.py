@@ -305,25 +305,47 @@ class EntriesMixin:
 
     # -- writing back --------------------------------------------------------
     def _write_current(self) -> None:
-        """File ▸ Write: the current file or slice back to disk."""
+        """File ▸ Write: the current file or slice, and the palette file it shows.
+
+        A File-mode palette is owned by its own PALETTE entry, so a color edit
+        dirties *that* and never the graphic rendering it
+        (``docs/design/palette-editing.md`` §2). Ctrl+W means "save what I am
+        looking at", and the palette on screen is part of that - so an unsaved
+        one is written with the graphic rather than needing a second gesture in
+        the Files list. Only when it actually has changes: writing a clean
+        ``.pal`` would bump the mtime of a file other graphics may share, for
+        nothing.
+
+        The two are separate files and are written independently, so a failure on
+        one (already reported) doesn't take the other with it; the status line
+        names whatever really landed.
+        """
         entry = self._workspace.current
         if entry is None or entry.doc is None:
             return
         # Read before the write, which clears the flags it acts on.
         palette_only = entry.palette_dirty and not entry.pixel_dirty
         has_palette_file = entry.doc.palette_config.write_enabled
-        if self._write_entry(entry):
-            # Report what actually went to disk: a palette-only write leaves the
-            # graphic alone, and Default/Custom/Emulator palettes have no file
-            # behind them at all (docs/design/palette-editing.md).
-            wrote = (
-                "palette"
-                if palette_only
-                else "pixel + palette"
-                if has_palette_file
-                else "pixel"
-            )
-            self.statusBar().showMessage(f"Wrote {entry.name} ({wrote}).")
+        palette = self._linked_palette_entry()
+        if palette is None or palette.doc is None or not palette.palette_dirty:
+            palette = None
+        wrote_entry = self._write_entry(entry)
+        wrote_palette = palette is not None and self._write_entry(palette)
+        # Report what actually went to disk: a palette-only write leaves the
+        # graphic alone, and Default/Custom/Emulator palettes have no file
+        # behind them at all (docs/design/palette-editing.md).
+        wrote = (
+            "palette"
+            if palette_only
+            else "pixel + palette"
+            if has_palette_file
+            else "pixel"
+        )
+        landed = [f"{entry.name} ({wrote})"] if wrote_entry else []
+        if wrote_palette:
+            landed.append(palette.name)
+        if landed:
+            self.statusBar().showMessage(f"Wrote {' and '.join(landed)}.")
 
     def _write_all(self) -> None:
         """File ▸ Write All: every entry with unsaved in-memory changes."""

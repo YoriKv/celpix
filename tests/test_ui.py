@@ -610,6 +610,36 @@ def test_palette_dock_header_tracks_mode(qtbot, tmp_path, monkeypatch) -> None:
     assert window._palette_preset.isVisibleTo(window)
 
 
+def test_palette_grid_never_scrolls_a_full_palette(qtbot) -> None:
+    """The dock floors its grid at a full 16x16 palette, squeezed or not.
+
+    The scroll area around the grid is a guard for pathological palettes, not
+    something a 256-color one may hit: crush the dock to nothing and the grid
+    still stands at its full size, with no scroll bar either way.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QScrollArea
+
+    from celpix.core.palette import FULL_PALETTE_COUNT, Palette
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+    window._palette_panel.set_palette(Palette.default(FULL_PALETTE_COUNT).colors)
+    window.resizeDocks([window._palette_dock], [1], Qt.Orientation.Vertical)
+    window.resizeDocks([window._palette_dock], [1], Qt.Orientation.Horizontal)
+    qtbot.wait(10)
+
+    holder = window._palette_dock.findChild(QScrollArea)
+    assert (
+        holder.viewport().size().expandedTo(window._palette_panel.size())
+        == holder.viewport().size()
+    )
+    assert not holder.verticalScrollBar().isVisible()
+    assert not holder.horizontalScrollBar().isVisible()
+
+
 def _make_big_snes_file(tmp_path, tiles: int):
     px = tmp_path / "big.4bpp.sfc"
     px.write_bytes(bytes((i * 13 + 1) & 0xFF for i in range(32 * tiles)))
@@ -3435,6 +3465,112 @@ def test_editing_a_file_palette_leaves_the_graphic_untouched(
     assert graphic.read_bytes() == before
     assert graphic.stat().st_mtime_ns == mtime
     assert not palette_entry.palette_dirty
+
+
+def test_the_dock_previews_a_palette_file_read_only_with_nothing_open(
+    qtbot, tmp_path
+) -> None:
+    """Opening a .pal with nothing else open shows its colors, and only shows them.
+
+    A palette is written back through the document that owns it, so with no
+    document there is nowhere for an edit to go: the dock displays the file and
+    every write path declines rather than pretending to land somewhere. Opening
+    a graphic hands the dock back to that graphic's palette.
+    """
+    from celpix.core.palette import FULL_PALETTE_COUNT, Palette
+    from celpix.project.workspace import EntryKind, PaletteMode
+
+    pal = tmp_path / "standalone.pal"
+    # 4 BGR555 entries, none of them the default palette's colors.
+    pal.write_bytes(bytes([0x1F, 0x00, 0xE0, 0x03, 0x00, 0x7C, 0xFF, 0x7F]))
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    # Nothing open at all: the grid sits on the generated default rather than
+    # being blank, and the load modes that need a document are disabled.
+    assert window._palette_panel._colors == list(
+        Palette.default(FULL_PALETTE_COUNT).colors
+    )
+    modes = {
+        PaletteMode.parse(
+            window._palette_mode_combo.itemData(i)
+        ): window._palette_mode_combo.model().item(i).isEnabled()
+        for i in range(window._palette_mode_combo.count())
+    }
+    assert modes == {
+        PaletteMode.DEFAULT: True,
+        PaletteMode.FILE: True,
+        PaletteMode.OFFSET: False,
+        PaletteMode.EMULATOR: False,
+        PaletteMode.CUSTOM: False,
+    }
+
+    # Open the .pal: its colors fill the grid, and the dock names the file.
+    assert window._open_palette_data(str(pal))
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    assert window._preview_palette is entry
+    assert window._palette_panel._colors == list(entry.doc.palette.colors)
+    assert window._palette_file_label.text() == "standalone.pal"
+    # Previewing is display state: no undo step, and it never becomes current.
+    assert window._workspace.current is None
+    assert window._undo_stack.undoText() == "add palette standalone.pal"
+
+    # Reading it is fine - the readout names the selected color.
+    window._palette_panel._select(1)
+    assert f"#{entry.doc.palette.color(1):08X}" in window._color_details.text()
+
+    # Editing it is not: no editor, no undo step, no color moved.
+    before = list(entry.doc.palette.colors)
+    window._open_color_editor(1)
+    assert window._color_editor is None
+    steps = window._undo_stack.count()
+    window._on_color_changed(0xFFFF0000)
+    window._paste_palette_color()
+    assert window._undo_stack.count() == steps
+    assert list(entry.doc.palette.colors) == before
+    assert not entry.palette_dirty
+
+    # Opening a graphic takes the dock back to that graphic's own palette.
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    assert window._preview_palette is None
+    assert window._palette_panel._colors == list(window._doc.palette.colors)
+
+
+def test_write_saves_the_graphic_and_the_file_palette_it_shows(qtbot, tmp_path) -> None:
+    """Ctrl+W saves what is on screen - which includes the .pal being rendered.
+
+    A file palette is owned by its own entry, so a color edit dirties that and
+    not the graphic; without this, Write would silently leave the colors unsaved
+    and only the Files list could reach them.
+    """
+    from celpix.project.workspace import EntryKind
+
+    pal = tmp_path / "shared.pal"
+    pal.write_bytes(bytes(32))
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._add_palette_file(str(pal))
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    window._use_palette_entry(entry)
+    graphic = window._workspace.current
+
+    window._palette_panel._select(0)
+    window._on_color_changed(0xFFFFFFFF)
+    assert entry.palette_dirty and not graphic.pixel_dirty
+
+    window._write_current()
+    assert not entry.palette_dirty  # the .pal went with the graphic...
+    assert pal.read_bytes() != bytes(32)
+    assert entry.name in window.statusBar().currentMessage()  # ...and is named
+
+    # A clean palette is left alone rather than having its mtime bumped: it is a
+    # shared file, and there is nothing of it to save.
+    stamp = pal.stat().st_mtime_ns
+    window._write_current()
+    assert pal.stat().st_mtime_ns == stamp
+    assert entry.name not in window.statusBar().currentMessage()
 
 
 def test_editing_a_file_palette_updates_every_graphic_using_it(qtbot, tmp_path) -> None:

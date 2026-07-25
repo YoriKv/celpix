@@ -73,6 +73,14 @@ class PaletteDockMixin:
         holder = QScrollArea()
         holder.setWidget(self._palette_panel)
         holder.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        # Room for a full 16x16 grid however short the palette actually loaded
+        # is - selection outlines included, since the panel draws them inside
+        # the swatch. As a *minimum* it also floors the dock, so neither a drag
+        # nor a restored layout can squeeze the grid to where it scrolls; only
+        # a palette longer than 256 colors still falls back on the scroll area.
+        full = self._palette_panel.full_grid_size()
+        frame = 2 * holder.frameWidth()
+        holder.setMinimumSize(full.width() + frame, full.height() + frame)
 
         # Same compact treatment as the pixel dropdown, at half its natural
         # width - the four mode labels don't need the full width the longest
@@ -242,19 +250,14 @@ class PaletteDockMixin:
         self._palette_dock.setObjectName("palette-dock")  # keeps saveState usable
         self._palette_dock.setWidget(container)
         # Stacked under the Files dock in the same left column (built first, so it
-        # is there to split), and opened tall enough to show a full palette's rows
-        # of swatches without scrolling - Default and Custom are both full length,
-        # so that is the common case. The column's own natural height already
-        # covers the header, readout and buttons; only the grid has to be traded
-        # up, since it is still empty here and asks for a single row. Files takes
-        # what is left, and either can be dragged from there.
+        # is there to split), and opened at its natural height - which the grid's
+        # minimum above already carries a full palette's rows of swatches into,
+        # on top of the header, readout and buttons. Files takes what is left,
+        # and either can be dragged from there.
         self.splitDockWidget(
             self._files_dock, self._palette_dock, Qt.Orientation.Vertical
         )
-        grid = self._palette_panel.full_grid_height() + 2 * holder.frameWidth()
-        wanted = (
-            self._palette_dock.sizeHint().height() - holder.sizeHint().height() + grid
-        )
+        wanted = self._palette_dock.sizeHint().height()
         self.resizeDocks(
             [self._files_dock, self._palette_dock],
             [max(1, self.height() - wanted), wanted],
@@ -328,26 +331,55 @@ class PaletteDockMixin:
         self._quantize_palette_action.setVisible(mode is PaletteMode.CUSTOM)
         self._refresh_palette_file_label()
         self._sync_palette_export_action()
+        self._sync_palette_mode_items()
+        # A file palette is Ctrl+W's second target, so loading or dropping one
+        # changes what Write has to offer.
+        self._sync_write_action()
 
     def _sync_palette_export_action(self) -> None:
         """Arm the dock's Export to File button iff there is a palette to write."""
         self._export_palette_action.setEnabled(
-            self._doc is not None and self._palette_mode.is_exportable
+            self._palette_doc() is not None and self._palette_mode.is_exportable
         )
+
+    def _sync_palette_mode_items(self) -> None:
+        """Grey out the load modes that have no graphic to act on.
+
+        Offset reads the graphic's own bytes, and Default/Custom/Emulator all
+        store their colors *into* one (an edit to either of the last two forks a
+        Custom palette, which lives in the graphic's project record). With
+        nothing open only File means anything - open a ``.pal`` and edit it on
+        its own - so the rest are disabled rather than answering "Open pixel
+        data first" to a click that looked available.
+        """
+        graphic = self._doc is not None
+        for index in range(self._palette_mode_combo.count()):
+            mode = PaletteMode.parse(self._palette_mode_combo.itemData(index))
+            # Default stays selectable with nothing open: it is the resting
+            # state the dock shows read-only, and picking it is how you put a
+            # standalone palette away again.
+            enabled = graphic or mode in (PaletteMode.FILE, PaletteMode.DEFAULT)
+            item = self._palette_mode_combo.model().item(index)
+            if item is not None:
+                item.setEnabled(enabled)
 
     def _refresh_palette_file_label(self) -> None:
         """Point the dock's file label at the palette's external source.
 
         Only the file/emulator modes have one. A degraded source (mode kept,
         file gone - see ``Entry.missing_palette``) still names its intended
-        file, marked missing; otherwise the path is read off the live config.
+        file, marked missing; otherwise the path is read off the live config -
+        or off the previewed entry, which has no document behind it.
         """
         path, missing = None, False
-        if self._doc is not None and self._palette_mode.has_external_file:
-            path = self._doc.palette_config.source.path or None
+        doc = self._palette_doc()
+        if doc is not None and self._palette_mode.has_external_file:
+            path = doc.palette_config.source.path or None
             entry = self._workspace.current
             if path is None and entry is not None and entry.missing_palette:
                 path, missing = entry.missing_palette.path, True
+        elif doc is None and self._preview_palette is not None:
+            path = self._preview_palette.path
         if path is None:
             self._palette_file_label.hide()
             return

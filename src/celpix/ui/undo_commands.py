@@ -14,7 +14,9 @@ classes here:
 
 - **Document-scoped commands carry their entry and re-activate it** before
   applying, so undoing a change made in another entry first switches the view
-  back to where that change happened.
+  back to where that change happened. The two *editing* commands carry the
+  tile/pixel edit mode alongside it (``_ensure_edit_context``): the same bytes
+  are edited from either mode, and a step reverts where it was made.
 - **Entry lifecycle is itself on the stack** (`AddEntryCommand` /
   `RemoveEntriesCommand`, which keep the removed `Entry` *objects*), so a
   command can never reference an entry that chronology hasn't restored yet.
@@ -302,6 +304,7 @@ class PixelEditCommand(QUndoCommand):
         super().__init__(text)
         self._window = window
         self._entry = entry
+        self._mode = window._edit_mode  # reverted where it was made (see below)
         self._start = start
         self._before = before
         self._after = after
@@ -312,14 +315,14 @@ class PixelEditCommand(QUndoCommand):
 
     def redo(self) -> None:
         with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
+            if self._window._ensure_edit_context(self._entry, self._mode):
                 self._window._apply_pixel_bytes(
                     self._start, self._after, self._after_revision
                 )
 
     def undo(self) -> None:
         with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
+            if self._window._ensure_edit_context(self._entry, self._mode):
                 self._window._apply_pixel_bytes(
                     self._start, self._before, self._before_revision
                 )
@@ -373,6 +376,7 @@ class PixelSelectionCommand(QUndoCommand):
         super().__init__(text)
         self._window = window
         self._entry = entry
+        self._mode = window._edit_mode  # a pixel selection exists only in one
         # Copied: the caller's rectangles are the live marquee, which moves on.
         self._before = None if before is None else QRect(before)
         self._after = None if after is None else QRect(after)
@@ -381,12 +385,12 @@ class PixelSelectionCommand(QUndoCommand):
 
     def redo(self) -> None:
         with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
+            if self._window._ensure_edit_context(self._entry, self._mode):
                 self._window._apply_marquee(self._after, self._after_float)
 
     def undo(self) -> None:
         with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
+            if self._window._ensure_edit_context(self._entry, self._mode):
                 self._window._apply_marquee(self._before, self._before_float)
 
 

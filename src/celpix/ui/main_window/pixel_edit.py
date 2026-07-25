@@ -30,9 +30,14 @@ gesture, leaving pixel mode, switching entry, a write), and only then does one
 edit blank the source and overwrite the destination. Everything else about a
 float is display state, which is why undo can carry one (:class:`FloatState`):
 dropping it back out of the air reveals the pixels exactly where they still are.
+Coming down is one step *with* the float (see :meth:`_float_leaves_the_air`), so
+undoing a landing lifts the same pixels back up rather than leaving them looking
+floating but really down.
 """
 
 from __future__ import annotations
+
+from contextlib import contextmanager
 
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor
@@ -465,6 +470,10 @@ class PixelEditMixin:
             return
         self._lifted_on_press = False
         self._commit_float()  # pressing away from the pixels sets them down
+        # Landing those pixels was a step of its own, and it dropped the selection
+        # with them — so what this gesture began with is what is left after it,
+        # not the rectangle that was on the float (see _marquee_release).
+        self._marquee_before = self._marquee
         self._marquee_anchor = (x, y)
         self._marquee = QRect(x, y, 1, 1)
         self._canvas.set_marquee(self._marquee)
@@ -487,6 +496,7 @@ class PixelEditMixin:
             self._refresh_view()  # repaint over the blanked-source preview
         else:
             self._commit_float()
+            self._marquee_before = self._marquee  # that landing was its own step
         grid = self._window_grid()
         if grid is None:
             return
@@ -650,6 +660,7 @@ class PixelEditMixin:
         source = self._float_source_rect
         moved = source is not None
         landed = self._float_rect()
+        state = FloatState(float_grid, source)
         base = self._window_grid()
         self._clear_float()
         if keep_selection:
@@ -658,18 +669,17 @@ class PixelEditMixin:
                 self._canvas.set_marquee(landed)
         if base is None:
             return
+        text = "move pixels" if moved else "paste pixels"
         dest = self._clone_grid(base)
         if source is not None:
             self._blank_rect(dest, source)
         draw.blit_region(dest, float_grid, fx, fy)
-        # Landing a float is a selection gesture, not a paint: if it never left
-        # home there is nothing to record, so no empty step.
-        self._commit_grid(
-            dest,
-            base,
-            "move pixels" if moved else "paste pixels",
-            no_op_step=False,
-        )
+        with self._float_leaves_the_air(
+            text, state, was=landed, becomes=landed if keep_selection else None
+        ):
+            # Landing a float is a selection gesture, not a paint: if it never left
+            # home there is nothing to record, so no empty step.
+            self._commit_grid(dest, base, text, no_op_step=False)
 
     def _discard_float(self, text: str) -> None:
         """Take the floating pixels out of the air without setting them down.
@@ -678,16 +688,54 @@ class PixelEditMixin:
         so cutting or clearing a float means "these pixels are deleted", not "put
         them back". A paste owes no hole, so discarding one writes nothing.
         """
+        if self._float_grid is None:
+            return
         source = self._float_source_rect
+        state = FloatState(self._float_grid, source)
+        was = self._float_rect()
         base = self._window_grid()
         self._clear_float()
-        if source is None or base is None:
-            if self._doc is not None:
-                self._refresh_view()  # take the float's overlay off the canvas
+        with self._float_leaves_the_air(text, state, was=was, becomes=None):
+            if source is None or base is None:
+                if self._doc is not None:
+                    self._refresh_view()  # take the float's overlay off the canvas
+                return
+            dest = self._clone_grid(base)
+            self._blank_rect(dest, source)
+            self._commit_grid(dest, base, text, no_op_step=False)
+
+    @contextmanager
+    def _float_leaves_the_air(
+        self,
+        text: str,
+        state: FloatState,
+        *,
+        was: QRect | None,
+        becomes: QRect | None,
+    ):
+        """Group the bytes a float writes on its way down with the float itself.
+
+        Pixels in the air are display state, so the write is only half of what
+        taking them out of the air did: the other half is the float, and undo has
+        to put that back too. Without it the bytes revert underneath a *landed*
+        selection — pixels sitting at the destination they were dragged to, but
+        now really there and owing no hole — so moving them again would blank the
+        destination instead of the place they came from.
+
+        Both halves go on the stack as one macro, the float state pushed first so
+        undo restores the bytes and *then* lifts the pixels back over them. A no-op
+        while a command is applying (nothing may push from there) and with no
+        current entry, where an empty macro is all it could leave behind.
+        """
+        if self._applying_undo or self._workspace.current is None:
+            yield
             return
-        dest = self._clone_grid(base)
-        self._blank_rect(dest, source)
-        self._commit_grid(dest, base, text, no_op_step=False)
+        self._undo_stack.beginMacro(text)
+        try:
+            self._push_pixel_interaction(was, becomes, text, before_float=state)
+            yield
+        finally:
+            self._undo_stack.endMacro()
 
     def _float_rect(self) -> QRect | None:
         """Where the floating pixels are, or None with nothing in the air."""
@@ -915,8 +963,8 @@ class PixelEditMixin:
         if region is None:
             self.statusBar().showMessage("Nothing on the clipboard to paste here.")
             return
+        self._commit_float()  # set any live float down first (its own step)
         before = None if self._marquee is None else QRect(self._marquee)
-        self._commit_float()  # set any live float down first
         self._float_grid = region
         self._float_pos = self._centred_position(region.width, region.height)
         self._float_source_rect = None  # a paste lifted nothing, so it owes no hole

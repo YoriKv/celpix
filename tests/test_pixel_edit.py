@@ -485,6 +485,38 @@ def test_undoing_a_move_takes_the_pixels_back_out_of_the_air(qtbot, tmp_path) ->
     assert window._float_source_rect == QRect(0, 0, 2, 2)  # still owes its hole
 
 
+def test_undoing_a_landing_puts_the_pixels_back_in_the_air(qtbot, tmp_path) -> None:
+    """Undoing a float's landing lifts the same float again - hole and all.
+
+    The screen looks the same either side of a landing, so an undo that reverted
+    only the bytes would leave pixels that read as floating but are really down:
+    the next drag would then blank the destination they were sitting on rather
+    than the place they came from.
+    """
+    window = _window(qtbot, tmp_path)
+    window._tool = Tool.SELECT
+    src, dest = _pixel(window, 0, 0), _pixel(window, 6, 6)
+    window._marquee = QRect(0, 0, 2, 2)
+    _move_selection(window, (0, 0), (6, 6))
+    steps = window._undo_stack.count()
+    _move_selection(window, (14, 14), (14, 14))  # a click away lands them...
+    assert window._undo_stack.count() == steps + 1  # ...as one step, not two
+    assert _pixel(window, 0, 0) == 0 and _pixel(window, 6, 6) == src
+
+    window._undo_stack.undo()
+    assert window._float_grid is not None  # back in the air...
+    assert window._marquee == QRect(6, 6, 2, 2)
+    assert window._float_source_rect == QRect(0, 0, 2, 2)  # ...still owing its hole
+    assert _pixel(window, 0, 0) == src and _pixel(window, 6, 6) == dest
+
+    # So dragging on blanks where the pixels came from, not where they hovered.
+    _move_selection(window, (6, 6), (10, 4))
+    window._pixel_key(Qt.Key.Key_Escape, False, False)
+    assert _pixel(window, 0, 0) == 0
+    assert _pixel(window, 6, 6) == dest
+    assert _pixel(window, 10, 4) == src
+
+
 def test_paste_floats_centred_on_the_view_until_it_is_dropped(qtbot, tmp_path) -> None:
     window = _window(qtbot, tmp_path)
     window._tool = Tool.SELECT
@@ -521,6 +553,13 @@ def test_cutting_a_float_deletes_it_without_setting_it_down(qtbot, tmp_path) -> 
     assert window._float_grid is None and window._marquee is None
     assert _pixel(window, 0, 0) == 0  # the hole the move owed
     assert _pixel(window, 6, 6) == dest and dest != src  # nothing landed
+
+    # Throwing a float away is one step with the hole it wrote, so undo lifts
+    # those pixels back into the air rather than leaving them deleted.
+    window._undo_stack.undo()
+    assert window._float_grid is not None
+    assert window._float_source_rect == QRect(0, 0, 2, 2)
+    assert _pixel(window, 0, 0) == src
 
 
 def test_moving_the_view_sets_a_floating_selection_down(qtbot, tmp_path) -> None:
@@ -902,37 +941,42 @@ def test_canvas_double_click_reports_a_pixel_and_ends_the_drag(qtbot) -> None:
     assert seen == [(2, 3)]
 
 
-def test_undoing_a_pixel_selection_paints_nothing_in_tile_mode(qtbot, tmp_path) -> None:
-    """Stepping the history past a pixel selection while tile editing must not
-    touch the canvas.
+def test_history_steps_revert_in_the_mode_they_were_made_in(qtbot, tmp_path) -> None:
+    """An editing step takes the window back to the mode that made it, both ways.
 
-    Undo still restores the selection wherever the history is walked — that is
-    what keeps the stack honest — but a pixel-space rectangle drawn over the tile
-    view is a stray outline the user has no way to explain or dismiss. Asserted
-    on the *rendered* canvas rather than the marquee state, because restoring the
-    state is correct; only painting it here is not.
+    The same bytes are edited from either mode, so a revert landing in the other
+    one changes something the user can't place: a stroke undone under the tile
+    grid, a pixel selection restored as an outline the tile view can't explain, or
+    a tile flip reverting while they are painting pixels.
     """
-    from PySide6.QtGui import QPixmap
-
     window = _window(qtbot, tmp_path)
     window._tool = Tool.SELECT
+    window._on_pixel_pressed(1, 1, Qt.MouseButton.LeftButton)
+    window._on_pixel_moved(5, 5)
+    window._on_pixel_released(5, 5)  # a pixel-mode step: the selection
 
-    def drag(x0: int, y0: int, x1: int, y1: int) -> None:
-        window._on_pixel_pressed(x0, y0, Qt.MouseButton.LeftButton)
-        window._on_pixel_moved(x1, y1)
-        window._on_pixel_released(x1, y1)
-
-    drag(1, 1, 5, 5)  # a selection...
-    drag(9, 9, 13, 13)  # ...replaced, so undoing restores a *non-empty* one
+    # A tile-mode step on top of it, so the history spans both modes.
     window._set_edit_mode(EditMode.TILE)
+    window._on_tiles_selected(0, 0)
+    flipped = _pixel(window, 0, 0)
+    window._transform_tiles(FLIP_H)
+    assert _pixel(window, 0, 0) != flipped
 
-    def canvas_pixels() -> bytes:
-        pixmap = QPixmap(window._canvas.size())
-        pixmap.fill()
-        window._canvas.render(pixmap)
-        return pixmap.toImage().constBits().tobytes()
-
-    before = canvas_pixels()
+    # Undoing the flip from pixel mode goes back to the tile view it happened in.
+    window._set_edit_mode(EditMode.PIXEL)
     window._undo_stack.undo()
-    assert window._marquee == QRect(1, 1, 5, 5)  # the state is restored...
-    assert canvas_pixels() == before  # ...but nothing about the view changed
+    assert window._edit_mode is EditMode.TILE
+    assert _pixel(window, 0, 0) == flipped
+
+    # ...and the step below it belongs to pixel mode, so undo swaps back again.
+    window._undo_stack.undo()
+    assert window._edit_mode is EditMode.PIXEL
+    assert window._marquee is None  # the selection this step made, taken back
+
+    # Redo returns to the mode each step was made in just the same.
+    window._undo_stack.redo()
+    assert window._edit_mode is EditMode.PIXEL
+    assert window._marquee == QRect(1, 1, 5, 5)
+    window._undo_stack.redo()
+    assert window._edit_mode is EditMode.TILE
+    assert _pixel(window, 0, 0) != flipped

@@ -50,6 +50,10 @@ packages = ["src/celpix"]
 line-length = 88
 target-version = "py39"
 src = ["src", "tests"]
+# One line per finding, no echoed source. The full form re-prints whole import
+# blocks for a single sorting complaint, which is noise in a terminal and costly
+# to read back through tooling.
+output-format = "concise"
 
 [tool.ruff.lint]
 # A pragmatic modern default: pyflakes/pycodestyle errors, import sorting,
