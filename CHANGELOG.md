@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.5 - unreleased
+## v0.2.5 - 2026-07-25
 
 - **Performance**: big performance improvement pass.
 - **Keyboard Shortcuts**: `H`/`V` flip and `C`/`X` rotate from the transform bar,
