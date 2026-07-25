@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.3 - unreleased
+## v0.2.3 - 2026-07-24
 
 - Fixed a bug with floating selection and undo
 - Undo/redo and palette grid cleanup
