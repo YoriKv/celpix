@@ -28,6 +28,7 @@ model — decode and save are unaffected; only what reaches the canvas is window
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 
 from celpix.core import ceil_div
 from celpix.core.index_grid import IndexGrid
@@ -148,29 +149,41 @@ class BlockLayout:
     block_rows: int = 1
     block_order: str = "row"
 
-    @property
+    # The three derived sizes below are read several times per slot mapped, and a
+    # window maps thousands of slots per repaint — so they are computed once per
+    # layout rather than per lookup. Cached on the instance, which is safe because
+    # the dataclass is frozen: the inputs cannot change under the cache.
+    @cached_property
     def is_plain(self) -> bool:
         """True when placement is plain row-major (no block grouping)."""
         return self._bc == 1 and self._br == 1
 
-    @property
+    @cached_property
     def _bc(self) -> int:
         # A block can't be wider than the canvas; clamp so partial-width blocks
         # never place tiles past the right edge.
         return max(1, min(self.block_columns, self.columns))
 
-    @property
+    @cached_property
     def _br(self) -> int:
         return max(1, self.block_rows)
 
-    @property
+    @cached_property
     def _blocks_per_row(self) -> int:
         return max(1, self.columns // self._bc)
 
+    @cached_property
+    def slots_per_block_row(self) -> int:
+        """How many linear slots one row of blocks holds — the mapping's period."""
+        return self._blocks_per_row * self._bc * self._br
+
     def slot_to_cell(self, slot: int) -> tuple[int, int]:
         """The ``(tile_x, tile_y)`` canvas cell a linear slot lands in."""
+        if self.is_plain:  # every term below collapses; skip the block arithmetic
+            cols = self._blocks_per_row  # 1×1 blocks: one per column, clamped ≥ 1
+            return slot % cols, slot // cols
         bc, br, bpr = self._bc, self._br, self._blocks_per_row
-        per_blockrow = bpr * bc * br
+        per_blockrow = self.slots_per_block_row
         blockrow, rem = divmod(slot, per_blockrow)
         if self.block_order == "row-interleave":
             inner_y, across = divmod(rem, bpr * bc)
@@ -186,6 +199,9 @@ class BlockLayout:
     def cell_to_slot(self, tile_x: int, tile_y: int) -> int | None:
         """The linear slot at cell ``(tile_x, tile_y)`` — ``None`` if no tile
         maps there (a partial-width block column past the last whole block)."""
+        if self.is_plain:
+            cols = self._blocks_per_row
+            return None if tile_x >= cols else tile_y * cols + tile_x
         bc, br, bpr = self._bc, self._br, self._blocks_per_row
         blockrow, inner_y = divmod(tile_y, br)
         block_x, inner_x = divmod(tile_x, bc)
@@ -250,9 +266,12 @@ def _compose(
     bpx = tiles[0].bytes_per_pixel
     image = type(tiles[0])(cols * tw, rows * th)
     dst = image.data
-    dst_stride = cols * tw * bpx
-    src_stride = tw * bpx
     row_bytes = tw * bpx
+    if layout.is_plain:
+        _compose_plain(dst, tiles, cols, rows, th, row_bytes, first_tile)
+        return image
+    dst_stride = cols * tw * bpx
+    src_stride = row_bytes
     for slot in range(cols * rows):
         idx = first_tile + slot
         if idx < 0 or idx >= len(tiles):
@@ -268,6 +287,41 @@ def _compose(
             s0 = y * src_stride
             dst[d0 : d0 + row_bytes] = src[s0 : s0 + row_bytes]
     return image
+
+
+def _compose_plain(
+    dst: bytearray,
+    tiles: list,
+    cols: int,
+    rows: int,
+    th: int,
+    row_bytes: int,
+    first_tile: int,
+) -> None:
+    """Blit a row-major window, one whole image row per write.
+
+    The plain layout puts a cell row's tiles side by side, so each image row is
+    the concatenation of the same pixel row of ``cols`` consecutive tiles — one
+    ``join`` and one store, instead of a slice assignment per tile per row. The
+    difference is the whole cost of composing when the tiles are small: a bitmap
+    width can cut a window into tens of thousands of them.
+    """
+    blank = bytes(th * row_bytes)  # a whole missing tile: past the end, or before it
+    datas = [tile.data for tile in tiles]
+    count = len(datas)
+    span = cols * row_bytes
+    pos = 0
+    for cell_y in range(rows):
+        base = first_tile + cell_y * cols
+        row_tiles = [
+            datas[idx] if 0 <= idx < count else blank
+            for idx in range(base, base + cols)
+        ]
+        for y in range(th):
+            start = y * row_bytes
+            stop = start + row_bytes
+            dst[pos : pos + span] = b"".join(src[start:stop] for src in row_tiles)
+            pos += span
 
 
 def split_grid(
@@ -406,7 +460,23 @@ def reflow_2d(
     if pad:
         window = window + bytes(pad)
     out = bytearray(len(window))
+    # Within one bitmap-row the gather is a transpose of a th × cols grid of
+    # row_bytes-sized chunks, and either axis can drive it. Walking the *chunk
+    # bytes* moves one strided slice per (pixel row, byte) instead of a contiguous
+    # copy per (tile, pixel row) — far fewer, larger operations whenever a tile's
+    # pixel row is narrower than the bitmap is wide, which is the usual shape.
+    strided = row_bytes < cols
     for stripe_base in range(0, len(window), stripe):
+        if strided:
+            end = stripe_base + cols * bytes_per_tile
+            for pixel_row in range(th):
+                src = stripe_base + pixel_row * (cols * row_bytes)
+                dst = stripe_base + pixel_row * row_bytes
+                for byte in range(row_bytes):
+                    out[dst + byte : end : bytes_per_tile] = window[
+                        src + byte : src + cols * row_bytes : row_bytes
+                    ]
+            continue
         for tile_x in range(cols):
             tile_base = stripe_base + tile_x * bytes_per_tile
             for pixel_row in range(th):

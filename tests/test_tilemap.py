@@ -161,6 +161,57 @@ def test_the_toggle_takes_the_map_out_of_the_read_path(qtbot, tmp_path) -> None:
     assert window._decode_run(0, 2) == window._decode_actual_run(0, 2)
 
 
+def test_r_arms_the_tool_and_shift_r_swaps_the_view(qtbot, tmp_path) -> None:
+    """Both keys go through their actions, so they carry the actions' side
+    effects: arming forces the rearranged view back on, and turning that view off
+    disarms the tool."""
+    window = _window(qtbot, tmp_path)
+    window._toggle_show_rearranged()
+    assert not window._show_rearranged
+
+    window._toggle_rearranging()
+    assert window._rearranging
+    assert window._show_rearranged  # arming brought the view back with it
+
+    window._toggle_show_rearranged()
+    assert not window._show_rearranged and not window._rearranging
+
+
+def test_both_switches_are_dead_with_nothing_open(qtbot, tmp_path, monkeypatch) -> None:
+    """They are shown in the Edit menu as well as on the transform bar, and a
+    menu row does not inherit that bar's disabled state — so the no-document
+    state has to reach the actions themselves, on a fresh window and again when
+    the last entry closes."""
+    from PySide6.QtWidgets import QMessageBox
+
+    def switches(win) -> list[bool]:
+        return [
+            win._rearrange_action.isEnabled(),
+            win._show_rearranged_action.isEnabled(),
+        ]
+
+    fresh = MainWindow()
+    qtbot.addWidget(fresh)
+    assert switches(fresh) == [False, False]
+
+    window = _window(qtbot, tmp_path)
+    assert switches(window) == [True, True]
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    window._remove_entry(window._workspace.current)
+    assert switches(window) == [False, False]
+
+
+def test_the_rearrange_keys_are_inert_under_a_2d_pattern(qtbot, tmp_path) -> None:
+    """The 2D lockout disables both actions, and the keys press those actions —
+    so the lockout covers the keyboard without knowing the keys exist."""
+    window = _window(qtbot, tmp_path)
+    window._two_d.setChecked(True)
+    window._toggle_rearranging()
+    assert not window._rearranging
+
+
 def test_a_pixel_edit_writes_back_to_the_tiles_real_home(qtbot, tmp_path) -> None:
     """The whole point: paint at the position a tile is *shown*, and its own
     bytes change — the tile that normally lives there is untouched."""
@@ -218,7 +269,7 @@ def test_h_and_v_keys_flip_the_carried_tile_and_commit_with_the_drop(
     window = _window(qtbot, tmp_path)
     window._set_rearranging(True)
     window._on_rearrange_started(0)
-    assert window._rearrange_key(Qt.Key.Key_H, False, False)
+    assert window._transform_key(Qt.Key.Key_H, False, False)
     assert window._rearrange_drag.flip == TILE_FLIP_H
     assert window._tile_map.is_identity()  # pending, not committed
     window._on_rearrange_dropped(3)
@@ -235,16 +286,26 @@ def test_picking_a_tile_up_and_putting_it_back_flipped_is_a_step(
     window = _window(qtbot, tmp_path)
     window._set_rearranging(True)
     window._on_rearrange_started(5)
-    window._rearrange_key(Qt.Key.Key_V, False, False)
+    window._transform_key(Qt.Key.Key_V, False, False)
     window._on_rearrange_dropped(5)  # back where it came from
     assert window._tile_map == TileMap().flip([5], TILE_FLIP_V)
 
 
-def test_the_keys_are_inert_while_the_tool_is_not_armed(qtbot, tmp_path) -> None:
+def test_the_flip_key_follows_the_group_on_the_transform_bar(qtbot, tmp_path) -> None:
+    """H is the bar's key, not the tool's: with the tool off it presses the
+    destructive Tile flip, and only while armed does it write the display map."""
     window = _window(qtbot, tmp_path)
     window._select_tiles(2, 2)
-    assert not window._rearrange_key(Qt.Key.Key_H, False, False)
-    assert window._tile_map.is_identity()
+    before = _tile_bytes(window, 2)
+    assert window._transform_key(Qt.Key.Key_H, False, False)
+    assert window._tile_map.is_identity()  # nothing display-only happened...
+    assert _tile_bytes(window, 2) != before  # ...the pixels were rewritten
+
+    window._set_rearranging(True)
+    after_edit = _tile_bytes(window, 2)
+    assert window._transform_key(Qt.Key.Key_H, False, False)
+    assert window._tile_map == TileMap().flip([2], TILE_FLIP_H)
+    assert _tile_bytes(window, 2) == after_edit  # no byte moved this time
 
 
 def test_a_rearranged_block_flip_looks_like_the_destructive_one(
@@ -294,11 +355,11 @@ def test_shift_h_and_v_drive_the_block_flip(qtbot, tmp_path) -> None:
     window._block_rows.setValue(2)
     window._select_tiles(0, 0)
     window._set_rearranging(True)
-    assert window._rearrange_key(Qt.Key.Key_H, True, False)
+    assert window._transform_key(Qt.Key.Key_H, True, False)
     assert window._tile_map.pairs  # positions moved: a block flip, not a tile one
     # Bare H is still the per-tile flip, which never moves anything.
     window._undo_stack.undo()
-    assert window._rearrange_key(Qt.Key.Key_H, False, False)
+    assert window._transform_key(Qt.Key.Key_H, False, False)
     assert not window._tile_map.pairs and window._tile_map.flips
 
 

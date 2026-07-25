@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.5 - unreleased
+
+- **Performance**: big performance improvement pass.
+- **Keyboard Shortcuts**: `H`/`V` flip and `C`/`X` rotate from the transform bar,
+  `Shift` for the block transforms. `R` for the rearrange tool and `Shift+R` swaps its view.
+- More fixes
+
 ## v0.2.4 - 2026-07-24
 
 - **Rearrange tool**: drag and mirror tiles into a readable order for

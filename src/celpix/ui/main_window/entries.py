@@ -10,6 +10,15 @@ The jumps share one body (:meth:`_jump_into_parent`): they differ only in which
 snapshot they install on the parent before re-reading it. Writing is per pathway
 - a palette-only edit leaves the graphic untouched, since the two live in
 different files.
+
+Removal closes the list off at the other end, and is the one path that has to
+look outside the entry being removed: a file takes its slices and bookmarks with
+it, and a **palette** other graphics are rendering with cannot simply vanish -
+each user is re-homed onto a Custom copy of its colors first, as one undoable
+step, so nothing is left pointing at a palette that is gone.
+
+What happens when the view *moves* between these entries is
+:mod:`~celpix.ui.main_window.session`'s, not this module's.
 """
 
 from __future__ import annotations
@@ -41,6 +50,9 @@ from celpix.project.workspace import (
 from celpix.ui.slice_dialog import SliceDialog
 from celpix.ui.undo_commands import (
     AddEntryCommand,
+    PaletteUserLink,
+    RemoveEntriesCommand,
+    RemovePaletteWithUsersCommand,
     SliceEditCommand,
 )
 
@@ -654,6 +666,20 @@ class EntriesMixin:
         entry.slice_offset = params.offset
         entry.slice_length = params.length
         entry.decompress_id = params.decompress_id
+        # How the region is *read* and *laid out* belongs to the entry, not to
+        # the coordinates: re-pointing changes which bytes arrive, not the
+        # format or arrangement they arrive in. The session snapshot only
+        # tracks the live toolbar at explicit capture points, and the view lives
+        # on the document about to be dropped - so both are taken here, or the
+        # re-read comes back on the entry's stale format and the codec's default
+        # geometry, silently dropping a wide-bitmap width (which _load_entry
+        # needs *before* the load, to re-cut the tile size) along with the
+        # columns, zoom and 2D walk built around it. Undo runs through here too,
+        # so it restores the setup its own re-read is about to discard.
+        if entry is self._workspace.current:
+            self._capture_session()
+        if entry.doc is not None:
+            entry.pending_view = entry.doc.view
         # Pixel edits die with the old region; the palette does not - it isn't
         # tied to the slice's coordinates, so drop_document carries it across.
         # Nothing is unsaved once the edits themselves are gone.
@@ -887,3 +913,115 @@ class EntriesMixin:
         )
         self._seed_slice_from_parent(entry)
         self._push_command(AddEntryCommand(self, entry, f'new slice "{entry.name}"'))
+
+    # -- removal -------------------------------------------------------------
+    def _remove_entry(self, entry: Entry) -> None:
+        """Remove ``entry`` from the list (a file takes its slices and
+        bookmarks with it), always confirming first - Remove is also on the
+        Delete key, and a slip there costs the entry's whole session setup."""
+        if entry.kind is EntryKind.PALETTE:
+            # The current graphic's palette mode is only written to its session on
+            # a switch, so snapshot it first - otherwise a palette in use *right
+            # now* looks unused and would be dropped without re-homing it.
+            self._capture_session()
+            users = self._workspace.palette_users(entry)
+            if users:
+                self._remove_used_palette(entry, users)
+                return
+        victims = [entry, *self._workspace.children_of(entry)]
+        dirty = [e.name for e in victims if e.pixel_dirty or e.palette_dirty]
+        message = f"Remove {entry.name}?"
+        parts = []
+        counts = [
+            f"{n} {label}(s)"
+            for label, n in (
+                ("slice", sum(e.kind is EntryKind.SLICE for e in victims[1:])),
+                ("bookmark", sum(e.kind is EntryKind.BOOKMARK for e in victims[1:])),
+            )
+            if n
+        ]
+        if counts:
+            parts.append(f"removes its {' and '.join(counts)}")
+        if dirty:
+            parts.append(f"discards unsaved changes ({', '.join(dirty)})")
+        if parts:
+            message = f"Remove {entry.name}? This also " + " and ".join(parts) + "."
+        answer = QMessageBox.question(self, "celPix - remove", message)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        entries = self._workspace.entries
+        self._push_command(
+            RemoveEntriesCommand(
+                self,
+                entry,
+                victims=[(entries.index(e), e) for e in victims],
+                was_current=self._workspace.current,
+            )
+        )
+
+    def _remove_used_palette(self, palette: Entry, users: list[Entry]) -> None:
+        """Confirm, then remove a file palette that graphics use - re-homing each
+        graphic onto a Custom copy so none is left rendering a palette that's gone.
+
+        The user is told exactly where it is used before the colors are frozen into
+        each graphic's own Custom palette. Undoable as one step.
+        """
+        names = ", ".join(u.name for u in users)
+        answer = QMessageBox.question(
+            self,
+            "celPix - remove palette",
+            f"Remove {palette.name}? It is used by {len(users)} "
+            f"graphic(s): {names}.\n\nEach keeps these colors as its own custom "
+            "palette, stored in the project.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        index = self._workspace.entries.index(palette)
+        links = []
+        for user in users:
+            src = palette_source_for(user)
+            links.append(
+                PaletteUserLink(
+                    entry=user,
+                    path=src.path if src and src.path else palette.path,
+                    offset=src.offset if src else 0,
+                    preset_id=(
+                        user.session.palette_preset_id
+                        if user.session is not None
+                        else self._palette_preset_id()
+                    ),
+                    loaded=user.doc is not None,
+                )
+            )
+        self._push_command(
+            RemovePaletteWithUsersCommand(self, palette, index=index, users=links)
+        )
+
+    def _apply_remove_palette_to_custom(
+        self, palette: Entry, users: list[PaletteUserLink]
+    ) -> None:
+        """Freeze the palette's colors into each user as a Custom copy, then drop
+        the palette from the list - :class:`RemovePaletteWithUsersCommand`'s redo."""
+        colors = self._file_palette_colors(palette)
+        preset = palette.palette_preset_id or self._palette_preset_id()
+        for link in users:
+            self._convert_user_to_custom(link.entry, colors, preset)
+        self._workspace.close(palette)
+        self._refresh_current_palette()
+
+    def _apply_restore_palette_users(
+        self, palette: Entry, index: int, users: list[PaletteUserLink]
+    ) -> None:
+        """Re-register the palette and relink every user - the command's undo."""
+        self._workspace.insert(palette, index)
+        for link in users:
+            self._relink_user_to_file_palette(link)
+        self._refresh_current_palette()
+
+    def _refresh_current_palette(self) -> None:
+        """Re-apply the current entry's (possibly changed) palette to the dock and
+        canvas after a re-home, so the on-screen mode/label follow the entry."""
+        current = self._workspace.current
+        if current is not None and current.doc is not None:
+            self._restore_session(current)
+        self._refresh_view()

@@ -218,14 +218,22 @@ def extract_region(grid: Grid, x: int, y: int, w: int, h: int) -> Grid:
     copy.
     """
     out = type(grid)(max(0, w), max(0, h))
+    # A row at a time: a lifted selection can be the whole window, and every
+    # rearrange or marquee drag re-lifts it as the cursor moves.
+    bpx = grid.bytes_per_pixel
+    left = max(0, -x)
+    right = min(w, grid.width - x)
+    if right <= left:
+        return out
+    src, dst = grid.data, out.data
+    span = (right - left) * bpx
     for yy in range(h):
         sy = y + yy
         if not (0 <= sy < grid.height):
             continue
-        for xx in range(w):
-            sx = x + xx
-            if 0 <= sx < grid.width:
-                out.set(xx, yy, grid.get(sx, sy))
+        s0 = (sy * grid.width + x + left) * bpx
+        d0 = (yy * w + left) * bpx
+        dst[d0 : d0 + span] = src[s0 : s0 + span]
     return out
 
 
@@ -239,14 +247,28 @@ def blit_region(
     non-rectangular stamp can preserve the pixels around it; ``None`` copies every
     pixel verbatim.
     """
+    left = max(0, -x)
+    right = min(src.width, dst.width - x)
+    if right <= left:
+        return
+    if transparent is None:
+        # Nothing to test per pixel, so the clipped span copies as one row.
+        bpx = dst.bytes_per_pixel
+        src_buf, dst_buf = src.data, dst.data
+        span = (right - left) * bpx
+        for yy in range(src.height):
+            dy = y + yy
+            if not (0 <= dy < dst.height):
+                continue
+            s0 = (yy * src.width + left) * bpx
+            d0 = (dy * dst.width + x + left) * bpx
+            dst_buf[d0 : d0 + span] = src_buf[s0 : s0 + span]
+        return
     for yy in range(src.height):
         dy = y + yy
         if not (0 <= dy < dst.height):
             continue
-        for xx in range(src.width):
-            dx = x + xx
-            if not (0 <= dx < dst.width):
-                continue
+        for xx in range(left, right):
             value = src.get(xx, yy)
-            if transparent is None or value != transparent:
-                dst.set(dx, dy, value)
+            if value != transparent:
+                dst.set(x + xx, dy, value)

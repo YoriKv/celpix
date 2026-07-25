@@ -33,8 +33,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from enum import Enum
 
-from PySide6.QtCore import QPointF, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QRegion
+from PySide6.QtCore import QPoint, QPointF, QRect, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import QWidget
 
 from celpix.core.arrangement import BlockLayout
@@ -89,6 +89,54 @@ _GRID_PEN_STYLES = {
     GridStyle.DASH: Qt.PenStyle.DashLine,
     GridStyle.LINE: Qt.PenStyle.SolidLine,
 }
+
+# The grid is periodic, so it is painted as a repeating pixmap rather than line by
+# line. That is not a micro-optimisation: Qt's raster engine strokes a *translucent*
+# one-pixel line at roughly two hundred times the cost per pixel of blitting one, so
+# a full repaint of a large window at high zoom spent longer on the lattice than on
+# the art. Blitting a prepared cell composites identically — source-over is
+# associative, so blending the crossings into the cell first and the cell onto the
+# canvas after lands on the same colours.
+#
+# The cell spans one coarse block, which is the mapping's true period. Past this
+# many pixels a side it is not worth holding (the cap is one tile at the maximum
+# zoom), and a cell that large means so few lines that stroking them is cheap
+# anyway — so the line path below stays as the fallback rather than as dead code.
+#
+# Solid lines and corner dots come out pixel-identical this way. The dotted and
+# dashed styles restart their dash phase at each repeat, where one long stroke
+# would have carried it the length of the line: a one- or two-pixel shift in the
+# rhythm, once every coarse block, landing on the coarse line that crosses there.
+# The phase is texture rather than information, so it is not worth a cell sized to
+# the lowest common multiple of the two periods — that is up to nine times the
+# area, which would push every ordinary zoom back onto the slow path.
+GRID_PATTERN_MAX = 1024
+
+
+class _GridPattern:
+    """One period of the lattice, ready to tile, keyed by what shapes it.
+
+    ``top``/``left`` are the canvas's own first row and column, which the tiling
+    cannot supply: the lattice is periodic, so a repeat that paints the coarse
+    line at *x = period* paints one at *x = 0* too — and the image's left edge
+    carries no grid line. So those two lines are held separately, each the cell's
+    edge with the origin line taken out, and laid down after the tiling. They are
+    what keeps every line's first pixel where stroking it used to put it.
+    """
+
+    __slots__ = ("key", "pixmap", "top", "left")
+
+    def __init__(
+        self,
+        key: tuple,
+        pixmap: QPixmap,
+        top: QPixmap | None = None,
+        left: QPixmap | None = None,
+    ) -> None:
+        self.key = key
+        self.pixmap = pixmap
+        self.top = top
+        self.left = left
 
 
 class Canvas(QWidget):
@@ -198,6 +246,9 @@ class Canvas(QWidget):
         # drawing tool is armed; the hovered pixel is tracked only while it is set.
         self._preview_color: QColor | None = None
         self._hover_pixel: tuple[int, int] | None = None
+        # The tiled lattice cell, rebuilt whenever the style/zoom/tile size that
+        # shapes it changes (see :data:`GRID_PATTERN_MAX`).
+        self._grid_pattern: _GridPattern | None = None
         # Hover needs move events with no button held.
         self.setMouseTracking(True)
         self._update_size()
@@ -761,17 +812,35 @@ class Canvas(QWidget):
                     self._tile_h * z,
                 )
             )
+        # Backing cells are unioned a horizontal *run* at a time rather than one
+        # by one: a region union costs the same for a wide rect as a narrow one,
+        # and a window can hold thousands of cells.
         region = QRegion()
+        filled = self._filled_tiles
         for tile_y in range(rows):
-            for tile_x in range(cols):
-                slot = layout.cell_to_slot(tile_x, tile_y)
-                if slot is None or slot >= self._filled_tiles:
-                    region = region.united(QRegion(self._cell_rect(tile_x, tile_y)))
+            start = None
+            for tile_x in range(cols + 1):  # one past the end flushes the last run
+                slot = None if tile_x == cols else layout.cell_to_slot(tile_x, tile_y)
+                backing = tile_x < cols and (slot is None or slot >= filled)
+                if backing:
+                    if start is None:
+                        start = tile_x
+                    continue
+                if start is not None:
+                    rect = self._cell_rect(start, tile_y)
+                    rect.setWidth(rect.width() * (tile_x - start))
+                    region = region.united(QRegion(rect))
+                    start = None
         return region if not region.isEmpty() else None
 
-    def paintEvent(self, event) -> None:  # noqa: ARG002 — Qt supplies the event
+    def paintEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         if self._image.isNull():
             return
+        # Everything below is confined to the exposed rect. Qt clips to it anyway,
+        # but the overlays are drawn per line / per cell — issuing the ones that
+        # fall outside costs as much as the ones that don't, and a scrolled view
+        # exposes a sliver of a canvas that can be thousands of pixels across.
+        exposed = event.rect()
         painter = QPainter(self)
         # Nearest-neighbour: pixels must stay crisp when magnified.
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
@@ -784,7 +853,7 @@ class Canvas(QWidget):
         background = self._background_region()
         if background is not None:
             painter.setClipRegion(background)
-            painter.fillRect(self.rect(), CANVAS_BACKGROUND)
+            painter.fillRect(exposed, CANVAS_BACKGROUND)
             painter.setClipRegion(QRegion(self.rect()).subtracted(background))
         painter.scale(z, z)
         painter.drawImage(0, 0, self._image)
@@ -794,12 +863,12 @@ class Canvas(QWidget):
         # (after resetTransform) so its lines stay 1px crisp at any zoom, and only
         # once a tile is at least 2px so it never swamps the pixels themselves.
         if self._show_grid and self._grid_style is not GridStyle.NONE and z >= 2:
-            self._draw_grid(painter, z)
-        self._paint_selection(painter)
-        self._paint_pixel_overlays(painter)
+            self._draw_grid(painter, z, exposed)
+        self._paint_selection(painter, exposed)
+        self._paint_pixel_overlays(painter, exposed)
         painter.end()
 
-    def _paint_pixel_overlays(self, painter: QPainter) -> None:
+    def _paint_pixel_overlays(self, painter: QPainter, exposed: QRect) -> None:
         """Draw the float, and whatever else the armed interaction wants.
 
         The float goes down first (a lifted image the user is dragging), then its
@@ -818,7 +887,7 @@ class Canvas(QWidget):
             return
         z = self._zoom
         if self._rearranging:
-            self._paint_drop_target(painter)
+            self._paint_drop_target(painter, exposed)
         if self._float_image is not None:
             fx, fy = self._float_pos
             rect = QRect(
@@ -837,7 +906,7 @@ class Canvas(QWidget):
             paint_selection_outline(painter, rect)
         self._paint_pen_preview(painter)
 
-    def _paint_drop_target(self, painter: QPainter) -> None:
+    def _paint_drop_target(self, painter: QPainter, exposed: QRect) -> None:
         """Outline the cells a rearrange drag would land on.
 
         Under the float, so the tile being carried stays readable over its
@@ -860,11 +929,11 @@ class Canvas(QWidget):
                 # A pen straddles the path, so inset by half its width to keep
                 # the whole outline inside the cell it marks.
                 inset = DROP_TARGET_WIDTH // 2
-                painter.drawRect(
-                    self._cell_rect(tile_x, tile_y).adjusted(
-                        inset, inset, -inset - 1, -inset - 1
-                    )
+                rect = self._cell_rect(tile_x, tile_y).adjusted(
+                    inset, inset, -inset - 1, -inset - 1
                 )
+                if rect.intersects(exposed):
+                    painter.drawRect(rect)
 
     def _paint_pen_preview(self, painter: QPainter) -> None:
         """Tint the pixel the pen is aimed at, in the colour it would write.
@@ -887,21 +956,36 @@ class Canvas(QWidget):
         # adjusted(): a 1px pen straddles the path, so inset to keep it inside.
         painter.drawRect(rect.adjusted(0, 0, -1, -1))
 
-    def _draw_grid(self, painter: QPainter, z: int) -> None:
+    def _draw_grid(self, painter: QPainter, z: int, exposed: QRect) -> None:
         """Draw the two-level tile grid in the current style (device coords).
 
         POINT dots the tile corners in the coarse color; the line styles draw a
         fine grid on every tile (grey) with a coarse grid every
         :data:`GRID_COARSE_TILES` tiles (white) laid over it, so block boundaries
         stand out from the tile lattice.
+
+        Both are one repeating cell, so the whole lattice is a tiled blit of that
+        cell (:data:`GRID_PATTERN_MAX`) — falling back to stroking the lines when
+        the cell is too big to be worth holding, which is also when there are few
+        enough of them for it not to matter.
         """
+        pattern = self._grid_pattern_for(z)
+        if pattern is not None:
+            self._tile_grid(painter, pattern, exposed)
+            return
         img_w, img_h = self._image.width(), self._image.height()
-        w, h = img_w * z, img_h * z
+        # Clamp the lines to the exposed band and skip the ones outside it: the
+        # lattice spans the whole canvas, which is mostly off screen.
+        top, bottom = exposed.top(), exposed.bottom()
+        left, right = exposed.left(), exposed.right()
         if self._grid_style is GridStyle.POINT:
             painter.setPen(GRID_COARSE_COLOR)
             for gx in range(self._tile_w, img_w, self._tile_w):
+                if not left <= gx * z <= right:
+                    continue
                 for gy in range(self._tile_h, img_h, self._tile_h):
-                    painter.drawPoint(gx * z, gy * z)
+                    if top <= gy * z <= bottom:
+                        painter.drawPoint(gx * z, gy * z)
             return
         pen_style = _GRID_PEN_STYLES[self._grid_style]
         # Fine first, then coarse over it: shared ×N boundaries read as coarse.
@@ -912,11 +996,114 @@ class Canvas(QWidget):
             painter.setPen(pen)
             step_x, step_y = self._tile_w * step_tiles, self._tile_h * step_tiles
             for gx in range(step_x, img_w, step_x):
-                painter.drawLine(gx * z, 0, gx * z, h)
+                if left <= gx * z <= right:
+                    painter.drawLine(gx * z, top, gx * z, bottom)
             for gy in range(step_y, img_h, step_y):
-                painter.drawLine(0, gy * z, w, gy * z)
+                if top <= gy * z <= bottom:
+                    painter.drawLine(left, gy * z, right, gy * z)
 
-    def _paint_selection(self, painter: QPainter) -> None:
+    def _tile_grid(
+        self, painter: QPainter, pattern: _GridPattern, exposed: QRect
+    ) -> None:
+        """Repeat the lattice cell over the exposed area, anchored on the canvas.
+
+        The tiled area starts one pixel in from the top-left, since the cell's own
+        origin is a coarse boundary and the image's border is not; the two edge
+        strips put back the line pixels that leaves out. Every offset is taken
+        modulo the period against the *canvas* origin, so what lands where does
+        not depend on which band of the canvas happens to be exposed.
+        """
+        cell = pattern.pixmap
+        width, height = cell.width(), cell.height()
+        target = exposed.intersected(
+            QRect(1, 1, max(0, self.width() - 1), max(0, self.height() - 1))
+        )
+        if not target.isEmpty():
+            painter.drawTiledPixmap(
+                target, cell, QPoint(target.x() % width, target.y() % height)
+            )
+        if pattern.top is not None and exposed.top() == 0 and exposed.width() > 1:
+            strip = QRect(max(1, exposed.left()), 0, 0, 1)
+            strip.setRight(exposed.right())
+            painter.drawTiledPixmap(strip, pattern.top, QPoint(strip.x() % width, 0))
+        if pattern.left is not None and exposed.left() == 0 and exposed.height() > 1:
+            strip = QRect(0, max(1, exposed.top()), 1, 0)
+            strip.setBottom(exposed.bottom())
+            painter.drawTiledPixmap(strip, pattern.left, QPoint(0, strip.y() % height))
+
+    def _grid_pattern_for(self, z: int) -> _GridPattern | None:
+        """The cached lattice cell for the current style/zoom/tile size.
+
+        ``None`` when one period is larger than :data:`GRID_PATTERN_MAX` a side,
+        which sends :meth:`_draw_grid` down the line-stroking path instead.
+        """
+        style = self._grid_style
+        # POINT's period is a single tile — it marks corners, with no second level.
+        span = 1 if style is GridStyle.POINT else GRID_COARSE_TILES
+        width, height = self._tile_w * z * span, self._tile_h * z * span
+        if width > GRID_PATTERN_MAX or height > GRID_PATTERN_MAX:
+            return None
+        key = (style, z, self._tile_w, self._tile_h)
+        cached = self._grid_pattern
+        if cached is not None and cached.key == key:
+            return cached
+        if style is GridStyle.POINT:
+            # Corner dots never fall on the image's first row or column, so this
+            # style needs no edge strips.
+            pattern = _GridPattern(key, self._grid_cell(z, width, height))
+        else:
+            pattern = _GridPattern(
+                key,
+                self._grid_cell(z, width, height),
+                self._grid_cell(z, width, height, only="vertical").copy(0, 0, width, 1),
+                self._grid_cell(z, width, height, only="horizontal").copy(
+                    0, 0, 1, height
+                ),
+            )
+        self._grid_pattern = pattern
+        return pattern
+
+    def _grid_cell(
+        self, z: int, width: int, height: int, only: str | None = None
+    ) -> QPixmap:
+        """Draw one period of the lattice into a transparent pixmap.
+
+        ``only`` keeps just the vertical or just the horizontal lines, which is
+        what the two edge strips are cut from: canvas row 0 shows the verticals
+        crossing it and nothing else, and column 0 the horizontals.
+        """
+        pixmap = QPixmap(width, height)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        if self._grid_style is GridStyle.POINT:
+            painter.setPen(GRID_COARSE_COLOR)
+            painter.drawPoint(0, 0)
+            painter.end()
+            return pixmap
+        pen_style = _GRID_PEN_STYLES[self._grid_style]
+        step_x, step_y = self._tile_w * z, self._tile_h * z
+        # The cell's own origin is the coarse boundary; the tile boundaries inside
+        # it are the fine ones. Fine first, so a crossing reads coarse — and from 0
+        # rather than the first tile inside, because a coarse boundary is a tile
+        # boundary too and the fine line under it is what gives the coarse line its
+        # brightness.
+        for color, positions in (
+            (GRID_FINE_COLOR, (range(0, width, step_x), range(0, height, step_y))),
+            (GRID_COARSE_COLOR, (range(1), range(1))),
+        ):
+            pen = QPen(color)
+            pen.setStyle(pen_style)
+            painter.setPen(pen)
+            if only != "horizontal":
+                for gx in positions[0]:
+                    painter.drawLine(gx, 0, gx, height)
+            if only != "vertical":
+                for gy in positions[1]:
+                    painter.drawLine(0, gy, width, gy)
+        painter.end()
+        return pixmap
+
+    def _paint_selection(self, painter: QPainter, exposed: QRect) -> None:
         if not self._selected_slots:
             return
         layout = self._layout()
@@ -941,7 +1128,7 @@ class Canvas(QWidget):
                 width * self._tile_w * z,
                 height * self._tile_h * z,
             )
-            if rect.intersects(self.rect()):
+            if rect.intersects(exposed):
                 paint_selection_outline(painter, rect)
             return
         for tile_y, xs in cells_by_row.items():
@@ -957,7 +1144,7 @@ class Canvas(QWidget):
                     (prev - run_start + 1) * self._tile_w * z,
                     self._tile_h * z,
                 )
-                if rect.intersects(self.rect()):
+                if rect.intersects(exposed):
                     paint_selection_outline(painter, rect)
                 run_start = prev = x
 

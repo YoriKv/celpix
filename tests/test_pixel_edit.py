@@ -822,6 +822,22 @@ def test_rotate_needs_a_square_region(qtbot, tmp_path) -> None:
     assert window._pixel_group.rotate_cw.isEnabled()
 
 
+def test_the_transform_keys_press_the_group_pixel_mode_is_showing(
+    qtbot, tmp_path
+) -> None:
+    """H reaches the Pixel group, and Shift+H is passed on rather than reaching
+    for a Block half pixel mode does not have."""
+    window = _window(qtbot, tmp_path)  # starts in pixel mode
+    window._tool = Tool.SELECT
+    row = [_pixel(window, x, 0) for x in range(4)]
+    window._marquee = QRect(0, 0, 4, 4)
+    window._sync_transform_actions()
+    assert window._transform_key(Qt.Key.Key_H, False, False)
+    assert [_pixel(window, x, 0) for x in range(4)] == row[::-1]
+    assert not window._transform_key(Qt.Key.Key_H, True, False)
+    assert [_pixel(window, x, 0) for x in range(4)] == row[::-1]  # unchanged
+
+
 def test_shift_square_marquee_corner_snaps_and_clamps(qtbot, tmp_path) -> None:
     # A 64x64 window so the clamp cases have room to be exceeded.
     window = _window(qtbot, tmp_path, tiles=64)

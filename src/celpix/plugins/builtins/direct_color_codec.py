@@ -26,11 +26,12 @@ from celpix.core.argb_grid import ArgbGrid
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._bits import merge_planes
 from celpix.plugins.builtins._mask import (
-    argb_to_value,
+    ARGB_BYTE_ORDER,
+    decode_tables,
+    encode_tables,
     parse_masks,
-    shift_widths,
-    value_to_argb,
 )
 from celpix.plugins.builtins._tile import check_tile_size, require_whole_tiles
 
@@ -72,35 +73,58 @@ class DirectColorCodec:
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> list[ArgbGrid]:
+        """Whole buffer at a time: one byte plane per component, then split.
+
+        A tile's pixels are contiguous and a pixel's conversion depends on
+        nothing but its own bytes, so the whole window converts as four strided
+        byte planes (``_mask.decode_tables``) and only the final split into tiles
+        happens per tile. A truecolor window is hundreds of thousands of pixels —
+        a per-pixel Python loop here is what makes a wide-bitmap view stall.
+        """
         bpx, order, masks = self._config(params)
-        sw = shift_widths(masks)
         width, height = self._tile(params)
         tile_bytes = width * height * bpx
         require_whole_tiles(len(data), tile_bytes)
-        tiles: list[ArgbGrid] = []
-        for addr in range(0, len(data), tile_bytes):
-            grid = ArgbGrid(width, height)
-            buf = grid.data
-            pos = addr
-            for i in range(width * height):
-                value = int.from_bytes(data[pos : pos + bpx], order)
-                pos += bpx
-                argb = value_to_argb(value, masks, sw)
-                buf[i * 4 : i * 4 + 4] = (argb & 0xFFFFFFFF).to_bytes(4, "little")
-            tiles.append(grid)
-        return tiles
+        if not data:
+            return []
+        pixels = len(data) // bpx
+        out = bytearray(pixels * 4)
+        tables = decode_tables(tuple(sorted(masks.items())), bpx, order)
+        for slot, comp in enumerate(ARGB_BYTE_ORDER):
+            planes = [
+                data[index::bpx].translate(table)
+                for index, table in enumerate(tables[slot])
+                if table is not None
+            ]
+            if planes:
+                out[slot::4] = merge_planes(planes)
+            elif comp == "a":
+                out[slot::4] = b"\xff" * pixels  # no alpha field → opaque
+        stride = width * height * 4
+        return [
+            ArgbGrid(width, height, out[base : base + stride])
+            for base in range(0, len(out), stride)
+        ]
 
     def encode(
         self, tiles: list[ArgbGrid], params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
+        """The inverse plane walk: every tile's pixels at once, then interleaved."""
         bpx, order, masks = self._config(params)
-        sw = shift_widths(masks)
         width, height = self._tile(params)
-        out = bytearray()
         for t, grid in enumerate(tiles):
             check_tile_size(grid, width, height, t)
-            buf = grid.data
-            for i in range(width * height):
-                argb = int.from_bytes(buf[i * 4 : i * 4 + 4], "little")
-                out += argb_to_value(argb, masks, sw).to_bytes(bpx, order)
+        if not tiles:
+            return b""
+        argb = b"".join(bytes(grid.data) for grid in tiles)
+        out = bytearray(len(argb) // 4 * bpx)
+        tables = encode_tables(tuple(sorted(masks.items())), bpx, order)
+        for index in range(bpx):
+            planes = [
+                argb[slot::4].translate(table)
+                for slot, table in enumerate(tables[index])
+                if table is not None
+            ]
+            if planes:
+                out[index::bpx] = merge_planes(planes)
         return bytes(out)

@@ -15,6 +15,14 @@ compression scan/preview overlays decodable structures.
 
 It drives the Qt-free pipeline through the plugin registry and never interprets
 bytes itself; all decode/encode goes through ``pipeline``.
+
+This module is the **shell**: it builds that surface and holds what belongs to no
+single one of it — the widgets and docks themselves, the menu bar, the undo stack
+every mixin pushes onto, the open project's dirty tracking, and the one modal
+errors reach the user through. The work each surface does lives in its own mixin
+beside it (see the package docstring); the two closest to this file are
+:mod:`~celpix.ui.main_window.session`, which swaps entries in and out, and
+:mod:`~celpix.ui.main_window.rendering`, which turns the current one into pixels.
 """
 
 from __future__ import annotations
@@ -28,7 +36,6 @@ from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QDesktopServices,
-    QImage,
     QKeySequence,
     QPalette,
     QUndoCommand,
@@ -47,34 +54,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix.core.arrangement import (
-    BlockLayout,
-)
-from celpix.core.document import Document, ViewOptions
+from celpix.core.document import Document
 from celpix.core.errors import PipelineError
 from celpix.core.palette import Palette
-from celpix.pipeline import pipeline
-from celpix.plugins.base import NO_DECOMPRESS
 from celpix.plugins.discovery import PluginLoadIssue
 from celpix.plugins.registry import Registry, default_registry
 from celpix.project import projectfile
 from celpix.project.workspace import (
     Entry,
     EntryKind,
-    EntrySession,
     PaletteMode,
     Workspace,
-    backfill_slice_length,
     data_missing,
-    palette_source_for,
 )
-from celpix.ui import render_bridge
 from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas, GridStyle
 from celpix.ui.color_editor import ColorEditorDialog
 from celpix.ui.decompress_overlay import DecompressOverlay
 from celpix.ui.file_list_panel import FileListPanel
 from celpix.ui.help_dialogs import AboutDialog, ShortcutGuide, shortcut_sections
-from celpix.ui.hex_view_panel import BYTES_PER_ROW, HexViewPanel
+from celpix.ui.hex_view_panel import HexViewPanel
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
 from celpix.ui.main_window.entries import EntriesMixin
@@ -87,24 +85,21 @@ from celpix.ui.main_window.palette_source import (
 )
 from celpix.ui.main_window.pixel_edit import PixelEditMixin
 from celpix.ui.main_window.rearrange import RearrangeMixin
+from celpix.ui.main_window.rendering import RenderingMixin
 from celpix.ui.main_window.selection import (
     SelectionMixin,
 )
+from celpix.ui.main_window.session import SessionMixin
 from celpix.ui.main_window.transfer import TransferMixin
 from celpix.ui.main_window.transform import TransformMixin
 from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
     AddEntryCommand,
-    PaletteUserLink,
-    RemoveEntriesCommand,
-    RemovePaletteWithUsersCommand,
     RenameEntryCommand,
 )
 from celpix.ui.widgets import (
     load_enum_setting,
     save_enum_setting,
-    select_combo_data,
-    signals_blocked,
 )
 
 # Rebuilds a registry from built-ins + the current plugin folder, returning it
@@ -127,6 +122,8 @@ class MainWindow(
     TransformMixin,
     PixelEditMixin,
     RearrangeMixin,
+    SessionMixin,
+    RenderingMixin,
     EntriesMixin,
     TransferMixin,
     CompressionMixin,
@@ -311,7 +308,7 @@ class MainWindow(
         # It sits to the LEFT of the canvas and is styled as an accent-colored rail
         # so it reads as a file navigator, not one of the canvas's own scrollbars.
         self._offset_bar = QScrollBar(Qt.Orientation.Vertical)
-        self._offset_bar.setToolTip("File position - drag to jump")
+        self._offset_bar.setToolTip("File position\nDrag to jump")
         self._offset_bar.setStyleSheet(self._offset_bar_style())
         self._offset_bar.valueChanged.connect(self._set_offset)
 
@@ -424,6 +421,7 @@ class MainWindow(
         # The panel nests a slice under its parent file's item when it's open.
         self._files_panel.add_entry(entry, self._workspace.parent_of(entry))
 
+    # -- the undo stack ------------------------------------------------------
     @contextmanager
     def _undo_apply(self):
         """Mark a command's undo/redo application as in progress.
@@ -477,6 +475,7 @@ class MainWindow(
         self._set_edit_mode(mode)  # a no-op when the window is already there
         return True
 
+    # -- an entry's name and dirty state ---------------------------------------
     def _on_entry_dirty_changed(self, entry: Entry) -> None:
         self._files_panel.refresh_entry(entry)
         self._write_all_action.setEnabled(bool(self._workspace.dirty_entries()))
@@ -534,6 +533,7 @@ class MainWindow(
         else:
             self.setWindowTitle(f"celPix - {entry.name}")
 
+    # -- the open project's dirty state -----------------------------------------
     def _on_undo_index_changed(self, _index: int) -> None:
         self._refresh_project_modified()
 
@@ -566,6 +566,7 @@ class MainWindow(
             return False
         return self._project_snapshot() != self._saved_project
 
+    # -- list commands apply through here ---------------------------------------
     def _apply_add_entry(self, entry: Entry) -> None:
         """Append ``entry`` to the workspace and show it - the application
         path for open-file/new-slice/new-bookmark/add-palette commands and
@@ -595,451 +596,6 @@ class MainWindow(
         if any(entry is was_current for _, entry in victims):
             self._activate_entry(was_current)
 
-    # -- entry switching -----------------------------------------------------
-    def _activate_entry(self, entry: Entry) -> None:
-        """Switch the view to ``entry`` - every activation path funnels here."""
-        if entry is None or entry is self._workspace.current:
-            return
-        if entry.kind in (EntryKind.BOOKMARK, EntryKind.PALETTE):
-            return  # no view of its own - selecting one in the list is inert
-        # Pixels floating over the entry being left belong to it, so they come
-        # down before the view moves on rather than hovering over a stranger.
-        self._commit_float()
-        if data_missing(entry):
-            # The file moved: make it current anyway, but show the disabled
-            # unavailable state (no _load_entry, so no pipeline-error alert -
-            # relocation happens through Locate missing files, not every click).
-            self._capture_session()
-            self._workspace.set_current(entry)  # -> _show_unavailable
-            return
-        fresh = entry.doc is None
-        if fresh and not self._load_entry(entry):
-            # Load failed (bad codec/invalid file): stay put, and snap the
-            # list highlight back onto the entry actually shown.
-            self._files_panel.set_current(self._workspace.current)
-            return
-        self._capture_session()
-        self._workspace.set_current(entry)  # -> _on_current_entry_changed
-        # Arm arrow-key navigation on the fresh view - but not when the list is
-        # itself being browsed with the arrow keys, or focus would be yanked
-        # away from the very keys the user is navigating with.
-        if not self._files_panel.is_key_navigating():
-            self._canvas.setFocus()
-        if fresh:
-            message = f"Loaded {entry.doc.tile_count} tiles from {entry.name}"
-            note = self._partial_tile_note()
-            self.statusBar().showMessage(f"{message} - {note}" if note else message)
-
-    def _on_current_entry_changed(self, entry: Entry | None) -> None:
-        self._files_panel.set_current(entry)
-        if entry is None:
-            self._show_empty()
-            return
-        if data_missing(entry):
-            self._show_unavailable(entry)
-            return
-        # Already loaded on the _activate_entry path; a close() repointing
-        # current to a never-activated (or invalidated) neighbour lands here.
-        if entry.doc is None and not self._load_entry(entry):
-            self._show_unavailable(entry)
-            return
-        self._restore_session(entry)
-        self._refresh_view()
-
-    def _load_entry(self, entry: Entry, *, quiet: bool = False) -> bool:
-        """Load ``entry``'s document through the pipeline; False on failure.
-
-        Runs on first activation and again whenever the cached document was
-        invalidated by a save into the same file. A failure is normally reported
-        with a modal; ``quiet`` suppresses it so a bulk caller (export over many
-        entries) can collect and summarize failures itself instead of stacking
-        one dialog per bad entry."""
-        if entry.session is None:
-            entry.session = self._seed_session(entry)
-        session = entry.session
-        header = (
-            session.header_length
-            if entry.kind is EntryKind.FILE and session.headered
-            else 0
-        )
-        cfg = self._pixel_config(entry, session.pixel_preset_id, header)
-        # A pending bitmap width re-cuts the codec's tile geometry, so it is an
-        # input to this first load rather than something the view applied
-        # afterwards can express - the entry would otherwise open at the codec's
-        # own tile size and only re-cut when a widget was next touched. Read off
-        # the pending view because that is where a not-yet-loaded entry's
-        # arrangement lives (a restored project, a slice seeded from its parent).
-        # Gated on the 2D walk exactly as _effective_bitmap_width is: the width
-        # describes a wide-bitmap read and means nothing to a tile-by-tile one.
-        pending = entry.pending_view
-        width = (
-            pending.bitmap_width
-            if pending is not None and pending.two_dimensional
-            else 0
-        )
-        try:
-            px = pipeline.load_pixel_data(cfg, self._registry, width)
-        except PipelineError as exc:
-            if not quiet:
-                self._report(exc)
-            return False
-        if backfill_slice_length(entry, px.ctx):
-            # The decompressor discovered the slice's true extent: rebuild the
-            # config bounded by it, so save-back is slot-enforced from now on.
-            cfg = self._pixel_config(entry, session.pixel_preset_id, header)
-            self._files_panel.refresh_entry(entry)
-        entry.doc = Document(
-            pixel_data=px.data,
-            bytes_per_tile=px.bytes_per_tile,
-            tile_width=px.tile_width,
-            tile_height=px.tile_height,
-            palette=self._fallback_palette(),
-            pixel_config=cfg,
-            palette_config=self._placeholder_palette_config(session.palette_preset_id),
-            pixel_ctx=px.ctx,
-        )
-        self._apply_restored_state(entry)
-        return True
-
-    def _apply_restored_state(self, entry: Entry) -> None:
-        """Apply project-restored view/palette state on the document's first load.
-
-        One-shot: the pending fields are consumed. A palette that can't be
-        restored (vanished file, bad offset) degrades the entry to the default
-        palette - a project load never fails on it.
-        """
-        doc = entry.doc
-        assert doc is not None and entry.session is not None
-        if entry.pending_view is not None:
-            doc.view = entry.pending_view
-            entry.pending_view = None
-        source, entry.pending_palette = entry.pending_palette, None
-        if source is not None:
-            self._restore_palette_source(entry, source)
-
-    def _seed_session(self, entry: Entry) -> EntrySession:
-        """A new entry's starting UI state, seeded from the live toolbar so a
-        freshly opened file keeps the codec the user is working in. A slice's
-        preview combo starts at none - its bytes are already decompressed."""
-        return EntrySession(
-            pixel_preset_id=self._pixel_preset_id(),
-            palette_preset_id=self._palette_preset_id(),
-            compression_id=(
-                NO_DECOMPRESS
-                if entry.kind is EntryKind.SLICE
-                else self._compression_id()
-            ),
-            headered=entry.kind is EntryKind.FILE and self._headered.isChecked(),
-            header_length=self._header_len.value(),
-        )
-
-    def _capture_session(self) -> None:
-        """Snapshot the live toolbar/view state into the current entry, so
-        switching back later restores exactly this setup."""
-        entry = self._workspace.current
-        # A missing (unavailable) entry has no live document driving the
-        # widgets, so there is nothing to snapshot - capturing here would
-        # overwrite its restored session with stale, disabled widget values.
-        if entry is None or entry.doc is None:
-            return
-        entry.doc.view.tile_offset = self._offset
-        entry.doc.view.byte_nudge = self._nudge
-        entry.session = EntrySession(
-            pixel_preset_id=self._pixel_preset_id(),
-            palette_preset_id=self._palette_preset_id(),
-            palette_mode=self._palette_mode,
-            compression_id=self._compression_id(),
-            headered=self._headered.isChecked(),
-            header_length=self._header_len.value(),
-            selected_tile=self._selected_tile,
-            selected_last=self._selected_last,
-            selection_cells=self._rect_cells,
-        )
-
-    def _restore_session(self, entry: Entry) -> None:
-        """Push ``entry``'s cached state into the toolbar/nav widgets.
-
-        Every widget is set with its signals blocked (the _repopulate_presets
-        pattern): the restore must be one coherent swap followed by a single
-        _refresh_view, not a cascade of per-widget reloads.
-        """
-        assert entry.doc is not None and entry.session is not None
-        session, view = entry.session, entry.doc.view
-        self._doc = entry.doc
-        # The dock follows what is on screen: a document's own palette takes over
-        # from any .pal that was filling an otherwise empty dock.
-        self._clear_palette_preview()
-        # Undo any disabling from a previously shown missing entry.
-        self._set_document_ui_enabled(True)
-        # The pixel combo goes through the filter, which force-shows the restored
-        # format even when hidden (you can't hide the format in force).
-        self._fill_pixel_combo(session.pixel_preset_id)
-        for combo, data in (
-            (self._palette_preset, session.palette_preset_id),
-            (self._compression, session.compression_id),
-            (self._block_order, view.block_order),
-        ):
-            select_combo_data(combo, data)
-        spins = (
-            (self._columns, view.columns),
-            (self._rows, view.rows),
-            (self._zoom, view.zoom),
-            (self._subpalette, view.subpalette_row),
-            (self._header_len, session.header_length),
-            (self._block_cols, view.block_columns),
-            (self._block_rows, view.block_rows),
-            (self._bitmap_width, view.bitmap_width),
-        )
-        checks = (
-            (self._grid, view.show_grid),
-            (self._headered, session.headered),
-            (self._two_d, view.two_dimensional),
-        )
-        with signals_blocked(*(w for w, _ in (*spins, *checks))):
-            for spin, value in spins:
-                spin.setValue(value)
-            for check, value in checks:
-                check.setChecked(value)
-        # The Cols the outgoing entry had before its bitmap width took over means
-        # nothing to this one, whose Cols has just been restored from its own
-        # view - drop it before the sync below can read it back.
-        self._columns_before_bitmap = None
-        # Reselect the Pattern preset (or Custom) that matches the block/order/2D
-        # values just restored, and lock the controls to match.
-        self._sync_pattern_selection()
-        # Header skip is FILE display state; a slice's offsets are absolute
-        # file offsets and must not shift under it.
-        is_file = entry.kind is EntryKind.FILE
-        self._headered.setEnabled(is_file)
-        self._header_len.setEnabled(is_file)
-        self._offset, self._nudge = view.tile_offset, view.byte_nudge
-        # The rearrangement belongs to the entry, like the offset: switching away
-        # and back must find the tiles where they were left. Any drag in flight
-        # belonged to the entry being left, so it goes with it.
-        self._cancel_rearrange_drag()
-        self._tile_map = view.tile_map.bounded(entry.doc.tile_count)
-        self._show_rearranged = view.show_rearranged
-        self._sync_rearrange_actions()
-        self._selected_tile = session.selected_tile
-        self._selected_last = (
-            session.selected_last
-            if session.selected_last is not None
-            else session.selected_tile
-        )
-        # A stored rectangle is re-resolved against the view that was restored
-        # with it, so it comes back covering the same cells it was drawn over.
-        self._rect_cells, self._rect_tiles = None, ()
-        if session.selected_tile is not None and session.selection_cells is not None:
-            tiles = self._rect_tiles_for(
-                session.selected_tile - self._offset, *session.selection_cells
-            )
-            if tiles:
-                self._rect_cells, self._rect_tiles = session.selection_cells, tiles
-                self._selected_last = max(tiles)
-        self._sync_selection_actions()
-        self._set_palette_mode(session.palette_mode)  # also arms Write
-        # Only whole files spawn slices and bookmarks - neither nests (and a
-        # file's byte stream is always raw, so its positions map straight to
-        # file offsets).
-        self._new_slice_action.setEnabled(is_file)
-        self._new_slice_from_view_action.setEnabled(is_file)
-        self._new_bookmark_action.setEnabled(is_file)
-        self._refresh_window_title()
-
-    def _clear_document_view(self) -> None:
-        """Blank the canvas and disable every document-bound action - shared by
-        the nothing-open and missing-file (unavailable) states."""
-        self._doc = None
-        self._selected_tile = None
-        self._selected_last = None
-        self._rect_cells, self._rect_tiles = None, ()
-        self._canvas.set_selection(None)
-        self._sync_selection_actions()
-        self._canvas.set_image(QImage())
-        self._overlay.hide_overlay()
-        self._hex_panel.clear()
-        # No document, no palette source - blank the dock's per-mode widgets
-        # (the mode member itself is left alone: it still mirrors the entry's
-        # session, which a later _restore_session re-applies).
-        self._palette_offset_edit.hide()
-        self._palette_offset_prev.hide()
-        self._palette_offset_next.hide()
-        self._palette_file_label.hide()
-        self._palette_format_label.hide()
-        self._palette_preset.hide()
-        self._sync_palette_export_action()  # no document, nothing to export
-        self._sync_palette_mode_items()  # ...and only File left to load
-        self._write_action.setEnabled(False)
-        self._new_slice_action.setEnabled(False)
-        self._new_slice_from_view_action.setEnabled(False)
-        self._new_bookmark_action.setEnabled(False)
-
-    def _set_document_ui_enabled(self, enabled: bool) -> None:
-        """Grey out (or restore) the document-editing surfaces as a block.
-
-        A missing (unavailable) entry has no document to drive, so its codec,
-        arrangement and view toolbars and the palette dock are disabled until a
-        real document is shown again.
-
-        The interpretation bars stay live with *nothing* open — they configure how
-        the next file will be read. The transform bar does not: flip/rotate and the
-        mode toggles act on a document, so it follows ``_doc`` itself, the same
-        gate the Edit ▸ mode toggles use.
-        """
-        for bar in (
-            self._codecs_toolbar,
-            self._arrange_toolbar,
-            self._view_toolbar,
-        ):
-            bar.setEnabled(enabled)
-        self._transform_toolbar.setEnabled(enabled and self._doc is not None)
-        self._palette_dock.setEnabled(enabled)
-        # The tools rail is only live in pixel mode with a document to paint on.
-        self._tools_panel.setEnabled(enabled and self._edit_mode is EditMode.PIXEL)
-
-    def _show_empty(self) -> None:
-        """Nothing open: clear the canvas, disable everything document-bound.
-
-        The palette dock stays live rather than blank - it shows the generated
-        default read-only, which is what a file would open on anyway, and the
-        modes that need a graphic are the ones disabled (see
-        :meth:`_sync_palette_mode_items`).
-        """
-        self._clear_document_view()
-        self._set_document_ui_enabled(True)  # idle, but live for the next open
-        self._set_palette_mode(PaletteMode.DEFAULT)
-        self._refresh_palette_dock()
-        self._refresh_window_title()
-        self._sync_nav()
-        self._announce_ready()
-
-    def _show_unavailable(self, entry: Entry) -> None:
-        """Show a missing-file entry as the current selection, but inert.
-
-        Like :meth:`_show_empty` (blank canvas, no live document) except
-        ``current`` stays on the entry with its name in the title and the
-        document UI greyed out: the file it references is gone, so there is
-        nothing to drive until it is relocated (File ▸ Locate missing files).
-        """
-        self._clear_document_view()
-        self._set_document_ui_enabled(False)
-        self._refresh_window_title()
-        self._sync_nav()
-        self.statusBar().showMessage(
-            f"{entry.name}: file not found - use File ▸ Locate missing files."
-        )
-
-    def _remove_entry(self, entry: Entry) -> None:
-        """Remove ``entry`` from the list (a file takes its slices and
-        bookmarks with it), always confirming first - Remove is also on the
-        Delete key, and a slip there costs the entry's whole session setup."""
-        if entry.kind is EntryKind.PALETTE:
-            # The current graphic's palette mode is only written to its session on
-            # a switch, so snapshot it first - otherwise a palette in use *right
-            # now* looks unused and would be dropped without re-homing it.
-            self._capture_session()
-            users = self._workspace.palette_users(entry)
-            if users:
-                self._remove_used_palette(entry, users)
-                return
-        victims = [entry, *self._workspace.children_of(entry)]
-        dirty = [e.name for e in victims if e.pixel_dirty or e.palette_dirty]
-        message = f"Remove {entry.name}?"
-        parts = []
-        counts = [
-            f"{n} {label}(s)"
-            for label, n in (
-                ("slice", sum(e.kind is EntryKind.SLICE for e in victims[1:])),
-                ("bookmark", sum(e.kind is EntryKind.BOOKMARK for e in victims[1:])),
-            )
-            if n
-        ]
-        if counts:
-            parts.append(f"removes its {' and '.join(counts)}")
-        if dirty:
-            parts.append(f"discards unsaved changes ({', '.join(dirty)})")
-        if parts:
-            message = f"Remove {entry.name}? This also " + " and ".join(parts) + "."
-        answer = QMessageBox.question(self, "celPix - remove", message)
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        entries = self._workspace.entries
-        self._push_command(
-            RemoveEntriesCommand(
-                self,
-                entry,
-                victims=[(entries.index(e), e) for e in victims],
-                was_current=self._workspace.current,
-            )
-        )
-
-    def _remove_used_palette(self, palette: Entry, users: list[Entry]) -> None:
-        """Confirm, then remove a file palette that graphics use - re-homing each
-        graphic onto a Custom copy so none is left rendering a palette that's gone.
-
-        The user is told exactly where it is used before the colors are frozen into
-        each graphic's own Custom palette. Undoable as one step.
-        """
-        names = ", ".join(u.name for u in users)
-        answer = QMessageBox.question(
-            self,
-            "celPix - remove palette",
-            f"Remove {palette.name}? It is used by {len(users)} "
-            f"graphic(s): {names}.\n\nEach keeps these colors as its own custom "
-            "palette, stored in the project.",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        index = self._workspace.entries.index(palette)
-        links = []
-        for user in users:
-            src = palette_source_for(user)
-            links.append(
-                PaletteUserLink(
-                    entry=user,
-                    path=src.path if src and src.path else palette.path,
-                    offset=src.offset if src else 0,
-                    preset_id=(
-                        user.session.palette_preset_id
-                        if user.session is not None
-                        else self._palette_preset_id()
-                    ),
-                    loaded=user.doc is not None,
-                )
-            )
-        self._push_command(
-            RemovePaletteWithUsersCommand(self, palette, index=index, users=links)
-        )
-
-    def _apply_remove_palette_to_custom(
-        self, palette: Entry, users: list[PaletteUserLink]
-    ) -> None:
-        """Freeze the palette's colors into each user as a Custom copy, then drop
-        the palette from the list - :class:`RemovePaletteWithUsersCommand`'s redo."""
-        colors = self._file_palette_colors(palette)
-        preset = palette.palette_preset_id or self._palette_preset_id()
-        for link in users:
-            self._convert_user_to_custom(link.entry, colors, preset)
-        self._workspace.close(palette)
-        self._refresh_current_palette()
-
-    def _apply_restore_palette_users(
-        self, palette: Entry, index: int, users: list[PaletteUserLink]
-    ) -> None:
-        """Re-register the palette and relink every user - the command's undo."""
-        self._workspace.insert(palette, index)
-        for link in users:
-            self._relink_user_to_file_palette(link)
-        self._refresh_current_palette()
-
-    def _refresh_current_palette(self) -> None:
-        """Re-apply the current entry's (possibly changed) palette to the dock and
-        canvas after a re-home, so the on-screen mode/label follow the entry."""
-        current = self._workspace.current
-        if current is not None and current.doc is not None:
-            self._restore_session(current)
-        self._refresh_view()
-
     def closeEvent(self, event) -> None:  # noqa: ANN001 - Qt override
         """Quit, having asked about both kinds of unsaved work.
 
@@ -1063,6 +619,7 @@ class MainWindow(
             return
         super().closeEvent(event)
 
+    # -- docks and menus --------------------------------------------------------
     def _build_hex_dock(self) -> None:
         """The raw-hex-dump dock: a presentation-only view of the file bytes at
         the current offset. Hidden by default (opened from the Panels menu), so
@@ -1098,7 +655,7 @@ class MainWindow(
 
         save_project = QAction("Save Project", self)
         save_project.setToolTip(
-            "Save the session to a .celpix project - references, not bytes"
+            "Save the session to a .celpix project\nReferences, not bytes"
         )
         save_project.setShortcut(QKeySequence.StandardKey.Save)  # Ctrl+S
         save_project.triggered.connect(self._save_project)
@@ -1354,212 +911,7 @@ class MainWindow(
         entry = Entry(name=Path(path).name, kind=EntryKind.FILE, path=path)
         self._push_command(AddEntryCommand(self, entry, f"open {entry.name}"))
 
-    # -- view --------------------------------------------------------------
-    def _on_view_change(self, *_args) -> None:
-        if self._doc is not None:
-            self._refresh_view()
-
-    def _render_arrangement(
-        self,
-        pixel_bytes: bytes,
-        engine,  # noqa: ANN001 - a pixel-interpret plugin
-        params,  # noqa: ANN001 - the preset's engine params
-        layout: BlockLayout,
-        two_dimensional: bool,
-        max_rows: int | None,
-    ):
-        """Decode a pixel-byte buffer through the arrangement into a rendered image.
-
-        The shared core of the live view and the decompression overlay, so blocks
-        and 2D behave identically in both: 2D reflow → decode → block layout →
-        render. ``pixel_bytes`` begins at the view origin - a window of the doc's
-        bytes for the live view, a decompressed scratch for the overlay.
-        ``max_rows`` caps the composed height (the live view's fixed window);
-        ``None`` sizes to the data (the overlay shows the whole structure). Returns
-        ``(QImage, real tile count)`` - the count excludes any 2D reflow padding, so
-        the canvas can background the rest.
-        """
-        assert self._doc is not None
-        grid, filled = pipeline.decode_and_compose(
-            pixel_bytes, engine, params, layout, two_dimensional, max_rows
-        )
-        base = self._doc.view.subpalette_row * self._index_space()
-        return render_bridge.render(grid, self._doc.palette, base), filled
-
-    def _render_rearranged(self, layout: BlockLayout, rows: int):
-        """Render the window when a tile map is in force.
-
-        The byte path above cannot serve this: a rearranged window's tiles are
-        gathered from wherever the map sends them, not from one contiguous slice.
-        So the tiles come through ``_decode_run`` — the same choke point that
-        resolves the map for every edit, which is what keeps what is drawn and
-        what is written in agreement — and only the layout is shared.
-
-        A window running past the end of the file is short by the same count it
-        always was: the map permutes existing tiles, so the positions with
-        nothing behind them are exactly the ones past the last tile.
-        """
-        assert self._doc is not None
-        view = self._doc.view
-        window_tiles = layout.columns * rows
-        tiles = self._decode_run(view.tile_offset, window_tiles) or []
-        base = view.subpalette_row * self._index_space()
-        grid = pipeline.compose_tiles(tiles, layout, rows)
-        return render_bridge.render(grid, self._doc.palette, base), len(tiles)
-
-    def _refresh_view(self) -> None:
-        assert self._doc is not None
-        # A bitmap width owns the column count (it *is* the width, in tiles), so
-        # settle Cols - and whether the width applies at all - before anything
-        # reads them.
-        self._sync_bitmap_width()
-        cols = self._columns.value()
-        # Rows is a free display-window height (bounded only by the spin's own 256
-        # cap), not by the data. Asking for more rows than the file fills just
-        # leaves the neutral background showing past the last tile row (see
-        # shown_rows below) instead of clamping the input - so the height survives
-        # switching to a format whose larger tiles leave far fewer rows of data.
-        # Re-clamp the offset next: a smaller file, or a bigger window (cols/rows),
-        # can push the previous offset past the last page.
-        self._offset = self._doc.clamp_offset(
-            self._offset, cols, self._rows.value(), self._nudge
-        )
-        rows = self._rows.value()
-        self._clamp_subpalette(self._doc.palette)
-        self._doc.view = ViewOptions(
-            columns=cols,
-            rows=rows,
-            zoom=self._zoom.value(),
-            show_grid=self._grid.isChecked(),
-            subpalette_row=self._subpalette.value(),
-            tile_offset=self._offset,
-            byte_nudge=self._nudge,
-            block_columns=self._block_cols.value(),
-            block_rows=self._block_rows.value(),
-            block_order=self._block_order.currentData(),
-            two_dimensional=self._two_d.isChecked(),
-            bitmap_width=self._bitmap_width.value(),
-            tile_map=self._tile_map,
-            show_rearranged=self._show_rearranged,
-        )
-        # Deferred decode: only the visible window's bytes are sliced, then decoded
-        # and laid out by the shared arrangement path (2D reflow / block layout).
-        # Reads back through doc.view (like zoom/grid below) so the freshly stored
-        # ViewOptions is genuinely the render input, not a dead mirror.
-        view = self._doc.view
-        layout = BlockLayout(
-            cols, view.block_columns, view.block_rows, view.block_order
-        )
-        if self._active_tile_map().is_identity():
-            engine, preset = self._registry.engine_for(
-                self._doc.pixel_config.interpret_preset_id
-            )
-            window = self._doc.window_bytes(
-                view.tile_offset, cols * rows, view.byte_nudge
-            )
-            image, filled = self._render_arrangement(
-                window,
-                engine,
-                pipeline.tile_params(self._doc, engine, preset.params),
-                layout,
-                view.two_dimensional,
-                max_rows=rows,
-            )
-        else:
-            image, filled = self._render_rearranged(layout, rows)
-        tw, th = self._pixel_tile_size()
-        self._canvas.set_tile_size(tw, th)
-        self._canvas.set_zoom(view.zoom)
-        self._canvas.set_grid(view.show_grid)
-        self._canvas.set_arrangement(
-            view.block_columns, view.block_rows, view.block_order
-        )
-        self._canvas.set_filled_tiles(filled)
-        self._canvas.set_image(image)
-        # A lifted float's source is shown blank, never written, so a fresh base
-        # image has to have that hole punched back into it.
-        self._refresh_float_preview()
-        self._refresh_selection(cols * rows)
-        # Follows the Pattern picker: a 2D pattern locks the rearrange tool out
-        # (see rearrange.py), and nothing else tells it the pattern changed.
-        self._sync_rearrange_actions()
-        self._refresh_palette_dock()
-        self._sync_nav()
-        # The pen's colour can move under the preview without the pen itself
-        # changing (a palette edit, another subpalette row, a new format).
-        self._sync_paint_preview()
-        self._refresh_overlay()
-        self._refresh_hex()
-        # Everything above landed in doc.view, which a project save writes out.
-        self._refresh_project_modified()
-
-    def _clamp_subpalette(self, palette: Palette) -> int:
-        """Hold the subpalette row inside ``palette``; returns the row size.
-
-        Switching to a shorter palette - a File palette holding a single row,
-        say - must not leave the view pointing past it. Signals are blocked
-        because this is a correction, not a user change, and must not re-enter
-        the refresh that called it.
-        """
-        group = self._index_space()
-        max_row = max(0, len(palette) - 1) // group
-        if self._subpalette.value() > max_row:
-            with signals_blocked(self._subpalette):
-                self._subpalette.setValue(max_row)
-        return group
-
-    def _refresh_palette_dock(self) -> None:
-        """Put the palette on screen into the swatch grid, readout and editor.
-
-        Shared by the graphics view and the two document-less states - a palette
-        file shown on its own, and the idle default - so the dock is filled the
-        same way whatever is driving it, and a reload that recolors (or drops)
-        the selected entry is picked up in all three.
-        """
-        palette = self._shown_palette()
-        group = self._clamp_subpalette(palette)
-        self._palette_panel.set_palette(palette.colors)
-        self._palette_panel.set_active_range(self._subpalette.value() * group, group)
-        self._refresh_color_details()
-        self._sync_color_editor()
-
-    def _refresh_hex(self) -> None:
-        """Feed the hex panel a dump of the file bytes at the current offset.
-
-        Cheap no-op while the dock is hidden (its usual state). The dump starts
-        at the row holding the current view origin - so the offset's row is
-        always the top line - and highlights the currently selected tile(s),
-        using the same address format as the navbar. Bounded to the on-screen
-        window (a minimum of some context, a cap for huge windows) so a
-        multi-megabyte file never renders as one giant document.
-        """
-        if not self._hex_dock.isVisible():
-            return
-        if self._doc is None:
-            self._hex_panel.clear()
-            return
-        data = self._doc.pixel_data
-        origin = self._byte_position()
-        window = len(
-            self._doc.window_bytes(
-                self._offset, self._columns.value() * self._rows.value(), self._nudge
-            )
-        )
-        row_start = (origin // BYTES_PER_ROW) * BYTES_PER_ROW
-        # Enough rows to cover the visible window, floored so the panel is never
-        # nearly empty and capped so a whole-file view can't blow up the dump.
-        span = max(window, 16 * BYTES_PER_ROW)
-        span = min(span, 256 * BYTES_PER_ROW)
-        region_end = min(len(data), row_start + BYTES_PER_ROW + span)
-        base = self._display_base()
-        self._hex_panel.show_bytes(
-            data,
-            row_start,
-            region_end,
-            lambda index: self._format_offset(base + index),
-            self._selection_byte_range(),
-        )
-
+    # -- reaching the user ------------------------------------------------------
     def _alert(self, message: str, *, title: str = "celPix", detail: str = "") -> None:
         """The one place errors and warnings reach the user, as a modal dialog.
 

@@ -16,7 +16,10 @@ So GBA, Genesis/X68000/MSX 4bpp, Virtual Boy, and both Neo Geo Pocket orderings 
 each a two-flag parameter set, not code.
 
 Like the planar engine this handles the 8-pixel-wide case (fixed 8×8 tile); wider or
-odd-width packed tiles are a later bespoke codec with their own walk.
+odd-width packed tiles are a later bespoke codec with their own walk. It shares that
+engine's whole-buffer walk too: a row byte sits at a fixed offset inside every tile,
+so one strided slice collects it from all of them and a 256-entry table
+(:mod:`celpix.plugins.builtins._bits`) unpacks the lot.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._bits import field_expansion, field_packing, merge_planes
 from celpix.plugins.builtins._tile import check_tile_size, require_whole_tiles
 
 
@@ -58,53 +62,70 @@ class PackedCodec:
     def tile_size(self, params: dict[str, Any]) -> tuple[int, int]:
         return self.TILE, self.TILE
 
-    def _shift(self, pos: int, pixels_per_byte: int, bpp: int, msb_first: bool) -> int:
-        # Field position of pixel `pos` (0-based within its byte) → bit shift.
-        slot = (pixels_per_byte - 1 - pos) if msb_first else pos
-        return slot * bpp
+    @classmethod
+    def _row_bytes(cls, ppb: int, reverse: bool) -> list[int]:
+        """Which row byte supplies each left-to-right group of ``ppb`` pixels.
+
+        Plain order, or right-to-left under ``reverse_bytes`` — the Neo Geo Pocket
+        byte-swap, where the odd byte drives the left pixels.
+        """
+        count = cls.TILE // ppb
+        return [(count - 1 - i) if reverse else i for i in range(count)]
 
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> list[IndexGrid]:
+        """Unpack every tile's row bytes at once, one pixel row at a time."""
         bpp, msb_first, reverse, ppb, tile_bytes = self._geometry(params)
         tile = self.TILE
-        bytes_per_row = tile // ppb
-        mask = (1 << bpp) - 1
         require_whole_tiles(len(data), tile_bytes)
-
-        tiles: list[IndexGrid] = []
-        for addr in range(0, len(data), tile_bytes):
-            grid = IndexGrid(tile, tile)
-            buf = grid.data
-            for y in range(tile):
-                row = addr + y * bytes_per_row
-                out = y * tile
-                for x in range(tile):
-                    bi = x // ppb
-                    if reverse:
-                        bi = bytes_per_row - 1 - bi
-                    shift = self._shift(x % ppb, ppb, bpp, msb_first)
-                    buf[out + x] = (data[row + bi] >> shift) & mask
-            tiles.append(grid)
-        return tiles
+        if not data:
+            return []
+        bytes_per_row = tile // ppb
+        table = field_expansion(ppb, bpp, msb_first)
+        order = self._row_bytes(ppb, reverse)
+        count = len(data) // tile_bytes
+        rows = []
+        for y in range(tile):
+            # Row y of every tile, back to back. Each source byte unpacks to its
+            # ppb pixels for all tiles at once; the strided writes interleave
+            # those groups back into pixel order.
+            row_buf = bytearray(count * tile)
+            for i, bi in enumerate(order):
+                chunk = b"".join(
+                    map(table.__getitem__, data[y * bytes_per_row + bi :: tile_bytes])
+                )
+                for j in range(ppb):
+                    row_buf[i * ppb + j :: tile] = chunk[j::ppb]
+            rows.append(bytes(row_buf))
+        return [
+            IndexGrid(tile, tile, b"".join(row[base : base + tile] for row in rows))
+            for base in range(0, count * tile, tile)
+        ]
 
     def encode(
         self, tiles: list[IndexGrid], params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
+        """The inverse: pack each row byte across every tile in one pass."""
         bpp, msb_first, reverse, ppb, tile_bytes = self._geometry(params)
         tile = self.TILE
-        bytes_per_row = tile // ppb
-        out = bytearray(len(tiles) * tile_bytes)
         for t, grid in enumerate(tiles):
             check_tile_size(grid, tile, tile, t)
-            buf = grid.data
-            for y in range(tile):
-                row = t * tile_bytes + y * bytes_per_row
-                src = y * tile
-                for x in range(tile):
-                    bi = x // ppb
-                    if reverse:
-                        bi = bytes_per_row - 1 - bi
-                    shift = self._shift(x % ppb, ppb, bpp, msb_first)
-                    out[row + bi] |= (buf[src + x] << shift) & 0xFF
+        out = bytearray(len(tiles) * tile_bytes)
+        if not tiles:
+            return bytes(out)
+        bytes_per_row = tile // ppb
+        order = self._row_bytes(ppb, reverse)
+        pixels = b"".join(bytes(grid.data) for grid in tiles)
+        stride = tile * tile  # one tile's pixels
+        for y in range(tile):
+            for i, bi in enumerate(order):
+                out[y * bytes_per_row + bi :: tile_bytes] = merge_planes(
+                    [
+                        pixels[y * tile + i * ppb + j :: stride].translate(
+                            field_packing(j, ppb, bpp, msb_first)
+                        )
+                        for j in range(ppb)
+                    ]
+                )
         return bytes(out)

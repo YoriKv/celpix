@@ -374,11 +374,15 @@ class NavigationMixin:
             (Qt.Key.Key_Right, *shift): lambda: self._adjust_spin(self._columns, 1),
             # Not navigation, but the same routing need: bare letter keys that
             # must yield to focused text inputs (Palette ▸ Load from Selection,
-            # View ▸ Grid).
+            # View ▸ Grid, and the three mode switches). The transform bar's
+            # letters are handled ahead of this map, since which button they press
+            # depends on the group it is showing.
             (Qt.Key.Key_P, *no_mod): self._load_palette_from_selection,
             (Qt.Key.Key_G, *no_mod): self._grid.toggle,
             (Qt.Key.Key_S, *no_mod): self._toggle_selection_mode,
             (Qt.Key.Key_E, *no_mod): self._toggle_edit_mode,
+            (Qt.Key.Key_R, *no_mod): self._toggle_rearranging,
+            (Qt.Key.Key_R, *shift): self._toggle_show_rearranged,
         }
 
     def eventFilter(self, obj, event) -> bool:
@@ -522,10 +526,13 @@ class NavigationMixin:
             return False
         shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
-        # A rearrange drag claims Escape (and H/V) first: whatever navigation
-        # would otherwise do with them, it cannot put a tile stranded in the air
-        # back down.
+        # A rearrange drag claims Escape first: whatever navigation would
+        # otherwise do with it, it cannot put a tile stranded in the air back
+        # down. Then the transform bar's flip/rotate letters, which act on
+        # whichever group it is showing - that tool's pair included.
         if self._rearrange_key(event.key(), shift, ctrl):
+            return True
+        if self._transform_key(event.key(), shift, ctrl):
             return True
         # Pixel mode claims the bare number keys (tool select) and Escape (stamp
         # the float / drop the marquee) before the navigation map sees them.
@@ -660,7 +667,7 @@ class NavigationMixin:
         return parse_hex(text) if layout is None else layout.parse(text)
 
     def _offset_edit_tip(self) -> str:
-        return f"File position ({self._addr_format.currentText()}) - Enter to jump"
+        return f"File position ({self._addr_format.currentText()})\nEnter to jump"
 
     def _refresh_offset_display(self) -> None:
         self._offset_edit.setToolTip(self._offset_edit_tip())

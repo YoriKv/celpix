@@ -2717,6 +2717,51 @@ def test_edit_slice_updates_coordinates_and_reloads(
     assert window._offset_text() == "0x000020"
 
 
+def test_edit_slice_keeps_the_view_across_the_re_read(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # Re-pointing a slice re-reads it, but the arrangement is the entry's, not
+    # the region's: a wide-bitmap view must come back on its own geometry rather
+    # than the codec's default - and undo must put it back the same way.
+    from celpix.ui.slice_dialog import SliceDialog, SliceParams
+
+    px = tmp_path / "bitmap.bin"
+    px.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(306 * 24 * 3)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    entry = window._workspace.add_slice(str(px), "gfx", 0, 306 * 16 * 3)
+    window._activate_entry(entry)
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.dc-rgb888-be")
+    )
+    _select_2d_pattern(window)
+    window._bitmap_width.setValue(306)
+    assert (window._doc.tile_width, window._columns.value()) == (6, 51)
+
+    monkeypatch.setattr(
+        SliceDialog,
+        "get_slice",
+        staticmethod(
+            lambda *_a, **_k: SliceParams("gfx", 0, 306 * 12 * 3, "decompress.none")
+        ),
+    )
+    window._edit_slice(entry)
+    assert entry.slice_length == 306 * 12 * 3  # the region really did change
+    assert window._bitmap_width.value() == 306
+    assert window._two_d.isChecked()
+    # The format the width was chosen for survives with it (the session snapshot
+    # is only refreshed at capture points, and this is one).
+    assert window._pixel_preset.currentData() == "preset.pixel.dc-rgb888-be"
+    # The width reached the *load*, not just the widget: the tiles are re-cut.
+    assert (window._doc.tile_width, window._columns.value()) == (6, 51)
+
+    window._undo_stack.undo()
+    assert entry.slice_length == 306 * 16 * 3
+    assert window._bitmap_width.value() == 306
+    assert (window._doc.tile_width, window._columns.value()) == (6, 51)
+
+
 def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
     qtbot, tmp_path, monkeypatch
 ) -> None:
@@ -4922,7 +4967,7 @@ def test_shortcut_guide_reads_both_key_styles_off_the_menus(qtbot) -> None:
     from PySide6.QtGui import QKeySequence
 
     from celpix.ui.help_dialogs import shortcut_sections
-    from celpix.ui.tools import TOOL_SPECS
+    from celpix.ui.tools import TOOL_SPECS, TRANSFORM_SPECS
 
     window = MainWindow()
     qtbot.addWidget(window)
@@ -4934,7 +4979,13 @@ def test_shortcut_guide_reads_both_key_styles_off_the_menus(qtbot) -> None:
     assert dict(sections["Edit"])["Copy"] == copy_keys
     assert dict(sections["Navigate"])["Next tile"] == "Right"
     assert "Undo" in dict(sections["Edit"])  # not "Undo <command name>"
+    # An action carrying both routes lists both; the toolbar's own switches are
+    # documented because they were given a menu home.
+    assert dict(sections["View"])["Zoom In"].endswith("/ Ctrl + Scroll Up")
+    assert dict(sections["Edit"])["Rearranged View"] == "Shift+R"
     assert dict(sections["Pixel Tools"]) == {s.label: s.key for s in TOOL_SPECS}
+    transform_keys = dict(sections["Transform"])
+    assert all(transform_keys[s.label] == s.key for s in TRANSFORM_SPECS)
     assert all(name and keys for entries in sections.values() for name, keys in entries)
 
 

@@ -475,6 +475,23 @@ def decode_and_compose(
     return compose_tiles(tiles, layout, max_rows), filled
 
 
+def _rows_needed(count: int, layout: BlockLayout) -> int:
+    """Cell rows ``count`` tiles occupy under ``layout``.
+
+    Plain placement is the ceiling; a block layout has to be asked, since its
+    last block row can leave the bottom cell rows short. Only that final block
+    row is walked, though — every earlier one is full, so it contributes exactly
+    its own height, and a window can hold tens of thousands of tiles.
+    """
+    if count <= 0:
+        return 1
+    if layout.is_plain:
+        return ceil_div(count, max(1, layout.columns))
+    period = layout.slots_per_block_row
+    start = ((count - 1) // period) * period
+    return 1 + max(layout.slot_to_cell(s)[1] for s in range(start, count))
+
+
 def compose_tiles(tiles: list, layout: BlockLayout, max_rows: int | None):
     """Lay an already-decoded tile list out through an arrangement.
 
@@ -485,11 +502,7 @@ def compose_tiles(tiles: list, layout: BlockLayout, max_rows: int | None):
     (the live view's fixed window); ``None`` sizes to the data.
     """
     cols = layout.columns
-    # Rows the tiles occupy under this layout (plain: ceil; blocked: the tallest
-    # cell). Capped to a fixed window for the live view; uncapped otherwise.
-    need_rows = (
-        1 + max(layout.slot_to_cell(s)[1] for s in range(len(tiles))) if tiles else 1
-    )
+    need_rows = _rows_needed(len(tiles), layout)
     canvas_rows = need_rows if max_rows is None else max(1, min(max_rows, need_rows))
     if layout.is_plain:
         # Narrow a single partial row to its tiles; a taller image keeps full

@@ -7,9 +7,12 @@ routes) as key text after a tab in the action's label, which Qt renders in the
 menu's shortcut column. Walking the menus therefore keeps the guide correct for
 free: a new action with a key shows up here without anyone remembering to add it.
 
-Two things menus can't express are appended as static sections: the pixel tools'
-number keys (read from :data:`~celpix.ui.tools.TOOL_SPECS`, so they stay in sync)
-and the mouse gestures.
+What no menu holds is appended as static sections, read from the same tables the
+widgets are built from so they stay in sync: the pixel tools' number keys
+(:data:`~celpix.ui.tools.TOOL_SPECS`) and the transform bar's flip/rotate letters
+(:data:`~celpix.ui.tools.TRANSFORM_SPECS`) — those buttons are glyphs on a toolbar
+that swaps with the mode, which is not something a menu row can say. The mouse
+gestures follow, and are the one genuinely hand-maintained part.
 
 An action whose menu label is rebuilt at runtime — Undo/Redo carry the name of
 the command they would undo — can set a ``guideLabel`` property to pin the text
@@ -34,7 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from celpix import __version__, resources
-from celpix.ui.tools import TOOL_SPECS
+from celpix.ui.tools import TOOL_SPECS, TRANSFORM_SPECS
 
 __all__ = ["AboutDialog", "ShortcutGuide", "shortcut_sections"]
 
@@ -42,31 +45,47 @@ AUTHOR = "Epi"
 HOMEPAGE = "https://github.com/YoriKv/celpix"
 
 # Mouse/modifier gestures the canvas answers to. No menu action can express a
-# scroll direction or a drag, so these are the one part of the guide that is
-# genuinely hand-maintained.
+# drag or a held modifier, so these and the panel keys below are the one part of
+# the guide that is genuinely hand-maintained. Zoom is not here: it is a menu
+# action, whose entry already advertises the wheel gesture alongside its keys.
 CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
-    ("Zoom in / out", "Ctrl + Scroll"),
     ("Pan the view", "Hold Space + drag"),
     ("Pick a color (any tool)", "Right-click"),
+    ("Square selection (Select tool)", "Shift + drag"),
+    ("Select tiles while rearranging", "Right-drag"),
     ("Stamp a floating selection", "Esc"),
+    ("Abandon a rearrange drag", "Esc"),
+)
+
+# Keys a focused panel claims for itself, which is why they are not on the menu
+# bar: while one has focus the canvas's own editing shortcuts yield to it
+# (``widgets.take_editing_shortcut``), so Ctrl+C means the color under the
+# palette's cursor rather than the tile selection behind the dock.
+PANEL_KEYS: tuple[tuple[str, str], ...] = (
+    ("Copy / paste a color", "Ctrl+C / Ctrl+V"),
+    ("Copy / paste a subpalette", "Ctrl+Shift+C / Ctrl+Shift+V"),
+    ("Move the color selection", "Arrow keys"),
+    ("Remove a Files entry", "Del"),
 )
 
 
 def _key_text(action: QAction) -> str:
     """The key(s) ``action`` advertises, or ``""`` when it has none.
 
-    Label text after a tab wins over a registered shortcut: an action that
-    carries both (Zoom In) puts the *gesture* in the label deliberately, and the
-    bare-key actions carry only the label form because registering them for real
-    would steal the key from focused text inputs.
+    Two routes, and an action can take both. A registered shortcut is the plain
+    case; text after a tab in the label is what no ``QKeySequence`` can hold — a
+    scroll direction (Zoom In), a list of alternates ("+ / Ctrl+Right"), or a bare
+    key that must not be registered because it would be stolen from focused text
+    inputs. The menu's shortcut column has room for only one of the two, so this
+    is the only place the pair is ever seen together.
     """
-    label = action.text()
-    if "\t" in label:
-        return label.split("\t", 1)[1].strip()
     # The primary sequence only. Qt's StandardKey lists carry every historical
     # and media-key alternate for a role (Redo also answers to Ctrl+Y and a bare
     # "Redo" key); showing them all would bury the binding people actually use.
-    return action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+    registered = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+    label = action.text()
+    advertised = label.split("\t", 1)[1].strip() if "\t" in label else ""
+    return " / ".join(part for part in (registered, advertised) if part)
 
 
 def _label_text(action: QAction) -> str:
@@ -114,7 +133,18 @@ def shortcut_sections(window) -> list[tuple[str, list[tuple[str, str]]]]:  # noq
     sections.append(
         ("Pixel Tools", [(spec.label, spec.key) for spec in TOOL_SPECS]),
     )
+    # One row per letter, plus the Shift axis: the letters act on whichever group
+    # the transform bar is showing, so naming the groups here would be four times
+    # the rows to say the same thing.
+    sections.append(
+        (
+            "Transform",
+            [(spec.label, spec.key) for spec in TRANSFORM_SPECS]
+            + [("The block, not each tile", "Shift + the above")],
+        ),
+    )
     sections.append(("Canvas", list(CANVAS_GESTURES)))
+    sections.append(("Panels (while focused)", list(PANEL_KEYS)))
     return sections
 
 

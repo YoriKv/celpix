@@ -188,18 +188,31 @@ class Document:
             )
 
     def clamp_offset(self, offset: int, columns: int, rows: int, nudge: int = 0) -> int:
-        """A valid top-left tile offset for a ``columns`` × ``rows`` window.
+        """A valid top-left tile offset for a ``columns`` × ``rows`` window."""
+        return max(0, min(offset, self.last_page_offset(columns, rows, nudge)))
 
-        Bounded so the last reachable window is exactly the final page of tiles
-        (the view never scrolls into all-blank space), mirroring how tile viewers
-        stop at ``file_size - one_page``. A byte ``nudge`` shifts the tile grid,
-        so the bound moves with it; a trailing partial tile counts as usable
-        (it renders zero-padded).
+    def last_page_offset(self, columns: int, rows: int, nudge: int = 0) -> int:
+        """The greatest top-left tile offset a ``columns`` × ``rows`` window may sit at.
+
+        The last reachable window is the final page of tiles (the view never
+        scrolls into all-blank space), mirroring how tile viewers stop at
+        ``file_size - one_page`` — but rounded **up to a whole tile-row**. A file
+        whose tile count isn't a multiple of ``columns`` has a partial last row,
+        and stopping at the exact tile bound would start that page at a different
+        column phase than every other one: the image would jump sideways on the
+        final scroll step, and under the 2D walk — where a row of tiles is one
+        interleaved byte stripe — the whole window would be re-cut from a
+        mid-stripe origin and decode into different pixels entirely. Landing on a
+        row boundary leaves a few blank cells after the last tile instead, which
+        is how that remainder reads at every other scroll position.
+
+        A byte ``nudge`` shifts the tile grid, so the bound moves with it; a
+        trailing partial tile counts as usable (it renders zero-padded).
         """
-        page = max(1, columns) * max(1, rows)
+        cols = max(1, columns)
         tb = self.bytes_per_tile
         usable = ceil_div(len(self.pixel_data) - nudge, tb) if tb else 0
-        return max(0, min(offset, max(0, usable - page)))
+        return max(0, ceil_div(usable - cols * max(1, rows), cols) * cols)
 
     def clamp_byte_position(self, pos: int, columns: int, rows: int) -> tuple[int, int]:
         """Clamp a byte-space view origin; split it into ``(offset, nudge)``.
@@ -212,6 +225,5 @@ class Document:
         tb = self.bytes_per_tile
         if not tb:
             return (0, 0)
-        page = max(1, columns) * max(1, rows)
-        max_pos = max(0, self.tile_count - page) * tb
+        max_pos = self.last_page_offset(columns, rows) * tb
         return divmod(max(0, min(pos, max_pos)), tb)

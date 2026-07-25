@@ -66,7 +66,8 @@ class ToolsPanel(QWidget):
         grid.setSpacing(2)
         for i, spec in enumerate(TOOL_SPECS):
             button = QToolButton()
-            button.setToolTip(f"{spec.tooltip}  ({spec.key})")
+            # "(key)" trails the description, the form every keyed control uses.
+            button.setToolTip(f"{spec.tooltip} ({spec.key})")
             # The label is gone from the face but stays the accessible name, so
             # screen readers and the tooltip still identify the tool.
             button.setText(spec.label)

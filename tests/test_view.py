@@ -104,6 +104,19 @@ def test_clamp_offset_stops_at_the_last_full_page() -> None:
     assert doc.clamp_offset(-5, 4, 4) == 0
 
 
+def test_clamp_offset_keeps_the_last_page_on_a_row_boundary() -> None:
+    doc = _doc(103)  # 25 rows of 4 tiles + a partial row of 3
+    # The exact bound (103 - 16 = 87) would start the last page three tiles into
+    # a row, sliding every column across — and under the 2D walk re-cutting the
+    # whole window from a mid-stripe origin. It rounds up to the row instead.
+    assert doc.clamp_offset(999, 4, 4) == 88
+    # Rounding up never scrolls into all-blank space: the last row still holds
+    # tiles (88 + 15 rows... the 4th row of the page starts at tile 100 < 103).
+    assert doc.clamp_offset(999, 4, 4) + 3 * 4 < doc.tile_count
+    # Byte-space moves land on the same page.
+    assert doc.clamp_byte_position(10**6, 4, 4) == (88, 0)
+
+
 def test_clamp_offset_small_file_pins_to_zero() -> None:
     doc = _doc(10)
     # A window bigger than the file can only sit at the top.

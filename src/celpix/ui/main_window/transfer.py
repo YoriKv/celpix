@@ -63,7 +63,7 @@ class TransferMixin:
 
         self._export_png_action = QAction("Export as PNG…", self)
         self._export_png_action.setToolTip(
-            "Export as an indexed PNG - index 0 is transparent"
+            "Export as an indexed PNG\nIndex 0 is transparent"
         )
         self._export_png_action.triggered.connect(
             lambda: self._export_png(self._workspace.current)

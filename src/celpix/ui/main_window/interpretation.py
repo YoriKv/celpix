@@ -298,11 +298,11 @@ class InterpretationMixin:
             arrange,
             "Bitmap W:",
             self._bitmap_width,
-            "Width of the 2D bitmap in pixels (needs 2D).\n"
-            "0 keeps the codec's own tile size. Any other width\n"
-            "re-cuts tiles to the largest size that divides it\n"
-            "(306 gives 6x6) and sets Cols to span exactly that\n"
-            "width. Codecs with a fixed tile size are unaffected.",
+            "Width of the 2D bitmap in pixels (needs 2D)\n"
+            "0 keeps the codec's own tile size\n"
+            "Any other width re-cuts tiles to the largest size\n"
+            "that divides it (306 gives 6x6) and spans it in Cols\n"
+            "Codecs with a fixed tile size are unaffected",
         )
         # The default view is Linear (the first preset), so start with the block
         # controls locked until Custom is picked.

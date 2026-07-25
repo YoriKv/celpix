@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from functools import cached_property
 
 from celpix.core import transform
 
@@ -112,13 +113,23 @@ class TileMap:
         turned = {int(t): int(f) for t, f in flips if int(f)}
         return cls(tuple(sorted(moved.items())), tuple(sorted(turned.items())))
 
-    @property
+    # The three lookup tables below are built once per map, not once per lookup.
+    # Rendering and editing resolve the map a tile at a time — a window is
+    # thousands of lookups — and rebuilding a dict of every moved tile for each of
+    # them made a single ``actual()`` cost as much as the whole map is big. Safe to
+    # hold because the class is frozen; callers that need to *change* one take
+    # their own copy (see :meth:`rearranged`).
+    @cached_property
     def _forward(self) -> dict[int, int]:
         return dict(self.pairs)
 
-    @property
+    @cached_property
     def _reverse(self) -> dict[int, int]:
         return {a: v for v, a in self.pairs}
+
+    @cached_property
+    def _flips(self) -> dict[int, int]:
+        return dict(self.flips)
 
     def is_identity(self) -> bool:
         """True when nothing is rearranged *or* flipped — the fast path everywhere.
@@ -130,7 +141,7 @@ class TileMap:
 
     def flip_of(self, actual: int) -> int:
         """The flip flags tile ``actual`` is displayed with (0 = as stored)."""
-        return dict(self.flips).get(actual, TILE_FLIP_NONE)
+        return self._flips.get(actual, TILE_FLIP_NONE)
 
     def flip(self, actuals: Iterable[int], flags: int) -> TileMap:
         """A new map with ``flags`` **toggled** on each of ``actuals``.
@@ -214,7 +225,7 @@ class TileMap:
         """
         if set(sources) != set(sources.values()):
             raise ValueError("a rearrangement must be a bijection over its positions")
-        forward = self._forward
+        forward = dict(self._forward)  # a copy: the map's own table is shared
         # Resolved against the *old* map in one pass before any is written back:
         # source and destination sets overlap, so writing as we go would read
         # positions this very call has already moved.

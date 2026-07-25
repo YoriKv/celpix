@@ -179,3 +179,33 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
 # By-member and by-key lookups the panel/controller use instead of re-scanning.
 SPEC_BY_TOOL: dict[Tool, ToolSpec] = {spec.tool: spec for spec in TOOL_SPECS}
 TOOL_BY_KEY: dict[str, Tool] = {spec.key: spec.tool for spec in TOOL_SPECS}
+
+
+@dataclass(frozen=True)
+class TransformSpec:
+    """One flip/rotate button: its glyph, its key, and what it is called.
+
+    ``field`` names the attribute the button is stored under in a transform
+    group, which is what lets one key table drive every group the bar can show
+    (Tile, Block, Pixel, and the rearrange tool's pair).
+    """
+
+    field: str
+    key: str  # the bare letter; Shift picks the Block group, not another letter
+    label: str
+    glyph: str
+
+
+# The transform bar's left-to-right button order *and* its keys, kept here rather
+# than beside the toolbar so the shortcut guide can list them without importing
+# the window. Shift is the Tile/Block axis, so four letters cover eight buttons.
+TRANSFORM_SPECS: tuple[TransformSpec, ...] = (
+    TransformSpec("flip_h", "H", "Flip horizontal", "↔"),
+    TransformSpec("flip_v", "V", "Flip vertical", "↕"),
+    TransformSpec("rotate_cw", "C", "Rotate 90° right", "↻"),
+    TransformSpec("rotate_ccw", "X", "Rotate 90° left", "↺"),
+)
+
+# The two a *display* flip can express: a real tile attribute carries mirror bits
+# but no rotation, so the rearrange tool's groups are exactly these.
+FLIP_SPECS: tuple[TransformSpec, ...] = TRANSFORM_SPECS[:2]

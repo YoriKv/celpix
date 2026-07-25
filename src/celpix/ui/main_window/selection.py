@@ -87,12 +87,14 @@ class SelectionMixin:
     """
 
     def _build_edit_menu(self) -> None:
-        """Edit ▸ Undo/Redo and the clipboard actions.
+        """Edit ▸ Undo/Redo, the clipboard actions, and the mode switches.
 
         Undo/Redo are stack-provided (label and enabled state come from the
         unified session stack). The clipboard group operates on the selected
         tile run - see :meth:`_copy_selection` for what a copy actually puts on
-        the clipboard.
+        the clipboard. The four switches at the end are bare-key toggles whose
+        home is elsewhere on screen (the transform bar); the menu is where they
+        are named and their keys written down.
         """
         menu = self.menuBar().addMenu("Edit")
         undo = self._undo_stack.createUndoAction(self)
@@ -122,6 +124,11 @@ class SelectionMixin:
         menu.addSeparator()
         menu.addAction(self._toggle_selection_mode_action)
         menu.addAction(self._toggle_edit_mode_action)
+        # The transform bar's own two switches, shown here as well: it gives them
+        # a menu home, and the shortcut guide reads the menu bar - so R/Shift+R
+        # are documented by the same route every other key is.
+        menu.addAction(self._rearrange_action)
+        menu.addAction(self._show_rearranged_action)
         # Enabled state depends on the clipboard's contents, which any other
         # program can change while we sit idle - so track the signal rather than
         # only recomputing when the menu opens.

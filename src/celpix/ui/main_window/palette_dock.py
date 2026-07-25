@@ -112,7 +112,7 @@ class PaletteDockMixin:
         )
         self._palette_offset_edit.setFixedWidth(104)
         self._palette_offset_edit.setToolTip(
-            "Palette offset in the pixel file - Enter to load"
+            "Palette offset in the pixel file\nEnter to load"
         )
         self._palette_offset_edit.hide()
         self._palette_offset_edit.committed.connect(self._on_palette_offset_committed)

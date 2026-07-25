@@ -33,10 +33,13 @@ result would be a rotation nobody asked for rather than a swap.
 
 Tiles can also be **flipped**, which is the other half of reading scattered art:
 hardware mirrors tiles rather than storing both halves of a symmetric sprite. Per
-tile (H/V, or the toolbar's Rearrange pair), or per **block** (Shift+H/V), which
+tile (H/V, or the toolbar's flip pair), or per **block** (Shift+H/V), which
 mirrors the block as one picture exactly as the destructive Block group does —
 flipping every tile *and* permuting their positions — except that both halves are
-stored in the map and no byte moves.
+stored in the map and no byte moves. Those keys are the transform bar's, not this
+module's: while the tool is armed its pair *is* the group on the bar, so H/V mean
+here what they mean anywhere (:meth:`~celpix.ui.main_window.transform.
+TransformMixin._transform_key`).
 """
 
 from __future__ import annotations
@@ -44,19 +47,28 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QImage
+from PySide6.QtGui import QAction, QImage, QKeySequence
 
-from celpix.core.draw import extract_region
+from celpix.core.draw import blit_region, extract_region
 from celpix.core.tilemap import (
     TILE_FLIP_NONE,
     TileMap,
     apply_flip,
 )
 from celpix.ui import render_bridge
-from celpix.ui.main_window.transform import OP_FLIP_H, OP_FLIP_V, TransformOp
+from celpix.ui.main_window.transform import TransformOp
 from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import TileMapCommand
 from celpix.ui.widgets import signals_blocked
+
+# The tool's own tooltip, re-set by :meth:`RearrangeMixin._sync_rearrange_actions`
+# when a 2D pattern locks the tool out, so both readings live side by side.
+REARRANGE_TIP = (
+    "Drag tiles to new display positions (R)\nRight-drag selects; no bytes move"
+)
+REARRANGE_BLOCKED_TIP = (
+    "Not available for a 2D pattern (R)\nA tile's bytes interleave with its neighbours'"
+)
 
 
 @dataclass(frozen=True)
@@ -147,23 +159,42 @@ class RearrangeMixin:
         other says whether the view is showing it. Both are whole-surface
         switches like Pixel Mode, which is why they sit past the spacer rather
         than among the transform groups.
+
+        ``R``/``Shift+R`` are set as shortcuts for the label they put in the menu
+        and the F1 guide, but with a widget context so they never fire: the bare
+        letters are routed by the app-wide event filter (``_handle_nav_key``),
+        which yields to focused text inputs — the same treatment View ▸ Grid gets.
         """
         self._rearrange_action = QAction("Rearrange", self)
         self._rearrange_action.setCheckable(True)
-        self._rearrange_action.setToolTip(
-            "Drag tiles to new display positions; the file is not changed\n"
-            "Right-drag selects tiles while the tool is armed"
-        )
+        self._rearrange_action.setShortcut(QKeySequence("R"))
+        self._rearrange_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        self._rearrange_action.setToolTip(REARRANGE_TIP)
         self._rearrange_action.toggled.connect(self._set_rearranging)
         bar.addAction(self._rearrange_action)
         self._show_rearranged_action = QAction("Rearranged View", self)
         self._show_rearranged_action.setCheckable(True)
         self._show_rearranged_action.setChecked(True)
+        self._show_rearranged_action.setShortcut(QKeySequence("Shift+R"))
+        self._show_rearranged_action.setShortcutContext(
+            Qt.ShortcutContext.WidgetShortcut
+        )
         self._show_rearranged_action.setToolTip(
-            "Show tiles where they were rearranged, or in the file's own order"
+            "Show the rearranged order, or the file's own (Shift+R)"
         )
         self._show_rearranged_action.toggled.connect(self._set_show_rearranged)
         bar.addAction(self._show_rearranged_action)
+
+    def _toggle_rearranging(self) -> None:
+        """The ``R`` key. Goes through the action so the key and the button can
+        only ever do the same thing — including staying inert while it is off."""
+        if self._rearrange_action.isEnabled():
+            self._rearrange_action.toggle()
+
+    def _toggle_show_rearranged(self) -> None:
+        """``Shift+R`` — the view toggle's key, via its action as ``R`` is."""
+        if self._show_rearranged_action.isEnabled():
+            self._show_rearranged_action.toggle()
 
     def _set_rearranging(self, on: bool) -> None:
         """Arm/disarm the tool, which is a **tile-mode** tool.
@@ -232,10 +263,7 @@ class RearrangeMixin:
             action.setEnabled(available)
         blocked = self._doc is not None and not available
         self._rearrange_action.setToolTip(
-            "Rearranging is not available for a 2D pattern - a tile's bytes "
-            "interleave with its neighbours' there"
-            if blocked
-            else "Drag tiles to new display positions; the file is not changed"
+            REARRANGE_BLOCKED_TIP if blocked else REARRANGE_TIP
         )
         # The flip buttons need something to act on: the carried tiles mid-drag,
         # else the selection. The block pair additionally needs a 2D block,
@@ -375,26 +403,16 @@ class RearrangeMixin:
         Claimed ahead of the other Escape handlers: whatever they would otherwise
         do, they cannot put the carried tile back down.
 
-        ``H``/``V`` flip, and read the same either side of a drag — the tile in
-        the air while one is in flight, the selection otherwise — so the keys and
-        the toolbar's Rearrange pair never mean different things. **Shift** makes
-        them flip the *block*, mirroring the Tile/Block pairing the transform bar
-        already teaches.
+        The flip keys are not here. While the tool is armed its pair *is* the
+        group on the transform bar, so they are that bar's keys like every other
+        flip (``TransformMixin._transform_key``) — which is what keeps H/V from
+        meaning one thing here and another a mode away.
         """
-        if ctrl or not self._rearranging:
+        if ctrl or shift or not self._rearranging:
             return False
-        if key == Qt.Key.Key_Escape:
-            if shift or self._rearrange_drag is None:
-                return False
-            self._cancel_rearrange_drag()
-            return True
-        op = {Qt.Key.Key_H: OP_FLIP_H, Qt.Key.Key_V: OP_FLIP_V}.get(key)
-        if op is None:
+        if key != Qt.Key.Key_Escape or self._rearrange_drag is None:
             return False
-        if shift:
-            self._flip_rearranged_block(op)
-        else:
-            self._flip_rearranged(op.tile_flip)
+        self._cancel_rearrange_drag()
         return True
 
     def _flip_rearranged_block(self, op: TransformOp) -> None:
@@ -446,16 +464,17 @@ class RearrangeMixin:
         )
 
     def _flip_rearranged_tiles(self, op: TransformOp) -> None:
-        """Toolbar entry point for the per-tile display flip (the keys pass flags)."""
+        """The per-tile display flip as the transform bar calls it — by op rather
+        than by flag, which is the shape every button in that bar is wired with."""
         self._flip_rearranged(op.tile_flip)
 
     def _flip_rearranged(self, flags: int) -> None:
         """Toggle a display flip on whatever the tool is currently pointed at.
 
-        The one entry point behind both the toolbar buttons and the H/V keys, so
-        the two can never drift apart. Mid-drag it retargets to the carried tiles
-        and rides along to the drop as part of that single step; otherwise it is
-        its own undoable step over the selection.
+        Mid-drag it retargets to the carried tiles and rides along to the drop as
+        part of that single step — the only route to flipping what is in the air,
+        since the buttons otherwise act on the selection; otherwise it is its own
+        undoable step over the selection.
         """
         if self._doc is None or not self._rearrange_available():
             return
@@ -615,8 +634,6 @@ class RearrangeMixin:
         for cx, cy in cells:
             tile = extract_region(grid, cx * tw, cy * th, tw, th)
             tile = apply_flip(tile, drag.flip)
-            for y in range(th):
-                for x in range(tw):
-                    out.set((cx - left) * tw + x, (cy - top) * th + y, tile.get(x, y))
+            blit_region(out, tile, (cx - left) * tw, (cy - top) * th)
         base = self._subpalette.value() * self._index_space()
         return render_bridge.render(out, self._doc.palette, base)

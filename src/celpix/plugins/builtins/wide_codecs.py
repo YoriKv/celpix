@@ -1,10 +1,17 @@
 """Wide / odd-tile pixel codecs (16-wide tiles with bespoke intra-tile layouts).
 
 These tiles are 16 pixels wide and/or a non-power-of-two height, so each row is two
-8-pixel halves with format-specific byte placement — no shared 8×8 kernel expresses
-them (``docs/graphics-formats-reference/implementation-guide.md`` §2, odd/wide-tile
-formats). Every tile's bytes are still **contiguous**, so they slot into the deferred
-windowed view like any other codec; only the intra-tile walk is custom.
+8-pixel halves with format-specific byte placement — no *preset* over the 8×8 planar
+engine expresses that walk (``docs/graphics-formats-reference/implementation-guide.md``
+§2, odd/wide-tile formats). Every tile's bytes are still **contiguous**, so they slot
+into the deferred windowed view like any other codec; only the intra-tile walk is
+custom, and each half-row still goes through the shared planar kernel
+(:func:`~celpix.plugins.builtins._bits.expand_row` / :func:`.pack_row`) rather than
+its own bit loop.
+
+That kernel is applied a row at a time here, not over the whole buffer as the 8×8
+engines do: a plane's bytes sit at offsets these formats each choose differently,
+so there is no single stride to gather every tile's copy of one byte along.
 
 Covered: 1bpp 16×16 / 16×12 (FF5) / 16×11 (FF6); PCE 2bpp 16×16; PCE SG 4bpp 16×16.
 """
@@ -17,20 +24,8 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._bits import bit_expansion, expand_row, pack_row
 from celpix.plugins.builtins._tile import check_tile_size, require_whole_tiles
-
-
-def _bit(byte: int, x: int) -> int:
-    """1bpp planar bit for pixel x (0=leftmost uses MSB)."""
-    return (byte >> (7 - x)) & 1
-
-
-def _pack8(pixels, plane: int) -> int:
-    """Collapse 8 pixels' bit `plane` into one byte (MSB = leftmost)."""
-    b = 0
-    for x in range(8):
-        b |= ((pixels[x] >> plane) & 1) << (7 - x)
-    return b
 
 
 class Wide1bppCodec:
@@ -69,17 +64,15 @@ class Wide1bppCodec:
         height, (lb, ls), (rb, rs) = self._mode(params)
         tile_bytes = 2 * height
         require_whole_tiles(len(data), tile_bytes)
+        expand = bit_expansion(0)  # 1bpp: one plane, so a byte *is* eight pixels
         tiles: list[IndexGrid] = []
         for addr in range(0, len(data), tile_bytes):
             grid = IndexGrid(16, height)
             buf = grid.data
             for y in range(height):
-                left = data[addr + lb + ls * y]
-                right = data[addr + rb + rs * y]
                 row = y * 16
-                for x in range(8):
-                    buf[row + x] = _bit(left, x)
-                    buf[row + 8 + x] = _bit(right, x)
+                buf[row : row + 8] = expand[data[addr + lb + ls * y]]
+                buf[row + 8 : row + 16] = expand[data[addr + rb + rs * y]]
             tiles.append(grid)
         return tiles
 
@@ -95,8 +88,8 @@ class Wide1bppCodec:
             base = t * tile_bytes
             for y in range(height):
                 row = y * 16
-                out[base + lb + ls * y] = _pack8(buf[row : row + 8], 0)
-                out[base + rb + rs * y] = _pack8(buf[row + 8 : row + 16], 0)
+                out[base + lb + ls * y] = pack_row(buf[row : row + 8], 0)
+                out[base + rb + rs * y] = pack_row(buf[row + 8 : row + 16], 0)
         return bytes(out)
 
 
@@ -124,12 +117,13 @@ class Pce2bpp16Codec:
             grid = IndexGrid(16, 16)
             buf = grid.data
             for y in range(16):
-                lp0, lp1 = data[addr + 2 * y], data[addr + 2 * y + 32]
-                rp0, rp1 = data[addr + 2 * y + 1], data[addr + 2 * y + 33]
                 row = y * 16
-                for x in range(8):
-                    buf[row + x] = _bit(lp0, x) | (_bit(lp1, x) << 1)
-                    buf[row + 8 + x] = _bit(rp0, x) | (_bit(rp1, x) << 1)
+                buf[row : row + 8] = expand_row(
+                    [data[addr + 2 * y], data[addr + 2 * y + 32]]
+                )
+                buf[row + 8 : row + 16] = expand_row(
+                    [data[addr + 2 * y + 1], data[addr + 2 * y + 33]]
+                )
             tiles.append(grid)
         return tiles
 
@@ -144,10 +138,10 @@ class Pce2bpp16Codec:
             for y in range(16):
                 left = buf[y * 16 : y * 16 + 8]
                 right = buf[y * 16 + 8 : y * 16 + 16]
-                out[base + 2 * y] = _pack8(left, 0)
-                out[base + 2 * y + 32] = _pack8(left, 1)
-                out[base + 2 * y + 1] = _pack8(right, 0)
-                out[base + 2 * y + 33] = _pack8(right, 1)
+                out[base + 2 * y] = pack_row(left, 0)
+                out[base + 2 * y + 32] = pack_row(left, 1)
+                out[base + 2 * y + 1] = pack_row(right, 0)
+                out[base + 2 * y + 33] = pack_row(right, 1)
         return bytes(out)
 
 
@@ -176,14 +170,13 @@ class PceSgCodec:
             buf = grid.data
             for y in range(16):
                 row = y * 16
-                for x in range(8):
-                    left = right = 0
-                    for p in range(4):
-                        block = addr + p * 32
-                        left |= _bit(data[block + 2 * y + 1], x) << p  # odd byte = left
-                        right |= _bit(data[block + 2 * y], x) << p  # even byte = right
-                    buf[row + x] = left
-                    buf[row + 8 + x] = right
+                # Odd byte of each plane block = left half, even byte = right.
+                buf[row : row + 8] = expand_row(
+                    [data[addr + p * 32 + 2 * y + 1] for p in range(4)]
+                )
+                buf[row + 8 : row + 16] = expand_row(
+                    [data[addr + p * 32 + 2 * y] for p in range(4)]
+                )
             tiles.append(grid)
         return tiles
 
@@ -200,6 +193,6 @@ class PceSgCodec:
                 right = buf[y * 16 + 8 : y * 16 + 16]
                 for p in range(4):
                     block = base + p * 32
-                    out[block + 2 * y + 1] = _pack8(left, p)
-                    out[block + 2 * y] = _pack8(right, p)
+                    out[block + 2 * y + 1] = pack_row(left, p)
+                    out[block + 2 * y] = pack_row(right, p)
         return bytes(out)
