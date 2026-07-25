@@ -86,6 +86,7 @@ from celpix.ui.main_window.palette_source import (
     PaletteSourceMixin,
 )
 from celpix.ui.main_window.pixel_edit import PixelEditMixin
+from celpix.ui.main_window.rearrange import RearrangeMixin
 from celpix.ui.main_window.selection import (
     SelectionMixin,
 )
@@ -125,6 +126,7 @@ class MainWindow(
     SelectionMixin,
     TransformMixin,
     PixelEditMixin,
+    RearrangeMixin,
     EntriesMixin,
     TransferMixin,
     CompressionMixin,
@@ -224,6 +226,12 @@ class MainWindow(
         # down and strand later switches there. Cleared when the pixel dropdown
         # loses focus (see _on_pixel_preset_change / the focus_lost hookup).
         self._pixel_switch_target: int | None = None
+        # The column count from before a bitmap width took Cols over, so dropping
+        # the width gives the user's own choice back instead of leaving the
+        # derived count behind. None = no width is currently overriding Cols. It
+        # is scratch state of the entry on screen, so switching entries clears it
+        # (the incoming entry's Cols is its own).
+        self._columns_before_bitmap: int | None = None
         # The selection as absolute tile indices (they survive scrolling; the
         # canvas only paints the highlight while it is inside the window).
         # ``_selected_tile`` is the anchor - the single "selected tile" every
@@ -256,12 +264,19 @@ class MainWindow(
         # Pixel-edit state (mode, tool, pen, stroke/float scratch) must exist
         # before the transform toolbar builds its mode toggle off _edit_mode.
         self._init_pixel_edit()
+        # Likewise the rearrangement: _refresh_view renders through the map, so
+        # it has to be there before anything can draw.
+        self._init_rearrange()
 
         self._canvas = Canvas()
         self._overlay = DecompressOverlay(self)
         self._canvas.tiles_selected.connect(self._on_tiles_selected)
         self._canvas.color_picked.connect(self._on_color_picked)
         self._connect_pixel_canvas()
+        self._canvas.rearrange_started.connect(self._on_rearrange_started)
+        self._canvas.rearrange_moved.connect(self._on_rearrange_moved)
+        self._canvas.rearrange_dropped.connect(self._on_rearrange_dropped)
+        self._canvas.rearrange_cancelled.connect(self._on_rearrange_cancelled)
         # Right-click the canvas for the clipboard actions (the canvas selects
         # the tile under the cursor first, unless it is already in the run).
         self._canvas.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -648,8 +663,22 @@ class MainWindow(
             else 0
         )
         cfg = self._pixel_config(entry, session.pixel_preset_id, header)
+        # A pending bitmap width re-cuts the codec's tile geometry, so it is an
+        # input to this first load rather than something the view applied
+        # afterwards can express - the entry would otherwise open at the codec's
+        # own tile size and only re-cut when a widget was next touched. Read off
+        # the pending view because that is where a not-yet-loaded entry's
+        # arrangement lives (a restored project, a slice seeded from its parent).
+        # Gated on the 2D walk exactly as _effective_bitmap_width is: the width
+        # describes a wide-bitmap read and means nothing to a tile-by-tile one.
+        pending = entry.pending_view
+        width = (
+            pending.bitmap_width
+            if pending is not None and pending.two_dimensional
+            else 0
+        )
         try:
-            px = pipeline.load_pixel_data(cfg, self._registry)
+            px = pipeline.load_pixel_data(cfg, self._registry, width)
         except PipelineError as exc:
             if not quiet:
                 self._report(exc)
@@ -759,6 +788,7 @@ class MainWindow(
             (self._header_len, session.header_length),
             (self._block_cols, view.block_columns),
             (self._block_rows, view.block_rows),
+            (self._bitmap_width, view.bitmap_width),
         )
         checks = (
             (self._grid, view.show_grid),
@@ -770,6 +800,10 @@ class MainWindow(
                 spin.setValue(value)
             for check, value in checks:
                 check.setChecked(value)
+        # The Cols the outgoing entry had before its bitmap width took over means
+        # nothing to this one, whose Cols has just been restored from its own
+        # view - drop it before the sync below can read it back.
+        self._columns_before_bitmap = None
         # Reselect the Pattern preset (or Custom) that matches the block/order/2D
         # values just restored, and lock the controls to match.
         self._sync_pattern_selection()
@@ -779,6 +813,13 @@ class MainWindow(
         self._headered.setEnabled(is_file)
         self._header_len.setEnabled(is_file)
         self._offset, self._nudge = view.tile_offset, view.byte_nudge
+        # The rearrangement belongs to the entry, like the offset: switching away
+        # and back must find the tiles where they were left. Any drag in flight
+        # belonged to the entry being left, so it goes with it.
+        self._cancel_rearrange_drag()
+        self._tile_map = view.tile_map.bounded(entry.doc.tile_count)
+        self._show_rearranged = view.show_rearranged
+        self._sync_rearrange_actions()
         self._selected_tile = session.selected_tile
         self._selected_last = (
             session.selected_last
@@ -1345,8 +1386,33 @@ class MainWindow(
         base = self._doc.view.subpalette_row * self._index_space()
         return render_bridge.render(grid, self._doc.palette, base), filled
 
+    def _render_rearranged(self, layout: BlockLayout, rows: int):
+        """Render the window when a tile map is in force.
+
+        The byte path above cannot serve this: a rearranged window's tiles are
+        gathered from wherever the map sends them, not from one contiguous slice.
+        So the tiles come through ``_decode_run`` — the same choke point that
+        resolves the map for every edit, which is what keeps what is drawn and
+        what is written in agreement — and only the layout is shared.
+
+        A window running past the end of the file is short by the same count it
+        always was: the map permutes existing tiles, so the positions with
+        nothing behind them are exactly the ones past the last tile.
+        """
+        assert self._doc is not None
+        view = self._doc.view
+        window_tiles = layout.columns * rows
+        tiles = self._decode_run(view.tile_offset, window_tiles) or []
+        base = view.subpalette_row * self._index_space()
+        grid = pipeline.compose_tiles(tiles, layout, rows)
+        return render_bridge.render(grid, self._doc.palette, base), len(tiles)
+
     def _refresh_view(self) -> None:
         assert self._doc is not None
+        # A bitmap width owns the column count (it *is* the width, in tiles), so
+        # settle Cols - and whether the width applies at all - before anything
+        # reads them.
+        self._sync_bitmap_width()
         cols = self._columns.value()
         # Rows is a free display-window height (bounded only by the spin's own 256
         # cap), not by the data. Asking for more rows than the file fills just
@@ -1372,6 +1438,9 @@ class MainWindow(
             block_rows=self._block_rows.value(),
             block_order=self._block_order.currentData(),
             two_dimensional=self._two_d.isChecked(),
+            bitmap_width=self._bitmap_width.value(),
+            tile_map=self._tile_map,
+            show_rearranged=self._show_rearranged,
         )
         # Deferred decode: only the visible window's bytes are sliced, then decoded
         # and laid out by the shared arrangement path (2D reflow / block layout).
@@ -1381,13 +1450,23 @@ class MainWindow(
         layout = BlockLayout(
             cols, view.block_columns, view.block_rows, view.block_order
         )
-        engine, preset = self._registry.engine_for(
-            self._doc.pixel_config.interpret_preset_id
-        )
-        window = self._doc.window_bytes(view.tile_offset, cols * rows, view.byte_nudge)
-        image, filled = self._render_arrangement(
-            window, engine, preset.params, layout, view.two_dimensional, max_rows=rows
-        )
+        if self._active_tile_map().is_identity():
+            engine, preset = self._registry.engine_for(
+                self._doc.pixel_config.interpret_preset_id
+            )
+            window = self._doc.window_bytes(
+                view.tile_offset, cols * rows, view.byte_nudge
+            )
+            image, filled = self._render_arrangement(
+                window,
+                engine,
+                pipeline.tile_params(self._doc, engine, preset.params),
+                layout,
+                view.two_dimensional,
+                max_rows=rows,
+            )
+        else:
+            image, filled = self._render_rearranged(layout, rows)
         tw, th = self._pixel_tile_size()
         self._canvas.set_tile_size(tw, th)
         self._canvas.set_zoom(view.zoom)
@@ -1401,6 +1480,9 @@ class MainWindow(
         # image has to have that hole punched back into it.
         self._refresh_float_preview()
         self._refresh_selection(cols * rows)
+        # Follows the Pattern picker: a 2D pattern locks the rearrange tool out
+        # (see rearrange.py), and nothing else tells it the pattern changed.
+        self._sync_rearrange_actions()
         self._refresh_palette_dock()
         self._sync_nav()
         # The pen's colour can move under the preview without the pen itself

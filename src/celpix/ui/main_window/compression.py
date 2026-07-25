@@ -37,6 +37,7 @@ from celpix.project.workspace import (
     default_slice_name,
     new_slice,
 )
+from celpix.ui.decompress_overlay import Badge
 from celpix.ui.undo_commands import (
     AddEntryCommand,
 )
@@ -60,7 +61,12 @@ class CompressionMixin:
                 self._compression.setCurrentIndex(self._compression.count() - 1)
 
     def _on_promote_structure(self) -> None:
-        """One click: the complete structure in view becomes a slice entry."""
+        """One click: the structure in view becomes a slice entry.
+
+        Its extent is whichever end the decode found — the structure's own
+        terminator, or, for a scheme that has none, the point the view window
+        ran out at.
+        """
         src = self._raw_slice_source()
         if src is None or self._structure_extent is None:
             return
@@ -104,9 +110,11 @@ class CompressionMixin:
     def _refresh_structure_actions(self) -> None:
         """Arm Jump-to-Next / promote-to-slice from the overlay's scan state.
 
-        Jump is armed only while a whole structure (known end) is in view;
-        promote also needs the view's positions to map to file offsets, so it
-        stays off while the main view is itself showing decompressed bytes.
+        Jump is armed only while a whole structure (known end) is in view.
+        Promote arms on any extent worth recording — that structure, or a
+        stream-based scheme's window end — but also needs the view's positions
+        to map to file offsets, so it stays off while the main view is itself
+        showing decompressed bytes.
 
         Kept separate from :meth:`_refresh_overlay` because it is the single
         source of truth for these two buttons: a scan's blanket UI re-enable
@@ -146,7 +154,12 @@ class CompressionMixin:
             # Same arrangement path as the live view (2D reflow / block layout),
             # but sized to the whole decompressed structure (max_rows=None).
             image, _ = self._render_arrangement(
-                raw, engine, preset.params, layout, view.two_dimensional, max_rows=None
+                raw,
+                engine,
+                pipeline.tile_params(self._doc, engine, preset.params),
+                layout,
+                view.two_dimensional,
+                max_rows=None,
             )
         except Exception:  # noqa: BLE001 - any failure means "not a structure"
             self._overlay.hide_overlay()
@@ -154,6 +167,7 @@ class CompressionMixin:
 
         parts = [f"{len(raw):#x} B raw from {len(window):#x} B window"]
         consumed = ctx.get(KEY_COMPRESSED_SIZE)
+        badge = None
         if consumed and ctx.get(KEY_DECOMPRESS_COMPLETE):
             # The structure's own end was inside the window: report its true
             # extent, and arm Jump-to-Next at the byte right after it.
@@ -162,6 +176,36 @@ class CompressionMixin:
             after = self._byte_position() + consumed
             if after < len(self._doc.pixel_data):
                 self._next_structure = after
+        elif plugin.info.self_delimiting:
+            # The scheme has an end marker and this decode never reached it, so
+            # the window really did cut a structure short: a warning, with a fix.
+            badge = Badge(
+                "end not in view",
+                "The structure's end marker is not inside the view\n"
+                "window, so this preview stops where the window does.\n"
+                "Add rows or columns to decode more of it.",
+                warning=True,
+            )
+        else:
+            # A stream-based scheme has no end to find, in this window or any
+            # other - so this is a statement of where the preview ends, not a
+            # problem to fix. The window's end is then the only extent on offer,
+            # and it is what To Slice promotes: `consumed` rather than the raw
+            # window size, so the slice ends on a whole packet the way the
+            # decoder read it. Jump-to-Next stays off - "the byte after this
+            # structure" means nothing when the structure had no end.
+            if consumed:
+                parts.append(f"slice {consumed:#x} B")
+                self._structure_extent = (self._byte_position(), consumed)
+            badge = Badge(
+                "end of view window",
+                "This scheme is a plain stream with no end marker, so it\n"
+                "decodes exactly as far as the view window reaches and\n"
+                "no further - the picture is a prefix, not a structure.\n"
+                "To Slice bounds the slice at that same point; widen the\n"
+                "window for more, or set the true length from whatever\n"
+                "container recorded it.",
+            )
         rows16 = ctx.get(KEY_LZ16_ROWS)
         if rows16 is not None:
             parts.append(f"{rows16} tile row(s)")
@@ -172,6 +216,7 @@ class CompressionMixin:
             view.show_grid,
             f"Decompressed - {plugin.info.name}",
             ", ".join(parts),
+            badge,
         )
 
     def _on_jump_next(self) -> None:

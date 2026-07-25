@@ -47,14 +47,12 @@ from celpix.core import draw
 from celpix.core.arrangement import compose_window, split_grid
 from celpix.pipeline import importer
 from celpix.ui import clipboard, render_bridge
-from celpix.ui.main_window.selection import SELECTION_SHAPE_KEY, SelectionShape
 from celpix.ui.tools import SPEC_BY_TOOL, TOOL_BY_KEY, EditMode, Gesture, Tool
 from celpix.ui.tools_panel import ToolsPanel
 from celpix.ui.undo_commands import FloatState, PixelSelectionCommand
 from celpix.ui.widgets import (
     load_enum_setting,
     save_enum_setting,
-    select_combo_data,
     signals_blocked,
 )
 
@@ -153,24 +151,23 @@ class PixelEditMixin:
         highlight doesn't linger over the paint surface — and the status line
         with it, which otherwise still announces a selection that is gone. Pixels
         still in the air are set down: the tile surface has nowhere to keep them.
+
+        Pixel mode also **disarms the rearrange tool**: the two are exclusive, and
+        each owns the same drag. Which one a press belongs to would otherwise be a
+        guess, and the tool's flips look like the destructive ones while doing
+        something else entirely.
         """
         if mode == self._edit_mode:
             return
+        if mode is EditMode.PIXEL:
+            self._set_rearranging(False)
         self._commit_float()
         self._edit_mode = mode
         pixel = mode is EditMode.PIXEL
         with signals_blocked(self._edit_mode_action):
             self._edit_mode_action.setChecked(pixel)
         self._canvas.set_edit_mode(mode)
-        # Force Rectangle in pixel mode without clobbering the saved shape.
-        with signals_blocked(self._selection_shape):
-            shape = (
-                SelectionShape.RECT
-                if pixel
-                else load_enum_setting(SELECTION_SHAPE_KEY, SelectionShape.LINEAR)
-            )
-            select_combo_data(self._selection_shape, shape)
-        self._selection_shape.setEnabled(not pixel)
+        self._sync_selection_shape()
         self._clear_stroke()
         self._clear_float()
         self._clear_selection()

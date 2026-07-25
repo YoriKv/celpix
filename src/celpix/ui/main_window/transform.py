@@ -6,8 +6,8 @@ interpreted pixels and round-trip through the active codec, unlike the byte-nudg
 The realignment need the reference tools cover with a 1px *shift* is already the
 byte-nudge's job, so only flip/rotate live here.
 
-The bar carries **two groups**, because "flip the selection" means two different
-things:
+The bar splits **Tile** from **Block**, because "flip the selection" means two
+different things:
 
 - **Tile** — transform each selected tile **in place**; tile positions never
   change. Works on any selection (linear or rectangle, one tile or many). This is
@@ -17,6 +17,16 @@ things:
   a rectangle selection, or a **single** selected tile — in any selection shape —
   which expands to the arrangement block (Block W×H) it sits in, so one click turns
   a whole metatile. Only a linear *multi*-tile run has no block.
+
+Which groups are on the bar follows the current interaction
+(:meth:`_sync_transform_bar_mode`): Tile + Block while editing tiles, a dedicated
+**Pixel** group in pixel mode, and — while the rearrange tool is armed — a
+**Rearrange** pair carrying the same Tile/Block split. Those last
+ones are *not* edits: they flip by storing bits in the tile map rather than
+rewriting pixels, so both halves of a block flip (the mirroring and the position
+permutation) live in the map and the file is untouched. One
+:class:`TransformOp` table drives both paths — ``tile_flip`` is each op expressed
+as display-flip bits, zero for the rotations, which have no such bit to store.
 
 Each button decodes the selection's enclosing run, transforms it, and re-encodes
 through :meth:`~celpix.ui.main_window.selection.SelectionMixin._apply_tile_edit`,
@@ -39,6 +49,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QLabel, QSizePolicy, QToolBar, QWidget
 
 from celpix.core import transform
+from celpix.core.tilemap import TILE_FLIP_H, TILE_FLIP_V
 from celpix.ui.main_window.selection import SELECTION_SHAPE_KEY, SelectionShape
 from celpix.ui.tools import EditMode
 from celpix.ui.widgets import (
@@ -57,36 +68,45 @@ class TransformOp:
     block, which source cell's (transformed) tile lands there — the block-level
     half of the permutation, unused by the in-place tile group. ``verb``/``past``
     feed the undo label and the status line.
+
+    ``tile_flip`` is the same operation expressed as **display** flip bits, for
+    the rearrange tool: it flips a tile by storing a flag rather than by rewriting
+    pixels, so the two paths share this one table instead of a parallel mapping.
+    Zero for the rotations — a display flip is what a real tile attribute can
+    carry, and there is no rotate bit to store.
     """
 
     verb: str
     past: str
     pixel_fn: Callable[[object], object]
     cell_src: Callable[[int, int, int, int], tuple[int, int]]
+    tile_flip: int = 0
 
 
 # The four directions. The cell maps invert the pixel transform at tile
 # granularity: a horizontal flip reverses the column axis, a CW rotation
 # transposes (block rotation is only ever applied to a square block, cols == rows).
-FLIP_H = TransformOp(
+OP_FLIP_H = TransformOp(
     "flip",
     "Flipped",
     transform.flip_horizontal,
     lambda dx, dy, cols, rows: (cols - 1 - dx, dy),
+    TILE_FLIP_H,
 )
-FLIP_V = TransformOp(
+OP_FLIP_V = TransformOp(
     "flip",
     "Flipped",
     transform.flip_vertical,
     lambda dx, dy, cols, rows: (dx, rows - 1 - dy),
+    TILE_FLIP_V,
 )
-ROTATE_CCW = TransformOp(
+OP_ROTATE_CCW = TransformOp(
     "rotate",
     "Rotated",
     transform.rotate_ccw,
     lambda dx, dy, cols, rows: (cols - 1 - dy, dx),
 )
-ROTATE_CW = TransformOp(
+OP_ROTATE_CW = TransformOp(
     "rotate",
     "Rotated",
     transform.rotate_cw,
@@ -165,6 +185,26 @@ class TransformMixin:
             self._transform_pixel_region,
             "the pixel selection, else the whole view",
         )
+        # Rearrange: shown only while that tool is armed, over *either* mode. Its
+        # flips are display state stored in the tile map, not pixel edits — the
+        # same glyphs, deliberately, because the gesture reads the same; the
+        # caption and tooltips carry the difference.
+        # It carries the same Tile/Block split as the destructive groups, because
+        # "flip the selection" is exactly as ambiguous here: each tile in place,
+        # or the block as one picture (tiles *and* their positions).
+        rearrange_label = self._group_caption(
+            bar, " Rearrange: ", "how a tile is shown - the file is not changed"
+        )
+        self._rearrange_group = self._add_flip_pair(
+            bar, self._flip_rearranged_tiles, "each tile in place", ""
+        )
+        rearrange_block_sep = bar.addSeparator()
+        rearrange_block_label = self._group_caption(
+            bar, " Block: ", "the block, tiles and positions - shown, not written"
+        )
+        self._rearrange_block_group = self._add_flip_pair(
+            bar, self._flip_rearranged_block, "the block, tiles and positions", "Shift+"
+        )
         self._tile_mode_bar_actions = [
             tile_label,
             *self._tile_group.actions,
@@ -173,6 +213,13 @@ class TransformMixin:
             *self._block_group.actions,
         ]
         self._pixel_mode_bar_actions = [pixel_label, *self._pixel_group.actions]
+        self._rearrange_bar_actions = [
+            rearrange_label,
+            *self._rearrange_group,
+            rearrange_block_sep,
+            rearrange_block_label,
+            *self._rearrange_block_group,
+        ]
         self._build_edit_mode_toggle(bar)
         self._sync_transform_bar_mode()
         # Nothing is open yet, and the bar acts on a document; _set_document_ui_enabled
@@ -180,14 +227,53 @@ class TransformMixin:
         bar.setEnabled(False)
         return bar
 
+    def _add_flip_pair(
+        self,
+        bar: QToolBar,
+        handler: Callable[[TransformOp], None],
+        scope: str,
+        modifier: str,
+    ) -> tuple[QAction, QAction]:
+        """One of the rearrange tool's Flip H / Flip V pairs.
+
+        Two, not the usual four: a display flip is stored as the flip bits a real
+        tile attribute carries, and there is no rotate bit to mirror. ``modifier``
+        names the key prefix this pair answers to, since the keys drive the same
+        handlers (see ``rearrange.py``); the shortcut is named in the tooltip
+        rather than set on the action, because a live shortcut on a bare letter
+        would steal it from any focused text input.
+        """
+        actions = []
+        for glyph, tip, key, op in (
+            ("↔", "Show mirrored left-right", "H", OP_FLIP_H),
+            ("↕", "Show mirrored top-bottom", "V", OP_FLIP_V),
+        ):
+            action = QAction(glyph, self)
+            action.setToolTip(
+                f"{tip} ({modifier}{key}) — {scope}; display only, stored with "
+                "the rearrangement"
+            )
+            action.setEnabled(False)
+            action.triggered.connect(lambda _=False, op=op: handler(op))
+            bar.addAction(action)
+            actions.append(action)
+        return tuple(actions)
+
     def _sync_transform_bar_mode(self) -> None:
-        """Show the transform groups that match the edit mode — labels, separators
-        and buttons together: Tile + Block for tile editing, Pixel for pixel."""
+        """Show the transform groups that match the current interaction.
+
+        Tile + Block for tile editing, Pixel for pixel editing — and while the
+        rearrange tool is armed, its own group instead of either, since its flips
+        do something different from the destructive ones (display state, not
+        pixels)."""
+        rearranging = self._rearranging
         pixel = self._edit_mode is EditMode.PIXEL
         for action in self._tile_mode_bar_actions:
-            action.setVisible(not pixel)
+            action.setVisible(not pixel and not rearranging)
         for action in self._pixel_mode_bar_actions:
-            action.setVisible(pixel)
+            action.setVisible(pixel and not rearranging)
+        for action in self._rearrange_bar_actions:
+            action.setVisible(rearranging)
 
     def _build_edit_mode_toggle(self, bar: QToolBar) -> None:
         """The Tile ⇄ Pixel mode toggle, pinned to the toolbar's right edge.
@@ -208,6 +294,11 @@ class TransformMixin:
             lambda on: self._set_edit_mode(EditMode.PIXEL if on else EditMode.TILE)
         )
         bar.addAction(self._edit_mode_action)
+        # The rearrange pair sits past the mode toggle: all three are switches
+        # for the whole editing surface, and arming the tool is itself a mode
+        # switch — it is exclusive with pixel editing (see rearrange.py).
+        bar.addSeparator()
+        self._build_rearrange_actions(bar)
 
     def _build_selection_shape_combo(self, bar: QToolBar) -> None:
         """The canvas-drag Selection Shape picker, hosted on the transform bar.
@@ -267,10 +358,10 @@ class TransformMixin:
         # Left-to-right button order; keyed by field so display order and the
         # dataclass mapping stay independent (clockwise rotate comes first).
         specs = (
-            ("flip_h", "↔", "Flip horizontal", FLIP_H),
-            ("flip_v", "↕", "Flip vertical", FLIP_V),
-            ("rotate_cw", "↻", "Rotate 90° right", ROTATE_CW),
-            ("rotate_ccw", "↺", "Rotate 90° left", ROTATE_CCW),
+            ("flip_h", "↔", "Flip horizontal", OP_FLIP_H),
+            ("flip_v", "↕", "Flip vertical", OP_FLIP_V),
+            ("rotate_cw", "↻", "Rotate 90° right", OP_ROTATE_CW),
+            ("rotate_ccw", "↺", "Rotate 90° left", OP_ROTATE_CCW),
         )
         actions = {}
         for field, glyph, tip, op in specs:

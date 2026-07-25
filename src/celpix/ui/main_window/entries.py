@@ -443,12 +443,15 @@ class EntriesMixin:
         consumed on that load. If the parent isn't open (or was never
         activated) there's nothing to copy - the toolbar seed then applies.
 
-        The **subpalette row** rides along too. It is part of how the palette is
-        read - with a 4bpp format over a 256-color palette it picks which 16
-        colors the tiles index - so a slice carved out of graphics being viewed
-        on row 3 has to arrive on row 3, or it opens in the wrong colors. It
-        lives in the view options rather than the session, hence the second
-        hand-off.
+        The **subpalette row** and the **arrangement** (the Pattern picker's
+        block size/order/2D, and the bitmap width that belongs to 2D) ride along
+        too. Both are part of how the bytes are read rather than merely where the
+        window sits: the row picks which colors the tiles index (with a 4bpp
+        format over a 256-color palette, which 16), and the arrangement decides
+        which bytes land in which tile at all - so a slice carved out of
+        graphics being viewed on row 3 in 2x2 blocks has to arrive that way, or
+        it opens in the wrong colors or as scrambled tiles. Both live in the
+        view options rather than the session, hence the second hand-off.
         """
         parent = self._workspace.find_file(slice_entry.path)
         if parent is None or parent.session is None:
@@ -466,12 +469,21 @@ class EntriesMixin:
             compression_id=NO_DECOMPRESS,
         )
         slice_entry.pending_palette = palette_source_for(parent)
-        # Only the subpalette row: the rest of the geometry is left at the
-        # defaults a fresh slice gets anyway, since the parent's window size and
-        # zoom describe a different region than the one being carved out.
+        # Only the subpalette row and the arrangement: the rest of the geometry
+        # is left at the defaults a fresh slice gets anyway, since the parent's
+        # window size and zoom describe a different region than the one being
+        # carved out. (Columns is the exception the bitmap width owns - it is
+        # re-derived from the width on the render path.)
         view = parent.doc.view if parent.doc is not None else parent.pending_view
         if view is not None:
-            slice_entry.pending_view = ViewOptions(subpalette_row=view.subpalette_row)
+            slice_entry.pending_view = ViewOptions(
+                subpalette_row=view.subpalette_row,
+                block_columns=view.block_columns,
+                block_rows=view.block_rows,
+                block_order=view.block_order,
+                two_dimensional=view.two_dimensional,
+                bitmap_width=view.bitmap_width,
+            )
 
     def _slice_prefill_offset(self) -> int:
         """The view position as an absolute file offset (raw sources only)."""

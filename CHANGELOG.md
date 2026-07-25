@@ -2,7 +2,11 @@
 
 ## v0.2.4 - unreleased
 
-- Various fixes
+- **Rearrange tool**: drag and mirror tiles into a readable order for
+  editing, without changing the file. Still in development.
+- **Compression**: PackBits compression (TIFF / ILBM / MacPaint) added.
+- **Bitmap Width**: view data of any pixel width without shearing.
+- Various other fixes and improvements
 
 ## v0.2.3 - 2026-07-24
 

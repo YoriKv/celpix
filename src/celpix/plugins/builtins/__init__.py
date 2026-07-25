@@ -32,6 +32,7 @@ from .linear_codec import LinearBespokeCodec
 from .lz16 import Lz16Compress, Lz16Decompress
 from .lz_command import Lz1Compress, Lz1Decompress, Lz2Compress, Lz2Decompress
 from .m7_interleave import M7VramCompress, M7VramDecompress
+from .packbits import PackBitsCompress, PackBitsDecompress
 from .packed_codec import PackedCodec
 from .passthrough import PassthroughCompress, PassthroughDecompress
 from .planar_codec import PlanarCodec
@@ -64,6 +65,8 @@ def register_builtins(reg: Registry) -> None:
         Lz2Compress(),
         Lz16Decompress(),
         Lz16Compress(),
+        PackBitsDecompress(),
+        PackBitsCompress(),
         PlanarCodec(),
         PackedCodec(),
         ChunkyCodec(),

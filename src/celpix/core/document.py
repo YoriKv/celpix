@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from celpix.core import ceil_div
 from celpix.core.context import PipelineContext
 from celpix.core.palette import Palette
+from celpix.core.tilemap import TileMap
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef
 
@@ -52,6 +53,23 @@ class ViewOptions:
     :data:`~celpix.core.arrangement.BLOCK_ORDERS`. ``two_dimensional`` reads the
     source as one wide bitmap ``columns`` tiles across instead of back-to-back
     tiles — a different byte walk applied before decode (arrangement's ``reflow_2d``).
+
+    ``bitmap_width`` (0 = off) says the data is a bitmap that many pixels wide.
+    It belongs to ``two_dimensional`` and applies only with it: the codec's tile
+    size is replaced by the largest divisor of the width that still fits inside
+    it (:func:`~celpix.core.arrangement.bitmap_tile_size`) so whole tiles span
+    the bitmap, and ``columns`` follows as the count that does. It is display
+    state like the rest of these, but unlike them it changes the codec's
+    geometry — so it is resolved on the load path, and only for codecs whose
+    tile size is a parameter at all.
+
+    ``tile_map`` rearranges *which* tile each position shows, so scattered tiles
+    can be viewed and edited side by side; it moves no bytes, and an edit made at
+    a rearranged position still writes back to the tile's real home
+    (:mod:`celpix.core.tilemap`). ``show_rearranged`` is the toggle between that
+    view and the file's true order — off makes the map inert without discarding
+    it. The map composes *before* the block placement: it decides which tile
+    fills a slot, the arrangement decides where that slot lands.
     """
 
     columns: int = 16
@@ -65,6 +83,9 @@ class ViewOptions:
     block_rows: int = 1  # tiles per block, vertically
     block_order: str = "row"  # fill within a block: row | column | row-interleave
     two_dimensional: bool = False  # read the source as a wide bitmap, not tiles
+    bitmap_width: int = 0  # pixels across the bitmap is (0 = the codec's own tiles)
+    tile_map: TileMap = TileMap()  # display-only rearrangement of tile positions
+    show_rearranged: bool = True  # apply tile_map, or show the file's true order
 
 
 @dataclass

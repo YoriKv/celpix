@@ -13,6 +13,7 @@ from celpix.core.arrangement import (
     BLOCK_ORDERS,
     BlockLayout,
     arrangement_preset_for,
+    bitmap_tile_size,
     compose_window,
     reflow_2d,
     split_coverage,
@@ -160,6 +161,20 @@ def test_reflow_2d_leaves_indivisible_tiles_untouched() -> None:
     # bytes_per_tile not a whole number of per-row chunks has no wide-bitmap reading.
     data = bytes(range(9))
     assert reflow_2d(data, bytes_per_tile=9, tile_height=2, columns=2) == data
+
+
+def test_bitmap_tile_size_picks_the_largest_divisor_that_fits() -> None:
+    # The whole point is a bitmap whose width the natural tile can't span: 306 px
+    # is 38.25 8-px tiles, and 6 is the largest tile that divides it exactly (2
+    # would also divide it — taking the *largest* is what keeps tiles usable).
+    assert bitmap_tile_size(306, 8) == 6
+    assert bitmap_tile_size(320, 8) == 8  # already a whole number of tiles
+    assert bitmap_tile_size(307, 8) == 1  # prime: only a per-pixel grid spans it
+    assert bitmap_tile_size(4, 8) == 4  # narrower than one tile: the width itself
+    assert bitmap_tile_size(306, 256) == 153  # a wide tile can take a big divisor
+    # Off, and degenerate inputs, keep the codec's own tile.
+    assert bitmap_tile_size(0, 8) == 8
+    assert bitmap_tile_size(-5, 8) == 8
 
 
 def test_arrangement_presets_have_distinct_params() -> None:

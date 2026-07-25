@@ -70,11 +70,23 @@ class FileRef:
 
 @dataclass(frozen=True)
 class PluginInfo:
-    """A plugin's identity. ``id`` is stable and namespaced by stage."""
+    """A plugin's identity. ``id`` is stable and namespaced by stage.
+
+    ``self_delimiting`` is **Decompress-only** and describes the *scheme*, not any
+    one decode: false means the stream carries no end marker, so its extent is
+    knowable only from outside (a slice length, a container's byte count). It is
+    declared here rather than recorded in the context because it is a static
+    property — true before a single byte is read, and on every code path — and
+    because the UI has to phrase "the decode stopped here" differently for the
+    two: a scheme *with* an end marker that didn't reach one was cut short and
+    can be fixed by widening the window, while one without simply decodes as far
+    as it is fed and always will.
+    """
 
     id: str
     name: str
     stage: Stage
+    self_delimiting: bool = True
 
 
 @runtime_checkable

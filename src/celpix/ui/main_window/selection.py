@@ -39,6 +39,7 @@ from celpix.core.arrangement import (
 from celpix.core.errors import PipelineError
 from celpix.core.index_grid import IndexGrid
 from celpix.core.quantize import QuantizeReport
+from celpix.core.tilemap import apply_flip, coalesce_runs
 from celpix.pipeline import importer, pipeline
 from celpix.pipeline.importer import ImportedTiles
 from celpix.project.workspace import (
@@ -49,7 +50,12 @@ from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
     PixelEditCommand,
 )
-from celpix.ui.widgets import save_enum_setting, select_combo_data
+from celpix.ui.widgets import (
+    load_enum_setting,
+    save_enum_setting,
+    select_combo_data,
+    signals_blocked,
+)
 
 # QSettings key for the app-wide selection shape: it changes how the mouse is
 # read, not how anything renders, so it is a preference rather than view state.
@@ -202,8 +208,9 @@ class SelectionMixin:
     def _toggle_selection_mode(self) -> None:
         """Swap Linear ⇄ Rectangle, when a swap is available.
 
-        Inert in pixel mode, which forces Rectangle — the combo carries the
-        preference and its change handler does the rest of the work.
+        Inert wherever Rectangle is forced (see :meth:`_sync_selection_shape`) —
+        the combo carries the preference and its change handler does the rest of
+        the work.
         """
         if not self._can_toggle_selection_mode():
             return
@@ -224,8 +231,13 @@ class SelectionMixin:
         )
 
     def _can_toggle_selection_mode(self) -> bool:
-        # Pixel mode is rectangle-only, so there is nothing to swap there.
-        return self._doc is not None and self._edit_mode is EditMode.TILE
+        # Pixel editing and the rearrange tool are both rectangle-only, so there
+        # is nothing to swap in either (see _sync_selection_shape).
+        return (
+            self._doc is not None
+            and self._edit_mode is EditMode.TILE
+            and not self._rearranging
+        )
 
     def _can_toggle_edit_mode(self) -> bool:
         return self._doc is not None
@@ -278,6 +290,35 @@ class SelectionMixin:
         """
         save_enum_setting(SELECTION_SHAPE_KEY, self._selection_shape.currentData())
         if self._doc is not None and self._selected_tile is not None:
+            self._select_tiles(self._selected_tile, self._selected_tile)
+
+    def _sync_selection_shape(self) -> None:
+        """Force Rectangle where a run has no meaning, else restore the preference.
+
+        Two interactions work on rectangles alone: pixel editing, which selects an
+        *area* of pixels, and the rearrange tool, whose drag carries a block whose
+        shape has to survive being put down somewhere else — a linear run is a run
+        through *storage*, so the tiles it holds need not be adjacent on screen at
+        all, and there is nothing coherent for a drag to pick up or land. So the
+        picker is forced to Rectangle and disabled for either, with signals blocked
+        so the user's own preference survives and comes back when both let go.
+
+        A linear run already on screen collapses to its anchor tile rather than
+        being reinterpreted as a rectangle — the same honest conversion
+        :meth:`_on_selection_shape_change` makes when the user switches by hand.
+        """
+        forced = self._edit_mode is EditMode.PIXEL or self._rearranging
+        with signals_blocked(self._selection_shape):
+            select_combo_data(
+                self._selection_shape,
+                SelectionShape.RECT
+                if forced
+                else load_enum_setting(SELECTION_SHAPE_KEY, SelectionShape.LINEAR),
+            )
+        self._selection_shape.setEnabled(not forced)
+        # The keyboard route to the same swap has to go with it.
+        self._sync_edit_actions()
+        if forced and self._rect_cells is None and self._selected_tile is not None:
             self._select_tiles(self._selected_tile, self._selected_tile)
 
     def _rect_tiles_for(
@@ -534,7 +575,46 @@ class SelectionMixin:
         }
 
     def _decode_run(self, first: int, count: int) -> list | None:
-        """Decode a tile run in the view's frame; None if the pipeline refuses."""
+        """Decode ``count`` tiles from **virtual** index ``first``; None on refusal.
+
+        The one place tiles are read, so it is also the one place the
+        rearrangement (:mod:`celpix.core.tilemap`) is resolved: ``first`` counts
+        display positions, and each is served the tile that actually lives
+        wherever the map sends it. Unrearranged — the ordinary case, and every
+        case while the view shows the file's true order — this is the single
+        contiguous decode it always was.
+
+        A rearranged run is gathered from as few decodes as
+        :func:`~celpix.core.tilemap.coalesce_runs` can get away with. It ends at
+        the first position with no tile behind it, exactly as a contiguous decode
+        stops at the end of the data: the map only ever permutes tiles that
+        exist, so the missing positions are the past-the-end tail and nothing
+        earlier is dropped.
+
+        Tiles come back in **display orientation** — a tile the map flips is
+        flipped here, once, so everything downstream sees what is on screen.
+        :meth:`_actual_runs` undoes it on the way back out.
+        """
+        assert self._doc is not None
+        tile_map = self._active_tile_map()
+        if tile_map.is_identity():
+            return self._decode_actual_run(first, count)
+        wanted = tile_map.actual_run(first, count)
+        decoded: dict[int, object] = {}
+        for run_first, run_count in coalesce_runs(wanted):
+            tiles = self._decode_actual_run(run_first, run_count)
+            if tiles is None:
+                return None
+            decoded.update((run_first + i, tile) for i, tile in enumerate(tiles))
+        gathered = []
+        for index in wanted:
+            if index not in decoded:
+                break
+            gathered.append(apply_flip(decoded[index], tile_map.flip_of(index)))
+        return gathered
+
+    def _decode_actual_run(self, first: int, count: int) -> list | None:
+        """Decode a run of **actual** tile indices; None if the pipeline refuses."""
         assert self._doc is not None
         try:
             return pipeline.decode_tiles(
@@ -864,7 +944,14 @@ class SelectionMixin:
         return self._edit_run(first, count, mutate, text)
 
     def _apply_tile_edit(self, first: int, tiles: list, text: str) -> int:
-        """Encode ``tiles`` over the run at ``first`` as one undoable edit.
+        """Encode ``tiles`` over the run at **virtual** ``first`` as one undoable edit.
+
+        The one place tiles are written, and so — like :meth:`_decode_run` — the
+        one place the rearrangement is resolved: each tile is encoded back to the
+        index it really occupies, which is what makes a rearranged view
+        display-only. Everything upstream (paste, the transforms, the drawing
+        tools) keeps working in the positions the user sees and needs to know
+        nothing about it.
 
         Returns how many tiles were written - fewer than offered when the run
         would overrun the data (editing never grows a file). An edit that would
@@ -878,36 +965,89 @@ class SelectionMixin:
         tiles = tiles[: max(0, self._doc.tile_count - first)]
         if not tiles:
             return 0
-        try:
-            start, data = pipeline.encode_tiles(
-                self._doc, self._registry, first, tiles, **self._view_frame()
-            )
-        except PipelineError as exc:
-            self._report(exc)
+        spans = self._encode_spans(first, tiles)
+        if spans is None:
             return 0
-        if not data:
-            return 0
-        before = self._doc.pixel_data[start : start + len(data)]
-        if before != data:
-            self._push_command(
-                PixelEditCommand(
-                    self, entry, text, start=start, before=before, after=data
-                )
-            )
+        regions = [
+            (start, self._doc.pixel_data[start : start + len(data)], data)
+            for start, data in spans
+        ]
+        regions = [r for r in regions if r[1] != r[2]]
+        if regions:
+            self._push_command(PixelEditCommand(self, entry, text, regions=regions))
         return len(tiles)
 
-    def _apply_pixel_bytes(self, start: int, data: bytes, revision: int) -> None:
-        """Land one pixel-byte region - :class:`PixelEditCommand`'s apply.
+    def _encode_spans(self, first: int, tiles: list) -> list[tuple[int, bytes]] | None:
+        """``(start, bytes)`` splices that put ``tiles`` at virtual ``first``.
+
+        Unrearranged this is the single splice it has always been. A rearranged
+        run is cut wherever the actual indices stop being consecutive — strictly,
+        unlike the gap-merging a *read* can afford, because the tiles in a gap
+        belong to somebody else and must not be rewritten.
+
+        The splices are **disjoint**, which is what lets them be computed
+        independently and applied in any order. That rests on rearrangement being
+        unavailable under the 2D walk (:meth:`_rearrange_available`): there a
+        tile's bytes interleave with its neighbours' and any write widens to the
+        whole bitmap-row, so two runs in one stripe would each rewrite it and the
+        second would carry through the first's pre-edit bytes. Off the 2D walk a
+        tile owns a contiguous range, and maximal runs are separated by at least
+        the tile that split them — so no two spans can touch.
+        """
+        assert self._doc is not None
+        frame = self._view_frame()
+        spans = []
+        for run_first, run_tiles in self._actual_runs(first, tiles):
+            try:
+                start, data = pipeline.encode_tiles(
+                    self._doc, self._registry, run_first, run_tiles, **frame
+                )
+            except PipelineError as exc:
+                self._report(exc)
+                return None
+            if data:
+                spans.append((start, data))
+        return spans
+
+    def _actual_runs(self, first: int, tiles: list) -> list[tuple[int, list]]:
+        """Split ``tiles`` into ``(actual_first, tiles)`` runs of consecutive homes.
+
+        Also **unflips** on the way past: ``tiles`` arrive in display
+        orientation, and a tile the map shows mirrored has to go back to the
+        file the way the file holds it. Miss this and the mirror bakes itself in
+        — the tile would be flipped on disk *and* still flipped on screen, so the
+        first thing the user would notice is the art coming apart.
+        """
+        tile_map = self._active_tile_map()
+        if tile_map.is_identity():
+            return [(first, tiles)]
+        homes = tile_map.actual_run(first, len(tiles))
+        runs: list[tuple[int, list]] = []
+        for index, tile in zip(homes, tiles):
+            tile = apply_flip(tile, tile_map.flip_of(index))
+            if runs and index == runs[-1][0] + len(runs[-1][1]):
+                runs[-1][1].append(tile)
+            else:
+                runs.append((index, [tile]))
+        return runs
+
+    def _apply_pixel_bytes(
+        self, splices: list[tuple[int, bytes]], revision: int
+    ) -> None:
+        """Land a pixel edit's byte regions - :class:`PixelEditCommand`'s apply.
 
         The decompressed bytes are the document's source of truth, so an edit is
-        a splice into them and Write picks it up from there. ``revision`` is the
+        a splice into them and Write picks it up from there. There can be several
+        regions because a rearranged view scatters one gesture across the file;
+        they land together, before the single refresh below. ``revision`` is the
         command's token for the state it just produced: stamping it on the
         *pixel* pathway makes the entry read dirty against what was last
         written, so an undo back to those bytes reports clean again.
         """
         if self._doc is None:
             return
-        self._doc.replace_bytes(start, data)
+        for start, data in splices:
+            self._doc.replace_bytes(start, data)
         entry = self._workspace.current
         if entry is not None:
             self._workspace.set_pixel_revision(entry, revision)
@@ -944,9 +1084,14 @@ class SelectionMixin:
         and File menus hold, gathered around what the selection can become.
 
         Suppressed in pixel mode, where right-click (and a right-drag sweep) is
-        the eyedropper: a popup here would swallow the sample gesture.
+        the eyedropper: a popup here would swallow the sample gesture. Suppressed
+        while the rearrange tool is armed for the same reason — the right button
+        carries the tile-selection drag there, the left one being busy picking
+        tiles up.
         """
         if self._doc is None or self._edit_mode is EditMode.PIXEL:
+            return
+        if self._rearranging:
             return
         self._sync_edit_actions()
         menu = QMenu(self)

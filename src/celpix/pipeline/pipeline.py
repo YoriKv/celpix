@@ -14,7 +14,12 @@ from dataclasses import dataclass
 from typing import Callable, NamedTuple, TypeVar
 
 from celpix.core import ceil_div
-from celpix.core.arrangement import BlockLayout, compose_window, reflow_2d
+from celpix.core.arrangement import (
+    BlockLayout,
+    bitmap_tile_size,
+    compose_window,
+    reflow_2d,
+)
 from celpix.core.context import PipelineContext
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
@@ -98,21 +103,30 @@ def _run(stage: Stage, pathway: Pathway, fn: Callable[[], T]) -> T:
         raise PipelineError(stage, pathway, str(exc)) from exc
 
 
-def load_pixel_data(cfg: PathwayConfig, reg: Registry) -> PixelData:
+def load_pixel_data(
+    cfg: PathwayConfig, reg: Registry, bitmap_width: int = 0
+) -> PixelData:
     """Run the pixel pathway forward through Decompress, *without* decoding.
 
     Returns the raw decompressed bytes plus the codec's atomic geometry, so the view
     can decode only the visible window on demand (:func:`decode_window`) rather than
     the whole file. Data whose length isn't a whole number of tiles is fine — the
     trailing partial tile is zero-padded at decode time (``Document.window_bytes``).
+
+    ``bitmap_width`` is the view's wide-bitmap width, which re-cuts the geometry
+    (see :func:`bitmap_params`); 0 leaves the codec's own tiles alone.
     """
     ctx = PipelineContext()
     data = _read_and_decompress(cfg, ctx, reg, Pathway.PIXEL)
-    return PixelData(data, *_pixel_geometry(cfg, reg), ctx)
+    return PixelData(data, *_pixel_geometry(cfg, reg, bitmap_width), ctx)
 
 
 def reinterpret_pixel_data(
-    data: bytes, ctx: PipelineContext, cfg: PathwayConfig, reg: Registry
+    data: bytes,
+    ctx: PipelineContext,
+    cfg: PathwayConfig,
+    reg: Registry,
+    bitmap_width: int = 0,
 ) -> PixelData:
     """Already-loaded bytes under ``cfg``'s Interpret preset — nothing re-read.
 
@@ -122,16 +136,61 @@ def reinterpret_pixel_data(
     and re-running the pathway would pull the file's own bytes back over them.
     Raises the same :class:`PipelineError` a load would for an unusable preset.
     """
-    return PixelData(data, *_pixel_geometry(cfg, reg), ctx)
+    return PixelData(data, *_pixel_geometry(cfg, reg, bitmap_width), ctx)
 
 
-def _pixel_geometry(cfg: PathwayConfig, reg: Registry) -> tuple[int, int, int]:
+def bitmap_params(engine, params: dict, bitmap_width: int) -> dict:  # noqa: ANN001
+    """``params`` re-cut to the tile size a ``bitmap_width`` bitmap needs.
+
+    The size itself is :func:`~celpix.core.arrangement.bitmap_tile_size`; this
+    adds the part only the engine can answer — **whether it honours a tile size
+    at all**. Support is probed, not assumed from the preset: the merged params
+    are handed back to ``tile_size`` and kept only if the engine reports the size
+    we asked for. A planar or packed codec ignores the keys (its rows are eight
+    pixels by construction), so it keeps its own geometry rather than having the
+    view claim a shape its decode doesn't produce.
+
+    Returns ``params`` itself when there is nothing to change, so every ordinary
+    format takes exactly the path it always did.
+    """
+    if bitmap_width <= 0:
+        return params
+    tile_w, _tile_h = engine.tile_size(params)
+    size = bitmap_tile_size(bitmap_width, tile_w)
+    if (size, size) == engine.tile_size(params):
+        return params
+    merged = {**params, "tile_width": size, "tile_height": size}
+    return merged if engine.tile_size(merged) == (size, size) else params
+
+
+def tile_params(doc: Document, engine, params: dict) -> dict:  # noqa: ANN001
+    """``params`` carrying the tile geometry ``doc`` was actually built with.
+
+    The load path resolves the bitmap-width override once
+    (:func:`bitmap_params`) and records the result on the document; every later
+    decode/encode has to hand the engine the *same* geometry or it would cut the
+    bytes into different tiles than the view is placing. Reading it back off the
+    document keeps that single resolution authoritative instead of recomputing
+    it — and leaves params untouched whenever the document is on the codec's
+    natural tiles, which is every format that has no tile-size parameter.
+    """
+    size = (doc.tile_width, doc.tile_height)
+    if size == engine.tile_size(params) or not all(size):
+        return params
+    merged = {**params, "tile_width": doc.tile_width, "tile_height": doc.tile_height}
+    return merged if engine.tile_size(merged) == size else params
+
+
+def _pixel_geometry(
+    cfg: PathwayConfig, reg: Registry, bitmap_width: int = 0
+) -> tuple[int, int, int]:
     """``(bytes_per_tile, tile_width, tile_height)`` of ``cfg``'s pixel codec."""
     engine, preset = reg.engine_for(cfg.interpret_preset_id)
+    params = bitmap_params(engine, preset.params, bitmap_width)
     tile_bytes = _run(
         Stage.INTERPRET_PIXEL,
         Pathway.PIXEL,
-        lambda: engine.bytes_per_tile(preset.params),
+        lambda: engine.bytes_per_tile(params),
     )
     if tile_bytes <= 0:
         raise PipelineError(
@@ -139,7 +198,7 @@ def _pixel_geometry(cfg: PathwayConfig, reg: Registry) -> tuple[int, int, int]:
             Pathway.PIXEL,
             f"tile size {tile_bytes} is not positive",
         )
-    return (tile_bytes, *engine.tile_size(preset.params))
+    return (tile_bytes, *engine.tile_size(params))
 
 
 def decode_window(
@@ -170,10 +229,11 @@ def decode_window(
     if two_dimensional and columns:
         window = reflow_2d(window, doc.bytes_per_tile, doc.tile_height, columns)
     engine, preset = reg.engine_for(doc.pixel_config.interpret_preset_id)
+    params = tile_params(doc, engine, preset.params)
     return _run(
         Stage.INTERPRET_PIXEL,
         Pathway.PIXEL,
-        lambda: engine.decode(window, preset.params, PipelineContext()),
+        lambda: engine.decode(window, params, PipelineContext()),
     )
 
 
@@ -325,10 +385,11 @@ def encode_tiles(
         return (nudge + first_tile * doc.bytes_per_tile, b"")
     tb = doc.bytes_per_tile
     engine, preset = reg.engine_for(doc.pixel_config.interpret_preset_id)
+    params = tile_params(doc, engine, preset.params)
     blob = _run(
         Stage.INTERPRET_PIXEL,
         Pathway.PIXEL,
-        lambda: engine.encode(tiles, preset.params, PipelineContext()),
+        lambda: engine.encode(tiles, params, PipelineContext()),
     )
     stripe = stripe_tiles(doc, columns, two_dimensional)
     if stripe == 1:
@@ -411,6 +472,19 @@ def decode_and_compose(
     if tile_bytes and len(buffer) % tile_bytes:
         buffer = buffer + bytes(-len(buffer) % tile_bytes)
     tiles = engine.decode(buffer, params, PipelineContext()) if buffer else []
+    return compose_tiles(tiles, layout, max_rows), filled
+
+
+def compose_tiles(tiles: list, layout: BlockLayout, max_rows: int | None):
+    """Lay an already-decoded tile list out through an arrangement.
+
+    The compose half of :func:`decode_and_compose`, split out because a
+    rearranged view (``core.tilemap``) cannot get its tiles from one contiguous
+    byte buffer: the tiles on screen are gathered from wherever the map sends
+    them, and only the placement is shared. ``max_rows`` caps the composed height
+    (the live view's fixed window); ``None`` sizes to the data.
+    """
+    cols = layout.columns
     # Rows the tiles occupy under this layout (plain: ceil; blocked: the tallest
     # cell). Capped to a fixed window for the live view; uncapped otherwise.
     need_rows = (
@@ -421,10 +495,8 @@ def decode_and_compose(
         # Narrow a single partial row to its tiles; a taller image keeps full
         # width and lets the caller background the trailing slots.
         shown_cols = cols if need_rows > 1 else min(cols, max(1, len(tiles)))
-        grid = compose_window(tiles, shown_cols, 0, canvas_rows)
-    else:
-        grid = compose_window(tiles, cols, 0, canvas_rows, layout)
-    return grid, filled
+        return compose_window(tiles, shown_cols, 0, canvas_rows)
+    return compose_window(tiles, cols, 0, canvas_rows, layout)
 
 
 class PaletteData(NamedTuple):

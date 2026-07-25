@@ -2203,6 +2203,188 @@ def test_compression_overlay_honors_the_arrangement(qtbot, tmp_path) -> None:
     assert window._overlay._canvas._image != flat
 
 
+def _pattern_name(preset_id: str) -> str:
+    from celpix.core.arrangement import ARRANGEMENT_PRESETS
+
+    return next(p.name for p in ARRANGEMENT_PRESETS if p.id == preset_id)
+
+
+def _select_2d_pattern(window) -> None:
+    """Turn on the wide-bitmap walk the way the UI does — via the Pattern preset.
+
+    The width stays editable under a preset (a preset picks the arrangement, not
+    one asset's width), so this is all it takes to get at it."""
+    window._pattern.setCurrentIndex(window._pattern.findText(_pattern_name("2d")))
+    assert window._two_d.isChecked()
+    assert window._bitmap_width.isEnabled()
+
+
+def test_bitmap_width_recuts_tiles_and_derives_columns(qtbot, tmp_path) -> None:
+    # A 306-px-wide RGB888 bitmap (the width an 8-px tile cannot span). Setting
+    # the width re-cuts the codec to 6x6 tiles and points Cols at the 51 that
+    # span it exactly - the two together are what makes the picture line up
+    # instead of shearing two pixels per row.
+    px = tmp_path / "bitmap.bin"
+    px.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(306 * 24 * 3)))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.dc-rgb888-be")
+    )
+    assert (window._doc.tile_width, window._doc.tile_height) == (8, 8)
+    # The width belongs to the wide-bitmap walk, so it is dead until 2D is on.
+    assert not window._bitmap_width.isEnabled()
+    _select_2d_pattern(window)
+    assert window._bitmap_width.isEnabled()
+
+    window._bitmap_width.setValue(306)
+    assert (window._doc.tile_width, window._doc.tile_height) == (6, 6)
+    assert window._doc.bytes_per_tile == 6 * 6 * 3
+    assert window._columns.value() == 51  # 306 / 6, and no longer the user's
+    assert not window._columns.isEnabled()
+    assert "6x6" in window.statusBar().currentMessage()
+    # The rendered window really is 306 pixels across, which is the whole point.
+    assert window._canvas._image.width() == 306
+
+    # Back to 0: the codec's own geometry returns, and Cols is the user's again -
+    # at the count it had before the width took it over, not the derived 51.
+    window._bitmap_width.setValue(0)
+    assert (window._doc.tile_width, window._doc.tile_height) == (8, 8)
+    assert window._columns.isEnabled()
+    assert window._columns.value() == 16
+
+    # Changing the Pattern drops the width outright: it described this one asset,
+    # so the geometry, Cols and the field itself all reset rather than the width
+    # staying in force invisibly under the new arrangement.
+    window._bitmap_width.setValue(306)
+    assert window._doc.tile_width == 6
+    window._pattern.setCurrentIndex(window._pattern.findText(_pattern_name("linear")))
+    assert (window._doc.tile_width, window._doc.tile_height) == (8, 8)
+    assert window._bitmap_width.value() == 0
+    assert not window._bitmap_width.isEnabled()  # the width needs the 2D walk
+    assert window._columns.isEnabled()
+    assert window._columns.value() == 16
+    # And coming back to a 2D arrangement starts from a clean, editable field
+    # instead of springing the old width back on.
+    _select_2d_pattern(window)
+    assert window._bitmap_width.isEnabled()
+    assert window._bitmap_width.value() == 0
+    assert (window._doc.tile_width, window._doc.tile_height) == (8, 8)
+
+    # An entry round trip reads the Pattern back as the 2D preset - the four axes
+    # match it, and the width is not one of them. The width must survive that
+    # editable: locking it under the preset would leave 306 in force with no way
+    # to change it, which is what a restored session always lands on.
+    window._bitmap_width.setValue(306)
+    other = tmp_path / "other.bin"
+    other.write_bytes(bytes(4096))
+    window._load_pixel(str(other))
+    window._workspace.set_current(window._workspace.find_file(str(px)))
+    assert window._pattern.currentData().id == "2d"
+    assert window._bitmap_width.value() == 306
+    assert window._bitmap_width.isEnabled()
+    assert window._doc.tile_width == 6
+
+
+def test_bitmap_width_leaves_a_fixed_tile_codec_alone(qtbot, tmp_path) -> None:
+    # A planar codec's row is eight pixels of bitplane, so there is no 6-px tile
+    # to re-cut to. The view must keep its real geometry (a claimed 6x6 would
+    # decode as garbage) and say so, rather than silently doing nothing.
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    _select_2d_pattern(window)
+    window._bitmap_width.setValue(306)
+    assert (window._doc.tile_width, window._doc.tile_height) == (8, 8)
+    assert window._columns.isEnabled()  # nothing spans 306 with an 8-px tile
+    assert "no effect" in window.statusBar().currentMessage()
+
+
+def test_compression_overlay_badge_distinguishes_the_three_decode_states(
+    qtbot, tmp_path
+) -> None:
+    # The preview looks equally finished whether the decompressor reached a
+    # structure's end, ran out of window, or was never going to find an end at
+    # all - so the status bar's badge is the only thing telling the three apart.
+    # The distinction that matters: a scheme *with* an end marker that missed it
+    # was cut short (amber, fixable by widening); a stream-based one simply
+    # decodes as far as it is fed (plain text, nothing to fix).
+    from celpix.plugins.builtins import lz_command, packbits
+
+    tiles = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    ended = tmp_path / "lz2.bin"
+    ended.write_bytes(lz_command.compress(tiles, big_endian_offsets=True) + bytes(64))
+    endless = tmp_path / "packbits.bin"
+    endless.write_bytes(packbits.compress(tiles))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(ended))
+    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
+    assert window._overlay.isVisible()
+    assert not window._overlay._badge.isVisible()  # terminator inside the window
+
+    # Same file, a window too small to hold the structure: now it *was* cut
+    # short, which is the warning case.
+    window._rows.setValue(1)
+    window._columns.setValue(1)
+    assert window._overlay._badge.isVisible()
+    assert window._overlay._badge.text() == "end not in view"
+    assert "#c08a30" in window._overlay._badge.styleSheet()
+
+    # A scheme with no end marker: informational, not amber, whatever the window.
+    window._load_pixel(str(endless))
+    window._compression.setCurrentIndex(
+        window._compression.findData("decompress.packbits")
+    )
+    assert window._overlay._badge.isVisible()
+    assert window._overlay._badge.text() == "end of view window"
+    assert window._overlay._badge.styleSheet() == ""
+    # Hard-wrapped so the tooltip doesn't run off the screen edge.
+    assert "\n" in window._overlay._badge.toolTip()
+
+
+def test_promote_bounds_a_stream_scheme_at_the_window_end(qtbot, tmp_path) -> None:
+    # A scheme with no end marker never yields a structure extent, so the only
+    # extent on offer is where the view window ran out - which To Slice uses, so
+    # a PackBits stream can still be promoted into an editable entry. Jump stays
+    # off: with no end found there is no "byte after this structure".
+    from celpix.plugins.builtins import packbits
+    from celpix.project.workspace import EntryKind
+
+    # One 32-byte run per tile, so every tile is exactly one 2-byte PackBits
+    # packet: any window then cuts on a packet boundary *and* on a whole tile,
+    # which is what lets this test bound the window without the preview simply
+    # failing to decode. 128 tiles compress to 256 B - twice the window below.
+    packed = packbits.compress(b"".join(bytes([i]) * 32 for i in range(128)))
+    px = tmp_path / "packbits.bin"
+    px.write_bytes(packed)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._columns.setValue(2)
+    window._rows.setValue(2)
+    window._compression.setCurrentIndex(
+        window._compression.findData("decompress.packbits")
+    )
+    assert window._promote_button.isEnabled()
+    assert not window._jump_next.isEnabled()
+
+    start, extent = window._structure_extent
+    window_bytes = 2 * 2 * window._doc.bytes_per_tile
+    assert (start, extent) == (0, window_bytes)  # bounded by the window's end
+    assert extent < len(packed)  # and the stream really does run on past it
+
+    window._on_promote_structure()
+    entry = window._workspace.entries[-1]
+    assert entry.kind is EntryKind.SLICE
+    assert (entry.slice_offset, entry.slice_length) == (start, extent)
+    assert entry.decompress_id == "decompress.packbits"
+
+
 def test_compression_overlay_hides_on_invalid_data(qtbot, tmp_path) -> None:
     # A leading backreference into unwritten output can never start a valid
     # structure, so no compression scheme should claim this window.
@@ -2564,6 +2746,11 @@ def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
     # A non-default subpalette row: it picks which colors the tiles index, so a
     # slice that opened back on row 0 would render in the wrong ones.
     window._subpalette.setValue(3)
+    # A non-default arrangement, likewise: it decides which bytes make up each
+    # tile, so a slice back on Linear would show the same region scrambled.
+    window._pattern.setCurrentIndex(
+        window._pattern.findText(_pattern_name("genesis-sprite"))
+    )
 
     # B: loaded, made current, and viewed as the *default* preset with a
     # default palette — so the live toolbar no longer reflects A's state.
@@ -2596,10 +2783,13 @@ def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
     assert slice_entry.session.pixel_preset_id == "preset.pixel.snes-2bpp"
     assert slice_entry.session.palette_mode == "offset"
     assert slice_entry.session.compression_id == "decompress.none"
-    # The subpalette row rides on the view options rather than the session, so
-    # it takes a hand-off of its own to come across.
+    # The subpalette row and the arrangement ride on the view options rather than
+    # the session, so they take a hand-off of their own to come across.
     assert slice_entry.doc.view.subpalette_row == 3
     assert window._subpalette.value() == 3
+    view = slice_entry.doc.view
+    assert (view.block_columns, view.block_rows, view.block_order) == (2, 2, "column")
+    assert window._pattern.currentData().id == "genesis-sprite"
 
     # End-to-end: the on-screen slice loaded A's palette from offset 32 (A's
     # offset, distinct from the slice's own offset of 64), reading A's file.

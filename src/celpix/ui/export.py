@@ -44,7 +44,15 @@ def document_image(doc: Document, registry: Registry) -> QImage:
     engine, preset = registry.engine_for(doc.pixel_config.interpret_preset_id)
     layout = BlockLayout(cols, view.block_columns, view.block_rows, view.block_order)
     grid, _filled = pipeline.decode_and_compose(
-        doc.pixel_data, engine, preset.params, layout, view.two_dimensional, None
+        doc.pixel_data,
+        engine,
+        # The document's own geometry, not the preset's: under a bitmap width
+        # those differ, and an export cut into different tiles than the canvas
+        # shows would not be the picture the user is looking at.
+        pipeline.tile_params(doc, engine, preset.params),
+        layout,
+        view.two_dimensional,
+        None,
     )
     if getattr(grid, "bytes_per_pixel", 1) == 4:
         # Direct-color: no palette; the ARGB carries its own alpha.

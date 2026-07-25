@@ -8,6 +8,14 @@ mask→ARGB kernel is shared with :mod:`celpix.plugins.builtins.color_codec`.
 
 Faithful to Tile Molester's default: the value is read at the configured
 ``byte_order`` (little by default) and the catalogue masks are applied as-is.
+
+The tile is 8×8 unless ``tile_width``/``tile_height`` say otherwise. Nothing
+here is tied to 8 — a pixel is a whole number of bytes, so any tile size walks
+the buffer correctly — and truecolor data is exactly what arrives as a bitmap of
+some arbitrary width (a TIFF strip, an ILBM row) rather than as console tiles.
+That is what lets the view's bitmap width re-cut the grid to a size the width
+divides by (``ViewOptions.bitmap_width``). Bit-packed codecs can't follow: a
+planar or sub-byte-packed row *is* eight pixels.
 """
 
 from __future__ import annotations
@@ -46,26 +54,35 @@ class DirectColorCodec:
         order = params.get("byte_order", "little")
         return bpx, order, parse_masks(params["masks"])
 
+    @classmethod
+    def _tile(cls, params: dict[str, Any]) -> tuple[int, int]:
+        width = int(params.get("tile_width", cls.TILE))
+        height = int(params.get("tile_height", cls.TILE))
+        if width <= 0 or height <= 0:
+            raise ValueError(f"tile size must be positive, got {width}x{height}")
+        return width, height
+
     def bytes_per_tile(self, params: dict[str, Any]) -> int:
-        return self.TILE * self.TILE * self._config(params)[0]
+        w, h = self._tile(params)
+        return w * h * self._config(params)[0]
 
     def tile_size(self, params: dict[str, Any]) -> tuple[int, int]:
-        return self.TILE, self.TILE
+        return self._tile(params)
 
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> list[ArgbGrid]:
         bpx, order, masks = self._config(params)
         sw = shift_widths(masks)
-        tile = self.TILE
-        tile_bytes = tile * tile * bpx
+        width, height = self._tile(params)
+        tile_bytes = width * height * bpx
         require_whole_tiles(len(data), tile_bytes)
         tiles: list[ArgbGrid] = []
         for addr in range(0, len(data), tile_bytes):
-            grid = ArgbGrid(tile, tile)
+            grid = ArgbGrid(width, height)
             buf = grid.data
             pos = addr
-            for i in range(tile * tile):
+            for i in range(width * height):
                 value = int.from_bytes(data[pos : pos + bpx], order)
                 pos += bpx
                 argb = value_to_argb(value, masks, sw)
@@ -78,12 +95,12 @@ class DirectColorCodec:
     ) -> bytes:
         bpx, order, masks = self._config(params)
         sw = shift_widths(masks)
-        tile = self.TILE
+        width, height = self._tile(params)
         out = bytearray()
         for t, grid in enumerate(tiles):
-            check_tile_size(grid, tile, tile, t)
+            check_tile_size(grid, width, height, t)
             buf = grid.data
-            for i in range(tile * tile):
+            for i in range(width * height):
                 argb = int.from_bytes(buf[i * 4 : i * 4 + 4], "little")
                 out += argb_to_value(argb, masks, sw).to_bytes(bpx, order)
         return bytes(out)

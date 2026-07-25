@@ -200,7 +200,9 @@ class InterpretationMixin:
         self._header_len.setFixedWidth(int(self._header_len.sizeHint().width() * 0.84))
         view.addWidget(self._header_len)
 
-        self._columns = self._spin(1, 64, 16, self._on_view_change)
+        # Ranged well past a screenful of 8-px tiles because a bitmap width
+        # derives this: a 4096-px bitmap of 8-px tiles is 512 columns.
+        self._columns = self._spin(1, 512, 16, self._on_view_change)
         add_labelled(view, "Cols:", self._columns, "Tiles per row")
 
         # How many tile-rows the window shows - the "render N rows" view setting.
@@ -282,23 +284,58 @@ class InterpretationMixin:
         add_labelled(arrange, "Order:", self._block_order, self._block_order.toolTip())
         self._two_d = QCheckBox("2D")
         self._two_d.setToolTip("Read as one wide bitmap, not back-to-back tiles")
-        self._two_d.toggled.connect(self._on_view_change)
+        self._two_d.toggled.connect(self._on_two_d_change)
         arrange.addWidget(self._two_d)
+
+        # The width the wide-bitmap read is *of* — so it belongs to 2D and is
+        # live only with 2D on. A bitmap only lines up when whole tiles span its
+        # width, which an 8-px tile can't do for (say) 306. Deliberately outside
+        # _arrangement_controls: a Pattern preset picks the arrangement, not the
+        # width of one particular asset, so it stays editable under a preset.
+        self._bitmap_width = self._spin(0, 8192, 0, self._on_bitmap_width_change)
+        self._bitmap_width.setSuffix(" px")
+        add_labelled(
+            arrange,
+            "Bitmap W:",
+            self._bitmap_width,
+            "Width of the 2D bitmap in pixels (needs 2D).\n"
+            "0 keeps the codec's own tile size. Any other width\n"
+            "re-cuts tiles to the largest size that divides it\n"
+            "(306 gives 6x6) and sets Cols to span exactly that\n"
+            "width. Codecs with a fixed tile size are unaffected.",
+        )
         # The default view is Linear (the first preset), so start with the block
         # controls locked until Custom is picked.
         self._apply_pattern_lock()
 
     @property
     def _arrangement_controls(self) -> tuple[QWidget, ...]:
-        """The individual block/order/2D widgets a Pattern preset drives."""
-        return (self._block_cols, self._block_rows, self._block_order, self._two_d)
+        """The individual block/order/2D widgets a Pattern preset drives.
+
+        Exactly the four axes a preset states — the bitmap width is not one of
+        them (no preset carries a width), so it is not locked away with these;
+        :meth:`_sync_bitmap_width` gates it on its own condition instead.
+        """
+        return (
+            self._block_cols,
+            self._block_rows,
+            self._block_order,
+            self._two_d,
+        )
 
     def _apply_pattern_lock(self) -> None:
         """Enable the individual arrangement controls only under Custom; a named
-        preset owns them, so they're read-only while one is selected."""
+        preset owns them, so they're read-only while one is selected.
+
+        Locked is not inert — every one of these still drives the view while a
+        preset holds it; the lock only says the preset is the thing choosing.
+        The width is gated separately (see :meth:`_sync_bitmap_width`), so it is
+        settled afterwards rather than by the blanket rule.
+        """
         custom = self._pattern.currentData() == "custom"
         for widget in self._arrangement_controls:
             widget.setEnabled(custom)
+        self._sync_bitmap_width()
 
     def _set_arrangement(
         self, block_columns: int, block_rows: int, block_order: str, two_d: bool
@@ -315,8 +352,20 @@ class InterpretationMixin:
     def _on_pattern_change(self) -> None:
         """Apply a chosen Pattern: a preset fills + locks the block/order/2D
         controls; Custom just unlocks them (leaving the current values as the
-        starting point). Either way, re-render."""
+        starting point). Either way, re-render.
+
+        Picking a Pattern also **clears the bitmap width**. A width is an
+        override of the codec's own geometry chosen for one particular asset, not
+        a standing preference, so it does not follow the user to a different
+        arrangement - and leaving it set would be worse than untidy: it stays in
+        force invisibly (the spin greys out under a preset) and springs back the
+        moment the new arrangement is 2D. Clearing it hands the tile size and
+        Cols back at the same time (:meth:`_sync_bitmap_width`).
+        """
         data = self._pattern.currentData()
+        applied = self._effective_bitmap_width() > 0
+        with signals_blocked(self._bitmap_width):
+            self._bitmap_width.setValue(0)
         if isinstance(data, ArrangementPreset):
             self._set_arrangement(
                 data.block_columns,
@@ -325,7 +374,13 @@ class InterpretationMixin:
                 data.two_dimensional,
             )
         self._apply_pattern_lock()
-        self._on_view_change()
+        # A width that *was* in force re-cut the codec's tiles, so withdrawing it
+        # is a geometry change and takes the re-interpretation path; otherwise
+        # this is an ordinary re-render.
+        if applied:
+            self._on_bitmap_width_change()
+        else:
+            self._on_view_change()
 
     def _sync_pattern_selection(self) -> None:
         """Reselect the Pattern entry that matches the live block/order/2D widgets
@@ -531,6 +586,110 @@ class InterpretationMixin:
                 pass
         return min(256, 1 << self._pixel_bpp())
 
+    def _effective_bitmap_width(self) -> int:
+        """The bitmap width actually in force — 0 unless the 2D walk is on.
+
+        The width describes a *wide-bitmap* read, so it means nothing to the
+        back-to-back tile walk; gating it here is what keeps the greyed-out
+        spin from still quietly driving the codec's geometry.
+        """
+        return self._bitmap_width.value() if self._two_d.isChecked() else 0
+
+    def _on_two_d_change(self) -> None:
+        """2D toggled: re-render, or re-cut the geometry if a width is waiting.
+
+        With a bitmap width set, switching the walk on or off changes the tile
+        size itself (it comes into force, or reverts), so this has to take the
+        geometry path rather than merely repaint.
+        """
+        if self._bitmap_width.value() > 0:
+            self._on_bitmap_width_change()
+        else:
+            self._on_view_change()
+
+    def _on_bitmap_width_change(self) -> None:
+        """Re-cut the codec's tiles to the new bitmap width.
+
+        Alone among the view controls this changes the document's *geometry* —
+        bytes per tile, and therefore what a tile index means — so it takes the
+        same re-interpretation path a format switch does, which re-lands the
+        view on the byte position it was showing instead of on a tile index that
+        now points somewhere else. Still display state, so nothing is pushed
+        onto the undo stack.
+        """
+        if self._doc is None:
+            return
+        if self._apply_pixel_config(
+            self._pixel_preset_id(), self._header_offset(), self._byte_position()
+        ):
+            self.statusBar().showMessage(self._bitmap_width_note())
+
+    def _bitmap_width_note(self) -> str:
+        """What the bitmap width did to the tile size, for the status footer.
+
+        The effect is invisible in the picture — a re-cut grid looks like any
+        other grid — and a codec whose tile size is fixed silently ignores the
+        whole setting, so the footer is where those two outcomes are told apart.
+        """
+        width = self._effective_bitmap_width()
+        tile_w, tile_h = self._pixel_tile_size()
+        if width <= 0:
+            if self._bitmap_width.value() > 0:  # set, but the walk is off
+                return f"Bitmap width needs 2D - {tile_w}x{tile_h} tiles"
+            return f"Bitmap width off - {tile_w}x{tile_h} tiles"
+        if width % tile_w:
+            return (
+                f"Bitmap width {width} px - no effect: "
+                f"{self._pixel_preset.currentText()} has a fixed "
+                f"{tile_w}x{tile_h} tile"
+            )
+        return (
+            f"Bitmap width {width} px - {tile_w}x{tile_h} tiles, "
+            f"{width // tile_w} columns"
+        )
+
+    def _sync_bitmap_width(self) -> None:
+        """Gate the width, and point Cols at it while it is in force.
+
+        Editable wherever it means anything, which is exactly: the 2D walk is on
+        (a back-to-back tile read has no bitmap width). Deliberately *not* also
+        gated on Custom, unlike the block controls: no Pattern preset carries a
+        width, so a preset has nothing to say about it and locking it under one
+        would leave a width that is still in force with no way to change it —
+        which is what a session restore lands on, since the Pattern reads back as
+        whichever preset the four axes match.
+
+        With a bitmap width the column count stops being a free choice: it is
+        however many tiles span that width, and any other value would show the
+        bitmap at the wrong stride. Cols is left alone when the tiles don't
+        divide the width — a codec that ignored the override keeps its own tile
+        size, and no column count spans the width with it.
+
+        Runs from the render path, so every route into a new arrangement — the
+        checkbox, a Pattern preset, a session restore — lands here without each
+        having to remember to.
+        """
+        self._bitmap_width.setEnabled(self._two_d.isChecked())
+        width = self._effective_bitmap_width()
+        tile_w = self._pixel_tile_size()[0]
+        spans = width > 0 and tile_w > 0 and width % tile_w == 0
+        self._columns.setEnabled(not spans)
+        if spans:
+            # Remembered on the take-over only, so repeated refreshes under the
+            # same width don't record the derived count as if it were a choice.
+            if self._columns_before_bitmap is None:
+                self._columns_before_bitmap = self._columns.value()
+            if width // tile_w != self._columns.value():
+                with signals_blocked(self._columns):
+                    self._columns.setValue(width // tile_w)
+        elif self._columns_before_bitmap is not None:
+            # The width stopped applying (cleared, 2D off, a codec that ignores
+            # it): hand Cols back at the value it had before, since the derived
+            # one described a bitmap that is no longer being read.
+            with signals_blocked(self._columns):
+                self._columns.setValue(self._columns_before_bitmap)
+            self._columns_before_bitmap = None
+
     def _pixel_tile_size(self) -> tuple[int, int]:
         # The atomic tile size is the codec's (recorded on the document at load) - not
         # a preset field (geometry is the engine's fixed unit; display grouping into
@@ -620,11 +779,14 @@ class InterpretationMixin:
         refresh, whose whole point is to re-run the reloaded plugins.
         """
         live = self._doc
+        # The bitmap width re-cuts the codec's tile geometry, so it is an input
+        # to every geometry resolution, not only to the one that set it.
+        bitmap_width = self._effective_bitmap_width()
         if not reload and live is not None and _same_bytes(live.pixel_config, cfg):
             return pipeline.reinterpret_pixel_data(
-                live.pixel_data, live.pixel_ctx, cfg, self._registry
+                live.pixel_data, live.pixel_ctx, cfg, self._registry, bitmap_width
             )
-        return pipeline.load_pixel_data(cfg, self._registry)
+        return pipeline.load_pixel_data(cfg, self._registry, bitmap_width)
 
     def _apply_pixel_config(
         self,

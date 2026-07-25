@@ -245,6 +245,32 @@ def test_pixel_bpp_derived_from_geometry(preset_id, expected_bpp) -> None:
     assert pipeline.pixel_bpp(preset_id, reg) == expected_bpp
 
 
+def test_bitmap_params_only_re_cuts_codecs_that_take_a_tile_size() -> None:
+    # A bitmap width re-cuts the tile grid so whole tiles span the width - but
+    # only where that means anything. Direct-color addresses whole bytes per
+    # pixel, so 306 px becomes 6x6 tiles; a planar codec's row *is* eight pixels
+    # of bitplane, so it must come back untouched rather than have the view
+    # claim a 6-px tile its decode would never produce. Support is probed
+    # through tile_size(), so a codec gaining the parameter needs no change here.
+    reg = default_registry()
+    direct, direct_preset = reg.engine_for("preset.pixel.dc-rgb888-be")
+    recut = pipeline.bitmap_params(direct, direct_preset.params, 306)
+    assert direct.tile_size(recut) == (6, 6)
+    assert direct.bytes_per_tile(recut) == 6 * 6 * 3
+    # Untouched when the natural tile already spans the width, and when off.
+    assert pipeline.bitmap_params(direct, direct_preset.params, 320) is (
+        direct_preset.params
+    )
+    assert pipeline.bitmap_params(direct, direct_preset.params, 0) is (
+        direct_preset.params
+    )
+
+    planar, planar_preset = reg.engine_for("preset.pixel.snes-4bpp")
+    assert pipeline.bitmap_params(planar, planar_preset.params, 306) is (
+        planar_preset.params
+    )
+
+
 def test_pixel_bpp_covers_code_formats() -> None:
     # A code format has empty preset params: any params["bpp"] read would fail.
     # 1 byte over a 2x2 tile = 8 bits / 4 pixels = 2bpp.

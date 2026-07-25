@@ -41,6 +41,7 @@ from PySide6.QtGui import QUndoCommand
 from celpix.core.context import PipelineContext
 from celpix.core.document import Document
 from celpix.core.palette import Palette
+from celpix.core.tilemap import TileMap
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.project.workspace import Entry, EntryKind, PaletteMode, SliceParams
@@ -119,6 +120,46 @@ class OffsetMoveCommand(QUndoCommand):
         with self._window._undo_apply():
             if self._window._ensure_current(self._entry):
                 self._window._apply_offset(*self._before)
+
+
+class TileMapCommand(QUndoCommand):
+    """One rearrangement of tile *display* positions, as before/after maps.
+
+    A rearrangement moves nothing in the file (see
+    :mod:`celpix.ui.main_window.rearrange`), so unlike an edit this command has
+    no bytes and stamps no revision: undoing it leaves the document exactly as
+    dirty — or as clean — as it was. It is on the undo stack all the same,
+    because a drag is an interaction the user will expect Ctrl+Z to take back,
+    and a mis-drop is easy to make and tedious to reverse by hand.
+
+    The maps are whole values rather than a delta: they hold only the tiles that
+    moved, so a snapshot is small however large the file, and restoring one
+    cannot drift the way replaying a sequence of swaps could.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        text: str,
+        before: TileMap,
+        after: TileMap,
+    ) -> None:
+        super().__init__(text)
+        self._window = window
+        self._entry = entry
+        self._before = before
+        self._after = after
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            if self._window._ensure_current(self._entry):
+                self._window._set_tile_map(self._after)
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            if self._window._ensure_current(self._entry):
+                self._window._set_tile_map(self._before)
 
 
 class PixelConfigCommand(QUndoCommand):
@@ -278,17 +319,23 @@ class ColorEditCommand(QUndoCommand):
 
 
 class PixelEditCommand(QUndoCommand):
-    """One pixel edit, as the before/after bytes of the region it rewrote.
+    """One pixel edit, as the before/after bytes of the regions it rewrote.
 
-    Every graphics edit (paste, cut, clear — later the drawing tools) lands as
-    a byte splice into the document's decompressed pixel data, so one command
-    covers them all: the push site encodes whatever tiles it wants through the
-    codec and hands over the resulting region.
+    Every graphics edit (paste, cut, clear, the drawing tools) lands as byte
+    splices into the document's decompressed pixel data, so one command covers
+    them all: the push site encodes whatever tiles it wants through the codec and
+    hands over the resulting regions.
 
     Bytes rather than tiles, because bytes are the document's source of truth and
     a codec round-trips *pixels*, not bytes — re-encoding on undo could hand back
-    something merely equivalent. Regions are bounded by the edited run, so the
+    something merely equivalent. Regions are bounded by the edited runs, so the
     snapshots stay small even on a multi-megabyte ROM.
+
+    Several regions rather than one because a **rearranged** view (``tile_map``)
+    scatters one gesture's tiles across the file: a stroke over what looks like
+    four neighbouring tiles can be four splices far apart. It is still one
+    interaction and so must still be one Ctrl+Z, which is why the list lives
+    inside a single command rather than becoming several.
     """
 
     def __init__(
@@ -297,35 +344,41 @@ class PixelEditCommand(QUndoCommand):
         entry: Entry,
         text: str,
         *,
-        start: int,
-        before: bytes,
-        after: bytes,
+        regions: list[tuple[int, bytes, bytes]],
     ) -> None:
         super().__init__(text)
         self._window = window
         self._entry = entry
         self._mode = window._edit_mode  # reverted where it was made (see below)
-        self._start = start
-        self._before = before
-        self._after = after
+        self._regions = regions  # (start, before, after), disjoint
         # The data pathway's revision on either side of this command, so an
         # undo hands the entry back the exact unsaved-state it had before.
         self._before_revision = entry.pixel_revision
         self._after_revision = window._workspace.next_revision()
 
     def redo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_edit_context(self._entry, self._mode):
-                self._window._apply_pixel_bytes(
-                    self._start, self._after, self._after_revision
-                )
+        self._apply(
+            [(start, after) for start, _before, after in self._regions],
+            self._after_revision,
+        )
 
     def undo(self) -> None:
+        self._apply(
+            [(start, before) for start, before, _after in self._regions],
+            self._before_revision,
+        )
+
+    def _apply(self, splices: list[tuple[int, bytes]], revision: int) -> None:
+        """Land every splice, as one refresh.
+
+        The regions are disjoint (the push site merges anything that touches),
+        so the order they land in doesn't matter — but the view must not be
+        rebuilt between them, or a multi-region edit would flicker through
+        half-applied states.
+        """
         with self._window._undo_apply():
             if self._window._ensure_edit_context(self._entry, self._mode):
-                self._window._apply_pixel_bytes(
-                    self._start, self._before, self._before_revision
-                )
+                self._window._apply_pixel_bytes(splices, revision)
 
 
 @dataclass(frozen=True)

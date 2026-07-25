@@ -15,7 +15,7 @@ from PySide6.QtGui import QMouseEvent
 
 from celpix.ui.canvas import Canvas
 from celpix.ui.main_window import MainWindow
-from celpix.ui.main_window.transform import FLIP_H
+from celpix.ui.main_window.transform import OP_FLIP_H
 from celpix.ui.tools import EditMode, Tool
 
 
@@ -806,7 +806,7 @@ def test_flip_transforms_the_marquee_region(qtbot, tmp_path) -> None:
     window._tool = Tool.SELECT
     row = [_pixel(window, x, 0) for x in range(4)]
     window._marquee = QRect(0, 0, 4, 4)
-    window._transform_pixel_region(FLIP_H)
+    window._transform_pixel_region(OP_FLIP_H)
     # A horizontal flip reverses each row of the region.
     assert [_pixel(window, x, 0) for x in range(4)] == row[::-1]
 
@@ -959,7 +959,7 @@ def test_history_steps_revert_in_the_mode_they_were_made_in(qtbot, tmp_path) -> 
     window._set_edit_mode(EditMode.TILE)
     window._on_tiles_selected(0, 0)
     flipped = _pixel(window, 0, 0)
-    window._transform_tiles(FLIP_H)
+    window._transform_tiles(OP_FLIP_H)
     assert _pixel(window, 0, 0) != flipped
 
     # Undoing the flip from pixel mode goes back to the tile view it happened in.

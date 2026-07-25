@@ -35,6 +35,7 @@ from os.path import (
 
 from celpix.core.arrangement import BLOCK_ORDERS
 from celpix.core.document import ViewOptions
+from celpix.core.tilemap import TileMap
 from celpix.plugins.base import NO_DECOMPRESS
 from celpix.project.workspace import (
     Entry,
@@ -174,7 +175,17 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
             "block_rows": view.block_rows,
             "block_order": view.block_order,
             "two_dimensional": view.two_dimensional,
+            "bitmap_width": view.bitmap_width,
         }
+        # Only a document that was actually rearranged carries the map, so an
+        # ordinary project's file is unchanged by the feature existing. The
+        # toggle rides along with it — on its own it says nothing.
+        if not view.tile_map.is_identity():
+            if view.tile_map.pairs:
+                data["view"]["tile_map"] = [list(p) for p in view.tile_map.pairs]
+            if view.tile_map.flips:
+                data["view"]["tile_flips"] = [list(f) for f in view.tile_map.flips]
+            data["view"]["show_rearranged"] = view.show_rearranged
     palette = palette_source_for(entry)
     if palette is not None:
         data["palette"] = _palette_dict(palette, base_dir)
@@ -311,7 +322,35 @@ def _view_from(raw: object) -> ViewOptions | None:
         block_rows=_int(raw.get("block_rows"), defaults.block_rows),
         block_order=_block_order(raw),
         two_dimensional=bool(raw.get("two_dimensional", defaults.two_dimensional)),
+        bitmap_width=_int(raw.get("bitmap_width"), defaults.bitmap_width),
+        tile_map=_tile_map(raw.get("tile_map"), raw.get("tile_flips")),
+        show_rearranged=bool(raw.get("show_rearranged", defaults.show_rearranged)),
     )
+
+
+def _tile_map(raw: object, flips: object) -> TileMap:
+    """A stored rearrangement, or the identity map for anything unusable.
+
+    Hand-edited or truncated pairs can describe something that isn't a
+    permutation, which :class:`TileMap` refuses to build. A project that won't
+    open is worse than one that opens unrearranged, so a bad map is dropped
+    rather than raised — the tiles are all still there, just in file order.
+    """
+    try:
+        return TileMap.from_pairs(_int_pairs(raw), _int_pairs(flips))
+    except (ValueError, TypeError):
+        return TileMap()
+
+
+def _int_pairs(raw: object) -> list[tuple[int, int]]:
+    """The well-formed two-integer entries of a stored pair list."""
+    if not isinstance(raw, list):
+        return []
+    return [
+        (int(pair[0]), int(pair[1]))
+        for pair in raw
+        if isinstance(pair, (list, tuple)) and len(pair) == 2
+    ]
 
 
 def _block_order(raw: dict) -> str:

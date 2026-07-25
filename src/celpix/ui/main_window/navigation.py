@@ -522,6 +522,11 @@ class NavigationMixin:
             return False
         shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        # A rearrange drag claims Escape (and H/V) first: whatever navigation
+        # would otherwise do with them, it cannot put a tile stranded in the air
+        # back down.
+        if self._rearrange_key(event.key(), shift, ctrl):
+            return True
         # Pixel mode claims the bare number keys (tool select) and Escape (stamp
         # the float / drop the marquee) before the navigation map sees them.
         if self._pixel_key(event.key(), shift, ctrl):

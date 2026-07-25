@@ -77,8 +77,8 @@ class ArrangementPreset:
 # out in docs/design-reference/navigation-and-preview.md and the tests in
 # tests/test_arrangement.py. "Linear" is the default plain back-to-back walk.
 ARRANGEMENT_PRESETS: tuple[ArrangementPreset, ...] = (
-    ArrangementPreset("linear", "1D Default - Linear"),
-    ArrangementPreset("2d", "2D - Wide bitmap (N64/NDS)", two_dimensional=True),
+    ArrangementPreset("linear", "Default - Linear Tiles"),
+    ArrangementPreset("2d", "2D - Bitmap (N64/NDS/PC/etc)", two_dimensional=True),
     # 8×16 NES/GB sprites: tile i (top) stacked over tile i+1 (bottom), the next
     # sprite in the next column — a 1×2 block filled block-by-block.
     ArrangementPreset("nes-8x16", "8×16 sprites, stacked (NES/GB)", block_rows=2),
@@ -351,6 +351,32 @@ def split_coverage(
         height = max(0, min(tile_height, grid_height - tile_y * tile_height))
         coverage.append((width, height) if width and height else (0, 0))
     return coverage
+
+
+def bitmap_tile_size(bitmap_width: int, tile_width: int) -> int:
+    """The tile size a ``bitmap_width``-pixel-wide image can be cut into.
+
+    A wide-bitmap view only lines up when a whole number of tiles spans the
+    bitmap's width, and a codec's natural tile is usually 8 — so a 306-pixel
+    bitmap has no 8-px reading at all (306 / 8 = 38.25) and every row of the
+    view slides two pixels further off. This picks the **largest divisor of
+    ``bitmap_width`` that is no bigger than ``tile_width``** — 6 for that 306,
+    so 51 tiles span it exactly. Square tiles: the same number sizes both axes,
+    since only the width is constrained and a non-square display tile would
+    just be a second thing to explain.
+
+    Returns ``tile_width`` unchanged when there is no bitmap width to honour, so
+    "off" is the ordinary path rather than a special case. A width smaller than
+    one tile yields the width itself (it divides itself), and 1 is always a
+    valid answer — a per-pixel grid, the degenerate but correct reading of a
+    prime width.
+    """
+    if bitmap_width <= 0 or tile_width <= 0:
+        return max(1, tile_width)
+    for size in range(min(bitmap_width, tile_width), 0, -1):
+        if bitmap_width % size == 0:
+            return size
+    return 1  # unreachable: 1 divides everything
 
 
 def reflow_2d(

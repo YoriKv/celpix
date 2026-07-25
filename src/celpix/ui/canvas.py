@@ -16,6 +16,16 @@ surface: the mouse reports **image-pixel** coordinates through the ``pixel_*``
 signals instead of tile slots, and it paints two controller-driven overlays — a
 floating selection and a pixel-space marquee. It still owns no model; what a
 gesture *does* is the pixel-edit controller's job on the window side.
+
+The **rearrange tool** (:meth:`Canvas.set_rearranging`) is armed over tile mode and
+never together with pixel mode, but it is still a modal flag the mouse handlers
+check ahead of the mode split, joining the pan and the eyedropper. While armed a
+left drag reports slots through the ``rearrange_*`` signals, and the canvas paints
+the dragged tile floating under the cursor over an outlined drop target — whether
+that drop is *allowed* is the controller's call, since it depends on the tile map.
+The **right** drag takes over tile selection there: picking the block to carry is
+what the left button would otherwise be for, and the tool has no context menu to
+displace.
 """
 
 from __future__ import annotations
@@ -65,6 +75,14 @@ GRID_COARSE_TILES = 8
 # rather than overwriting.
 PREVIEW_OUTLINE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0xC0)
 
+# Where a rearrange drag would land. Opaque and thicker than the grid, because
+# this marks a destination rather than tinting the art: it has to be findable
+# under the floating tile and over any colors. Red is the refusal (a drop that
+# would overlap its own source), the one thing the canvas says no to.
+DROP_TARGET_COLOR = QColor(0x40, 0xC0, 0xFF)
+DROP_REFUSED_COLOR = QColor(0xFF, 0x50, 0x50)
+DROP_TARGET_WIDTH = 2
+
 # Line styles per drawing style; POINT/NONE are handled separately.
 _GRID_PEN_STYLES = {
     GridStyle.DOT: Qt.PenStyle.DotLine,
@@ -94,6 +112,16 @@ class Canvas(QWidget):
     # A left double-click in pixel mode, at the pixel under the cursor. The
     # controller decides what it means (the Select tool takes the whole tile).
     pixel_double_clicked = Signal(int, int)  # x, y
+    # Rearrange-tool gestures, in window slots. Emitted only while the tool is
+    # armed (:meth:`set_rearranging`) — dragging a tile to a new *display*
+    # position is neither a tile selection nor a paint stroke, so it gets its own
+    # gesture rather than overloading one of theirs. ``dropped``
+    # carries the slot released on; ``cancelled`` means the gesture ended with no
+    # destination (Esc, a right press mid-drag, or a release off the image).
+    rearrange_started = Signal(int)  # slot pressed
+    rearrange_moved = Signal(int)  # slot dragged over
+    rearrange_dropped = Signal(int)  # slot released on
+    rearrange_cancelled = Signal()
     # A space-drag pan step, in device pixels: how far to shift the view. The
     # window feeds it to the scroll bars, which clamp it so the image can't be
     # dragged off screen. Emitted in either edit mode.
@@ -140,6 +168,18 @@ class Canvas(QWidget):
         self._marquee: QRect | None = None
         self._float_image: QImage | None = None
         self._float_pos = (0, 0)
+        # Rearrange tool: like the eyedropper and the pan it is a modal flag the
+        # mouse handlers check before the mode split (it is armed over tile mode,
+        # never together with pixel mode). ``_rearrange_slot`` is the last slot
+        # reported during a drag, so crossing within one tile emits nothing.
+        self._rearranging = False
+        self._rearrange_drag = False
+        self._rearrange_slot: int | None = None
+        # Where a rearrange drag would land, and whether it may: the controller
+        # decides (a drop that would overlap its own source is refused), the
+        # canvas only draws it.
+        self._drop_slots: frozenset[int] = frozenset()
+        self._drop_valid = True
         # How many of the image's tile slots hold real data. When the stream ends
         # mid-row the trailing slots of the bottom row are padding, not tiles, so
         # they are painted as background rather than drawn (None = the whole image
@@ -256,6 +296,46 @@ class Canvas(QWidget):
         self._apply_cursor()
         self.update()
 
+    def set_rearranging(self, on: bool) -> None:
+        """Arm/disarm the rearrange tool.
+
+        Modal over the mouse while armed, like the pan and the eyedropper: a left
+        press picks a tile up to move where it is *shown*, so it must not also
+        select tiles or paint — selecting moves to the right button instead.
+        Toggling abandons any drag in progress — the controller is told, so a
+        half-made move can't leave a float behind — and drops the selection drag
+        with it, since the button it belongs to changes either way.
+        """
+        if self._rearranging == on:
+            return
+        self._rearranging = on
+        if not on and self._rearrange_drag:
+            self._end_rearrange_drag()
+            self.rearrange_cancelled.emit()
+        self._rearrange_drag = False
+        self._rearrange_slot = None
+        self._drag_anchor = self._drag_slot = None
+        self._apply_cursor()
+        self.update()
+
+    def set_drop_target(
+        self, slots: Iterable[int] | None, *, valid: bool = True
+    ) -> None:
+        """Outline where a rearrange drag would land; ``valid`` says it may.
+
+        Driven entirely by the controller — whether a drop is legal depends on
+        the tile map, which the canvas has no business knowing.
+        """
+        self._drop_slots = frozenset(slots or ())
+        self._drop_valid = valid
+        self.update()
+
+    def _end_rearrange_drag(self) -> None:
+        self._rearrange_drag = False
+        self._rearrange_slot = None
+        self._float_image = None
+        self._drop_slots = frozenset()
+
     def set_pan_mode(self, on: bool) -> None:
         """Arm/disarm space-drag panning (the window drives this off the space key).
 
@@ -277,6 +357,8 @@ class Canvas(QWidget):
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
         elif self._pan_active:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self._rearranging:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
         elif self._edit_mode is EditMode.PIXEL or self._eyedropper:
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
@@ -405,6 +487,12 @@ class Canvas(QWidget):
                 self.color_picked.emit(argb)
             event.accept()
             return
+        # The rearrange tool owns the mouse while it is armed, so it sits above
+        # the mode split alongside the pan/eyedropper.
+        if self._rearranging and not self._image.isNull():
+            self._rearrange_press(event)
+            super().mousePressEvent(event)
+            return
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_press(event)
             super().mousePressEvent(event)
@@ -460,6 +548,10 @@ class Canvas(QWidget):
             event.accept()
             return
         self._track_hover(event.position())
+        if self._rearranging:
+            self._rearrange_move(event)
+            super().mouseMoveEvent(event)
+            return
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_move(event)
             super().mouseMoveEvent(event)
@@ -479,6 +571,10 @@ class Canvas(QWidget):
             self._panning = False
             self._apply_cursor()  # back to the open hand (space may still be held)
             event.accept()
+            return
+        if self._rearranging:
+            self._rearrange_release(event)
+            super().mouseReleaseEvent(event)
             return
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_release(event)
@@ -509,6 +605,71 @@ class Canvas(QWidget):
         steps = int(dy / 120) or (1 if dy > 0 else -1)
         self.zoom_requested.emit(steps, event.position())
         event.accept()
+
+    def _rearrange_press(self, event) -> None:  # noqa: ANN001 — Qt event
+        """Pick a tile up (left), or start selecting tiles (right).
+
+        The right button inherits the tile-selection drag while the tool is armed:
+        the left one is picking tiles *up*, and a block has to be selected before
+        it can be carried as one. It never samples a color and never opens the
+        context menu here — the window suppresses that for the same reason.
+
+        Mid-drag it still abandons the move instead, the standard "get me out of
+        this drag" escape, since selecting under a tile in the air would leave the
+        gesture pinned to a block that is no longer the one selected.
+        """
+        if event.button() == Qt.MouseButton.RightButton:
+            if self._rearrange_drag:
+                self._end_rearrange_drag()
+                self.rearrange_cancelled.emit()
+                self.update()
+                return
+            slot = self._slot_at(event.position())
+            if slot is not None:
+                self._drag_anchor = self._drag_slot = slot
+                self.tiles_selected.emit(slot, slot)
+            return
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        slot = self._slot_at(event.position())
+        if slot is None:
+            return
+        self._rearrange_drag = True
+        self._rearrange_slot = slot
+        self.rearrange_started.emit(slot)
+
+    def _rearrange_move(self, event) -> None:  # noqa: ANN001 — Qt event
+        buttons = event.buttons()
+        if self._drag_anchor is not None and buttons & Qt.MouseButton.RightButton:
+            # The borrowed selection drag: same growing range as tile mode's, on
+            # the button the tool left free.
+            slot = self._slot_at(event.position(), clamp=True)
+            if slot is not None and slot != self._drag_slot:
+                self._drag_slot = slot
+                self.tiles_selected.emit(self._drag_anchor, slot)
+            return
+        if not (self._rearrange_drag and buttons & Qt.MouseButton.LeftButton):
+            return
+        # Clamped, like the tile-selection drag: sliding off the edge keeps
+        # aiming at the boundary tile rather than dropping the gesture.
+        slot = self._slot_at(event.position(), clamp=True)
+        if slot is not None and slot != self._rearrange_slot:
+            self._rearrange_slot = slot
+            self.rearrange_moved.emit(slot)
+
+    def _rearrange_release(self, event) -> None:  # noqa: ANN001 — Qt event
+        if event.button() == Qt.MouseButton.RightButton:
+            self._drag_anchor = self._drag_slot = None
+            return
+        if event.button() != Qt.MouseButton.LeftButton or not self._rearrange_drag:
+            return
+        slot = self._slot_at(event.position(), clamp=True)
+        self._end_rearrange_drag()
+        if slot is None:
+            self.rearrange_cancelled.emit()
+        else:
+            self.rearrange_dropped.emit(slot)
+        self.update()
 
     def _pixel_press(self, event) -> None:  # noqa: ANN001 — Qt event
         """Begin a pixel gesture: report the pressed pixel and its button.
@@ -639,22 +800,25 @@ class Canvas(QWidget):
         painter.end()
 
     def _paint_pixel_overlays(self, painter: QPainter) -> None:
-        """Draw the floating selection and the pixel marquee (pixel mode only).
+        """Draw the float, and whatever else the armed interaction wants.
 
         The float goes down first (a lifted image the user is dragging), then its
-        outline, then the marquee — a pixel-space rectangle. Both scale by the
-        zoom and are drawn in device coordinates, over the base image, so they
-        track the pixels beneath them.
+        outline. Both pixel editing and the rearrange tool put something in the
+        air, so the float is painted for either; the marquee and pen preview
+        belong to pixel editing alone, and the drop target to the rearrange.
 
-        Gated on the mode rather than trusting both to be ``None`` there: undo
-        steps through pixel-mode selections wherever the history is walked, tile
-        mode included, and it restores them by driving these same setters. A
+        Gated on the mode rather than trusting the overlays to be ``None`` there:
+        undo steps through pixel-mode selections wherever the history is walked,
+        tile mode included, and it restores them by driving these same setters. A
         pixel rectangle drawn over the tile view is then a stray outline the user
         has no way to explain or dismiss.
         """
-        if self._edit_mode is not EditMode.PIXEL:
+        pixel_mode = self._edit_mode is EditMode.PIXEL
+        if not (pixel_mode or self._rearranging):
             return
         z = self._zoom
+        if self._rearranging:
+            self._paint_drop_target(painter)
         if self._float_image is not None:
             fx, fy = self._float_pos
             rect = QRect(
@@ -665,11 +829,42 @@ class Canvas(QWidget):
             )
             painter.drawImage(rect, self._float_image)
             paint_selection_outline(painter, rect)
+        if not pixel_mode:
+            return
         if self._marquee is not None and not self._marquee.isNull():
             m = self._marquee
             rect = QRect(m.x() * z, m.y() * z, m.width() * z, m.height() * z)
             paint_selection_outline(painter, rect)
         self._paint_pen_preview(painter)
+
+    def _paint_drop_target(self, painter: QPainter) -> None:
+        """Outline the cells a rearrange drag would land on.
+
+        Under the float, so the tile being carried stays readable over its
+        destination. The invalid color is the only place the canvas says *no* to
+        a gesture, and it has to read as a refusal at a glance — the swap would
+        otherwise look like it simply didn't take.
+        """
+        if not self._drop_slots:
+            return
+        layout = self._layout()
+        color = DROP_TARGET_COLOR if self._drop_valid else DROP_REFUSED_COLOR
+        pen = QPen(color)
+        pen.setWidth(DROP_TARGET_WIDTH)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        cols, rows = self._columns(), self._rows()
+        for slot in self._drop_slots:
+            tile_x, tile_y = layout.slot_to_cell(slot)
+            if 0 <= tile_x < cols and 0 <= tile_y < rows:
+                # A pen straddles the path, so inset by half its width to keep
+                # the whole outline inside the cell it marks.
+                inset = DROP_TARGET_WIDTH // 2
+                painter.drawRect(
+                    self._cell_rect(tile_x, tile_y).adjusted(
+                        inset, inset, -inset - 1, -inset - 1
+                    )
+                )
 
     def _paint_pen_preview(self, painter: QPainter) -> None:
         """Tint the pixel the pen is aimed at, in the colour it would write.

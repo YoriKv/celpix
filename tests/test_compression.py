@@ -17,7 +17,7 @@ from celpix.core.context import (
     KEY_DECOMPRESS_PARTIAL,
     PipelineContext,
 )
-from celpix.plugins.builtins import konami_rle, lz16, lz_command
+from celpix.plugins.builtins import konami_rle, lz16, lz_command, packbits
 from celpix.plugins.builtins.konami_rle import (
     KonamiNesRleCompress,
     KonamiNesRleDecompress,
@@ -29,6 +29,7 @@ from celpix.plugins.builtins.lz_command import (
     Lz2Decompress,
 )
 from celpix.plugins.builtins.m7_interleave import M7VramCompress, M7VramDecompress
+from celpix.plugins.builtins.packbits import PackBitsCompress, PackBitsDecompress
 
 # -- LZ1/LZ2 command stream -------------------------------------------------
 
@@ -401,6 +402,101 @@ def test_konami_fds_round_trip() -> None:
         assert out == data
         assert complete is True
         assert consumed == len(packed)
+
+
+# -- PackBits ---------------------------------------------------------------
+
+
+def test_packbits_decode_known_vector() -> None:
+    # The worked example from the format's own documentation: a 3-run, a 3-byte
+    # literal, a 4-run, a 4-byte literal and a 10-run. Guards the signed control
+    # arithmetic (0xFE = -2 is a *3*-byte run, not a 2-byte one) independently of
+    # our compressor, and pins that literal payloads may hold 0x80 verbatim.
+    stream = bytes.fromhex("fe aa 02 80 00 2a fd aa 03 80 00 2a 22 f7 aa")
+    out, consumed = packbits.decompress(stream)
+    assert out == bytes.fromhex(
+        "aa aa aa 80 00 2a aa aa aa aa 80 00 2a 22 aa aa aa aa aa aa aa aa aa aa"
+    )
+    assert consumed == len(stream)
+    # Our encoder reproduces this stream byte for byte — the runs are all ≥3, so
+    # the run/literal split has no leeway.
+    assert packbits.compress(out) == stream
+
+
+def test_packbits_round_trip() -> None:
+    rng = random.Random(7)
+    payloads = [
+        b"",
+        b"\x42",
+        b"\x42\x42",  # a bare 2-run: the packet-vs-literal boundary case
+        b"\x55" * 300,  # long run: multi-packet, 128 + 128 + a 44 tail
+        b"\x55" * 130,  # 128-run plus a 2-byte tail (its own run packet)
+        b"\x55" * 129,  # 128-run plus a lone byte (a literal)
+        b"\xab" * 128,  # exactly one full run packet
+        bytes(range(128)),  # exactly one full literal packet
+        bytes(range(129)),
+        bytes(range(256)),  # all distinct: literal-only
+        bytes([0x80]) * 200,  # the no-op control value as data
+        b"AB" * 5 + b"C" * 10 + b"D" + b"EFG" + b"H" * 200,
+        bytes(rng.randrange(256) for _ in range(2000)),
+        bytes(rng.choice(b"\x00\x80\xff") for _ in range(1500)),
+    ]
+    for data in payloads:
+        packed = packbits.compress(data)
+        out, consumed = packbits.decompress(packed)
+        assert out == data
+        assert consumed == len(packed)
+        # One control byte per 128 output bytes is the format's worst case.
+        assert len(packed) <= len(data) + (len(data) + 127) // 128
+
+
+def test_packbits_nop_control_is_skipped() -> None:
+    # 0x80 as a *control* byte carries no data of its own: the byte after it is
+    # the next control. Reading it as a run (or as an end marker) would desync
+    # everything following.
+    stream = bytes([0x80, 0x01, 0x41, 0x42, 0x80, 0xFF, 0x43])
+    out, consumed = packbits.decompress(stream)
+    assert out == b"AB" + b"CC"
+    assert consumed == len(stream)
+
+
+def test_packbits_truncated_stream_decodes_prefix() -> None:
+    # A window can cut a packet in half. The literal bytes that *are* present
+    # still decode — the overlay preview wants them — but `consumed` stops at the
+    # last whole packet, since only that offset is a real packet boundary.
+    stream = bytes([0x01, 0x41, 0x42, 0x03, 0x43, 0x44])  # 4-byte literal, 2 given
+    out, consumed = packbits.decompress(stream)
+    assert out == b"ABCD"
+    assert consumed == 3
+    # A run header with no value byte contributes nothing at all.
+    out, consumed = packbits.decompress(bytes([0x01, 0x41, 0x42, 0xFE]))
+    assert out == b"AB"
+    assert consumed == 3
+
+
+def test_packbits_plugin_records_size_but_never_complete() -> None:
+    # The format has no terminator, so a decode that reaches the end of the
+    # buffer is "the buffer ran out", not "the structure ended". Reporting
+    # complete would let a slice with no length backfill its extent as the whole
+    # rest of the file — hence the flag is always False, unlike every other
+    # scheme here.
+    data = b"\x00" * 50 + bytes(range(30)) + b"\xff" * 40
+    packed = PackBitsCompress().compress(data, PipelineContext())
+    ctx = PipelineContext()
+    assert PackBitsDecompress().decompress(packed, ctx) == data
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is False
+
+
+def test_packbits_output_cap_stops_an_unbounded_read() -> None:
+    # Any bytes are valid PackBits, so a read that runs to end-of-file expands
+    # arbitrary data by up to 128x. The cap stops the decode at a packet
+    # boundary instead of raising: there is no stream end to be inconsistent
+    # with, so over-long output isn't evidence of corruption.
+    bomb = bytes([0x81, 0x00]) * 20000  # 128 output bytes per 2 input bytes
+    out, consumed = packbits.decompress(bomb)
+    assert len(out) == 0x100000
+    assert consumed == 2 * (0x100000 // 128) < len(bomb)
 
 
 # The FDS plugin wrapper (KonamiFdsRle*) is a copy of the NES wrapper differing

@@ -514,6 +514,9 @@ class Lz16Decompress:
         id="decompress.lz16",
         name="LZ16 (Yoshi's Island Super FX)",
         stage=Stage.DECOMPRESS,
+        # No terminator: the extent comes from the row count (context or probe),
+        # both of which need a bound the bit stream itself never carries.
+        self_delimiting=False,
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
