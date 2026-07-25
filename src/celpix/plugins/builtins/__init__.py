@@ -21,6 +21,7 @@ from .chunky_codec import ChunkyCodec
 from .color_codec import ColorCodec
 from .container_read import INesReader, SmdReader, SnesInterleavedReader
 from .direct_color_codec import DirectColorCodec
+from .gb_rom import GbRomReader, GbRomWriter
 from .indexed_codec import IndexedColorCodec
 from .konami_rle import (
     KonamiFdsRleCompress,
@@ -32,6 +33,7 @@ from .linear_codec import LinearBespokeCodec
 from .lz16 import Lz16Compress, Lz16Decompress
 from .lz_command import Lz1Compress, Lz1Decompress, Lz2Compress, Lz2Decompress
 from .m7_interleave import M7VramCompress, M7VramDecompress
+from .n64_rom import N64RomReader, N64RomWriter
 from .packbits import PackBitsCompress, PackBitsDecompress
 from .packed_codec import PackedCodec
 from .passthrough import PassthroughCompress, PassthroughDecompress
@@ -51,6 +53,10 @@ def register_builtins(reg: Registry) -> None:
         INesReader(),
         SmdReader(),
         SnesInterleavedReader(),
+        GbRomReader(),
+        GbRomWriter(),
+        N64RomReader(),
+        N64RomWriter(),
         PassthroughDecompress(),
         PassthroughCompress(),
         KonamiNesRleDecompress(),

@@ -298,6 +298,9 @@ class SessionMixin:
         self._new_slice_action.setEnabled(is_file)
         self._new_slice_from_view_action.setEnabled(is_file)
         self._new_bookmark_action.setEnabled(is_file)
+        # A slice has no container of its own — it reads through its parent's
+        # coordinates — so this follows the same is_file rule as the rest.
+        self._change_container_action.setEnabled(is_file)
         self._refresh_window_title()
 
     def _clear_document_view(self) -> None:
@@ -332,6 +335,7 @@ class SessionMixin:
         self._new_slice_action.setEnabled(False)
         self._new_slice_from_view_action.setEnabled(False)
         self._new_bookmark_action.setEnabled(False)
+        self._change_container_action.setEnabled(False)
 
     def _set_document_ui_enabled(self, enabled: bool) -> None:
         """Grey out (or restore) the document-editing surfaces as a block.

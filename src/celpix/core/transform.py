@@ -1,4 +1,4 @@
-"""Geometric transforms of a decoded tile: flip and 90° rotation.
+"""Geometric transforms of a decoded tile: flip, 90° rotation, transpose.
 
 These are **content edits** — they rewrite the interpreted pixels, unlike the
 byte-nudge that only realigns where tiles start (a display option). Each function
@@ -61,4 +61,21 @@ def rotate_ccw(grid: Grid) -> Grid:
         for x in range(w):
             # (x, y) → (y, w-1-x): the top row becomes the left column.
             out.set(y, w - 1 - x, grid.get(x, y))
+    return out
+
+
+def transpose(grid: Grid) -> Grid:
+    """Reflect across the main diagonal: ``(x, y)`` → ``(y, x)``, so ``h×w`` out.
+
+    No toolbar button performs this one. It is here because it is the *axis swap*
+    the two rotations are built from — a quarter turn is a transpose plus a mirror
+    — which is what lets the display orientations of
+    :mod:`celpix.core.tilemap` be eight combinations of three independent bits
+    rather than a table.
+    """
+    w, h = grid.width, grid.height
+    out = type(grid)(h, w)
+    for y in range(h):
+        for x in range(w):
+            out.set(y, x, grid.get(x, y))
     return out

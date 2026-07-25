@@ -22,13 +22,14 @@ Which groups are on the bar follows the current interaction
 (:meth:`_sync_transform_bar_mode`): Tile + Block while editing tiles, a dedicated
 **Pixel** group in pixel mode, and — while the rearrange tool is armed — a
 display-only Tile/Block pair in their place. Those last ones are *not* edits: they
-flip by storing bits in the tile map rather than rewriting pixels, so both halves
-of a block flip (the mirroring and the position permutation) live in the map and
-the file is untouched. They keep the Tile/Block captions rather than announcing
-themselves, since the split means exactly what it does elsewhere; the tooltips
-carry the difference. One :class:`TransformOp` table drives both paths —
-``tile_flip`` is each op expressed as display-flip bits, zero for the rotations,
-which have no such bit to store.
+transform by storing an orientation in the tile map rather than by rewriting
+pixels, so both halves of a block transform (the tiles' orientation and their
+position permutation) live in the map and the file is untouched. They keep the
+Tile/Block captions rather than announcing themselves, since the split means
+exactly what it does elsewhere; the tooltips carry the difference. One
+:class:`TransformOp` table drives both paths — ``tile_orient`` is each op expressed
+as display-orientation bits, so the destructive and the display route cannot
+disagree about what "rotate right" means.
 
 **H / V / C / X** press the flip and rotate buttons from the keyboard, and
 **Shift** picks the Block group — so four letters cover whichever pair is on the
@@ -41,10 +42,10 @@ through :meth:`~celpix.ui.main_window.selection.SelectionMixin._apply_tile_edit`
 which pushes one :class:`~celpix.ui.undo_commands.PixelEditCommand` — so a
 transform is a single Ctrl+Z step, exactly like a paste.
 
-Rotation swaps a tile's width and height, so it needs **square tiles** in both
-groups; the block group additionally needs a **square block** (``cols == rows``),
-since a non-square block would swap the block's own dimensions. Flips have no such
-constraint.
+Rotation swaps a tile's width and height, so it needs **square tiles** in every
+group, the rearrange ones included; a block group additionally needs a **square
+block** (``cols == rows``), since a non-square block would swap the block's own
+dimensions. Flips have no such constraint.
 """
 
 from __future__ import annotations
@@ -57,9 +58,14 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QLabel, QSizePolicy, QToolBar, QWidget
 
 from celpix.core import transform
-from celpix.core.tilemap import TILE_FLIP_H, TILE_FLIP_V
+from celpix.core.tilemap import (
+    TILE_FLIP_H,
+    TILE_FLIP_V,
+    TILE_ROTATE_CCW,
+    TILE_ROTATE_CW,
+)
 from celpix.ui.main_window.selection import SELECTION_SHAPE_KEY, SelectionShape
-from celpix.ui.tools import FLIP_SPECS, TRANSFORM_SPECS, EditMode, TransformSpec
+from celpix.ui.tools import TRANSFORM_SPECS, EditMode, TransformSpec
 from celpix.ui.widgets import (
     CompactComboBox,
     load_enum_setting,
@@ -77,18 +83,17 @@ class TransformOp:
     half of the permutation, unused by the in-place tile group. ``verb``/``past``
     feed the undo label and the status line.
 
-    ``tile_flip`` is the same operation expressed as **display** flip bits, for
-    the rearrange tool: it flips a tile by storing a flag rather than by rewriting
-    pixels, so the two paths share this one table instead of a parallel mapping.
-    Zero for the rotations — a display flip is what a real tile attribute can
-    carry, and there is no rotate bit to store.
+    ``tile_orient`` is the same operation expressed as **display-orientation**
+    bits (:mod:`celpix.core.tilemap`), for the rearrange tool: it transforms a tile
+    by storing an orientation rather than by rewriting pixels, so the two paths
+    share this one table instead of a parallel mapping that could drift from it.
     """
 
     verb: str
     past: str
     pixel_fn: Callable[[object], object]
     cell_src: Callable[[int, int, int, int], tuple[int, int]]
-    tile_flip: int = 0
+    tile_orient: int
 
 
 # The four directions. The cell maps invert the pixel transform at tile
@@ -113,12 +118,14 @@ OP_ROTATE_CCW = TransformOp(
     "Rotated",
     transform.rotate_ccw,
     lambda dx, dy, cols, rows: (cols - 1 - dy, dx),
+    TILE_ROTATE_CCW,
 )
 OP_ROTATE_CW = TransformOp(
     "rotate",
     "Rotated",
     transform.rotate_cw,
     lambda dx, dy, cols, rows: (dy, rows - 1 - dx),
+    TILE_ROTATE_CW,
 )
 
 # Which op each button in :data:`~celpix.ui.tools.TRANSFORM_SPECS` performs. The
@@ -140,6 +147,12 @@ def _qt_key(spec: TransformSpec) -> Qt.Key:
     """
     return getattr(Qt.Key, f"Key_{spec.key}")
 
+
+# Appended to every tooltip in the rearrange tool's groups. Its buttons carry the
+# same glyphs as the destructive ones, so the one thing a tooltip there has to say
+# is that nothing is being rewritten. Its own line, within the ~60-column wrap a
+# plain-text tooltip needs (docs/py-qt-reference/pyside6-pitfalls.md).
+DISPLAY_ONLY_TIP = "\nDisplay only; the file is not changed"
 
 # The transform keys as Qt keys, in button order. Bare letters, so they are routed
 # by the app-wide event filter (:meth:`TransformMixin._transform_key`) rather than
@@ -222,26 +235,35 @@ class TransformMixin:
             "",
         )
         # Rearrange: shown only while that tool is armed, over *either* mode. Its
-        # flips are display state stored in the tile map, not pixel edits — the
-        # same glyphs and the same Tile/Block captions, deliberately, because the
-        # gesture and the split read the same; the tooltips carry the difference.
+        # transforms are display state stored in the tile map, not pixel edits —
+        # the same glyphs and the same Tile/Block captions, deliberately, because
+        # the gesture and the split read the same; the tooltips carry the
+        # difference.
         rearrange_label = self._group_caption(
             bar,
             " Tile: ",
-            "Mirror each tile in place\nDisplay only; the file is not changed",
+            "Flip / rotate each tile in place\nDisplay only; the file is not changed",
         )
-        self._rearrange_group = self._add_flip_pair(
-            bar, self._flip_rearranged_tiles, "each tile in place", ""
+        self._rearrange_group = self._add_transform_group(
+            bar,
+            self._orient_rearranged_tiles,
+            "each tile in place",
+            "",
+            DISPLAY_ONLY_TIP,
         )
         rearrange_block_sep = bar.addSeparator()
         rearrange_block_label = self._group_caption(
             bar,
             " Block: ",
-            "Mirror the block, tiles and positions\n"
+            "Flip / rotate the block, tiles and positions\n"
             "Display only; the file is not changed",
         )
-        self._rearrange_block_group = self._add_flip_pair(
-            bar, self._flip_rearranged_block, "the block, tiles and positions", "Shift+"
+        self._rearrange_block_group = self._add_transform_group(
+            bar,
+            self._orient_rearranged_block,
+            "the block, tiles and positions",
+            "Shift+",
+            DISPLAY_ONLY_TIP,
         )
         self._tile_mode_bar_actions = [
             tile_label,
@@ -253,10 +275,10 @@ class TransformMixin:
         self._pixel_mode_bar_actions = [pixel_label, *self._pixel_group.actions]
         self._rearrange_bar_actions = [
             rearrange_label,
-            *self._rearrange_group,
+            *self._rearrange_group.actions,
             rearrange_block_sep,
             rearrange_block_label,
-            *self._rearrange_block_group,
+            *self._rearrange_block_group.actions,
         ]
         self._build_edit_mode_toggle(bar)
         self._sync_transform_bar_mode()
@@ -264,34 +286,6 @@ class TransformMixin:
         # arms it when one is shown.
         bar.setEnabled(False)
         return bar
-
-    def _add_flip_pair(
-        self,
-        bar: QToolBar,
-        handler: Callable[[TransformOp], None],
-        scope: str,
-        modifier: str,
-    ) -> tuple[QAction, QAction]:
-        """One of the rearrange tool's Flip H / Flip V pairs.
-
-        Two, not the usual four: a display flip is stored as the flip bits a real
-        tile attribute carries, and there is no rotate bit to mirror. ``modifier``
-        is the key prefix this pair answers to (Shift for the block half), named
-        in the tooltip rather than registered — see :data:`KEY_FIELDS`.
-        """
-        actions = []
-        for spec, tip in zip(FLIP_SPECS, ("left-right", "top-bottom"), strict=True):
-            action = QAction(spec.glyph, self)
-            action.setToolTip(
-                f"Mirror {tip} ({modifier}{spec.key}) — {scope}\n"
-                "Display only; the file is not changed"
-            )
-            action.setEnabled(False)
-            op = OP_BY_FIELD[spec.field]
-            action.triggered.connect(lambda _=False, op=op: handler(op))
-            bar.addAction(action)
-            actions.append(action)
-        return tuple(actions)
 
     def _sync_transform_bar_mode(self) -> None:
         """Show the transform groups that match the current interaction.
@@ -386,18 +380,20 @@ class TransformMixin:
         handler: Callable[[TransformOp], None],
         scope: str,
         modifier: str,
+        suffix: str = "",
     ) -> _TransformGroup:
         """Build one flip/rotate group on ``bar``, wired to ``handler``.
 
         ``scope`` completes each tooltip so the groups' otherwise-identical glyphs
-        read unambiguously, and ``modifier`` is the key prefix this group answers
-        to (Shift for Block) — named in the tooltip, not registered; see
-        :data:`KEY_FIELDS`.
+        read unambiguously, ``suffix`` adds the line the rearrange groups need to
+        disown the destructive reading, and ``modifier`` is the key prefix this
+        group answers to (Shift for Block) — named in the tooltip, not registered;
+        see :data:`KEY_FIELDS`.
         """
         actions = {}
         for spec in TRANSFORM_SPECS:  # the table is the left-to-right order
             action = QAction(spec.glyph, self)
-            action.setToolTip(f"{spec.label} ({modifier}{spec.key}) — {scope}")
+            action.setToolTip(f"{spec.label} ({modifier}{spec.key}) — {scope}{suffix}")
             action.setEnabled(False)
             op = OP_BY_FIELD[spec.field]
             action.triggered.connect(lambda _=False, op=op: handler(op))
@@ -416,9 +412,9 @@ class TransformMixin:
         different mode.
 
         A disabled button still swallows the key: the selection simply doesn't
-        support that transform, and letting the letter fall through to something
-        else would be a surprise. A key the visible group has no button for (a
-        rotate while rearranging) is passed on untouched.
+        support that transform — non-square tiles have no rotation, whichever
+        group is showing — and letting the letter fall through to something else
+        would be a surprise.
         """
         if ctrl or self._doc is None:
             return False
@@ -432,12 +428,8 @@ class TransformMixin:
     def _transform_key_actions(self, shift: bool) -> dict:
         """The keyed buttons of the group currently on the bar, by Qt key."""
         if self._rearranging:
-            pair = self._rearrange_block_group if shift else self._rearrange_group
-            return {
-                _qt_key(spec): action
-                for spec, action in zip(FLIP_SPECS, pair, strict=True)
-            }
-        if self._edit_mode is EditMode.PIXEL:
+            group = self._rearrange_block_group if shift else self._rearrange_group
+        elif self._edit_mode is EditMode.PIXEL:
             if shift:
                 return {}  # one group, so there is no Block half to shift into
             group = self._pixel_group
@@ -459,7 +451,7 @@ class TransformMixin:
             self._sync_pixel_transform_actions()
             return
         has = self._doc is not None and self._selected_tile is not None
-        square_tiles = has and self._doc.tile_width == self._doc.tile_height
+        square_tiles = has and self._square_tiles()
         for action in self._tile_group.flips:
             action.setEnabled(has)
         for action in self._tile_group.rotates:
@@ -471,6 +463,17 @@ class TransformMixin:
         square_block = geom is not None and geom[0] == geom[1]
         for action in self._block_group.rotates:
             action.setEnabled(square_block and square_tiles)
+
+    def _square_tiles(self) -> bool:
+        """Whether this codec's tile can be turned at all.
+
+        A rotation swaps a tile's width and height, so on a tile that isn't square
+        it could neither be shown in the cell it came from nor written back to the
+        bytes it came from. One rule for every group on the bar, destructive and
+        display-only alike (the rearrange tool's, in
+        :meth:`~celpix.ui.main_window.rearrange.RearrangeMixin._sync_rearrange_actions`).
+        """
+        return self._doc is not None and self._doc.tile_width == self._doc.tile_height
 
     def _block_geometry(self) -> tuple[int, int, int, int] | None:
         """The block a block-transform acts on: ``(cols, rows, x0, y0)`` in cells.

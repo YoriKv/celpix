@@ -39,7 +39,11 @@ from celpix.core.arrangement import (
 from celpix.core.errors import PipelineError
 from celpix.core.index_grid import IndexGrid
 from celpix.core.quantize import QuantizeReport
-from celpix.core.tilemap import apply_flip, coalesce_runs
+from celpix.core.tilemap import (
+    apply_orientation,
+    coalesce_runs,
+    unapply_orientation,
+)
 from celpix.pipeline import importer, pipeline
 from celpix.pipeline.importer import ImportedTiles
 from celpix.project.workspace import (
@@ -452,6 +456,10 @@ class SelectionMixin:
         has = self._selected_tile is not None
         self._sync_edit_actions()
         self._sync_transform_actions()
+        # The rearrange tool's groups act on the selection as well, and they are
+        # not part of the sync above: they sit over *either* edit mode, so nothing
+        # else would tell them a right-drag has just picked a different block.
+        self._sync_rearrange_actions()
         self._palette_from_selection_action.setEnabled(has)
         # Only whole files spawn slices - slices never nest.
         current = self._workspace.current
@@ -598,9 +606,9 @@ class SelectionMixin:
         exist, so the missing positions are the past-the-end tail and nothing
         earlier is dropped.
 
-        Tiles come back in **display orientation** — a tile the map flips is
-        flipped here, once, so everything downstream sees what is on screen.
-        :meth:`_actual_runs` undoes it on the way back out.
+        Tiles come back in **display orientation** — a tile the map mirrors or
+        turns is oriented here, once, so everything downstream sees what is on
+        screen. :meth:`_actual_runs` undoes it on the way back out.
         """
         assert self._doc is not None
         tile_map = self._active_tile_map()
@@ -617,7 +625,9 @@ class SelectionMixin:
         for index in wanted:
             if index not in decoded:
                 break
-            gathered.append(apply_flip(decoded[index], tile_map.flip_of(index)))
+            gathered.append(
+                apply_orientation(decoded[index], tile_map.orient_of(index))
+            )
         return gathered
 
     def _decode_actual_run(self, first: int, count: int) -> list | None:
@@ -1019,11 +1029,12 @@ class SelectionMixin:
     def _actual_runs(self, first: int, tiles: list) -> list[tuple[int, list]]:
         """Split ``tiles`` into ``(actual_first, tiles)`` runs of consecutive homes.
 
-        Also **unflips** on the way past: ``tiles`` arrive in display
-        orientation, and a tile the map shows mirrored has to go back to the
-        file the way the file holds it. Miss this and the mirror bakes itself in
-        — the tile would be flipped on disk *and* still flipped on screen, so the
-        first thing the user would notice is the art coming apart.
+        Also puts the **orientation** back on the way past: ``tiles`` arrive as
+        they are displayed, and a tile the map shows mirrored or turned has to go
+        back to the file the way the file holds it. Miss this and the mirror or
+        turn bakes itself in — the tile would be transformed on disk *and* still
+        transformed on screen, so the first thing the user would notice is the art
+        coming apart.
         """
         tile_map = self._active_tile_map()
         if tile_map.is_identity():
@@ -1031,7 +1042,7 @@ class SelectionMixin:
         homes = tile_map.actual_run(first, len(tiles))
         runs: list[tuple[int, list]] = []
         for index, tile in zip(homes, tiles):
-            tile = apply_flip(tile, tile_map.flip_of(index))
+            tile = unapply_orientation(tile, tile_map.orient_of(index))
             if runs and index == runs[-1][0] + len(runs[-1][1]):
                 runs[-1][1].append(tile)
             else:

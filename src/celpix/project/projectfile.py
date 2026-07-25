@@ -36,7 +36,7 @@ from os.path import (
 from celpix.core.arrangement import BLOCK_ORDERS
 from celpix.core.document import ViewOptions
 from celpix.core.tilemap import TileMap
-from celpix.plugins.base import NO_DECOMPRESS
+from celpix.plugins.base import NO_DECOMPRESS, RAW_READ
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -56,7 +56,14 @@ from celpix.project.workspace import (
 # edited colors on the next save, so the bump makes it warn instead.
 # 5: added the top-level "hidden_pixel_presets" filter. A v4 reader ignores it
 # and would drop it on the next save, so the bump makes it warn instead.
-PROJECT_VERSION = 5
+# 6: a view's per-tile display orientations moved from "tile_flips" (two mirror
+# bits) to "tile_orientations" (those two plus the axis swap a turn needs). A v5
+# reader ignores the new key and would drop the whole rearrangement's orientations
+# on the next save, so the bump makes it warn instead.
+# 7: added a file's "container_id" (which Read/Write pair its bytes go through).
+# A v6 reader ignores it and would drop it on the next save, silently returning
+# the file to plain bytes, so the bump makes it warn instead.
+PROJECT_VERSION = 7
 PROJECT_EXTENSION = ".celpix"
 
 # Fallbacks for a hand-authored project that omits preset ids entirely — the
@@ -136,7 +143,13 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
         "name": entry.name,
         "path": _store_path(entry.path, base_dir),
     }
-    if entry.kind is EntryKind.SLICE:
+    if entry.kind is EntryKind.FILE:
+        # Only when it isn't the plain-bytes default, so detection's usual answer
+        # adds nothing to the file — and so a project written before containers
+        # existed round-trips unchanged.
+        if entry.container_id != RAW_READ:
+            data["container_id"] = entry.container_id
+    elif entry.kind is EntryKind.SLICE:
         data["slice_offset"] = entry.slice_offset
         data["slice_length"] = entry.slice_length
         data["decompress_id"] = entry.decompress_id
@@ -178,13 +191,17 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
             "bitmap_width": view.bitmap_width,
         }
         # Only a document that was actually rearranged carries the map, so an
-        # ordinary project's file is unchanged by the feature existing. The
-        # toggle rides along with it — on its own it says nothing.
+        # ordinary project's file is unchanged by the feature existing. Each half
+        # is written only if it holds something: a rearrangement that just turns
+        # tiles has no positions to store, and one that just moves them no
+        # orientations. The toggle rides along — on its own it says nothing.
         if not view.tile_map.is_identity():
             if view.tile_map.pairs:
                 data["view"]["tile_map"] = [list(p) for p in view.tile_map.pairs]
-            if view.tile_map.flips:
-                data["view"]["tile_flips"] = [list(f) for f in view.tile_map.flips]
+            if view.tile_map.orientations:
+                data["view"]["tile_orientations"] = [
+                    list(o) for o in view.tile_map.orientations
+                ]
             data["view"]["show_rearranged"] = view.show_rearranged
     palette = palette_source_for(entry)
     if palette is not None:
@@ -284,6 +301,10 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         slice_offset=_int(raw.get(offset_key), 0),
         slice_length=_int(raw.get("slice_length"), None),
         decompress_id=_str(raw.get("decompress_id"), NO_DECOMPRESS),
+        # Absent for every project written before containers, and for every file
+        # nothing claimed — both mean plain bytes, which is also what an entry
+        # naming a container the registry no longer has falls back to at load.
+        container_id=_str(raw.get("container_id"), RAW_READ),
         session=_session_from(raw.get("session")),
         pending_view=_view_from(raw.get("view")),
         pending_palette=_palette_from(raw.get("palette"), base_dir),
@@ -323,21 +344,28 @@ def _view_from(raw: object) -> ViewOptions | None:
         block_order=_block_order(raw),
         two_dimensional=bool(raw.get("two_dimensional", defaults.two_dimensional)),
         bitmap_width=_int(raw.get("bitmap_width"), defaults.bitmap_width),
-        tile_map=_tile_map(raw.get("tile_map"), raw.get("tile_flips")),
+        tile_map=_tile_map(raw),
         show_rearranged=bool(raw.get("show_rearranged", defaults.show_rearranged)),
     )
 
 
-def _tile_map(raw: object, flips: object) -> TileMap:
+def _tile_map(raw: dict) -> TileMap:
     """A stored rearrangement, or the identity map for anything unusable.
 
     Hand-edited or truncated pairs can describe something that isn't a
     permutation, which :class:`TileMap` refuses to build. A project that won't
     open is worse than one that opens unrearranged, so a bad map is dropped
     rather than raised — the tiles are all still there, just in file order.
+
+    ``tile_flips`` is where a project written before turning existed keeps its
+    mirrors. The two mirror bits are the low two bits of an orientation and mean
+    exactly what they meant there, so the key is read as one.
     """
+    orientations = raw.get("tile_orientations", raw.get("tile_flips"))
     try:
-        return TileMap.from_pairs(_int_pairs(raw), _int_pairs(flips))
+        return TileMap.from_pairs(
+            _int_pairs(raw.get("tile_map")), _int_pairs(orientations)
+        )
     except (ValueError, TypeError):
         return TileMap()
 

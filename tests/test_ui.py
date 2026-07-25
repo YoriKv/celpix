@@ -8,6 +8,7 @@ from pathlib import Path
 from celpix.core.arrangement import ARRANGEMENT_PRESETS
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
+from celpix.plugins.base import RAW_READ
 from celpix.project.workspace import PaletteMode
 from celpix.ui import render_bridge
 from celpix.ui.main_window import MainWindow
@@ -5016,3 +5017,119 @@ def test_help_menu_opens_the_guide_and_about(qtbot) -> None:
     assert about
     blurb = " ".join(label.text() for label in about[0].findChildren(QLabel))
     assert "Epi" in blurb and __version__ in blurb
+
+
+def test_opening_a_file_detects_its_container(qtbot, tmp_path) -> None:
+    """A file's container is picked from its signature when it is opened."""
+    ines = tmp_path / "cart.nes"
+    chr_rom = bytes((i * 7) & 0xFF for i in range(8192))
+    ines.write_bytes(
+        bytes([*b"NES\x1a", 1, 1, 0, 0]) + bytes(8) + bytes(16384) + chr_rom
+    )
+    plain = tmp_path / "plain.bin"
+    plain.write_bytes(bytes(1024))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(ines))
+    window._load_pixel(str(plain))
+
+    assert window._workspace.find_file(str(ines)).container_id == "read.ines"
+    assert window._workspace.find_file(str(plain)).container_id == RAW_READ
+    # Detection is not cosmetic: the reader skipped to the CHR ROM, so the
+    # document holds the graphics rather than the header and PRG banks.
+    assert window._workspace.find_file(str(ines)).doc.pixel_data == chr_rom
+
+
+def test_change_container_re_reads_the_file(qtbot, tmp_path, monkeypatch) -> None:
+    """Change Container… re-reads through the newly chosen one, in place."""
+    from celpix.ui.container_dialog import ContainerDialog
+
+    cart = tmp_path / "cart.bin"  # named so nothing claims it
+    chr_rom = bytes((i * 3) & 0xFF for i in range(8192))
+    whole = bytes([*b"NES\x1a", 1, 1, 0, 0]) + bytes(8) + bytes(16384) + chr_rom
+    cart.write_bytes(whole)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(cart))
+    entry = window._workspace.find_file(str(cart))
+    # Magic claims it whatever the suffix says, so detection already found iNES.
+    assert entry.container_id == "read.ines"
+
+    monkeypatch.setattr(
+        ContainerDialog, "get_container", staticmethod(lambda *_a, **_k: RAW_READ)
+    )
+    window._change_container_for(entry)
+    assert entry.container_id == RAW_READ
+    assert entry.doc.pixel_data == whole  # plain bytes: the header is back
+
+    # Cancelling changes nothing — not the container, not the loaded bytes.
+    monkeypatch.setattr(
+        ContainerDialog, "get_container", staticmethod(lambda *_a, **_k: None)
+    )
+    window._change_container_for(entry)
+    assert entry.container_id == RAW_READ
+    assert entry.doc.pixel_data == whole
+
+
+def test_change_container_is_file_only(qtbot, tmp_path, monkeypatch) -> None:
+    """A slice has no container of its own, so neither menu offers it one."""
+    from celpix.ui.container_dialog import ContainerDialog
+
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    sliced = window._workspace.add_slice(str(px), "gfx", 64, 64)
+
+    called = []
+    monkeypatch.setattr(
+        ContainerDialog,
+        "get_container",
+        staticmethod(lambda *_a, **_k: called.append(1) or RAW_READ),
+    )
+    window._change_container_for(sliced)
+    assert called == []  # never even asked
+
+    window._activate_entry(sliced)
+    assert not window._change_container_action.isEnabled()
+    window._activate_entry(window._workspace.find_file(str(px)))
+    assert window._change_container_action.isEnabled()
+
+
+def test_file_labels_carry_a_container_hint(qtbot, tmp_path) -> None:
+    """A file read through a container says so; a plain one stays unadorned."""
+    ines = tmp_path / "cart.nes"
+    ines.write_bytes(bytes([*b"NES\x1a", 1, 1, 0, 0]) + bytes(8) + bytes(16384 + 8192))
+    plain = _make_snes_file(tmp_path)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(ines))
+    window._load_pixel(str(plain))
+    panel = window._files_panel
+
+    cart = window._workspace.find_file(str(ines))
+    assert panel._items[cart].text(0) == "cart.nes (iNES)"
+    # The tag is short by design; the tooltip carries the full name.
+    assert "Container iNES file (auto-skip header)" in panel._items[cart].toolTip(0)
+
+    # Plain bytes are the overwhelming majority — no hint, no wasted width.
+    bare = window._workspace.find_file(str(plain))
+    assert panel._items[bare].text(0) == bare.name
+    assert "Container" not in panel._items[bare].toolTip(0)
+
+    # A slice has no container of its own, so it never carries a hint.
+    sliced = window._workspace.add_slice(str(ines), "gfx", 64, 64)
+    assert panel._items[sliced].text(0) == "gfx"
+
+    # The unsaved marker leads, so the hint has to sit inside it, not after it.
+    cart.pixel_revision = cart.pixel_saved_revision + 1
+    panel.refresh_entry(cart)
+    assert panel._items[cart].text(0) == "● cart.nes (iNES)"
+
+    # And the hint tracks the container it names.
+    cart.container_id = RAW_READ
+    panel.refresh_entry(cart)
+    assert panel._items[cart].text(0) == "● cart.nes"

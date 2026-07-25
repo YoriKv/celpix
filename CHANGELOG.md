@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.6 - unreleased
+
+- **Rearrange tool**: rotate tiles and blocks as well as mirroring them, still
+  without changing a byte (square tiles only, as elsewhere).
+- **Containers**: opening a file now picks how it is unwrapped from its extension
+  and magic bytes, and the Files list tags it — `board.tif (TIFF)`. **File ▸
+  Change Container…** (and the Files right-click menu) overrides the choice. New
+  Game Boy container repairs both ROM checksums on write, and a Nintendo 64 one
+  reads `.v64`/`.n64` in native byte order and writes them back as they were.
+- **Plugin examples**: a worked TIFF container example, plus corrections to the
+  compression and container reference plugins and the contracts they document.
+- **Format reference**: new MAME reference notes — its universal tile-layout
+  model, how arcade graphics ROM regions are assembled, and the Atari System 2
+  pixel format.
+
 ## v0.2.5 - 2026-07-25
 
 - **Performance**: big performance improvement pass.

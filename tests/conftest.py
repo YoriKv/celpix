@@ -77,6 +77,23 @@ def _help_dialogs_never_block(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _container_dialog_never_blocks(monkeypatch):
+    """Make the container dialog's ``exec()`` return Rejected instead of blocking.
+
+    Reachable by triggering File ▸ Change Container…, and an ``exec()`` under the
+    offscreen platform never returns. Rejected is the safe default: the caller
+    reads it as a cancel and changes nothing, so a test that lands here by
+    accident does not silently re-read a file through some other container.
+    Tests exercising the flow patch ``get_container`` instead. Guarded like
+    :func:`captured_alerts` so headless suites stay Qt-free.
+    """
+    module = sys.modules.get("celpix.ui.container_dialog")
+    if module is None:
+        return
+    monkeypatch.setattr(module.ContainerDialog, "exec", lambda self: 0, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _close_discards_edits(monkeypatch):
     """Let pytest-qt close windows without the unsaved-changes prompt.
 

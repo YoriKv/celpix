@@ -28,7 +28,12 @@ class INesReader:
     """
 
     info = PluginInfo(
-        id="read.ines", name="iNES file (auto-skip header)", stage=Stage.READ
+        id="read.ines",
+        name="iNES file (auto-skip header)",
+        stage=Stage.READ,
+        extensions=(".nes",),
+        magic=((0, _INES_MAGIC),),
+        short_name="iNES",
     )
 
     def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
@@ -59,7 +64,15 @@ class SmdReader:
     reader); this reader always deinterleaves.
     """
 
-    info = PluginInfo(id="read.smd", name="Sega .smd (deinterleave)", stage=Stage.READ)
+    # Suffix only: the 512-byte header carries no marker this reader can assert
+    # on, so the name is the whole of what identifies a .smd.
+    info = PluginInfo(
+        id="read.smd",
+        name="Sega .smd (deinterleave)",
+        stage=Stage.READ,
+        extensions=(".smd",),
+        short_name="SMD",
+    )
 
     _HEADER = 512
     _BLOCK = 16384
@@ -94,10 +107,14 @@ class SnesInterleavedReader:
     deinterleaves — use it only on images known to be interleaved.
     """
 
+    # Deliberately unsignatured, so it is never auto-detected: `.sfc`/`.smc` say
+    # nothing about interleaving and an interleaved image carries no marker.
+    # Deinterleaving a plain image scrambles it, so this one is picked by hand.
     info = PluginInfo(
         id="read.snes-interleaved",
         name="SNES interleaved ROM (deinterleave)",
         stage=Stage.READ,
+        short_name="Interleaved",
     )
 
     _HALF = 0x8000  # half of a 64 KB HiROM bank

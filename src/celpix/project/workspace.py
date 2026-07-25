@@ -50,7 +50,8 @@ from celpix.core.context import (
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import Stage
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_COMPRESS, NO_DECOMPRESS, FileRef
+from celpix.plugins.base import NO_COMPRESS, NO_DECOMPRESS, RAW_READ, FileRef
+from celpix.plugins.detect import container_ids
 from celpix.plugins.registry import Registry
 
 
@@ -246,6 +247,13 @@ class Entry:
     slice_offset: int = 0
     slice_length: int | None = None
     decompress_id: str = NO_DECOMPRESS
+    # The container this file is read and written through, picked by signature
+    # when the file is opened and changeable afterwards. FILE-only: a slice is a
+    # byte range of its *parent*, and a container that relocates or rewrites
+    # bytes (a header skip, a deinterleave) would leave the slice's file-absolute
+    # offset pointing somewhere else — so slices stay on plain bytes and read
+    # through their parent's coordinates.
+    container_id: str = RAW_READ
     doc: Document | None = None  # lazy: loaded on first activation
     session: EntrySession | None = None
     # Unsaved in-memory changes, tracked **per pathway** because the two write to
@@ -670,11 +678,18 @@ def pixel_config_for(
     registered compressor (view-only compression format) yields a config with
     ``write_enabled=False`` — the slice loads and views fine, it just can't be
     written back.
+
+    A whole file additionally goes through its **container** (``Entry.container_id``
+    and the ``read.X`` ↔ ``write.X`` half paired with it); a slice does not, for
+    the reason given on that field.
     """
     if entry.kind is EntryKind.FILE:
+        read_id, write_id = container_ids(registry, entry.container_id)
         return PathwayConfig(
             source=FileRef(entry.path, offset=header_offset),
             interpret_preset_id=preset_id,
+            read_id=read_id,
+            write_id=write_id,
         )
     compress_id = entry.decompress_id.replace("decompress.", "compress.", 1)
     write_enabled = True

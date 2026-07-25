@@ -36,6 +36,15 @@ from celpix.core.palette import Palette
 NO_DECOMPRESS = "decompress.none"
 NO_COMPRESS = "compress.none"
 
+# The plain-bytes Read/Write pair — the container equivalent of the pass-through
+# above, and named here for the same reason: "no container" is the fallback every
+# detection lands on when nothing claims a file, so the host has to know it by
+# name. A Read/Write pair is matched by the ``read.X`` ⇄ ``write.X`` id
+# convention (:func:`~celpix.plugins.detect.container_write_id`), mirroring
+# ``decompress.X`` ⇄ ``compress.X``.
+RAW_READ = "read.raw-file"
+RAW_WRITE = "write.raw-file"
+
 
 @dataclass(frozen=True)
 class FileRef:
@@ -81,12 +90,36 @@ class PluginInfo:
     two: a scheme *with* an end marker that didn't reach one was cut short and
     can be fixed by widening the window, while one without simply decodes as far
     as it is fed and always will.
+
+    ``extensions`` and ``magic`` are **Read-only** and together form a container's
+    *signature* — what makes opening a file pick its container automatically
+    instead of asking. ``extensions`` are lowercase suffixes including the dot
+    (``(".nes",)``); ``magic`` is a tuple of ``(offset, bytes)`` probes, any one of
+    which matching is a hit (a format with two byte orders declares both). They
+    are declared rather than detected by a callback because detection has to run
+    over every registered container before a file is open, and a data comparison
+    can do that without executing anyone's code.
+
+    A container that declares ``magic`` is matched **only** by it: the bytes are
+    an assertion about the format, so a ``.nes`` file without ``NES\\x1a`` is not
+    an iNES file whatever it is called. A container with no ``magic`` falls back
+    to matching on ``extensions`` alone, which is the best some wrappers offer
+    (Sega ``.smd`` carries no reliable marker).
+
+    ``short_name`` is a compact form of ``name`` for places that show a plugin
+    *inline with other text* rather than on a row of its own — the Files list
+    tags each file with its container, where the full "Game Boy ROM (checksum
+    repair on write)" would bury the filename it is annotating. Empty means
+    ``name`` is already short enough.
     """
 
     id: str
     name: str
     stage: Stage
     self_delimiting: bool = True
+    extensions: tuple[str, ...] = ()
+    magic: tuple[tuple[int, bytes], ...] = ()
+    short_name: str = ""
 
 
 @runtime_checkable

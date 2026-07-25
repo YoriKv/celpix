@@ -10,6 +10,12 @@ the pixel format then interprets; Compress is its inverse, run on save so edits
 write back packed. A view-only format may ship Decompress alone (drop the
 Compress class and its register call); such a format opens read-only.
 
+**Name the two halves ``decompress.<scheme>`` and ``compress.<scheme>``.** Only
+the decompressor is ever picked in the UI — celPix finds the matching compressor
+by swapping that prefix. A compressor named anything else is never found, and a
+slice using the scheme silently opens without write support instead of
+reporting an error.
+
 This toy scheme is byte run-length encoding: the stream is a series of
 ``(count, value)`` pairs, ``count`` in 1..255, terminated by a ``count`` of 0.
 Real schemes (LZ, Konami RLE) are more involved, but the plumbing is identical.
@@ -18,10 +24,11 @@ Real schemes (LZ, Konami RLE) are more involved, but the plumbing is identical.
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
+    KEY_DECOMPRESS_PARTIAL,
     PipelineContext,
 )
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
+from celpix.plugins import PluginInfo
 
 
 class ExampleRleDecompress:
@@ -30,13 +37,29 @@ class ExampleRleDecompress:
         id="decompress.example-rle",
         name="Example byte RLE",
         stage=Stage.DECOMPRESS,
+        # Decompress-only, and a property of the *scheme*: this stream carries a
+        # terminator, so its extent is knowable from the data alone. Set False
+        # for a scheme that ends only where something outside it says (a slice
+        # length, a container's byte count) — celPix words "the decode stopped
+        # here" differently for the two, and Scan can only find the first kind.
+        self_delimiting=True,
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
         """Expand ``(count, value)`` pairs until the 0-count terminator.
 
-        celPix hands over the visible byte window, which may end mid-stream, so
-        decode defensively and report two things back through ``ctx``:
+        **Strict by default: raise when the structure does not end inside the
+        buffer.** That is what makes "these bytes are an Example RLE structure"
+        a real question — the Scan tool walks the file trying a decode at every
+        offset and treats a success as a hit, so a decompressor that returns
+        best-effort output for arbitrary bytes reports a structure everywhere.
+
+        celPix asks for a lenient decode by setting ``KEY_DECOMPRESS_PARTIAL``
+        when — and only when — it knowingly hands over a bounded window that may
+        cut a structure short (the live preview). Honour it by returning the
+        valid prefix; structurally corrupt data should still raise either way.
+
+        Two things go back through ``ctx``:
 
         - ``KEY_COMPRESSED_SIZE`` — bytes consumed, i.e. the packed structure's
           true length; a save-back must fit this slot.
@@ -56,12 +79,16 @@ class ExampleRleDecompress:
                 break
             out += bytes([data[i + 1]]) * count
             i += 2
+        if not complete and not ctx.get(KEY_DECOMPRESS_PARTIAL):
+            raise ValueError("no terminator — no Example RLE structure here")
         ctx.set(KEY_COMPRESSED_SIZE, i)
         ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
         return bytes(out)
 
 
 class ExampleRleCompress:
+    # Same scheme name as the decompressor above — that pairing is how celPix
+    # finds this half (see the module docstring).
     info = PluginInfo(
         id="compress.example-rle",
         name="Example byte RLE",

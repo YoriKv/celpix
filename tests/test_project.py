@@ -8,7 +8,7 @@ from os.path import normcase, samefile
 from celpix.core.document import Document, ViewOptions
 from celpix.core.palette import Palette
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import FileRef
+from celpix.plugins.base import RAW_READ, FileRef
 from celpix.project.projectfile import (
     PROJECT_VERSION,
     ProjectError,
@@ -393,3 +393,25 @@ def test_replace_swaps_list_and_notifies(tmp_path) -> None:
     assert ws.current is new
     assert removed == [old]
     assert added == [new]
+
+
+def test_container_round_trips_and_the_default_is_omitted(tmp_path) -> None:
+    # A file's container is part of how it is read, so it has to survive a
+    # project — but the plain-bytes default is left out entirely, so projects
+    # written before containers existed keep round-tripping unchanged.
+    rom = tmp_path / "game.nes"
+    rom.write_bytes(b"\x00" * 32)
+    ws = Workspace()
+    plain = ws.open_file(str(rom))
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    assert (
+        "container_id"
+        not in json.loads(project.read_text(encoding="utf-8"))["entries"][0]
+    )
+    assert load_project(str(project)).entries[0].container_id == RAW_READ
+
+    plain.container_id = "read.ines"
+    save_project(ws, str(project))
+    assert load_project(str(project)).entries[0].container_id == "read.ines"

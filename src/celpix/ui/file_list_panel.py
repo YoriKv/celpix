@@ -32,6 +32,9 @@ from PySide6.QtWidgets import QMenu, QTreeWidget, QTreeWidgetItem, QVBoxLayout, 
 
 from celpix import resources
 from celpix.core.address import format_hex
+from celpix.core.errors import Stage
+from celpix.plugins.detect import container_label
+from celpix.plugins.registry import Registry
 from celpix.project.workspace import Entry, EntryKind, entry_reference_missing
 from celpix.ui.widgets import signals_blocked, take_editing_shortcut
 
@@ -104,6 +107,7 @@ class FileListPanel(QWidget):
     new_slice_from_view_requested = Signal(object)  # Entry — slice the viewport
     new_slice_from_selection_requested = Signal(object)  # Entry — slice the tiles
     new_bookmark_requested = Signal(object)  # Entry (a FILE) — bookmark the view
+    change_container_requested = Signal(object)  # Entry (a FILE) — repick its container
     use_palette_requested = Signal(object)  # Entry (a PALETTE) — apply to the view
     edit_slice_requested = Signal(object)  # Entry (a SLICE) — edit its coordinates
     jump_to_source_requested = Signal(object)  # Entry (a SLICE) — show it in its parent
@@ -111,8 +115,13 @@ class FileListPanel(QWidget):
     bookmark_as_palette_requested = Signal(object)  # Entry (BOOKMARK) — offset palette
     rename_committed = Signal(object, str)  # Entry, new name — a finished rename
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, registry: Registry | None = None, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
+        # Only to name a file's container in its label; None simply omits the
+        # hint, which keeps the panel constructible on its own.
+        self._registry = registry
         self._tree = _EntryTree()
         self._tree.setHeaderHidden(True)
         self._tree.setIconSize(QSize(_ICON_W, _ICON_H))  # tighten icon-to-name gap
@@ -289,13 +298,34 @@ class FileListPanel(QWidget):
                 self._tree.setCurrentItem(item)
 
     # -- presentation --------------------------------------------------------
+    def _container_hint(self, entry: Entry) -> str:
+        """`` (TIFF)`` for a file read through a container; ``""`` otherwise.
+
+        Only for whole files (nothing else has a container), and only when one is
+        actually in use: tagging the great majority of files "(Raw binary file)"
+        would cost every row width to say nothing. So the hint's presence is
+        itself the signal that this file is not being read literally.
+        """
+        if self._registry is None or entry.kind is not EntryKind.FILE:
+            return ""
+        label = container_label(self._registry, entry.container_id)
+        return f" ({label})" if label else ""
+
     def _refresh_item(self, entry: Entry, item: QTreeWidgetItem) -> None:
         # The label is just the name (default slice names already read as
-        # "offset (length) compression"); coordinates live in the tooltip so a
-        # custom-named slice stays inspectable without cluttering the list.
+        # "offset (length) compression"), plus the container hint on a file;
+        # coordinates live in the tooltip so a custom-named slice stays
+        # inspectable without cluttering the list.
         unsaved = entry.pixel_dirty or entry.palette_dirty
-        item.setText(0, f"● {entry.name}" if unsaved else entry.name)
+        name = f"{entry.name}{self._container_hint(entry)}"
+        item.setText(0, f"● {name}" if unsaved else name)
         tip = entry.path
+        if entry.kind is EntryKind.FILE and self._registry is not None:
+            # The full container name, since the label only had room for a tag.
+            full = container_label(self._registry, entry.container_id)
+            if full:
+                plugin = self._registry.plugin(Stage.READ, entry.container_id)
+                tip += f"\nContainer {plugin.info.name}"
         if entry.kind is EntryKind.SLICE:
             # A picture glyph marks a slice as its own little graphic, telling it
             # apart from the ribbon-marked bookmarks it sits among.
@@ -519,6 +549,13 @@ class FileListPanel(QWidget):
             bookmark = menu.addAction("New Bookmark")
             bookmark.triggered.connect(lambda: self.new_bookmark_requested.emit(entry))
             bookmark.setEnabled(sliceable)
+            menu.addSeparator()
+            # Always offered, and needs no document: correcting the container is
+            # exactly what a file that failed to make sense needs.
+            container = menu.addAction("Change Container…")
+            container.triggered.connect(
+                lambda: self.change_container_requested.emit(entry)
+            )
             menu.addSeparator()
         elif entry.kind is EntryKind.SLICE:
             # A slice's primary navigation action: reopen its region in the

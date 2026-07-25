@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError
 from celpix.core.palette import Palette
+from celpix.plugins.detect import detect_container
 from celpix.plugins.discovery import PluginLoadIssue
 from celpix.plugins.registry import Registry, default_registry
 from celpix.project import projectfile
@@ -379,7 +380,7 @@ class MainWindow(
     # -- construction ------------------------------------------------------
     def _build_files_dock(self) -> None:
         """The left-side open-files dock, mirroring the workspace model."""
-        self._files_panel = FileListPanel()
+        self._files_panel = FileListPanel(self._registry)
         self._files_panel.entry_activated.connect(self._activate_entry)
         self._files_panel.remove_requested.connect(self._remove_entry)
         self._files_panel.write_requested.connect(self._write_entry_checked)
@@ -395,6 +396,7 @@ class MainWindow(
             self._new_slice_from_selection_for
         )
         self._files_panel.new_bookmark_requested.connect(self._new_bookmark_for)
+        self._files_panel.change_container_requested.connect(self._change_container_for)
         self._files_panel.use_palette_requested.connect(self._use_palette_entry)
         self._files_panel.edit_slice_requested.connect(self._edit_slice)
         self._files_panel.jump_to_source_requested.connect(self._jump_to_slice_source)
@@ -709,6 +711,15 @@ class MainWindow(
         self._new_bookmark_action.setEnabled(False)
         file_menu.addAction(self._new_bookmark_action)
 
+        self._change_container_action = QAction("Change Container…", self)
+        self._change_container_action.setToolTip(
+            "Change how this file is unwrapped before decoding:\n"
+            "a header to skip, an interleave to undo, or none at all"
+        )
+        self._change_container_action.triggered.connect(self._change_container_current)
+        self._change_container_action.setEnabled(False)
+        file_menu.addAction(self._change_container_action)
+
         file_menu.addSeparator()
 
         self._write_action = QAction("Write", self)
@@ -903,12 +914,22 @@ class MainWindow(
         dropped file behaves exactly like an opened one. A file that is
         already open activates its existing entry - identity is the path -
         so only a genuinely new entry becomes an undoable step.
+
+        The container is picked here, once, from the file's name and leading
+        bytes: it is a property of the file, so detecting it at open time means
+        every later load reads through the same one, and the answer is on the
+        entry where the user can see and change it.
         """
         existing = self._workspace.find_file(path)
         if existing is not None:
             self._activate_entry(existing)
             return
-        entry = Entry(name=Path(path).name, kind=EntryKind.FILE, path=path)
+        entry = Entry(
+            name=Path(path).name,
+            kind=EntryKind.FILE,
+            path=path,
+            container_id=detect_container(self._registry, path),
+        )
         self._push_command(AddEntryCommand(self, entry, f"open {entry.name}"))
 
     # -- reaching the user ------------------------------------------------------

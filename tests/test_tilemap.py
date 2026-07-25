@@ -8,6 +8,8 @@ is read and written *there*, and the bytes land at its real home.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
@@ -19,16 +21,23 @@ from celpix.core.tilemap import (
     TILE_FLIP_BOTH,
     TILE_FLIP_H,
     TILE_FLIP_V,
+    TILE_ORIENT_MASK,
+    TILE_ROTATE_CCW,
+    TILE_ROTATE_CW,
+    TILE_TRANSPOSE,
     TileMap,
-    apply_flip,
+    apply_orientation,
     coalesce_runs,
+    compose_orientation,
+    invert_orientation,
+    unapply_orientation,
 )
 from celpix.ui.main_window import MainWindow
 from celpix.ui.main_window.selection import SelectionShape
 
-# transform.FLIP_H is a destructive TransformOp; tilemap.FLIP_H is the display
-# flip bit. Aliased so the two never read as the same thing.
-from celpix.ui.main_window.transform import OP_FLIP_H
+# transform.OP_* are destructive TransformOps; tilemap's flags are the display
+# orientation. Kept apart so the two never read as the same thing.
+from celpix.ui.main_window.transform import OP_FLIP_H, OP_ROTATE_CW
 from celpix.ui.tools import EditMode, Tool
 
 
@@ -82,37 +91,101 @@ def test_bounded_drops_whole_cycles_that_reach_past_the_end() -> None:
 
 
 def test_a_flip_toggles_and_follows_its_tile_through_a_swap() -> None:
-    """Flips are keyed by the tile, not the display position — you flipped it to
-    make the art read, so moving it has to keep it reading."""
-    flipped = TileMap().flip([3], TILE_FLIP_H)
-    assert flipped.flip_of(3) == TILE_FLIP_H and not flipped.is_identity()
-    assert flipped.flip([3], TILE_FLIP_H).is_identity()  # the buttons are two-state
-    assert flipped.flip([3], TILE_FLIP_V).flip_of(3) == TILE_FLIP_BOTH
+    """Orientations are keyed by the tile, not the display position — you turned
+    it to make the art read, so moving it has to keep it reading."""
+    flipped = TileMap().oriented([3], TILE_FLIP_H)
+    assert flipped.orient_of(3) == TILE_FLIP_H and not flipped.is_identity()
+    assert flipped.oriented([3], TILE_FLIP_H).is_identity()  # the buttons compose
+    assert flipped.oriented([3], TILE_FLIP_V).orient_of(3) == TILE_FLIP_BOTH
     moved = flipped.swap(3, 20)
-    assert moved.flip_of(3) == TILE_FLIP_H  # still the tile's own property
+    assert moved.orient_of(3) == TILE_FLIP_H  # still the tile's own property
     assert moved.virtual(3) == 20  # ...now shown over here
 
 
-def test_a_flip_alone_is_not_identity() -> None:
-    """A map with no moves still has to take the gather path, or the flip would
-    silently not render."""
-    assert not TileMap().flip([1], TILE_FLIP_V).is_identity()
+def test_an_orientation_alone_is_not_identity() -> None:
+    """A map with no moves still has to take the gather path, or the orientation
+    would silently not render."""
+    assert not TileMap().oriented([1], TILE_FLIP_V).is_identity()
 
 
-def test_bounded_drops_an_out_of_range_flip() -> None:
-    assert TileMap().flip([2, 40], TILE_FLIP_H).bounded(10) == TileMap().flip(
+def test_bounded_drops_an_out_of_range_orientation() -> None:
+    assert TileMap().oriented([2, 40], TILE_FLIP_H).bounded(10) == TileMap().oriented(
         [2], TILE_FLIP_H
     )
 
 
-def test_apply_flip_is_its_own_inverse() -> None:
-    """One function serves read and write, so the two directions cannot disagree."""
-    grid = IndexGrid(8, 8)
-    for x in range(8):
-        grid.set(x, 0, x)
-    for flags in (TILE_FLIP_H, TILE_FLIP_V, TILE_FLIP_BOTH):
-        assert apply_flip(apply_flip(grid, flags), flags).data == grid.data
-    assert apply_flip(grid, TILE_FLIP_H).get(7, 0) == 0
+def test_four_quarter_turns_come_back_to_where_they_started() -> None:
+    """The buttons compose onto what a tile already carries, so pressing one
+    repeatedly walks the orientations rather than fighting the stored flags."""
+    tile_map = TileMap()
+    for _ in range(3):
+        tile_map = tile_map.oriented([1], TILE_ROTATE_CW)
+        assert not tile_map.is_identity()
+    assert tile_map.oriented([1], TILE_ROTATE_CW).is_identity()
+
+
+def _ramp(width: int = 8, height: int = 8) -> IndexGrid:
+    """A grid whose every pixel is distinct, so any transform is detectable."""
+    grid = IndexGrid(width, height)
+    for y in range(height):
+        for x in range(width):
+            grid.set(x, y, (y * width + x) & 0xFF)
+    return grid
+
+
+def test_the_orientations_are_a_group_over_the_pixels_they_move() -> None:
+    """The whole basis of composing: one stored orientation has to do exactly what
+    the sequence of button presses that built it would have done, for every pair of
+    the eight. Get this wrong and a second press on a turned tile mirrors the wrong
+    axis — and the map, being canonical, has no record of how it got there."""
+    grid = _ramp()
+    every = range(TILE_ORIENT_MASK + 1)
+    for first in every:
+        for second in every:
+            once = apply_orientation(grid, compose_orientation(second, first))
+            twice = apply_orientation(apply_orientation(grid, first), second)
+            assert once.data == twice.data, (first, second)
+    # ...and all eight are distinct, so none of the three bits is redundant.
+    assert len({bytes(apply_orientation(grid, f).data) for f in every}) == 8
+
+
+def test_the_two_rotations_are_the_transforms_they_are_named_for() -> None:
+    """The display orientation and the destructive transform must agree, or the
+    same button would turn a tile one way in the file and the other on screen."""
+    grid = _ramp()
+    assert (
+        apply_orientation(grid, TILE_ROTATE_CW).data == transform.rotate_cw(grid).data
+    )
+    assert (
+        apply_orientation(grid, TILE_ROTATE_CCW).data == transform.rotate_ccw(grid).data
+    )
+
+
+def test_unapply_orientation_returns_every_orientation_to_storage() -> None:
+    """The write path's half. A mirror is its own inverse but a turn is not, so
+    the read and write directions are two functions that must not disagree: an
+    edit made on a turned tile has to land back the way the file holds it."""
+    grid = _ramp()
+    for flags in range(TILE_ORIENT_MASK + 1):
+        shown = apply_orientation(grid, flags)
+        assert unapply_orientation(shown, flags).data == grid.data
+        assert compose_orientation(invert_orientation(flags), flags) == 0
+
+
+def test_a_turn_is_ignored_on_a_tile_that_is_not_square() -> None:
+    """A turn would swap the tile's dimensions, so it could neither be shown in
+    the cell it came from nor written back to the bytes it came from. It is
+    ignored — in *both* directions, or the round trip would not be exact — and
+    kept in the map, so a codec with square tiles brings it back."""
+    tall = _ramp(8, 16)
+    assert apply_orientation(tall, TILE_ROTATE_CW).data == tall.data
+    assert unapply_orientation(tall, TILE_ROTATE_CW).data == tall.data
+    assert apply_orientation(tall, TILE_TRANSPOSE).data == tall.data
+    # Mirrors are unaffected: they keep the tile's shape.
+    assert (
+        apply_orientation(tall, TILE_FLIP_H).data
+        == transform.flip_horizontal(tall).data
+    )
 
 
 def test_coalesce_runs_merges_small_gaps_but_not_distant_tiles() -> None:
@@ -232,7 +305,7 @@ def test_a_flipped_tile_renders_mirrored_but_keeps_its_bytes(qtbot, tmp_path) ->
     window = _window(qtbot, tmp_path)
     stored = window._decode_actual_run(3, 1)[0]
     before = _tile_bytes(window, 3)
-    window._set_tile_map(TileMap().flip([3], TILE_FLIP_H))
+    window._set_tile_map(TileMap().oriented([3], TILE_FLIP_H))
     assert window._decode_run(3, 1)[0] == transform.flip_horizontal(stored)
     assert _tile_bytes(window, 3) == before  # display only — nothing written
 
@@ -242,7 +315,7 @@ def test_an_edit_on_a_flipped_tile_lands_unflipped(qtbot, tmp_path) -> None:
     tile: the *stored* top-right must change. Miss the unflip and the mirror
     bakes into the file — flipped on disk and still flipped on screen."""
     window = _window(qtbot, tmp_path)
-    window._set_tile_map(TileMap().flip([3], TILE_FLIP_H))
+    window._set_tile_map(TileMap().oriented([3], TILE_FLIP_H))
     shown = window._decode_run(3, 1)[0]
     edited = type(shown)(shown.width, shown.height, bytes(shown.data))
     edited.set(0, 0, 7)
@@ -251,31 +324,77 @@ def test_an_edit_on_a_flipped_tile_lands_unflipped(qtbot, tmp_path) -> None:
     assert window._decode_run(3, 1)[0].get(0, 0) == 7  # reads back where painted
 
 
+def test_a_turned_tile_renders_rotated_and_an_edit_lands_unturned(
+    qtbot, tmp_path
+) -> None:
+    """The flip test's harder twin. A quarter turn is not its own inverse, so the
+    write path has to turn back the *other* way: paint the displayed top-left of a
+    tile shown rotated right, and the pixel the file gains is its bottom-left. Get
+    the direction wrong and the edit lands at 180° to where it belongs."""
+    window = _window(qtbot, tmp_path)
+    stored = window._decode_actual_run(3, 1)[0]
+    before = _tile_bytes(window, 3)
+    window._set_tile_map(TileMap().oriented([3], TILE_ROTATE_CW))
+    shown = window._decode_run(3, 1)[0]
+    assert shown == transform.rotate_cw(stored)
+    assert _tile_bytes(window, 3) == before  # display only — nothing written
+
+    edited = type(shown)(shown.width, shown.height, bytes(shown.data))
+    edited.set(0, 0, 7)
+    window._apply_tile_edit(3, [edited], "paint")
+    assert window._decode_actual_run(3, 1)[0].get(0, 7) == 7  # stored, turned back
+    assert window._decode_run(3, 1)[0].get(0, 0) == 7  # reads back where painted
+
+
+def test_the_rotate_buttons_need_a_square_tile(qtbot, tmp_path) -> None:
+    """A turn swaps the tile's width and height, so on a tile that isn't square it
+    has nowhere to land — the mirrors are unaffected. Same rule as the destructive
+    groups, and it has to reach the block pair as well as the per-tile one."""
+    window = _window(qtbot, tmp_path)
+    window._set_rearranging(True)
+    window._select_tiles(0, 0)
+    tile, block = window._rearrange_group, window._rearrange_block_group
+    assert tile.rotate_cw.isEnabled() and block.rotate_cw.isEnabled()
+
+    window._doc.tile_height = 16  # an 8×16 codec's tile
+    window._sync_rearrange_actions()
+    assert tile.flip_h.isEnabled() and block.flip_h.isEnabled()
+    assert not tile.rotate_cw.isEnabled() and not block.rotate_ccw.isEnabled()
+    # ...and the key can't get past the disabled button either.
+    assert window._transform_key(Qt.Key.Key_C, False, False)
+    assert window._tile_map.is_identity()
+
+
 def test_flipping_the_selection_is_an_undoable_step(qtbot, tmp_path) -> None:
     window = _window(qtbot, tmp_path)
     window._set_rearranging(True)
     window._select_tiles(2, 3)
-    window._flip_rearranged(TILE_FLIP_V)
-    assert window._tile_map == TileMap().flip([2, 3], TILE_FLIP_V)
+    window._orient_rearranged(TILE_FLIP_V)
+    assert window._tile_map == TileMap().oriented([2, 3], TILE_FLIP_V)
     window._undo_stack.undo()
     assert window._tile_map.is_identity()
 
 
-def test_h_and_v_keys_flip_the_carried_tile_and_commit_with_the_drop(
+def test_transform_keys_orient_the_carried_tile_and_commit_with_the_drop(
     qtbot, tmp_path
 ) -> None:
-    """Mid-drag the keys retarget to what is in the air, and the flip rides along
-    to the drop as part of that one step."""
+    """Mid-drag the keys retarget to what is in the air, and the orientation rides
+    along to the drop as part of that one step. Two presses compose into the single
+    orientation that gets stored, so the second acts on the *displayed* tile."""
     window = _window(qtbot, tmp_path)
     window._set_rearranging(True)
     window._on_rearrange_started(0)
     assert window._transform_key(Qt.Key.Key_H, False, False)
-    assert window._rearrange_drag.flip == TILE_FLIP_H
+    assert window._rearrange_drag.orient == TILE_FLIP_H
+    assert window._transform_key(Qt.Key.Key_C, False, False)  # rotate right
+    want = compose_orientation(TILE_ROTATE_CW, TILE_FLIP_H)
+    assert want & TILE_TRANSPOSE  # a mirror plus a turn is still a turn
+    assert window._rearrange_drag.orient == want
     assert window._tile_map.is_identity()  # pending, not committed
     window._on_rearrange_dropped(3)
-    assert window._tile_map == TileMap().swap(0, 3).flip([0], TILE_FLIP_H)
+    assert window._tile_map == TileMap().swap(0, 3).oriented([0], want)
     window._undo_stack.undo()
-    assert window._tile_map.is_identity()  # move and flip revert together
+    assert window._tile_map.is_identity()  # move and orientation revert together
 
 
 def test_picking_a_tile_up_and_putting_it_back_flipped_is_a_step(
@@ -288,7 +407,7 @@ def test_picking_a_tile_up_and_putting_it_back_flipped_is_a_step(
     window._on_rearrange_started(5)
     window._transform_key(Qt.Key.Key_V, False, False)
     window._on_rearrange_dropped(5)  # back where it came from
-    assert window._tile_map == TileMap().flip([5], TILE_FLIP_V)
+    assert window._tile_map == TileMap().oriented([5], TILE_FLIP_V)
 
 
 def test_the_flip_key_follows_the_group_on_the_transform_bar(qtbot, tmp_path) -> None:
@@ -304,31 +423,36 @@ def test_the_flip_key_follows_the_group_on_the_transform_bar(qtbot, tmp_path) ->
     window._set_rearranging(True)
     after_edit = _tile_bytes(window, 2)
     assert window._transform_key(Qt.Key.Key_H, False, False)
-    assert window._tile_map == TileMap().flip([2], TILE_FLIP_H)
+    assert window._tile_map == TileMap().oriented([2], TILE_FLIP_H)
     assert _tile_bytes(window, 2) == after_edit  # no byte moved this time
 
 
-def test_a_rearranged_block_flip_looks_like_the_destructive_one(
-    qtbot, tmp_path
+@pytest.mark.parametrize("op", [OP_FLIP_H, OP_ROTATE_CW])
+def test_a_rearranged_block_transform_looks_like_the_destructive_one(
+    qtbot, tmp_path, op
 ) -> None:
     """The whole promise of the feature: the picture reads identically to a real
-    block flip, while every byte stays exactly where and how the file had it."""
+    block transform, while every byte stays exactly where and how the file had it.
+    Both halves have to agree for a rotation too — the tiles' own turn *and* the
+    permutation of their positions, which is where a wrong turn direction shows up
+    as a block that comes apart rather than one that turns."""
     window = _window(qtbot, tmp_path)
     window._block_cols.setValue(2)
     window._block_rows.setValue(2)
     window._select_tiles(0, 0)  # a lone tile expands to its 2x2 arrangement block
 
-    # What a *destructive* block flip would put on screen, in a throwaway window.
+    # What the *destructive* block transform would put on screen, in a throwaway
+    # window.
     reference = _window(qtbot, tmp_path)
     reference._block_cols.setValue(2)
     reference._block_rows.setValue(2)
     reference._select_tiles(0, 0)
-    reference._transform_block(OP_FLIP_H)
+    reference._transform_block(op)
     want = reference._decode_run(0, 4)
 
     before = [_tile_bytes(window, i) for i in range(4)]
     window._set_rearranging(True)
-    window._flip_rearranged_block(OP_FLIP_H)
+    window._orient_rearranged_block(op)
     assert window._decode_run(0, 4) == want  # same picture...
     assert [_tile_bytes(window, i) for i in range(4)] == before  # ...untouched bytes
 
@@ -341,8 +465,8 @@ def test_a_block_flip_permutes_positions_and_flips_the_tiles(qtbot, tmp_path) ->
     window._block_rows.setValue(2)
     window._select_tiles(0, 0)
     window._set_rearranging(True)
-    window._flip_rearranged_block(OP_FLIP_H)
-    assert window._tile_map == TileMap().swap(0, 1).swap(2, 3).flip(
+    window._orient_rearranged_block(OP_FLIP_H)
+    assert window._tile_map == TileMap().swap(0, 1).swap(2, 3).oriented(
         [0, 1, 2, 3], TILE_FLIP_H
     )
     window._undo_stack.undo()
@@ -360,7 +484,7 @@ def test_shift_h_and_v_drive_the_block_flip(qtbot, tmp_path) -> None:
     # Bare H is still the per-tile flip, which never moves anything.
     window._undo_stack.undo()
     assert window._transform_key(Qt.Key.Key_H, False, False)
-    assert not window._tile_map.pairs and window._tile_map.flips
+    assert not window._tile_map.pairs and window._tile_map.orientations
 
 
 def test_a_rearrange_drop_is_one_undo_step(qtbot, tmp_path) -> None:
@@ -590,27 +714,50 @@ def test_the_map_rides_the_entry_and_survives_a_switch(qtbot, tmp_path) -> None:
 
 def test_a_map_survives_a_project_round_trip(qtbot, tmp_path) -> None:
     window = _window(qtbot, tmp_path)
-    window._set_tile_map(TileMap().swap(2, 9).flip([5], TILE_FLIP_BOTH))
+    stored = (
+        TileMap()
+        .swap(2, 9)
+        .oriented([5], TILE_FLIP_BOTH)
+        .oriented([7], TILE_ROTATE_CCW)
+    )
+    window._set_tile_map(stored)
     window._show_rearranged_action.setChecked(False)
     path = str(tmp_path / "p.celpix")
     window._save_project_to(path)
     reopened = MainWindow()
     qtbot.addWidget(reopened)
     reopened._load_project(path)
-    assert reopened._tile_map == TileMap().swap(2, 9).flip([5], TILE_FLIP_BOTH)
+    assert reopened._tile_map == stored
     assert not reopened._show_rearranged
 
 
-def test_flips_alone_survive_a_project_round_trip(qtbot, tmp_path) -> None:
+def test_orientations_alone_survive_a_project_round_trip(qtbot, tmp_path) -> None:
     """A map with no moves still has to persist — `tile_map` would be empty."""
     window = _window(qtbot, tmp_path)
-    window._set_tile_map(TileMap().flip([4], TILE_FLIP_V))
+    window._set_tile_map(TileMap().oriented([4], TILE_FLIP_V))
     path = str(tmp_path / "p.celpix")
     window._save_project_to(path)
     reopened = MainWindow()
     qtbot.addWidget(reopened)
     reopened._load_project(path)
-    assert reopened._tile_map == TileMap().flip([4], TILE_FLIP_V)
+    assert reopened._tile_map == TileMap().oriented([4], TILE_FLIP_V)
+
+
+def test_a_project_written_before_turning_keeps_its_mirrors(qtbot, tmp_path) -> None:
+    """`tile_flips` is where those projects hold them, and its two bits are the low
+    two of an orientation — so it is read as one rather than silently dropped."""
+    window = _window(qtbot, tmp_path)
+    path = tmp_path / "p.celpix"
+    window._set_tile_map(TileMap().swap(2, 9))
+    window._save_project_to(str(path))
+    data = json.loads(path.read_text())
+    data["entries"][0]["view"]["tile_flips"] = [[5, TILE_FLIP_BOTH]]
+    path.write_text(json.dumps(data))
+
+    reopened = MainWindow()
+    qtbot.addWidget(reopened)
+    reopened._load_project(str(path))
+    assert reopened._tile_map == TileMap().swap(2, 9).oriented([5], TILE_FLIP_BOTH)
 
 
 def test_an_unrearranged_project_writes_no_map(qtbot, tmp_path) -> None:

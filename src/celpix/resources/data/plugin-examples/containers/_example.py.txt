@@ -13,13 +13,25 @@ This toy container is a fixed 8-byte magic header (``CELPIXEX``) in front of the
 payload — Read skips it, Write puts it back. Note the two provenance keys Read
 sets: they let a plain Write default the bytes back to exactly where they came
 from, so an unedited open/save round-trips byte-identically.
+
+Both halves take a :class:`FileRef`, which is **not always a plain whole file**.
+Handling its three non-obvious cases is most of what separates a container that
+works from one that quietly eats data:
+
+- ``source.data`` — the bytes are already in memory (a slice reading its parent's
+  *unsaved* edits, a palette lifted out of an emulator memory image). When set it
+  *is* the source; the path is only provenance, and reading the file instead
+  serves stale bytes.
+- ``source.length`` — the caller wants a bounded window, not everything to EOF.
+- ``dest.offset`` / ``dest.length`` — the save target is a slot *inside* a larger
+  file. Replacing the whole file there destroys everything around the slot.
 """
 
 from pathlib import Path
 
 from celpix.core.context import KEY_SOURCE_OFFSET, KEY_SOURCE_PATH, PipelineContext
 from celpix.core.errors import Stage
-from celpix.plugins.base import FileRef, PluginInfo
+from celpix.plugins import FileRef, PluginInfo
 
 _MAGIC = b"CELPIXEX"  # 8-byte header this toy container wraps its payload in
 
@@ -34,15 +46,23 @@ class ExampleContainerReader:
     def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
         """Return the payload after the magic header (or the whole file if absent).
 
-        ``source`` carries the path plus an optional offset/length window. Record
-        provenance — the path and the byte offset the returned data starts at —
-        so the writer can splice edits back into the right place.
+        Record provenance — the path and the byte offset the returned data starts
+        at — so the writer can splice edits back into the right place.
+
+        Where the payload begins is the *container's* answer, not the caller's,
+        so ``source.offset`` is deliberately not consulted here; the offset that
+        matters is published through ``KEY_SOURCE_OFFSET`` instead. A reader that
+        does honour ``source.offset`` (celPix's own raw-file reader is the model)
+        must treat it as **file-absolute** and subtract ``source.data_base`` when
+        reading from an in-memory buffer that starts part way into the file.
         """
-        raw = Path(source.path).read_bytes()
+        # In-memory source wins over the path — see the module docstring.
+        raw = source.data if source.data is not None else Path(source.path).read_bytes()
         ctx.set(KEY_SOURCE_PATH, source.path)
         start = len(_MAGIC) if raw[: len(_MAGIC)] == _MAGIC else 0
         ctx.set(KEY_SOURCE_OFFSET, start)
-        return raw[start:]
+        end = len(raw) if source.length is None else start + source.length
+        return raw[start:end]
 
 
 class ExampleContainerWriter:
@@ -53,8 +73,24 @@ class ExampleContainerWriter:
     )
 
     def write(self, data: bytes, dest: FileRef, ctx: PipelineContext) -> None:
-        """Re-wrap ``data`` in the magic header — the inverse of read."""
-        Path(dest.path).write_bytes(_MAGIC + data)
+        """Re-wrap ``data`` in the magic header — the inverse of read.
+
+        Only the whole-file case re-wraps: the framing *is* the file, so writing
+        it means writing the file. A bounded target is a slot inside a file that
+        already has its own framing, so the payload is spliced in and every byte
+        around it is left alone. Skipping that branch — always writing
+        ``magic + data`` — truncates the file to one slice's worth of bytes.
+        """
+        path = Path(dest.path)
+        if dest.offset == 0 and dest.length is None:
+            path.write_bytes(_MAGIC + data)
+            return
+        existing = bytearray(path.read_bytes()) if path.exists() else bytearray()
+        end = dest.offset + len(data)
+        if len(existing) < end:
+            existing.extend(b"\x00" * (end - len(existing)))
+        existing[dest.offset : end] = data
+        path.write_bytes(existing)
 
 
 def register(registry):

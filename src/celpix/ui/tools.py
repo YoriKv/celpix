@@ -187,7 +187,7 @@ class TransformSpec:
 
     ``field`` names the attribute the button is stored under in a transform
     group, which is what lets one key table drive every group the bar can show
-    (Tile, Block, Pixel, and the rearrange tool's pair).
+    (Tile, Block, Pixel, and the rearrange tool's own two).
     """
 
     field: str
@@ -205,7 +205,3 @@ TRANSFORM_SPECS: tuple[TransformSpec, ...] = (
     TransformSpec("rotate_cw", "C", "Rotate 90° right", "↻"),
     TransformSpec("rotate_ccw", "X", "Rotate 90° left", "↺"),
 )
-
-# The two a *display* flip can express: a real tile attribute carries mirror bits
-# but no rotation, so the rearrange tool's groups are exactly these.
-FLIP_SPECS: tuple[TransformSpec, ...] = TRANSFORM_SPECS[:2]

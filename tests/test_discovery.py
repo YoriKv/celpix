@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import struct
+
 import pytest
 
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
+    KEY_DECOMPRESS_PARTIAL,
     PipelineContext,
 )
 from celpix.core.errors import Stage
@@ -17,6 +20,35 @@ from celpix.plugins.trust import TrustStore
 
 # Auto-approve confirm callback for tests that aren't exercising the gate itself.
 _ALLOW = lambda pending: True  # noqa: E731
+
+# The magic header the seeded containers/ example wraps its payload in.
+_MAGIC = b"CELPIXEX"
+
+
+def _two_strip_tiff(first: bytes, second: bytes) -> bytes:
+    """A minimal uncompressed little-endian TIFF holding two strips.
+
+    The strips are separated by a filler gap on purpose: a TIFF's image data is
+    reached through the directory and need not be contiguous, which is the whole
+    reason the seeded example's reader joins and its writer scatters.
+    """
+    ifd_at, offsets_at, counts_at, first_at, second_at = 8, 50, 58, 66, 74
+    out = bytearray(b"II*\x00" + struct.pack("<I", ifd_at))
+    entries = (
+        (259, 3, 1, struct.pack("<HH", 1, 0)),  # Compression: none, inline value
+        (273, 4, 2, struct.pack("<I", offsets_at)),  # StripOffsets
+        (279, 4, 2, struct.pack("<I", counts_at)),  # StripByteCounts
+    )
+    out += struct.pack("<H", len(entries))
+    for tag, type_id, count, field in entries:
+        out += struct.pack("<HHI", tag, type_id, count) + field
+    out += struct.pack("<I", 0)  # no second image
+    assert len(out) == offsets_at
+    out += struct.pack("<II", first_at, second_at)
+    out += struct.pack("<II", len(first), len(second))
+    assert len(out) == first_at
+    return bytes(out + first + b"\x99" * 4 + second)
+
 
 # A minimal code plugin: a Read plugin plus the register() hook the host calls.
 # Belongs in containers/ (read + write handlers).
@@ -359,6 +391,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert seeded == [
         "compression/_example.py",
         "containers/_example.py",
+        "containers/_tiff.py",
         "palette/_example.py",
         "palette/_example.toml",
         "palette/_nes-custom.py",
@@ -429,6 +462,16 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert dec.decompress(packed, ctx) == raw
     assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
     assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+    # Strict unless asked otherwise: bytes with no terminator are not a
+    # structure, so Scan (which reads a successful decode as a hit) can tell
+    # them apart. The lenient path is opt-in via KEY_DECOMPRESS_PARTIAL.
+    cut = packed[: len(packed) // 2]
+    with pytest.raises(ValueError):
+        dec.decompress(cut, PipelineContext())
+    lenient = PipelineContext()
+    lenient.set(KEY_DECOMPRESS_PARTIAL, True)
+    assert raw.startswith(dec.decompress(cut, lenient))
+    assert lenient.get(KEY_DECOMPRESS_COMPLETE) is False
 
     # Container example: write wraps the payload in its magic; read strips it back.
     writer = reg.plugin(Stage.WRITE, "write.example-container")
@@ -438,6 +481,29 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     writer.write(payload, FileRef(str(blob)), ctx)
     assert blob.read_bytes().startswith(b"CELPIXEX")
     assert reader.read(FileRef(str(blob)), ctx) == payload
+    # An in-memory source is read instead of the file (a slice of a dirty
+    # parent), and a bounded write target is spliced rather than replacing the
+    # file — the two FileRef cases a container is most likely to get wrong.
+    in_memory = FileRef(str(blob), data=_MAGIC + b"live-bytes")
+    assert reader.read(in_memory, ctx) == b"live-bytes"
+    writer.write(b"XX", FileRef(str(blob), offset=9, length=2), ctx)
+    assert blob.read_bytes() == _MAGIC + b"tXXe-bytes-here"
+
+    # TIFF example: the strips are found through the directory rather than at a
+    # fixed offset, and are non-contiguous — so a read that joins them and a
+    # write that scatters them back is the whole of what it has to get right.
+    tiff_read = reg.plugin(Stage.READ, "read.tiff")
+    tiff_write = reg.plugin(Stage.WRITE, "write.tiff")
+    tiff = tmp_path / "image.tif"
+    tiff.write_bytes(_two_strip_tiff(b"AAAA", b"BBBB"))
+    assert tiff_read.read(FileRef(str(tiff)), ctx) == b"AAAABBBB"
+    tiff_write.write(b"12345678", FileRef(str(tiff)), ctx)
+    assert tiff_read.read(FileRef(str(tiff)), ctx) == b"12345678"
+    assert tiff.read_bytes() == _two_strip_tiff(b"1234", b"5678")
+    # The strips are fixed slots, so a wrong-sized result is refused outright
+    # rather than written into part of the image.
+    with pytest.raises(ValueError):
+        tiff_write.write(b"short", FileRef(str(tiff)), ctx)
 
 
 def test_wrong_shaped_format_is_reported(tmp_path) -> None:

@@ -31,15 +31,20 @@ with what it lands on. A drop whose destination overlaps its own source is
 **refused** — the pairwise exchanges would no longer be independent, and the
 result would be a rotation nobody asked for rather than a swap.
 
-Tiles can also be **flipped**, which is the other half of reading scattered art:
-hardware mirrors tiles rather than storing both halves of a symmetric sprite. Per
-tile (H/V, or the toolbar's flip pair), or per **block** (Shift+H/V), which
-mirrors the block as one picture exactly as the destructive Block group does —
-flipping every tile *and* permuting their positions — except that both halves are
-stored in the map and no byte moves. Those keys are the transform bar's, not this
-module's: while the tool is armed its pair *is* the group on the bar, so H/V mean
-here what they mean anywhere (:meth:`~celpix.ui.main_window.transform.
-TransformMixin._transform_key`).
+Tiles can also be **mirrored and turned**, which is the other half of reading
+scattered art: hardware mirrors tiles rather than storing both halves of a
+symmetric sprite, and art lifted from one context often sits at ninety degrees to
+the one it is being read in. Per tile (H/V/C/X, or the toolbar's group), or per
+**block** (Shift + the same letters), which transforms the block as one picture
+exactly as the destructive Block group does — orienting every tile *and* permuting
+their positions — except that both halves are stored in the map and no byte moves.
+Those keys are the transform bar's, not this module's: while the tool is armed its
+group *is* the group on the bar, so the letters mean here what they mean anywhere
+(:meth:`~celpix.ui.main_window.transform.TransformMixin._transform_key`).
+
+A turn swaps a tile's width and height, so the two rotations need **square tiles**
+— the same rule the destructive groups follow, and the block group additionally
+needs a square block.
 """
 
 from __future__ import annotations
@@ -51,9 +56,11 @@ from PySide6.QtGui import QAction, QImage, QKeySequence
 
 from celpix.core.draw import blit_region, extract_region
 from celpix.core.tilemap import (
-    TILE_FLIP_NONE,
+    TILE_ORIENT_NONE,
+    TILE_TRANSPOSE,
     TileMap,
-    apply_flip,
+    apply_orientation,
+    compose_orientation,
 )
 from celpix.ui import render_bridge
 from celpix.ui.main_window.transform import TransformOp
@@ -81,18 +88,18 @@ class RearrangeDrag:
     float relative to the cursor's cell so it keeps the grip it was picked up
     with.
 
-    ``source`` is the composed window grid captured at press, kept so pressing
-    H or V mid-drag can re-render the float without decoding again — and without
+    ``source`` is the composed window grid captured at press, kept so a transform
+    key mid-drag can re-render the float without decoding again — and without
     reading back through the preview map, which by then is showing the *result*
-    of the drag rather than what is being carried. ``flip`` is the pending flip,
-    committed with the drop.
+    of the drag rather than what is being carried. ``orient`` is the pending
+    display orientation, committed with the drop.
     """
 
     grab: tuple[int, int]
     cells: tuple[tuple[int, int], ...]
     offset: tuple[int, int]  # image pixels from the hovered cell's top-left
     source: object  # the window grid at press — an IndexGrid or ArgbGrid
-    flip: int = TILE_FLIP_NONE
+    orient: int = TILE_ORIENT_NONE
 
 
 class RearrangeMixin:
@@ -110,8 +117,8 @@ class RearrangeMixin:
         self._show_rearranged = True
         self._rearranging = False
         self._rearrange_drag: RearrangeDrag | None = None
-        # The cell the drag is hovering, so an H/V mid-drag can re-preview at the
-        # same place rather than needing a mouse move to catch up.
+        # The cell the drag is hovering, so a transform key mid-drag can re-preview
+        # at the same place rather than needing a mouse move to catch up.
         self._rearrange_hover = (0, 0)
         # The map the *preview* renders through while a drag hovers a legal
         # drop: the committed map with the pending swap already in it, so what
@@ -223,9 +230,9 @@ class RearrangeMixin:
         self._cancel_rearrange_drag()
         self._canvas.set_rearranging(on)
         self._sync_selection_shape()
-        # The bar swaps to the Rearrange group, whose flips are display state
-        # rather than pixel edits — so the destructive ones can't be reached by
-        # muscle memory while a rearrangement is what the user is making.
+        # The bar swaps to the Rearrange groups, whose transforms are display
+        # state rather than pixel edits — so the destructive ones can't be reached
+        # by muscle memory while a rearrangement is what the user is making.
         self._sync_transform_bar_mode()
         self._sync_rearrange_actions()
 
@@ -265,16 +272,25 @@ class RearrangeMixin:
         self._rearrange_action.setToolTip(
             REARRANGE_BLOCKED_TIP if blocked else REARRANGE_TIP
         )
-        # The flip buttons need something to act on: the carried tiles mid-drag,
-        # else the selection. The block pair additionally needs a 2D block,
-        # exactly as the destructive Block group does.
-        can_flip = available and (
+        # The transform buttons need something to act on: the carried tiles
+        # mid-drag, else the selection. The block group additionally needs a 2D
+        # block, exactly as the destructive Block group does — and both groups'
+        # rotations need a square tile, since a turn swaps the tile's dimensions
+        # (:meth:`TransformMixin._square_tiles`).
+        has_target = available and (
             self._rearrange_drag is not None or bool(self._selection_tiles())
         )
-        for action in self._rearrange_group:
-            action.setEnabled(can_flip)
-        for action in self._rearrange_block_group:
-            action.setEnabled(available and self._block_geometry() is not None)
+        square_tiles = self._square_tiles()
+        geom = self._block_geometry() if available else None
+        for action in self._rearrange_group.flips:
+            action.setEnabled(has_target)
+        for action in self._rearrange_group.rotates:
+            action.setEnabled(has_target and square_tiles)
+        for action in self._rearrange_block_group.flips:
+            action.setEnabled(geom is not None)
+        square_block = geom is not None and geom[0] == geom[1]
+        for action in self._rearrange_block_group.rotates:
+            action.setEnabled(square_block and square_tiles)
 
     def _set_tile_map(self, tile_map: TileMap) -> None:
         """Land a rearrangement — :class:`TileMapCommand`'s apply, and the
@@ -311,13 +327,13 @@ class RearrangeMixin:
             self._show_rearrange_drag(self._view_layout().slot_to_cell(slot))
 
     def _on_rearrange_dropped(self, slot: int) -> None:
-        """Commit the move and any pending flip under the cursor, as one step.
+        """Commit the move and any pending orientation under the cursor, as one step.
 
         A drop that resolves to nothing — refused, or back where it started with
-        no flip pending — just ends the gesture: pushing an empty step would make
-        Ctrl+Z walk through drags that did nothing. A drop that *only* flips is a
+        nothing pending — just ends the gesture: pushing an empty step would make
+        Ctrl+Z walk through drags that did nothing. A drop that *only* orients is a
         real step though, which is what makes "pick it up, press H, put it back"
-        the natural way to mirror a tile in place.
+        the natural way to mirror or turn a tile in place.
         """
         drag = self._rearrange_drag
         entry = self._workspace.current
@@ -343,8 +359,8 @@ class RearrangeMixin:
         The block the user is working with is the one they just moved, and leaving
         the highlight on the cells it came from would offer them the *tiles it
         swapped with* for the next gesture — a Copy or a second drag would quietly
-        act on the wrong thing. Only a drop that moved something comes here, so a
-        flip in place leaves the selection alone.
+        act on the wrong thing. Only a drop that moved something comes here, so an
+        orientation applied in place leaves the selection alone.
 
         The destination is the source rectangle shifted by the drag, which is the
         selection the tool always makes (Rectangle is forced while it is armed).
@@ -368,31 +384,44 @@ class RearrangeMixin:
 
         Shared by the drop and the live preview, so what is rendered mid-drag is
         the very map the release commits rather than a second rendering of the
-        same intent. The flip lands on the carried tiles' **own** indices, which
-        is why the order against the swap doesn't matter: a swap moves positions,
-        never tiles.
+        same intent. The orientation lands on the carried tiles' **own** indices,
+        which is why the order against the swap doesn't matter: a swap moves
+        positions, never tiles.
         """
-        if not moves and not drag.flip:
+        if not moves and not drag.orient:
             return None
         tile_map = self._tile_map.swap_many(moves) if moves else self._tile_map
-        if drag.flip:
+        if drag.orient:
             carried = self._carried_tiles(drag)
-            tile_map = tile_map.flip(carried, drag.flip)
+            tile_map = tile_map.oriented(carried, drag.orient)
         return tile_map
 
     def _carried_tiles(self, drag: RearrangeDrag) -> list[int]:
-        """The **actual** tile indices under the carried cells, for flipping."""
+        """The **actual** tile indices under the carried cells, for orienting."""
         layout = self._view_layout()
         shown = (self._cell_tile(layout, *cell) for cell in drag.cells)
         return [self._tile_map.actual(v) for v in shown if v is not None]
 
     @staticmethod
-    def _drop_label(drag: RearrangeDrag, moves: list) -> str:
+    def _orient_verb(orient: int) -> str:
+        """An undo label's verb for ``orient`` — the two ``TransformOp.verb`` uses.
+
+        The pending orientation is a composition, not the button that made it, so
+        the label reads off the result: anything that swaps the tile's axes reads as
+        a rotation, and the rest as mirrors. Deliberately the same two words the ops
+        carry, so "rotate tile" and "rotate block" don't describe the same gesture
+        two ways.
+        """
+        return "rotate" if orient & TILE_TRANSPOSE else "flip"
+
+    @classmethod
+    def _drop_label(cls, drag: RearrangeDrag, moves: list) -> str:
         count = len(moves) or len(drag.cells)
         what = "tile" if count == 1 else f"{count} tiles"
+        verb = cls._orient_verb(drag.orient)
         if not moves:
-            return f"flip {what}"
-        return f"rearrange {what}" + (" and flip" if drag.flip else "")
+            return f"{verb} {what}"
+        return f"rearrange {what}" + (f" and {verb}" if drag.orient else "")
 
     def _on_rearrange_cancelled(self) -> None:
         self._cancel_rearrange_drag()
@@ -403,10 +432,10 @@ class RearrangeMixin:
         Claimed ahead of the other Escape handlers: whatever they would otherwise
         do, they cannot put the carried tile back down.
 
-        The flip keys are not here. While the tool is armed its pair *is* the
-        group on the transform bar, so they are that bar's keys like every other
-        flip (``TransformMixin._transform_key``) — which is what keeps H/V from
-        meaning one thing here and another a mode away.
+        The transform keys are not here. While the tool is armed its groups *are*
+        the groups on the transform bar, so they are that bar's keys like every
+        other flip and rotate (``TransformMixin._transform_key``) — which is what
+        keeps H/V/C/X from meaning one thing here and another a mode away.
         """
         if ctrl or shift or not self._rearranging:
             return False
@@ -415,14 +444,15 @@ class RearrangeMixin:
         self._cancel_rearrange_drag()
         return True
 
-    def _flip_rearranged_block(self, op: TransformOp) -> None:
-        """Mirror the block as one picture, entirely as display state.
+    def _orient_rearranged_block(self, op: TransformOp) -> None:
+        """Flip or turn the block as one picture, entirely as display state.
 
-        The same thing the destructive Block group does — flip every tile *and*
-        permute their positions within the block — except that neither half
+        The same thing the destructive Block group does — transform every tile
+        *and* permute their positions within the block — except that neither half
         touches a byte: the positions move in the tile map's permutation, the
-        mirroring in its flip flags. So the picture reads the same on screen while
-        the file keeps the tiles exactly where and how it had them.
+        tiles' own transform in its orientation flags. So the picture reads the
+        same on screen while the file keeps the tiles exactly where and how it had
+        them.
 
         The block comes from the same :meth:`_block_geometry` the destructive
         group uses, so a lone selected tile expands to its arrangement block and
@@ -430,9 +460,9 @@ class RearrangeMixin:
 
         Order doesn't matter between the two halves: the permutation shuffles
         tiles *among* the block's positions, so the set of tiles in the block —
-        which is what carries the flips — is the same before and after.
+        which is what carries the orientations — is the same before and after.
         """
-        if self._doc is None or not self._rearrange_available() or not op.tile_flip:
+        if self._doc is None or not self._rearrange_available():
             return
         entry = self._workspace.current
         geom = self._block_geometry()
@@ -451,28 +481,28 @@ class RearrangeMixin:
                 sources[dest] = src
         if not sources:
             return
-        flipped = [self._tile_map.actual(v) for v in sources]
+        turned = [self._tile_map.actual(v) for v in sources]
         new_map = (
             self._tile_map.rearranged(sources)
-            .flip(flipped, op.tile_flip)
+            .oriented(turned, op.tile_orient)
             .bounded(self._doc.tile_count)
         )
         if new_map == self._tile_map:
             return
         self._push_command(
-            TileMapCommand(self, entry, "flip block", self._tile_map, new_map)
+            TileMapCommand(self, entry, f"{op.verb} block", self._tile_map, new_map)
         )
 
-    def _flip_rearranged_tiles(self, op: TransformOp) -> None:
-        """The per-tile display flip as the transform bar calls it — by op rather
-        than by flag, which is the shape every button in that bar is wired with."""
-        self._flip_rearranged(op.tile_flip)
+    def _orient_rearranged_tiles(self, op: TransformOp) -> None:
+        """The per-tile display transform as the transform bar calls it — by op
+        rather than by flag, the shape every button in that bar is wired with."""
+        self._orient_rearranged(op.tile_orient)
 
-    def _flip_rearranged(self, flags: int) -> None:
-        """Toggle a display flip on whatever the tool is currently pointed at.
+    def _orient_rearranged(self, flags: int) -> None:
+        """Compose a display orientation onto whatever the tool is pointed at.
 
         Mid-drag it retargets to the carried tiles and rides along to the drop as
-        part of that single step — the only route to flipping what is in the air,
+        part of that single step — the only route to orienting what is in the air,
         since the buttons otherwise act on the selection; otherwise it is its own
         undoable step over the selection.
         """
@@ -480,20 +510,20 @@ class RearrangeMixin:
             return
         drag = self._rearrange_drag
         if drag is not None:
-            self._rearrange_drag = replace(drag, flip=drag.flip ^ flags)
+            pending = compose_orientation(flags, drag.orient)
+            self._rearrange_drag = replace(drag, orient=pending)
             self._show_rearrange_drag(self._rearrange_hover)
             return
         entry = self._workspace.current
         tiles = [self._tile_map.actual(t) for t in self._selection_tiles()]
         if entry is None or not tiles:
             return
-        new_map = self._tile_map.flip(tiles, flags).bounded(self._doc.tile_count)
+        new_map = self._tile_map.oriented(tiles, flags).bounded(self._doc.tile_count)
         if new_map == self._tile_map:
             return
         what = "tile" if len(tiles) == 1 else f"{len(tiles)} tiles"
-        self._push_command(
-            TileMapCommand(self, entry, f"flip {what}", self._tile_map, new_map)
-        )
+        label = f"{self._orient_verb(flags)} {what}"
+        self._push_command(TileMapCommand(self, entry, label, self._tile_map, new_map))
 
     def _cancel_rearrange_drag(self) -> None:
         """Drop the gesture and put the view back the way it was.
@@ -511,7 +541,7 @@ class RearrangeMixin:
             self._refresh_view()
 
     def _show_rearrange_drag(self, over: tuple[int, int]) -> None:
-        """Preview the drop on cell ``over``: swapped tiles, float, drop target.
+        """Preview the drop on cell ``over``: moved tiles, float, drop target.
 
         The preview is the map the release would leave, rendered through the
         ordinary view path — so what the user is looking at mid-drag *is* the
@@ -617,9 +647,9 @@ class RearrangeMixin:
         that wraps a row — leaves the cells it doesn't cover blank, so what floats
         is the shape that will actually land.
 
-        A pending flip is applied **per tile, in place**, not by mirroring the
-        whole float: that is what will be stored, since a flip belongs to a tile
-        rather than to the group carrying it. Mirroring the block would also
+        A pending orientation is applied **per tile, in place**, not to the whole
+        float: that is what will be stored, since an orientation belongs to a tile
+        rather than to the group carrying it. Transforming the block would also
         permute the tiles' positions, which is the Block transform's job and not
         this gesture's — so the float would be promising something the drop
         wouldn't deliver.
@@ -633,7 +663,7 @@ class RearrangeMixin:
         out = type(grid)((right - left + 1) * tw, (bottom - top + 1) * th)
         for cx, cy in cells:
             tile = extract_region(grid, cx * tw, cy * th, tw, th)
-            tile = apply_flip(tile, drag.flip)
+            tile = apply_orientation(tile, drag.orient)
             blit_region(out, tile, (cx - left) * tw, (cy - top) * th)
         base = self._subpalette.value() * self._index_space()
         return render_bridge.render(out, self._doc.palette, base)

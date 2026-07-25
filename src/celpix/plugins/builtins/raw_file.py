@@ -17,11 +17,13 @@ from pathlib import Path
 
 from celpix.core.context import KEY_SOURCE_OFFSET, KEY_SOURCE_PATH, PipelineContext
 from celpix.core.errors import Stage
-from celpix.plugins.base import FileRef, PluginInfo
+from celpix.plugins.base import RAW_READ, RAW_WRITE, FileRef, PluginInfo
 
 
 class RawFileReader:
-    info = PluginInfo(id="read.raw-file", name="Raw binary file", stage=Stage.READ)
+    # No signature: this is where detection lands when nothing claims a file, so
+    # claiming anything itself would only get in the way.
+    info = PluginInfo(id=RAW_READ, name="Raw binary file", stage=Stage.READ)
 
     def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
         # In-memory source (a palette extracted from an emulator memory image, a
@@ -39,7 +41,7 @@ class RawFileReader:
 
 
 class RawFileWriter:
-    info = PluginInfo(id="write.raw-file", name="Raw binary file", stage=Stage.WRITE)
+    info = PluginInfo(id=RAW_WRITE, name="Raw binary file", stage=Stage.WRITE)
 
     def write(self, data: bytes, dest: FileRef, ctx: PipelineContext) -> None:
         path = Path(dest.path)

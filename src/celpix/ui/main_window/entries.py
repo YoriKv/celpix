@@ -47,6 +47,7 @@ from celpix.project.workspace import (
     palette_source_for,
     relocate_path,
 )
+from celpix.ui.container_dialog import ContainerDialog
 from celpix.ui.slice_dialog import SliceDialog
 from celpix.ui.undo_commands import (
     AddEntryCommand,
@@ -688,6 +689,72 @@ class EntriesMixin:
         self._files_panel.refresh_entry(entry)
         if entry is self._workspace.current:
             self._on_current_entry_changed(entry)  # reload the new region now
+
+    # -- containers ----------------------------------------------------------
+    def _change_container_current(self) -> None:
+        entry = self._workspace.current
+        if entry is not None and entry.kind is EntryKind.FILE:
+            self._change_container_for(entry)
+
+    def _change_container_for(self, entry: Entry) -> None:
+        """Files dock / File ▸ Change Container…: repick how ``entry`` is unwrapped.
+
+        Detection chose one when the file was opened; this is the override for
+        what only a person can settle (an interleaved image is indistinguishable
+        from a plain one, a headerless dump still ends in ``.nes``). Slices are
+        excluded for the reason on :attr:`Entry.container_id` — theirs are their
+        parent's coordinates.
+        """
+        if entry.kind is not EntryKind.FILE:
+            return
+        chosen = ContainerDialog.get_container(
+            self, self._registry, path=entry.path, container_id=entry.container_id
+        )
+        if chosen is None or chosen == entry.container_id:
+            return
+        # A container decides which bytes the file even has, so switching it is a
+        # re-read — and pixel edits describe positions the new container may not
+        # have. They cannot come across, so the user gets the choice first.
+        if entry.pixel_dirty and not self._confirm_container_discard(entry):
+            return
+        entry.container_id = chosen
+        # Format, arrangement and view survive the re-read for the same reason
+        # they survive a slice re-point (see :meth:`_apply_slice_params`): what
+        # changes is which bytes arrive, not how they are read once they do.
+        if entry is self._workspace.current:
+            self._capture_session()
+        if entry.doc is not None:
+            entry.pending_view = entry.doc.view
+        self._workspace.mark_saved(entry)
+        self._workspace.drop_document(entry)
+        self._files_panel.refresh_entry(entry)
+        if entry is self._workspace.current:
+            self._on_current_entry_changed(entry)  # re-read through the new one
+
+    def _confirm_container_discard(self, entry: Entry) -> bool:
+        """Unsaved-edits gate for a container change; True when OK to proceed.
+
+        The per-entry sibling of :meth:`_resolve_dirty_entries`: only this file
+        is about to be re-read, so offering Write All would touch files the user
+        never asked about.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle("celPix - unsaved changes")
+        box.setText(
+            f"{entry.name} has unsaved edits. Changing its container re-reads "
+            "the file and discards them. Write them first?"
+        )
+        write = box.addButton("Write", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(write)  # least-lossy choice when Enter is hit blind
+        box.exec()
+        if box.clickedButton() is cancel:
+            return False
+        if box.clickedButton() is write:
+            self._write_entry_checked(entry)
+            return not entry.pixel_dirty  # a failed write must not proceed
+        return True
 
     def _jump_to_slice_source(self, slice_entry: Entry) -> None:
         """Files dock ▸ Jump to Source: show a slice's bytes in its parent file.
