@@ -3,96 +3,86 @@ file, drop the underscore from the name, edit it, and press F5 in celPix to
 load it (code plugins ask for confirmation the first time, since they run with
 the app's privileges).
 
-A container is a Read/Write *pair*: both halves live in one file because they
-are two ends of one on-disk wrapper. Read acquires the file's bytes and strips
-whatever framing the pixel codec shouldn't see (a header, an interleave, a
-checksum block), handing downstream contiguous tile data; Write is its inverse,
-re-wrapping the edited bytes on save. A read-only container may ship Read alone.
+A container is **one plugin with both directions on it**: ``read`` strips whatever
+framing the pixel codec shouldn't see (a header, an interleave, a checksum block),
+handing downstream contiguous tile data, and ``write`` is its inverse, re-wrapping
+the edited bytes on save. They live together because they are two ends of one
+on-disk wrapper and have to stay each other's inverse.
+
+**``write`` is optional**, and a container without one is view-only: its files
+open and cannot be saved. That is deliberate — unwrapping is not something plain
+bytes can undo, so a missing inverse must cost a save rather than a file.
 
 This toy container is a fixed 8-byte magic header (``CELPIXEX``) in front of the
-payload — Read skips it, Write puts it back. Note the two provenance keys Read
-sets: they let a plain Write default the bytes back to exactly where they came
+payload — ``read`` skips it, ``write`` puts it back. Note the offset ``read``
+publishes: it lets a plain write default the bytes back to exactly where they came
 from, so an unedited open/save round-trips byte-identically.
 
-Both halves take a :class:`FileRef`, which is **not always a plain whole file**.
-Handling its three non-obvious cases is most of what separates a container that
-works from one that quietly eats data:
+**Neither direction touches the disk.** The host opens the file and hands ``read``
+the bytes (:class:`ReadSource`); ``write`` is shown the destination as it
+currently stands (:class:`WriteTarget`) and *returns* what should replace it. So a
+container is a byte transform both ways — which is what keeps it working whether
+its bytes came from a file, from a parent's unsaved buffer, or from several files
+joined together.
 
-- ``source.data`` — the bytes are already in memory (a slice reading its parent's
-  *unsaved* edits, a palette lifted out of an emulator memory image). When set it
-  *is* the source; the path is only provenance, and reading the file instead
-  serves stale bytes.
-- ``source.length`` — the caller wants a bounded window, not everything to EOF.
+Two cases still need handling, and they are most of what separates a container
+that works from one that quietly eats data:
+
+- ``source.offset`` / ``source.length`` — the caller wants a bounded window, not
+  everything to EOF. ``source.window()`` applies both when your container has no
+  opinion of its own about where the payload starts.
 - ``dest.offset`` / ``dest.length`` — the save target is a slot *inside* a larger
-  file. Replacing the whole file there destroys everything around the slot.
+  file. Returning just the payload truncates the file to it; ``splice`` lays the
+  edit over ``dest.existing`` and keeps everything around it.
 """
 
-from pathlib import Path
-
-from celpix.core.context import KEY_SOURCE_OFFSET, KEY_SOURCE_PATH, PipelineContext
+from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
-from celpix.plugins import FileRef, PluginInfo
+from celpix.plugins import PluginInfo, ReadSource, WriteTarget, splice
 
 _MAGIC = b"CELPIXEX"  # 8-byte header this toy container wraps its payload in
 
 
-class ExampleContainerReader:
+class ExampleContainer:
     info = PluginInfo(
-        id="read.example-container",
-        name="Example container (skip magic)",
-        stage=Stage.READ,
+        id="container.example",
+        name="Example container (magic header)",
+        stage=Stage.CONTAINER,
     )
 
-    def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
+    def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         """Return the payload after the magic header (or the whole file if absent).
 
-        Record provenance — the path and the byte offset the returned data starts
-        at — so the writer can splice edits back into the right place.
+        Publish the byte offset the returned data starts at, so ``write`` can
+        splice edits back into the right place and the UI can show real file
+        addresses. That offset is the one thing only the container knows.
 
         Where the payload begins is the *container's* answer, not the caller's,
-        so ``source.offset`` is deliberately not consulted here; the offset that
-        matters is published through ``KEY_SOURCE_OFFSET`` instead. A reader that
-        does honour ``source.offset`` (celPix's own raw-file reader is the model)
-        must treat it as **file-absolute** and subtract ``source.data_base`` when
-        reading from an in-memory buffer that starts part way into the file.
+        so ``source.offset`` is deliberately not consulted here. A container that
+        does honour it (celPix's own raw-file one is the model) should use
+        ``source.window()``, which keeps the offset file-absolute even when the
+        bytes came from a buffer starting part way into the file.
         """
-        # In-memory source wins over the path — see the module docstring.
-        raw = source.data if source.data is not None else Path(source.path).read_bytes()
-        ctx.set(KEY_SOURCE_PATH, source.path)
+        raw = source.data
         start = len(_MAGIC) if raw[: len(_MAGIC)] == _MAGIC else 0
         ctx.set(KEY_SOURCE_OFFSET, start)
         end = len(raw) if source.length is None else start + source.length
         return raw[start:end]
 
+    def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
+        """Re-wrap ``data`` in the magic header — the inverse of ``read``.
 
-class ExampleContainerWriter:
-    info = PluginInfo(
-        id="write.example-container",
-        name="Example container (add magic)",
-        stage=Stage.WRITE,
-    )
-
-    def write(self, data: bytes, dest: FileRef, ctx: PipelineContext) -> None:
-        """Re-wrap ``data`` in the magic header — the inverse of read.
-
-        Only the whole-file case re-wraps: the framing *is* the file, so writing
-        it means writing the file. A bounded target is a slot inside a file that
-        already has its own framing, so the payload is spliced in and every byte
-        around it is left alone. Skipping that branch — always writing
-        ``magic + data`` — truncates the file to one slice's worth of bytes.
+        Only the whole-file case re-wraps: the framing *is* the file, so the
+        returned bytes are the whole of it. A bounded target is a slot inside a
+        file that already has its own framing, so the payload is spliced into
+        what is there and every byte around it is left alone. Skipping that
+        branch — always returning ``magic + data`` — truncates the file to one
+        slice's worth of bytes.
         """
-        path = Path(dest.path)
-        if dest.offset == 0 and dest.length is None:
-            path.write_bytes(_MAGIC + data)
-            return
-        existing = bytearray(path.read_bytes()) if path.exists() else bytearray()
-        end = dest.offset + len(data)
-        if len(existing) < end:
-            existing.extend(b"\x00" * (end - len(existing)))
-        existing[dest.offset : end] = data
-        path.write_bytes(existing)
+        if dest.whole_file:
+            return _MAGIC + data
+        return splice(dest.existing, dest.offset, data)
 
 
 def register(registry):
-    registry.register(ExampleContainerReader())
-    registry.register(ExampleContainerWriter())
+    registry.register(ExampleContainer())

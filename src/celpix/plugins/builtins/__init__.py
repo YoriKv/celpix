@@ -15,40 +15,32 @@ from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from celpix import resources
+from celpix.plugins.bitswap import bitswap_from_toml
 from celpix.plugins.discovery import PRESET_FOLDER_STAGE, preset_from_toml
 
 from .chunky_codec import ChunkyCodec
 from .color_codec import ColorCodec
-from .container_read import (
-    CopierHeaderReader,
-    CopierHeaderWriter,
-    INesReader,
-    INesWriter,
-    SmdReader,
-    SmdWriter,
-    SnesInterleavedReader,
-    SnesInterleavedWriter,
+from .containers import (
+    CopierHeaderContainer,
+    INesContainer,
+    SmdContainer,
+    SnesInterleavedContainer,
 )
 from .direct_color_codec import DirectColorCodec
-from .gb_rom import GbRomReader, GbRomWriter
+from .gb_rom import GbRomContainer
 from .indexed_codec import IndexedColorCodec
-from .konami_rle import (
-    KonamiFdsRleCompress,
-    KonamiFdsRleDecompress,
-    KonamiNesRleCompress,
-    KonamiNesRleDecompress,
-)
+from .konami_rle import KonamiFdsRle, KonamiNesRle
 from .linear_codec import LinearBespokeCodec
-from .lz16 import Lz16Compress, Lz16Decompress
-from .lz_command import Lz1Compress, Lz1Decompress, Lz2Compress, Lz2Decompress
-from .m7_interleave import M7VramCompress, M7VramDecompress
-from .n64_rom import N64RomReader, N64RomWriter
+from .lz16 import Lz16Compression
+from .lz_command import Lz1, Lz2
+from .m7_interleave import M7VramReshape
+from .n64_rom import N64RomContainer
 from .nibble_planar_codec import NibblePlanarCodec
-from .packbits import PackBitsCompress, PackBitsDecompress
+from .packbits import PackBitsCompression
 from .packed_codec import PackedCodec
-from .passthrough import PassthroughCompress, PassthroughDecompress
+from .passthrough import PassthroughCompression, PassthroughReshape
 from .planar_codec import PlanarCodec
-from .raw_file import RawFileReader, RawFileWriter
+from .raw_file import RawFileContainer
 from .split_planes import split_plane_plugins
 from .wide_codecs import Pce2bpp16Codec, PceSgCodec, Wide1bppCodec
 
@@ -59,37 +51,23 @@ if TYPE_CHECKING:
 
 def register_builtins(reg: Registry) -> None:
     for plugin in (
-        RawFileReader(),
-        RawFileWriter(),
-        CopierHeaderReader(),
-        CopierHeaderWriter(),
-        INesReader(),
-        INesWriter(),
-        SmdReader(),
-        SmdWriter(),
-        SnesInterleavedReader(),
-        SnesInterleavedWriter(),
-        GbRomReader(),
-        GbRomWriter(),
-        N64RomReader(),
-        N64RomWriter(),
-        PassthroughDecompress(),
-        PassthroughCompress(),
-        KonamiNesRleDecompress(),
-        KonamiNesRleCompress(),
-        KonamiFdsRleDecompress(),
-        KonamiFdsRleCompress(),
-        M7VramDecompress(),
-        M7VramCompress(),
+        RawFileContainer(),
+        CopierHeaderContainer(),
+        INesContainer(),
+        SmdContainer(),
+        SnesInterleavedContainer(),
+        GbRomContainer(),
+        N64RomContainer(),
+        PassthroughReshape(),
+        M7VramReshape(),
         *split_plane_plugins(),
-        Lz1Decompress(),
-        Lz1Compress(),
-        Lz2Decompress(),
-        Lz2Compress(),
-        Lz16Decompress(),
-        Lz16Compress(),
-        PackBitsDecompress(),
-        PackBitsCompress(),
+        PassthroughCompression(),
+        KonamiNesRle(),
+        KonamiFdsRle(),
+        Lz1(),
+        Lz2(),
+        Lz16Compression(),
+        PackBitsCompression(),
         PlanarCodec(),
         PackedCodec(),
         NibblePlanarCodec(),
@@ -106,6 +84,10 @@ def register_builtins(reg: Registry) -> None:
 
     for stage, text in _shipped_presets():
         reg.register_preset(preset_from_toml(text, stage))
+    # Bitswap reshape presets register as plugins, not Presets — the Reshape
+    # stage resolves plain plugin ids (see discovery._load_reshape_preset).
+    for text in _shipped_reshape_presets():
+        reg.register(bitswap_from_toml(text))
 
 
 @lru_cache(maxsize=1)
@@ -132,3 +114,16 @@ def _shipped_presets() -> tuple[tuple[Stage, str], ...]:
     # Stable order regardless of filesystem iteration order.
     named.sort(key=lambda item: item[0])
     return tuple((stage, text) for _, stage, text in named)
+
+
+@lru_cache(maxsize=1)
+def _shipped_reshape_presets() -> tuple[str, ...]:
+    """Every shipped bitswap preset's TOML, read once per process — cached for
+    exactly the reasons :func:`_shipped_presets` is."""
+    node = resources.resource("data", "presets", "reshape")
+    named = sorted(
+        (entry.name, entry.read_text(encoding="utf-8"))
+        for entry in node.iterdir()
+        if entry.name.endswith(".toml")
+    )
+    return tuple(text for _, text in named)

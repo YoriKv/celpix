@@ -3,7 +3,7 @@
 A plugin has always had two ways to end: raise, and the whole load fails with a
 :class:`~celpix.core.errors.PipelineError`; or return, and say nothing. Plenty of
 real cases fall between. An iNES cart with **CHR-RAM** has no CHR ROM at all, so
-the reader hands over the bytes after the header — which are program code, not
+the container hands over the bytes after the header — which are program code, not
 graphics. A ``.smd`` whose length isn't a whole number of 16 KB blocks has a tail
 the deinterleaver cannot place. Neither is a failure; both leave the user looking
 at something that isn't what they asked for, with nothing on screen to say why.

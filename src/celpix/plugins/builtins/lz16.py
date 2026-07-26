@@ -509,11 +509,11 @@ def compress(tiles: bytes) -> bytes:
     return bytes(out)
 
 
-class Lz16Decompress:
+class Lz16Compression:
     info = PluginInfo(
-        id="decompress.lz16",
+        id="compression.lz16",
         name="LZ16 (Yoshi's Island Super FX)",
-        stage=Stage.DECOMPRESS,
+        stage=Stage.COMPRESSION,
         # No terminator: the extent comes from the row count (context or probe),
         # both of which need a bound the bit stream itself never carries.
         self_delimiting=False,
@@ -537,14 +537,6 @@ class Lz16Decompress:
         ctx.set(KEY_COMPRESSED_SIZE, consumed)
         ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
         return out
-
-
-class Lz16Compress:
-    info = PluginInfo(
-        id="compress.lz16",
-        name="LZ16 (Yoshi's Island Super FX)",
-        stage=Stage.COMPRESS,
-    )
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
         return compress(data)

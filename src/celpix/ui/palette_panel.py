@@ -1,6 +1,6 @@
 """The palette panel: a swatch grid of the decoded palette.
 
-Lives in a right-side dock. It shows every color the palette pathway decoded
+Lives in a dock under the Files list. It shows every color the palette pathway decoded
 (not just the slice the current bit depth can index) so embedded palettes can be
 inspected at a glance, and outlines the active subpalette range. Selecting a
 swatch — by click or arrow keys — selects that color *and* the subpalette row

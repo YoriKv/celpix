@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from celpix.core import emustate
 from celpix.core.context import (
+    KEY_SOURCE_OFFSET,
     PipelineContext,
 )
 from celpix.core.document import Document
@@ -32,14 +33,16 @@ from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.palette import FULL_PALETTE_COUNT, Palette
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import FileRef
+from celpix.plugins.base import NO_RESHAPE, FileRef
 from celpix.project.workspace import (
     Entry,
     EntryKind,
     PaletteMode,
     PaletteSource,
     data_missing,
+    entry_view_bytes,
     export_basename,
+    reorders_bytes,
 )
 from celpix.ui.undo_commands import (
     AddEntryCommand,
@@ -352,22 +355,23 @@ class PaletteSourceMixin:
                     source=FileRef(source.path, offset=source.offset),
                     interpret_preset_id=session.palette_preset_id,
                 )
-            else:  # palette bytes at an offset in the entry's own file
-                ref = self._selection_palette_source(
-                    doc.pixel_config.source.path,
-                    source.offset,
-                    session.palette_preset_id,
+            else:  # palette bytes at an offset in the entry's own coordinates
+                ref, writable = self._offset_palette_source(
+                    source.offset, session.palette_preset_id, entry=entry
                 )
                 if ref is None:
                     raise PipelineError(
-                        Stage.READ,
+                        Stage.CONTAINER,
                         Pathway.PALETTE,
                         "not enough data at the palette offset",
                     )
-                # Writable, as on the interactive Offset load: the bounded ref
-                # confines Write to the palette's own bytes.
+                # Writable exactly as on the interactive Offset load: the bounded
+                # ref confines Write to the palette's own bytes, and a reordered
+                # source has no file bytes to confine it to.
                 cfg = PathwayConfig(
-                    source=ref, interpret_preset_id=session.palette_preset_id
+                    source=ref,
+                    interpret_preset_id=session.palette_preset_id,
+                    write_enabled=writable,
                 )
             loaded = pipeline.load_palette(cfg, self._registry)
             doc.palette, doc.palette_ctx = loaded.palette, loaded.ctx
@@ -636,7 +640,7 @@ class PaletteSourceMixin:
                 path, offset=0, length=length, data=region.data
             )
         else:
-            ref = self._selection_palette_source(
+            ref = self._file_palette_source(
                 path, region.offset, region.preset_id, max_entries=region.count
             )
         if ref is None:
@@ -1015,44 +1019,245 @@ class PaletteSourceMixin:
         offset would raise. Reuses the Offset-mode load, so each step is an
         ordinary undoable palette change.
         """
-        if self._doc is None or self._palette_mode is not PaletteMode.OFFSET:
+        entry = self._workspace.current
+        if (
+            self._doc is None
+            or entry is None
+            or self._palette_mode is not PaletteMode.OFFSET
+        ):
             return
         step = self._doc.bytes_per_tile
-        path = self._doc.pixel_config.source.path
         entry_size = pipeline.palette_entry_size(
             self._palette_preset_id(), self._registry
         )
         try:
-            file_size = Path(path).stat().st_size
+            end = self._offset_palette_space(entry)[1]
         except OSError as exc:
-            self._alert(f"Cannot read {path}: {exc}", title="celPix - palette")
+            self._alert(
+                f"Cannot read the palette source: {exc}", title="celPix - palette"
+            )
             return
-        last = file_size - entry_size  # last offset a whole entry still fits at
+        last = end - entry_size  # last offset a whole entry still fits at
         if last < 0:
             return
-        # source.offset is the file-absolute palette offset; step there and
-        # clamp before handing it back (the load re-adds the container's skip, so
-        # strip it to keep the absolute value).
+        # source.offset is already in the coordinates the load expects, so a step
+        # is just arithmetic on it.
         current = self._doc.palette_config.source.offset
         target = min(max(0, current + delta_tiles * step), last)
         if target != current:
-            self._load_palette_at_offset(target - self._container_skip())
+            self._load_palette_at_offset(target)
 
-    def _selection_palette_source(
+    def _palette_offset_owner(self, entry: Entry | None) -> Entry | None:
+        """The FILE entry whose coordinates ``entry``'s Offset palette is in.
+
+        ``entry`` itself when it is a whole file; its **parent** when it is a
+        slice, because a slice's palette offsets are parent-absolute and
+        deliberately reach outside its own window - a graphics block's palette
+        usually lives elsewhere in the ROM (``docs/design/palette-editing.md``
+        §2). ``None`` when the parent is not open: with no entry there is no
+        container or reshape to honour, and the file's own bytes are what the
+        offset means.
+        """
+        if entry is None:
+            return None
+        if entry.kind is EntryKind.FILE:
+            return entry
+        return self._workspace.find_file(entry.path)
+
+    def _reordered_view(self, owner: Entry) -> tuple[bytes, int] | None:
+        """``owner``'s view buffer plus the offset its first byte sits at, or
+        ``None`` when reading the file would give the same bytes anyway.
+
+        A container that merely skips a header leaves every remaining byte where
+        it was, so offsets still name file bytes and the palette keeps reading
+        the file - which is also what keeps its write half. A **permuting**
+        container or an active reshape makes the buffer a different address space
+        from the file, and then the buffer is the only place the offset means
+        anything at all.
+
+        The owner's live bytes are used when it is loaded, so an Offset palette
+        sees a dirty parent's unsaved edits exactly as a slice of it would;
+        otherwise the region is read fresh (``workspace.entry_view_bytes`` — the
+        same read a slice of the owner performs, so the two can never disagree).
+        """
+        if not reorders_bytes(owner, self._registry):
+            return None
+        return entry_view_bytes(
+            owner,
+            self._registry,
+            owner.session.pixel_preset_id
+            if owner.session is not None
+            else self._pixel_preset_id(),
+            self._workspace,
+        )
+
+    def _offset_palette_space(
+        self, entry: Entry
+    ) -> tuple[tuple[bytes, int] | None, int]:
+        """The address space ``entry``'s Offset palette reads: ``(view, end)``.
+
+        ``view`` is the owner's ``(buffer, base)`` when it reorders bytes —
+        offsets then index the buffer at ``offset - base`` — else ``None``,
+        meaning offsets are file offsets into the joined files. ``end`` is one
+        past the highest offset addressable in that space, whichever it is: the
+        shared answer behind both the read window
+        (:meth:`_offset_palette_source`) and the step buttons' clamp.
+
+        ``base`` mirrors what the *address display* uses for the owner, because
+        a palette offset is one of the numbers on screen: under an active
+        reshape the display falls back to 0-based buffer positions
+        (``_display_base``), so the base is 0; under a permuting container the
+        display keeps the recorded start (those are the ROM's real addresses —
+        an ``.smd`` body begins past its copier header), so the base is that
+        start.
+        """
+        assert entry.doc is not None
+        owner = self._palette_offset_owner(entry)
+        view = self._reordered_view(owner) if owner is not None else None
+        if view is not None:
+            data, base = view
+            if owner is not None and owner.reshape_id != NO_RESHAPE:
+                base = 0
+            return (data, base), base + len(data)
+        paths = entry.doc.pixel_config.source.paths
+        return None, sum(Path(p).stat().st_size for p in paths)
+
+    def _offset_palette_pixel_owner(self) -> Entry | None:
+        """The FILE entry whose pixel buffer holds the on-screen Offset palette,
+        when a color edit should land there — ``None`` for every other palette.
+
+        A buffer-backed Offset palette (its source carries ``data``: the owner
+        reorders bytes, so the window was cut from the owner's view buffer) has
+        no file span of its own to write, but the *owner's* pixel pathway writes
+        the whole region through ``unshape`` and the container already. So the
+        edit is persisted by splicing into that buffer and dirtying the owner's
+        pixel pathway — this answers *which entry that is*, loading its document
+        if it isn't yet (a slice's parent may be closed), and ``None`` when the
+        owner's own write path can't carry the edit anyway (no ``unshape``, no
+        container write half), which keeps those palettes honestly view-only.
+        """
+        if self._palette_mode is not PaletteMode.OFFSET or self._doc is None:
+            return None
+        if self._doc.palette_config.source.data is None:
+            return None  # plain file window: the palette pathway writes itself
+        owner = self._palette_offset_owner(self._workspace.current)
+        if owner is None:
+            return None
+        if owner.doc is None and not self._load_entry(owner, quiet=True):
+            return None
+        assert owner.doc is not None
+        if not owner.doc.pixel_config.write_enabled:
+            return None
+        return owner
+
+    def _sync_offset_palette_bytes(self, doc: Document, pixel_owner: Entry) -> None:
+        """Splice ``doc``'s current palette bytes into ``pixel_owner``'s buffer.
+
+        The persistence half of a buffer-backed Offset palette edit: re-encode
+        the edited entries over the splice base (``pipeline.spliced_palette_bytes``)
+        and land the window in the owner's ``pixel_data`` at the offset it was
+        read from — the exact bytes the owner's next pixel Write will carry
+        through ``unshape`` and the container. Runs on undo as well as redo (the
+        splice is recomputed from the palette's state, not diffed), so the buffer
+        always mirrors the palette on screen.
+        """
+        target = pixel_owner.doc
+        if target is None:
+            return
+        try:
+            window = pipeline.spliced_palette_bytes(doc, self._registry)
+        except PipelineError as exc:
+            self._report(exc)
+            return
+        # The same addressing rule as _offset_palette_space, recomputed live
+        # rather than trusted from the ref's data_base (the owner's document may
+        # have been rebuilt since): 0-based under a reshape, the recorded start
+        # under a permuting container.
+        base = (
+            0
+            if pixel_owner.reshape_id != NO_RESHAPE
+            else target.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
+        )
+        target.replace_bytes(doc.palette_config.source.offset - base, window)
+
+    def _offset_palette_source(
+        self,
+        byte_off: int,
+        preset_id: str | None = None,
+        max_entries: int = 256,
+        entry: Entry | None = None,
+    ) -> tuple[FileRef | None, bool]:
+        """The read window for an Offset palette at ``byte_off``, and whether a
+        color edit can be written back through it.
+
+        ``byte_off`` is in the **owning file entry's** view coordinates - the same
+        numbers the offset box and the status bar show. Where the file is its own
+        buffer that is a file offset, and the window is read (and written)
+        straight from disk. Where the owner reorders bytes the window is cut from
+        its view buffer instead, and the *palette pathway* comes back write-off:
+        a length-bounded ``FileRef`` into the file cannot say where a permuted
+        splice belongs. Color edits still persist - through the buffer owner's
+        **pixel** pathway instead (:meth:`_offset_palette_pixel_owner`), whose
+        Write carries the whole region through ``unshape`` and the container
+        (``docs/design/palette-editing.md`` §2).
+
+        Floored to whole entries - the color codecs reject a partial trailing
+        one, so clamping at the end alone is not enough. ``(None, ...)`` when not
+        even one entry fits. ``preset_id`` overrides the combo when sizing
+        entries for a non-current entry's palette format, and ``entry`` names
+        whose palette is being resolved - both default to the live document, and
+        both are passed when a project restore loads an entry that is not (yet)
+        the one on screen.
+        """
+        entry = entry if entry is not None else self._workspace.current
+        assert entry is not None and entry.doc is not None
+        bpe = pipeline.palette_entry_size(
+            preset_id or self._palette_preset_id(), self._registry
+        )
+        view, end = self._offset_palette_space(entry)
+        writable = view is None
+        base = 0 if view is None else view[1]
+        avail = end - byte_off if byte_off >= base else 0
+        entries = min(max_entries, avail // bpe)
+        if entries <= 0:
+            return None, writable
+        # The whole file list, as the pixel pathway reads it: the offset
+        # addresses the joined buffer, so a several-chip region cannot be
+        # answered from its first chip alone.
+        paths = entry.doc.pixel_config.source.paths
+        if view is None:
+            return FileRef(paths, offset=byte_off, length=entries * bpe), True
+        data, base = view
+        return (
+            FileRef(
+                paths, offset=byte_off, length=entries * bpe, data=data, data_base=base
+            ),
+            False,
+        )
+
+    def _file_palette_source(
         self,
         path: str,
         byte_off: int,
         preset_id: str | None = None,
         max_entries: int = 256,
     ) -> FileRef | None:
-        """A read window for up to ``max_entries`` palette entries at ``byte_off``.
+        """A read window for up to ``max_entries`` palette entries at ``byte_off``
+        in the **named file**, read as plain bytes.
+
+        The source builder for palette data that lives in a file of its own
+        rather than at a position in an entry's coordinate space - an emulator
+        save state's CGRAM, and a format change re-flooring such a window. Its
+        siblings serve the other palette homes: :meth:`_offset_palette_source`
+        for an Offset palette (which honours the owning entry's container and
+        reshape), :meth:`_file_palette_config` for a File-mode ``.pal`` (whole
+        file, writable pathway).
 
         Floored to whole entries - the color codecs reject a partial trailing
         entry, so clamping at EOF alone is not enough. ``None`` when not even one
-        entry fits. ``preset_id`` overrides the combo when sizing entries for a
-        non-current entry's palette format (project restore). ``max_entries``
-        caps the window: the 256-entry default suits a free offset read; an
-        emulator state passes its console's exact palette size instead.
+        entry fits. ``max_entries`` caps the window: the 256-entry default suits a
+        free offset read; an emulator state passes its console's exact palette
+        size instead.
         """
         bpe = pipeline.palette_entry_size(
             preset_id or self._palette_preset_id(), self._registry
@@ -1064,32 +1269,29 @@ class PaletteSourceMixin:
         return FileRef(path, offset=byte_off, length=entries * bpe)
 
     def _load_palette_at_offset(self, byte_off: int) -> bool:
-        """Load palette data from the pixel source file at ``byte_off`` (Offset mode).
+        """Load palette data at ``byte_off`` in the owning file's coordinates.
 
-        The offset is in the pixel *source's* coordinate space (the same numbers
-        the offset box shows - i.e. after any skip the container made, which is
-        re-added for the file read), and the palette pathway re-reads the raw file - for
-        container/compressed pixel sources the bytes at that offset differ from the
-        decoded pixel data. Accepted for now; it mirrors the offset box semantics.
-        For a **slice**, the source file is the *parent*, so the offset is an
-        absolute parent-file offset - deliberately unbounded by the slice, since
-        a graphics block's palette usually lives elsewhere in the ROM.
+        ``byte_off`` is exactly the number the offset box and the status bar
+        show, and it addresses the same bytes the view is built from: past a
+        container's header skip, and through a permuting container or a reshape
+        (:meth:`_offset_palette_source`). For a **slice** those are the
+        *parent's* coordinates - deliberately unbounded by the slice, since a
+        graphics block's palette usually lives elsewhere in the ROM.
 
-        The read window is **writable**: color edits re-encode into exactly the
-        bytes they were read from (the ``FileRef`` is length-bounded, so Write
-        can only ever rewrite the palette's own region). That is the point of
-        Offset mode - editing a palette where it actually lives in the ROM. The
-        hazard is the user's to judge: the window is sized to whatever fits, so
-        pointing it at bytes that aren't really a palette and then saving
-        rewrites them (``docs/design/palette-editing.md``).
+        The read window is **writable wherever the offset still names a file
+        byte**: color edits re-encode into exactly the bytes they were read from
+        (the ``FileRef`` is length-bounded, so Write can only ever rewrite the
+        palette's own region). That is the point of Offset mode - editing a
+        palette where it actually lives in the ROM. The hazard is the user's to
+        judge: the window is sized to whatever fits, so pointing it at bytes that
+        aren't really a palette and then saving rewrites them
+        (``docs/design/palette-editing.md``).
         """
         if self._doc is None:
             return False
         src = self._doc.pixel_config.source
         try:
-            ref = self._selection_palette_source(
-                src.path, byte_off + self._container_skip()
-            )
+            ref, writable = self._offset_palette_source(byte_off)
         except PipelineError as exc:
             self._report(exc)
             return False
@@ -1102,16 +1304,20 @@ class PaletteSourceMixin:
                 title="celPix - palette",
             )
             return False
-        # Compression is deliberately ignored on this pathway: the config keeps
-        # the default decompress.none/compress.none, so the palette is read from
-        # - and written back to - the file's raw bytes at this offset whatever
-        # the *pixel* pathway is doing. A palette sitting next to compressed
-        # graphics is not itself compressed, and round-tripping it through a
-        # compressor would relocate and corrupt it.
+        # No compression on this pathway, and none is reachable: an offset
+        # resolves against a *file* entry's buffer, and a file entry's pathway
+        # never carries a scheme - only a slice's does. Which agrees with the
+        # intent anyway: a palette sitting next to compressed graphics is not
+        # itself compressed, and round-tripping it through a compressor would
+        # relocate and corrupt it.
         # Offset mode keeps pixel reloads from restoring the default palette.
         where = self._format_offset(byte_off)
         return self._load_and_commit_palette(
-            PathwayConfig(source=ref, interpret_preset_id=self._palette_preset_id()),
+            PathwayConfig(
+                source=ref,
+                interpret_preset_id=self._palette_preset_id(),
+                write_enabled=writable,
+            ),
             mode=PaletteMode.OFFSET,
             label=f"load palette from {where}",
             status=lambda n: f"Loaded {n} colors from {where}",
@@ -1210,14 +1416,16 @@ class PaletteSourceMixin:
         """Decode the loaded palette source under the format combo's preset;
         ``None`` (reported) on failure, without touching the document.
 
-        A **bounded** read window - Offset mode's length-limited ref into the
-        pixel file - is re-floored for the new preset, since the new entry size
-        need not divide the old window's byte length. An inline-data ref (an
-        emulator state's extracted CGRAM) carries its own bytes rather than being
-        re-read from disk, but is re-floored the same way, so a wider/narrower
-        format reads a whole number of entries out of it. A whole palette file is
-        unbounded and needs none. ``write_enabled`` carries over untouched: where
-        a Save lands is the load mode's decision, not this re-decode's.
+        A **bounded** read window - Offset mode's length-limited ref - is
+        re-floored for the new preset, since the new entry size need not divide
+        the old window's byte length; the re-floor goes through the same source
+        builder as the original load (:meth:`_offset_palette_source`), so a
+        buffer-backed window is re-cut from the owner's buffer with its base
+        intact, not re-read from the file. An inline-data ref that is *not* an
+        Offset window (an emulator state's extracted CGRAM) carries its own bytes
+        and is re-floored over them. A whole palette file is unbounded and needs
+        none. ``write_enabled`` carries over untouched: where a Save lands is the
+        load mode's decision, not this re-decode's.
         """
         # In File mode the palette lives on its PALETTE entry, so re-decode *its*
         # bytes/config, not the graphic's mirror.
@@ -1225,9 +1433,11 @@ class PaletteSourceMixin:
         assert pal_doc is not None
         old = pal_doc.palette_config
         source = old.source
-        if source.length is not None and source.data is None:
+
+        def refloored(build: Callable[[], FileRef | None]) -> FileRef | None:
+            """Run a window builder, reporting its failures; None ends the redecode."""
             try:
-                source = self._selection_palette_source(source.path, source.offset)
+                ref = build()
             except PipelineError as exc:
                 self._report(exc)
                 return None
@@ -1236,11 +1446,22 @@ class PaletteSourceMixin:
                     f"Cannot read {old.source.path}: {exc}", title="celPix - palette"
                 )
                 return None
-            if source is None:
+            if ref is None:
                 self._alert(
                     "Not enough data at the palette offset for this format.",
                     title="celPix - palette",
                 )
+            return ref
+
+        offset = source.offset
+        if self._palette_mode is PaletteMode.OFFSET:
+            source = refloored(lambda: self._offset_palette_source(offset)[0])
+            if source is None:
+                return None
+        elif source.length is not None and source.data is None:
+            path = source.path
+            source = refloored(lambda: self._file_palette_source(path, offset))
+            if source is None:
                 return None
         elif source.data is not None:
             # Inline bytes (an emulator state's extracted palette RAM): re-floor

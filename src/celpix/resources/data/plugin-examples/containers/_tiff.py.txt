@@ -8,10 +8,10 @@ the first time, since they run with the app's privileges).
 and a good one to learn containers from because its framing is a *lookup* rather
 than a fixed header. A TIFF does not store its pixels at a known offset: it
 stores a directory (the IFD) whose entries say where the image data actually
-sits, in one or more "strips" scattered anywhere in the file. So Read parses the
-directory and hands celPix the strips joined end to end, and Write puts edited
-bytes back strip by strip — which is exactly the general container job, since the
-byte range the codec edits has no fixed relationship to the file at all.
+sits, in one or more "strips" scattered anywhere in the file. So ``read`` parses
+the directory and hands celPix the strips joined end to end, and ``write`` puts
+edited bytes back strip by strip — which is exactly the general container job,
+since the byte range the codec edits has no fixed relationship to the file at all.
 
 **Layout.** ``II``/``MM`` picks the byte order for every number in the file, then
 magic 42, then the offset of the first IFD. An IFD is an entry count, then
@@ -20,10 +20,10 @@ four bytes) or an offset to it. Three tags matter here: ``StripOffsets`` (273),
 ``StripByteCounts`` (279) and ``Compression`` (259).
 
 **Compression.** Baseline TIFF's own PackBits is a *celPix* compression plugin,
-not a container concern: this reader hands over the strips exactly as stored and
-reports which scheme they use, and the user picks "PackBits" in the Compression
-dropdown to unpack them. The two layers compose — that is why they are separate
-pipeline stages.
+not a container concern: this hands over the strips exactly as stored and reports
+which scheme they use, and the user picks "PackBits" in the Compression dropdown
+to unpack them. The two layers compose — that is why they are separate pipeline
+stages.
 
 **Telling the user something.** Two channels, and the difference matters. Raise
 when the read cannot proceed — celPix stops and reports it, and nothing opens.
@@ -39,12 +39,10 @@ BigTIFF, and any compression beyond none/PackBits. Each would be more parsing,
 not a different shape.
 """
 
-from pathlib import Path
-
-from celpix.core.context import KEY_SOURCE_OFFSET, KEY_SOURCE_PATH, PipelineContext
+from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.notices import inform, warn
-from celpix.plugins import FileRef, PluginInfo
+from celpix.plugins import PluginInfo, ReadSource, WriteTarget
 
 _LITTLE = b"II*\x00"  # byte order + magic 42, together the whole signature
 _BIG = b"MM\x00*"
@@ -53,7 +51,7 @@ _TAG_COMPRESSION = 259
 _TAG_STRIP_OFFSETS = 273
 _TAG_STRIP_BYTE_COUNTS = 279
 
-# The IFD value types this reader understands. The three tags it wants are all
+# The IFD value types this container understands. The three tags it wants are all
 # counts and offsets, so BYTE/SHORT/LONG cover them; an entry of any other type
 # is skipped rather than guessed at.
 _TYPE_SIZES = {1: 1, 3: 2, 4: 4}
@@ -100,11 +98,11 @@ def _strips(raw: bytes) -> tuple[list[tuple[int, int]], int]:
     return list(zip(offsets, counts)), compression
 
 
-class TiffReader:
+class TiffContainer:
     info = PluginInfo(
-        id="read.tiff",
+        id="container.tiff",
         name="TIFF image (strip data)",
-        stage=Stage.READ,
+        stage=Stage.CONTAINER,
         extensions=(".tif", ".tiff"),
         # Both byte orders, so a TIFF is claimed whichever machine wrote it.
         magic=((0, _LITTLE), (0, _BIG)),
@@ -112,20 +110,20 @@ class TiffReader:
         short_name="TIFF",
     )
 
-    def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
+    def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         """The image strips, joined — the bytes a pixel codec should see."""
-        # An in-memory source is the bytes themselves; only fall back to the path.
-        raw = source.data if source.data is not None else Path(source.path).read_bytes()
+        # The host has already acquired the file's bytes, so a container is a
+        # pure transform of them and never opens source.path itself.
+        raw = source.data
         strips, compression = _strips(raw)
-        ctx.set(KEY_SOURCE_PATH, source.path)
         # Provenance is the first strip: it is where the data celPix now holds
         # begins in the file, which is what the address display and a save-back
         # want. The strips after it are not contiguous with it, which is exactly
-        # why Write below cannot be a single splice.
+        # why the write below cannot be a single splice.
         ctx.set(KEY_SOURCE_OFFSET, strips[0][0])
         name = _COMPRESSION_NAMES.get(compression, f"unsupported ({compression})")
         # Advisory, like everything on the context: it tells the user which
-        # Compression entry to pick without this reader deciding for them.
+        # Compression entry to pick without this container deciding for them.
         ctx.set("tiff.compression", name)
         # A *notice* is the other half of that: the context entry above is for
         # another stage to read, this is for the person looking at the result.
@@ -139,7 +137,7 @@ class TiffReader:
                 f"Unsupported TIFF compression ({compression})",
                 "The strips are handed over exactly as stored, so they\n"
                 "will look like noise until a matching Compression\n"
-                "plugin unpacks them - and this reader ships none.",
+                "plugin unpacks them - and this example ships none.",
                 self.info.id,
             )
         if len(strips) > 1:
@@ -156,42 +154,35 @@ class TiffReader:
             joined = joined[: source.length]
         return joined
 
-
-class TiffWriter:
-    info = PluginInfo(
-        id="write.tiff",
-        name="TIFF image (strip data)",
-        stage=Stage.WRITE,
-    )
-
-    def write(self, data: bytes, dest: FileRef, ctx: PipelineContext) -> None:
+    def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         """Put edited bytes back into the strips they were read out of.
 
         ``dest.offset`` is not consulted: the strips say where the bytes go, and
         they are not contiguous, so a single file offset could not describe the
         destination even in principle. Every container that relocates data ends
         up here — Read's mapping is the only thing that knows how to undo itself.
+        Returning the file *whole* is what makes that expressible: the edit lands
+        in several places at once, and everything between the strips is carried
+        across untouched.
 
         The strips are a fixed set of slots, so the edited data has to be exactly
         the size it was read as. It always is for an ordinary tile edit, which
         rewrites bytes in place; a re-compression that packed to a different size
         would not fit, and is refused rather than written half-way.
         """
-        raw = Path(dest.path).read_bytes()
-        strips, _compression = _strips(raw)
+        strips, _compression = _strips(dest.existing)
         total = sum(length for _at, length in strips)
         if len(data) != total:
             raise ValueError(
                 f"{len(data)} bytes do not fit the image's {total}-byte strips"
             )
-        out = bytearray(raw)
+        out = bytearray(dest.existing)
         taken = 0
         for at, length in strips:
             out[at : at + length] = data[taken : taken + length]
             taken += length
-        Path(dest.path).write_bytes(bytes(out))
+        return bytes(out)
 
 
 def register(registry):
-    registry.register(TiffReader())
-    registry.register(TiffWriter())
+    registry.register(TiffContainer())

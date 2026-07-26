@@ -1,16 +1,17 @@
 """The strictly linear pipeline: run both pathways for load and for save.
 
-Load runs each pathway forward — Read -> Decompress -> interpret — and converges
-the results into a :class:`Document`. Save mirrors it — interpret.encode ->
-Compress -> Write — per pathway, with palette Write optional. Any stage that
-cannot proceed raises :class:`PipelineError`, which halts the pipeline and names
-the stage + pathway + reason; nothing partial is written
-(``docs/design/overview.md`` §2).
+Load runs each pathway forward — container.read -> reshape -> decompress ->
+interpret — and converges the results into a :class:`Document`. Save mirrors
+it — interpret.encode -> compress -> unshape -> container.write — per pathway,
+with the palette's save optional. Any stage that cannot proceed raises
+:class:`PipelineError`, which halts the pipeline and names the stage + direction
++ pathway + reason; nothing partial is written (``docs/design/overview.md`` §2).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, NamedTuple, TypeVar
 
 from celpix.core import ceil_div
@@ -20,13 +21,21 @@ from celpix.core.arrangement import (
     compose_window,
     reflow_2d,
 )
-from celpix.core.context import PipelineContext
+from celpix.core.context import KEY_SOURCE_FILES, KEY_SOURCE_PATH, PipelineContext
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import DecompressPlugin, FileRef
+from celpix.plugins.base import (
+    NO_RESHAPE,
+    RAW_CONTAINER,
+    CompressionPlugin,
+    FileRef,
+    ReadSource,
+    SourceFile,
+    WriteTarget,
+)
 from celpix.plugins.registry import Registry
 
 T = TypeVar("T")
@@ -48,7 +57,7 @@ class ScanResult:
 
 def find_next_structure(
     data: bytes,
-    plugin: DecompressPlugin,
+    plugin: CompressionPlugin,
     window_len: int,
     start: int,
     *,
@@ -93,14 +102,19 @@ class PixelData(NamedTuple):
     ctx: PipelineContext
 
 
-def _run(stage: Stage, pathway: Pathway, fn: Callable[[], T]) -> T:
-    """Run one stage, translating any failure into a hard-stop PipelineError."""
+def _run(stage: Stage, pathway: Pathway, fn: Callable[[], T], action: str = "") -> T:
+    """Run one stage, translating any failure into a hard-stop PipelineError.
+
+    ``action`` is the direction within the stage (``read``/``write``,
+    ``decompress``/``compress``) — a stage covers both, and which one failed is
+    what the user needs to know first (:class:`PipelineError`).
+    """
     try:
         return fn()
     except PipelineError:
         raise
     except Exception as exc:  # noqa: BLE001 — deliberately funnel every failure
-        raise PipelineError(stage, pathway, str(exc)) from exc
+        raise PipelineError(stage, pathway, str(exc), action) from exc
 
 
 def load_pixel_data(
@@ -538,6 +552,21 @@ def load_palette(cfg: PathwayConfig, reg: Registry) -> PaletteData:
     return PaletteData(colors, ctx, data)
 
 
+def read_region(cfg: PathwayConfig, reg: Registry) -> tuple[bytes, PipelineContext]:
+    """A pathway's Read alone: container -> reshape -> decompress, no decoding.
+
+    The front half of :func:`load_pixels` without a codec, for a caller that
+    needs an entry's **view buffer** rather than its picture — an Offset palette
+    resolving its coordinates against the file entry that owns them, when that
+    entry is closed and has no live document to borrow the bytes from
+    (``docs/design/palette-editing.md`` §2). The context comes back because the
+    buffer alone doesn't say where it starts: only the container knows that, and
+    it reports it as ``KEY_SOURCE_OFFSET``.
+    """
+    ctx = PipelineContext()
+    return _read_and_decompress(cfg, ctx, reg, Pathway.PIXEL), ctx
+
+
 def palette_entry_size(preset_id: str, reg: Registry) -> int:
     """Byte size of one palette entry under the preset — for sizing palette reads."""
     engine, preset = reg.engine_for(preset_id)
@@ -704,27 +733,132 @@ def export_palette(
         Pathway.PALETTE,
         lambda: engine.encode(doc.palette, preset.params, doc.palette_ctx),
     )
-    _run(
-        Stage.WRITE,
-        Pathway.PALETTE,
-        lambda: reg.plugin(Stage.WRITE, "write.raw-file").write(
-            data, FileRef(path), doc.palette_ctx
-        ),
-    )
+
+    def write() -> None:
+        container = reg.plugin(Stage.CONTAINER, RAW_CONTAINER)
+        _deposit(FileRef(path), lambda t: container.write(data, t, doc.palette_ctx))
+
+    _run(Stage.CONTAINER, Pathway.PALETTE, write, "write")
+
+
+def _existing(path: str) -> bytes:
+    """A *destination's* current bytes, or ``b""`` when it isn't there yet.
+
+    Write-side only. A missing source is a hard failure — reading one lets the
+    OSError out so the load stops and says so, rather than opening an empty
+    document that looks like a file full of zeroes.
+    """
+    target = Path(path)
+    return target.read_bytes() if target.exists() else b""
+
+
+def _acquire(ref: FileRef) -> tuple[ReadSource, tuple[SourceFile, ...]]:
+    """Resolve a :class:`FileRef` to the bytes a container is handed, plus the
+    files those bytes came from.
+
+    The host's half of the container contract: opening the files (or taking the
+    in-memory buffer a caller supplied) happens here, once, so that every
+    container gets the same answer and none of them has to know which of the two
+    it is looking at. A container that opened the path itself would serve the
+    file's *saved* bytes to a slice whose parent has unsaved edits.
+
+    **Several files are joined end to end**, in the order the ref names them, and
+    handed over as one buffer. That is the whole of multi-file support as a
+    container sees it: nothing in the contract changes, and every container ever
+    written works on a joined region without being told. The spans come back
+    alongside for the caller to publish (``KEY_SOURCE_FILES``) and are what the
+    container would consult if it did care.
+    """
+    if ref.data is not None:
+        # An in-memory source is one buffer by construction — it is a slice of a
+        # parent's live bytes, which were themselves already joined if the parent
+        # had several files.
+        source = ReadSource(ref.data, ref.path, ref.offset, ref.length, ref.data_base)
+        return source, (SourceFile(ref.path, 0, len(ref.data)),)
+    blobs = [Path(path).read_bytes() for path in ref.paths]
+    spans, at = [], 0
+    for path, blob in zip(ref.paths, blobs):
+        spans.append(SourceFile(path, at, len(blob)))
+        at += len(blob)
+    joined = blobs[0] if len(blobs) == 1 else b"".join(blobs)
+    return ReadSource(joined, ref.path, ref.offset, ref.length), tuple(spans)
+
+
+def _deposit(ref: FileRef, produce: Callable[[WriteTarget], bytes]) -> None:
+    """Hand ``ref``'s current bytes to ``produce`` and store what it returns.
+
+    The mirror of :func:`_acquire`, and the only place a pathway writes a file.
+    The destination is read first because a container returns it *whole* — that is
+    what lets it keep the framing and the surrounding bytes it never decoded — so
+    it has to be shown what is there to keep.
+
+    With several files the returned buffer is cut back apart at the boundaries the
+    files on disk have *now*, and each piece written to its own file. So the
+    result has to be the length it was handed: the boundaries are the only thing
+    that says which bytes belong to which file, and a buffer that changed size has
+    moved every boundary after the change by an unknown amount. Refusing is the
+    only safe answer — the alternative is writing most of a sprite sheet into the
+    wrong chip. A single file has no boundaries to keep and so is free to grow or
+    shrink, which is what a fresh palette export relies on.
+
+    Files whose bytes did not change are left alone rather than rewritten
+    identically: editing one tile of a region spread over four ROM chips should
+    not touch the timestamps of the three that did not change.
+    """
+    if len(ref.paths) == 1:
+        existing = _existing(ref.path)
+        result = produce(WriteTarget(existing, ref.path, ref.offset, ref.length))
+        Path(ref.path).write_bytes(result)
+        return
+    blobs = [_existing(path) for path in ref.paths]
+    existing = b"".join(blobs)
+    result = produce(WriteTarget(existing, ref.path, ref.offset, ref.length))
+    if len(result) != len(existing):
+        raise ValueError(
+            f"result is {len(result)} bytes but the {len(ref.paths)} files it has "
+            f"to be split back into hold {len(existing)}; the file boundaries "
+            "would move, so nothing was written"
+        )
+    at = 0
+    for path, blob in zip(ref.paths, blobs):
+        chunk = result[at : at + len(blob)]
+        at += len(blob)
+        if chunk != blob:
+            Path(path).write_bytes(chunk)
 
 
 def _read_and_decompress(
     cfg: PathwayConfig, ctx: PipelineContext, reg: Registry, pathway: Pathway
 ) -> bytes:
-    raw = _run(
-        Stage.READ,
+    def read() -> bytes:
+        source, files = _acquire(cfg.source)
+        # Provenance the host owns, because it is the host that knows where the
+        # bytes came from; the container publishes only KEY_SOURCE_OFFSET, which
+        # is a fact about the format rather than about the source. Both keys are
+        # set before the container runs, so one that wants to know how its buffer
+        # was assembled can read KEY_SOURCE_FILES while assembling it.
+        ctx.set(KEY_SOURCE_PATH, source.path)
+        ctx.set(KEY_SOURCE_FILES, files)
+        return reg.plugin(Stage.CONTAINER, cfg.container_id).read(source, ctx)
+
+    raw = _run(Stage.CONTAINER, pathway, read, "read")
+    # The reshape sits between the container and the decompressor so that a
+    # compressed structure inside an interleaved region is contiguous by the
+    # time compression sees it. It is handed the container's whole payload —
+    # a reshape is region-scoped, and the region is what Read produced.
+    shaped = _run(
+        Stage.RESHAPE,
         pathway,
-        lambda: reg.plugin(Stage.READ, cfg.read_id).read(cfg.source, ctx),
+        lambda: reg.plugin(Stage.RESHAPE, cfg.reshape_id).reshape(raw, ctx),
+        "reshape",
     )
     return _run(
-        Stage.DECOMPRESS,
+        Stage.COMPRESSION,
         pathway,
-        lambda: reg.plugin(Stage.DECOMPRESS, cfg.decompress_id).decompress(raw, ctx),
+        lambda: reg.plugin(Stage.COMPRESSION, cfg.compression_id).decompress(
+            shaped, ctx
+        ),
+        "decompress",
     )
 
 
@@ -756,6 +890,24 @@ def _save_palette(doc: Document, reg: Registry) -> None:
     no original bytes, or a palette whose length no longer matches them (a
     format switch changes the entry size, so the old buffer doesn't apply).
     """
+    data = spliced_palette_bytes(doc, reg)
+    _compress_and_write(doc.palette_config, data, doc.palette_ctx, reg, Pathway.PALETTE)
+    # The file now holds these bytes, so they become the baseline for the next
+    # splice and no entry is outstanding. Skipping this would make a second save
+    # splice against pre-save bytes and undo the first one's edits.
+    doc.palette_bytes = data
+    doc.palette_edits = set()
+
+
+def spliced_palette_bytes(doc: Document, reg: Registry) -> bytes:
+    """The palette's byte image as a save would write it: the freshly encoded
+    bytes of the *edited* entries spliced into the buffer it was read from.
+
+    The encode half of :func:`_save_palette`, usable without a write target —
+    an Offset palette living inside a reordered region persists an edit by
+    splicing this into the owning entry's pixel buffer rather than through its
+    own (write-disabled) pathway (``docs/design/palette-editing.md`` §2).
+    """
     cfg = doc.palette_config
     engine, preset = reg.engine_for(cfg.interpret_preset_id)
     encoded = _run(
@@ -763,13 +915,7 @@ def _save_palette(doc: Document, reg: Registry) -> None:
         Pathway.PALETTE,
         lambda: engine.encode(doc.palette, preset.params, doc.palette_ctx),
     )
-    data = _splice_palette(doc, encoded, engine, preset)
-    _compress_and_write(cfg, data, doc.palette_ctx, reg, Pathway.PALETTE)
-    # The file now holds these bytes, so they become the baseline for the next
-    # splice and no entry is outstanding. Skipping this would make a second save
-    # splice against pre-save bytes and undo the first one's edits.
-    doc.palette_bytes = data
-    doc.palette_edits = set()
+    return _splice_palette(doc, encoded, engine, preset)
 
 
 def _splice_palette(doc: Document, encoded: bytes, engine, preset) -> bytes:  # noqa: ANN001
@@ -798,29 +944,57 @@ def _compress_and_write(
     reg: Registry,
     pathway: Pathway,
 ) -> None:
-    """Compress ``data`` and write it to the config's target.
+    """Compress ``data``, undo any reshape, and write it to the config's target.
 
     A bounded target (``length`` set — a slice of a larger file) is a hard slot:
     a result that would overflow it raises before anything touches the file. A
     result *smaller* than the slot is written short, leaving the slot's tail
     bytes as they were — every supported scheme is self-delimiting, so the stale
     tail is inert, and not rewriting it keeps the file diff minimal.
+
+    **Under an active reshape the slot must be filled exactly.** A reshape's
+    part boundaries are fractions of the region's length, so a short result is
+    a *different region* whose unshape scatters every byte to the wrong chip —
+    there is no such thing as writing the front of one.
     """
     packed = _run(
-        Stage.COMPRESS,
+        Stage.COMPRESSION,
         pathway,
-        lambda: reg.plugin(Stage.COMPRESS, cfg.compress_id).compress(data, ctx),
+        lambda: reg.plugin(Stage.COMPRESSION, cfg.compression_id).compress(data, ctx),
+        "compress",
+    )
+    shaped = _run(
+        Stage.RESHAPE,
+        pathway,
+        lambda: reg.plugin(Stage.RESHAPE, cfg.reshape_id).unshape(packed, ctx),
+        "unshape",
     )
     target = cfg.write_target()
-    if target.length is not None and len(packed) > target.length:
+    if target.length is not None and len(shaped) > target.length:
         raise PipelineError(
-            Stage.WRITE,
+            Stage.CONTAINER,
             pathway,
-            f"result ({len(packed)} bytes) exceeds the {target.length}-byte slot "
+            f"result ({len(shaped)} bytes) exceeds the {target.length}-byte slot "
             f"at {target.offset:#x} in {target.path}",
+            "write",
         )
-    _run(
-        Stage.WRITE,
-        pathway,
-        lambda: reg.plugin(Stage.WRITE, cfg.write_id).write(packed, target, ctx),
-    )
+    if (
+        cfg.reshape_id != NO_RESHAPE
+        and target.length is not None
+        and len(shaped) != target.length
+    ):
+        raise PipelineError(
+            Stage.RESHAPE,
+            pathway,
+            f"result ({len(shaped)} bytes) must fill the {target.length}-byte "
+            f"slot at {target.offset:#x} in {target.path} exactly: a reshape's "
+            "boundaries are fractions of the region, so a shorter region is a "
+            "different reshape",
+            "unshape",
+        )
+
+    def write() -> None:
+        container = reg.plugin(Stage.CONTAINER, cfg.container_id)
+        _deposit(target, lambda dest: container.write(shaped, dest, ctx))
+
+    _run(Stage.CONTAINER, pathway, write, "write")

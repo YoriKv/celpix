@@ -20,8 +20,19 @@ class Registry:
         self._presets: dict[str, Preset] = {}
 
     # -- plugins -----------------------------------------------------------
-    def register(self, plugin: Plugin) -> None:
-        stage = plugin.info.stage
+    def register(self, plugin: Plugin, stage: Stage | None = None) -> None:
+        """Register ``plugin``, at ``stage`` when the caller knows better.
+
+        Folder-drop discovery passes the stage its folder implies, so a dropped
+        plugin need not repeat it (:class:`~celpix.plugins.base.PluginInfo`).
+        Registering directly — as the built-ins do — has no folder behind it, so
+        the descriptor has to say.
+        """
+        stage = stage or plugin.info.stage
+        if stage is None:
+            raise ValueError(
+                f"plugin {plugin.info.id!r} names no stage, and none was supplied"
+            )
         bucket = self._plugins[stage]
         if plugin.info.id in bucket:
             raise ValueError(f"duplicate plugin id for {stage.value}: {plugin.info.id}")

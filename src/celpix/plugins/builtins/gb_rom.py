@@ -1,7 +1,7 @@
 """Game Boy / Game Boy Color ROM container — checksum repair on write.
 
 The odd one among the containers: it strips nothing. A ``.gb`` file *is* its
-bytes, so Read is the plain reader with a signature attached. What makes it a
+bytes, so its read is the plain one with a signature attached. What makes it a
 container is the write half — a GB ROM carries two checksums over its own
 header, and editing tiles anywhere in the file invalidates the second of them:
 
@@ -27,11 +27,9 @@ See ``docs/graphics-formats-reference/implementation-guide.md`` §5.
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from celpix.core.context import KEY_SOURCE_OFFSET, KEY_SOURCE_PATH, PipelineContext
+from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
-from celpix.plugins.base import FileRef, PluginInfo
+from celpix.plugins.base import PluginInfo, ReadSource, WriteTarget, splice
 
 # The Nintendo logo the boot ROM compares against, at 0x104. Every ROM that runs
 # on hardware carries it byte-for-byte, which makes its head a far better
@@ -65,42 +63,23 @@ def repair_checksums(rom: bytes) -> bytes:
     return bytes(out)
 
 
-class GbRomReader:
+class GbRomContainer:
     info = PluginInfo(
-        id="read.gb-rom",
+        id="container.gb-rom",
         name="Game Boy ROM (checksum repair on write)",
-        stage=Stage.READ,
+        stage=Stage.CONTAINER,
         extensions=(".gb", ".gbc"),
         magic=((_LOGO_AT, _LOGO_HEAD),),
         short_name="GB",
     )
 
-    def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
-        # Identical to the raw reader: the container's whole job is on the write
+    def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
+        # Identical to the raw container: this one's whole job is on the write
         # side, and a GB ROM's bytes need no rearranging to be decoded.
-        in_memory = source.data is not None
-        raw = source.data if in_memory else Path(source.path).read_bytes()
-        start = max(0, source.offset - (source.data_base if in_memory else 0))
-        end = len(raw) if source.length is None else start + source.length
-        ctx.set(KEY_SOURCE_PATH, source.path)
         ctx.set(KEY_SOURCE_OFFSET, source.offset)
-        return raw[start:end]
+        return source.window()
 
-
-class GbRomWriter:
-    info = PluginInfo(
-        id="write.gb-rom",
-        name="Game Boy ROM (checksum repair on write)",
-        stage=Stage.WRITE,
-    )
-
-    def write(self, data: bytes, dest: FileRef, ctx: PipelineContext) -> None:
-        path = Path(dest.path)
-        existing = bytearray(path.read_bytes()) if path.exists() else bytearray()
-        end = dest.offset + len(data)
-        if len(existing) < end:
-            existing.extend(b"\x00" * (end - len(existing)))
-        existing[dest.offset : end] = data
+    def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         # Whole-file write into nothing: the spliced buffer *is* the ROM. Either
         # way the checksums are computed over the final bytes.
-        path.write_bytes(repair_checksums(bytes(existing)))
+        return repair_checksums(splice(dest.existing, dest.offset, data))

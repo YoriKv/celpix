@@ -5,8 +5,8 @@ and *contribute* entries for later ones. **Everything here is advisory** — a
 recommendation a downstream stage or the user may follow, adjust, or ignore, never
 an enforced constraint (see ``docs/design/overview.md`` §5).
 
-For the MVP the one concrete use is **provenance**: the Read stage records where
-the bytes came from so the Write stage can default to writing them back to the
+For the MVP the one concrete use is **provenance**: the container's read records
+where the bytes came from so its write can default to putting them back in the
 same place. The bag is intentionally an open, typed key/value store — plugins may
 define new keys and stages ignore keys they do not understand.
 """
@@ -20,22 +20,29 @@ from typing import Any
 # drift on the spelling.
 KEY_SOURCE_PATH = "source.path"  # str: filesystem path the bytes were read from
 KEY_SOURCE_OFFSET = "source.offset"  # int: byte offset within that source
+# tuple[SourceFile, ...]: every file that went into the buffer a container was
+# handed, in order, with the range each supplied. One entry for the ordinary
+# single-file source; several when a region is spread over its board's ROM chips.
+# Advisory like everything here — a container is handed the files already joined
+# precisely so it need not consult this, but one assembling a region from named
+# chips can.
+KEY_SOURCE_FILES = "source.files"
 # int: size of the compressed structure in the source, recorded by Decompress.
-# The Read stage usually over-reads (offset to end-of-file), so this — not the
+# A container usually over-reads (offset to end-of-file), so this — not the
 # input length — is the slot a save-back has to fit into.
-KEY_COMPRESSED_SIZE = "decompress.compressed-size"
+KEY_COMPRESSED_SIZE = "compression.compressed-size"
 # bool: set before Decompress by window-preview callers handing in a *bounded*
 # buffer (the visible view window) that may cut a structure short. A
 # decompressor that honours it returns the valid prefix it decoded when the
 # source ends mid-stream instead of raising; structurally corrupt data still
 # raises. Decompressors that don't understand the key just keep strict
 # behaviour.
-KEY_DECOMPRESS_PARTIAL = "decompress.allow-partial"
+KEY_DECOMPRESS_PARTIAL = "compression.allow-partial"
 # bool: whether Decompress found the structure's own end (terminator / known
 # size) inside the buffer — i.e. KEY_COMPRESSED_SIZE is the structure's true
 # extent, not a truncation point. Distinguishes "the whole structure is in
 # view" from a best-effort partial decode.
-KEY_DECOMPRESS_COMPLETE = "decompress.complete"
+KEY_DECOMPRESS_COMPLETE = "compression.complete"
 # One more well-known key lives in :mod:`celpix.core.notices` rather than here:
 # what a stage wants to *tell the user* without failing. It keeps company with
 # the notice type and its helpers, since unlike the scalars above it is only ever

@@ -95,9 +95,15 @@ class _EntryTree(QTreeWidget):
     the key and fires neither, so it silently does nothing. The only editing key
     the list acts on is Delete (remove entry); the arrow keys reach the tree's own
     navigation through the app-wide filter that already yields to this widget.
+
+    Shift+arrows reach it the same way, and it claims the vertical pair to reorder
+    the files (they resize the view window everywhere else). Selection is
+    single-item here, so nothing is lost: Shift+Up/Down would otherwise be a
+    second way to spell the bare arrows.
     """
 
     delete_pressed = Signal()  # Delete with the list focused - remove the entry
+    move_pressed = Signal(int)  # Shift+Up/Down - reorder by -1 / +1
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -113,6 +119,13 @@ class _EntryTree(QTreeWidget):
             self.delete_pressed.emit()
             event.accept()
             return
+        if event.modifiers() == Qt.KeyboardModifier.ShiftModifier and event.key() in (
+            Qt.Key.Key_Up,
+            Qt.Key.Key_Down,
+        ):
+            self.move_pressed.emit(-1 if event.key() == Qt.Key.Key_Up else 1)
+            event.accept()
+            return
         self.key_navigating = True
         try:
             super().keyPressEvent(event)  # emits currentItemChanged synchronously
@@ -123,6 +136,7 @@ class _EntryTree(QTreeWidget):
 class FileListPanel(QWidget):
     entry_activated = Signal(object)  # Entry — the user selected it in the list
     remove_requested = Signal(object)  # Entry — take it out of the list
+    move_requested = Signal(object, int)  # Entry (a FILE), -1/+1 — reorder the files
     write_requested = Signal(object)  # Entry
     export_png_requested = Signal(object)  # Entry (FILE/SLICE) — render to one PNG
     export_raw_requested = Signal(object)  # Entry (FILE/SLICE) — decoded bytes out
@@ -191,6 +205,7 @@ class FileListPanel(QWidget):
         # _EntryTree) rather than a QShortcut, so it wins the key over the
         # canvas's window-wide Clear/Delete instead of overloading with it.
         self._tree.delete_pressed.connect(self._remove_current)
+        self._tree.move_pressed.connect(self._move_current)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -288,6 +303,54 @@ class FileListPanel(QWidget):
             else:
                 self._tree.takeTopLevelItem(self._tree.indexOfTopLevelItem(item))
 
+    def move_entry(self, entry: Entry, delta: int) -> None:
+        """Move a file's row one place up (``delta`` -1) or down (+1), taking its
+        nested slices and bookmarks with it — the view side of
+        :meth:`~celpix.project.workspace.Workspace.move_file`.
+
+        Expansion and the highlight live in the *view*, not the item, so a row
+        taken out comes back collapsed and unhighlighted — both are put back
+        explicitly. The highlight is restored to whatever it was on, which need
+        not be the moved row itself: moving a file from the context menu while
+        one of its slices is the shown entry takes that row out of the tree too,
+        and it must come back current.
+        """
+        item = self._items.get(entry)
+        if item is None:
+            return
+        index = self._tree.indexOfTopLevelItem(item)
+        target = self._file_neighbour(index, delta)
+        if target is None:
+            return
+        # The neighbour's *pre-removal* index is the destination either way:
+        # moving down, dropping the row first shifts the neighbour up into it.
+        was_current = self._tree.currentItem()
+        was_expanded = item.isExpanded()
+        with signals_blocked(self._tree):  # a take/re-insert must not re-activate
+            self._tree.takeTopLevelItem(index)
+            self._tree.insertTopLevelItem(target, item)
+            item.setExpanded(was_expanded)
+            if was_current is not None:
+                self._tree.setCurrentItem(was_current)
+
+    def _file_neighbour(self, index: int, delta: int) -> int | None:
+        """The top-level index of the nearest file row ``delta``'s way from
+        ``index``, or None at the end of the list.
+
+        Scans rather than steps by one: the Palettes header is a top-level row
+        too, and a slice whose parent file isn't open sits at the top level as
+        well. Neither is a file, so a reorder passes over them — which keeps this
+        in step with the model, where the move counts files alone.
+        """
+        step = 1 if delta > 0 else -1
+        position = index + step
+        while 0 <= position < self._tree.topLevelItemCount():
+            entry = self._tree.topLevelItem(position).data(0, Qt.ItemDataRole.UserRole)
+            if entry is not None and entry.kind is EntryKind.FILE:
+                return position
+            position += step
+        return None
+
     def set_current(self, entry: Entry | None) -> None:
         self._current = entry
         with signals_blocked(self._tree):
@@ -344,20 +407,43 @@ class FileListPanel(QWidget):
         label = container_label(self._registry, entry.container_id)
         return f" ({label})" if label else ""
 
+    @staticmethod
+    def _files_hint(entry: Entry) -> str:
+        """`` (3)`` for a region joined from several files; ``""`` for one file.
+
+        A row is named after its *first* file, which alone would read as the whole
+        of what the entry holds — so how many files it really is goes beside the
+        name, where a name is being read. The whole count rather than how many
+        *extra* there are: "(3)" answers the question the row raises without the
+        reader having to add one to it. The paths themselves are long and belong
+        in the tooltip. Whole files only: a slice carries its parent's list but is
+        one region cut out of the join, so counting the parent's chips on its row
+        would answer a question the row isn't asking.
+        """
+        if entry.kind is not EntryKind.FILE or not entry.extra_paths:
+            return ""
+        return f" ({len(entry.paths)})"
+
     def _refresh_item(self, entry: Entry, item: QTreeWidgetItem) -> None:
         # The label is just the name (default slice names already read as
-        # "offset (length) compression"), plus the container hint on a file;
-        # coordinates live in the tooltip so a custom-named slice stays
-        # inspectable without cluttering the list.
+        # "offset (length) compression"), plus how many files join onto it and the
+        # container hint on a file; coordinates live in the tooltip so a
+        # custom-named slice stays inspectable without cluttering the list.
         unsaved = entry.pixel_dirty or entry.palette_dirty
-        name = f"{entry.name}{self._container_hint(entry)}"
+        name = f"{entry.name}{self._files_hint(entry)}{self._container_hint(entry)}"
         item.setText(0, f"● {name}" if unsaved else name)
         tip = entry.path
+        if entry.kind is EntryKind.FILE and entry.extra_paths:
+            # Numbered, because the order is what the join uses and is the one
+            # thing about a multi-file region a user cannot check anywhere else.
+            tip = f"{len(entry.paths)} files joined end to end:\n" + "\n".join(
+                f"{n}. {path}" for n, path in enumerate(entry.paths, 1)
+            )
         if entry.kind is EntryKind.FILE and self._registry is not None:
             # The full container name, since the label only had room for a tag.
             full = container_label(self._registry, entry.container_id)
             if full:
-                plugin = self._registry.plugin(Stage.READ, entry.container_id)
+                plugin = self._registry.plugin(Stage.CONTAINER, entry.container_id)
                 tip += f"\nContainer {plugin.info.name}"
         if entry.kind is EntryKind.SLICE:
             # A picture glyph marks a slice as its own little graphic, telling it
@@ -593,10 +679,32 @@ class FileListPanel(QWidget):
         if entry is not None:  # not the Palettes header
             self.remove_requested.emit(entry)
 
+    def _move_current(self, delta: int) -> None:
+        """The Shift+Up/Down shortcut: reorder the highlighted file.
+
+        Silent on anything else the highlight can be sitting on — a slice or
+        bookmark is ordered by its offset and a palette by registration, so there
+        is no hand order for the key to change there.
+        """
+        item = self._tree.currentItem()
+        if item is None or self._editing is not None:  # nothing, or mid-rename
+            return
+        entry: Entry | None = item.data(0, Qt.ItemDataRole.UserRole)
+        if entry is None or entry.kind is not EntryKind.FILE:
+            return
+        if self._can_move(item, delta):
+            self.move_requested.emit(entry, delta)
+
+    def _can_move(self, item: QTreeWidgetItem, delta: int) -> bool:
+        """Whether ``item``'s file row has a file to trade places with."""
+        index = self._tree.indexOfTopLevelItem(item)
+        return index >= 0 and self._file_neighbour(index, delta) is not None
+
     def _on_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         # A bookmark's or palette's double-click is its primary action — jump
-        # to it / apply it (rename stays on the context menu); a slice's
-        # double-click opens the renamer.
+        # to it / apply it (rename stays on the context menu); a file's or
+        # slice's double-click opens the renamer, single-click having already
+        # done the only other thing a row can do.
         entry: Entry | None = item.data(0, Qt.ItemDataRole.UserRole)
         if entry is None:  # the Palettes header
             return
@@ -609,10 +717,17 @@ class FileListPanel(QWidget):
 
     # -- rename --------------------------------------------------------------
     def _begin_rename(self, entry: Entry) -> None:
-        """Open the inline editor on ``entry``'s item (slices and bookmarks —
-        a file's or palette's name is its on-disk basename, not free text)."""
+        """Open the inline editor on ``entry``'s item.
+
+        Files, slices and bookmarks: a file opens under its basename, but a ROM
+        is rarely named after what a person is editing in it, and a region joined
+        from several chips is named after only the first of them — so the row is
+        free text like the others, and the path it was named from stays in the
+        tooltip. Not palettes: theirs is the ``.pal`` on disk, and the entry
+        exists to point at that file.
+        """
         item = self._items.get(entry)
-        if item is None or entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
+        if item is None or entry.kind is EntryKind.PALETTE:
             return
         self._editing = entry
         with signals_blocked(self._tree):  # marker strip must not read as an edit
@@ -674,12 +789,33 @@ class FileListPanel(QWidget):
             bookmark.triggered.connect(lambda: self.new_bookmark_requested.emit(entry))
             bookmark.setEnabled(sliceable)
             menu.addSeparator()
+            rename = menu.addAction("Rename…")
+            rename.triggered.connect(lambda: self._begin_rename(entry))
             # Always offered, and needs no document: correcting the container is
             # exactly what a file that failed to make sense needs.
-            container = menu.addAction("Change Container…")
+            container = menu.addAction("Edit File Container…")
+            # Display-only, like Remove's below: the working binding is the File
+            # menu's action, which acts on the *current* entry rather than the
+            # right-clicked one.
+            container.setShortcut(QKeySequence("Ctrl+E"))
             container.triggered.connect(
                 lambda: self.change_container_requested.emit(entry)
             )
+            menu.addSeparator()
+            # Files are the one kind in hand order (slices and bookmarks sort by
+            # offset, palettes by registration), so only they can be reordered.
+            # The key goes in the label after a tab, which Qt renders in the
+            # shortcut column, rather than being registered as the action's
+            # shortcut: Shift+Up/Down resize the view window window-wide, and a
+            # real binding here would fire from anywhere in the app. The working
+            # one is the tree's own key handling, which the navigation filter
+            # already defers to while the list has focus.
+            up = menu.addAction("Move Up\tShift+Up")
+            up.triggered.connect(lambda: self.move_requested.emit(entry, -1))
+            up.setEnabled(self._can_move(item, -1))
+            down = menu.addAction("Move Down\tShift+Down")
+            down.triggered.connect(lambda: self.move_requested.emit(entry, 1))
+            down.setEnabled(self._can_move(item, 1))
             menu.addSeparator()
         elif entry.kind is EntryKind.SLICE:
             # A slice's primary navigation action: reopen its region in the

@@ -118,3 +118,31 @@ def test_marquee_glyph_is_centred_like_the_other_tool_shapes() -> None:
         rows = alpha("marquee", box)
         assert rows == [list(reversed(row)) for row in rows]
         assert rows == rows[::-1]
+
+
+def test_a_stale_enum_preference_falls_back_to_the_default(qtbot, tmp_path) -> None:
+    # Every app-global preference (grid style, selection shape, active tool) is
+    # stored by its enum's string value, so a settings file written by an older or
+    # newer celPix can name a member this build doesn't have. That must not stop
+    # the window from being built, so an unreadable value reads as the default.
+    from enum import Enum
+
+    from PySide6.QtCore import QSettings
+
+    from celpix.ui.widgets import load_enum_setting, save_enum_setting
+
+    class Style(Enum):
+        LINE = "line"
+        DOT = "dot"
+
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(
+        QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path)
+    )
+    QSettings().clear()
+
+    assert load_enum_setting("probe/style", Style.LINE) is Style.LINE  # unset
+    save_enum_setting("probe/style", Style.DOT)
+    assert load_enum_setting("probe/style", Style.LINE) is Style.DOT  # round trip
+    QSettings().setValue("probe/style", "bogus")  # stale / foreign value
+    assert load_enum_setting("probe/style", Style.LINE) is Style.LINE

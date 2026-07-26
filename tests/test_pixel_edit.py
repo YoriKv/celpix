@@ -37,8 +37,10 @@ def _pixel(window, x: int, y: int) -> int:
 
 
 # -- the mode toggle -------------------------------------------------------
-def test_toggle_enters_pixel_mode(qtbot, tmp_path) -> None:
-    window = _window(qtbot, tmp_path)
+def test_the_toggle_arms_pixel_mode_and_tile_mode_takes_it_back(
+    qtbot, tmp_path
+) -> None:
+    window = _window(qtbot, tmp_path)  # the helper leaves it in pixel mode
     assert window._edit_mode is EditMode.PIXEL
     assert window._canvas._edit_mode is EditMode.PIXEL
     # Pixel mode is rectangle-only: the shape picker is forced and locked.
@@ -47,9 +49,6 @@ def test_toggle_enters_pixel_mode(qtbot, tmp_path) -> None:
     assert window._tools_panel.isEnabled()
     assert window._edit_mode_action.isChecked()
 
-
-def test_toggle_back_restores_tile_mode(qtbot, tmp_path) -> None:
-    window = _window(qtbot, tmp_path)
     window._set_edit_mode(EditMode.TILE)
     assert window._canvas._edit_mode is EditMode.TILE
     assert window._selection_shape.isEnabled()
@@ -579,63 +578,63 @@ def test_moving_the_view_sets_a_floating_selection_down(qtbot, tmp_path) -> None
     assert _pixel(window, 0, 0) == 0 and _pixel(window, 6, 6) == src
 
 
-def test_clicks_that_change_nothing_push_no_undo_step(qtbot, tmp_path) -> None:
-    """A stray Select click is only a step when it actually drops a selection."""
+def test_what_a_pixel_gesture_costs_on_the_undo_stack(qtbot, tmp_path) -> None:
+    """Which gestures are a step and which are free.
+
+    The rule differs by tool, which is the whole reason it is worth pinning: a
+    *painting* interaction is always one step, whether or not it moved a pixel
+    (the user drew, and Ctrl+Z should answer), while a Select gesture is a step
+    only when the selection actually ends up somewhere else.
+
+    Measured on the stack's **index**, not its count: this walks back through an
+    undo partway, and the next push truncates the redo tail it left behind — so
+    the count can stay put across a push that really did add a step.
+    """
     window = _window(qtbot, tmp_path)
+    stack = window._undo_stack
     window._tool = Tool.SELECT
-    before = window._undo_stack.count()
+
     # Nothing selected, click empty space: no selection change, no step.
+    before = stack.index()
     window._on_pixel_pressed(10, 10, Qt.MouseButton.LeftButton)
     window._on_pixel_released(10, 10)
-    assert window._undo_stack.count() == before
-    # Now make a selection and click away: dropping it *is* a step.
-    window._marquee = QRect(0, 0, 4, 4)
-    window._canvas.set_marquee(window._marquee)
-    window._on_pixel_pressed(20, 20, Qt.MouseButton.LeftButton)
-    window._on_pixel_released(20, 20)
-    assert window._marquee is None
-    assert window._undo_stack.count() == before + 1
-    window._undo_stack.undo()
-    assert window._marquee == QRect(0, 0, 4, 4)  # the selection came back
+    assert stack.index() == before
 
-
-def test_pressing_inside_a_selection_without_moving_pushes_nothing(
-    qtbot, tmp_path
-) -> None:
-    window = _window(qtbot, tmp_path)
-    window._tool = Tool.SELECT
-    window._marquee = QRect(0, 0, 2, 2)
-    before = window._undo_stack.count()
-    window._on_pixel_pressed(0, 0, Qt.MouseButton.LeftButton)  # lifts a float
-    window._on_pixel_released(0, 0)  # ...and puts it straight back
-    assert window._undo_stack.count() == before
-    assert window._marquee == QRect(0, 0, 2, 2)
-
-
-def test_paint_that_changes_nothing_still_costs_an_undo_step(qtbot, tmp_path) -> None:
-    """Every pixel interaction is one step, whether or not it moved a pixel."""
-    window = _window(qtbot, tmp_path)
-    window._tool = Tool.PENCIL
-    window._on_pixel_pressed(2, 3, Qt.MouseButton.LeftButton)
-    window._on_pixel_released(2, 3)  # paints the pen value
-    before = window._undo_stack.count()
-    # Paint the same pixel with the same pen: no byte changes, still a step.
-    window._on_pixel_pressed(2, 3, Qt.MouseButton.LeftButton)
-    window._on_pixel_released(2, 3)
-    assert window._undo_stack.count() == before + 1
-
-
-def test_making_a_selection_is_its_own_undo_step(qtbot, tmp_path) -> None:
-    window = _window(qtbot, tmp_path)
-    window._tool = Tool.SELECT
-    before = window._undo_stack.count()
+    # Dragging one out *is* a step, and undo restores the previous (empty) one.
     window._on_pixel_pressed(0, 0, Qt.MouseButton.LeftButton)
     window._on_pixel_moved(3, 3)
     window._on_pixel_released(3, 3)
     assert window._marquee == QRect(0, 0, 4, 4)
-    assert window._undo_stack.count() == before + 1
-    window._undo_stack.undo()
-    assert window._marquee is None  # undo restored the previous (empty) selection
+    assert stack.index() == before + 1
+    stack.undo()
+    assert window._marquee is None
+
+    # Pressing inside a selection lifts a float; releasing without moving puts it
+    # straight back, so the round trip is free.
+    window._marquee = QRect(0, 0, 2, 2)
+    window._canvas.set_marquee(window._marquee)
+    before = stack.index()
+    window._on_pixel_pressed(0, 0, Qt.MouseButton.LeftButton)
+    window._on_pixel_released(0, 0)
+    assert stack.index() == before
+    assert window._marquee == QRect(0, 0, 2, 2)
+
+    # Clicking away drops the selection — a change, so a step, and undoable.
+    window._on_pixel_pressed(20, 20, Qt.MouseButton.LeftButton)
+    window._on_pixel_released(20, 20)
+    assert window._marquee is None
+    assert stack.index() == before + 1
+    stack.undo()
+    assert window._marquee == QRect(0, 0, 2, 2)
+
+    # A paint that changes no bytes still costs a step.
+    window._tool = Tool.PENCIL
+    window._on_pixel_pressed(2, 3, Qt.MouseButton.LeftButton)
+    window._on_pixel_released(2, 3)  # paints the pen value
+    before = stack.index()
+    window._on_pixel_pressed(2, 3, Qt.MouseButton.LeftButton)
+    window._on_pixel_released(2, 3)  # same pen, same pixel
+    assert stack.index() == before + 1
 
 
 def test_pen_preview_follows_the_drawing_tools_and_the_pen(qtbot, tmp_path) -> None:

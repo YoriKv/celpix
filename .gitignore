@@ -30,6 +30,12 @@ venv/
 .mypy_cache/
 .cache/
 
+# --- Coverage ---
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
 # --- Packaging / release build outputs (for the future CI pipeline) ---
 *.spec
 *.dmg

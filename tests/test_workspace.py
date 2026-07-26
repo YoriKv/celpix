@@ -29,6 +29,8 @@ from celpix.project.workspace import (
     palette_source_for,
     pixel_config_for,
     relocate_path,
+    reorders_bytes,
+    retarget_files,
 )
 
 
@@ -114,11 +116,11 @@ def test_pixel_config_for_slice_bounds_source_and_derives_compressor(tmp_path) -
     ws = Workspace()
     rom = ws.open_file(str(tmp_path / "rom.sfc"))
 
-    lz = ws.add_slice(rom.path, "lz", 0x200, 0x80, "decompress.lz16")
+    lz = ws.add_slice(rom.path, "lz", 0x200, 0x80, "compression.lz16")
     cfg = pixel_config_for(lz, "preset.pixel.snes-4bpp", reg)
     assert cfg.source == FileRef(rom.path, offset=0x200, length=0x80)
-    assert cfg.decompress_id == "decompress.lz16"
-    assert cfg.compress_id == "compress.lz16"
+    assert cfg.compression_id == "compression.lz16"
+    assert cfg.compression_id == "compression.lz16"
     assert cfg.write_enabled
 
     # A scheme whose compressor isn't registered loads view-only. No built-in
@@ -126,10 +128,10 @@ def test_pixel_config_for_slice_bounds_source_and_derives_compressor(tmp_path) -
     # fallback: pixel_config_for derives the compressor purely by the
     # decompress.X ↔ compress.X id convention, so an unregistered counterpart
     # (compress.view-only-example) disables write-back.
-    rle = ws.add_slice(rom.path, "rle", 0x0, None, "decompress.view-only-example")
+    rle = ws.add_slice(rom.path, "rle", 0x0, None, "compression.view-only-example")
     cfg = pixel_config_for(rle, "preset.pixel.snes-4bpp", reg)
     assert not cfg.write_enabled
-    assert cfg.compress_id == "compress.none"
+    assert cfg.compression_id == "compression.none"
 
     # A FILE entry is unbounded and starts at the file: any header skip is the
     # container's to make and to record, not something the config asks for.
@@ -182,6 +184,43 @@ def test_slice_of_dirty_parent_reads_the_unsaved_bytes_past_a_header(tmp_path) -
     assert pipeline.load_pixel_data(cfg, reg).data == bytes(range(0x20, 0x30))
 
 
+def test_slice_of_a_permuting_parent_reads_its_buffer_and_cannot_write(
+    tmp_path,
+) -> None:
+    """A parent whose container *reorders* bytes makes its offsets positions in
+    the deinterleaved ROM, not in the file — so a slice has to read through the
+    parent's buffer, closed parent or not, and must not write.
+
+    Reading the file instead is silently wrong (a scrambled region that still
+    looks like tiles), and writing there is worse: the splice lands on bytes the
+    offset never named. Both were reachable before the parent's reordering was
+    declared.
+    """
+    reg = default_registry()
+    # .smd: 512-byte header, then a 16 KB block holding all the odd bytes and
+    # then all the even ones. Deinterleaved, byte 0 is 0x22 and byte 1 is 0x11.
+    body = bytearray(16384)
+    body[0], body[8192] = 0x11, 0x22
+    smd = tmp_path / "rom.smd"
+    smd.write_bytes(bytes(512) + bytes(body))
+
+    ws = Workspace()
+    parent = ws.open_file(str(smd))
+    parent.container_id = "container.smd"  # what opening it detects by suffix
+    assert reorders_bytes(parent, reg)
+    sl = ws.add_slice(parent.path, "gfx", 512, 0x10)  # the buffer's first bytes
+
+    # The parent is closed: the region is read fresh rather than falling back to
+    # the file, which at 512 holds the odd half rather than the joined bytes.
+    assert parent.doc is None
+    cfg = pixel_config_for(sl, "preset.pixel.snes-4bpp", reg, ws)
+    assert cfg.source.data is not None
+    assert cfg.source.data_base == 512
+    assert pipeline.load_pixel_data(cfg, reg).data[:2] == b"\x22\x11"
+    # No file offset for a permuted splice to land on.
+    assert cfg.write_enabled is False
+
+
 def test_invalidate_path_spares_the_saver_and_dirty_siblings(tmp_path) -> None:
     ws = Workspace()
     rom = ws.open_file(str(tmp_path / "rom.sfc"))
@@ -202,7 +241,7 @@ def test_invalidate_path_spares_the_saver_and_dirty_siblings(tmp_path) -> None:
 def test_backfill_slice_length_requires_a_complete_decompress(tmp_path) -> None:
     ws = Workspace()
     rom = ws.open_file(str(tmp_path / "rom.sfc"))
-    s = ws.add_slice(rom.path, "lz", 0x100, None, "decompress.lz16")
+    s = ws.add_slice(rom.path, "lz", 0x100, None, "compression.lz16")
 
     partial = PipelineContext()
     partial.set(KEY_COMPRESSED_SIZE, 0x40)  # extent of a *truncated* decode
@@ -321,6 +360,52 @@ def test_relocate_path_repoints_shared_rom_and_palette_sources(tmp_path) -> None
     assert file_entry.path == renamed
     assert file_entry.name == "moved.smc"
     assert sl.name == "gfx"
+
+    # A name the user typed over the basename is not a stale one to correct:
+    # the next relocate moves the path and leaves the row's name alone.
+    file_entry.name = "tileset ROM"
+    relocate_path(ws, renamed, str(tmp_path / "elsewhere.sfc"))
+    assert file_entry.path == str(tmp_path / "elsewhere.sfc")
+    assert file_entry.name == "tileset ROM"
+
+
+def test_retarget_files_carries_children_and_renames(tmp_path) -> None:
+    """A file's new list reaches its slices and bookmarks, keyed off the old path."""
+    first = str(tmp_path / "chip1.bin")
+    second = str(tmp_path / "chip2.bin")
+    ws = Workspace()
+    file_entry = ws.open_file(first)
+    sl = ws.add_slice(first, "gfx", 0x10, 0x20)
+    mark = Entry(name="here", kind=EntryKind.BOOKMARK, path=first, slice_offset=0x40)
+    ws.entries.append(mark)
+    other = ws.open_file(str(tmp_path / "unrelated.bin"))
+
+    touched = retarget_files(ws, file_entry, (first, second))
+    assert touched == [file_entry, sl, mark]
+    # A child's offset addresses the parent's *joined* buffer, so it has to be
+    # joined the same way — the extras reach every child, not just the file.
+    for entry in (file_entry, sl, mark):
+        assert entry.paths == (first, second)
+    assert other.paths == (str(tmp_path / "unrelated.bin"),)
+
+    # Reordering moves the entry's identity: the children follow onto the new
+    # first file (or they would no longer find their parent at all), and the
+    # FILE's name follows the basename it now leads with.
+    retarget_files(ws, file_entry, (second, first))
+    assert file_entry.name == "chip2.bin"
+    for entry in (file_entry, sl, mark):
+        assert entry.path == second and entry.extra_paths == (first,)
+    assert sl.name == "gfx"  # a slice keeps the name the user gave it
+
+    # A slice is never the thing being re-pointed — its list is its parent's.
+    assert retarget_files(ws, sl, (first,)) == []
+    assert sl.path == second
+
+    # The basename follows the list only while the row is still showing it: a
+    # name the user typed survives the list being re-ordered under it.
+    file_entry.name = "tileset ROM"
+    retarget_files(ws, file_entry, (first, second))
+    assert file_entry.path == first and file_entry.name == "tileset ROM"
 
 
 def test_palette_source_for_prefers_missing_palette(tmp_path) -> None:
@@ -513,3 +598,111 @@ def test_export_basename_prefixes_slices_and_sanitizes() -> None:
     # A slice is prefixed with the parent stem so cross-file slices don't collide,
     # and its punctuation is flattened to underscores (trailing ones trimmed).
     assert export_basename(slice_entry) == "sheet_1000__800"
+
+
+# -- regions spread over several files -------------------------------------
+
+
+def _region(tmp_path, ws):
+    """Two 64-byte "ROM chips" opened as one region, plus their bytes."""
+    lo = bytes(range(64))
+    hi = bytes(range(64, 128))
+    first, second = tmp_path / "lo.bin", tmp_path / "hi.bin"
+    first.write_bytes(lo)
+    second.write_bytes(hi)
+    entry = ws.open_file(str(first), extra_paths=(str(second),))
+    return entry, first, second, lo + hi
+
+
+def test_a_slice_reads_its_parents_whole_file_list(tmp_path) -> None:
+    """A slice's offset is into the parent's *joined* region.
+
+    Reading only the file the slice is named after would put every offset past
+    the first chip somewhere else entirely — and silently, since the bytes it
+    landed on are still plausible graphics.
+    """
+    reg = default_registry()
+    ws = Workspace()
+    parent, first, second, joined = _region(tmp_path, ws)
+
+    # A slice straddling the boundary: 32 bytes from each chip.
+    sliced = ws.add_slice(parent.path, "gfx", 32, 64)
+    assert sliced.paths == (str(first), str(second))
+
+    cfg = pixel_config_for(sliced, "preset.pixel.chunky-8bpp", reg, ws)
+    assert cfg.source.paths == (str(first), str(second))
+    assert pipeline.load_pixel_data(cfg, reg).data == joined[32:96]
+
+
+def test_a_region_is_missing_when_any_of_its_files_is(tmp_path) -> None:
+    # One absent chip does not shorten a region, it moves every byte after the
+    # gap — so the region is unloadable, and it is the chip that has to be found.
+    ws = Workspace()
+    parent, _first, second, _joined = _region(tmp_path, ws)
+    assert missing_paths(ws) == []
+
+    second.unlink()
+    assert data_missing(parent)
+    assert missing_paths(ws) == [str(second)]  # only the one that moved
+
+    moved = tmp_path / "moved.bin"
+    moved.write_bytes(bytes(64))
+    relocate_path(ws, str(second), str(moved))
+    assert parent.paths == (parent.path, str(moved))  # repointed, order kept
+    assert missing_paths(ws) == []
+
+
+def test_saving_a_shared_chip_invalidates_the_entries_reading_it(tmp_path) -> None:
+    # Cache invalidation follows every file of a region, not just the one it is
+    # named after: an entry that only borrows a chip as its *second* file goes
+    # just as stale when something rewrites it.
+    ws = Workspace()
+    parent, _first, second, _joined = _region(tmp_path, ws)
+    other = ws.open_file(str(second))
+    other.doc = _fake_doc()
+
+    ws.invalidate_path(str(second), keep=parent)
+    assert other.doc is None
+
+
+def test_move_file_carries_its_children_and_lands_between_files(tmp_path) -> None:
+    # Reordering a file is a block move: its slices and bookmarks are matched by
+    # path rather than position, but the panel can only nest them under a parent
+    # that precedes them, so they travel with it. And the block is positioned
+    # relative to the file that follows, not the neighbour it passes - a
+    # neighbour's own children sit somewhere after it, so aiming past the last of
+    # them would jump the block over whatever file came next.
+    ws = Workspace()
+    a = ws.open_file(str(tmp_path / "a.sfc"))
+    b = ws.open_file(str(tmp_path / "b.sfc"))
+    c = ws.open_file(str(tmp_path / "c.sfc"))
+    a_slice = ws.add_slice(str(tmp_path / "a.sfc"), "cut", 0, 64)
+    b_slice = ws.add_slice(str(tmp_path / "b.sfc"), "cut", 0, 64)
+    assert ws.entries == [a, b, c, a_slice, b_slice]
+
+    assert ws.move_file(a, 1)
+    # One place only: a sits between b and c, and b keeps its own slice after it.
+    assert ws.entries == [b, a, a_slice, c, b_slice]
+    assert ws.children_of(a) == [a_slice]
+
+    assert ws.move_file(a, -1)  # a one-step move is its own inverse
+    assert ws.entries == [a, a_slice, b, c, b_slice]
+
+    assert not ws.move_file(a, -1)  # already first
+    assert not ws.move_file(c, 1)  # already last
+    assert not ws.move_file(a_slice, -1)  # slices sort by offset, not by hand
+    assert ws.entries == [a, a_slice, b, c, b_slice]
+
+
+def test_can_move_file_counts_only_files(tmp_path) -> None:
+    # Palettes and bookmarks share the flat list but not the hand order, so a
+    # file with only those between it and the end of the list is still last.
+    ws = Workspace()
+    rom = ws.open_file(str(tmp_path / "rom.sfc"))
+    ws.add_palette(str(tmp_path / "p.pal"), None)
+    assert not ws.can_move_file(rom, 1)
+    assert not ws.can_move_file(rom, -1)
+
+    other = ws.open_file(str(tmp_path / "other.sfc"))
+    assert ws.can_move_file(rom, 1)
+    assert ws.can_move_file(other, -1)

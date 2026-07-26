@@ -30,11 +30,11 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.pipeline import pipeline
-from celpix.plugins.base import NO_DECOMPRESS
+from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
 from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS
 from celpix.project.workspace import (
     default_slice_name,
-    new_slice,
+    slice_of,
 )
 from celpix.ui.decompress_overlay import Badge
 from celpix.ui.undo_commands import (
@@ -54,9 +54,9 @@ class CompressionMixin:
     def _populate_compression(self) -> None:
         """Fill the compression combo from the registry, in registration order
         (the built-ins group naturally: none first, then the LZ family)."""
-        for plugin in self._registry.plugins(Stage.DECOMPRESS):
+        for plugin in self._registry.plugins(Stage.COMPRESSION):
             self._compression.addItem(plugin.info.name, plugin.info.id)
-            if plugin.info.id == NO_DECOMPRESS:
+            if plugin.info.id == NO_COMPRESSION:
                 self._compression.setCurrentIndex(self._compression.count() - 1)
 
     def _on_promote_structure(self) -> None:
@@ -72,13 +72,13 @@ class CompressionMixin:
         entry, doc = src
         start, consumed = self._structure_extent
         abs_off = doc.pixel_config.source.offset + start
-        decompress_id = self._compression_id()
-        slice_entry = new_slice(
-            entry.path,
-            default_slice_name(abs_off, consumed, decompress_id),
+        compression_id = self._compression_id()
+        slice_entry = slice_of(
+            entry,
+            default_slice_name(abs_off, consumed, compression_id),
             abs_off,
             consumed,
-            decompress_id,
+            compression_id,
         )
         self._seed_slice_from_parent(slice_entry)
         self._push_command(
@@ -96,13 +96,13 @@ class CompressionMixin:
         structure starts at this offset" and simply hides the preview.
         """
         assert self._doc is not None
-        decompress_id = self._compression_id()
-        active = decompress_id != NO_DECOMPRESS
+        compression_id = self._compression_id()
+        active = compression_id != NO_COMPRESSION
         self._scan_button.setEnabled(active and not self._scanning)
         self._next_structure = None
         self._structure_extent = None
         try:
-            self._present_overlay(decompress_id if active else None)
+            self._present_overlay(compression_id if active else None)
         finally:
             self._refresh_structure_actions()
 
@@ -121,13 +121,17 @@ class CompressionMixin:
         than leave them switched on.
         """
         self._jump_next.setEnabled(self._next_structure is not None)
+        # The reshape check mirrors _raw_slice_source: a reshaped view's
+        # positions name no file offset, so a promoted slice would carry
+        # garbage coordinates.
         self._promote_button.setEnabled(
             self._structure_extent is not None
             and self._doc is not None
-            and self._doc.pixel_config.decompress_id == NO_DECOMPRESS
+            and self._doc.pixel_config.compression_id == NO_COMPRESSION
+            and self._doc.pixel_config.reshape_id == NO_RESHAPE
         )
 
-    def _present_overlay(self, decompress_id: str | None) -> None:
+    def _present_overlay(self, compression_id: str | None) -> None:
         """The overlay body of :meth:`_refresh_overlay` (which owns the button
         state around every early exit here)."""
         assert self._doc is not None
@@ -135,7 +139,7 @@ class CompressionMixin:
         window = self._doc.window_bytes(
             view.tile_offset, view.columns * view.rows, view.byte_nudge
         )
-        if decompress_id is None or not window:
+        if compression_id is None or not window:
             self._overlay.hide_overlay()
             return
         ctx = PipelineContext()
@@ -145,7 +149,7 @@ class CompressionMixin:
             view.columns, view.block_columns, view.block_rows, view.block_order
         )
         try:
-            plugin = self._registry.plugin(Stage.DECOMPRESS, decompress_id)
+            plugin = self._registry.plugin(Stage.COMPRESSION, compression_id)
             raw = plugin.decompress(bytes(window), ctx)
             if not raw:  # nothing decompressed: not a structure
                 self._overlay.hide_overlay()
@@ -239,10 +243,10 @@ class CompressionMixin:
             return
         if self._doc is None:
             return
-        decompress_id = self._compression_id()
-        if decompress_id == NO_DECOMPRESS:
+        compression_id = self._compression_id()
+        if compression_id == NO_COMPRESSION:
             return
-        plugin = self._registry.plugin(Stage.DECOMPRESS, decompress_id)
+        plugin = self._registry.plugin(Stage.COMPRESSION, compression_id)
         data = self._doc.pixel_data
         window_len = max(
             1,

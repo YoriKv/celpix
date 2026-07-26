@@ -14,7 +14,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.plugins import discovery
-from celpix.plugins.base import FileRef
+from celpix.plugins.base import ReadSource, WriteTarget
 from celpix.plugins.registry import default_registry
 from celpix.plugins.trust import TrustStore
 
@@ -50,22 +50,24 @@ def _two_strip_tiff(first: bytes, second: bytes) -> bytes:
     return bytes(out + first + b"\x99" * 4 + second)
 
 
-# A minimal code plugin: a Read plugin plus the register() hook the host calls.
-# Belongs in containers/ (read + write handlers).
+# A minimal code plugin: a container plus the register() hook the host calls.
+# Belongs in containers/. It deliberately omits the stage — the shipped examples
+# state theirs, so this is what covers the other path, where the folder supplies
+# it and the shape check is the only thing standing between a misplaced plugin
+# and a registration it cannot honour.
 _CODE_PLUGIN = """
-from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
 
 
-class HelloReader:
-    info = PluginInfo(id="read.hello", name="Hello reader", stage=Stage.READ)
+class HelloContainer:
+    info = PluginInfo(id="container.hello", name="Hello container")
 
     def read(self, source, ctx):
         return b"hello"
 
 
 def register(registry):
-    registry.register(HelloReader())
+    registry.register(HelloContainer())
 """
 
 # A zero-code preset: a new 1bpp planar format for the built-in planar engine.
@@ -118,29 +120,34 @@ def register(registry):
     registry.register_format(TwoBit2x2())
 """
 
-# A compression scheme's two halves registered from one file (the pair case).
-_PAIR_PLUGIN = """
+# One file registering two plugins, one of which is out of scope for its folder:
+# the scheme belongs in compression/, the container does not. Only the offending
+# registration may be skipped — the rest of the file still loads.
+_SCHEME_PLUGIN = """
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
 
 
 class Doubler:
-    info = PluginInfo(id="decompress.double", name="Doubler", stage=Stage.DECOMPRESS)
+    info = PluginInfo(id="compression.double", name="Doubler", stage=Stage.COMPRESSION)
 
     def decompress(self, data, ctx):
         return data + data
-
-
-class Halver:
-    info = PluginInfo(id="compress.halve", name="Halver", stage=Stage.COMPRESS)
 
     def compress(self, data, ctx):
         return data[: len(data) // 2]
 
 
+class Stray:
+    info = PluginInfo(id="container.stray", name="Stray", stage=Stage.CONTAINER)
+
+    def read(self, source, ctx):
+        return b""
+
+
 def register(registry):
     registry.register(Doubler())
-    registry.register(Halver())
+    registry.register(Stray())
 """
 
 
@@ -172,7 +179,7 @@ def test_drop_in_code_plugin_loads_when_approved(tmp_path) -> None:
     issues = discovery.load_directory(reg, str(tmp_path), confirm=_ALLOW)
     assert issues == []
 
-    plugin = reg.plugin(Stage.READ, "read.hello")
+    plugin = reg.plugin(Stage.CONTAINER, "container.hello")
     assert plugin.read(None, PipelineContext()) == b"hello"
 
 
@@ -185,7 +192,7 @@ def test_code_plugin_skipped_when_not_approved(tmp_path) -> None:
     assert len(issues) == 1
     assert "not approved" in issues[0].message
     with pytest.raises(KeyError):
-        reg.plugin(Stage.READ, "read.hello")
+        reg.plugin(Stage.CONTAINER, "container.hello")
 
 
 def _plugin_dir(tmp_path):
@@ -204,14 +211,14 @@ def test_approval_is_remembered_by_hash(tmp_path) -> None:
     reg1 = default_registry()
     issues1 = discovery.load_directory(reg1, str(plugdir), trust=trust, confirm=_ALLOW)
     assert issues1 == []
-    assert reg1.plugin(Stage.READ, "read.hello")
+    assert reg1.plugin(Stage.CONTAINER, "container.hello")
 
     # Second load: deny everything, but the trusted hash loads silently.
     deny = lambda pending: False  # noqa: E731
     reg2 = default_registry()
     issues2 = discovery.load_directory(reg2, str(plugdir), trust=trust, confirm=deny)
     assert issues2 == []
-    assert reg2.plugin(Stage.READ, "read.hello")
+    assert reg2.plugin(Stage.CONTAINER, "container.hello")
 
 
 def test_changed_code_is_reprompted_in_a_new_run(tmp_path) -> None:
@@ -231,7 +238,7 @@ def test_changed_code_is_reprompted_in_a_new_run(tmp_path) -> None:
     )
     assert len(issues) == 1
     with pytest.raises(KeyError):
-        reg.plugin(Stage.READ, "read.hello")
+        reg.plugin(Stage.CONTAINER, "container.hello")
 
 
 def test_session_edit_reloads_without_prompt(tmp_path) -> None:
@@ -248,7 +255,7 @@ def test_session_edit_reloads_without_prompt(tmp_path) -> None:
     deny = lambda pending: False  # noqa: E731
     issues = discovery.load_directory(reg, str(plugdir), trust=trust, confirm=deny)
     assert issues == []
-    assert reg.plugin(Stage.READ, "read.hello")
+    assert reg.plugin(Stage.CONTAINER, "container.hello")
 
 
 def test_broken_preset_is_reported_not_raised(tmp_path) -> None:
@@ -288,20 +295,34 @@ def test_missing_directory_is_silent(tmp_path) -> None:
 # -- the typed layout's own guarantees ------------------------------------------
 
 
-def test_stage_mismatch_is_reported_and_pair_still_loads(tmp_path) -> None:
-    # A READ plugin in pixel/ is out of scope: reported, not registered.
+def test_a_misplaced_plugin_is_reported_and_the_rest_still_loads(tmp_path) -> None:
+    """The folder determines a plugin's stage, so being in the wrong one has to be
+    caught by something other than a stage field it no longer has to declare.
+
+    Two ways in, and both are covered here because a plugin may still *state* its
+    stage: a stated one that disagrees with the folder is refused outright, and one
+    that says nothing is refused for not having the methods that folder's stage
+    needs. The second is the stronger check — it would also catch a typo'd method
+    name in a plugin that is in the right place.
+    """
+    # Says nothing, so it is judged on shape: a container has no decode/encode.
     _drop(tmp_path, "pixel", "misplaced.py", _CODE_PLUGIN)
-    # A compression scheme registering both halves from one file loads both.
-    _drop(tmp_path, "compression", "scheme.py", _PAIR_PLUGIN)
+    # Registers one in-scope plugin plus one that *declares* a foreign stage; the
+    # scope check is per registration, so the first still loads.
+    _drop(tmp_path, "compression", "scheme.py", _SCHEME_PLUGIN)
     reg = default_registry()
 
     issues = discovery.load_directory(reg, str(tmp_path), confirm=_ALLOW)
-    assert len(issues) == 1
-    assert "not allowed in folder 'pixel/'" in issues[0].message
+    reported = " ".join(issue.message for issue in issues)
+    assert len(issues) == 2
+    assert "is missing decode, encode, bytes_per_tile, tile_size" in reported
+    assert "not allowed in folder 'compression/'" in reported
+    for plugin_id in ("container.hello", "container.stray"):
+        with pytest.raises(KeyError):
+            reg.plugin(Stage.CONTAINER, plugin_id)
     with pytest.raises(KeyError):
-        reg.plugin(Stage.READ, "read.hello")
-    assert reg.plugin(Stage.DECOMPRESS, "decompress.double")
-    assert reg.plugin(Stage.COMPRESS, "compress.halve")
+        reg.plugin(Stage.INTERPRET_PIXEL, "container.hello")
+    assert reg.plugin(Stage.COMPRESSION, "compression.double")
 
 
 def test_loose_root_file_reported_and_unknown_folder_ignored(tmp_path) -> None:
@@ -323,7 +344,7 @@ def test_preset_in_code_only_folder_is_reported(tmp_path) -> None:
 
     issues = discovery.load_directory(reg, str(tmp_path))
     assert len(issues) == 1
-    assert "pixel/palette only" in issues[0].message
+    assert "pixel/palette/reshape only" in issues[0].message
 
 
 def test_conflicting_legacy_stage_field_is_reported(tmp_path) -> None:
@@ -383,7 +404,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     # Seeding lays down _example.* reference files (never overwriting), and each
     # must actually work once renamed — examples drifting from the real schema
     # or format contract is exactly the regression this guards.
-    for sub in discovery.FOLDER_STAGES:
+    for sub in discovery.FOLDER_STAGE:
         (tmp_path / sub).mkdir()
     discovery.seed_examples(str(tmp_path))
 
@@ -397,6 +418,8 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         "palette/_nes-custom.py",
         "pixel/_example.py",
         "pixel/_example.toml",
+        "reshape/_example.py",
+        "reshape/_example.toml",
     ]
 
     # Re-seeding must not clobber a user's edits.
@@ -455,10 +478,9 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
 
     # Compression example: compress → decompress restores the bytes, and the
     # decoder reports the packed structure's true length + completeness via ctx.
-    comp = reg.plugin(Stage.COMPRESS, "compress.example-rle")
-    dec = reg.plugin(Stage.DECOMPRESS, "decompress.example-rle")
+    dec = reg.plugin(Stage.COMPRESSION, "compression.example-rle")
     raw = b"AAAAABBBC" + bytes([0x07]) * 300  # runs (some > 255) plus a literal tail
-    packed = comp.compress(raw, ctx)
+    packed = dec.compress(raw, ctx)
     assert dec.decompress(packed, ctx) == raw
     assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
     assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
@@ -473,37 +495,48 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert raw.startswith(dec.decompress(cut, lenient))
     assert lenient.get(KEY_DECOMPRESS_COMPLETE) is False
 
+    # Reshape example: reshape → unshape restores the bytes at every parity,
+    # including the odd tail byte the example deliberately passes through.
+    swap = reg.plugin(Stage.RESHAPE, "reshape.example-swap-halves")
+    for data in (b"", b"Z", b"frontback", b"frontback!"):
+        assert swap.unshape(swap.reshape(data, ctx), ctx) == data
+    assert swap.reshape(b"aabb", ctx) == b"bbaa"
+
+    # Bitswap preset example: the TOML registers as an ordinary reshape plugin
+    # whose table swaps address bits 4 and 3 — the middle quarters of every
+    # 32-byte block — and the pair stays its own inverse.
+    bs = reg.plugin(Stage.RESHAPE, "reshape.example-bitswap")
+    block = bytes(range(32))
+    swapped = block[:8] + block[16:24] + block[8:16] + block[24:]
+    assert bs.reshape(block, ctx) == swapped
+    assert bs.unshape(swapped, ctx) == block
+
     # Container example: write wraps the payload in its magic; read strips it back.
-    writer = reg.plugin(Stage.WRITE, "write.example-container")
-    reader = reg.plugin(Stage.READ, "read.example-container")
+    example = reg.plugin(Stage.CONTAINER, "container.example")
     payload = b"tile-bytes-here"
-    blob = tmp_path / "blob.bin"
-    writer.write(payload, FileRef(str(blob)), ctx)
-    assert blob.read_bytes().startswith(b"CELPIXEX")
-    assert reader.read(FileRef(str(blob)), ctx) == payload
-    # An in-memory source is read instead of the file (a slice of a dirty
-    # parent), and a bounded write target is spliced rather than replacing the
-    # file — the two FileRef cases a container is most likely to get wrong.
-    in_memory = FileRef(str(blob), data=_MAGIC + b"live-bytes")
-    assert reader.read(in_memory, ctx) == b"live-bytes"
-    writer.write(b"XX", FileRef(str(blob), offset=9, length=2), ctx)
-    assert blob.read_bytes() == _MAGIC + b"tXXe-bytes-here"
+    blob = example.write(payload, WriteTarget(b""), ctx)
+    assert blob.startswith(b"CELPIXEX")
+    assert example.read(ReadSource(blob), ctx) == payload
+    # A bounded write target is spliced rather than replacing the file — the
+    # WriteTarget case a container is most likely to get wrong.
+    assert (
+        example.write(b"XX", WriteTarget(blob, offset=9, length=2), ctx)
+        == _MAGIC + b"tXXe-bytes-here"
+    )
 
     # TIFF example: the strips are found through the directory rather than at a
     # fixed offset, and are non-contiguous — so a read that joins them and a
     # write that scatters them back is the whole of what it has to get right.
-    tiff_read = reg.plugin(Stage.READ, "read.tiff")
-    tiff_write = reg.plugin(Stage.WRITE, "write.tiff")
-    tiff = tmp_path / "image.tif"
-    tiff.write_bytes(_two_strip_tiff(b"AAAA", b"BBBB"))
-    assert tiff_read.read(FileRef(str(tiff)), ctx) == b"AAAABBBB"
-    tiff_write.write(b"12345678", FileRef(str(tiff)), ctx)
-    assert tiff_read.read(FileRef(str(tiff)), ctx) == b"12345678"
-    assert tiff.read_bytes() == _two_strip_tiff(b"1234", b"5678")
+    tiff_plugin = reg.plugin(Stage.CONTAINER, "container.tiff")
+    tiff = _two_strip_tiff(b"AAAA", b"BBBB")
+    assert tiff_plugin.read(ReadSource(tiff), ctx) == b"AAAABBBB"
+    edited = tiff_plugin.write(b"12345678", WriteTarget(tiff), ctx)
+    assert tiff_plugin.read(ReadSource(edited), ctx) == b"12345678"
+    assert edited == _two_strip_tiff(b"1234", b"5678")
     # The strips are fixed slots, so a wrong-sized result is refused outright
     # rather than written into part of the image.
     with pytest.raises(ValueError):
-        tiff_write.write(b"short", FileRef(str(tiff)), ctx)
+        tiff_plugin.write(b"short", WriteTarget(tiff), ctx)
 
 
 def test_wrong_shaped_format_is_reported(tmp_path) -> None:

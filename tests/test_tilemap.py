@@ -276,15 +276,6 @@ def test_both_switches_are_dead_with_nothing_open(qtbot, tmp_path, monkeypatch) 
     assert switches(window) == [False, False]
 
 
-def test_the_rearrange_keys_are_inert_under_a_2d_pattern(qtbot, tmp_path) -> None:
-    """The 2D lockout disables both actions, and the keys press those actions —
-    so the lockout covers the keyboard without knowing the keys exist."""
-    window = _window(qtbot, tmp_path)
-    window._two_d.setChecked(True)
-    window._toggle_rearranging()
-    assert not window._rearranging
-
-
 def test_a_pixel_edit_writes_back_to_the_tiles_real_home(qtbot, tmp_path) -> None:
     """The whole point: paint at the position a tile is *shown*, and its own
     bytes change — the tile that normally lives there is untouched."""
@@ -301,22 +292,21 @@ def test_a_pixel_edit_writes_back_to_the_tiles_real_home(qtbot, tmp_path) -> Non
     assert _tile_bytes(window, 1) == before_shown
 
 
-def test_a_flipped_tile_renders_mirrored_but_keeps_its_bytes(qtbot, tmp_path) -> None:
+def test_a_flipped_tile_renders_mirrored_and_an_edit_lands_unflipped(
+    qtbot, tmp_path
+) -> None:
+    """Rendering and editing are one round trip, so they are pinned as one: paint
+    the displayed top-left of a mirrored tile and the *stored* top-right must
+    change. Miss the unflip and the mirror bakes into the file - flipped on disk
+    and still flipped on screen."""
     window = _window(qtbot, tmp_path)
     stored = window._decode_actual_run(3, 1)[0]
     before = _tile_bytes(window, 3)
     window._set_tile_map(TileMap().oriented([3], TILE_FLIP_H))
-    assert window._decode_run(3, 1)[0] == transform.flip_horizontal(stored)
+    shown = window._decode_run(3, 1)[0]
+    assert shown == transform.flip_horizontal(stored)
     assert _tile_bytes(window, 3) == before  # display only — nothing written
 
-
-def test_an_edit_on_a_flipped_tile_lands_unflipped(qtbot, tmp_path) -> None:
-    """The one that really matters. Paint the displayed top-left of a mirrored
-    tile: the *stored* top-right must change. Miss the unflip and the mirror
-    bakes into the file — flipped on disk and still flipped on screen."""
-    window = _window(qtbot, tmp_path)
-    window._set_tile_map(TileMap().oriented([3], TILE_FLIP_H))
-    shown = window._decode_run(3, 1)[0]
     edited = type(shown)(shown.width, shown.height, bytes(shown.data))
     edited.set(0, 0, 7)
     window._apply_tile_edit(3, [edited], "paint")
@@ -487,9 +477,17 @@ def test_shift_h_and_v_drive_the_block_flip(qtbot, tmp_path) -> None:
     assert not window._tile_map.pairs and window._tile_map.orientations
 
 
-def test_a_rearrange_drop_is_one_undo_step(qtbot, tmp_path) -> None:
+def test_what_a_rearrange_drop_costs_on_the_undo_stack(qtbot, tmp_path) -> None:
     window = _window(qtbot, tmp_path)
     window._set_rearranging(True)
+
+    # A drop back on the grabbed cell rearranges nothing, so it is not a step.
+    window._on_rearrange_started(5)
+    window._on_rearrange_dropped(5)
+    assert window._tile_map.is_identity()
+    assert window._undo_stack.count() == 1  # only the file-open command
+
+    # A real move is one step, undoable and redoable.
     window._on_rearrange_started(0)  # cell (0, 0)
     window._on_rearrange_dropped(3)  # cell (3, 0)
     assert window._tile_map == TileMap().swap(0, 3)
@@ -497,15 +495,6 @@ def test_a_rearrange_drop_is_one_undo_step(qtbot, tmp_path) -> None:
     assert window._tile_map.is_identity()
     window._undo_stack.redo()
     assert window._tile_map == TileMap().swap(0, 3)
-
-
-def test_a_drop_on_the_grabbed_cell_is_not_a_step(qtbot, tmp_path) -> None:
-    window = _window(qtbot, tmp_path)
-    window._set_rearranging(True)
-    window._on_rearrange_started(5)
-    window._on_rearrange_dropped(5)
-    assert window._tile_map.is_identity()
-    assert window._undo_stack.count() == 1  # only the file-open command
 
 
 def test_escape_abandons_a_drag_in_flight(qtbot, tmp_path) -> None:
@@ -573,6 +562,10 @@ def test_a_2d_pattern_locks_the_tool_out_and_suspends_the_map(qtbot, tmp_path) -
     assert not window._rearrange_available()
     assert not window._rearranging  # disarmed, not merely greyed
     assert not window._rearrange_action.isEnabled()
+    # The keys press these actions, so disabling them covers the keyboard too -
+    # the lockout never needs to know the keys exist.
+    window._toggle_rearranging()
+    assert not window._rearranging
     assert window._active_tile_map().is_identity()
     assert window._decode_run(0, 2) == window._decode_actual_run(0, 2)
 

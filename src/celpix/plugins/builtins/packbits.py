@@ -146,11 +146,11 @@ def compress(data: bytes) -> bytes:
     return bytes(out)
 
 
-class PackBitsDecompress:
+class PackBitsCompression:
     info = PluginInfo(
-        id="decompress.packbits",
+        id="compression.packbits",
         name="PackBits (TIFF / ILBM / MacPaint)",
-        stage=Stage.DECOMPRESS,
+        stage=Stage.COMPRESSION,
         # A pure byte stream: it ends where its container says it does, never
         # where the data does. The overlay phrases its status accordingly.
         self_delimiting=False,
@@ -163,14 +163,6 @@ class PackBitsDecompress:
         # here" is not "the structure ends here" (see the module docstring).
         ctx.set(KEY_DECOMPRESS_COMPLETE, False)
         return out
-
-
-class PackBitsCompress:
-    info = PluginInfo(
-        id="compress.packbits",
-        name="PackBits (TIFF / ILBM / MacPaint)",
-        stage=Stage.COMPRESS,
-    )
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
         return compress(data)

@@ -12,14 +12,26 @@ from enum import Enum
 
 
 class Stage(str, Enum):
-    """The pipeline stages, in forward order. String-valued for readable ids."""
+    """The pipeline's extension points, in forward order.
 
-    READ = "read"
-    DECOMPRESS = "decompress"
+    A stage is **one plugin covering both directions**: a container is the read
+    *and* write of one on-disk wrapper, a compression scheme is its decompress
+    *and* compress halves. They are one stage because they are one thing a user
+    picks, one thing a plugin author writes, and one thing that has to stay each
+    other's inverse — splitting them into separate registrations only ever meant
+    two descriptors and an id convention holding the pair together.
+
+    Which direction a load or save is going is not lost by that: it is the
+    :attr:`PipelineError.action` sub-label, reported when something fails.
+
+    String-valued for readable ids.
+    """
+
+    CONTAINER = "container"
+    RESHAPE = "reshape"
+    COMPRESSION = "compression"
     INTERPRET_PIXEL = "interpret-pixel"
     INTERPRET_PALETTE = "interpret-palette"
-    COMPRESS = "compress"
-    WRITE = "write"
 
 
 class Pathway(str, Enum):
@@ -33,10 +45,22 @@ class PipelineError(Exception):
     """A stage could not proceed; the pipeline halts and reports this.
 
     Attributes mirror what the user needs to fix the configuration and retry.
+
+    ``action`` names the *direction* within the stage — ``read``/``write`` for a
+    container, ``reshape``/``unshape`` for a reshape,
+    ``decompress``/``compress`` for a compression scheme. A stage now
+    spans both, and "the container failed" is a materially different report from
+    "the container failed **while saving**", so the message keeps it:
+    ``[pixel/container:write] …``. Empty for a stage where there is nothing to
+    disambiguate.
     """
 
-    def __init__(self, stage: Stage, pathway: Pathway, message: str) -> None:
+    def __init__(
+        self, stage: Stage, pathway: Pathway, message: str, action: str = ""
+    ) -> None:
         self.stage = stage
         self.pathway = pathway
+        self.action = action
         self.message = message
-        super().__init__(f"[{pathway.value}/{stage.value}] {message}")
+        label = f"{stage.value}:{action}" if action else stage.value
+        super().__init__(f"[{pathway.value}/{label}] {message}")

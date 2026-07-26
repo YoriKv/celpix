@@ -36,7 +36,7 @@ from os.path import (
 from celpix.core.arrangement import BLOCK_ORDERS
 from celpix.core.document import ViewOptions
 from celpix.core.tilemap import TileMap
-from celpix.plugins.base import NO_DECOMPRESS, RAW_READ
+from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE, RAW_CONTAINER
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -60,10 +60,26 @@ from celpix.project.workspace import (
 # bits) to "tile_orientations" (those two plus the axis swap a turn needs). A v5
 # reader ignores the new key and would drop the whole rearrangement's orientations
 # on the next save, so the bump makes it warn instead.
-# 7: added a file's "container_id" (which Read/Write pair its bytes go through).
+# 7: added a file's "container_id" (which container its bytes go through).
 # A v6 reader ignores it and would drop it on the next save, silently returning
 # the file to plain bytes, so the bump makes it warn instead.
-PROJECT_VERSION = 7
+# 8: a stage's two halves became one plugin, so "decompress_id" is now
+# "compression_id" and the ids themselves lost their direction prefix
+# ("read.smd" -> "container.smd", "decompress.lz1" -> "compression.lz1"). Older
+# projects are translated on load (_stage_id) rather than degraded; the bump is
+# for the other direction, since a v7 reader would not recognise the new ids and
+# would silently return every file to plain bytes and every slice to
+# uncompressed.
+# 9: added "extra_paths" — the rest of the files a region is joined from. A v8
+# reader ignores it and would drop it on the next save, quietly reducing a
+# several-chip region to its first chip, so the bump makes it warn instead.
+# 10: added "reshape_id" (on files *and* slices) — the Reshape stage, which the
+# split-planes and Mode 7 VRAM reorderings moved into out of Compression. Older
+# projects naming those under "compression_id" are translated on load
+# (_RESHAPED_COMPRESSION) rather than degraded; the bump is for the other
+# direction — a v9 reader knows neither the key nor the new ids, and would
+# silently open every reshaped region as plain (scrambled-looking) bytes.
+PROJECT_VERSION = 10
 PROJECT_EXTENSION = ".celpix"
 
 # Fallbacks for a hand-authored project that omits preset ids entirely — the
@@ -143,16 +159,29 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
         "name": entry.name,
         "path": _store_path(entry.path, base_dir),
     }
+    # The rest of a region's files, when it has any — omitted for the ordinary
+    # one-file entry, so nothing that predates multi-file regions changes shape.
+    # Stored on a slice too, and not re-derived from its parent on load: a slice
+    # is loaded before the workspace exists to look a parent up in, and its
+    # offsets are meaningless against a different join.
+    if entry.extra_paths:
+        data["extra_paths"] = [_store_path(p, base_dir) for p in entry.extra_paths]
+    # Only when it isn't the pass-through default, so the ordinary un-reshaped
+    # entry adds nothing to the file — and so a project written before the
+    # Reshape stage existed round-trips unchanged. Files and slices alike: a
+    # reshape is a property of the region, whichever kind holds it.
+    if entry.reshape_id != NO_RESHAPE:
+        data["reshape_id"] = entry.reshape_id
     if entry.kind is EntryKind.FILE:
         # Only when it isn't the plain-bytes default, so detection's usual answer
         # adds nothing to the file — and so a project written before containers
         # existed round-trips unchanged.
-        if entry.container_id != RAW_READ:
+        if entry.container_id != RAW_CONTAINER:
             data["container_id"] = entry.container_id
     elif entry.kind is EntryKind.SLICE:
         data["slice_offset"] = entry.slice_offset
         data["slice_length"] = entry.slice_length
-        data["decompress_id"] = entry.decompress_id
+        data["compression_id"] = entry.compression_id
     elif entry.kind is EntryKind.BOOKMARK:
         data["offset"] = entry.slice_offset
     elif entry.kind is EntryKind.PALETTE:
@@ -292,17 +321,36 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
             ),
         )
     offset_key = "offset" if kind is EntryKind.BOOKMARK else "slice_offset"
+    # "decompress_id" is the pre-v8 spelling of the same field.
+    compression_id = _stage_id(
+        raw.get("compression_id", raw.get("decompress_id")), NO_COMPRESSION
+    )
+    reshape_id = _str(raw.get("reshape_id"), NO_RESHAPE)
+    # Pre-v10 projects kept the reorder plugins in the compression slot; the
+    # same behaviour lives at the Reshape stage now, so the stored id is moved
+    # rather than left to resolve to nothing (which would quietly open the
+    # region as plain, scrambled-looking bytes). A project somehow naming both
+    # keeps its own reshape_id — it is the newer statement.
+    if compression_id in _RESHAPED_COMPRESSION and reshape_id == NO_RESHAPE:
+        reshape_id = _RESHAPED_COMPRESSION[compression_id]
+        compression_id = NO_COMPRESSION
     return Entry(
         name=name if isinstance(name, str) and name else basename(path),
         kind=kind,
         path=path,
+        extra_paths=tuple(
+            _resolve_path(p, base_dir)
+            for p in raw.get("extra_paths", ())
+            if isinstance(p, str) and p
+        ),
         slice_offset=_int(raw.get(offset_key), 0),
         slice_length=_int(raw.get("slice_length"), None),
-        decompress_id=_str(raw.get("decompress_id"), NO_DECOMPRESS),
+        compression_id=compression_id,
+        reshape_id=reshape_id,
         # Absent for every project written before containers, and for every file
         # nothing claimed — both mean plain bytes, which is also what an entry
         # naming a container the registry no longer has falls back to at load.
-        container_id=_str(raw.get("container_id"), RAW_READ),
+        container_id=_stage_id(raw.get("container_id"), RAW_CONTAINER),
         session=_session_from(raw.get("session")),
         pending_view=_view_from(raw.get("view")),
         pending_palette=_palette_from(raw.get("palette"), base_dir),
@@ -315,11 +363,17 @@ def _session_from(raw: object) -> EntrySession:
     # any other key this version doesn't use — an entry opens with nothing
     # selected either way.
     data = raw if isinstance(raw, dict) else {}
+    # The preview combo: an id the Reshape stage took over drops to none rather
+    # than migrating — previewing a region-scoped reorder over the view window
+    # was exactly the misbehaviour the stage split exists to end.
+    compression_id = _stage_id(data.get("compression_id"), NO_COMPRESSION)
+    if compression_id in _RESHAPED_COMPRESSION:
+        compression_id = NO_COMPRESSION
     return EntrySession(
         pixel_preset_id=_str(data.get("pixel_preset_id"), _DEFAULT_PIXEL_PRESET),
         palette_preset_id=_str(data.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET),
         palette_mode=PaletteMode.parse(data.get("palette_mode")),
-        compression_id=_str(data.get("compression_id"), NO_DECOMPRESS),
+        compression_id=compression_id,
     )
 
 
@@ -413,6 +467,37 @@ def _int(value: object, default: int | None) -> int | None:
 
 def _str(value: object, default: str) -> str:
     return value if isinstance(value, str) and value else default
+
+
+# What a pre-v8 project's plugin ids start with, and what they are now. The two
+# halves of a stage were separate plugins then, so the stored id names a
+# direction; the same behaviour lives under one id today.
+_PRE_V8_PREFIXES = (("read.", "container."), ("decompress.", "compression."))
+
+# The reorder plugins that lived in the Compression stage before the Reshape
+# stage existed (pre-v10), and the reshape id each moved to. Applied *after*
+# the prefix translation above, so a pre-v8 "decompress.split-planes-2" chains
+# through "compression.split-planes-2" to its reshape home.
+_RESHAPED_COMPRESSION = {
+    f"compression.split-planes-{parts}": f"reshape.split-planes-{parts}"
+    for parts in (2, 3, 4)
+}
+_RESHAPED_COMPRESSION["compression.snes-m7-vram"] = "reshape.snes-m7-vram"
+
+
+def _stage_id(value: object, default: str) -> str:
+    """A stored plugin id, translated from its pre-v8 spelling if it has one.
+
+    Translating beats degrading: an untranslated id resolves to nothing, which
+    would quietly return every file in an older project to plain bytes and every
+    compressed slice to uncompressed — a change the user never asked for and
+    would only notice by the graphics being wrong.
+    """
+    stored = _str(value, default)
+    for old, new in _PRE_V8_PREFIXES:
+        if stored.startswith(old):
+            return new + stored[len(old) :]
+    return stored
 
 
 # -- path handling (docs/design/project-format.md §3) ----------------------

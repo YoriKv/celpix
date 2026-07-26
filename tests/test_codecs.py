@@ -191,7 +191,7 @@ def test_planar_plane_maps_to_bit(preset_id: str) -> None:
 
 # Arcade boards commonly wire one bitplane per ROM chip, so a tile's planes sit in
 # N equal *parts* of the graphics region instead of inside the tile. celPix reads
-# that by joining the parts first (`decompress.split-planes-N`) and then using the
+# that by joining the parts first (`reshape.split-planes-N`) and then using the
 # ordinary interleaved-planar presets. The pairing is only right if the join's
 # ordering and the preset's plane offsets agree, so it is checked here against a
 # reference that indexes the unjoined region directly.
@@ -231,9 +231,9 @@ def test_split_plane_join_feeds_interleaved_planar_presets(
     tiles_wanted = 3
     region = bytes((i * 61 + 7) & 0xFF for i in range(8 * tiles_wanted * planes))
     ctx = PipelineContext()
-    joined = _REG.plugin(
-        Stage.DECOMPRESS, f"decompress.split-planes-{planes}"
-    ).decompress(region, ctx)
+    joined = _REG.plugin(Stage.RESHAPE, f"reshape.split-planes-{planes}").reshape(
+        region, ctx
+    )
 
     engine, params = _pixel_engine(preset_id)
     grids = engine.decode(joined, params, ctx)
@@ -242,8 +242,8 @@ def test_split_plane_join_feeds_interleaved_planar_presets(
         actual = [[grid.get(x, y) for x in range(8)] for y in range(8)]
         assert actual == _region_split_reference(region, planes, code)
 
-    back = _REG.plugin(Stage.COMPRESS, f"compress.split-planes-{planes}")
-    assert back.compress(engine.encode(grids, params, ctx), ctx) == region
+    back = _REG.plugin(Stage.RESHAPE, f"reshape.split-planes-{planes}")
+    assert back.unshape(engine.encode(grids, params, ctx), ctx) == region
 
 
 def test_packed_nibble_and_bit_order() -> None:

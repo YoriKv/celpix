@@ -8,7 +8,7 @@ from os.path import normcase, samefile
 from celpix.core.document import Document, ViewOptions
 from celpix.core.palette import Palette
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import RAW_READ, FileRef
+from celpix.plugins.base import NO_COMPRESSION, RAW_CONTAINER, FileRef
 from celpix.project.projectfile import (
     PROJECT_VERSION,
     ProjectError,
@@ -62,9 +62,9 @@ def test_round_trip_preserves_entries_sessions_and_state(tmp_path) -> None:
     file_view = ViewOptions(columns=8, rows=4, zoom=2, show_grid=True, tile_offset=16)
     file_entry.doc = _doc(FileRef(str(pal), offset=4), file_view)
 
-    slice_entry = ws.add_slice(str(rom), "title GFX", 0x100, None, "decompress.lz2")
+    slice_entry = ws.add_slice(str(rom), "title GFX", 0x100, None, "compression.lz2")
     slice_entry.session = _session(
-        palette_mode="offset", compression_id="decompress.lz1"
+        palette_mode="offset", compression_id="compression.lz1"
     )
     # Exercise the arrangement fields (block grouping / interleave / 2D) so the
     # round-trip assertion below covers their persistence.
@@ -112,7 +112,7 @@ def test_round_trip_preserves_entries_sessions_and_state(tmp_path) -> None:
         0x100,
         None,
     )
-    assert second.decompress_id == "decompress.lz2"
+    assert second.compression_id == "compression.lz2"
     assert second.session == slice_entry.session
     assert second.pending_view == slice_view
     assert second.pending_palette == PaletteSource(offset=0x200)
@@ -411,8 +411,174 @@ def test_container_round_trips_and_the_default_is_omitted(tmp_path) -> None:
         "container_id"
         not in json.loads(project.read_text(encoding="utf-8"))["entries"][0]
     )
-    assert load_project(str(project)).entries[0].container_id == RAW_READ
+    assert load_project(str(project)).entries[0].container_id == RAW_CONTAINER
 
-    plain.container_id = "read.ines"
+    plain.container_id = "container.ines"
     save_project(ws, str(project))
-    assert load_project(str(project)).entries[0].container_id == "read.ines"
+    assert load_project(str(project)).entries[0].container_id == "container.ines"
+
+
+def test_a_pre_v8_project_keeps_its_container_and_compression(tmp_path) -> None:
+    """v7 named a stage's two halves separately, so its ids carry a direction
+    prefix this build no longer registers.
+
+    Reading them as-is would resolve to nothing and silently reopen every file on
+    plain bytes and every slice uncompressed — the graphics would be wrong with
+    nothing to point at, which is worse than refusing to load. So the ids are
+    translated to their merged spelling.
+    """
+    rom = tmp_path / "game.nes"
+    rom.write_bytes(b"\x00" * 64)
+    project = tmp_path / "old.celpix"
+    project.write_text(
+        json.dumps(
+            {
+                "version": 7,
+                "current": 0,
+                "entries": [
+                    {
+                        "kind": "file",
+                        "name": "game.nes",
+                        "path": "game.nes",
+                        "container_id": "read.ines",
+                        "session": {"compression_id": "decompress.lz2"},
+                    },
+                    {
+                        "kind": "slice",
+                        "name": "gfx",
+                        "path": "game.nes",
+                        "slice_offset": 16,
+                        "slice_length": 32,
+                        "decompress_id": "decompress.lz1",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_project(str(project))
+    file_entry, slice_entry = loaded.entries
+    assert loaded.version == 7  # reported as it was, so the UI can say so
+    assert file_entry.container_id == "container.ines"
+    assert file_entry.session.compression_id == "compression.lz2"
+    assert slice_entry.compression_id == "compression.lz1"
+
+
+def test_reshape_round_trips_and_the_default_is_omitted(tmp_path) -> None:
+    # A reshape is part of how a region is read, on files and slices alike —
+    # but the pass-through default is left out entirely, so projects written
+    # before the Reshape stage existed keep round-tripping unchanged.
+    rom = tmp_path / "pair.bin"
+    rom.write_bytes(b"\x00" * 64)
+    ws = Workspace()
+    file_entry = ws.open_file(str(rom))
+    ws.add_slice(str(rom), "gfx", 16, 32, reshape_id="reshape.split-planes-2")
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert "reshape_id" not in raw["entries"][0]
+    assert raw["entries"][1]["reshape_id"] == "reshape.split-planes-2"
+
+    file_entry.reshape_id = "reshape.split-words-2"
+    save_project(ws, str(project))
+    loaded_file, loaded_slice = load_project(str(project)).entries
+    assert loaded_file.reshape_id == "reshape.split-words-2"
+    assert loaded_slice.reshape_id == "reshape.split-planes-2"
+
+
+def test_a_pre_v10_project_moves_reorders_out_of_the_compression_slot(
+    tmp_path,
+) -> None:
+    """Before the Reshape stage the reorder plugins lived under Compression, so
+    a v9 slice names one as its codec. Read as-is it would resolve to nothing
+    and quietly reopen the slice as plain, scrambled-looking bytes; instead the
+    id moves to the reshape slot. A *session's* preview combo naming one drops
+    to none — previewing a region-scoped reorder over the view window was the
+    misbehaviour the stage split ends. The pre-v8 direction prefix chains
+    through the same translation.
+    """
+    rom = tmp_path / "game.sfc"
+    rom.write_bytes(b"\x00" * 64)
+    project = tmp_path / "old.celpix"
+    project.write_text(
+        json.dumps(
+            {
+                "version": 9,
+                "entries": [
+                    {
+                        "kind": "file",
+                        "name": "game.sfc",
+                        "path": "game.sfc",
+                        "session": {"compression_id": "compression.snes-m7-vram"},
+                    },
+                    {
+                        "kind": "slice",
+                        "name": "gfx",
+                        "path": "game.sfc",
+                        "slice_offset": 16,
+                        "slice_length": 32,
+                        "compression_id": "compression.split-planes-2",
+                    },
+                    {
+                        "kind": "slice",
+                        "name": "old-gfx",
+                        "path": "game.sfc",
+                        "slice_offset": 0,
+                        "slice_length": 16,
+                        "decompress_id": "decompress.split-planes-3",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    file_entry, slice_entry, pre_v8 = load_project(str(project)).entries
+    assert file_entry.session.compression_id == NO_COMPRESSION
+    assert slice_entry.reshape_id == "reshape.split-planes-2"
+    assert slice_entry.compression_id == NO_COMPRESSION
+    assert pre_v8.reshape_id == "reshape.split-planes-3"
+    assert pre_v8.compression_id == NO_COMPRESSION
+
+
+def test_a_regions_extra_files_survive_a_project_round_trip(tmp_path) -> None:
+    """A region is its files joined, so losing the list past the first one is
+    losing the document — the slice offsets under it would all move.
+
+    Stored relative like every other path, and on the slice too rather than
+    re-derived from its parent: entries load before there is a workspace to look
+    a parent up in.
+    """
+    lo, hi = tmp_path / "lo.bin", tmp_path / "hi.bin"
+    for f in (lo, hi):
+        f.write_bytes(bytes(64))
+    ws = Workspace()
+    ws.open_file(str(lo), extra_paths=(str(hi),))
+    ws.add_slice(str(lo), "gfx", 32, 64)
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert raw["entries"][0]["extra_paths"] == ["hi.bin"]  # relative, like path
+
+    file_entry, slice_entry = load_project(str(project)).entries
+    assert normcase(file_entry.paths[1]) == normcase(str(hi))
+    assert normcase(slice_entry.paths[1]) == normcase(str(hi))
+
+
+def test_a_one_file_entry_stores_no_file_list(tmp_path) -> None:
+    # The ordinary entry is unchanged on disk, so nothing written before regions
+    # existed reads differently and no project grows a key for nothing.
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(16))
+    ws = Workspace()
+    ws.open_file(str(rom))
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    assert (
+        "extra_paths"
+        not in json.loads(project.read_text(encoding="utf-8"))["entries"][0]
+    )

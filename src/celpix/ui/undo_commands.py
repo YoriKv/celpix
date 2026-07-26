@@ -264,6 +264,7 @@ class ColorEditCommand(QUndoCommand):
         *,
         before: int,
         after: int,
+        pixel_owner: Entry | None = None,
     ) -> None:
         super().__init__(f"edit color {index}")
         self._window = window
@@ -276,6 +277,17 @@ class ColorEditCommand(QUndoCommand):
         # undo hands the owner back the exact unsaved-state it had before.
         self._before_revision = owner.palette_revision
         self._after_revision = window._workspace.next_revision()
+        # A buffer-backed Offset palette persists through the *pixel* pathway of
+        # the entry whose buffer holds it (its own pathway can't write a span of
+        # a permuted region) — so that entry's pixel revision is tokened on both
+        # sides too, exactly as the palette revision is above.
+        self._pixel_owner = pixel_owner
+        self._before_pixel_revision = (
+            pixel_owner.pixel_revision if pixel_owner is not None else 0
+        )
+        self._after_pixel_revision = (
+            window._workspace.next_revision() if pixel_owner is not None else 0
+        )
 
     def id(self) -> int:
         return COLOR_EDIT_ID
@@ -290,6 +302,7 @@ class ColorEditCommand(QUndoCommand):
             return False
         self._after = other._after
         self._after_revision = other._after_revision  # other's redo already ran
+        self._after_pixel_revision = other._after_pixel_revision
         if self._after == self._before:
             # The run landed back on the original color — drop the empty step,
             # and with it the dirty mark the swallowed edits stamped on.
@@ -297,15 +310,19 @@ class ColorEditCommand(QUndoCommand):
             self._window._workspace.set_palette_revision(
                 self._owner, self._before_revision
             )
+            if self._pixel_owner is not None:
+                self._window._workspace.set_pixel_revision(
+                    self._pixel_owner, self._before_pixel_revision
+                )
         return True
 
     def redo(self) -> None:
-        self._apply(self._after, self._after_revision)
+        self._apply(self._after, self._after_revision, self._after_pixel_revision)
 
     def undo(self) -> None:
-        self._apply(self._before, self._before_revision)
+        self._apply(self._before, self._before_revision, self._before_pixel_revision)
 
-    def _apply(self, argb: int, revision: int) -> None:
+    def _apply(self, argb: int, revision: int, pixel_revision: int) -> None:
         with self._window._undo_apply():
             # A PALETTE entry can never be current, so a file-palette edit applies
             # without switching the view; a graphic-owned edit first returns to the
@@ -314,7 +331,13 @@ class ColorEditCommand(QUndoCommand):
                 self._owner
             ):
                 self._window._apply_color_edit(
-                    self._owner, self._doc, self._index, argb, revision
+                    self._owner,
+                    self._doc,
+                    self._index,
+                    argb,
+                    revision,
+                    pixel_owner=self._pixel_owner,
+                    pixel_revision=pixel_revision,
                 )
 
 
@@ -499,6 +522,29 @@ class SliceEditCommand(QUndoCommand):
     def undo(self) -> None:
         with self._window._undo_apply():
             self._window._apply_slice_params(self._entry, self._before)
+
+
+class MoveEntryCommand(QUndoCommand):
+    """Reordering a file in the files pane — one place up or down.
+
+    Applied in place, like a rename: the list is where the change shows, so it
+    doesn't switch the view. A single step is its own inverse, so undo is the
+    same move the other way.
+    """
+
+    def __init__(self, window: MainWindow, entry: Entry, delta: int) -> None:
+        super().__init__(f'move "{entry.name}" {"up" if delta < 0 else "down"}')
+        self._window = window
+        self._entry = entry
+        self._delta = delta
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            self._window._apply_move_entry(self._entry, self._delta)
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            self._window._apply_move_entry(self._entry, -self._delta)
 
 
 class AddEntryCommand(QUndoCommand):

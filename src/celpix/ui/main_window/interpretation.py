@@ -33,7 +33,7 @@ from celpix.core.arrangement import (
 from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_DECOMPRESS
+from celpix.plugins.base import NO_COMPRESSION
 from celpix.project.workspace import (
     Entry,
     pixel_config_for,
@@ -59,10 +59,10 @@ def _same_bytes(a: PathwayConfig, b: PathwayConfig) -> bool:
     those bytes are *read*, so when this holds the loaded buffer is still valid
     and must not be fetched again (see :meth:`InterpretationMixin._pixel_data_for`).
     """
-    return (a.source, a.read_id, a.decompress_id) == (
+    return (a.source, a.container_id, a.compression_id) == (
         b.source,
-        b.read_id,
-        b.decompress_id,
+        b.container_id,
+        b.compression_id,
     )
 
 
@@ -509,7 +509,7 @@ class InterpretationMixin:
         during construction) and after a plugin refresh drops the selected
         scheme, both of which leave ``currentData()`` empty.
         """
-        return self._compression.currentData() or NO_DECOMPRESS
+        return self._compression.currentData() or NO_COMPRESSION
 
     def _pixel_bpp(self) -> int:
         return pipeline.pixel_bpp(self._pixel_preset_id(), self._registry)

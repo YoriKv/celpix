@@ -8,7 +8,7 @@ from pathlib import Path
 from celpix.core.arrangement import ARRANGEMENT_PRESETS
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
-from celpix.plugins.base import RAW_READ
+from celpix.plugins.base import RAW_CONTAINER
 from celpix.project.workspace import PaletteMode
 from celpix.ui import render_bridge
 from celpix.ui.main_window import MainWindow
@@ -150,7 +150,6 @@ def test_slice_entry_views_bounded_region_with_absolute_addresses(
     # reads as the slice offset. It has no container of its own — it reads
     # through its parent's coordinates — so nothing was skipped in front of it.
     assert window._offset_text() == "0x000040"
-    assert window._container_skip() == 0
     assert not window._change_container_action.isEnabled()
     assert window._write_action.isEnabled()
     # Slices never nest: a slice on screen offers no slice-creation actions.
@@ -168,7 +167,7 @@ def test_slice_entry_views_bounded_region_with_absolute_addresses(
     assert window._new_slice_from_view_action.isEnabled()
 
 
-def test_slice_rename_inline_editor_commits_and_cancels(qtbot, tmp_path) -> None:
+def test_entry_rename_inline_editor_commits_and_cancels(qtbot, tmp_path) -> None:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QLineEdit
 
@@ -203,8 +202,20 @@ def test_slice_rename_inline_editor_commits_and_cancels(qtbot, tmp_path) -> None
     assert entry.name == "yoshi gfx"
     assert panel._items[entry].text(0) == "yoshi gfx"
 
-    # Files are not renameable — their name is the on-disk basename.
-    panel._begin_rename(window._workspace.entries[0])
+    # A file renames the same way — its basename is only the name it opens
+    # under — and the label keeps the container hint the name is shown with.
+    file_entry = window._workspace.entries[0]
+    panel._begin_rename(file_entry)
+    editor = panel._tree.findChildren(QLineEdit)[-1]
+    assert editor.text() == file_entry.name  # the bare name, no hints to edit
+    editor.setText("tileset ROM")
+    qtbot.keyClick(editor, Qt.Key.Key_Return)
+    qtbot.waitUntil(lambda: file_entry.name == "tileset ROM")
+    assert panel._items[file_entry].text(0) == "tileset ROM"
+
+    # A palette entry is not renameable — it exists to point at its .pal.
+    palette = window._workspace.add_palette(str(tmp_path / "colors.pal"), None)
+    panel._begin_rename(palette)
     assert panel._editing is None
 
 
@@ -237,11 +248,75 @@ def test_file_list_children_stay_sorted_by_offset(qtbot, tmp_path, monkeypatch) 
     monkeypatch.setattr(
         SliceDialog,
         "get_slice",
-        staticmethod(lambda *_a, **_k: SliceParams("b", 200, 32, "decompress.none")),
+        staticmethod(lambda *_a, **_k: SliceParams("b", 200, 32, "compression.none")),
     )
     window._edit_slice(b)
     assert offsets() == sorted(offsets())
     assert panel._offset_of(file_item.child(file_item.childCount() - 1)) == 200
+
+
+def test_shift_arrows_reorder_the_files_and_undo_puts_them_back(
+    qtbot, tmp_path
+) -> None:
+    # Shift+Up/Down resize the view window everywhere else; with the list focused
+    # they reorder the files instead (the navigation filter defers to the tree).
+    # Both the model list and the tree rows have to move, and the file's slices
+    # have to stay nested under it rather than being left behind.
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    first = _make_snes_file(tmp_path)
+    second = tmp_path / "other.4bpp.sfc"
+    second.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(32 * 8)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(first))
+    window._load_pixel(str(second))
+    a = window._workspace.find_file(str(first))
+    b = window._workspace.find_file(str(second))
+    cut = window._workspace.add_slice(str(first), "cut", 64, 64)
+    panel = window._files_panel
+
+    def file_rows() -> list[str]:
+        tree = panel._tree
+        return [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
+
+    window.show()
+    QApplication.setActiveWindow(window)
+    tree = panel._tree
+    # Highlight first, focus second: activating an entry hands focus to the
+    # canvas, and the list only claims the keys while it holds focus itself.
+    tree.setCurrentItem(panel._items[a])
+    tree.setFocus()
+
+    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
+    assert window._workspace.entries == [b, a, cut]  # the slice travelled along
+    assert file_rows() == [b.name, a.name]
+    assert panel._items[cut].parent() is panel._items[a]
+    assert tree.currentItem() is panel._items[a]  # the moved row keeps the highlight
+
+    # Already last: the key does nothing rather than pushing an empty undo step.
+    depth = window._undo_stack.count()
+    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
+    assert window._undo_stack.count() == depth
+    assert file_rows() == [b.name, a.name]
+
+    window._undo_stack.undo()
+    assert window._workspace.entries == [a, cut, b]
+    assert file_rows() == [a.name, b.name]
+
+    # A slice has no hand order to change - its offset places it.
+    tree.setCurrentItem(panel._items[cut])
+    tree.setFocus()
+    qtbot.keyClick(tree, Qt.Key.Key_Up, Qt.KeyboardModifier.ShiftModifier)
+    assert window._workspace.entries == [a, cut, b]
+
+    # The context-menu path, with that slice still the shown row: it leaves the
+    # tree along with its parent, so it has to come back nested and highlighted.
+    panel.move_requested.emit(a, 1)
+    assert window._workspace.entries == [b, a, cut]
+    assert panel._items[cut].parent() is panel._items[a]
+    assert tree.currentItem() is panel._items[cut]
 
 
 def test_arrow_key_browsing_keeps_focus_on_file_list(qtbot, tmp_path) -> None:
@@ -662,10 +737,12 @@ def _open_big(qtbot, tmp_path, monkeypatch, tiles: int) -> MainWindow:
     return window
 
 
-def test_navigation_steps_by_row_and_tile(qtbot, tmp_path, monkeypatch) -> None:
+def test_navigation_steps_by_row_and_tile_and_clamps(
+    qtbot, tmp_path, monkeypatch
+) -> None:
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
     window._columns.setValue(16)
-    window._rows.setValue(2)
+    window._rows.setValue(2)  # 32-tile page; last page top-left = 64 - 32 = 32.
     assert window._offset == 0
 
     window._nav_rows(1)  # down one row = +columns tiles
@@ -676,17 +753,12 @@ def test_navigation_steps_by_row_and_tile(qtbot, tmp_path, monkeypatch) -> None:
     window._nav_rows(-1)
     assert window._offset == 0
 
-
-def test_navigation_clamps_to_file_bounds(qtbot, tmp_path, monkeypatch) -> None:
-    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
-    window._columns.setValue(16)
-    window._rows.setValue(2)  # 32-tile page; last page top-left = 64 - 32 = 32.
-
-    window._nav_rows(-1)  # already at top: stays put
+    # Both ends hold: the top absorbs an up-step, the end absorbs an over-scroll.
+    window._nav_rows(-1)
     assert window._offset == 0
     window._nav_end()
     assert window._offset == 32
-    window._nav_rows(5)  # can't scroll past the last page
+    window._nav_rows(5)
     assert window._offset == 32
     window._nav_home()
     assert window._offset == 0
@@ -777,76 +849,65 @@ def _select_address_format(window: MainWindow, entry_id: str) -> None:
     )
 
 
-def test_address_format_dropdown_switches_display_and_parse(
+def test_the_address_format_dropdown_drives_the_offset_box(
     qtbot, tmp_path, monkeypatch
 ) -> None:
-    # The dropdown swaps the offset box's format/parse pair: the displayed text
-    # re-renders in the new format, and typed addresses parse under it. The
-    # mapping math itself is covered in test_address.
+    """Picking an address format swaps the offset box's render/parse pair, and the
+    bank spins that parameterize it follow.
+
+    All of it is one wiring question - which layout is the box speaking right now -
+    so it is checked as one walk through the formats rather than per format. The
+    mapping arithmetic itself lives in test_address.
+    """
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
     window._columns.setValue(16)
     window._rows.setValue(2)
     window._nav_rows(1)  # byte 0x200
+    before = window._offset
 
+    # Flat hex needs no bank settings, and invalid input reverts to the current
+    # offset. The commit path is focus-independent (CommittingLineEdit always
+    # re-renders), so this one case covers focused and unfocused alike.
+    assert not window._bank_size.isEnabled()
+    window._offset_edit.setText("nonsense")
+    window._offset_edit.commit()
+    assert window._offset == before
+    assert window._offset_edit.text() == f"0x{before * 32:06X}"
+
+    # A banked preset re-renders the displayed text and parses typed addresses
+    # under the new layout, and fills the spins it is described by.
     _select_address_format(window, "snes-lorom")
     assert window._offset_edit.text() == "$00:8200"
-
-    window._offset_edit.setText("$00:8400")  # byte 0x400 -> tile 32
-    window._offset_edit.commit()
-    assert window._offset == 32
-    assert window._offset_edit.text() == "$00:8400"
-
-
-def test_bank_setting_edit_diverges_to_custom(qtbot, tmp_path, monkeypatch) -> None:
-    # A preset fills the bank-setting spins; hand-editing one flips the dropdown
-    # to Custom (the preset no longer describes the settings), re-rendering the
-    # box under the edited layout. Re-selecting the preset restores its values.
-    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
-    window._columns.setValue(16)
-    window._rows.setValue(2)
-    window._nav_rows(1)  # byte 0x200
-
-    assert not window._bank_size.isEnabled()  # flat hex needs no bank settings
-    _select_address_format(window, "snes-lorom")
     assert window._bank_size.isEnabled()
     assert (
         window._bank_size.value(),
         window._bank_addr.value(),
         window._bank_first.value(),
     ) == (0x8000, 0x8000, 0x00)
+    window._offset_edit.setText("$00:8400")  # byte 0x400 -> tile 32
+    window._offset_edit.commit()
+    assert window._offset == 32
+    assert window._offset_edit.text() == "$00:8400"
 
+    # Hand-editing a spin flips the dropdown to Custom - the preset no longer
+    # describes the settings - and re-renders under the edited layout. Re-selecting
+    # the preset restores its values.
     window._bank_first.setValue(0x40)  # e.g. SuperFX-style bank numbering
     assert window._addr_format.currentData() == "custom"
-    assert window._offset_edit.text() == "$40:8200"
-
+    assert window._offset_edit.text() == "$40:8400"
     _select_address_format(window, "snes-lorom")
     assert window._bank_first.value() == 0x00
-    assert window._offset_edit.text() == "$00:8200"
+    assert window._offset_edit.text() == "$00:8400"
 
-
-def test_split_preset_hides_bank_settings(qtbot, tmp_path, monkeypatch) -> None:
-    # ExHiROM/ExLoROM are piecewise mappings the three-spin model can't
-    # express: selecting one hides the bank settings entirely and renders
-    # through the split layout; a banked preset brings the settings back.
-    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
+    # ExHiROM/ExLoROM are piecewise mappings the three-spin model can't express:
+    # selecting one hides the settings entirely and renders through the split
+    # layout; a banked preset brings them back.
+    window._nav_home()
     _select_address_format(window, "snes-exhirom")
     assert window._bank_settings.isHidden()
     assert window._offset_edit.text() == "$C0:0000"
     _select_address_format(window, "snes-lorom")
     assert not window._bank_settings.isHidden()
-
-
-def test_bad_hex_offset_reverts(qtbot, tmp_path, monkeypatch) -> None:
-    # Invalid input reverts the box to the current offset. The commit path is
-    # focus-independent (CommittingLineEdit always re-renders), so this one case
-    # covers both the focused and unfocused scenarios.
-    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
-    window._nav_rows(1)
-    before = window._offset
-    window._offset_edit.setText("nonsense")
-    window._offset_edit.commit()
-    assert window._offset == before
-    assert window._offset_edit.text() == f"0x{before * 32:06X}"
 
 
 def test_offset_scrollbar_jumps_and_stays_in_sync(qtbot, tmp_path, monkeypatch) -> None:
@@ -857,14 +918,33 @@ def test_offset_scrollbar_jumps_and_stays_in_sync(qtbot, tmp_path, monkeypatch) 
     assert window._offset_bar.pageStep() == 32
     assert window._offset_bar.singleStep() == 16  # one row
 
-    # Dragging the scrollbar moves the offset.
+    # A drag can land on any tile; the offset snaps to the nearest whole row
+    # and the bar is pulled back onto it.
     window._offset_bar.setValue(20)
-    assert window._offset == 20
+    assert window._offset == 16
+    assert window._offset_bar.value() == 16
 
     # Moving via keys/buttons keeps the scrollbar in step (no feedback loop).
     window._nav_home()
     assert window._offset == 0
     assert window._offset_bar.value() == 0
+
+
+def test_block_pattern_scales_vertical_step(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtCore import Qt
+
+    # A 2-tile-high block makes the vertical unit a block-row: Up/Down move two
+    # rows and the position bar snaps to block-row multiples, so no vertical
+    # move can re-cut blocks from a mid-block origin.
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
+    window._columns.setValue(8)
+    window._rows.setValue(2)
+    window._pattern.setCurrentIndex(window._pattern.findText(_pattern_name("nes-8x16")))
+    window._nav_keys[(Qt.Key.Key_Down, False, False)]()
+    assert window._offset == 16  # two rows of 8 tiles
+    assert window._offset_bar.singleStep() == 16
+    window._offset_bar.setValue(28)  # nearest block-row multiple is 32
+    assert window._offset == 32
 
 
 def test_switching_codec_preserves_byte_offset(qtbot, tmp_path, monkeypatch) -> None:
@@ -1433,15 +1513,28 @@ def test_custom_format_change_relabels_without_touching_colors(
     assert window._doc.palette.colors[0] == 0xFF010203  # unchanged - only relabelled
 
 
-def test_quantize_button_snaps_custom_colors_to_the_selected_format(
+def test_the_quantize_button_snaps_custom_colors_to_the_format(
     qtbot, tmp_path, monkeypatch
 ) -> None:
-    # The Quantize button is the explicit one-shot conversion: it snaps the stored
-    # colors onto what the selected format can hold, undoable in one step. Shown
-    # only for Custom, the one mode whose colors are stored raw.
+    """Quantize is the explicit one-shot conversion of stored colors onto what the
+    selected format can hold - where it is offered, what it moves, and what it
+    costs on the undo stack.
+
+    One window: which mode is showing is the very thing being varied, so the
+    passes have to run against the same palette dock anyway.
+    """
     from celpix.pipeline import pipeline
 
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
+
+    # Offered for Custom alone - the one mode whose colors are stored raw. A
+    # raw-bytes palette already holds values its format can store, so there would
+    # be nothing to snap.
+    assert window._palette_mode == "default"
+    assert not window._quantize_palette_action.isVisibleTo(window)
+    assert window._load_palette_at_offset(32)  # Offset mode
+    assert not window._quantize_palette_action.isVisibleTo(window)
+
     window._palette_mode_combo.setCurrentIndex(
         window._palette_mode_combo.findData(PaletteMode.CUSTOM)
     )
@@ -1461,40 +1554,15 @@ def test_quantize_button_snaps_custom_colors_to_the_selected_format(
 
     assert window._palette_mode == "custom"  # still project-stored ARGB
     assert window._doc.palette.colors[0] == expected
-
     window._undo_stack.undo()  # one step back to the pre-quantize colors
     assert window._doc.palette.colors[0] == 0xFF010203
 
-
-def test_quantize_that_changes_nothing_pushes_no_undo_step(
-    qtbot, tmp_path, monkeypatch
-) -> None:
-    # Quantizing colors that already fit the format is a no-op: it must not add a
-    # dead undo entry the user would have to walk back past.
-    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    window._palette_mode_combo.setCurrentIndex(
-        window._palette_mode_combo.findData(PaletteMode.CUSTOM)
-    )
-    window._palette_preset.setCurrentIndex(
-        window._palette_preset.findData("preset.palette.bgr555")
-    )
-    # Quantize once so every color already sits on a BGR555 value …
-    window._quantize_palette_action.click()
+    # Quantizing colors that already fit is a no-op, and must not leave a dead
+    # undo entry the user has to walk back past.
+    window._quantize_palette_action.click()  # everything now sits on BGR555 values
     depth = window._undo_stack.index()
-
-    window._quantize_palette_action.click()  # … a second pass changes nothing
-
-    assert window._undo_stack.index() == depth  # no new command pushed
-
-
-def test_quantize_button_hidden_outside_custom(qtbot, tmp_path, monkeypatch) -> None:
-    # Raw-bytes palettes already hold values their format can store, so Quantize
-    # would be a no-op there and is hidden.
-    window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    assert window._palette_mode == "default"
-    assert not window._quantize_palette_action.isVisibleTo(window)
-    assert window._load_palette_at_offset(32)  # Offset mode
-    assert not window._quantize_palette_action.isVisibleTo(window)
+    window._quantize_palette_action.click()
+    assert window._undo_stack.index() == depth
 
 
 def test_custom_forked_from_offset_keeps_the_source_format(
@@ -1718,18 +1786,6 @@ def test_grid_style_menu_applies_and_persists(qtbot, tmp_path) -> None:
     assert reopened._canvas._grid_style is GridStyle.DOT
     checked = [a.data() for a in reopened._grid_style_group.actions() if a.isChecked()]
     assert checked == [GridStyle.DOT]
-
-
-def test_grid_style_defaults_when_setting_is_bad(qtbot, tmp_path) -> None:
-    from PySide6.QtCore import QSettings
-
-    from celpix.ui.canvas import GridStyle
-
-    _isolate_settings(tmp_path)
-    QSettings().setValue("view/grid_style", "bogus")  # stale / foreign value
-    window = MainWindow()
-    qtbot.addWidget(window)
-    assert window._canvas._grid_style is GridStyle.LINE
 
 
 def test_palette_panel_color_selection_click_and_arrows(qtbot) -> None:
@@ -1984,63 +2040,43 @@ def test_mode_switch_resets_row_and_selection_into_palette(
     assert "Subpal 7 · Color 15" in window._color_details.text()
 
 
-def test_pixel_filter_prunes_dropdown_but_keeps_current(qtbot, tmp_path) -> None:
-    px = _make_snes_file(tmp_path)
-    window = MainWindow()
-    qtbot.addWidget(window)
-    window._load_pixel(str(px))
-    combo = window._pixel_preset
-    assert combo.count() > 2
-    current = combo.currentData()
-    other = next(
-        combo.itemData(i) for i in range(combo.count()) if combo.itemData(i) != current
-    )
-
-    effective = window._apply_pixel_filter({current, other})
-    assert effective == {current, other}
-    assert {combo.itemData(i) for i in range(combo.count())} == {current, other}
-    assert combo.currentData() == current  # the shown format is untouched
-    # The popup model marks exactly the visible formats checked.
-    assert {key for key, _name, checked in window._pixel_filter_items() if checked} == {
-        current,
-        other,
-    }
-
-
-def test_pixel_filter_unchecking_current_switches_and_is_undoable(
+def test_pixel_filter_prunes_the_dropdown_without_losing_the_view(
     qtbot, tmp_path
 ) -> None:
-    px = _make_snes_file(tmp_path)
-    window = MainWindow()
-    qtbot.addWidget(window)
-    window._load_pixel(str(px))
-    combo = window._pixel_preset
-    current = combo.currentData()
-    other = next(
-        combo.itemData(i) for i in range(combo.count()) if combo.itemData(i) != current
-    )
+    """The view-only format filter: what it hides, what it refuses to hide, and
+    what survives it.
 
-    # Unchecking the shown format moves the view to the remaining one.
-    window._apply_pixel_filter({other})
-    assert combo.currentData() == other
-    assert window._doc.pixel_config.interpret_preset_id == other
-    # It is an ordinary undoable switch: undo restores the old format, force-shown
-    # even though the filter had hidden it.
-    window._undo_stack.undo()
-    assert window._doc.pixel_config.interpret_preset_id == current
-    assert combo.currentData() == current
-
-
-def test_pixel_filter_select_none_keeps_current_then_all_restores(
-    qtbot, tmp_path
-) -> None:
+    One window walks the whole feature because every step asks the same question
+    of the same dropdown - which formats are listed, and is the shown one still
+    among them - and the invariant that matters is exactly that no combination of
+    hiding leaves the view stranded on a format the list no longer offers.
+    """
     px = _make_snes_file(tmp_path)
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(px))
     combo = window._pixel_preset
     full = combo.count()
+    assert full > 2
     current = combo.currentData()
+    other = next(
+        combo.itemData(i) for i in range(combo.count()) if combo.itemData(i) != current
+    )
+
+    # Hiding everything else leaves the two, with the shown one untouched.
+    assert window._apply_pixel_filter({current, other}) == {current, other}
+    assert {combo.itemData(i) for i in range(combo.count())} == {current, other}
+    assert combo.currentData() == current
+    # The popup model marks exactly the visible formats checked.
+    assert {key for key, _name, checked in window._pixel_filter_items() if checked} == {
+        current,
+        other,
+    }
+
+    # A repopulation (plugin reload) keeps the filter and the shown format.
+    window._repopulate_presets()
+    assert {combo.itemData(i) for i in range(combo.count())} == {current, other}
+    assert combo.currentData() == current
 
     # Select None can't empty the list; it collapses to the current format.
     assert window._apply_pixel_filter(set()) == {current}
@@ -2048,28 +2084,18 @@ def test_pixel_filter_select_none_keeps_current_then_all_restores(
     assert combo.currentData() == current
 
     # Select All brings every format back and clears the filter.
-    all_ids = {p.id for p in window._all_pixel_presets()}
-    window._apply_pixel_filter(all_ids)
+    window._apply_pixel_filter({p.id for p in window._all_pixel_presets()})
     assert combo.count() == full
     assert not window._workspace.hidden_pixel_presets
 
-
-def test_pixel_filter_survives_a_plugin_refresh(qtbot, tmp_path) -> None:
-    # A hidden format stays hidden across a repopulation (plugin reload); the
-    # shown format stays shown.
-    px = _make_snes_file(tmp_path)
-    window = MainWindow()
-    qtbot.addWidget(window)
-    window._load_pixel(str(px))
-    combo = window._pixel_preset
-    current = combo.currentData()
-    other = next(
-        combo.itemData(i) for i in range(combo.count()) if combo.itemData(i) != current
-    )
-    window._apply_pixel_filter({current, other})
-
-    window._repopulate_presets()
-    assert {combo.itemData(i) for i in range(combo.count())} == {current, other}
+    # Unchecking the *shown* format moves the view to the remaining one - an
+    # ordinary undoable switch, so undo restores the old format and force-shows
+    # it even though the filter had hidden it.
+    window._apply_pixel_filter({other})
+    assert combo.currentData() == other
+    assert window._doc.pixel_config.interpret_preset_id == other
+    window._undo_stack.undo()
+    assert window._doc.pixel_config.interpret_preset_id == current
     assert combo.currentData() == current
 
 
@@ -2149,40 +2175,20 @@ def test_color_details_show_selected_color(qtbot, tmp_path, monkeypatch) -> None
     assert "#FFFFFFFF" not in window._color_details.text()  # index 1 changed
 
 
-def test_compression_overlay_shows_and_hides(qtbot, tmp_path) -> None:
+def test_compression_overlay_shows_the_decoded_window_beside_the_raw_one(
+    qtbot, tmp_path
+) -> None:
+    """When the preview appears, what it shows, and when it refuses to.
+
+    The overlay is a second, parallel run of the pipeline, and the thing that can
+    break in it is divergence from the live view - it must decode the same window,
+    lay it out through the same arrangement path, and leave the raw view it sits
+    beside completely alone. So one window checks all three against one file.
+    """
     from celpix.plugins.builtins import lz_command
 
-    # The file is an LZ2 structure (4 SNES 4bpp tiles) followed by trailing
-    # bytes: the main view keeps showing the raw file; the overlay shows the
-    # decompressed tiles for the current window.
-    tiles = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
-    packed = lz_command.compress(tiles, big_endian_offsets=True)
-    px = tmp_path / "packed.bin"
-    px.write_bytes(packed + bytes(64))
-
-    window = MainWindow()
-    qtbot.addWidget(window)
-    window._load_pixel(str(px))
-    assert not window._overlay.isVisible()
-    raw_image = window._canvas._image.copy()
-
-    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
-    assert window._overlay.isVisible()
-    assert not window._overlay._canvas._image.isNull()
-    # The parallel run leaves the main (raw) view untouched.
-    assert window._canvas._image == raw_image
-    assert window._doc.pixel_config.decompress_id == "decompress.none"
-
-    window._compression.setCurrentIndex(window._compression.findData("decompress.none"))
-    assert not window._overlay.isVisible()
-
-
-def test_compression_overlay_honors_the_arrangement(qtbot, tmp_path) -> None:
-    from celpix.plugins.builtins import lz_command
-
-    # An LZ2 structure of 4 distinct SNES 4bpp tiles. Viewed 2 tiles wide, both a
-    # 2D wide-bitmap read and a 1×2 block grouping must re-lay the preview — proving
-    # the overlay runs the same arrangement path as the live view (not a 1D fork).
+    # An LZ2 structure of 4 distinct SNES 4bpp tiles, plus trailing bytes: the
+    # main view keeps showing the raw file, the overlay the decompressed tiles.
     tiles = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
     px = tmp_path / "packed.bin"
     px.write_bytes(lz_command.compress(tiles, big_endian_offsets=True) + bytes(64))
@@ -2190,18 +2196,40 @@ def test_compression_overlay_honors_the_arrangement(qtbot, tmp_path) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(px))
-    window._columns.setValue(2)  # a 2-wide bitmap, so 2D/blocks actually reorder
-    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
-    assert window._overlay.isVisible()
-    flat = window._overlay._canvas._image.copy()
+    assert not window._overlay.isVisible()
+    raw_image = window._canvas._image.copy()
 
+    window._compression.setCurrentIndex(window._compression.findData("compression.lz2"))
+    assert window._overlay.isVisible()
+    assert not window._overlay._canvas._image.isNull()
+    # The parallel run leaves the main (raw) view and its config untouched.
+    assert window._canvas._image == raw_image
+    assert window._doc.pixel_config.compression_id == "compression.none"
+
+    # Viewed 2 tiles wide, both a 2D wide-bitmap read and a 1×2 block grouping
+    # re-lay the preview - proving it runs the live arrangement path, not a 1D fork.
+    window._columns.setValue(2)
+    flat = window._overlay._canvas._image.copy()
     window._two_d.setChecked(True)
     assert window._overlay._canvas._image != flat
     window._two_d.setChecked(False)
     assert window._overlay._canvas._image == flat  # back to the 1D preview
-
     window._block_rows.setValue(2)
     assert window._overlay._canvas._image != flat
+    window._block_rows.setValue(1)
+
+    window._compression.setCurrentIndex(
+        window._compression.findData("compression.none")
+    )
+    assert not window._overlay.isVisible()
+
+    # Data no scheme can claim: a leading backreference into unwritten output can
+    # never start a valid structure, so there is nothing to preview.
+    junk = tmp_path / "junk.bin"
+    junk.write_bytes(b"\x83\xff\xff" * 22)
+    window._load_pixel(str(junk))
+    window._compression.setCurrentIndex(window._compression.findData("compression.lz2"))
+    assert not window._overlay.isVisible()
 
 
 def _pattern_name(preset_id: str) -> str:
@@ -2327,7 +2355,7 @@ def test_compression_overlay_badge_distinguishes_the_three_decode_states(
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(ended))
-    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
+    window._compression.setCurrentIndex(window._compression.findData("compression.lz2"))
     assert window._overlay.isVisible()
     assert not window._overlay._badge.isVisible()  # terminator inside the window
 
@@ -2342,7 +2370,7 @@ def test_compression_overlay_badge_distinguishes_the_three_decode_states(
     # A scheme with no end marker: informational, not amber, whatever the window.
     window._load_pixel(str(endless))
     window._compression.setCurrentIndex(
-        window._compression.findData("decompress.packbits")
+        window._compression.findData("compression.packbits")
     )
     assert window._overlay._badge.isVisible()
     assert window._overlay._badge.text() == "end of view window"
@@ -2373,7 +2401,7 @@ def test_promote_bounds_a_stream_scheme_at_the_window_end(qtbot, tmp_path) -> No
     window._columns.setValue(2)
     window._rows.setValue(2)
     window._compression.setCurrentIndex(
-        window._compression.findData("decompress.packbits")
+        window._compression.findData("compression.packbits")
     )
     assert window._promote_button.isEnabled()
     assert not window._jump_next.isEnabled()
@@ -2387,20 +2415,7 @@ def test_promote_bounds_a_stream_scheme_at_the_window_end(qtbot, tmp_path) -> No
     entry = window._workspace.entries[-1]
     assert entry.kind is EntryKind.SLICE
     assert (entry.slice_offset, entry.slice_length) == (start, extent)
-    assert entry.decompress_id == "decompress.packbits"
-
-
-def test_compression_overlay_hides_on_invalid_data(qtbot, tmp_path) -> None:
-    # A leading backreference into unwritten output can never start a valid
-    # structure, so no compression scheme should claim this window.
-    px = tmp_path / "junk.bin"
-    px.write_bytes(b"\x83\xff\xff" * 22)
-
-    window = MainWindow()
-    qtbot.addWidget(window)
-    window._load_pixel(str(px))
-    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
-    assert not window._overlay.isVisible()
+    assert entry.compression_id == "compression.packbits"
 
 
 def test_copier_header_is_detected_and_skipped(qtbot, tmp_path) -> None:
@@ -2420,11 +2435,242 @@ def test_copier_header_is_detected_and_skipped(qtbot, tmp_path) -> None:
     qtbot.addWidget(window)
     window._load_pixel(str(px))
 
-    assert window._workspace.current.container_id == "read.copier-header"
+    assert window._workspace.current.container_id == "container.copier-header"
     assert bytes(window._doc.pixel_data) == body
     # Offsets stay file-absolute, so ROM addresses still mean what they say.
     assert window._display_base() == 512
     assert window._offset_text() == "0x000200"
+
+
+def test_reshape_shows_joined_bytes_and_gates_offsets(qtbot, tmp_path) -> None:
+    """Under an active reshape the view shows the reordered region, and every
+    view-position-to-file-offset mapping goes dark: the address display falls
+    back to 0-based positions and no slice can be carved from the view. These
+    gates keyed on compression alone before the Reshape stage existed, so a
+    reshaped view silently minting garbage file offsets is the regression this
+    guards (docs/design/reshape-stage.md §3).
+    """
+    from celpix.core.context import PipelineContext
+    from celpix.plugins.builtins.split_planes import SplitPartsReshape
+
+    data = bytes((i * 13 + 1) & 0xFF for i in range(256))
+    px = tmp_path / "pair.bin"
+    px.write_bytes(data)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    entry = window._workspace.current
+    assert window._raw_slice_source() is not None  # raw view: carving allowed
+
+    # What _change_container_for does once the dialog returns a reshape.
+    entry.reshape_id = "reshape.split-planes-2"
+    window._capture_session()
+    window._workspace.drop_document(entry)
+    window._on_current_entry_changed(entry)
+
+    joined = SplitPartsReshape(2).reshape(data, PipelineContext())
+    assert bytes(window._doc.pixel_data) == joined
+    assert window._display_base() == 0
+    assert window._raw_slice_source() is None
+
+
+def test_offset_palette_under_a_reshape_reads_the_joined_bytes(qtbot, tmp_path):
+    """An Offset palette addresses the same coordinate space the view does, so
+    under a reshape it reads the *joined* buffer rather than whatever the file
+    happens to hold at that number. Reading the file instead is the regression
+    this guards, and it fails quietly: the wrong bytes still decode to plausible
+    colors (docs/design/palette-editing.md §2).
+    """
+    # split-planes-2 lays the first half on the even positions and the second on
+    # the odd ones, so joined 32..33 comes from file bytes 16 and 80 — and the
+    # file's own 32..33 is something else entirely.
+    data = bytearray((i * 13 + 1) & 0xFF for i in range(128))
+    data[16], data[80] = 0xFF, 0x7F
+    assert bytes(data[32:34]) != b"\xff\x7f"  # the bytes the old read would find
+    px = tmp_path / "pair.4bpp.sfc"
+    px.write_bytes(bytes(data))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    entry = window._workspace.current
+    entry.reshape_id = "reshape.split-planes-2"
+    window._capture_session()
+    window._workspace.drop_document(entry)
+    window._on_current_entry_changed(entry)
+
+    assert window._load_palette_at_offset(32)
+    doc = window._doc
+    assert doc.palette_bytes[:2] == b"\xff\x7f"
+    assert doc.palette.colors[0] == 0xFFFFFFFF
+    assert doc.palette_config.source.data is not None  # cut from the joined buffer
+    # Reordered bytes have no file offset for a splice to land on.
+    assert doc.palette_config.write_enabled is False
+
+
+def test_offset_palette_edit_in_reshaped_region_saves_through_the_owner(
+    qtbot, tmp_path
+):
+    """A color edit on a buffer-backed Offset palette persists through the
+    owner's pixel pathway: spliced into its buffer (as undoable pixel dirt),
+    then carried through unshape by the owner's ordinary Write — landing each
+    byte on the chip it came from (docs/design/palette-editing.md §2).
+    """
+    # split-planes-2 on one file: joined 32..33 come from file bytes 16 and 80.
+    data = bytearray((i * 13 + 1) & 0xFF for i in range(128))
+    data[16], data[80] = 0xFF, 0x7F  # BGR555 white at joined offset 32
+    px = tmp_path / "pair.4bpp.sfc"
+    px.write_bytes(bytes(data))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    entry = window._workspace.current
+    entry.reshape_id = "reshape.split-planes-2"
+    window._capture_session()
+    window._workspace.drop_document(entry)
+    window._on_current_entry_changed(entry)
+
+    assert window._load_palette_at_offset(32)
+    assert window._doc.palette.color(0) == 0xFFFFFFFF
+    window._palette_panel._select(0)
+    window._on_color_changed(0xFFFF0000)  # pure red -> BGR555 0x001F
+
+    doc = window._doc
+    assert doc.palette.color(0) == 0xFFFF0000
+    assert doc.pixel_data[32:34] == b"\x1f\x00"  # landed in the owner's buffer
+    assert entry.pixel_dirty  # ...as pixel dirt on the owner
+    assert not entry.palette_dirty  # the palette pathway never writes here
+
+    # Tokened through undo exactly as palette dirt is.
+    window._undo_stack.undo()
+    assert window._doc.pixel_data[32:34] == b"\xff\x7f"
+    assert not entry.pixel_dirty
+    window._undo_stack.redo()
+    assert window._doc.pixel_data[32:34] == b"\x1f\x00"
+    assert entry.pixel_dirty
+
+    # The owner's Write unshapes the whole region: each half of the edited
+    # entry returns to the file byte it came from, everything else untouched.
+    assert window._write_entry(entry)
+    out = px.read_bytes()
+    assert (out[16], out[80]) == (0x1F, 0x00)
+    expect = bytearray(data)
+    expect[16], expect[80] = 0x1F, 0x00
+    assert out == bytes(expect)
+    assert not entry.pixel_dirty
+
+
+def test_offset_palette_edit_on_slice_loads_and_dirties_the_parent(qtbot, tmp_path):
+    """From a slice, a buffer-backed Offset palette edit lands on the *parent*:
+    its buffer holds the bytes, so it is loaded if closed and its pixel pathway
+    is what goes dirty - the slice itself stays clean (it is view-only under a
+    reordered parent, and the palette was never its bytes to begin with).
+    """
+    data = bytearray((i * 13 + 1) & 0xFF for i in range(128))
+    data[16], data[80] = 0xFF, 0x7F  # BGR555 white at joined offset 32
+    px = tmp_path / "pair.4bpp.sfc"
+    px.write_bytes(bytes(data))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    parent = window._workspace.current
+    parent.reshape_id = "reshape.split-planes-2"
+    window._capture_session()
+    window._workspace.drop_document(parent)
+    window._on_current_entry_changed(parent)
+
+    slice_entry = window._workspace.add_slice(str(px), "gfx", 64, 32)
+    window._activate_entry(slice_entry)
+    window._workspace.drop_document(parent)  # the closed-parent branch
+    assert parent.doc is None
+
+    assert window._load_palette_at_offset(32)
+    assert window._doc.palette.color(0) == 0xFFFFFFFF
+    window._palette_panel._select(0)
+    window._on_color_changed(0xFFFF0000)
+
+    # The first edit loaded the parent and spliced into *its* buffer.
+    assert parent.doc is not None
+    assert parent.doc.pixel_data[32:34] == b"\x1f\x00"
+    assert parent.pixel_dirty
+    assert not slice_entry.pixel_dirty and not slice_entry.palette_dirty
+
+
+def test_format_switch_refloors_buffer_backed_offset_palette_in_place(qtbot, tmp_path):
+    """Switching the palette format re-cuts a buffer-backed Offset window from
+    the owner's buffer with its base intact. The re-floor used to rebuild the
+    ref against the raw file (and drop ``data_base``), so with a container skip
+    in front the redecode silently read a different window.
+    """
+    # Copier header (base 512) + split-planes-2 over the 1024-byte body:
+    # joined 32..33 come from body bytes 16 and 512+16.
+    data = bytearray((i * 13 + 1) & 0xFF for i in range(512 + 1024))
+    data[512 + 16], data[512 + 512 + 16] = 0xFF, 0x7F  # white at joined 512+32
+    px = tmp_path / "pair.4bpp.sfc"
+    px.write_bytes(bytes(data))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    entry = window._workspace.current
+    entry.container_id = "container.copier-header"
+    entry.reshape_id = "reshape.split-planes-2"
+    window._capture_session()
+    window._workspace.drop_document(entry)
+    window._on_current_entry_changed(entry)
+    # Reshaped: the display shows 0-based buffer positions, and a palette
+    # offset is one of those numbers - the container's skip is already inside
+    # the buffer, not something the offset re-adds.
+    assert window._display_base() == 0
+    assert window._load_palette_at_offset(32)
+    assert window._doc.palette.color(0) == 0xFFFFFFFF
+
+    window._palette_preset.setCurrentIndex(
+        window._palette_preset.findData("preset.palette.bgr555-be")
+    )
+    # Same window, same bytes, re-decoded: the re-floor was cut from the
+    # owner's buffer again, not re-read from the raw file at that number.
+    src = window._doc.palette_config.source
+    assert (src.offset, src.data_base) == (32, 0)
+    assert window._doc.palette_bytes[:2] == b"\xff\x7f"
+
+
+def test_offset_palette_lands_on_the_offset_shown_past_a_header(qtbot, tmp_path):
+    """A container that only skips a header leaves offsets naming file bytes, so
+    an Offset palette reads the file at exactly the number the offset box shows
+    — and stays writable. The skip was previously added a second time on the way
+    in, putting every Palette from Selection a header's width past the bytes it
+    pointed at.
+    """
+    # One 16 KB PRG bank, then CHR: the view — and so the palette offset — starts
+    # at 0x4010 rather than 0.
+    chr_start = 16 + 0x4000
+    rom = bytearray([*b"NES\x1a", 1, 1, 0, 0] + [0] * 8)
+    rom += bytes((i * 7) & 0xFF for i in range(0x4000 + 0x2000))
+    rom[chr_start + 32 : chr_start + 34] = b"\xff\x7f"
+    nes = tmp_path / "g.nes"
+    nes.write_bytes(bytes(rom))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(nes))
+    assert window._display_base() == chr_start
+
+    assert window._load_palette_at_offset(chr_start + 32)
+    doc = window._doc
+    assert doc.palette_bytes[:2] == b"\xff\x7f"
+    assert doc.palette_config.source.offset == chr_start + 32
+    assert doc.palette_config.source.data is None  # read straight from the file
+    assert doc.palette_config.write_enabled is True
+
+    # A slice offset is written in those same coordinates, so New Slice… must
+    # prefill the address on screen rather than the config's requested 0 — which
+    # is what it did, putting every slice of a headered file a header short.
+    assert window._offset_text() == f"0x{chr_start:06X}"
+    assert window._slice_prefill_offset() == chr_start
 
 
 def test_container_notices_land_in_the_row_tooltip(qtbot, tmp_path) -> None:
@@ -2481,7 +2727,7 @@ def test_small_rom_sized_file_is_not_headered(qtbot, tmp_path) -> None:
     qtbot.addWidget(window)
     window._load_pixel(str(px))
 
-    assert window._workspace.current.container_id == RAW_READ
+    assert window._workspace.current.container_id == RAW_CONTAINER
     assert len(window._doc.pixel_data) == 512
 
 
@@ -2508,7 +2754,7 @@ def test_jump_and_scan_navigate_structures(qtbot, tmp_path) -> None:
     assert not window._scan_button.isEnabled()  # compression off
     assert not window._jump_next.isEnabled()
 
-    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
+    window._compression.setCurrentIndex(window._compression.findData("compression.lz2"))
     assert window._scan_button.isEnabled()
     assert window._jump_next.isEnabled()  # whole structure A (known end) in view
     window._on_jump_next()
@@ -2544,7 +2790,7 @@ def test_scan_ui_thaw_does_not_arm_structure_actions(qtbot, tmp_path) -> None:
     window._load_pixel(str(px))
     window._columns.setValue(4)
     window._rows.setValue(4)
-    window._compression.setCurrentIndex(window._compression.findData("decompress.lz2"))
+    window._compression.setCurrentIndex(window._compression.findData("compression.lz2"))
     window._set_byte_position(len(packed_a))  # into the junk: no structure here
     assert not window._overlay.isVisible()
     assert not window._jump_next.isEnabled()
@@ -2694,7 +2940,7 @@ def test_delete_key_removes_entry_even_with_a_tile_selection(
     qtbot.addWidget(window)
     window._load_pixel(str(px))
     # A decompressed slice - the case the report was filed against.
-    window._workspace.add_slice(str(px), "packed-slice", 0, None, "decompress.lz2")
+    window._workspace.add_slice(str(px), "packed-slice", 0, None, "compression.lz2")
     slice_entry = next(
         e for e in window._workspace.entries if e.kind is EntryKind.SLICE
     )
@@ -2769,7 +3015,7 @@ def test_edit_slice_updates_coordinates_and_reloads(
         SliceDialog,
         "get_slice",
         staticmethod(
-            lambda *_a, **_k: SliceParams("bigger", 32, 96, "decompress.none")
+            lambda *_a, **_k: SliceParams("bigger", 32, 96, "compression.none")
         ),
     )
     window._edit_slice(entry)
@@ -2806,7 +3052,7 @@ def test_edit_slice_keeps_the_view_across_the_re_read(
         SliceDialog,
         "get_slice",
         staticmethod(
-            lambda *_a, **_k: SliceParams("gfx", 0, 306 * 12 * 3, "decompress.none")
+            lambda *_a, **_k: SliceParams("gfx", 0, 306 * 12 * 3, "compression.none")
         ),
     )
     window._edit_slice(entry)
@@ -2876,7 +3122,7 @@ def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
     monkeypatch.setattr(
         SliceDialog,
         "get_slice",
-        staticmethod(lambda *_a, **_k: SliceParams("mine", 64, 64, "decompress.none")),
+        staticmethod(lambda *_a, **_k: SliceParams("mine", 64, 64, "compression.none")),
     )
     window._new_slice_for(entry_a)
 
@@ -2890,7 +3136,7 @@ def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
     assert slice_entry.session is not None
     assert slice_entry.session.pixel_preset_id == "preset.pixel.snes-2bpp"
     assert slice_entry.session.palette_mode == "offset"
-    assert slice_entry.session.compression_id == "decompress.none"
+    assert slice_entry.session.compression_id == "compression.none"
     # The subpalette row and the arrangement ride on the view options rather than
     # the session, so they take a hand-off of their own to come across.
     assert slice_entry.doc.view.subpalette_row == 3
@@ -4000,50 +4246,49 @@ def test_project_reload_relinks_a_file_palette_to_its_entry(qtbot, tmp_path) -> 
     assert not graphic.pixel_dirty and not graphic.palette_dirty
 
 
-def test_eyedropper_samples_the_canvas_without_moving_the_selection(
+def test_the_eyedropper_samples_without_disturbing_what_is_being_edited(
     qtbot, tmp_path, monkeypatch
 ) -> None:
+    """Picking a color from either surface - the canvas or the palette grid - must
+    leave the selection that identifies the *edited* entry where it was.
+
+    Both surfaces are checked together because the risk they share is the whole
+    point: a pick is a click, and a click on either one normally moves a
+    selection. On the canvas that would reload an Offset-mode palette out from
+    under the color being edited; on the grid it would retarget the edit itself.
+    """
     from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QMouseEvent
 
     window = _open_for_color_edit(qtbot, tmp_path, monkeypatch)
     window._open_color_editor(3)
+    panel = window._palette_panel
     picked: list[int] = []
     window._canvas.color_picked.connect(picked.append)
 
     window._set_pick_mode(True)
     before_selection = window._selected_tile
-    event = QMouseEvent(
-        QMouseEvent.Type.MouseButtonPress,
-        QPointF(2, 2),
-        QPointF(2, 2),
-        Qt.MouseButton.LeftButton,
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
+    window._canvas.mousePressEvent(
+        QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress,
+            QPointF(2, 2),
+            QPointF(2, 2),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
     )
-    window._canvas.mousePressEvent(event)
 
     assert len(picked) == 1
     assert picked[0] >> 24 == 0xFF  # a real, opaque rendered pixel
-    # Sampling must not select a tile: in Offset mode that would reload the
-    # palette out from under the color being edited.
-    assert window._selected_tile == before_selection
+    assert window._selected_tile == before_selection  # no tile got selected
     # The pick disarms itself and lands in the editor.
     assert window._color_editor.editor.color() == picked[0]
 
-
-def test_eyedropper_from_the_grid_keeps_the_edited_entry_selected(
-    qtbot, tmp_path, monkeypatch
-) -> None:
-    window = _open_for_color_edit(qtbot, tmp_path, monkeypatch)
-    window._open_color_editor(3)
-    panel = window._palette_panel
+    # From the grid: entry 3 is still the one being edited - it took entry 9's color.
     source = window._doc.palette.color(9)
-
     window._set_pick_mode(True)
     panel.color_picked.emit(source)
-
-    # Entry 3 is still the one being edited — it took entry 9's color.
     assert panel.selected_index() == 3
     assert window._doc.palette.color(3) == source
 
@@ -4078,8 +4323,15 @@ def test_custom_palette_round_trips_through_a_project(
 
 
 # -- export (docs/design/export.md) ----------------------------------------
-def test_export_document_image_is_indexed_with_opaque_palette(qtbot, tmp_path):
+def test_export_png_is_indexed_and_round_trips_to_disk(qtbot, tmp_path, monkeypatch):
+    """The exported image is a true indexed PNG, and what reaches disk is it.
+
+    Checked as one export because the in-memory image and the written file are two
+    halves of one operation - separating them would build a second window to
+    re-export the same eight tiles.
+    """
     from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QFileDialog
 
     from celpix.ui import export
 
@@ -4097,22 +4349,12 @@ def test_export_document_image_is_indexed_with_opaque_palette(qtbot, tmp_path):
     assert table[0] >> 24 == 0xFF
     assert table[1] >> 24 == 0xFF
 
-
-def test_export_current_png_round_trips(qtbot, tmp_path, monkeypatch):
-    from PySide6.QtGui import QImage
-    from PySide6.QtWidgets import QFileDialog
-
-    window = MainWindow()
-    qtbot.addWidget(window)
-    window._load_pixel(str(_make_snes_file(tmp_path)))
-
     out = tmp_path / "sheet.png"
     monkeypatch.setattr(
         QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), "PNG image (*.png)")
     )
     window._export_png(window._workspace.current)
 
-    assert out.exists()
     reloaded = QImage(str(out))
     assert not reloaded.isNull()
     assert (reloaded.width(), reloaded.height()) == (64, 8)
@@ -4153,11 +4395,10 @@ def test_export_project_writes_slices_and_skips_sliced_file(
     ]
 
 
-def test_export_png_loads_the_named_entry_not_the_current_one(
-    qtbot, tmp_path, monkeypatch
-):
-    """The files-list Export acts on the entry whose menu was opened, loading it
-    on demand — the parent file stays the current view throughout."""
+def test_export_acts_on_the_entry_it_is_handed(qtbot, tmp_path, monkeypatch):
+    """Export targets the entry whose menu was opened, not the current view - it
+    loads a never-activated one on demand and leaves the view where it was - and
+    the Raw pathway writes decoded bytes rather than an image."""
     from PySide6.QtGui import QImage
     from PySide6.QtWidgets import QFileDialog
 
@@ -4181,21 +4422,12 @@ def test_export_png_loads_the_named_entry_not_the_current_one(
     assert (reloaded.width(), reloaded.height()) == (16, 8)
     assert window._workspace.current is parent  # the view never moved
 
-
-def test_export_raw_writes_decoded_bytes(qtbot, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QFileDialog
-
-    window = MainWindow()
-    qtbot.addWidget(window)
-    px = _make_snes_file(tmp_path)
-    window._load_pixel(str(px))
-
-    out = tmp_path / "dump.bin"
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
-    window._export_raw(window._workspace.current)
-
-    # An uncompressed file's decoded bytes are its bytes verbatim.
-    assert out.read_bytes() == px.read_bytes()
+    # Raw export of the parent: an uncompressed file's decoded bytes are its
+    # bytes verbatim.
+    dump = tmp_path / "dump.bin"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(dump), ""))
+    window._export_raw(parent)
+    assert dump.read_bytes() == sheet.read_bytes()
 
 
 def test_window_title_names_project_and_marks_it_unsaved(qtbot, tmp_path):
@@ -4325,55 +4557,60 @@ def test_switching_pixel_format_keeps_unsaved_edits(qtbot, tmp_path) -> None:
     assert bytes(window._doc.pixel_data) == edited
 
 
-def test_copy_then_paste_duplicates_a_tile_and_undo_restores(qtbot, tmp_path) -> None:
-    window = _open_pixels(qtbot, tmp_path)
-    original = window._doc.pixel_data
+def test_the_tile_clipboard_round_trip(qtbot, tmp_path) -> None:
+    """Cut/copy/paste/clear at tile granularity, on one 8-tile file.
 
+    One test rather than five because these are one mechanism seen from five
+    sides - every one of them is "which bytes moved where, and what is selected
+    afterwards" - and running them in sequence additionally proves they compose:
+    what a cut put on the clipboard is what a later paste lays down.
+    """
+    window = _open_pixels(qtbot, tmp_path)  # 8 tiles
+    original = window._doc.pixel_data
+    size = len(original)
+
+    # The actions arm off the selection: nothing selected, nothing to copy, and
+    # Paste stays dead until something is on the clipboard.
+    assert not window._copy_action.isEnabled()
     window._select_tiles(0, 0)
+    assert window._copy_action.isEnabled()
+    assert window._cut_action.isEnabled()
     assert window._copy_selection()
+    assert window._paste_action.isEnabled()
+
+    # Paste onto tile 3: indices move verbatim within one format, the paste
+    # selects what it landed on (so the next one stamps forward), and undo is exact.
     window._select_tiles(3, 3)
     window._paste()
-
-    # Tile 3 now holds tile 0's bytes; indices move verbatim within one format.
     assert window._doc.pixel_data[96:128] == original[:32]
     assert window._doc.pixel_data[:96] == original[:96]
     assert window._workspace.current.pixel_dirty
-    # The paste selects what it landed on, so the next paste stamps forward.
     assert (window._selected_tile, window._selected_last) == (3, 3)
-
     window._undo_stack.undo()
     assert window._doc.pixel_data == original
 
-
-def test_paste_is_clipped_at_the_end_of_the_data(qtbot, tmp_path) -> None:
-    window = _open_pixels(qtbot, tmp_path)  # 8 tiles
-    size = len(window._doc.pixel_data)
-    window._select_tiles(0, 3)  # copy four tiles …
-    assert window._copy_selection()
-    window._select_tiles(6, 6)  # … onto the last two: two must be dropped
-    window._paste()
-    assert len(window._doc.pixel_data) == size
-    assert window._selected_last == 7
-
-
-def test_clear_blanks_the_selected_tiles(qtbot, tmp_path) -> None:
-    window = _open_pixels(qtbot, tmp_path)
+    # Clear blanks exactly the selected tiles and nothing beyond them.
     window._select_tiles(2, 3)
     window._clear_pixels()
     assert window._doc.pixel_data[64:128] == bytes(64)
     assert window._doc.pixel_data[128:160] != bytes(32)  # tile 4 untouched
 
-
-def test_cut_copies_before_it_blanks(qtbot, tmp_path) -> None:
-    window = _open_pixels(qtbot, tmp_path)
-    original = window._doc.pixel_data
+    # Cut copies before it blanks - what it took is on the clipboard, so pasting
+    # it elsewhere restores those exact bytes.
     window._select_tiles(1, 1)
     window._cut_selection()
     assert window._doc.pixel_data[32:64] == bytes(32)
-    # What was cut is on the clipboard: pasting it elsewhere restores it.
     window._select_tiles(5, 5)
     window._paste()
     assert window._doc.pixel_data[160:192] == original[32:64]
+
+    # A paste that would run past the end is clipped, never extending the file.
+    window._select_tiles(0, 3)  # four tiles …
+    assert window._copy_selection()
+    window._select_tiles(6, 6)  # … onto the last two: two must be dropped
+    window._paste()
+    assert len(window._doc.pixel_data) == size
+    assert window._selected_last == 7
 
 
 def test_paste_of_an_external_image_matches_the_active_palette(qtbot, tmp_path) -> None:
@@ -4428,16 +4665,6 @@ def test_clipboard_payload_round_trips_and_rejects_junk() -> None:
     assert TilePayload.from_bytes(raw[:-1]) is None
     assert TilePayload.from_bytes(b"") is None
     assert TilePayload.from_bytes(b"not a celpix payload") is None
-
-
-def test_clipboard_actions_track_the_selection(qtbot, tmp_path) -> None:
-    window = _open_pixels(qtbot, tmp_path)
-    assert not window._copy_action.isEnabled()
-    window._select_tiles(0, 1)
-    assert window._copy_action.isEnabled()
-    assert window._cut_action.isEnabled()
-    window._copy_selection()
-    assert window._paste_action.isEnabled()
 
 
 def _rect_shape(window, tmp_path) -> None:
@@ -4684,104 +4911,69 @@ def test_dropped_png_imports_onto_the_selection_instead_of_opening(qtbot, tmp_pa
     assert set(imported[0].data) == {5}
 
 
-def test_dropped_png_snaps_an_offscreen_selection_into_view(
+def test_every_stamp_snaps_an_offscreen_selection_into_view(
     qtbot, tmp_path, monkeypatch
 ):
-    """A drop lands on the selected tile - but if that selection has scrolled
-    off-screen, the anchor resolves off the grid and nothing would import. The
-    drop first snaps the selection to the visible top-left tile, so the image
-    arrives where the user can see it rather than silently landing nothing."""
+    """A stamp lands on the selected tile - but if that selection has scrolled
+    off-screen the anchor resolves off the grid and nothing would land.
+
+    All three stamping entry points (paste, Import from PNG, a dropped PNG) go
+    through one guard, ``_stamp_anchor``, which first pulls the selection onto the
+    visible top-left tile. They are checked together because the risk is not the
+    guard's arithmetic - it is an entry point reaching for the raw anchor instead
+    and silently writing nothing, which only shows up per path.
+    """
     from PySide6.QtCore import QPointF, Qt
-    from PySide6.QtGui import QDropEvent
-
-    from celpix.pipeline import pipeline
-
-    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
-    window._columns.setValue(8)
-    window._rows.setValue(2)  # a 16-tile window
-    png = _fill_png(tmp_path / "sprite.png", window, 5, 8, 8)
-
-    window._select_tiles(2, 2)  # select a tile …
-    window._set_offset(32)  # … then scroll it off-screen
-    assert window._selection_offscreen()
-    before_at_2 = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
-
-    mime = _drag_payload(png)  # must outlive the event, or Qt reads freed memory
-    event = QDropEvent(
-        QPointF(10, 10),
-        Qt.DropAction.CopyAction,
-        mime,
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
-    )
-    window.dropEvent(event)
-
-    # The selection moved onto the visible top-left tile, and the image landed
-    # there - not at the off-screen tile 2, which is left untouched.
-    assert window._selected_tile == 32
-    imported = pipeline.decode_tiles(window._doc, window._registry, 32, 1)
-    assert set(imported[0].data) == {5}
-    unchanged = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
-    assert unchanged[0].data == before_at_2[0].data
-
-
-def test_paste_snaps_an_offscreen_selection_into_view(qtbot, tmp_path, monkeypatch):
-    """Paste shares the drop's on-screen guard: a selection scrolled out of the
-    window is pulled onto the visible top-left tile before the clipboard lands,
-    so a paste is never stamped where it can't be seen (or lands nothing)."""
-    from PySide6.QtGui import QGuiApplication, QImage
-
-    from celpix.pipeline import pipeline
-
-    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
-    window._columns.setValue(8)
-    window._rows.setValue(2)  # a 16-tile window
-    image = QImage(8, 8, QImage.Format.Format_ARGB32)
-    image.fill(window._doc.palette.color(5))
-    QGuiApplication.clipboard().setImage(image)
-
-    window._select_tiles(2, 2)  # select a tile …
-    window._set_offset(32)  # … then scroll it off-screen
-    assert window._selection_offscreen()
-    before_at_2 = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
-
-    window._paste()
-
-    assert window._selected_tile == 32
-    pasted = pipeline.decode_tiles(window._doc, window._registry, 32, 1)
-    assert set(pasted[0].data) == {5}
-    unchanged = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
-    assert unchanged[0].data == before_at_2[0].data
-
-
-def test_import_png_here_snaps_an_offscreen_selection_into_view(
-    qtbot, tmp_path, monkeypatch
-):
-    """The canvas Import from PNG shares the same guard as paste and the drop."""
+    from PySide6.QtGui import QDropEvent, QGuiApplication, QImage
     from PySide6.QtWidgets import QFileDialog
 
     from celpix.pipeline import pipeline
 
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
     window._columns.setValue(8)
-    window._rows.setValue(2)
+    window._rows.setValue(2)  # a 16-tile window
     png = _fill_png(tmp_path / "sprite.png", window, 5, 8, 8)
     monkeypatch.setattr(
         QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (png, ""))
     )
+    image = QImage(8, 8, QImage.Format.Format_ARGB32)
+    image.fill(window._doc.palette.color(5))
+    QGuiApplication.clipboard().setImage(image)
 
-    window._select_tiles(2, 2)  # select a tile …
-    window._set_offset(32)  # … then scroll it off-screen
-    assert window._selection_offscreen()
-    before_at_2 = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
+    def dropped_png() -> None:
+        mime = _drag_payload(png)  # must outlive the event, or Qt reads freed memory
+        window.dropEvent(
+            QDropEvent(
+                QPointF(10, 10),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
 
-    window._import_png_here()
+    for landing, stamp in enumerate(
+        (window._paste, window._import_png_here, dropped_png)
+    ):
+        # Select a tile, then scroll it off-screen. Each pass stamps onto a
+        # different visible page, so no two of them can pass on the last one's
+        # bytes: page 2 (tile 16), then page 3, then page 4.
+        offscreen = 2
+        window._select_tiles(offscreen, offscreen)
+        visible = 16 * (landing + 1)
+        window._set_offset(visible)
+        assert window._selection_offscreen()
+        before = pipeline.decode_tiles(window._doc, window._registry, offscreen, 1)
 
-    assert window._selected_tile == 32
-    imported = pipeline.decode_tiles(window._doc, window._registry, 32, 1)
-    assert set(imported[0].data) == {5}
-    unchanged = pipeline.decode_tiles(window._doc, window._registry, 2, 1)
-    assert unchanged[0].data == before_at_2[0].data
+        stamp()
+
+        # The selection moved onto the visible top-left tile and the image landed
+        # there - not at the off-screen tile, which is left untouched.
+        assert window._selected_tile == visible
+        landed = pipeline.decode_tiles(window._doc, window._registry, visible, 1)
+        assert set(landed[0].data) == {5}
+        untouched = pipeline.decode_tiles(window._doc, window._registry, offscreen, 1)
+        assert untouched[0].data == before[0].data
 
 
 def test_tile_and_block_transforms(qtbot, tmp_path) -> None:
@@ -5004,36 +5196,49 @@ def test_default_palette_is_full_length_so_the_gray_ramp_is_reachable(
     qtbot.addWidget(window)
     window._load_pixel(str(_make_snes_file(tmp_path)))
 
-    palette = window._doc.palette
     assert window._index_space() == 16  # 4bpp: one row would have stopped here
-    assert len(palette) == FULL_PALETTE_COUNT
-    # Row 1 is the ramp: black, white, then 14 grays climbing dark to light.
-    ramp = [palette.color(i) for i in range(16, 32)]
-    assert all((c >> 16 & 0xFF) == (c >> 8 & 0xFF) == (c & 0xFF) for c in ramp), (
-        "row 1 must be neutral grays"
-    )
-    assert ramp[0] == 0xFF000000 and ramp[1] == 0xFFFFFFFF
-    assert [c & 0xFF for c in ramp[2:]] == sorted(c & 0xFF for c in ramp[2:])
-    # ...and the row is reachable: the spin clamps to the palette's real rows.
+    assert len(window._doc.palette) == FULL_PALETTE_COUNT
+    # ...and row 1 is reachable: the spin clamps to the palette's real rows.
+    # What the ramp itself looks like is test_palette's business.
     window._subpalette.setValue(1)
     assert window._subpalette.value() == 1
 
 
-def test_shortcut_guide_reads_both_key_styles_off_the_menus(qtbot) -> None:
-    """The guide is generated from the live menu bar, so both key styles must land.
+def test_the_help_menu_builds_its_dialogs_and_documents_both_key_styles(
+    qtbot,
+) -> None:
+    """Help's two actions build their dialogs (About reads a bundled icon), and the
+    guide they show is generated from the live menu bar - so both ways a key can be
+    declared have to land in it.
 
-    A real ``QKeySequence`` (Edit ▸ Copy) and the tab-in-the-label form the
-    bare-key nav actions use (Navigate ▸ Next tile) reach it by different
-    routes; Undo's label is pinned because the undo stack renames it at
-    runtime; and an action with no key at all must not become a blank row.
+    A real ``QKeySequence`` (Edit > Copy) and the tab-in-the-label form the bare-key
+    nav actions use reach the guide by different routes; Undo's label is pinned
+    because the undo stack renames it at runtime; and an action with no key at all
+    must not become a blank row.
     """
     from PySide6.QtGui import QKeySequence
+    from PySide6.QtWidgets import QLabel
 
-    from celpix.ui.help_dialogs import shortcut_sections
+    from celpix import __version__
+    from celpix.ui.help_dialogs import AboutDialog, ShortcutGuide, shortcut_sections
     from celpix.ui.tools import TOOL_SPECS, TRANSFORM_SPECS
 
     window = MainWindow()
     qtbot.addWidget(window)
+
+    # Hold the menubar's action list: dropping it collects the QAction wrappers,
+    # and the submenu each owns goes with them.
+    bar_actions = window.menuBar().actions()
+    help_menu = next(a.menu() for a in bar_actions if a.text() == "Help")
+    for action in help_menu.actions():
+        if not action.isSeparator():
+            action.trigger()  # conftest stops exec() from blocking
+
+    assert window.findChildren(ShortcutGuide)
+    about = window.findChildren(AboutDialog)
+    assert about
+    blurb = " ".join(label.text() for label in about[0].findChildren(QLabel))
+    assert "Epi" in blurb and __version__ in blurb
 
     sections = dict(shortcut_sections(window))
     copy_keys = QKeySequence(QKeySequence.StandardKey.Copy).toString(
@@ -5056,31 +5261,6 @@ def test_shortcut_guide_reads_both_key_styles_off_the_menus(qtbot) -> None:
     assert all(name and keys for entries in sections.values() for name, keys in entries)
 
 
-def test_help_menu_opens_the_guide_and_about(qtbot) -> None:
-    """Help's two actions build their dialogs (About reads a bundled icon)."""
-    from PySide6.QtWidgets import QLabel
-
-    from celpix import __version__
-    from celpix.ui.help_dialogs import AboutDialog, ShortcutGuide
-
-    window = MainWindow()
-    qtbot.addWidget(window)
-
-    # Hold the menubar's action list: dropping it collects the QAction wrappers,
-    # and the submenu each owns goes with them.
-    bar_actions = window.menuBar().actions()
-    help_menu = next(a.menu() for a in bar_actions if a.text() == "Help")
-    for action in help_menu.actions():
-        if not action.isSeparator():
-            action.trigger()  # conftest stops exec() from blocking
-
-    assert window.findChildren(ShortcutGuide)
-    about = window.findChildren(AboutDialog)
-    assert about
-    blurb = " ".join(label.text() for label in about[0].findChildren(QLabel))
-    assert "Epi" in blurb and __version__ in blurb
-
-
 def test_opening_a_file_detects_its_container(qtbot, tmp_path) -> None:
     """A file's container is picked from its signature when it is opened."""
     ines = tmp_path / "cart.nes"
@@ -5096,16 +5276,25 @@ def test_opening_a_file_detects_its_container(qtbot, tmp_path) -> None:
     window._load_pixel(str(ines))
     window._load_pixel(str(plain))
 
-    assert window._workspace.find_file(str(ines)).container_id == "read.ines"
-    assert window._workspace.find_file(str(plain)).container_id == RAW_READ
+    assert window._workspace.find_file(str(ines)).container_id == "container.ines"
+    assert window._workspace.find_file(str(plain)).container_id == RAW_CONTAINER
     # Detection is not cosmetic: the reader skipped to the CHR ROM, so the
     # document holds the graphics rather than the header and PRG banks.
     assert window._workspace.find_file(str(ines)).doc.pixel_data == chr_rom
 
 
-def test_change_container_re_reads_the_file(qtbot, tmp_path, monkeypatch) -> None:
-    """Change Container… re-reads through the newly chosen one, in place."""
+def _answer_container_dialog(monkeypatch, answer) -> None:
+    """Make Edit File Container… return ``answer`` instead of opening."""
     from celpix.ui.container_dialog import ContainerDialog
+
+    monkeypatch.setattr(
+        ContainerDialog, "edit_container", staticmethod(lambda *_a, **_k: answer)
+    )
+
+
+def test_change_container_re_reads_the_file(qtbot, tmp_path, monkeypatch) -> None:
+    """Edit File Container… re-reads through the newly chosen one, in place."""
+    from celpix.ui.container_dialog import ContainerEdit
 
     cart = tmp_path / "cart.bin"  # named so nothing claims it
     chr_rom = bytes((i * 3) & 0xFF for i in range(8192))
@@ -5117,21 +5306,17 @@ def test_change_container_re_reads_the_file(qtbot, tmp_path, monkeypatch) -> Non
     window._load_pixel(str(cart))
     entry = window._workspace.find_file(str(cart))
     # Magic claims it whatever the suffix says, so detection already found iNES.
-    assert entry.container_id == "read.ines"
+    assert entry.container_id == "container.ines"
 
-    monkeypatch.setattr(
-        ContainerDialog, "get_container", staticmethod(lambda *_a, **_k: RAW_READ)
-    )
+    _answer_container_dialog(monkeypatch, ContainerEdit(RAW_CONTAINER, (str(cart),)))
     window._change_container_for(entry)
-    assert entry.container_id == RAW_READ
+    assert entry.container_id == RAW_CONTAINER
     assert entry.doc.pixel_data == whole  # plain bytes: the header is back
 
     # Cancelling changes nothing — not the container, not the loaded bytes.
-    monkeypatch.setattr(
-        ContainerDialog, "get_container", staticmethod(lambda *_a, **_k: None)
-    )
+    _answer_container_dialog(monkeypatch, None)
     window._change_container_for(entry)
-    assert entry.container_id == RAW_READ
+    assert entry.container_id == RAW_CONTAINER
     assert entry.doc.pixel_data == whole
 
 
@@ -5148,8 +5333,8 @@ def test_change_container_is_file_only(qtbot, tmp_path, monkeypatch) -> None:
     called = []
     monkeypatch.setattr(
         ContainerDialog,
-        "get_container",
-        staticmethod(lambda *_a, **_k: called.append(1) or RAW_READ),
+        "edit_container",
+        staticmethod(lambda *_a, **_k: called.append(1) or None),
     )
     window._change_container_for(sliced)
     assert called == []  # never even asked
@@ -5158,6 +5343,136 @@ def test_change_container_is_file_only(qtbot, tmp_path, monkeypatch) -> None:
     assert not window._change_container_action.isEnabled()
     window._activate_entry(window._workspace.find_file(str(px)))
     assert window._change_container_action.isEnabled()
+
+
+def test_container_dialog_edits_the_file_list(qtbot, tmp_path, monkeypatch) -> None:
+    """The row buttons reorder, replace and drop files, and never drop the last."""
+    from celpix.plugins.registry import default_registry
+    from celpix.ui import container_dialog
+    from celpix.ui.container_dialog import ContainerDialog
+
+    chips = [str(tmp_path / f"chip{i}.bin") for i in range(3)]
+    for chip in chips:
+        Path(chip).write_bytes(b"\0" * 32)
+    spare = str(tmp_path / "spare.bin")
+    Path(spare).write_bytes(b"\0" * 32)
+
+    dialog = ContainerDialog(default_registry(), paths=tuple(chips))
+    qtbot.addWidget(dialog)
+    assert dialog.paths() == tuple(chips)
+
+    # Moving is a swap with the neighbour, and the ends can't move past them.
+    dialog._rows[2].up.click()
+    assert dialog.paths() == (chips[0], chips[2], chips[1])
+    assert not dialog._rows[0].up.isEnabled()
+    assert not dialog._rows[-1].down.isEnabled()
+
+    # Browse replaces one row in place; Append lands at the end, since the order
+    # is what the join uses and only the user can state it.
+    monkeypatch.setattr(
+        container_dialog.QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *_a, **_k: (spare, "")),
+    )
+    dialog._rows[0].browse.click()
+    assert dialog.paths() == (spare, chips[2], chips[1])
+    dialog._append.click()
+    assert dialog.paths() == (spare, chips[2], chips[1], spare)
+
+    dialog._rows[3].remove.click()
+    assert dialog.paths() == (spare, chips[2], chips[1])
+    # A region is at least one file: emptying the list stops one short, with the
+    # last row's Remove disabled — and a no-op even if it is reached anyway.
+    for _ in range(2):
+        dialog._rows[-1].remove.click()
+    assert not dialog._rows[0].remove.isEnabled()
+    dialog._remove(0)
+    assert dialog.paths() == (spare,)
+
+
+def test_container_dialog_marks_detection_for_the_first_file(qtbot, tmp_path) -> None:
+    """The (detected) marker follows the file it describes when row 1 changes."""
+    from celpix.plugins.registry import default_registry
+    from celpix.ui.container_dialog import ContainerDialog
+
+    ines = tmp_path / "cart.nes"
+    ines.write_bytes(bytes([*b"NES\x1a", 1, 1, 0, 0]) + bytes(8) + bytes(16384 + 8192))
+    plain = _make_snes_file(tmp_path)
+
+    dialog = ContainerDialog(default_registry(), paths=(str(ines), str(plain)))
+    qtbot.addWidget(dialog)
+    marked = dialog._container.itemData(
+        next(
+            i
+            for i in range(dialog._container.count())
+            if "(detected)" in dialog._container.itemText(i)
+        )
+    )
+    assert marked == "container.ines"
+
+    # Swap the plain file to the front: detection now says plain bytes, and the
+    # marker has to move with it or it recommends the old file's answer.
+    dialog._rows[1].up.click()
+    marked = dialog._container.itemData(
+        next(
+            i
+            for i in range(dialog._container.count())
+            if "(detected)" in dialog._container.itemText(i)
+        )
+    )
+    assert marked == RAW_CONTAINER
+
+
+def test_editing_the_file_list_repoints_the_file_and_its_slices(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Applying a new list re-reads the joined region, slices included."""
+    from celpix.ui.container_dialog import ContainerEdit
+
+    first = tmp_path / "chip1.bin"
+    second = tmp_path / "chip2.bin"
+    first.write_bytes(bytes(range(128)) * 2)
+    second.write_bytes(bytes(range(255, 127, -1)) * 2)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(first))
+    entry = window._workspace.find_file(str(first))
+    sliced = window._workspace.add_slice(str(first), "gfx", 0x100, 0x40)
+    assert entry.doc.pixel_data == first.read_bytes()
+
+    _answer_container_dialog(
+        monkeypatch, ContainerEdit(RAW_CONTAINER, (str(first), str(second)))
+    )
+    window._change_container_for(entry)
+    assert entry.paths == (str(first), str(second))
+    # The slice carries the same list — its offset is into the joined buffer.
+    assert sliced.paths == (str(first), str(second))
+    # And the region really is the two chips joined, so an offset past the first
+    # one now lands in the second rather than off the end.
+    assert entry.doc.pixel_data == first.read_bytes() + second.read_bytes()
+
+
+def test_file_list_refuses_an_already_open_first_file(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """An entry is its first file, so two entries can't come to name one."""
+    from celpix.ui.container_dialog import ContainerEdit
+
+    one, two = tmp_path / "one.bin", tmp_path / "two.bin"
+    for path in (one, two):
+        path.write_bytes(bytes((i * 7 + 1) & 0xFF for i in range(32 * 8)))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(one))
+    window._load_pixel(str(two))
+    entry = window._workspace.find_file(str(one))
+
+    _answer_container_dialog(monkeypatch, ContainerEdit(RAW_CONTAINER, (str(two),)))
+    window._change_container_for(entry)
+    assert entry.paths == (str(one),)  # refused, and said so
+    assert window._workspace.find_file(str(two)) is not entry
 
 
 def test_file_labels_carry_a_container_hint(qtbot, tmp_path) -> None:
@@ -5192,6 +5507,33 @@ def test_file_labels_carry_a_container_hint(qtbot, tmp_path) -> None:
     assert panel._items[cart].text(0) == "● cart.nes (iNES)"
 
     # And the hint tracks the container it names.
-    cart.container_id = RAW_READ
+    cart.container_id = RAW_CONTAINER
     panel.refresh_entry(cart)
     assert panel._items[cart].text(0) == "● cart.nes"
+
+
+def test_file_labels_count_the_files_a_region_joins(qtbot, tmp_path) -> None:
+    """A row named after one chip says how many files it really covers."""
+    chips = [tmp_path / f"chip{i}.bin" for i in range(3)]
+    for chip in chips:
+        chip.write_bytes(bytes((i * 5 + 1) & 0xFF for i in range(32 * 8)))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(chips[0]))
+    panel = window._files_panel
+    entry = window._workspace.find_file(str(chips[0]))
+    assert panel._items[entry].text(0) == "chip0.bin"  # one file, nothing to say
+
+    entry.extra_paths = (str(chips[1]), str(chips[2]))
+    panel.refresh_entry(entry)
+    assert panel._items[entry].text(0) == "chip0.bin (3)"
+    # The order is what the join uses, so the tooltip numbers the files.
+    tip = panel._items[entry].toolTip(0)
+    assert "3 files joined end to end:" in tip
+    assert f"2. {chips[1]}" in tip and f"3. {chips[2]}" in tip
+
+    # A slice is one region cut out of the join, not a list of its own.
+    sliced = window._workspace.add_slice(str(chips[0]), "gfx", 64, 64)
+    assert sliced.extra_paths == entry.extra_paths
+    assert panel._items[sliced].text(0) == "gfx"

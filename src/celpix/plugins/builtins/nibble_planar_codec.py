@@ -19,7 +19,7 @@ recurs on Atari's other raster boards.
 **The deeper formats need their region joined first.** On the hardware the two
 plane pairs of a 4bpp tile come from opposite halves of the graphics region, not
 from adjacent bytes, so a 4bpp preset here expects a buffer that
-``decompress.split-planes-2`` has already interleaved
+``reshape.split-planes-2`` has already interleaved
 (:mod:`celpix.plugins.builtins.split_planes`) — after which a group's bytes *are*
 adjacent and this codec stays buffer-relative, which is what keeps windowed
 decoding of a large file working. 2bpp formats carry both planes in one byte

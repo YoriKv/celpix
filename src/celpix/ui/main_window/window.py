@@ -96,6 +96,7 @@ from celpix.ui.main_window.transform import TransformMixin
 from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
     AddEntryCommand,
+    MoveEntryCommand,
     RenameEntryCommand,
 )
 from celpix.ui.widgets import (
@@ -305,13 +306,14 @@ class MainWindow(
 
         # A file-position scrollbar: its range spans the whole file (in tiles), so
         # dragging jumps far through a large file at once. It drives the same offset
-        # the buttons/keys do; _sync_nav keeps it in step (with signals blocked).
+        # the buttons/keys do, snapped to whole tile-rows; _sync_nav keeps it in
+        # step (with signals blocked).
         # It sits to the LEFT of the canvas and is styled as an accent-colored rail
         # so it reads as a file navigator, not one of the canvas's own scrollbars.
         self._offset_bar = QScrollBar(Qt.Orientation.Vertical)
         self._offset_bar.setToolTip("File position\nDrag to jump")
         self._offset_bar.setStyleSheet(self._offset_bar_style())
-        self._offset_bar.valueChanged.connect(self._set_offset)
+        self._offset_bar.valueChanged.connect(self._on_offset_bar_change)
 
         # Every bar lives in this column rather than in QMainWindow's toolbar
         # area: that area spans the whole window width and would cut across the
@@ -383,6 +385,7 @@ class MainWindow(
         self._files_panel = FileListPanel(self._registry)
         self._files_panel.entry_activated.connect(self._activate_entry)
         self._files_panel.remove_requested.connect(self._remove_entry)
+        self._files_panel.move_requested.connect(self._move_entry)
         self._files_panel.write_requested.connect(self._write_entry_checked)
         self._files_panel.export_png_requested.connect(self._export_png)
         self._files_panel.export_raw_requested.connect(self._export_raw)
@@ -492,6 +495,16 @@ class MainWindow(
         self._files_panel.refresh_entry(entry)
         if entry is self._workspace.current:
             self._refresh_window_title()
+
+    def _move_entry(self, entry: Entry, delta: int) -> None:
+        """Reorder a file in the list, one place per gesture (undoable)."""
+        if self._applying_undo or not self._workspace.can_move_file(entry, delta):
+            return
+        self._push_command(MoveEntryCommand(self, entry, delta))
+
+    def _apply_move_entry(self, entry: Entry, delta: int) -> None:
+        if self._workspace.move_file(entry, delta):
+            self._files_panel.move_entry(entry, delta)
 
     def _sync_write_action(self) -> None:
         """Arm File ▸ Write for whatever the current view can actually save.
@@ -727,11 +740,12 @@ class MainWindow(
         self._new_bookmark_action.setEnabled(False)
         file_menu.addAction(self._new_bookmark_action)
 
-        self._change_container_action = QAction("Change Container…", self)
+        self._change_container_action = QAction("Edit File Container…", self)
         self._change_container_action.setToolTip(
             "Change how this file is unwrapped before decoding:\n"
             "a header to skip, an interleave to undo, or none at all"
         )
+        self._change_container_action.setShortcut(QKeySequence("Ctrl+E"))
         self._change_container_action.triggered.connect(self._change_container_current)
         self._change_container_action.setEnabled(False)
         file_menu.addAction(self._change_container_action)

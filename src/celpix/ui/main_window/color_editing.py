@@ -186,11 +186,29 @@ class ColorEditingMixin:
         if before == argb:
             return
         self._push_command(
-            ColorEditCommand(self, owner, doc, index, before=before, after=argb)
+            ColorEditCommand(
+                self,
+                owner,
+                doc,
+                index,
+                before=before,
+                after=argb,
+                # A buffer-backed Offset palette persists through the pixel
+                # pathway of the entry whose buffer holds it; None otherwise.
+                pixel_owner=self._offset_palette_pixel_owner(),
+            )
         )
 
     def _apply_color_edit(
-        self, owner: Entry, doc: Document, index: int, argb: int, revision: int
+        self,
+        owner: Entry,
+        doc: Document,
+        index: int,
+        argb: int,
+        revision: int,
+        *,
+        pixel_owner: Entry | None = None,
+        pixel_revision: int = 0,
     ) -> None:
         """Land one color on ``doc`` - :class:`ColorEditCommand`'s apply.
 
@@ -213,6 +231,13 @@ class ColorEditingMixin:
         # write_enabled is off and it dirties nothing.
         if doc.palette_config.write_enabled:
             self._workspace.set_palette_revision(owner, revision)
+        # A buffer-backed Offset palette (inside a reordered region) has no file
+        # span of its own: the edit persists by landing in the buffer owner's
+        # pixel bytes, whose ordinary Write carries it through unshape and the
+        # container - so it is that entry's *pixel* pathway that goes dirty.
+        if pixel_owner is not None:
+            self._sync_offset_palette_bytes(doc, pixel_owner)
+            self._workspace.set_pixel_revision(pixel_owner, pixel_revision)
         # A file palette is shown by every graphic that references it: push the new
         # colors onto all of them so one edit updates them together.
         if owner.kind is EntryKind.PALETTE:

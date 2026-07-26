@@ -1,4 +1,4 @@
-"""The slice dialog: name + offset + length + decompressor for a file region.
+"""The slice dialog: name + offset + length + reshape + decompressor for a region.
 
 One dialog serves both creating a slice (New Slice) and editing an existing
 one's coordinates — the caller sets the ``title`` and prefills the fields.
@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from celpix.core.address import format_hex, parse_hex
 from celpix.core.errors import Stage
-from celpix.plugins.base import NO_DECOMPRESS
+from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
 from celpix.plugins.registry import Registry
 from celpix.project.workspace import SliceParams, default_slice_name
 
@@ -39,7 +39,8 @@ class SliceDialog(QDialog):
         path: str,
         offset: int = 0,
         length: int | None = None,
-        decompress_id: str = NO_DECOMPRESS,
+        compression_id: str = NO_COMPRESSION,
+        reshape_id: str = NO_RESHAPE,
         name: str = "",
         title: str = "New Slice",
         parent: QWidget | None = None,
@@ -58,11 +59,23 @@ class SliceDialog(QDialog):
             "Byte length (hex); blank lets a decompressor find the end"
         )
 
+        self._reshape = QComboBox()
+        self._reshape.setToolTip(
+            "Undo a region-scoped byte reordering on load\n"
+            "(a plane-per-chip split, an interleave). Applies to\n"
+            "the whole region, before any decompression"
+        )
+        for plugin in registry.plugins(Stage.RESHAPE):
+            self._reshape.addItem(plugin.info.name, plugin.info.id)
+        index = self._reshape.findData(reshape_id)
+        if index >= 0:
+            self._reshape.setCurrentIndex(index)
+
         self._decompress = QComboBox()
         self._decompress.setToolTip("Decompress with this codec on load")
-        for plugin in registry.plugins(Stage.DECOMPRESS):
+        for plugin in registry.plugins(Stage.COMPRESSION):
             self._decompress.addItem(plugin.info.name, plugin.info.id)
-        index = self._decompress.findData(decompress_id)
+        index = self._decompress.findData(compression_id)
         if index >= 0:
             self._decompress.setCurrentIndex(index)
 
@@ -74,6 +87,7 @@ class SliceDialog(QDialog):
         # coordinate fields, so leaving the name blank never surprises.
         self._offset.textChanged.connect(self._refresh_placeholder)
         self._length.textChanged.connect(self._refresh_placeholder)
+        self._reshape.currentIndexChanged.connect(self._refresh_placeholder)
         self._decompress.currentIndexChanged.connect(self._refresh_placeholder)
         self._refresh_placeholder()
 
@@ -81,11 +95,18 @@ class SliceDialog(QDialog):
         form.addRow("Name:", self._name)
         form.addRow("Offset:", self._offset)
         form.addRow("Length:", self._length)
+        form.addRow("Reshape:", self._reshape)
         form.addRow("Compression:", self._decompress)
         form.addRow(self._error)
         # QFormLayout builds the caption widgets itself, so copy each field's
         # tooltip onto its caption - hovering either half then answers the same.
-        for field in (self._name, self._offset, self._length, self._decompress):
+        for field in (
+            self._name,
+            self._offset,
+            self._length,
+            self._reshape,
+            self._decompress,
+        ):
             label = form.labelForField(field)
             if label is not None:
                 label.setToolTip(field.toolTip())
@@ -103,7 +124,12 @@ class SliceDialog(QDialog):
         length_text = self._length.text().strip()
         length = parse_hex(length_text) if length_text else None
         self._name.setPlaceholderText(
-            default_slice_name(offset, length, self._decompress.currentData())
+            default_slice_name(
+                offset,
+                length,
+                self._decompress.currentData(),
+                self._reshape.currentData(),
+            )
         )
 
     def _fail(self, message: str) -> None:
@@ -115,7 +141,8 @@ class SliceDialog(QDialog):
         if offset is None or offset < 0:
             self._fail("Offset is not a valid address.")
             return
-        decompress_id = self._decompress.currentData()
+        compression_id = self._decompress.currentData()
+        reshape_id = self._reshape.currentData()
         length_text = self._length.text().strip()
         length: int | None = None
         if length_text:
@@ -123,7 +150,16 @@ class SliceDialog(QDialog):
             if length is None or length <= 0:
                 self._fail("Length is not a valid byte count.")
                 return
-        elif decompress_id == NO_DECOMPRESS:
+        elif reshape_id != NO_RESHAPE:
+            # A reshape's boundaries are fractions of the region's length, so a
+            # decompressor-discovered extent (measured in reshaped space) would
+            # re-bound the window and change the permutation itself.
+            self._fail(
+                "A reshaped slice needs a length — its extent defines "
+                "the reshape, so nothing can discover it."
+            )
+            return
+        elif compression_id == NO_COMPRESSION:
             # A raw slice without an extent is just the file from that offset —
             # require the bound that makes it a slice (and its writes slot-safe).
             self._fail("A raw slice needs a length (compressed ones can discover it).")
@@ -138,9 +174,9 @@ class SliceDialog(QDialog):
             return
         # Default name from the *validated* values, not the placeholder text.
         name = self._name.text().strip() or default_slice_name(
-            offset, length, decompress_id
+            offset, length, compression_id, reshape_id
         )
-        self._params = SliceParams(name, offset, length, decompress_id)
+        self._params = SliceParams(name, offset, length, compression_id, reshape_id)
         self.accept()
 
     @staticmethod
@@ -151,7 +187,8 @@ class SliceDialog(QDialog):
         path: str,
         offset: int = 0,
         length: int | None = None,
-        decompress_id: str = NO_DECOMPRESS,
+        compression_id: str = NO_COMPRESSION,
+        reshape_id: str = NO_RESHAPE,
         name: str = "",
         title: str = "New Slice",
     ) -> SliceParams | None:
@@ -161,7 +198,8 @@ class SliceDialog(QDialog):
             path=path,
             offset=offset,
             length=length,
-            decompress_id=decompress_id,
+            compression_id=compression_id,
+            reshape_id=reshape_id,
             name=name,
             title=title,
             parent=parent,

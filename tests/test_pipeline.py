@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from celpix.core.context import PipelineContext
+from celpix.core.context import KEY_SOURCE_FILES, KEY_SOURCE_PATH, PipelineContext
 from celpix.core.errors import PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.pipeline import pipeline
@@ -161,14 +161,23 @@ def test_slice_round_trip_touches_only_the_slice(tmp_path) -> None:
     assert px.read_bytes() == pixel_bytes
 
 
-class _StubCompress:
-    """Compressor whose output size is dictated by the test."""
+class _StubCompression:
+    """Compression scheme whose *packed* size is dictated by the test.
+
+    Both directions on one plugin, as every scheme is: the load side has to work
+    for the save side to be reachable at all, so decompress passes through.
+    """
 
     def __init__(self, packed: bytes) -> None:
         from celpix.plugins.base import PluginInfo
 
-        self.info = PluginInfo(id="compress.stub", name="Stub", stage=Stage.COMPRESS)
+        self.info = PluginInfo(
+            id="compression.stub", name="Stub", stage=Stage.COMPRESSION
+        )
         self._packed = packed
+
+    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        return data
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
         return self._packed
@@ -180,9 +189,9 @@ def _save_slice_with_stub(tmp_path, packed: bytes):
     reg = default_registry()
     px, pl, pixel_bytes, _ = _make_files(tmp_path)
     pixel_cfg, palette_cfg = _slice_configs(px, pl, offset=32, length=64)
-    pixel_cfg.compress_id = "compress.stub"
+    pixel_cfg.compression_id = "compression.stub"
     palette_cfg.write_enabled = False
-    reg.register(_StubCompress(packed))
+    reg.register(_StubCompression(packed))
     doc = pipeline.load(pixel_cfg, palette_cfg, reg)
     return px, pixel_bytes, lambda: pipeline.save(doc, reg)
 
@@ -191,7 +200,10 @@ def test_bounded_write_refuses_oversized_result(tmp_path) -> None:
     px, pixel_bytes, save = _save_slice_with_stub(tmp_path, packed=bytes(65))
     with pytest.raises(PipelineError) as excinfo:
         save()
-    assert excinfo.value.stage == Stage.WRITE
+    # The stage covers both directions, so the sub-label is what says this was a
+    # save that failed rather than the load that preceded it.
+    assert (excinfo.value.stage, excinfo.value.action) == (Stage.CONTAINER, "write")
+    assert "container:write" in str(excinfo.value)
     assert px.read_bytes() == pixel_bytes  # nothing partial written
 
 
@@ -308,7 +320,7 @@ def test_missing_source_file_hard_stops(tmp_path) -> None:
     )
     with pytest.raises(PipelineError) as excinfo:
         pipeline.load(pixel_cfg, palette_cfg, reg)
-    assert excinfo.value.stage == Stage.READ
+    assert excinfo.value.stage == Stage.CONTAINER
 
 
 def test_find_next_structure_locates_reports_and_aborts() -> None:
@@ -316,7 +328,7 @@ def test_find_next_structure_locates_reports_and_aborts() -> None:
     reports no-match at end-of-data, and honours an on_tick abort."""
     from celpix.plugins.builtins import lz_command
 
-    plugin = default_registry().plugin(Stage.DECOMPRESS, "decompress.lz2")
+    plugin = default_registry().plugin(Stage.COMPRESSION, "compression.lz2")
     tiles = bytes((i * 31 + 7) & 0xFF for i in range(32 * 4))
     packed = lz_command.compress(tiles, big_endian_offsets=True)
     # A junk lead-in no scheme accepts (backrefs into nothing), then a structure.
@@ -594,3 +606,116 @@ def test_pixel_is_direct_color_distinguishes_the_codecs() -> None:
     reg = default_registry()
     assert not pipeline.pixel_is_direct_color("preset.pixel.snes-4bpp", reg)
     assert pipeline.pixel_is_direct_color("preset.pixel.dc-argb8888", reg)
+
+
+# -- several files as one region -------------------------------------------
+
+
+def _chip_files(tmp_path, sizes: tuple[int, ...]) -> tuple[list, list[bytes]]:
+    """One file per size, each filled with a distinguishable byte pattern."""
+    paths, blobs = [], []
+    for i, size in enumerate(sizes):
+        blob = bytes(((n * 7) + i * 101) & 0xFF for n in range(size))
+        path = tmp_path / f"chip{i}.bin"
+        path.write_bytes(blob)
+        paths.append(path)
+        blobs.append(blob)
+    return paths, blobs
+
+
+def _joined_configs(tmp_path, paths):
+    """A pixel pathway over the joined files, plus an inert palette beside it."""
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(bytes(32))
+    pixel = PathwayConfig(
+        source=FileRef(tuple(str(p) for p in paths)),
+        interpret_preset_id="preset.pixel.chunky-8bpp",
+    )
+    palette = PathwayConfig(
+        source=FileRef(str(pal)),
+        interpret_preset_id="preset.palette.bgr555",
+        write_enabled=False,
+    )
+    return pixel, palette
+
+
+def test_several_files_load_as_one_joined_region(tmp_path) -> None:
+    """An arcade region spread over its board's ROM chips is one document.
+
+    The container is handed the concatenation and is never told there was more
+    than one file — which is what lets every container already written work on a
+    joined region unchanged.
+    """
+    paths, blobs = _chip_files(tmp_path, (64, 64, 32))
+    reg = default_registry()
+
+    pixel_cfg, _palette_cfg = _joined_configs(tmp_path, paths)
+    data = pipeline.load_pixel_data(pixel_cfg, reg)
+    assert data.data == b"".join(blobs)
+
+    # The pieces are on the context for a container that wants them: which file
+    # supplied which range of the buffer, in order.
+    files = data.ctx.get(KEY_SOURCE_FILES)
+    assert [(f.start, f.length) for f in files] == [(0, 64), (64, 64), (128, 32)]
+    assert [f.path for f in files] == [str(p) for p in paths]
+    # Provenance still names one file — the region's identity, and the first.
+    assert data.ctx.get(KEY_SOURCE_PATH) == str(paths[0])
+
+
+def test_an_edit_writes_back_to_the_file_that_owns_those_bytes(tmp_path) -> None:
+    """The joined buffer is cut apart again at the boundaries the files have, so
+    an edit lands in whichever chip actually holds it — and only that one."""
+    paths, blobs = _chip_files(tmp_path, (64, 64, 32))
+    reg = default_registry()
+    pixel_cfg, palette_cfg = _joined_configs(tmp_path, paths)
+
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    # A byte inside the *second* file (buffer offset 64..127).
+    doc.pixel_data = doc.pixel_data[:70] + b"\xaa" + doc.pixel_data[71:]
+    mtimes = [p.stat().st_mtime_ns for p in paths]
+    pipeline.save(doc, reg, pixel=True, palette=False)
+
+    assert paths[0].read_bytes() == blobs[0]  # untouched
+    assert paths[2].read_bytes() == blobs[2]  # untouched
+    assert paths[1].read_bytes() == blobs[1][:6] + b"\xaa" + blobs[1][7:]
+    # ...and the two that did not change were not rewritten at all.
+    assert [p.stat().st_mtime_ns for p in (paths[0], paths[2])] == [
+        mtimes[0],
+        mtimes[2],
+    ]
+
+
+def test_a_resized_result_is_refused_rather_than_split_wrong(tmp_path) -> None:
+    """File boundaries are the only thing saying which bytes belong to which
+    chip, so a result that changed length has moved every boundary after it.
+
+    Refusing is the safe answer — splitting anyway would write most of the region
+    into the wrong files, and the ROM the bytes came off cannot change size.
+    """
+    paths, blobs = _chip_files(tmp_path, (64, 64))
+    reg = default_registry()
+    pixel_cfg, palette_cfg = _joined_configs(tmp_path, paths)
+    pixel_cfg.compression_id = "compression.stub"
+    reg.register(_StubCompression(b"\x00" * 100))  # 100 != the 128 on disk
+
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    with pytest.raises(PipelineError) as excinfo:
+        pipeline.save(doc, reg, pixel=True, palette=False)
+    assert (excinfo.value.stage, excinfo.value.action) == (Stage.CONTAINER, "write")
+    assert "file boundaries" in str(excinfo.value)
+    # Nothing partial written: both files are exactly as they were.
+    assert [p.read_bytes() for p in paths] == blobs
+
+
+def test_one_file_in_the_list_behaves_exactly_as_before(tmp_path) -> None:
+    # The single-file case is a list of one and keeps every freedom it had —
+    # including growing the file, which a fresh palette export relies on.
+    paths, blobs = _chip_files(tmp_path, (64,))
+    reg = default_registry()
+    pixel_cfg, palette_cfg = _joined_configs(tmp_path, paths)
+
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    assert doc.pixel_data == blobs[0]
+    doc.pixel_data = blobs[0] + b"\xff" * 32  # longer than the file on disk
+    pipeline.save(doc, reg, pixel=True, palette=False)
+    assert paths[0].read_bytes() == blobs[0] + b"\xff" * 32

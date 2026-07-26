@@ -7,10 +7,10 @@ span (``docs/graphics-formats-reference/snes-hardware-notes.md``). ROMs usually
 store Mode 7 graphics already split, but VRAM dumps and savestates are
 interleaved, so neither half is viewable as-is.
 
-Decompress reorders the data to *odd bytes then even bytes*: the pixel bytes
+``reshape`` reorders the data to *odd bytes then even bytes*: the pixel bytes
 come first (view with the 8bpp chunky preset), the BG map's char numbers fill
-the second half. Compress re-interleaves exactly, so the round trip is
-byte-exact and write-back preserves both halves. This is a Decompress-stage
+the second half. ``unshape`` re-interleaves exactly, so the round trip is
+byte-exact and write-back preserves both halves. This is a Reshape-stage
 plugin rather than a codec stride parameter because a codec that skipped the
 map bytes could not reproduce them on encode — a lossless reorder keeps every
 byte in the document.
@@ -23,27 +23,19 @@ from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
 
 
-class M7VramDecompress:
+class M7VramReshape:
     info = PluginInfo(
-        id="decompress.snes-m7-vram",
+        id="reshape.snes-m7-vram",
         name="SNES Mode 7 VRAM (split pixels/map)",
-        stage=Stage.DECOMPRESS,
+        stage=Stage.RESHAPE,
     )
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+    def reshape(self, data: bytes, ctx: PipelineContext) -> bytes:
         return data[1::2] + data[0::2]
 
-
-class M7VramCompress:
-    info = PluginInfo(
-        id="compress.snes-m7-vram",
-        name="SNES Mode 7 VRAM (split pixels/map)",
-        stage=Stage.COMPRESS,
-    )
-
-    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
+    def unshape(self, data: bytes, ctx: PipelineContext) -> bytes:
         # Odd length is fine either way: the odd-byte half is the shorter one
-        # (len // 2), matching what the decompress slices produced.
+        # (len // 2), matching what the reshape slices produced.
         half = len(data) // 2
         out = bytearray(len(data))
         out[1::2] = data[:half]

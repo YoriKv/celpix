@@ -15,12 +15,15 @@ and the folder a file sits in *determines* its type:
     self-contained decode/encode implementation registered via
     ``registry.register_format(...)``, listed in the picker like any preset.
 
-- ``compression/`` — ``*.py`` registering compress and/or decompress plugins
-  (a scheme's two halves live in one file); ``containers/`` — ``*.py``
-  registering read and/or write plugins.
+- ``compression/`` — ``*.py`` registering compression plugins; ``containers/``
+  — ``*.py`` registering containers; ``reshape/`` — ``*.py`` registering
+  reshapes, plus ``*.toml`` **bitswap presets** (zero code: a table for the
+  :mod:`~celpix.plugins.bitswap` engine, adapted into an ordinary reshape
+  plugin at load). Each is one plugin covering both directions, so a folder
+  maps to exactly one stage.
 
 Because the folder is authoritative, preset TOMLs carry no ``stage`` field, and
-a ``register()`` call whose stage falls outside its folder is reported (that one
+a ``register()`` call whose stage is not its folder's is reported (that one
 registration is skipped, the rest of the file still loads). Loose files in the
 root are reported with a pointer to the right subfolder; *unknown* subfolders
 are ignored — renaming a folder (``pixel.off/``) is a cheap way to park plugins.
@@ -53,7 +56,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
 
 from celpix import resources
 from celpix.core.errors import Stage
-from celpix.plugins.base import Plugin, Preset
+from celpix.plugins.base import Plugin, Preset, missing_methods
+from celpix.plugins.bitswap import bitswap_from_toml
 from celpix.plugins.formats import adapt_format
 from celpix.plugins.trust import (
     ConfirmCallback,
@@ -69,14 +73,15 @@ if TYPE_CHECKING:
 # the app passes in. Handy for development and tests without a real data dir.
 ENV_PLUGIN_PATH = "CELPIX_PLUGIN_PATH"
 
-# The typed layout: which stages a plugin found in each subfolder may register.
-# Folders pair the stages a user thinks of as one unit (a compression scheme is
-# its compress + decompress halves; a container format is read + write).
-FOLDER_STAGES: dict[str, frozenset[Stage]] = {
-    "pixel": frozenset({Stage.INTERPRET_PIXEL}),
-    "palette": frozenset({Stage.INTERPRET_PALETTE}),
-    "compression": frozenset({Stage.COMPRESS, Stage.DECOMPRESS}),
-    "containers": frozenset({Stage.READ, Stage.WRITE}),
+# The typed layout: which stage a plugin found in each subfolder may register.
+# One stage per folder, because a stage *is* the unit a user thinks in — a
+# compression scheme is both its halves, a container is both of its.
+FOLDER_STAGE: dict[str, Stage] = {
+    "pixel": Stage.INTERPRET_PIXEL,
+    "palette": Stage.INTERPRET_PALETTE,
+    "reshape": Stage.RESHAPE,
+    "compression": Stage.COMPRESSION,
+    "containers": Stage.CONTAINER,
 }
 
 # The folders whose *.toml files are presets (and the stage each folder implies).
@@ -129,9 +134,9 @@ class ScopedRegistry:
 
     It enforces the folder-determines-type rule at the registration boundary:
     an out-of-scope registration becomes a :class:`PluginLoadIssue` attributed
-    to the source file and only *that* registration is skipped — a compression
-    file registering both its compress and decompress halves keeps whichever
-    are in scope. Reads pass through so plugins can inspect what exists.
+    to the source file and only *that* registration is skipped — a file
+    registering several plugins keeps whichever are in scope. Reads pass through
+    so plugins can inspect what exists.
     """
 
     def __init__(
@@ -146,24 +151,44 @@ class ScopedRegistry:
         self._path = path
         self._issues = issues
 
-    def _allows(self, stage: Stage) -> bool:
-        allowed = FOLDER_STAGES[self._folder]
-        if stage in allowed:
+    def _allows(self, stage: Stage | None) -> bool:
+        """Whether ``stage`` may be registered here. ``None`` means "the folder's".
+
+        Omitting the stage is the normal case — the folder is authoritative, so
+        repeating it is only ceremony. A *stated* one is still honoured as an
+        assertion, and disagreeing with the folder is the load issue it always was.
+        """
+        allowed = FOLDER_STAGE[self._folder]
+        if stage is None or stage is allowed:
             return True
-        names = ", ".join(sorted(s.value for s in allowed))
         self._issues.append(
             PluginLoadIssue(
                 str(self._path),
                 f"stage '{stage.value}' not allowed in folder "
-                f"'{self._folder}/' (allowed: {names}); registration skipped",
+                f"'{self._folder}/' (allowed: {allowed.value}); registration skipped",
             )
         )
         return False
 
     # -- writes (scope-checked) --------------------------------------------
     def register(self, plugin: Plugin) -> None:
-        if self._allows(plugin.info.stage):
-            self._reg.register(plugin)
+        if not self._allows(plugin.info.stage):
+            return
+        stage = FOLDER_STAGE[self._folder]
+        # Shape-check up front, as register_format does: with the folder supplying
+        # the stage, a plugin in the wrong folder is no longer caught by a stage
+        # mismatch, and would instead be registered as something it cannot do.
+        missing = missing_methods(plugin, stage)
+        if missing:
+            self._issues.append(
+                PluginLoadIssue(
+                    str(self._path),
+                    f"{plugin.info.id!r} is missing {', '.join(missing)} — a "
+                    f"{stage.value} plugin needs it; registration skipped",
+                )
+            )
+            return
+        self._reg.register(plugin, stage)
 
     def register_preset(self, preset: Preset) -> None:
         if self._allows(preset.stage):
@@ -255,7 +280,7 @@ def seed_examples(directory: str) -> None:
     because frozen-build data collection excludes ``.py`` files; the suffix is
     dropped here.
     """
-    for folder in FOLDER_STAGES:
+    for folder in FOLDER_STAGE:
         dest_dir = Path(directory) / folder
         try:
             entries = list(
@@ -291,7 +316,7 @@ def load_directory(
     if not root.is_dir():
         return issues
     for entry in sorted(root.iterdir()):
-        if entry.is_dir() and entry.name in FOLDER_STAGES:
+        if entry.is_dir() and entry.name in FOLDER_STAGE:
             _load_typed_dir(reg, entry, entry.name, issues, trust, confirm)
         elif (
             entry.is_file()
@@ -302,7 +327,7 @@ def load_directory(
                 PluginLoadIssue(
                     str(entry),
                     "plugins live in typed subfolders - move this file into "
-                    "pixel/, palette/, compression/ or containers/",
+                    "pixel/, palette/, reshape/, compression/ or containers/",
                 )
             )
     return issues
@@ -326,16 +351,18 @@ def _load_typed_dir(
             continue
         if entry.suffix == ".toml":
             stage = PRESET_FOLDER_STAGE.get(folder)
-            if stage is None:
+            if stage is not None:
+                _load_preset(reg, entry, stage, issues)
+            elif folder == "reshape":
+                _load_reshape_preset(reg, entry, issues)
+            else:
                 issues.append(
                     PluginLoadIssue(
                         str(entry),
-                        f"presets are pixel/palette only; '{folder}/' takes "
-                        ".py code plugins",
+                        f"presets are pixel/palette/reshape only; '{folder}/' "
+                        "takes .py code plugins",
                     )
                 )
-            else:
-                _load_preset(reg, entry, stage, issues)
         elif entry.suffix == ".py":
             _load_module(reg, entry, folder, issues, trust, confirm)
 
@@ -347,6 +374,22 @@ def _load_preset(
         reg.register_preset(preset_from_toml(path.read_text(encoding="utf-8"), stage))
     except Exception as exc:  # noqa: BLE001 — report, don't abort startup
         issues.append(PluginLoadIssue(str(path), f"preset load failed: {exc}"))
+
+
+def _load_reshape_preset(
+    reg: Registry, path: Path, issues: list[PluginLoadIssue]
+) -> None:
+    """A ``reshape/*.toml`` bitswap preset, adapted into a reshape plugin.
+
+    Data like any preset — no code runs, so no trust gate — but registered as a
+    *plugin* rather than a :class:`Preset`, because the Reshape stage resolves
+    plain plugin ids everywhere (the pipeline, the combos, a project's
+    ``reshape_id``). Adapting here keeps all of that untouched.
+    """
+    try:
+        reg.register(bitswap_from_toml(path.read_text(encoding="utf-8")))
+    except Exception as exc:  # noqa: BLE001 — report, don't abort startup
+        issues.append(PluginLoadIssue(str(path), f"reshape preset load failed: {exc}"))
 
 
 def _is_approved(

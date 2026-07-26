@@ -219,8 +219,8 @@ def test_slice_edit_round_trip(qtbot, tmp_path) -> None:
     window, path = _open(qtbot, tmp_path)
     sl = window._workspace.add_slice(path, "sliceA", 0, 256)
 
-    before = SliceParams(sl.name, sl.slice_offset, sl.slice_length, sl.decompress_id)
-    after = SliceParams("moved", 128, 512, "decompress.none")
+    before = SliceParams(sl.name, sl.slice_offset, sl.slice_length, sl.compression_id)
+    after = SliceParams("moved", 128, 512, "compression.none")
     window._push_command(SliceEditCommand(window, sl, before=before, after=after))
     assert (sl.slice_offset, sl.slice_length, sl.name) == (128, 512, "moved")
     assert sl.doc is None  # cached document dropped so the new region re-reads

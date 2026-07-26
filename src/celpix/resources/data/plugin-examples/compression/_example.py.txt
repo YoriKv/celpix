@@ -3,18 +3,16 @@ file, drop the underscore from the name, edit it, and press F5 in celPix to
 load it (code plugins ask for confirmation the first time, since they run with
 the app's privileges).
 
-A compression scheme is a Decompress/Compress *pair*: both halves live in one
-file because they are two ends of one format. Decompress runs as a pipeline
-layer *before* the pixel codec — it turns a packed byte run into the raw bytes
-the pixel format then interprets; Compress is its inverse, run on save so edits
-write back packed. A view-only format may ship Decompress alone (drop the
-Compress class and its register call); such a format opens read-only.
+A compression scheme is **one plugin with both directions on it**: ``decompress``
+runs as a pipeline layer *before* the pixel codec — it turns a packed byte run
+into the raw bytes the pixel format then interprets — and ``compress`` is its
+inverse, run on save so edits write back packed. They live together because they
+are two ends of one format and have to stay each other's inverse.
 
-**Name the two halves ``decompress.<scheme>`` and ``compress.<scheme>``.** Only
-the decompressor is ever picked in the UI — celPix finds the matching compressor
-by swapping that prefix. A compressor named anything else is never found, and a
-slice using the scheme silently opens without write support instead of
-reporting an error.
+**``compress`` is optional.** A format reverse-engineered far enough to view but
+not to re-encode ships ``decompress`` alone; celPix then opens its data read-only
+rather than saving something it cannot guarantee. Nothing has to declare that —
+shipping the method is the declaration.
 
 This toy scheme is byte run-length encoding: the stream is a series of
 ``(count, value)`` pairs, ``count`` in 1..255, terminated by a ``count`` of 0.
@@ -31,13 +29,12 @@ from celpix.core.errors import Stage
 from celpix.plugins import PluginInfo
 
 
-class ExampleRleDecompress:
-    # stage marks this the decode half; the id doubles as its stable identity.
+class ExampleRle:
     info = PluginInfo(
-        id="decompress.example-rle",
+        id="compression.example-rle",
         name="Example byte RLE",
-        stage=Stage.DECOMPRESS,
-        # Decompress-only, and a property of the *scheme*: this stream carries a
+        stage=Stage.COMPRESSION,
+        # About the decode direction, and a property of the *scheme*: this carries a
         # terminator, so its extent is knowable from the data alone. Set False
         # for a scheme that ends only where something outside it says (a slice
         # length, a container's byte count) — celPix words "the decode stopped
@@ -85,16 +82,6 @@ class ExampleRleDecompress:
         ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
         return bytes(out)
 
-
-class ExampleRleCompress:
-    # Same scheme name as the decompressor above — that pairing is how celPix
-    # finds this half (see the module docstring).
-    info = PluginInfo(
-        id="compress.example-rle",
-        name="Example byte RLE",
-        stage=Stage.COMPRESS,
-    )
-
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
         """Pack ``data`` into ``(count, value)`` pairs — the inverse of decode.
 
@@ -116,5 +103,4 @@ class ExampleRleCompress:
 
 
 def register(registry):
-    registry.register(ExampleRleDecompress())
-    registry.register(ExampleRleCompress())
+    registry.register(ExampleRle())

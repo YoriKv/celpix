@@ -1,4 +1,4 @@
-"""Container Read/Write plugins (iNES / .smd / SNES interleave) and Konami NES RLE."""
+"""Container plugins (iNES / .smd / SNES interleave) and how one is picked."""
 
 from __future__ import annotations
 
@@ -16,85 +16,81 @@ from celpix.core.notices import (
 )
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import RAW_READ, RAW_WRITE, FileRef, PluginInfo
-from celpix.plugins.builtins.container_read import (
-    CopierHeaderReader,
-    INesReader,
-    SmdReader,
-    SnesInterleavedReader,
+from celpix.plugins.base import (
+    RAW_CONTAINER,
+    FileRef,
+    PluginInfo,
+    ReadSource,
+    WriteTarget,
 )
-from celpix.plugins.builtins.gb_rom import GbRomWriter, repair_checksums
+from celpix.plugins.builtins.containers import (
+    CopierHeaderContainer,
+    INesContainer,
+    SmdContainer,
+    SnesInterleavedContainer,
+)
+from celpix.plugins.builtins.gb_rom import GbRomContainer, repair_checksums
 from celpix.plugins.builtins.n64_rom import (
     KEY_N64_SWAP,
-    N64RomReader,
-    N64RomWriter,
+    N64RomContainer,
     swap_groups,
 )
 from celpix.plugins.detect import (
-    container_ids,
+    container_id_for,
     container_write_enabled,
-    container_write_id,
     detect_container,
 )
 from celpix.plugins.registry import default_registry
 from celpix.project.workspace import Entry, EntryKind, new_slice, pixel_config_for
 
 
-def test_ines_skips_header_to_chr(tmp_path) -> None:
+def test_ines_skips_header_to_chr() -> None:
     chr_rom = bytes((i * 7) & 0xFF for i in range(8192))  # 1 CHR bank
     prg = bytes(16384)  # 1 PRG bank
     header = bytes([*b"NES\x1a", 1, 1, 0, 0]) + bytes(8)  # PRG=1, CHR=1, no trainer
-    f = tmp_path / "game.nes"
-    f.write_bytes(header + prg + chr_rom)
 
     ctx = PipelineContext()
-    data = INesReader().read(FileRef(str(f)), ctx)
+    data = INesContainer().read(ReadSource(header + prg + chr_rom), ctx)
     assert data == chr_rom
     assert ctx.get(KEY_SOURCE_OFFSET) == 16 + 16384  # header + PRG
 
 
-def test_ines_non_ines_reads_whole_file(tmp_path) -> None:
-    f = tmp_path / "plain.bin"
-    f.write_bytes(b"\x01\x02\x03\x04not-a-nes")
-    data = INesReader().read(FileRef(str(f)), PipelineContext())
-    assert data == b"\x01\x02\x03\x04not-a-nes"
+def test_ines_non_ines_reads_whole_file() -> None:
+    plain = b"\x01\x02\x03\x04not-a-nes"
+    assert INesContainer().read(ReadSource(plain), PipelineContext()) == plain
 
 
-def test_smd_deinterleaves(tmp_path) -> None:
+def test_smd_deinterleaves() -> None:
     # Build a known deinterleaved 16 KB block, interleave it into .smd layout, and
     # confirm the reader reconstructs the original.
     block = bytes((i * 5 + 1) & 0xFF for i in range(16384))
     odd = bytes(block[j] for j in range(1, 16384, 2))  # odd positions -> first half
     even = bytes(block[j] for j in range(0, 16384, 2))  # even positions -> second half
-    f = tmp_path / "rom.smd"
-    f.write_bytes(bytes(512) + odd + even)  # 512-byte header + interleaved block
 
-    data = SmdReader().read(FileRef(str(f)), PipelineContext())
-    assert data == block
+    # 512-byte header + interleaved block.
+    smd = ReadSource(bytes(512) + odd + even)
+    assert SmdContainer().read(smd, PipelineContext()) == block
 
 
-def test_snes_interleaved_restores_bank_order(tmp_path) -> None:
+def test_snes_interleaved_restores_bank_order() -> None:
     # Two 64 KB HiROM banks. Interleaved layout stores every bank's upper 32 KB
     # half first, then all the lower halves (the header trick that puts $FFC0 at
     # file offset 0x7FC0); the reader must reassemble lower+upper per bank.
     halves = [bytes([n]) * 0x8000 for n in range(4)]  # bank0 = 0,1; bank1 = 2,3
-    f = tmp_path / "rom.smc"
-    f.write_bytes(halves[1] + halves[3] + halves[0] + halves[2])
 
     ctx = PipelineContext()
-    data = SnesInterleavedReader().read(FileRef(str(f)), ctx)
+    interleaved = ReadSource(halves[1] + halves[3] + halves[0] + halves[2])
+    data = SnesInterleavedContainer().read(interleaved, ctx)
     assert data == halves[0] + halves[1] + halves[2] + halves[3]
     assert ctx.get(KEY_SOURCE_OFFSET) == 0
 
 
-def test_snes_interleaved_skips_copier_header_by_size(tmp_path) -> None:
+def test_snes_interleaved_skips_copier_header_by_size() -> None:
     # size % 1024 == 512 marks a 512-byte copier header (carts are whole KiB).
     upper, lower = b"\x01" * 0x8000, b"\x00" * 0x8000
-    f = tmp_path / "rom.swc"
-    f.write_bytes(bytes(512) + upper + lower)
 
     ctx = PipelineContext()
-    data = SnesInterleavedReader().read(FileRef(str(f)), ctx)
+    data = SnesInterleavedContainer().read(ReadSource(bytes(512) + upper + lower), ctx)
     assert data == lower + upper
     assert ctx.get(KEY_SOURCE_OFFSET) == 512
 
@@ -109,14 +105,16 @@ def test_detection_prefers_magic_and_falls_back_to_raw() -> None:
     # a magic-declaring container refuses a file whose bytes disagree even when
     # the suffix matches, and anything unclaimed lands on plain bytes.
     reg = default_registry()
-    assert detect_container(reg, "cart.nes", b"NES\x1a\x01\x01") == "read.ines"
-    assert detect_container(reg, "cart.bin", b"NES\x1a\x01\x01") == "read.ines"
-    assert detect_container(reg, "cart.nes", b"not-an-ines-header") == RAW_READ
+    assert detect_container(reg, "cart.nes", b"NES\x1a\x01\x01") == "container.ines"
+    assert detect_container(reg, "cart.bin", b"NES\x1a\x01\x01") == "container.ines"
+    assert detect_container(reg, "cart.nes", b"not-an-ines-header") == RAW_CONTAINER
     # No magic to assert on, so .smd is claimed on its name alone.
-    assert detect_container(reg, "cart.smd", b"\x00" * 16) == "read.smd"
-    assert detect_container(reg, "cart.bin", b"\x00" * 16) == RAW_READ
+    assert detect_container(reg, "cart.smd", b"\x00" * 16) == "container.smd"
+    assert detect_container(reg, "cart.bin", b"\x00" * 16) == RAW_CONTAINER
     # Never auto-detected: deinterleaving a plain image would scramble it.
-    assert detect_container(reg, "cart.sfc", b"\x00" * 16) != "read.snes-interleaved"
+    assert (
+        detect_container(reg, "cart.sfc", b"\x00" * 16) != "container.snes-interleaved"
+    )
 
 
 def test_copier_header_needs_both_a_suffix_and_a_plausible_size(tmp_path) -> None:
@@ -134,15 +132,15 @@ def test_copier_header_needs_both_a_suffix_and_a_plausible_size(tmp_path) -> Non
         f.write_bytes(bytes(size))
         return detect_container(reg, str(f))
 
-    assert detected("rom.sfc", 512 + 0x8000) == "read.copier-header"
-    assert detected("rom.smc", 512 + 0x200000) == "read.copier-header"
-    assert detected("rom.sfc", 0x200000) == RAW_READ  # whole KiB: no header
-    assert detected("rom.bin", 512 + 0x8000) == RAW_READ  # right size, no suffix
+    assert detected("rom.sfc", 512 + 0x8000) == "container.copier-header"
+    assert detected("rom.smc", 512 + 0x200000) == "container.copier-header"
+    assert detected("rom.sfc", 0x200000) == RAW_CONTAINER  # whole KiB: no header
+    assert detected("rom.bin", 512 + 0x8000) == RAW_CONTAINER  # right size, no suffix
     # The floor: both of these fit the modulo rule and neither is a headered cart.
-    assert detected("tiles.4bpp.sfc", 512) == RAW_READ
-    assert detected("tiles.4bpp.sfc", 512 + 1024) == RAW_READ
+    assert detected("tiles.4bpp.sfc", 512) == RAW_CONTAINER
+    assert detected("tiles.4bpp.sfc", 512 + 1024) == RAW_CONTAINER
     # A .smd is 512-over too, and must stay with its own container.
-    assert detected("rom.smd", 512 + 16384) == "read.smd"
+    assert detected("rom.smd", 512 + 16384) == "container.smd"
 
 
 def test_detection_reads_the_head_off_disk(tmp_path) -> None:
@@ -150,8 +148,11 @@ def test_detection_reads_the_head_off_disk(tmp_path) -> None:
     # have not read the file hand over the path alone.
     f = tmp_path / "cart.nes"
     f.write_bytes(b"NES\x1a" + bytes(64))
-    assert detect_container(default_registry(), str(f)) == "read.ines"
-    assert detect_container(default_registry(), str(tmp_path / "gone.nes")) == RAW_READ
+    assert detect_container(default_registry(), str(f)) == "container.ines"
+    assert (
+        detect_container(default_registry(), str(tmp_path / "gone.nes"))
+        == RAW_CONTAINER
+    )
 
 
 def _noise(n: int, seed: int = 0) -> bytes:
@@ -161,8 +162,8 @@ def _noise(n: int, seed: int = 0) -> bytes:
 # One plausible file per shipped container. Each must be something its reader
 # actually claims, since the point is to exercise the real read→write pair.
 _CONTAINER_SAMPLES = {
-    RAW_READ: ("f.bin", _noise(4096)),
-    "read.ines": (
+    RAW_CONTAINER: ("f.bin", _noise(4096)),
+    "container.ines": (
         "f.nes",
         bytes([*b"NES\x1a", 1, 1, 0, 0])
         + bytes(8)
@@ -170,10 +171,10 @@ _CONTAINER_SAMPLES = {
         + _noise(8192, 2),
     ),
     # Past COPIER_MIN_SIZE, else the size rule correctly declines to claim it.
-    "read.copier-header": ("f.sfc", _noise(512, 8) + _noise(0x8000, 2)),
-    "read.smd": ("f.smd", _noise(512, 9) + _noise(16384, 3)),
-    "read.snes-interleaved": ("f.sfc", _noise(512, 5) + _noise(0x20000, 4)),
-    "read.gb-rom": (
+    "container.copier-header": ("f.sfc", _noise(512, 8) + _noise(0x8000, 2)),
+    "container.smd": ("f.smd", _noise(512, 9) + _noise(16384, 3)),
+    "container.snes-interleaved": ("f.sfc", _noise(512, 5) + _noise(0x20000, 4)),
+    "container.gb-rom": (
         "f.gb",
         repair_checksums(
             _noise(0x104)
@@ -181,7 +182,7 @@ _CONTAINER_SAMPLES = {
             + _noise(0x8000 - 0x10C, 6)
         ),
     ),
-    "read.n64-rom": ("f.v64", b"\x37\x80\x40\x12" + _noise(0x2000 - 4, 7)),
+    "container.n64-rom": ("f.v64", b"\x37\x80\x40\x12" + _noise(0x2000 - 4, 7)),
 }
 
 
@@ -189,8 +190,7 @@ def _container_config(reg, path, container_id):
     return PathwayConfig(
         source=FileRef(str(path), offset=0),  # the host's header box, unticked
         interpret_preset_id="preset.pixel.chunky-8bpp",
-        read_id=container_ids(reg, container_id)[0],
-        write_id=container_ids(reg, container_id)[1],
+        container_id=container_id_for(reg, container_id),
         write_enabled=container_write_enabled(reg, container_id),
     )
 
@@ -202,10 +202,10 @@ def test_saving_an_unedited_file_through_its_container_changes_nothing(
     """Load and save with no edit, through every container: the file must come
     back byte-identical.
 
-    The check a container's writer really is its reader's inverse. It is not
-    implied by the reader's own tests: a reader can unwrap perfectly and still be
-    paired with a writer that puts the bytes somewhere else, which silently
-    destroys the file on the user's first save rather than failing.
+    The check that a container's ``write`` really is its ``read``'s inverse. It is
+    not implied by the read's own tests: a container can unwrap perfectly and
+    still put the bytes back somewhere else, which silently destroys the file on
+    the user's first save rather than failing.
     """
     reg = default_registry()
     name, content = _CONTAINER_SAMPLES[container_id]
@@ -243,47 +243,37 @@ def test_an_edit_lands_where_its_container_read_it_from(container_id, tmp_path) 
     assert pipeline.load(cfg, cfg, reg).pixel_data[at] == want
 
 
-def test_container_write_id_pairs_by_convention() -> None:
-    # read.X -> write.X. The plain-bytes result for a writer-less container is an
-    # inert placeholder — container_write_enabled has already made it read-only,
-    # so the id is never reached (see test_a_container_without_a_writer_is_view_only).
-    reg = default_registry()
-    assert container_write_id(reg, RAW_READ) == RAW_WRITE
-    assert container_write_id(reg, "read.ines") == "write.ines"
-
-
-def test_container_ids_degrade_when_the_plugin_is_gone() -> None:
+def test_container_id_degrades_when_the_plugin_is_gone() -> None:
     # A project names the container its files were opened with, and the plugin
     # behind it can be uninstalled or left untrusted before the next launch —
     # that must show raw bytes, not fail the load.
     reg = default_registry()
-    assert container_ids(reg, "read.ines") == ("read.ines", "write.ines")
-    assert container_ids(reg, "read.no-such-plugin") == (RAW_READ, RAW_WRITE)
+    assert container_id_for(reg, "container.ines") == "container.ines"
+    assert container_id_for(reg, "container.no-such-plugin") == RAW_CONTAINER
 
 
-def test_a_container_without_a_writer_is_view_only() -> None:
+def test_a_container_without_a_write_half_is_view_only() -> None:
     """Unwrapping a file is not something plain bytes can undo, so a container
-    with no writer opens read-only rather than saving through the raw fallback.
+    with no ``write`` opens read-only rather than saving through the raw fallback.
 
-    Doubles as the check that every shipped container really does have its
-    inverse registered: the pairing is by id convention, so a typo in a writer's
-    id would silently turn that format read-only.
+    Doubles as the check that every shipped container really does implement its
+    own inverse — a missing one would silently turn that format read-only.
     """
     reg = default_registry()
-    for plugin in reg.plugins(Stage.READ):
+    for plugin in reg.plugins(Stage.CONTAINER):
         assert container_write_enabled(reg, plugin.info.id), plugin.info.id
 
     class _ReadOnly:
-        info = PluginInfo(id="read.probe", name="probe", stage=Stage.READ)
+        info = PluginInfo(id="container.probe", name="probe", stage=Stage.CONTAINER)
 
-        def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
+        def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
             return b""
 
     reg.register(_ReadOnly())
-    assert container_write_enabled(reg, "read.probe") is False
+    assert container_write_enabled(reg, "container.probe") is False
     # An id the registry has lost is a different case: the *read* degrades to
     # plain bytes too, so the two agree and the file stays saveable.
-    assert container_write_enabled(reg, "read.no-such-plugin") is True
+    assert container_write_enabled(reg, "container.no-such-plugin") is True
 
 
 def test_file_entry_reads_through_its_container(tmp_path) -> None:
@@ -291,14 +281,17 @@ def test_file_entry_reads_through_its_container(tmp_path) -> None:
     # while a slice of it stays on plain bytes (its offsets are its parent's).
     reg = default_registry()
     entry = Entry(name="g.nes", kind=EntryKind.FILE, path="g.nes")
-    entry.container_id = "read.ines"
+    entry.container_id = "container.ines"
     cfg = pixel_config_for(entry, "preset.pixel.nes-2bpp", reg)
-    assert (cfg.read_id, cfg.write_id) == ("read.ines", "write.ines")
+    assert (cfg.container_id, cfg.container_id) == ("container.ines", "container.ines")
     assert cfg.write_enabled
 
     sliced = new_slice("g.nes", "s", 0x10, 0x20)
     slice_cfg = pixel_config_for(sliced, "preset.pixel.nes-2bpp", reg)
-    assert (slice_cfg.read_id, slice_cfg.write_id) == (RAW_READ, RAW_WRITE)
+    assert (slice_cfg.container_id, slice_cfg.container_id) == (
+        RAW_CONTAINER,
+        RAW_CONTAINER,
+    )
 
 
 def _gb_rom(size: int = 0x8000) -> bytearray:
@@ -308,17 +301,15 @@ def _gb_rom(size: int = 0x8000) -> bytearray:
     return rom
 
 
-def test_gb_write_repairs_both_checksums(tmp_path) -> None:
+def test_gb_write_repairs_both_checksums() -> None:
     # The header sum is what the boot ROM checks (a wrong one is a blank screen
     # on hardware); the global sum is the one tile edits actually invalidate.
     rom = _gb_rom()
-    f = tmp_path / "game.gb"
-    f.write_bytes(bytes(rom))
 
     edited = bytearray(rom)
     edited[0x4000:0x4010] = bytes(range(16))  # "tile edits", far from the header
-    GbRomWriter().write(bytes(edited), FileRef(str(f)), PipelineContext())
-    out = f.read_bytes()
+    target = WriteTarget(bytes(rom))
+    out = GbRomContainer().write(bytes(edited), target, PipelineContext())
 
     expected = 0
     for byte in out[0x134:0x14D]:
@@ -332,42 +323,38 @@ def test_gb_write_repairs_both_checksums(tmp_path) -> None:
     assert out[:0x14D] == bytes(rom[:0x14D])
 
 
-def test_gb_write_leaves_a_headerless_file_alone(tmp_path) -> None:
+def test_gb_write_leaves_a_headerless_file_alone() -> None:
     # Too short to hold a header: inventing one would corrupt whatever it is.
-    f = tmp_path / "tiny.gb"
-    GbRomWriter().write(b"\xaa" * 64, FileRef(str(f)), PipelineContext())
-    assert f.read_bytes() == b"\xaa" * 64
+    out = GbRomContainer().write(b"\xaa" * 64, WriteTarget(b""), PipelineContext())
+    assert out == b"\xaa" * 64
 
 
-def test_n64_round_trips_each_byte_order(tmp_path) -> None:
+def test_n64_round_trips_each_byte_order() -> None:
     # Read normalises to native so offsets mean what the docs say; Write puts
     # the file back in the order it arrived in, so other tools still read it.
     native = b"\x80\x37\x12\x40" + bytes((i * 11) & 0xFF for i in range(0x400 - 4))
-    for name, width in (("rom.z64", 0), ("rom.v64", 2), ("rom.n64", 4)):
+    for width in (0, 2, 4):
         on_disk = swap_groups(native, width)
-        f = tmp_path / name
-        f.write_bytes(on_disk)
 
         ctx = PipelineContext()
-        assert N64RomReader().read(FileRef(str(f)), ctx) == native
+        assert N64RomContainer().read(ReadSource(on_disk), ctx) == native
         assert ctx.get(KEY_N64_SWAP) == width
-        N64RomWriter().write(native, FileRef(str(f)), ctx)
-        assert f.read_bytes() == on_disk
+        assert N64RomContainer().write(native, WriteTarget(on_disk), ctx) == on_disk
 
 
-def test_n64_splices_a_bounded_edit_in_native_coordinates(tmp_path) -> None:
+def test_n64_splices_a_bounded_edit_in_native_coordinates() -> None:
     # A byte's position only survives the swap within its own group, so an
     # unaligned splice has to happen in native order and be swapped back whole.
     native = bytearray(b"\x80\x37\x12\x40" + bytes(range(0x40)))
-    f = tmp_path / "rom.v64"
-    f.write_bytes(swap_groups(bytes(native), 2))
+    on_disk = swap_groups(bytes(native), 2)
 
     ctx = PipelineContext()
-    N64RomReader().read(FileRef(str(f)), ctx)  # arms the width
-    N64RomWriter().write(b"\xee\xff", FileRef(str(f), offset=0x11, length=2), ctx)
+    N64RomContainer().read(ReadSource(on_disk), ctx)  # arms the width
+    target = WriteTarget(on_disk, offset=0x11, length=2)
+    out = N64RomContainer().write(b"\xee\xff", target, ctx)
 
     native[0x11:0x13] = b"\xee\xff"
-    assert f.read_bytes() == swap_groups(bytes(native), 2)
+    assert out == swap_groups(bytes(native), 2)
 
 
 def test_n64_swap_leaves_a_trailing_partial_group(tmp_path) -> None:
@@ -388,11 +375,11 @@ def test_notices_accumulate_across_stages_and_survive_junk() -> None:
     assert notices(ctx) == ()
     assert worst_level(()) is None
 
-    warn(ctx, "first", "detail", "read.a")
-    inform(ctx, "second", source="decompress.b")
+    warn(ctx, "first", "detail", "container.a")
+    inform(ctx, "second", source="compression.b")
     got = notices(ctx)
     assert [n.summary for n in got] == ["first", "second"]  # oldest first
-    assert [n.source for n in got] == ["read.a", "decompress.b"]
+    assert [n.source for n in got] == ["container.a", "compression.b"]
     assert worst_level(got) is NoticeLevel.WARNING
     assert worst_level(got[1:]) is NoticeLevel.INFO
 
@@ -400,44 +387,40 @@ def test_notices_accumulate_across_stages_and_survive_junk() -> None:
     assert notices(ctx) == ()
 
 
-def test_containers_report_what_they_had_to_assume(tmp_path) -> None:
+def test_containers_report_what_they_had_to_assume() -> None:
     """Each built-in container's non-fatal compromise reaches the user.
 
     These are the cases that used to be silent: the read succeeds, but the bytes
     on screen are not what the user would assume, and nothing said so.
     """
 
-    def read_notices(reader, name: str, content: bytes):
-        f = tmp_path / name
-        f.write_bytes(content)
+    def read_notices(reader, content: bytes):
         ctx = PipelineContext()
-        reader.read(FileRef(str(f)), ctx)
+        reader.read(ReadSource(content), ctx)
         return notices(ctx)
 
     # CHR-RAM: the header declares no CHR banks, so there is no tile data at all.
     chr_ram = read_notices(
-        INesReader(),
-        "chrram.nes",
-        bytes([*b"NES\x1a", 2, 0, 0, 0]) + bytes(8) + bytes(0x8000),
+        INesContainer(), bytes([*b"NES\x1a", 2, 0, 0, 0]) + bytes(8) + bytes(0x8000)
     )
     assert [n.level for n in chr_ram] == [NoticeLevel.WARNING]
     assert "CHR-RAM" in chr_ram[0].summary
 
     # A file the iNES reader cannot claim is read raw rather than failing.
-    assert read_notices(INesReader(), "plain.nes", b"not-an-ines-file")[0].is_warning
+    assert read_notices(INesContainer(), b"not-an-ines-file")[0].is_warning
 
     # A tail too short to deinterleave is dropped, and not written back either.
-    ragged = read_notices(SmdReader(), "r.smd", bytes(512) + bytes(16384) + bytes(300))
+    ragged = read_notices(SmdContainer(), bytes(512) + bytes(16384) + bytes(300))
     assert "300" in ragged[0].summary
 
     # Hand-picking the copier container on a file that is not 512-over strips
     # 512 bytes of real image.
-    off = read_notices(CopierHeaderReader(), "x.sfc", bytes(0x8000))
+    off = read_notices(CopierHeaderContainer(), bytes(0x8000))
     assert off and off[0].is_warning
 
     # A clean read says nothing at all.
     clean = bytes([*b"NES\x1a", 1, 1, 0, 0]) + bytes(8) + bytes(16384) + bytes(8192)
-    assert read_notices(INesReader(), "ok.nes", clean) == ()
+    assert read_notices(INesContainer(), clean) == ()
 
 
 def test_a_plugin_may_record_notices_and_then_fail() -> None:
@@ -446,12 +429,12 @@ def test_a_plugin_may_record_notices_and_then_fail() -> None:
     ctx = PipelineContext()
 
     class _Doomed:
-        info = PluginInfo(id="read.doomed", name="doomed", stage=Stage.READ)
+        info = PluginInfo(id="container.doomed", name="doomed", stage=Stage.CONTAINER)
 
-        def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
+        def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
             warn(ctx, "header looked odd", source=self.info.id)
             raise ValueError("and then it fell over")
 
     with pytest.raises(ValueError):
-        _Doomed().read(FileRef("x"), ctx)
+        _Doomed().read(ReadSource(b""), ctx)
     assert [n.summary for n in notices(ctx)] == ["header looked odd"]

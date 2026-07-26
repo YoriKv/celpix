@@ -1,46 +1,27 @@
 # Changelog
 
-## v0.2.6 - unreleased
+## v0.3.0 - unreleased
 
-- **Rearrange tool**: rotate tiles and blocks as well as mirroring them, still
-  without changing a byte (square tiles only, as elsewhere).
-- **Containers**: opening a file now picks how it is unwrapped from its extension
-  and magic bytes, and the Files list tags it — `board.tif (TIFF)`. **File ▸
-  Change Container…** (and the Files right-click menu) overrides the choice. New
-  Game Boy container repairs both ROM checksums on write, and a Nintendo 64 one
-  reads `.v64`/`.n64` in native byte order and writes them back as they were.
-- **Plugin examples**: a worked TIFF container example, plus corrections to the
-  compression and container reference plugins and the contracts they document.
-- **Containers can now say something without failing.** When a file opens but
-  isn't quite what it looks like — a CHR-RAM `.nes` that holds no tiles at all, a
-  `.smd` with a tail too short to deinterleave — the Files list highlights it and
-  its tooltip explains what was dropped or assumed. Previously those cases were
-  silent. Each condition has its own marker in the list, so a row says which it
-  is at a glance: **?** for a file that needs locating, **!** for something a
-  container had to assume.
-- **Copier headers are detected, not configured.** A headered ROM
-  (`.smc`/`.swc`/`.fig`/`.sfc`) now opens straight onto the cartridge through a
-  container of its own, and saves back behind the header. The **Header**
-  checkbox and size box are gone with it — a custom header size returns later as
-  a container setting. Addresses now come from whatever the container skipped, so
-  a `.nes` finally shows real file offsets instead of counting from zero.
-- **Fixed: saving corrupted `.nes`, `.smd` and interleaved SNES files.** These
-  containers unwrap the file on open but had no matching writer, so saving wrote
-  the unwrapped bytes straight back — replacing a `.nes` with just its CHR ROM,
-  and scrambling a `.smd`. Even opening and saving with no edit destroyed the
-  file. Each now writes back through its own container, and a container that
-  cannot reproduce its framing is refused rather than silently degraded.
-- **Arcade tile formats**: new **Split bitplanes** compression option joins
-  graphics stored as 2, 3 or 4 separate plane ROMs, which makes a large family of
-  arcade tile layouts readable with the existing planar formats. Three new Atari
-  System 2 formats (8×8 chars, 8×8 playfield, 16×16 sprites) on a new
-  nibble-planar codec.
-- **New pixel formats**: Nintendo 64 I8, IA8 and IA16 intensity textures.
-- **Tile size on the view bar**: the size the tiles on screen are cut to is now
-  shown beside Cols, including when a bitmap width has re-cut it.
-- **Format reference**: new MAME reference notes — its universal tile-layout
-  model, how arcade graphics ROM regions are assembled, and the Atari System 2
-  pixel format.
+- **New Reshape stage**: add a new reshape stage for byte reodering and split bitplanes.
+  Configurable under `Edit File Container`.
+- **Bitswap reshape plugins**: a TOML preset with the `reshape.bitswap` engine
+  and a MAME-style address-permutation table becomes a Reshape entry.
+- **Offsets mean the same thing everywhere**: palettes loaded from an offset,
+  and slices, now read the bytes the view is built from — past a header skip,
+  and through a deinterleaving container or a reshape — instead of the raw file
+  at that number. New Slice… no longer prefills a headered file short by its
+  header. Color edits on a palette inside a reordered region save through the
+  owning file's own write, so they land on the right bytes in every chip;
+  slices of reordered data stay view-only.
+
+- **Navigation**: improved navigation while in block mode.
+- **Rearrange tool**: rotate tiles and blocks added.
+- **Files**: added support for files with multiple component files appended
+  together to support an arcade board's ROM chip. Also, file rows can now be
+  renamed, and reordered with Move Up/Down (`Shift+Up`/`Shift+Down`).
+- **Containers**: container auto detection based on magic bytes or extension.
+- **Pixel formats**: added Nintendo 64 I8, IA8 and IA16 intensity textures.
+- Lots of other fixes.
 
 ## v0.2.5 - 2026-07-25
 

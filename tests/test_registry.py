@@ -16,7 +16,7 @@ from celpix.plugins.registry import default_registry
 def test_unknown_lookup_raises() -> None:
     reg = default_registry()
     with pytest.raises(KeyError):
-        reg.plugin(Stage.READ, "nope")
+        reg.plugin(Stage.CONTAINER, "nope")
     with pytest.raises(KeyError):
         reg.preset("nope")
 
@@ -24,4 +24,4 @@ def test_unknown_lookup_raises() -> None:
 def test_duplicate_registration_rejected() -> None:
     reg = default_registry()
     with pytest.raises(ValueError):
-        reg.register(reg.plugin(Stage.READ, "read.raw-file"))
+        reg.register(reg.plugin(Stage.CONTAINER, "container.raw-file"))

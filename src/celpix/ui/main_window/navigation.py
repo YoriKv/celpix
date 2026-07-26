@@ -47,8 +47,7 @@ from celpix.core.address import (
     parse_hex,
 )
 from celpix.core.context import KEY_SOURCE_OFFSET
-from celpix.plugins.base import NO_DECOMPRESS
-from celpix.project.workspace import EntryKind
+from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.undo_commands import (
     OffsetMoveCommand,
@@ -89,8 +88,8 @@ class NavigationMixin:
                 ("Zero byte offset", "0", self._clear_nudge),
                 ("Previous tile", "Left", lambda: self._nav_tiles(-1)),
                 ("Next tile", "Right", lambda: self._nav_tiles(1)),
-                ("Row up", "Up", lambda: self._nav_rows(-1)),
-                ("Row down", "Down", lambda: self._nav_rows(1)),
+                ("Row up", "Up", lambda: self._nav_rows(-self._row_step())),
+                ("Row down", "Down", lambda: self._nav_rows(self._row_step())),
                 ("Page up", "PgUp", lambda: self._nav_rows(-self._rows.value())),
                 ("Page down", "PgDown", lambda: self._nav_rows(self._rows.value())),
             ),
@@ -223,8 +222,18 @@ class NavigationMixin:
                 "Down one page (PgDown)",
                 lambda: self._nav_rows(self._rows.value()),
             ),
-            ("", sp.SP_ArrowDown, "Down one row (Down)", lambda: self._nav_rows(1)),
-            ("", sp.SP_ArrowUp, "Up one row (Up)", lambda: self._nav_rows(-1)),
+            (
+                "",
+                sp.SP_ArrowDown,
+                "Down one row (Down)\nA whole block-row in a block pattern",
+                lambda: self._nav_rows(self._row_step()),
+            ),
+            (
+                "",
+                sp.SP_ArrowUp,
+                "Up one row (Up)\nA whole block-row in a block pattern",
+                lambda: self._nav_rows(-self._row_step()),
+            ),
             (
                 "Pg Up",
                 None,
@@ -351,8 +360,8 @@ class NavigationMixin:
         shift = (True, False)
         ctrl = (False, True)
         self._nav_keys = {
-            (Qt.Key.Key_Up, *no_mod): lambda: self._nav_rows(-1),
-            (Qt.Key.Key_Down, *no_mod): lambda: self._nav_rows(1),
+            (Qt.Key.Key_Up, *no_mod): lambda: self._nav_rows(-self._row_step()),
+            (Qt.Key.Key_Down, *no_mod): lambda: self._nav_rows(self._row_step()),
             (Qt.Key.Key_Left, *no_mod): lambda: self._nav_tiles(-1),
             (Qt.Key.Key_Right, *no_mod): lambda: self._nav_tiles(1),
             (Qt.Key.Key_PageUp, *no_mod): lambda: self._nav_rows(-self._rows.value()),
@@ -553,6 +562,16 @@ class NavigationMixin:
         spin.setValue(spin.value() + delta)
 
     # -- navigation --------------------------------------------------------
+    def _row_step(self) -> int:
+        """Tile-rows a single Up/Down step moves - the block height.
+
+        With a block grouping taller than one tile, a one-row move would re-cut
+        every block from a mid-block origin and scramble the image, so the unit
+        of vertical movement is a whole block-row. Plain layouts keep the
+        ordinary single row (block height 1).
+        """
+        return max(1, self._block_rows.value())
+
     def _nav_rows(self, delta_rows: int) -> None:
         """Move the window ``delta_rows`` tile-rows (± ``columns`` tiles each)."""
         self._set_offset(self._offset + delta_rows * self._columns.value())
@@ -578,6 +597,21 @@ class NavigationMixin:
 
     def _nav_home(self) -> None:
         self._set_offset(0)
+
+    def _on_offset_bar_change(self, value: int) -> None:
+        """Scrub the file-position bar in whole rows (block-rows in a block pattern).
+
+        A drag can land the raw slider value on any tile, which would shift the
+        image sideways by the sub-row remainder - and re-cut every block under
+        a block grouping - so the value snaps to the nearest vertical step
+        (:meth:`_row_step` rows). The bar's maximum is row-aligned
+        (:meth:`Document.last_page_offset` rounds up to a whole row), so a
+        row snap never overshoots the end clamp; a block-row snap can, and
+        :meth:`_set_offset` clamps it back to the last page. Tile-level moves
+        stay available on the keys/buttons, and the byte nudge is untouched.
+        """
+        unit = max(1, self._columns.value()) * self._row_step()
+        self._set_offset((value + unit // 2) // unit * unit)
 
     def _nav_end(self) -> None:
         if self._doc is not None:
@@ -713,35 +747,24 @@ class NavigationMixin:
     def _display_base(self) -> int:
         """The file byte the view's position 0 corresponds to - display policy.
 
-        Raw sources (no decompressor) show source-file-absolute addresses: past
-        whatever a container skipped for a whole file, the slice offset for a raw
-        slice - so ROM bank addresses stay meaningful wherever the bytes came
-        from. A decompressed stream has no linear mapping back to file offsets, so
-        it shows its own 0-based positions instead of lying with file addresses.
+        Raw sources (no decompressor, no reshape) show source-file-absolute
+        addresses: past whatever a container skipped for a whole file, the slice
+        offset for a raw slice - so ROM bank addresses stay meaningful wherever
+        the bytes came from. A decompressed stream has no linear mapping back to
+        file offsets, and a reshaped one is a byte permutation of its region, so
+        both show their own 0-based positions instead of lying with file
+        addresses.
 
         The base comes from what Read *recorded* rather than from the config's
-        requested offset, because only the reader knows where it actually began:
+        requested offset, because only the container knows where it actually began:
         a container works its start out from the format (past a copier header,
         past the iNES header and the PRG banks) and the host never asked for it.
         """
         assert self._doc is not None
-        if self._doc.pixel_config.decompress_id != NO_DECOMPRESS:
-            return 0
-        return self._doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
-
-    def _container_skip(self) -> int:
-        """Bytes this entry's *container* skipped at the front of its own file.
-
-        The sibling of :meth:`_display_base`, and deliberately not the same
-        number. This one converts between the offset box's coordinate space and
-        real file offsets, so it is **zero for a slice**: a slice reads through
-        its parent's coordinates, its own offsets are already parent-absolute,
-        and so are the palette offsets taken against them. ``_display_base``
-        answers a different question — what file byte the view starts at — for
-        which a slice's own offset is exactly right.
-        """
-        entry = self._workspace.current
-        if self._doc is None or entry is None or entry.kind is not EntryKind.FILE:
+        if (
+            self._doc.pixel_config.compression_id != NO_COMPRESSION
+            or self._doc.pixel_config.reshape_id != NO_RESHAPE
+        ):
             return 0
         return self._doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
 
@@ -797,7 +820,7 @@ class NavigationMixin:
         with signals_blocked(bar):  # setValue here must not re-enter _set_offset
             bar.setEnabled(max_off > 0)
             bar.setRange(0, max_off)
-            bar.setSingleStep(cols)
+            bar.setSingleStep(cols * self._row_step())  # one (block-)row
             bar.setPageStep(page)
             bar.setValue(self._offset)
 

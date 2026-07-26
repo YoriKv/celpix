@@ -28,12 +28,10 @@ See ``docs/graphics-formats-reference/implementation-guide.md`` §5.
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from celpix.core.context import KEY_SOURCE_OFFSET, KEY_SOURCE_PATH, PipelineContext
+from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.notices import warn
-from celpix.plugins.base import FileRef, PluginInfo
+from celpix.plugins.base import PluginInfo, ReadSource, WriteTarget, splice
 
 # int: group width whose reversal converts this file between its on-disk order
 # and native order (2 = .v64, 4 = .n64); 0 = already native. Set by Read so Write
@@ -72,23 +70,24 @@ def swap_width(head: bytes) -> int:
     return _ORDERS.get(bytes(head[:4]), 0)
 
 
-class N64RomReader:
+class N64RomContainer:
     info = PluginInfo(
-        id="read.n64-rom",
+        id="container.n64-rom",
         name="Nintendo 64 ROM (normalise byte order)",
-        stage=Stage.READ,
+        stage=Stage.CONTAINER,
         extensions=(".z64", ".v64", ".n64"),
         magic=tuple((0, sig) for sig in _ORDERS),
         short_name="N64",
-        # A .v64/.n64 is byte-swapped on read, so plain-bytes write-back would
-        # writer below is the real inverse; the flag is what stops the fallback
+        # A .z64 passes through untouched, but a .v64/.n64 is reordered within
+        # every group, so a native-order offset names a different byte in the
+        # file. Declared statically for the whole container: which of the three
+        # a given file is isn't known until it has been read.
+        preserves_offsets=False,
     )
 
-    def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
-        in_memory = source.data is not None
-        raw = source.data if in_memory else Path(source.path).read_bytes()
+    def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
+        raw = source.data
         width = swap_width(raw)
-        ctx.set(KEY_SOURCE_PATH, source.path)
         ctx.set(KEY_N64_SWAP, width)
         if not raw[:4] or bytes(raw[:4]) not in _ORDERS:
             # None of the three signatures matched, so there is nothing to say
@@ -107,35 +106,21 @@ class N64RomReader:
         # file reads in native order — which is also the order every published
         # N64 offset is quoted in.
         native = swap_groups(raw, width)
-        start = max(0, source.offset - (source.data_base if in_memory else 0))
+        start = source.start
         end = len(native) if source.length is None else start + source.length
         ctx.set(KEY_SOURCE_OFFSET, source.offset)
         return native[start:end]
 
-
-class N64RomWriter:
-    info = PluginInfo(
-        id="write.n64-rom",
-        name="Nintendo 64 ROM (restore byte order)",
-        stage=Stage.WRITE,
-    )
-
-    def write(self, data: bytes, dest: FileRef, ctx: PipelineContext) -> None:
-        path = Path(dest.path)
+    def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         # The context is the authority — it records the order this file was read
-        # in. Without it (a write with no prior read) the file on disk still says
-        # so, and a file that isn't there yet is written native.
+        # in. Without it (a write with no prior read) the destination's own bytes
+        # still say so, and a file that isn't there yet is written native.
         width = ctx.get(KEY_N64_SWAP)
         if width is None:
-            width = swap_width(path.read_bytes()[:4]) if path.exists() else 0
-        existing = path.read_bytes() if path.exists() else b""
+            width = swap_width(dest.existing[:4])
         # Splice in native order and swap the whole result back, rather than
         # splicing into the on-disk order: an offset that is not group-aligned
         # names different bytes in the two orders, and only the native one is
         # what the rest of the app has been addressing.
-        native = bytearray(swap_groups(existing, width))
-        end = dest.offset + len(data)
-        if len(native) < end:
-            native.extend(b"\x00" * (end - len(native)))
-        native[dest.offset : end] = data
-        path.write_bytes(swap_groups(bytes(native), width))
+        native = splice(swap_groups(dest.existing, width), dest.offset, data)
+        return swap_groups(native, width)

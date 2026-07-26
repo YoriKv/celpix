@@ -1,7 +1,7 @@
 """Which entry is on screen, and the UI state that travels with it.
 
 Switching entries is not just repointing ``_doc``: every entry carries its own
-codec choice, header skip, arrangement, view window, selection and palette mode,
+codec choice, preview compression, arrangement, view window, selection and palette mode,
 and all of it has to be put back exactly as it was left. So an activation is
 always **capture the outgoing, then restore the incoming**
 (:meth:`~SessionMixin._capture_session` / :meth:`~SessionMixin._restore_session`),
@@ -27,7 +27,7 @@ from PySide6.QtGui import QImage
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError
 from celpix.pipeline import pipeline
-from celpix.plugins.base import NO_DECOMPRESS
+from celpix.plugins.base import NO_COMPRESSION
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -174,7 +174,7 @@ class SessionMixin:
             pixel_preset_id=self._pixel_preset_id(),
             palette_preset_id=self._palette_preset_id(),
             compression_id=(
-                NO_DECOMPRESS
+                NO_COMPRESSION
                 if entry.kind is EntryKind.SLICE
                 else self._compression_id()
             ),

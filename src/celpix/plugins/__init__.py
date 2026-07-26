@@ -8,11 +8,23 @@ cannot express.
 The plugin-authoring names are re-exported here so a drop-in plugin file can
 write ``from celpix.plugins import FormatInfo`` — for every folder, not just
 ``pixel/`` and ``palette/``: a compression or container plugin needs
-:class:`~celpix.plugins.base.PluginInfo` and :class:`~celpix.plugins.base.FileRef`
-and has the same claim on a one-line import.
+:class:`~celpix.plugins.base.PluginInfo`, the container types and
+:func:`~celpix.plugins.base.splice`, and has the same claim on a one-line import.
+
+:class:`~celpix.plugins.base.FileRef` is deliberately *not* here: it is the
+host's own descriptor of where bytes live, and a container is handed the bytes
+themselves.
 """
 
-from celpix.plugins.base import FileRef, PluginInfo
+from celpix.plugins.base import PluginInfo, ReadSource, WriteTarget, splice
 from celpix.plugins.formats import FormatInfo, PaletteFormat, PixelFormat
 
-__all__ = ["FileRef", "FormatInfo", "PaletteFormat", "PixelFormat", "PluginInfo"]
+__all__ = [
+    "FormatInfo",
+    "PaletteFormat",
+    "PixelFormat",
+    "PluginInfo",
+    "ReadSource",
+    "WriteTarget",
+    "splice",
+]

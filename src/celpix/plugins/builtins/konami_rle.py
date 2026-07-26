@@ -3,7 +3,7 @@
 Run-length-encoded NES/FDS CHR used by many Konami titles; decompresses to
 ordinary NES 2bpp, which the normal pixel codec then interprets
 (``docs/graphics-formats-reference/implementation-guide.md`` §6). Compression is a
-distinct pipeline layer, so these are Decompress/Compress stage plugins, not codec
+distinct pipeline layer, so these are Compression-stage plugins, not codec
 variants. Pair either with the NES 2bpp pixel preset.
 
 Every reference agrees on the core scheme — a control byte ``c`` with bit 7 clear
@@ -32,9 +32,9 @@ read past it.
 which stays inside the *unambiguous subset* every reference decodes alike: it
 never emits ``0x7F`` or ``0x80`` (runs cap at ``0x7E``), so its output round-trips
 under either family's decoder — and under the rle_konami reading too. Byte-identity
-with a game's original blob is a non-goal; round-tripping is the contract. The two
-Compress plugins therefore share an implementation and exist only so each scheme's
-``decompress.X`` has the ``compress.X`` counterpart write-back derives by id.
+with a game's original blob is a non-goal; round-tripping is the contract. So the
+two schemes differ only in how they *decode*, and share a base class carrying the
+one encoder.
 """
 
 from __future__ import annotations
@@ -155,52 +155,38 @@ def compress(data: bytes) -> bytes:
     return bytes(out)
 
 
-class _KonamiRleCompress:
-    """Shared Compress base — both schemes encode with the portable subset."""
+class _KonamiRle:
+    """Shared base: the two schemes differ only in how ``decompress`` reads them.
+
+    Encoding is common to both — the portable subset every variant accepts — so
+    it lives here and each scheme supplies only its own ``fds`` flag.
+    """
+
+    fds: bool
+
+    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        out, consumed, complete = decompress(data, fds=self.fds)
+        ctx.set(KEY_COMPRESSED_SIZE, consumed)
+        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
+        return out
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
         return compress(data)
 
 
-class KonamiNesRleDecompress:
+class KonamiNesRle(_KonamiRle):
     info = PluginInfo(
-        id="decompress.konami-nes-rle",
+        id="compression.konami-nes-rle",
         name="Konami RLE (Contra family)",
-        stage=Stage.DECOMPRESS,
+        stage=Stage.COMPRESSION,
     )
-
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        out, consumed, complete = decompress(data, fds=False)
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
-        return out
+    fds = False
 
 
-class KonamiNesRleCompress(_KonamiRleCompress):
+class KonamiFdsRle(_KonamiRle):
     info = PluginInfo(
-        id="compress.konami-nes-rle",
-        name="Konami RLE (Contra family)",
-        stage=Stage.COMPRESS,
-    )
-
-
-class KonamiFdsRleDecompress:
-    info = PluginInfo(
-        id="decompress.konami-fds-rle",
+        id="compression.konami-fds-rle",
         name="Konami RLE (Simon's Quest / FDS family)",
-        stage=Stage.DECOMPRESS,
+        stage=Stage.COMPRESSION,
     )
-
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        out, consumed, complete = decompress(data, fds=True)
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
-        return out
-
-
-class KonamiFdsRleCompress(_KonamiRleCompress):
-    info = PluginInfo(
-        id="compress.konami-fds-rle",
-        name="Konami RLE (Simon's Quest / FDS family)",
-        stage=Stage.COMPRESS,
-    )
+    fds = True

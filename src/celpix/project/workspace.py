@@ -20,7 +20,7 @@ the config factory (:func:`pixel_config_for`) that tells the pipeline how to
 read it.
 
 **Slices reference their parent by path.** A slice is an ordinary bounded
-:class:`~celpix.plugins.base.FileRef` into the parent, so the normal Read stage
+:class:`~celpix.plugins.base.FileRef` into the parent, so the ordinary container
 serves it — from the file on disk, *except* while the parent holds unsaved pixel
 edits. Then the file is the stale copy, so :func:`pixel_config_for` points the
 slice's source at the parent's live buffer instead (``FileRef.data``) while
@@ -51,9 +51,16 @@ from celpix.core.context import (
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import Stage
 from celpix.core.notices import Notice, notices
+from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_COMPRESS, NO_DECOMPRESS, RAW_READ, FileRef
-from celpix.plugins.detect import container_ids, container_write_enabled
+from celpix.plugins.base import (
+    NO_COMPRESSION,
+    NO_RESHAPE,
+    RAW_CONTAINER,
+    FileRef,
+    writes_back,
+)
+from celpix.plugins.detect import container_id_for, container_write_enabled
 from celpix.plugins.registry import Registry
 
 
@@ -162,7 +169,7 @@ class PaletteSource:
 
 @dataclass(frozen=True)
 class SliceParams:
-    """The four entry fields a slice's coordinates comprise.
+    """The entry fields a slice's coordinates comprise.
 
     Plain, Qt-free data shared by the slice dialog (which produces it) and the
     slice-edit undo command (which stores a before/after pair) — one type so a
@@ -172,7 +179,8 @@ class SliceParams:
     name: str
     offset: int
     length: int | None
-    decompress_id: str
+    compression_id: str
+    reshape_id: str = NO_RESHAPE
 
 
 @dataclass
@@ -188,7 +196,7 @@ class EntrySession:
     pixel_preset_id: str
     palette_preset_id: str
     palette_mode: PaletteMode = PaletteMode.DEFAULT
-    compression_id: str = NO_DECOMPRESS  # the preview combo, not a slice codec
+    compression_id: str = NO_COMPRESSION  # the preview combo, not a slice codec
     # The selection. ``selected_tile`` is the anchor (and what single-selection
     # consumers read); ``selected_last`` >= it bounds a range, None when the
     # selection is a single tile (or absent). ``selection_cells`` is set only for
@@ -244,16 +252,36 @@ class Entry:
     name: str
     kind: EntryKind
     path: str
+    # The files *after* ``path`` whose bytes join onto it, for a region spread
+    # over several ROM chips (:class:`~celpix.plugins.base.FileRef`). ``path``
+    # stays the entry's identity — the row in the list, the key slices and
+    # bookmarks find their parent by, what a relocate repoints — so the extras
+    # are carried beside it rather than folding it into a list; read them
+    # together through :attr:`paths`, which is what addresses bytes.
+    #
+    # A **slice carries its parent's list**, not one of its own: its offset is
+    # into the parent's joined buffer, so the same files have to be joined the
+    # same way to mean anything. Copying them at creation keeps a slice able to
+    # answer that on its own, without a workspace to look its parent up in.
+    extra_paths: tuple[str, ...] = ()
     slice_offset: int = 0
     slice_length: int | None = None
-    decompress_id: str = NO_DECOMPRESS
+    compression_id: str = NO_COMPRESSION
+    # The region-scoped byte reordering the entry's bytes go through, between
+    # container and decompressor. Unlike ``container_id`` this lives on **both
+    # FILE and SLICE** entries: a reshape is a property of the region, and a
+    # region is either a whole file (a joined ROM pair) or a slice of one (a
+    # plane-split block inside a larger ROM) — the slice's bounded window *is*
+    # the region its reshape applies to, so no coordinates are invalidated.
+    reshape_id: str = NO_RESHAPE
     # The container this file is read and written through, picked by signature
     # when the file is opened and changeable afterwards. FILE-only: a slice is a
-    # byte range of its *parent*, and a container that relocates or rewrites
-    # bytes (a header skip, a deinterleave) would leave the slice's file-absolute
-    # offset pointing somewhere else — so slices stay on plain bytes and read
-    # through their parent's coordinates.
-    container_id: str = RAW_READ
+    # byte range of its *parent* and carries no container of its own — it reads
+    # through the parent's coordinates, which is what the parent's container
+    # defines. Past a header skip those coordinates are still file offsets and
+    # the slice reads the file; where the parent *permutes* them they are not, and
+    # the slice reads its buffer instead (:func:`_parent_view_bytes`).
+    container_id: str = RAW_CONTAINER
     doc: Document | None = None  # lazy: loaded on first activation
     session: EntrySession | None = None
     # Unsaved in-memory changes, tracked **per pathway** because the two write to
@@ -289,6 +317,11 @@ class Entry:
     palette_preset_id: str | None = None
 
     @property
+    def paths(self) -> tuple[str, ...]:
+        """Every file this entry's bytes come from, in the order they join."""
+        return (self.path, *self.extra_paths)
+
+    @property
     def pixel_dirty(self) -> bool:
         """Unsaved changes to the entry's own data (its pixel bytes)."""
         return self.pixel_revision != self.pixel_saved_revision
@@ -304,7 +337,9 @@ def new_slice(
     name: str,
     offset: int,
     length: int | None = None,
-    decompress_id: str = NO_DECOMPRESS,
+    compression_id: str = NO_COMPRESSION,
+    extra_paths: tuple[str, ...] = (),
+    reshape_id: str = NO_RESHAPE,
 ) -> Entry:
     """A SLICE entry over ``parent_path`` — not yet in any workspace.
 
@@ -319,14 +354,47 @@ def new_slice(
     a slice is named by the file it cuts into, not by one of its own.
     ``offset`` is likewise absolute in that file, and ``length`` may be ``None``
     for a compressed slice whose extent is discovered on first load.
+
+    ``extra_paths`` is the rest of the parent's file list when its region spans
+    several ROM chips (:attr:`Entry.extra_paths`). Offsets into a joined region
+    only mean anything against the same join, so a slice of one carries the
+    parent's whole list — :func:`slice_of` is the way to get that right.
     """
     return Entry(
         name=name,
         kind=EntryKind.SLICE,
         path=parent_path,
+        extra_paths=extra_paths,
         slice_offset=offset,
         slice_length=length,
-        decompress_id=decompress_id,
+        compression_id=compression_id,
+        reshape_id=reshape_id,
+    )
+
+
+def slice_of(
+    parent: Entry,
+    name: str,
+    offset: int,
+    length: int | None = None,
+    compression_id: str = NO_COMPRESSION,
+    reshape_id: str = NO_RESHAPE,
+) -> Entry:
+    """A SLICE entry over an open ``parent`` — :func:`new_slice` given the entry.
+
+    The form to reach for whenever the parent entry is in hand, because it is the
+    one that cannot get the file list wrong: it takes the parent's paths whole
+    rather than leaving the caller to remember that a region may be several
+    files. :func:`new_slice` stays for callers holding only a path.
+    """
+    return new_slice(
+        parent.path,
+        name,
+        offset,
+        length,
+        compression_id,
+        parent.extra_paths,
+        reshape_id,
     )
 
 
@@ -474,16 +542,27 @@ class Workspace:
         return [e for e in self.entries if e.pixel_dirty or e.palette_dirty]
 
     # -- mutations ---------------------------------------------------------
-    def open_file(self, path: str) -> Entry:
+    def open_file(self, path: str, extra_paths: tuple[str, ...] = ()) -> Entry:
         """Add a FILE entry for ``path`` — or return the one already open.
 
         Identity is the (normalized) path: a document *is* its file, so opening
         it twice yields the same entry rather than a duplicate.
+
+        ``extra_paths`` opens several files as **one** region, joined in the
+        order given (an arcade board's graphics ROMs). ``path`` is still the
+        entry's identity, so the already-open check is on it alone: reopening
+        the first chip returns the region that was built from it rather than
+        starting a second, competing document over the same bytes.
         """
         existing = self.find_file(path)
         if existing is not None:
             return existing
-        entry = Entry(name=basename(path), kind=EntryKind.FILE, path=path)
+        entry = Entry(
+            name=basename(path),
+            kind=EntryKind.FILE,
+            path=path,
+            extra_paths=tuple(extra_paths),
+        )
         self.entries.append(entry)
         self._notify(self.on_added, entry)
         return entry
@@ -494,7 +573,8 @@ class Workspace:
         name: str,
         offset: int,
         length: int | None,
-        decompress_id: str = NO_DECOMPRESS,
+        compression_id: str = NO_COMPRESSION,
+        reshape_id: str = NO_RESHAPE,
     ) -> Entry:
         """Build a slice of ``parent_path`` and append it directly.
 
@@ -504,8 +584,20 @@ class Workspace:
         command has to own the insertion (see :func:`new_slice`, which builds the
         entry the command then adds). This stays for callers with no undo stack
         to answer to — scripting the model directly, and the tests.
+
+        The parent is looked up so the slice inherits its file list (see
+        :func:`slice_of`); a parent that isn't open contributes only its path,
+        which is right, since a closed one is a single file as far as anything
+        here knows.
         """
-        entry = new_slice(parent_path, name, offset, length, decompress_id)
+        parent = self.find_file(parent_path)
+        entry = (
+            slice_of(parent, name, offset, length, compression_id, reshape_id)
+            if parent is not None
+            else new_slice(
+                parent_path, name, offset, length, compression_id, reshape_id=reshape_id
+            )
+        )
         self.entries.append(entry)
         self._notify(self.on_added, entry)
         return entry
@@ -516,6 +608,42 @@ class Workspace:
         and any commands referencing it stay valid)."""
         self.entries.insert(index, entry)
         self._notify(self.on_added, entry)
+
+    def can_move_file(self, entry: Entry, delta: int) -> bool:
+        """Whether ``entry`` has a file neighbour ``delta`` places away — what
+        arms the reorder gesture (False for anything but a FILE, which is the
+        only kind whose order is the user's: slices and bookmarks sort by
+        offset, palettes by registration)."""
+        files = [e for e in self.entries if e.kind is EntryKind.FILE]
+        if entry not in files:
+            return False
+        return 0 <= files.index(entry) + delta < len(files)
+
+    def move_file(self, entry: Entry, delta: int) -> bool:
+        """Move a FILE one place earlier (``delta`` -1) or later (+1) among the
+        open files; False when there is no neighbour that way.
+
+        The file takes its slices and bookmarks with it. They are matched by path
+        rather than position, so the list *could* leave them behind — but a parent
+        has to precede its children for the panel to nest them (that is the order
+        a project reload replays), so the whole block moves as one.
+
+        Positioned relative to the file that will *follow* it, not the neighbour
+        it swaps with: a neighbour's own children sit somewhere after it, so
+        inserting after the last of them would jump the block past whatever file
+        came next.
+        """
+        if not self.can_move_file(entry, delta):
+            return False
+        files = [e for e in self.entries if e.kind is EntryKind.FILE]
+        index = files.index(entry) + delta
+        follower = files[index] if delta < 0 else next(iter(files[index + 1 :]), None)
+        block = [entry, *self.children_of(entry)]
+        for member in block:
+            self.entries.remove(member)
+        at = self.entries.index(follower) if follower is not None else len(self.entries)
+        self.entries[at:at] = block
+        return True
 
     def close(self, entry: Entry) -> list[Entry]:
         """Remove ``entry`` — and, for a file, the slices/bookmarks under it.
@@ -637,12 +765,17 @@ class Workspace:
         holds those changes, and dropping it would silently lose them; they
         simply stay based on the pre-save bytes until written or explicitly
         reloaded.
+
+        A region's later chips count as much as the file it is named after: a
+        save that rewrites one of them leaves every other entry reading it —
+        including one that only borrows it as its *second* file — holding stale
+        bytes.
         """
         key = self._path_key(path)
         for entry in self.entries:
             if entry is keep or entry.pixel_dirty or entry.palette_dirty:
                 continue
-            if self._path_key(entry.path) == key:
+            if any(self._path_key(p) == key for p in entry.paths):
                 self.drop_document(entry)
 
     @staticmethod
@@ -660,94 +793,183 @@ def pixel_config_for(
     """The pixel pathway config that reads (and writes back) ``entry``.
 
     A slice needs no special pipeline machinery: it is an ordinary config whose
-    source is a *bounded* FileRef into the parent — Read slices the region,
-    Decompress unpacks it, and at save time the same bounds make Write splice
-    into (and never overflow) the parent's slot.
+    source is a *bounded* FileRef into the parent — the container slices the
+    region, the compression scheme unpacks it, and at save time the same bounds
+    make the write splice into (and never overflow) the parent's slot.
 
     Pass ``workspace`` so a slice of a parent with **unsaved pixel edits** reads
     those edits rather than the stale bytes on disk (see the module docstring);
     without it — or with a clean/unloaded parent — the file is the source, which
     is the same thing. The rebase is what keeps that honest: the parent's buffer
     starts at its header skip, so it is handed over as ``data`` with a matching
-    ``data_base``, leaving the slice's own ``offset`` file-absolute for Read,
-    Write and the address display alike.
+    ``data_base``, leaving the slice's own ``offset`` file-absolute for reading,
+    writing and the address display alike.
 
-    The compressor is derived from the slice's decompressor by the built-in
-    ``decompress.X`` ↔ ``compress.X`` id convention. A scheme with no
-    registered compressor (view-only compression format) yields a config with
-    ``write_enabled=False`` — the slice loads and views fine, it just can't be
-    written back.
-
-    A whole file additionally goes through its **container** (``Entry.container_id``
-    and the ``read.X`` ↔ ``write.X`` half paired with it); a slice does not, for
-    the reason given on that field.
+    A compression scheme that can be decoded but not re-encoded yields a config
+    with ``write_enabled=False`` — the slice loads and views fine, it just can't
+    be written back. A whole file is the same rule applied to its **container**
+    (``Entry.container_id``) — a slice does not go through one, for the reason
+    given on that field — and both kinds apply it to their **reshape**
+    (``Entry.reshape_id``), which either may carry.
     """
+    reshape_id, reshape_writes = _resolve_reshape(entry, registry)
     if entry.kind is EntryKind.FILE:
-        read_id, write_id = container_ids(registry, entry.container_id)
         return PathwayConfig(
-            source=FileRef(entry.path),
+            source=FileRef(entry.paths),
             interpret_preset_id=preset_id,
-            read_id=read_id,
-            write_id=write_id,
-            # A container that rewrites bytes and has lost its writer is
+            container_id=container_id_for(registry, entry.container_id),
+            reshape_id=reshape_id,
+            # A container that rewrites bytes and ships no write half is
             # view-only, exactly as a compression scheme with no compressor is:
             # writing unwrapped bytes back through plain bytes would destroy the
             # framing rather than restore it.
-            write_enabled=container_write_enabled(registry, entry.container_id),
+            write_enabled=container_write_enabled(registry, entry.container_id)
+            and reshape_writes,
         )
-    compress_id = entry.decompress_id.replace("decompress.", "compress.", 1)
-    write_enabled = True
+    compression_id, write_enabled = entry.compression_id, True
     try:
-        registry.plugin(Stage.COMPRESS, compress_id)
+        plugin = registry.plugin(Stage.COMPRESSION, compression_id)
     except KeyError:
-        compress_id = NO_COMPRESS
+        compression_id, write_enabled = NO_COMPRESSION, False
+    else:
+        write_enabled = writes_back(plugin, "compress")
+    parent = workspace.find_file(entry.path) if workspace is not None else None
+    reordered = parent is not None and reorders_bytes(parent, registry)
+    live, live_base = _parent_view_bytes(entry, parent, reordered, registry, preset_id)
+    if reordered:
+        # The slice's offset is a position in the parent's buffer, and a bounded
+        # FileRef into the files cannot say where a permuted splice belongs - so
+        # it views correctly and saves not at all. Editing that region goes
+        # through the parent entry, whose own write re-wraps it.
         write_enabled = False
-    live, live_base = _unsaved_parent_bytes(entry, workspace)
     return PathwayConfig(
+        # The parent's *whole* file list, not just the file the slice is named
+        # after: a slice's offset addresses the parent's joined buffer, so
+        # reading one chip of a several-chip region would put every offset past
+        # the first chip somewhere else entirely.
         source=FileRef(
-            entry.path,
+            entry.paths,
             offset=entry.slice_offset,
             length=entry.slice_length,
             data=live,
             data_base=live_base,
         ),
-        # Write always targets the file: the in-memory source above is only about
-        # reading what the parent has not written out yet.
-        dest=FileRef(entry.path, offset=entry.slice_offset, length=entry.slice_length),
+        # Write always targets the files, whatever the source above reads from;
+        # whether a write is allowed at all is `write_enabled`'s business.
+        dest=FileRef(entry.paths, offset=entry.slice_offset, length=entry.slice_length),
         interpret_preset_id=preset_id,
-        decompress_id=entry.decompress_id,
-        compress_id=compress_id,
-        write_enabled=write_enabled,
+        reshape_id=reshape_id,
+        compression_id=compression_id,
+        write_enabled=write_enabled and reshape_writes,
     )
 
 
-def _unsaved_parent_bytes(
-    entry: Entry, workspace: Workspace | None
-) -> tuple[bytes | None, int]:
-    """A dirty parent's live pixel bytes and the file offset they start at.
+def _resolve_reshape(entry: Entry, registry: Registry) -> tuple[str, bool]:
+    """The entry's reshape as ``(usable id, writes back)``.
 
-    ``(None, 0)`` — read the file — unless the slice's parent is open, loaded and
-    holds unsaved *pixel* edits. A dirty **palette** doesn't qualify: it lives on
-    the other pathway and in another file, so it says nothing about these bytes.
-    The slice must also fall inside the parent's window; one anchored before
-    whatever the parent's container skipped isn't in that buffer at all, so it
-    reads from disk.
-
-    The base is what the parent's Read **recorded**, not what its config asked
-    for: a container works its own start out from the format (past a copier
-    header, past the iNES header and PRG banks) and the config never names it, so
-    rebasing on the request would put every slice of a headered parent half a
-    kilobyte out.
+    An id the registry no longer has degrades exactly as an unknown compression
+    does on a slice: the read falls back to pass-through — the bytes still open,
+    unreordered — and the entry goes view-only, because the entry *means* to be
+    reshaped and writing what is on screen would put unreordered bytes where
+    reordered ones belong the moment the plugin returns. A reshape that ships no
+    ``unshape`` is view-only the same way its stage siblings are.
     """
-    if workspace is None:
+    try:
+        plugin = registry.plugin(Stage.RESHAPE, entry.reshape_id)
+    except KeyError:
+        return NO_RESHAPE, False
+    return entry.reshape_id, writes_back(plugin, "unshape")
+
+
+def reorders_bytes(entry: Entry, registry: Registry) -> bool:
+    """Does reading ``entry`` move its bytes about, so its positions are not file
+    offsets?
+
+    True for an active reshape, and for a container that **permutes** rather than
+    merely skipping (:attr:`~celpix.plugins.base.PluginInfo.preserves_offsets`) —
+    a ``.smd``, an interleaved SNES image, a byte-swapped N64 dump. In both cases
+    the entry's buffer is the ROM as the machine addresses it and the file is a
+    scrambled encoding of that, so a position in one names nothing in the other.
+
+    Everything that resolves an offset against this entry's coordinates keys off
+    this: a slice of it has to read (and cannot write) through its buffer, and so
+    does an Offset palette (``docs/design/palette-editing.md`` §2). A plugin the
+    registry no longer has reads as plain bytes, which preserve positions.
+    """
+    if _resolve_reshape(entry, registry)[0] != NO_RESHAPE:
+        return True
+    try:
+        plugin = registry.plugin(
+            Stage.CONTAINER, container_id_for(registry, entry.container_id)
+        )
+    except KeyError:  # pragma: no cover - container_id_for already falls back
+        return False
+    return not plugin.info.preserves_offsets
+
+
+def entry_view_bytes(
+    entry: Entry,
+    registry: Registry,
+    preset_id: str,
+    workspace: Workspace | None = None,
+) -> tuple[bytes, int]:
+    """``entry``'s view buffer and the file offset its first byte sits at.
+
+    The single definition of "what this entry shows": its live document's bytes
+    when one is loaded, else the region read fresh through its own container and
+    reshape (``pipeline.read_region`` — the preset is inert, the read stops
+    before any codec runs). The base is what Read **recorded**, not what the
+    config asked for: only the container knows where it actually began (past a
+    copier header, past the iNES header and PRG banks).
+
+    Everything that resolves an offset in this entry's coordinates reads through
+    this — a slice of a reordering parent, an Offset palette — so they can never
+    disagree with the view about what the bytes at an offset are.
+    """
+    if entry.doc is not None:
+        return entry.doc.pixel_data, entry.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
+    data, ctx = pipeline.read_region(
+        pixel_config_for(entry, preset_id, registry, workspace), registry
+    )
+    return data, ctx.get(KEY_SOURCE_OFFSET, 0)
+
+
+def _parent_view_bytes(
+    entry: Entry,
+    parent: Entry | None,
+    reordered: bool,
+    registry: Registry,
+    preset_id: str,
+) -> tuple[bytes | None, int]:
+    """The parent bytes a slice reads through, and the file offset they start at.
+
+    ``(None, 0)`` — read the files — whenever the parent's own Read is a plain
+    window onto them, because then the slice's offset lands on the same bytes
+    either way. Two things make the parent's buffer the only correct source:
+
+    - **A parent that reorders** (``reordered``, from :func:`reorders_bytes`).
+      Then the file simply does not hold the bytes the slice's offset names,
+      dirty or not — so the buffer is read even when the parent is closed, since
+      falling back to disk would quietly hand back a scrambled region.
+    - **Unsaved pixel edits.** A dirty parent's live bytes are what the slice is a
+      view of; the file still holds the old ones. A dirty *palette* doesn't
+      qualify — it lives on the other pathway and in another file, so it says
+      nothing about these bytes.
+
+    Either way the slice must fall inside the parent's window: one anchored
+    before whatever the parent's container skipped isn't in that buffer at all,
+    so it reads from disk (and under a reorder those bytes are no one's to name).
+    """
+    if parent is None:
         return (None, 0)
-    parent = workspace.find_file(entry.path)
-    if parent is None or parent.doc is None or not parent.pixel_dirty:
-        return (None, 0)
-    base = parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
-    if entry.slice_offset < base:
-        return (None, 0)
-    return (parent.doc.pixel_data, base)
+    if reordered:
+        data, base = entry_view_bytes(parent, registry, preset_id)
+        return (data, base) if entry.slice_offset >= base else (None, 0)
+    if parent.doc is not None and parent.pixel_dirty:
+        base = parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
+        if entry.slice_offset >= base:
+            return (parent.doc.pixel_data, base)
+    return (None, 0)
 
 
 def palette_source_for(entry: Entry) -> PaletteSource | None:
@@ -788,12 +1010,14 @@ def palette_source_for(entry: Entry) -> PaletteSource | None:
 
 # -- missing-reference handling (docs/design/project-format.md §3) ---------
 def data_missing(entry: Entry) -> bool:
-    """Whether the entry's own data file is gone from disk.
+    """Whether any of the entry's data files is gone from disk.
 
     For a slice or bookmark this is the parent file (their ``path``); a missing
-    parent leaves the child unloadable exactly as a missing file does.
+    parent leaves the child unloadable exactly as a missing file does. **Any**
+    of a several-file region counts: the region is the files joined, so one
+    absent chip does not shorten it, it moves every byte after the gap.
     """
-    return not exists(entry.path)
+    return any(not exists(path) for path in entry.paths)
 
 
 def entry_palette_path(entry: Entry) -> str | None:
@@ -852,7 +1076,10 @@ def missing_paths(ws: Workspace) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for entry in ws.entries:
-        candidates = [entry.path] if data_missing(entry) else []
+        # Each *individually* missing file of a region, not the whole list: the
+        # user locates the one chip that moved, and the ones still on disk must
+        # not be put in front of them again.
+        candidates = [path for path in entry.paths if not exists(path)]
         if palette_missing(entry):
             candidates.append(entry_palette_path(entry))
         for path in candidates:
@@ -873,17 +1100,28 @@ def relocate_path(ws: Workspace, old_path: str, new_path: str) -> list[Entry]:
     caller reloads the affected documents/palettes.
     """
     key = Workspace._path_key(old_path)
-    new_name = basename(new_path)
+    old_name, new_name = basename(old_path), basename(new_path)
     touched: list[Entry] = []
     for entry in ws.entries:
         data_moved = bool(entry.path) and Workspace._path_key(entry.path) == key
         if data_moved:
             entry.path = new_path
-            # A FILE's or PALETTE's display name mirrors its on-disk basename,
-            # so a located file that was renamed (or re-extensioned) takes the
-            # new name; slices and bookmarks keep the names the user gave them.
+            # A FILE's or PALETTE's display name defaults to its on-disk
+            # basename, so a located file that was renamed (or re-extensioned)
+            # takes the new name — but only while the row is still showing that
+            # default. A name the user typed is theirs, and survives the move;
+            # slices and bookmarks are always named that way.
             if entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
-                entry.name = new_name
+                if entry.name == old_name:
+                    entry.name = new_name
+        # A region's later chips move the same way, and independently: locating
+        # one of them must not disturb the others or the order they join in.
+        moved_extra = tuple(
+            new_path if Workspace._path_key(p) == key else p for p in entry.extra_paths
+        )
+        if moved_extra != entry.extra_paths:
+            entry.extra_paths = moved_extra
+            data_moved = True
         changed = data_moved
         for source in (entry.missing_palette, entry.pending_palette):
             if source is None or not source.path:
@@ -893,6 +1131,36 @@ def relocate_path(ws: Workspace, old_path: str, new_path: str) -> list[Entry]:
                 changed = True
         if changed:
             touched.append(entry)
+    return touched
+
+
+def retarget_files(ws: Workspace, entry: Entry, paths: tuple[str, ...]) -> list[Entry]:
+    """Re-point a FILE at ``paths``, carrying its children; the entries touched.
+
+    A file list is the entry's identity as much as its content: ``paths[0]`` is
+    the row in the Files list, the key a slice or bookmark finds its parent by,
+    and the file a save is attributed to. So the children move in the same step —
+    a child's offset addresses the *joined* buffer (:func:`pixel_config_for`), so
+    it has to be joined the same way to mean anything, and one left on the old
+    path would no longer find its parent at all.
+
+    A FILE's display name defaults to its first file's basename, so it follows
+    the list too — unless the user has renamed the row, which is theirs to keep
+    (the same rule as :func:`relocate_path`). Pure data — the caller drops the
+    affected documents and re-reads them.
+    """
+    if entry.kind is not EntryKind.FILE or not paths:
+        return []
+    first, *rest = paths
+    named_after_file = entry.name == basename(entry.path)
+    # The children are found *before* the path moves — they are keyed by the one
+    # that is about to change.
+    touched = [entry, *ws.children_of(entry)]
+    for moved in touched:
+        moved.path = first
+        moved.extra_paths = tuple(rest)
+    if named_after_file:
+        entry.name = basename(first)
     return touched
 
 
@@ -945,20 +1213,26 @@ def _sanitize(name: str) -> str:
 
 
 def default_slice_name(
-    offset: int, length: int | None, decompress_id: str = NO_DECOMPRESS
+    offset: int,
+    length: int | None,
+    compression_id: str = NO_COMPRESSION,
+    reshape_id: str = NO_RESHAPE,
 ) -> str:
-    """The generated name for an unnamed slice: ``offset (length) compression``.
+    """The generated name for an unnamed slice:
+    ``offset (length) reshape compression``.
 
     No parent-filename prefix — the slice nests under its parent in the list,
     so the coordinates alone identify it. The length is omitted while still
-    unknown (a compressed slice awaiting discovery), as is the pass-through
-    compression.
+    unknown (a compressed slice awaiting discovery), as are the pass-through
+    reshape and compression.
     """
     parts = [format_hex(offset)]
     if length is not None:
         parts.append(f"({format_hex(length)})")
-    if decompress_id != NO_DECOMPRESS:
-        parts.append(decompress_id.removeprefix("decompress."))
+    if reshape_id != NO_RESHAPE:
+        parts.append(reshape_id.removeprefix("reshape."))
+    if compression_id != NO_COMPRESSION:
+        parts.append(compression_id.removeprefix("compression."))
     return " ".join(parts)
 
 
@@ -971,8 +1245,16 @@ def backfill_slice_length(entry: Entry, ctx: PipelineContext) -> bool:
     every later load — and, crucially, makes save-back slot-enforced. Only a
     *complete* decompress counts: a truncated/partial extent would bound the
     slice at the wrong size.
+
+    **Never under an active reshape.** The discovered extent is measured in
+    *reshaped* space, and re-bounding the window changes the region's length —
+    which changes the permutation itself, so the slice would decode differently
+    after discovery than during it. The slice dialog requires an explicit
+    length whenever a reshape is chosen, so this guard is its backstop.
     """
     if entry.kind is not EntryKind.SLICE or entry.slice_length is not None:
+        return False
+    if entry.reshape_id != NO_RESHAPE:
         return False
     consumed = ctx.get(KEY_COMPRESSED_SIZE)
     if not consumed or not ctx.get(KEY_DECOMPRESS_COMPLETE):

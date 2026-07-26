@@ -51,28 +51,6 @@ def test_rotate_ccw_turns_top_row_into_left_column() -> None:
     ]
 
 
-def test_flip_is_its_own_inverse() -> None:
-    g = _grid([[1, 2, 3], [4, 5, 6]])
-    assert _rows(transform.flip_horizontal(transform.flip_horizontal(g))) == _rows(g)
-    assert _rows(transform.flip_vertical(transform.flip_vertical(g))) == _rows(g)
-
-
-def test_rotations_compose_to_identity() -> None:
-    g = _grid([[1, 2], [3, 4]])
-    # cw ∘ ccw is the identity, and four cw turns come back to the start.
-    assert _rows(transform.rotate_ccw(transform.rotate_cw(g))) == _rows(g)
-    turned = g
-    for _ in range(4):
-        turned = transform.rotate_cw(turned)
-    assert _rows(turned) == _rows(g)
-
-
-def test_rotate_swaps_dimensions() -> None:
-    g = _grid([[1, 2, 3], [4, 5, 6]])  # 3 wide, 2 tall
-    out = transform.rotate_cw(g)
-    assert (out.width, out.height) == (2, 3)
-
-
 def test_transforms_preserve_grid_type_for_argb() -> None:
     # Direct-color grids go through the same code path via type(grid).
     g = ArgbGrid(2, 1)

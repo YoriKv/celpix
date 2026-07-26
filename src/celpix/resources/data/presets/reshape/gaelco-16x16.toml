@@ -1,0 +1,11 @@
+# Gaelco "Modular System" 16x16 tile scramble: the background ROMs store each
+# 16x16 tile's data in an order the single-pass codecs can't walk, undone in
+# hardware terms by rotating address lines 14..5 (MAME: descramble_16x16tiles,
+# bitswap<20>). The table is the driver's, copied verbatim (msb first); it
+# defines a 1 MiB block, applied per block over the region.
+id = "reshape.gaelco-16x16"
+name = "Gaelco 16x16 tiles (bitswap)"
+engine_id = "reshape.bitswap"
+
+[params]
+bits = [19, 18, 17, 16, 15, 12, 11, 10, 9, 8, 7, 6, 5, 14, 13, 4, 3, 2, 1, 0]

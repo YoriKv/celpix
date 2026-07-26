@@ -1,6 +1,6 @@
 """Pick a container for a file from its name and its leading bytes.
 
-Opening a file should not start with a format interrogation. Every Read plugin
+Opening a file should not start with a format interrogation. Every container
 declares what it recognises — suffixes and/or magic bytes, on its
 :class:`~celpix.plugins.base.PluginInfo` — and this module walks the registered
 containers and answers *which one claims this file*, falling back to plain bytes
@@ -22,7 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from celpix.core.errors import Stage
-from celpix.plugins.base import RAW_READ, RAW_WRITE, PluginInfo
+from celpix.plugins.base import RAW_CONTAINER, PluginInfo, writes_back
 from celpix.plugins.registry import Registry
 
 # How much of a file detection looks at. Comfortably past every signature we
@@ -83,69 +83,48 @@ def detect_container(
     head: bytes | None = None,
     size: int | None = None,
 ) -> str:
-    """The id of the Read plugin that best claims ``path``.
+    """The id of the container that best claims ``path``.
 
     ``head`` is the file's leading bytes and ``size`` its length; each is taken
     from disk when not supplied. Magic beats a bare suffix, and registration order
     breaks a tie — built-ins register first, so a user plugin never silently
-    displaces one on an equal claim. :data:`~celpix.plugins.base.RAW_READ` when
-    nothing claims the file, which is the answer for most files and every plain
-    binary.
+    displaces one on an equal claim. :data:`~celpix.plugins.base.RAW_CONTAINER`
+    when nothing claims the file, which is the answer for most files and every
+    plain binary.
     """
     if head is None:
         head = signature_head(path)
     if size is None:
         size = file_size(path)
-    best_id, best_score = RAW_READ, 0
-    for plugin in registry.plugins(Stage.READ):
+    best_id, best_score = RAW_CONTAINER, 0
+    for plugin in registry.plugins(Stage.CONTAINER):
         score = _score(plugin.info, path, head, size)
         if score > best_score:
             best_id, best_score = plugin.info.id, score
     return best_id
 
 
-def container_write_id(registry: Registry, read_id: str) -> str:
-    """The Write half paired with ``read_id`` by the ``read.X`` ⇄ ``write.X`` rule.
-
-    Falls back to :data:`~celpix.plugins.base.RAW_WRITE` for a container that
-    ships no writer — an inert placeholder rather than a degradation, since
-    :func:`container_write_enabled` has already made that container view-only and
-    the id is never reached. It exists so callers get a well-formed pair to carry
-    around instead of having to handle ``None``.
-    """
-    write_id = read_id.replace("read.", "write.", 1)
-    try:
-        registry.plugin(Stage.WRITE, write_id)
-    except KeyError:
-        return RAW_WRITE
-    return write_id
-
-
 def container_write_enabled(registry: Registry, container_id: str) -> bool:
     """Whether bytes read through ``container_id`` may be written back at all.
 
-    **A container with no writer of its own is view-only.** Unwrapping a file is
+    **A container with no ``write`` of its own is view-only.** Unwrapping a file is
     not something plain bytes can undo: the bytes would go back either scrambled
-    (the reader reordered them) or at the wrong place (the reader relocated them),
+    (the read reordered them) or at the wrong place (the read relocated them),
     and the saved file would be worse than the one loaded. There is no useful
     category of container that reads one way and writes another, so rather than
     have each declare whether its unwrapping is reversible — a question whose
-    safe answer is always "supply the inverse" — the rule is simply that writing
-    requires a registered ``write.X``. Forgetting one costs a save, not a file.
+    safe answer is always "supply the inverse" — the rule is simply that saving
+    requires the method. Forgetting it costs a save, not a file.
 
-    The exception is an id the registry no longer has: :func:`container_ids`
+    The exception is an id the registry no longer has: :func:`container_id_for`
     already degrades that to plain bytes on the *read* side too, so reading and
     writing agree and the file stays saveable.
     """
     try:
-        registry.plugin(Stage.READ, container_id)
+        plugin = registry.plugin(Stage.CONTAINER, container_id)
     except KeyError:
         return True  # unregistered: read degrades to plain bytes, so write matches
-    try:
-        registry.plugin(Stage.WRITE, container_id.replace("read.", "write.", 1))
-    except KeyError:
-        return False
-    return True
+    return writes_back(plugin, "write")
 
 
 def container_label(registry: Registry, container_id: str) -> str:
@@ -156,27 +135,27 @@ def container_label(registry: Registry, container_id: str) -> str:
     registry no longer has, since naming a container that isn't there would claim
     the file is being read through it.
     """
-    if container_id == RAW_READ:
+    if container_id == RAW_CONTAINER:
         return ""
     try:
-        info = registry.plugin(Stage.READ, container_id).info
+        info = registry.plugin(Stage.CONTAINER, container_id).info
     except KeyError:
         return ""
     return info.short_name or info.name
 
 
-def container_ids(registry: Registry, container_id: str) -> tuple[str, str]:
-    """``(read_id, write_id)`` for ``container_id``, degrading to plain bytes.
+def container_id_for(registry: Registry, container_id: str) -> str:
+    """``container_id`` if the registry still has it, plain bytes if it does not.
 
     A container id outlives the plugin that provided it: a project names the
     container its files were opened with, and the plugin behind it can be
     uninstalled, renamed, or simply left untrusted at the next launch. Opening
     that project should show the file as raw bytes with the container reported
     missing, not fail the load outright — so an unregistered id resolves to
-    :data:`~celpix.plugins.base.RAW_READ` here rather than raising downstream.
+    :data:`~celpix.plugins.base.RAW_CONTAINER` here rather than raising downstream.
     """
     try:
-        registry.plugin(Stage.READ, container_id)
+        registry.plugin(Stage.CONTAINER, container_id)
     except KeyError:
-        return RAW_READ, RAW_WRITE
-    return container_id, container_write_id(registry, container_id)
+        return RAW_CONTAINER
+    return container_id

@@ -319,7 +319,9 @@ def compress(data: bytes, *, big_endian_offsets: bool) -> bytes:
     return bytes(out)
 
 
-class _LzDecompressBase:
+class _LzBase:
+    """Both directions of one LZ variant; ``_big_endian`` is all that differs."""
+
     _big_endian: bool
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
@@ -340,35 +342,21 @@ class _LzDecompressBase:
         ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
         return out
 
-
-class _LzCompressBase:
-    _big_endian: bool
-
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
         return compress(data, big_endian_offsets=self._big_endian)
 
 
-class Lz1Decompress(_LzDecompressBase):
+class Lz1(_LzBase):
     _big_endian = False
-    info = PluginInfo(id="decompress.lz1", name="LZ1 (Zelda 3)", stage=Stage.DECOMPRESS)
-
-
-class Lz1Compress(_LzCompressBase):
-    _big_endian = False
-    info = PluginInfo(id="compress.lz1", name="LZ1 (Zelda 3)", stage=Stage.COMPRESS)
-
-
-class Lz2Decompress(_LzDecompressBase):
-    _big_endian = True
     info = PluginInfo(
-        id="decompress.lz2",
-        name="LZ2 (SMW, Yoshi's Island)",
-        stage=Stage.DECOMPRESS,
+        id="compression.lz1", name="LZ1 (Zelda 3)", stage=Stage.COMPRESSION
     )
 
 
-class Lz2Compress(_LzCompressBase):
+class Lz2(_LzBase):
     _big_endian = True
     info = PluginInfo(
-        id="compress.lz2", name="LZ2 (SMW, Yoshi's Island)", stage=Stage.COMPRESS
+        id="compression.lz2",
+        name="LZ2 (SMW, Yoshi's Island)",
+        stage=Stage.COMPRESSION,
     )

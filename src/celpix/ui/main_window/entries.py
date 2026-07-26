@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import PipelineError
 from celpix.pipeline import pipeline
-from celpix.plugins.base import NO_DECOMPRESS
+from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
 from celpix.project import projectfile
 from celpix.project.workspace import (
     Entry,
@@ -46,6 +46,8 @@ from celpix.project.workspace import (
     new_slice,
     palette_source_for,
     relocate_path,
+    retarget_files,
+    slice_of,
 )
 from celpix.ui.container_dialog import ContainerDialog
 from celpix.ui.slice_dialog import SliceDialog
@@ -421,7 +423,9 @@ class EntriesMixin:
         self._workspace.mark_saved(entry, pixel=not palette_only)
         # Invalidated even for a palette-only write: in Offset mode the palette's
         # target *is* this entry's own file, so other entries on it are stale too.
-        self._workspace.invalidate_path(entry.path, keep=entry)
+        # Every file of a region, since a save can have rewritten any of them.
+        for path in entry.paths:
+            self._workspace.invalidate_path(path, keep=entry)
         self._refresh_stale_current()
         return True
 
@@ -479,7 +483,7 @@ class EntriesMixin:
             palette_preset_id=src.palette_preset_id,
             palette_mode=src.palette_mode,
             # A slice's bytes are already decompressed - no preview codec.
-            compression_id=NO_DECOMPRESS,
+            compression_id=NO_COMPRESSION,
         )
         slice_entry.pending_palette = palette_source_for(parent)
         # Only the subpalette row and the arrangement: the rest of the geometry
@@ -499,23 +503,33 @@ class EntriesMixin:
             )
 
     def _slice_prefill_offset(self) -> int:
-        """The view position as an absolute file offset (raw sources only)."""
+        """The view position in the coordinates a slice offset is written in.
+
+        The same numbers the offset box shows, which is what a slice addresses:
+        past whatever the container skipped for a whole file, the slice offset
+        for a raw slice. Taking the *config's* requested offset instead would
+        prefill a headered file's slices short by its header - the config never
+        names the start the container worked out for itself.
+        """
         assert self._doc is not None
-        return self._doc.pixel_config.source.offset + self._byte_position()
+        return self._display_base() + self._byte_position()
 
     def _raw_slice_source(self) -> tuple[Entry, Document] | None:
         """The current entry + document if a slice can be carved from the view.
 
         A slice reads its parent's bytes directly, so only a live document whose
-        pixel source is *raw* (no decompressor in the view) qualifies - a
-        decompressed view can't spawn one. ``None`` when nothing qualifies;
-        callers add any gesture-specific guard (a selection, a found structure).
+        pixel source is *raw* (no decompressor, no reshape in the view)
+        qualifies - a decompressed view can't spawn one, and a reshaped view is
+        a byte permutation whose positions name no file offset. ``None`` when
+        nothing qualifies; callers add any gesture-specific guard (a selection,
+        a found structure).
         """
         entry, doc = self._workspace.current, self._doc
         if (
             entry is None
             or doc is None
-            or doc.pixel_config.decompress_id != NO_DECOMPRESS
+            or doc.pixel_config.compression_id != NO_COMPRESSION
+            or doc.pixel_config.reshape_id != NO_RESHAPE
         ):
             return None
         return entry, doc
@@ -567,7 +581,7 @@ class EntriesMixin:
             entry.path,
             offset=self._slice_prefill_offset(),
             length=length,
-            decompress_id=self._compression_id(),
+            compression_id=self._compression_id(),
         )
 
     def _new_slice_from_selection_for(self, entry: Entry) -> None:
@@ -601,7 +615,7 @@ class EntriesMixin:
                 detail=(
                     "This rectangle's rows are separated in the file, and a "
                     "slice is a single offset and length. Select the tiles as "
-                    "one run (Shape ▸ Linear), or widen the rectangle to the "
+                    "one run (Selection ▸ Linear), or widen the rectangle to the "
                     "full width of the view."
                 ),
             )
@@ -646,14 +660,19 @@ class EntriesMixin:
             path=entry.path,
             offset=entry.slice_offset,
             length=entry.slice_length,
-            decompress_id=entry.decompress_id,
+            compression_id=entry.compression_id,
+            reshape_id=entry.reshape_id,
             name=entry.name,
             title="Edit Slice",
         )
         if params is None:
             return
         before = SliceParams(
-            entry.name, entry.slice_offset, entry.slice_length, entry.decompress_id
+            entry.name,
+            entry.slice_offset,
+            entry.slice_length,
+            entry.compression_id,
+            entry.reshape_id,
         )
         if params == before:
             return  # OK'd unchanged - nothing happened, nothing to undo
@@ -666,7 +685,8 @@ class EntriesMixin:
         entry.name = params.name
         entry.slice_offset = params.offset
         entry.slice_length = params.length
-        entry.decompress_id = params.decompress_id
+        entry.compression_id = params.compression_id
+        entry.reshape_id = params.reshape_id
         # How the region is *read* and *laid out* belongs to the entry, not to
         # the coordinates: re-pointing changes which bytes arrive, not the
         # format or arrangement they arrive in. The session snapshot only
@@ -697,52 +717,99 @@ class EntriesMixin:
             self._change_container_for(entry)
 
     def _change_container_for(self, entry: Entry) -> None:
-        """Files dock / File ▸ Change Container…: repick how ``entry`` is unwrapped.
+        """Files dock / File ▸ Edit File Container…: repick ``entry``'s files and
+        how they are unwrapped.
 
-        Detection chose one when the file was opened; this is the override for
-        what only a person can settle (an interleaved image is indistinguishable
-        from a plain one, a headerless dump still ends in ``.nes``). Slices are
-        excluded for the reason on :attr:`Entry.container_id` — theirs are their
-        parent's coordinates.
+        Detection chose the container when the file was opened; this is the
+        override for what only a person can settle (an interleaved image is
+        indistinguishable from a plain one, a headerless dump still ends in
+        ``.nes``) — and, beside it, the list of files whose bytes make up the
+        region and the region's reshape, neither of which anything can detect
+        at all. Slices are excluded for the reason on
+        :attr:`Entry.container_id` — theirs are their parent's coordinates, and
+        its file list; a *slice's* reshape is edited in the slice dialog.
         """
         if entry.kind is not EntryKind.FILE:
             return
-        chosen = ContainerDialog.get_container(
-            self, self._registry, path=entry.path, container_id=entry.container_id
+        edit = ContainerDialog.edit_container(
+            self,
+            self._registry,
+            paths=entry.paths,
+            container_id=entry.container_id,
+            reshape_id=entry.reshape_id,
         )
-        if chosen is None or chosen == entry.container_id:
+        if edit is None:
             return
-        # A container decides which bytes the file even has, so switching it is a
-        # re-read — and pixel edits describe positions the new container may not
-        # have. They cannot come across, so the user gets the choice first.
-        if entry.pixel_dirty and not self._confirm_container_discard(entry):
+        moved = edit.paths != entry.paths
+        if (
+            not moved
+            and edit.container_id == entry.container_id
+            and edit.reshape_id == entry.reshape_id
+        ):
             return
-        entry.container_id = chosen
+        if moved and not self._retarget_allowed(entry, edit.paths[0]):
+            return
+        # A container decides which bytes the file even has, and so does the file
+        # list — so applying either is a re-read, and pixel edits describe
+        # positions the new bytes may not have. They cannot come across, so the
+        # user gets the choice first. A re-pointed file re-reads its slices with
+        # it, so their edits are on the table too.
+        family = [entry, *self._workspace.children_of(entry)] if moved else [entry]
+        if not self._confirm_container_discard(family):
+            return
+        entry.container_id = edit.container_id
+        entry.reshape_id = edit.reshape_id
         # Format, arrangement and view survive the re-read for the same reason
         # they survive a slice re-point (see :meth:`_apply_slice_params`): what
         # changes is which bytes arrive, not how they are read once they do.
         if entry is self._workspace.current:
             self._capture_session()
-        if entry.doc is not None:
-            entry.pending_view = entry.doc.view
-        self._workspace.mark_saved(entry)
-        self._workspace.drop_document(entry)
-        self._files_panel.refresh_entry(entry)
-        if entry is self._workspace.current:
-            self._on_current_entry_changed(entry)  # re-read through the new one
+        if moved:
+            retarget_files(self._workspace, entry, edit.paths)
+        for touched in family:
+            if touched.doc is not None:
+                touched.pending_view = touched.doc.view
+            self._workspace.mark_saved(touched)
+            self._workspace.drop_document(touched)
+            self._files_panel.refresh_entry(touched)
+        self._sync_locate_action()  # the new list may name a file that isn't there
+        if self._workspace.current in family:
+            self._on_current_entry_changed(self._workspace.current)  # re-read now
 
-    def _confirm_container_discard(self, entry: Entry) -> bool:
-        """Unsaved-edits gate for a container change; True when OK to proceed.
+    def _retarget_allowed(self, entry: Entry, first: str) -> bool:
+        """Whether ``entry`` may take ``first`` as its file — i.e. its identity.
 
-        The per-entry sibling of :meth:`_resolve_dirty_entries`: only this file
-        is about to be re-read, so offering Write All would touch files the user
-        never asked about.
+        The same rule as relocating onto an open file (:meth:`_relocate_missing`),
+        and for the same reason: an entry is its first file, so two entries naming
+        one would be two documents editing the same bytes.
         """
+        clash = self._workspace.find_file(first)
+        if clash is None or clash is entry:
+            return True
+        self._alert(
+            f"{Path(first).name} is already open in this project, so it can't "
+            f"become {entry.name}'s file. Pick a different one, or close the "
+            "duplicate first.",
+            title="celPix - files",
+        )
+        return False
+
+    def _confirm_container_discard(self, entries: list[Entry]) -> bool:
+        """Unsaved-edits gate for a container/file-list change; True to proceed.
+
+        The per-entry sibling of :meth:`_resolve_dirty_entries`: only these
+        entries are about to be re-read, so offering Write All would touch files
+        the user never asked about.
+        """
+        dirty = [e for e in entries if e.pixel_dirty]
+        if not dirty:
+            return True
+        names = ", ".join(e.name for e in dirty)
         box = QMessageBox(self)
         box.setWindowTitle("celPix - unsaved changes")
         box.setText(
-            f"{entry.name} has unsaved edits. Changing its container re-reads "
-            "the file and discards them. Write them first?"
+            f"{names} {'have' if len(dirty) > 1 else 'has'} unsaved edits. "
+            "Applying this re-reads the bytes and discards them. Write them first?"
         )
         write = box.addButton("Write", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
@@ -752,8 +819,10 @@ class EntriesMixin:
         if box.clickedButton() is cancel:
             return False
         if box.clickedButton() is write:
-            self._write_entry_checked(entry)
-            return not entry.pixel_dirty  # a failed write must not proceed
+            for entry in dirty:
+                self._write_entry_checked(entry)
+            # A failed write must not proceed — its edits would go with the re-read.
+            return not any(e.pixel_dirty for e in dirty)
         return True
 
     def _jump_to_slice_source(self, slice_entry: Entry) -> None:
@@ -948,9 +1017,9 @@ class EntriesMixin:
             self._activate_entry(parent)
         if self._workspace.current is not parent or self._doc is None:
             return  # vanished file / bad codec - leave the view untouched
-        # slice_offset is file-absolute; _load_palette_at_offset re-adds the
-        # container's skip, so strip it to land on the absolute byte.
-        self._load_palette_at_offset(bookmark.slice_offset - self._container_skip())
+        # A bookmark's offset is already in the parent's coordinates, which is
+        # what an Offset palette addresses - hand it over as it stands.
+        self._load_palette_at_offset(bookmark.slice_offset)
 
     def _create_slice_via_dialog(
         self,
@@ -958,7 +1027,7 @@ class EntriesMixin:
         *,
         offset: int = 0,
         length: int | None = None,
-        decompress_id: str = NO_DECOMPRESS,
+        compression_id: str = NO_COMPRESSION,
     ) -> None:
         params = SliceDialog.get_slice(
             self,
@@ -966,12 +1035,18 @@ class EntriesMixin:
             path=path,
             offset=offset,
             length=length,
-            decompress_id=decompress_id,
+            compression_id=compression_id,
         )
         if params is None:
             return
-        entry = new_slice(
-            path, params.name, params.offset, params.length, params.decompress_id
+        # Through the parent entry when it is open, so a slice of a several-file
+        # region inherits the whole list its offsets are relative to.
+        parent = self._workspace.find_file(path)
+        args = (params.name, params.offset, params.length, params.compression_id)
+        entry = (
+            slice_of(parent, *args, reshape_id=params.reshape_id)
+            if parent is not None
+            else new_slice(path, *args, reshape_id=params.reshape_id)
         )
         self._seed_slice_from_parent(entry)
         self._push_command(AddEntryCommand(self, entry, f'new slice "{entry.name}"'))

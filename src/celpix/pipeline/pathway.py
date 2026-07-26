@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from celpix.plugins.base import NO_COMPRESS, NO_DECOMPRESS, RAW_READ, RAW_WRITE, FileRef
+from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE, RAW_CONTAINER, FileRef
 
 
 @dataclass
@@ -21,15 +21,21 @@ class PathwayConfig:
     ``interpret_preset_id`` selects a registered :class:`~celpix.plugins.base.Preset`
     (which in turn names the codec engine and its params). ``dest`` defaults to
     ``source`` at save time, so a round trip writes back where it was read from;
-    ``write_enabled=False`` skips Write entirely (used for view-only palettes).
+    ``write_enabled=False`` skips the save-side stages entirely (used for
+    view-only palettes, and for a container or compression scheme that ships no
+    inverse).
+
+    One id per stage, covering both directions: the container that unwraps this
+    pathway's file is the one that re-wraps it, and the scheme that decompresses
+    is the one that compresses. A load and a save cannot disagree about which
+    plugin they are going through, because there is only one to name.
     """
 
     source: FileRef
     interpret_preset_id: str
-    read_id: str = RAW_READ
-    decompress_id: str = NO_DECOMPRESS
-    compress_id: str = NO_COMPRESS
-    write_id: str = RAW_WRITE
+    container_id: str = RAW_CONTAINER
+    reshape_id: str = NO_RESHAPE
+    compression_id: str = NO_COMPRESSION
     dest: FileRef | None = None
     write_enabled: bool = True
 

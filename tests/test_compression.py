@@ -18,23 +18,10 @@ from celpix.core.context import (
     PipelineContext,
 )
 from celpix.plugins.builtins import konami_rle, lz16, lz_command, packbits
-from celpix.plugins.builtins.konami_rle import (
-    KonamiNesRleCompress,
-    KonamiNesRleDecompress,
-)
-from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS, Lz16Decompress
-from celpix.plugins.builtins.lz_command import (
-    Lz1Decompress,
-    Lz2Compress,
-    Lz2Decompress,
-)
-from celpix.plugins.builtins.m7_interleave import M7VramCompress, M7VramDecompress
-from celpix.plugins.builtins.packbits import PackBitsCompress, PackBitsDecompress
-from celpix.plugins.builtins.split_planes import (
-    PART_COUNTS,
-    SplitPlanesCompress,
-    SplitPlanesDecompress,
-)
+from celpix.plugins.builtins.konami_rle import KonamiNesRle
+from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS, Lz16Compression
+from celpix.plugins.builtins.lz_command import Lz1, Lz2
+from celpix.plugins.builtins.packbits import PackBitsCompression
 
 # -- LZ1/LZ2 command stream -------------------------------------------------
 
@@ -138,10 +125,10 @@ def test_lz_partial_still_rejects_corrupt_streams() -> None:
 
 def test_lz_plugin_honours_partial_context_flag() -> None:
     data = bytes(range(64)) * 3
-    packed = Lz2Compress().compress(data, PipelineContext())
+    packed = Lz2().compress(data, PipelineContext())
     ctx = PipelineContext()
     ctx.set(KEY_DECOMPRESS_PARTIAL, True)
-    out = Lz2Decompress().decompress(packed[:-1], ctx)  # terminator cut off
+    out = Lz2().decompress(packed[:-1], ctx)  # terminator cut off
     assert data[: len(out)] == out
     assert ctx.get(KEY_DECOMPRESS_COMPLETE) is False  # truncated: end unknown
 
@@ -155,11 +142,11 @@ def test_lz_malformed_raises() -> None:
 
 def test_lz_plugins_record_compressed_size() -> None:
     data = b"\x07" * 100
-    packed = Lz2Compress().compress(data, PipelineContext())
+    packed = Lz2().compress(data, PipelineContext())
     ctx = PipelineContext()
     # LZ1 and LZ2 agree on everything but backrefs; an all-fill stream decodes
     # identically, which keeps this plugin-level check codec-agnostic.
-    assert Lz1Decompress().decompress(packed + b"\x00" * 3, ctx) == data
+    assert Lz1().decompress(packed + b"\x00" * 3, ctx) == data
     assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
     assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True  # terminator = known end
 
@@ -196,7 +183,7 @@ def test_lz16_plugin_probes_and_records_context() -> None:
     tiles, rows = _tile_payloads()[1]
     packed = lz16.compress(tiles)
     ctx = PipelineContext()
-    assert Lz16Decompress().decompress(packed, ctx) == tiles
+    assert Lz16Compression().decompress(packed, ctx) == tiles
     assert ctx.get(KEY_LZ16_ROWS) == rows
     assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
 
@@ -208,7 +195,7 @@ def test_lz16_plugin_honours_explicit_rows() -> None:
     packed = lz16.compress(tiles)
     ctx = PipelineContext()
     ctx.set(KEY_LZ16_ROWS, rows)
-    assert Lz16Decompress().decompress(packed + b"\xa5" * 5, ctx) == tiles
+    assert Lz16Compression().decompress(packed + b"\xa5" * 5, ctx) == tiles
 
 
 def test_lz16_partial_decode_recovers_leading_rows() -> None:
@@ -224,7 +211,7 @@ def test_lz16_partial_decode_recovers_leading_rows() -> None:
     ctx = PipelineContext()
     ctx.set(KEY_DECOMPRESS_PARTIAL, True)
     assert (
-        Lz16Decompress().decompress(packed + b"\x00" * 40, ctx)[: len(tiles)] == tiles
+        Lz16Compression().decompress(packed + b"\x00" * 40, ctx)[: len(tiles)] == tiles
     )
 
 
@@ -240,48 +227,6 @@ def test_lz16_compress_rejects_partial_tile_rows() -> None:
         lz16.compress(bytes(511))
     with pytest.raises(ValueError):
         lz16.compress(b"")
-
-
-# -- SNES Mode 7 VRAM split -------------------------------------------------
-
-
-def test_m7_vram_split_known_vector() -> None:
-    # Interleaved words: map bytes at even offsets, pixel bytes at odd offsets.
-    # The split puts the pixels first, then the map.
-    interleaved = bytes([0xA0, 0x01, 0xA1, 0x02, 0xA2, 0x03])
-    split = M7VramDecompress().decompress(interleaved, PipelineContext())
-    assert split == bytes([0x01, 0x02, 0x03, 0xA0, 0xA1, 0xA2])
-    assert M7VramCompress().compress(split, PipelineContext()) == interleaved
-
-
-def test_m7_vram_split_round_trips_odd_length() -> None:
-    data = bytes((i * 37 + 5) & 0xFF for i in range(129))
-    split = M7VramDecompress().decompress(data, PipelineContext())
-    assert M7VramCompress().compress(split, PipelineContext()) == data
-
-
-# -- Split bitplanes (N equal parts, one per plane) --------------------------
-
-
-def test_split_planes_join_interleaves_parts_in_order() -> None:
-    """Part *k* must land on tile byte ``k + N * y``, which is what makes the
-    shipped ``{ base = k, stride = N }`` planar presets read the joined buffer."""
-    parts = bytes((0x10, 0x11, 0x12)) + bytes((0x20, 0x21, 0x22))
-    joined = SplitPlanesDecompress(2).decompress(parts, PipelineContext())
-    assert joined == bytes((0x10, 0x20, 0x11, 0x21, 0x12, 0x22))
-    assert SplitPlanesCompress(2).compress(joined, PipelineContext()) == parts
-
-
-@pytest.mark.parametrize("parts", PART_COUNTS)
-def test_split_planes_round_trips_including_ragged_tail(parts: int) -> None:
-    """Both directions are exact for every part count, and a length that isn't a
-    whole number of parts keeps its tail rather than shearing the image."""
-    dec, enc = SplitPlanesDecompress(parts), SplitPlanesCompress(parts)
-    ctx = PipelineContext()
-    for length in (0, 1, parts * 8 - 1, parts * 8, parts * 8 + 3):
-        data = bytes((i * 37 + 5) & 0xFF for i in range(length))
-        assert enc.compress(dec.decompress(data, ctx), ctx) == data
-        assert dec.decompress(enc.compress(data, ctx), ctx) == data
 
 
 # -- Konami NES RLE ---------------------------------------------------------
@@ -356,9 +301,9 @@ def test_konami_truncated_stream_decodes_prefix() -> None:
 
 def test_konami_plugins_record_size_and_round_trip() -> None:
     data = b"\x00" * 50 + bytes(range(30)) + b"\xff" * 40
-    packed = KonamiNesRleCompress().compress(data, PipelineContext())
+    packed = KonamiNesRle().compress(data, PipelineContext())
     ctx = PipelineContext()
-    out = KonamiNesRleDecompress().decompress(packed + b"\x5a" * 6, ctx)
+    out = KonamiNesRle().decompress(packed + b"\x5a" * 6, ctx)
     assert out == data
     # The terminator position is the structure's byte length; trailing garbage
     # past it is not counted.
@@ -510,9 +455,9 @@ def test_packbits_plugin_records_size_but_never_complete() -> None:
     # rest of the file — hence the flag is always False, unlike every other
     # scheme here.
     data = b"\x00" * 50 + bytes(range(30)) + b"\xff" * 40
-    packed = PackBitsCompress().compress(data, PipelineContext())
+    packed = PackBitsCompression().compress(data, PipelineContext())
     ctx = PipelineContext()
-    assert PackBitsDecompress().decompress(packed, ctx) == data
+    assert PackBitsCompression().decompress(packed, ctx) == data
     assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
     assert ctx.get(KEY_DECOMPRESS_COMPLETE) is False
 
