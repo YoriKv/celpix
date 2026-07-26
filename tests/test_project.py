@@ -58,7 +58,7 @@ def test_round_trip_preserves_entries_sessions_and_state(tmp_path) -> None:
 
     ws = Workspace()
     file_entry = ws.open_file(str(rom))
-    file_entry.session = _session(palette_mode="file", headered=True, selected_tile=3)
+    file_entry.session = _session(palette_mode="file", selected_tile=3)
     file_view = ViewOptions(columns=8, rows=4, zoom=2, show_grid=True, tile_offset=16)
     file_entry.doc = _doc(FileRef(str(pal), offset=4), file_view)
 
@@ -99,7 +99,7 @@ def test_round_trip_preserves_entries_sessions_and_state(tmp_path) -> None:
 
     assert first.kind is EntryKind.FILE
     assert normcase(first.path) == normcase(str(rom))
-    assert first.session == _session(palette_mode="file", headered=True)  # no selection
+    assert first.session == _session(palette_mode="file")  # no selection
     assert first.doc is None  # documents stay lazy on load
     assert first.pending_view == file_view
     assert first.pending_palette is not None
@@ -132,7 +132,7 @@ def test_bookmark_round_trips_and_current_index_at_bookmark_degrades(tmp_path) -
         kind=EntryKind.BOOKMARK,
         path=str(rom),
         slice_offset=0x140,
-        session=_session(palette_mode="offset", headered=True, selected_tile=5),
+        session=_session(palette_mode="offset", selected_tile=5),
         pending_view=ViewOptions(columns=8, rows=4, zoom=3),
         pending_palette=PaletteSource(offset=0x140),
     )
@@ -156,7 +156,7 @@ def test_bookmark_round_trips_and_current_index_at_bookmark_degrades(tmp_path) -
     assert restored.kind is EntryKind.BOOKMARK
     assert restored.slice_offset == 0x140  # "offset" reloads into slice_offset
     # Everything but the selection, which no entry kind persists.
-    assert restored.session == _session(palette_mode="offset", headered=True)
+    assert restored.session == _session(palette_mode="offset")
     assert restored.pending_view == bookmark.pending_view
     assert restored.pending_palette == PaletteSource(offset=0x140)
 
@@ -325,6 +325,8 @@ def test_tolerant_load_defaults_unknowns_and_garbage(tmp_path) -> None:
         "current": 0,  # points at the garbage entry below → no current
         "entries": [
             {"kind": "file"},  # no path: skipped, not fatal
+            # "headered" was a session field once; a project written before it
+            # was dropped must still load, with the stale key simply ignored.
             {"path": "x.bin", "unknown_key": 1, "session": {"headered": "yes"}},
             {"path": "gone.bin"},  # missing file: listed anyway, fails at activation
         ],
@@ -340,8 +342,7 @@ def test_tolerant_load_defaults_unknowns_and_garbage(tmp_path) -> None:
     # Missing/odd session fields fall back to workable defaults.
     assert entry.session is not None
     assert entry.session.pixel_preset_id == "preset.pixel.snes-4bpp"
-    assert entry.session.header_length == 512
-    assert entry.session.headered is True  # truthy string coerces
+    assert not hasattr(entry.session, "headered")  # retired field, silently dropped
     assert entry.pending_view is None
 
 

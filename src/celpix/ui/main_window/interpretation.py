@@ -1,13 +1,13 @@
-"""How the bytes on screen are read: codec, header skip, and arrangement.
+"""How the bytes on screen are read: codec, container, and arrangement.
 
-The decode axes (the pixel preset, the header skip that decides *which* bytes
+The decode axes (the pixel preset, the container that decides *which* bytes
 the entry is) together with the display axes on the toolbars - block grouping,
 fill order, 2D - and the plugin registry they all resolve through.
 
 The load rule that shapes this module: switching the **preset** re-reads nothing,
 because it only changes how the same buffer is interpreted, and re-running the
 pathway there would pull the file's bytes back over unsaved edits. Changing the
-header (or anything else feeding Read/Decompress) genuinely changes which bytes
+container (or anything else feeding Read/Decompress) genuinely changes which bytes
 the entry is, and must load. :func:`_same_bytes` is the test.
 """
 
@@ -36,7 +36,6 @@ from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import NO_DECOMPRESS
 from celpix.project.workspace import (
     Entry,
-    EntryKind,
     pixel_config_for,
 )
 from celpix.ui.undo_commands import (
@@ -68,7 +67,7 @@ def _same_bytes(a: PathwayConfig, b: PathwayConfig) -> bool:
 
 
 class InterpretationMixin:
-    """The codec, header skip and arrangement the bytes are read through.
+    """The codec, container and arrangement the bytes are read through.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a
     standalone object: it reads and writes the window's own widgets and its
@@ -76,7 +75,7 @@ class InterpretationMixin:
     package docstring for why these are mixins.
     """
 
-    def _pixel_config(self, entry: Entry, preset_id: str, header: int) -> PathwayConfig:
+    def _pixel_config(self, entry: Entry, preset_id: str) -> PathwayConfig:
         """``entry``'s pixel pathway config, in this workspace.
 
         The workspace is what lets a slice of a parent with unsaved edits read
@@ -84,9 +83,7 @@ class InterpretationMixin:
         config the window builds goes through here rather than calling the factory
         directly and silently losing that.
         """
-        return pixel_config_for(
-            entry, preset_id, header, self._registry, self._workspace
-        )
+        return pixel_config_for(entry, preset_id, self._registry, self._workspace)
 
     def _build_toolbar(self) -> None:
         # Three stacked rows: the codec selects (what the bytes *are*) on top, the
@@ -184,21 +181,22 @@ class InterpretationMixin:
         self._promote_button.clicked.connect(self._on_promote_structure)
         codecs.addWidget(self._promote_button)
 
-        # Manual header skip for headered ROMs: when checked, the first N file
-        # bytes are ignored - the view and every offset start after the header
-        # (so bank-address formats line up with the ROM proper), and saves
-        # splice back after it. 512 B default = copier headers; iNES is 16 B.
-        self._headered = QCheckBox("Header")
-        self._headered.setToolTip("Skip a file header; offsets start after it")
-        self._headered.toggled.connect(self._on_header_change)
-        view.addWidget(self._headered)
-        self._header_len = self._spin(0, 0x10000, 512, self._on_header_change)
-        self._header_len.setToolTip("Header size (512 = copier, 16 = iNES)")
-        self._header_len.setSuffix(" B")
-        # The hint is sized for the 5-digit maximum, but real headers are at
-        # most 3 digits - trim the box so the view row stays compact.
-        self._header_len.setFixedWidth(int(self._header_len.sizeHint().width() * 0.84))
-        view.addWidget(self._header_len)
+        # Sits immediately left of Cols because the two are read together: a
+        # bitmap width re-cuts the codec's tiles and Cols is then derived from
+        # whatever size that landed on, so the number it derives *from* has to
+        # be on screen. Read-only - the size is the codec's, not a setting.
+        self._tile_size = QLabel()
+        add_labelled(
+            view,
+            "Tile:",
+            self._tile_size,
+            "Size of one tile in pixels",
+        )
+        # Pinned wide enough for the sizes a re-cut reaches, so Cols doesn't
+        # slide sideways each time the format or the width changes.
+        self._tile_size.setMinimumWidth(
+            self._tile_size.fontMetrics().horizontalAdvance("64\u00d764")
+        )
 
         # Ranged well past a screenful of 8-px tiles because a bitmap width
         # derives this: a 4096-px bitmap of 8-px tiles is 512 columns.
@@ -397,54 +395,6 @@ class InterpretationMixin:
         select_combo_data(self._pattern, target)
         self._apply_pattern_lock()
 
-    def _header_offset(self) -> int:
-        """File bytes to skip before data begins (0 while 'Header' is unchecked)."""
-        return self._header_len.value() if self._headered.isChecked() else 0
-
-    def _on_header_change(self, *_args) -> None:
-        entry = self._workspace.current
-        if self._doc is None or entry is None or self._applying_undo:
-            return
-        if entry.kind is not EntryKind.FILE:
-            return  # header skip is FILE state; the widgets are disabled anyway
-        # The effective skip folds the checkbox and the length spin into one
-        # number, so "toggle" and "length edit" are the same command; an edit
-        # while unchecked (or an uncheck with no skip applied) changes nothing.
-        old_header = self._doc.pixel_config.source.offset
-        header = self._header_offset()
-        if header == old_header:
-            return
-        preset_id = self._pixel_preset_id()
-        before = (preset_id, old_header, self._byte_position())
-        cfg = self._pixel_config(entry, preset_id, header)
-        try:
-            px = self._pixel_data_for(cfg)  # a moved header really does re-read
-        except PipelineError as exc:
-            self._report(exc)
-            # The doc never changed - snap the widgets back onto its config.
-            self._sync_header_widgets(old_header)
-            return
-        self._push_command(
-            PixelConfigCommand(
-                self,
-                entry,
-                "change header",
-                before=before,
-                after=(preset_id, header, self._byte_position()),
-                preloaded=px,
-            )
-        )
-
-    def _sync_header_widgets(self, header_offset: int) -> None:
-        """Snap the header checkbox + length spin to ``header_offset``, signals
-        blocked - seeds them on a config apply and reverts them when a header
-        change fails to load. A zero offset just unticks the box and leaves the
-        spin's last value, so re-ticking restores the previous skip length."""
-        with signals_blocked(self._headered, self._header_len):
-            self._headered.setChecked(header_offset > 0)
-            if header_offset:
-                self._header_len.setValue(header_offset)
-
     def _preset_combo(self, stage: Stage, default_suffix: str) -> QComboBox:
         # Compact: preset names are long and the combo shares a row with other
         # controls, so the closed button takes 3/4 of its natural width; the
@@ -619,9 +569,7 @@ class InterpretationMixin:
         """
         if self._doc is None:
             return
-        if self._apply_pixel_config(
-            self._pixel_preset_id(), self._header_offset(), self._byte_position()
-        ):
+        if self._apply_pixel_config(self._pixel_preset_id(), self._byte_position()):
             self.statusBar().showMessage(self._bitmap_width_note())
 
     def _bitmap_width_note(self) -> str:
@@ -670,6 +618,7 @@ class InterpretationMixin:
         having to remember to.
         """
         self._bitmap_width.setEnabled(self._two_d.isChecked())
+        self._refresh_tile_size()
         width = self._effective_bitmap_width()
         tile_w = self._pixel_tile_size()[0]
         spans = width > 0 and tile_w > 0 and width % tile_w == 0
@@ -690,6 +639,20 @@ class InterpretationMixin:
                 self._columns.setValue(self._columns_before_bitmap)
             self._columns_before_bitmap = None
 
+    def _refresh_tile_size(self) -> None:
+        """Show the size the tiles on screen are actually cut to.
+
+        Reads the document's own geometry rather than the preset's, so both a
+        bitmap width that re-cut the codec's tiles and a fixed-size codec that
+        ignored the width read true. With nothing open there is no geometry to
+        report - the 8x8 fallback would be a guess about the next file.
+        """
+        if self._doc is None:
+            self._tile_size.setText("\u2014")
+            return
+        tile_w, tile_h = self._pixel_tile_size()
+        self._tile_size.setText(f"{tile_w}\u00d7{tile_h}")
+
     def _pixel_tile_size(self) -> tuple[int, int]:
         # The atomic tile size is the codec's (recorded on the document at load) - not
         # a preset field (geometry is the engine's fixed unit; display grouping into
@@ -707,6 +670,10 @@ class InterpretationMixin:
         self._doc.tile_height = px.tile_height
         self._doc.pixel_config = cfg
         self._doc.pixel_ctx = px.ctx
+        # A re-read can produce a different set of notices than the one that
+        # opened the entry - a container change is exactly that - so the row
+        # follows the bytes rather than only the entry switch.
+        self._refresh_current_entry_row()
         if not self._palette_mode.is_real:
             self._doc.palette = self._fallback_palette()
 
@@ -732,17 +699,11 @@ class InterpretationMixin:
         # The doc still holds the outgoing interpretation here (only the combo
         # has moved), so the undo state reads straight off it.
         old_preset = self._doc.pixel_config.interpret_preset_id
-        old_header = (
-            self._doc.pixel_config.source.offset
-            if entry.kind is EntryKind.FILE
-            else self._header_offset()  # ignored for slices
-        )
-        before = (old_preset, old_header, self._byte_position())
+        before = (old_preset, self._byte_position())
         preset_id = self._pixel_preset_id()
-        header = self._header_offset()
         # Rebuild from the entry, not the old config: a slice keeps its bounds
-        # and codec ids, and a file re-derives the header skip.
-        cfg = self._pixel_config(entry, preset_id, header)
+        # and codec ids, and a file re-derives its container.
+        cfg = self._pixel_config(entry, preset_id)
         try:
             px = self._pixel_data_for(cfg)
         except PipelineError as exc:
@@ -756,7 +717,7 @@ class InterpretationMixin:
                 entry,
                 f"switch pixel format to {self._pixel_preset.currentText()}",
                 before=before,
-                after=(preset_id, header, self._pixel_switch_target),
+                after=(preset_id, self._pixel_switch_target),
                 preloaded=px,
             )
         )
@@ -773,7 +734,7 @@ class InterpretationMixin:
         A pixel-format switch changes how the same bytes are *read as* tiles, not
         which bytes they are - so the live buffer is reinterpreted in place.
         Re-running the pathway there would pull the file's own bytes back over
-        unsaved edits, silently undoing them. A header change (or any other
+        unsaved edits, silently undoing them. A container change (or any other
         change to the source, Read or Decompress ids) genuinely moves which bytes
         the entry is, and has to load; ``reload`` forces that for a plugin
         refresh, whose whole point is to re-run the reloaded plugins.
@@ -791,7 +752,6 @@ class InterpretationMixin:
     def _apply_pixel_config(
         self,
         preset_id: str,
-        header_offset: int,
         byte_position: int,
         preloaded: pipeline.PixelData | None = None,
         *,
@@ -799,7 +759,7 @@ class InterpretationMixin:
     ) -> bool:
         """Re-interpret the current entry's bytes and land on ``byte_position``.
 
-        The one application path for preset switches, header changes, plugin
+        The one application path for preset switches, container changes, plugin
         refreshes and their undos: syncs the codec widgets (signals blocked,
         the _restore_session pattern) and never pushes a command. ``preloaded``
         carries a push site's already-validated result; without it the pathway
@@ -818,7 +778,7 @@ class InterpretationMixin:
         if self._doc is None or entry is None:
             return False
         old_group = self._index_space(self._doc.pixel_config.interpret_preset_id)
-        cfg = self._pixel_config(entry, preset_id, header_offset)
+        cfg = self._pixel_config(entry, preset_id)
         if preloaded is not None:
             px = preloaded
         else:
@@ -830,8 +790,6 @@ class InterpretationMixin:
         # Rebuild rather than a plain select: the applied format may be one the
         # filter hides, and you can never hide the format actually in force.
         self._fill_pixel_combo(preset_id)
-        if entry.kind is EntryKind.FILE:
-            self._sync_header_widgets(header_offset)
         self._store_pixel_data(px, cfg)
         # _refresh_view clamps the offset; the nudge stays < the new tile size.
         self._offset, self._nudge = divmod(byte_position, px.bytes_per_tile)
@@ -879,7 +837,6 @@ class InterpretationMixin:
             # edit and must not pollute the undo history.
             self._apply_pixel_config(
                 self._pixel_preset_id(),
-                self._header_offset(),
                 self._byte_position(),
                 reload=entry is None or not entry.pixel_dirty,
             )

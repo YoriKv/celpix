@@ -19,6 +19,8 @@ The primitives are:
   plane byte to the eight pixels its bits land in, and back.
 - :func:`field_expansion` / :func:`field_packing` — the packed kernel both ways:
   one byte to the sub-byte index fields inside it, and back.
+- :func:`nibble_plane_expansion` / :func:`nibble_plane_packing` — the nibble-planar
+  kernel both ways: one byte carrying *two* bitplanes of four pixels, and back.
 - :func:`expand_row` / :func:`pack_row` — the planar kernel applied to a *single*
   eight-pixel row, for the wide/odd tiles whose bytes are too scattered for a
   strided slice to gather. They go through the tables above rather than their own
@@ -128,6 +130,50 @@ def field_expansion(
     ]
     return tuple(
         bytes((value >> shift) & mask for shift in shifts) for value in range(256)
+    )
+
+
+def _nibble_planes(bpp: int, group_byte: int) -> tuple[int, int]:
+    """The two index bits byte ``group_byte`` of a nibble-planar group carries.
+
+    Bytes are ordered most-significant plane pair first, so byte 0 holds the top
+    two bits of the index and each further byte drops two more.
+    """
+    return bpp - 1 - 2 * group_byte, bpp - 2 - 2 * group_byte
+
+
+@cache
+def nibble_plane_expansion(bpp: int, group_byte: int) -> tuple[bytes, ...]:
+    """One nibble-planar byte → the four pixels its two bitplanes contribute to.
+
+    The byte's **high nibble is the more significant plane** and its low nibble the
+    less significant one, with bit 3 of a nibble being the leftmost of the four
+    pixels. Entry *v* is the four-byte pixel run byte value *v* contributes, so a
+    group's pixels are the OR of one lookup per byte of the group.
+    """
+    hi, lo = _nibble_planes(bpp, group_byte)
+    return tuple(
+        bytes(
+            (((value >> (7 - pos)) & 1) << hi) | (((value >> (3 - pos)) & 1) << lo)
+            for pos in range(4)
+        )
+        for value in range(256)
+    )
+
+
+@cache
+def nibble_plane_packing(bpp: int, group_byte: int, pos: int) -> bytes:
+    """The inverse of :func:`nibble_plane_expansion` for one of the four pixels.
+
+    A 256-byte ``bytes.translate`` table: what the index at pixel ``pos`` of the
+    group contributes to that group byte. Packing needs one table per position
+    because the destination *bit* within each nibble is the pixel's position, so a
+    group byte is the OR of four of these.
+    """
+    hi, lo = _nibble_planes(bpp, group_byte)
+    return bytes(
+        (((value >> hi) & 1) << (7 - pos)) | (((value >> lo) & 1) << (3 - pos))
+        for value in range(256)
     )
 
 

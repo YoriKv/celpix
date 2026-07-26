@@ -36,6 +36,10 @@ KEY_DECOMPRESS_PARTIAL = "decompress.allow-partial"
 # extent, not a truncation point. Distinguishes "the whole structure is in
 # view" from a best-effort partial decode.
 KEY_DECOMPRESS_COMPLETE = "decompress.complete"
+# One more well-known key lives in :mod:`celpix.core.notices` rather than here:
+# what a stage wants to *tell the user* without failing. It keeps company with
+# the notice type and its helpers, since unlike the scalars above it is only ever
+# read or written through them.
 
 
 class PipelineContext:

@@ -28,26 +28,51 @@ from PySide6.QtGui import (
     QPalette,
     QPixmap,
 )
-from PySide6.QtWidgets import QMenu, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHeaderView,
+    QMenu,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from celpix import resources
 from celpix.core.address import format_hex
 from celpix.core.errors import Stage
+from celpix.core.notices import Notice
 from celpix.plugins.detect import container_label
 from celpix.plugins.registry import Registry
-from celpix.project.workspace import Entry, EntryKind, entry_reference_missing
+from celpix.project.workspace import (
+    Entry,
+    EntryKind,
+    entry_notices,
+    entry_reference_missing,
+)
 from celpix.ui.widgets import signals_blocked, take_editing_shortcut
 
-# Translucent amber behind an entry whose referenced file (or palette) is
-# missing: reads as a warning over either light or dark row backgrounds without
-# fighting the selection highlight.
+# Translucent amber behind an entry that needs the user's attention — a missing
+# referenced file, or a container that had to assume something. Reads as a
+# warning over either light or dark row backgrounds without fighting the
+# selection highlight. Which of the two it is, is what the status glyph says.
 _MISSING_HIGHLIGHT = QBrush(QColor(255, 193, 7, 70))
+
+# The status glyphs' own color: opaque amber, matching the row wash it sits on.
+# Fixed rather than a palette role, because a warning that took the theme's text
+# color would stop reading as a warning.
+_WARNING_INK = QColor(200, 137, 10)
 
 # The slice/bookmark icon box. Narrower than the default 16px decoration so a
 # centred glyph sits close to the entry name rather than across a wide gap; the
 # glyphs are painted at exactly this size so nothing is scaled.
 _ICON_W = 13
 _ICON_H = 16
+
+# The status column, right of the name: the *kind* glyph already owns column 0's
+# icon slot (a slice's picture, a bookmark's ribbon), and a row can be both a
+# slice and in trouble — so the two cannot share one slot.
+_STATUS_COL = 1
+_STATUS_W = _ICON_W + 8  # the glyph box plus breathing room from the name
 
 
 class _EntryTree(QTreeWidget):
@@ -124,6 +149,12 @@ class FileListPanel(QWidget):
         self._registry = registry
         self._tree = _EntryTree()
         self._tree.setHeaderHidden(True)
+        self._tree.setColumnCount(2)
+        header = self._tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(_STATUS_COL, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(_STATUS_COL, _STATUS_W)
         self._tree.setIconSize(QSize(_ICON_W, _ICON_H))  # tighten icon-to-name gap
         self._tree.setRootIsDecorated(True)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -145,6 +176,8 @@ class FileListPanel(QWidget):
         # Both built lazily and theme-colored; cached against the palette and
         # pixel ratio they were rasterized for (see _drop_stale_icons).
         self._bookmark_icon: QIcon | None = None
+        self._missing_icon: QIcon | None = None
+        self._notice_icon: QIcon | None = None
         self._slice_icon: QIcon | None = None
         self._icon_key: tuple[int, float] | None = None
         # The "Palettes" section header — created with the first palette entry,
@@ -358,20 +391,57 @@ class FileListPanel(QWidget):
                 else "changes (data + palette)"
             )
             tip += f"\nUnsaved {what}"
-        # A moved/missing referenced file leaves the entry partially working —
-        # flag it amber so it stands out as needing Locate missing files.
+        # Two conditions that leave an entry working but not on the bytes the user
+        # thinks: its file has moved, or a container had to drop, assume or
+        # substitute something. Both wash the row amber, and each has its own
+        # glyph, because the fixes differ — go and find the file, versus read what
+        # the container did. Missing wins when both apply: a file that isn't there
+        # cannot have been read, so any notice on the entry is from an older load.
+        #
+        # The whole explanation goes in the tooltip. It is the one place a user
+        # already looks to ask "what is wrong with this row", so a notice belongs
+        # there rather than somewhere else they have to be told to look.
+        notes = entry_notices(entry)
+        warnings = [n for n in notes if n.is_warning]
+        status: QIcon | None = None
         if entry_reference_missing(entry):
             tip += "\nReferenced file is missing - File ▸ Locate missing files"
-            item.setBackground(0, _MISSING_HIGHLIGHT)
+            status = self._missing_glyph()
         else:
-            item.setBackground(0, QBrush())
+            # Every notice, not only the warnings that earn the glyph: an info one
+            # raises no marker of its own but is still worth reading once here.
+            tip += "".join(self._notice_lines(n) for n in notes)
+            if warnings:
+                status = self._notice_glyph()
+        wash = _MISSING_HIGHLIGHT if status is not None else QBrush()
+        item.setBackground(0, wash)
+        item.setBackground(_STATUS_COL, wash)
+        item.setIcon(_STATUS_COL, status if status is not None else QIcon())
         item.setToolTip(0, tip)
+        # The glyph is the thing a user points at to ask what is wrong with this
+        # one, so it has to answer rather than showing nothing.
+        item.setToolTip(_STATUS_COL, tip)
+
+    @staticmethod
+    def _notice_lines(notice: Notice) -> str:
+        """One notice as tooltip lines: the summary flush, its detail indented.
+
+        The indent is what keeps a list of several readable — without it the
+        detail of one runs straight into the summary of the next. Both are
+        already hard-wrapped by whoever wrote them, per the tooltip rule (Qt
+        never wraps a plain-text tooltip), and two extra columns keep them inside
+        it.
+        """
+        lines = f"\n{notice.summary}"
+        if notice.detail:
+            lines += "".join(f"\n  {line}" for line in notice.detail.split("\n"))
+        return lines
 
     def _ribbon_icon(self) -> QIcon:
         """The bookmark marker: a flag glyph in the theme's accent color."""
         self._drop_stale_icons()
         if self._bookmark_icon is None:
-            self._bookmark_icon = self._tinted_icon(
+            self._bookmark_icon = self._role_icon(
                 "bookmark.png", QPalette.ColorRole.Highlight
             )
         return self._bookmark_icon
@@ -381,8 +451,27 @@ class FileListPanel(QWidget):
         color — the universal "this is a graphic" symbol."""
         self._drop_stale_icons()
         if self._slice_icon is None:
-            self._slice_icon = self._tinted_icon("slice.png", QPalette.ColorRole.Text)
+            self._slice_icon = self._role_icon("slice.png", QPalette.ColorRole.Text)
         return self._slice_icon
+
+    def _missing_glyph(self) -> QIcon:
+        """A question mark: this entry's file is unaccounted for, and the fix is
+        to go and find it (File ▸ Locate missing files). Deliberately not a cross
+        — at this size, next to rows the user can close, a cross reads as a close
+        button rather than a state."""
+        self._drop_stale_icons()
+        if self._missing_icon is None:
+            self._missing_icon = self._tinted_icon("missing.png", _WARNING_INK)
+        return self._missing_icon
+
+    def _notice_glyph(self) -> QIcon:
+        """An exclamation mark: the entry opened, but a stage had to drop, assume
+        or substitute something on the way in, and the row's own tooltip spells
+        out what."""
+        self._drop_stale_icons()
+        if self._notice_icon is None:
+            self._notice_icon = self._tinted_icon("notice.png", _WARNING_INK)
+        return self._notice_icon
 
     def _drop_stale_icons(self) -> None:
         """Discard the cached glyphs when what they were rasterized *from* has
@@ -395,6 +484,8 @@ class FileListPanel(QWidget):
             self._icon_key = key
             self._bookmark_icon = None
             self._slice_icon = None
+            self._missing_icon = None
+            self._notice_icon = None
 
     def changeEvent(self, event) -> None:  # Qt override
         # A theme switch repaints the rows, but the icons are pixmaps baked in
@@ -406,12 +497,26 @@ class FileListPanel(QWidget):
             for entry, item in self._items.items():
                 self._refresh_item(entry, item)
 
-    def _tinted_icon(self, filename: str, role: QPalette.ColorRole) -> QIcon:
-        """A bundled ``icons/<filename>`` recolored to a theme role.
+    def _role_icon(self, filename: str, role: QPalette.ColorRole) -> QIcon:
+        """A bundled glyph in a **theme** color — what the kind markers use.
+
+        The color comes from the **Active** group explicitly: an entry's marker
+        shouldn't wear the dimmed inactive variant (on Windows the inactive
+        Highlight is a flat gray) merely because the window happened to be
+        unfocused when the icon was first built and cached.
+        """
+        return self._tinted_icon(
+            filename, self.palette().color(QPalette.ColorGroup.Active, role)
+        )
+
+    def _tinted_icon(self, filename: str, color: QColor) -> QIcon:
+        """A bundled ``icons/<filename>`` recolored to ``color``.
 
         The art ships as white glyphs, pre-cropped to their opaque bounds (no
         baked-in margin to widen the gap to the entry name). We recolor to the
-        palette role — keeping the icons theme-aware in light and dark — then
+        given color — which is a palette role for the kind markers, keeping them
+        theme-aware in light and dark, and the fixed warning amber for the status
+        glyphs, whose whole job is to read as a warning in either theme — then
         fit the glyph, centred, into the icon box.
 
         Rasterized at the screen's **device** resolution, not the logical 13x16:
@@ -419,22 +524,41 @@ class FileListPanel(QWidget):
         scaled display, so Qt would stretch that bitmap — and these glyphs are
         thin enough that the smear reads as a washed-out gray rather than the
         tint. The pixmap carries its ratio, so the icon still measures 13x16 in
-        layout units. The color comes from the **Active** group explicitly: an
-        entry's marker shouldn't wear the dimmed inactive variant (on Windows
-        the inactive Highlight is a flat gray) merely because the window
-        happened to be unfocused when the icon was first built and cached.
+        layout units.
+
+        Two pixmaps, not one: a **selected** row is painted in the highlight
+        color, and any ink chosen to read against the ordinary row background
+        turns muddy on top of it — the warning amber worst of all. Qt asks a
+        QIcon for its ``Selected`` variant when it draws the decoration of a
+        selected item, so the second pixmap is the same glyph in the highlighted
+        text color. The shape still says *which* condition it is; only the ink
+        follows the row.
         """
-        color = self.palette().color(QPalette.ColorGroup.Active, role)
         source = QImage.fromData(resources.read_bytes("icons", filename))
         glyph = source.convertToFormat(QImage.Format.Format_ARGB32)
+        icon = QIcon(self._glyph_pixmap(glyph, color))
+        icon.addPixmap(
+            self._glyph_pixmap(
+                glyph,
+                self.palette().color(
+                    QPalette.ColorGroup.Active, QPalette.ColorRole.HighlightedText
+                ),
+            ),
+            QIcon.Mode.Selected,
+        )
+        return icon
+
+    def _glyph_pixmap(self, glyph: QImage, color: QColor) -> QPixmap:
+        """``glyph`` tinted ``color`` and centred in the icon box, at device scale."""
+        tinted = QImage(glyph)  # per-color copy: the tint is destructive
         # SourceIn keeps the glyph's alpha but replaces its color with the tint.
-        tinting = QPainter(glyph)
+        tinting = QPainter(tinted)
         tinting.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        tinting.fillRect(glyph.rect(), color)
+        tinting.fillRect(tinted.rect(), color)
         tinting.end()
         ratio = self.devicePixelRatioF()
         box_w, box_h = round(_ICON_W * ratio), round(_ICON_H * ratio)
-        scaled = QPixmap.fromImage(glyph).scaled(
+        scaled = QPixmap.fromImage(tinted).scaled(
             box_w,
             box_h,
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -450,7 +574,7 @@ class FileListPanel(QWidget):
         )
         placing.end()
         canvas.setDevicePixelRatio(ratio)
-        return QIcon(canvas)
+        return canvas
 
     # -- interaction ---------------------------------------------------------
     def _on_current_item_changed(self, item: QTreeWidgetItem | None, _prev) -> None:

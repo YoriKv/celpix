@@ -509,6 +509,18 @@ class MainWindow(
             writable or self._linked_palette_entry() is not None
         )
 
+    def _refresh_current_entry_row(self) -> None:
+        """Re-render the current entry's row in the files list.
+
+        Its notices live on the document, so the panel's own refresh — which runs
+        when an entry is *added* — happens too early to see them: at that point no
+        document exists yet. This is the second pass, from the sites that have
+        just finished a load or switched which entry is on screen.
+        """
+        entry = self._workspace.current
+        if entry is not None:
+            self._files_panel.refresh_entry(entry)
+
     def _refresh_window_title(self) -> None:
         """Re-render the window title from what is currently open.
 
@@ -522,6 +534,10 @@ class MainWindow(
         gone), or a bare ``celPix`` when nothing is open - and carries no marker,
         since there is no project file those changes could be saved to.
         """
+        # Paired with the title on purpose: both follow the current entry, so
+        # doing them together means the row cannot go stale at one of the several
+        # sites that switch which entry is on screen.
+        self._refresh_current_entry_row()
         if self._project_path is not None:
             self.setWindowTitle(f"celPix - {Path(self._project_path).name}[*]")
             self._refresh_project_modified()

@@ -45,13 +45,15 @@ from celpix.core.address import format_hex
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
+    KEY_SOURCE_OFFSET,
     PipelineContext,
 )
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import Stage
+from celpix.core.notices import Notice, notices
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import NO_COMPRESS, NO_DECOMPRESS, RAW_READ, FileRef
-from celpix.plugins.detect import container_ids
+from celpix.plugins.detect import container_ids, container_write_enabled
 from celpix.plugins.registry import Registry
 
 
@@ -187,8 +189,6 @@ class EntrySession:
     palette_preset_id: str
     palette_mode: PaletteMode = PaletteMode.DEFAULT
     compression_id: str = NO_DECOMPRESS  # the preview combo, not a slice codec
-    headered: bool = False
-    header_length: int = 512
     # The selection. ``selected_tile`` is the anchor (and what single-selection
     # consumers read); ``selected_last`` >= it bounds a range, None when the
     # selection is a single tile (or absent). ``selection_cells`` is set only for
@@ -654,7 +654,6 @@ class Workspace:
 def pixel_config_for(
     entry: Entry,
     preset_id: str,
-    header_offset: int,
     registry: Registry,
     workspace: Workspace | None = None,
 ) -> PathwayConfig:
@@ -686,10 +685,15 @@ def pixel_config_for(
     if entry.kind is EntryKind.FILE:
         read_id, write_id = container_ids(registry, entry.container_id)
         return PathwayConfig(
-            source=FileRef(entry.path, offset=header_offset),
+            source=FileRef(entry.path),
             interpret_preset_id=preset_id,
             read_id=read_id,
             write_id=write_id,
+            # A container that rewrites bytes and has lost its writer is
+            # view-only, exactly as a compression scheme with no compressor is:
+            # writing unwrapped bytes back through plain bytes would destroy the
+            # framing rather than restore it.
+            write_enabled=container_write_enabled(registry, entry.container_id),
         )
     compress_id = entry.decompress_id.replace("decompress.", "compress.", 1)
     write_enabled = True
@@ -725,15 +729,22 @@ def _unsaved_parent_bytes(
     ``(None, 0)`` — read the file — unless the slice's parent is open, loaded and
     holds unsaved *pixel* edits. A dirty **palette** doesn't qualify: it lives on
     the other pathway and in another file, so it says nothing about these bytes.
-    The slice must also fall inside the parent's window; one anchored before the
-    parent's header skip isn't in that buffer at all, so it reads from disk.
+    The slice must also fall inside the parent's window; one anchored before
+    whatever the parent's container skipped isn't in that buffer at all, so it
+    reads from disk.
+
+    The base is what the parent's Read **recorded**, not what its config asked
+    for: a container works its own start out from the format (past a copier
+    header, past the iNES header and PRG banks) and the config never names it, so
+    rebasing on the request would put every slice of a headered parent half a
+    kilobyte out.
     """
     if workspace is None:
         return (None, 0)
     parent = workspace.find_file(entry.path)
     if parent is None or parent.doc is None or not parent.pixel_dirty:
         return (None, 0)
-    base = parent.doc.pixel_config.source.offset
+    base = parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
     if entry.slice_offset < base:
         return (None, 0)
     return (parent.doc.pixel_data, base)
@@ -815,6 +826,20 @@ def entry_reference_missing(entry: Entry) -> bool:
     """Whether either file the entry references (its data or its palette) is
     gone — the condition the files list flags with a warning highlight."""
     return data_missing(entry) or palette_missing(entry)
+
+
+def entry_notices(entry: Entry) -> tuple[Notice, ...]:
+    """What the stages said while reading ``entry`` — both pathways, pixel first.
+
+    Read off the live document rather than stored on the entry, because that is
+    where they are already: a notice is produced by a load and the document *is*
+    the result of one, so the two cannot fall out of step. An entry whose document
+    has never been built has nothing to report, which is correct — nothing has
+    been read yet.
+    """
+    if entry.doc is None:
+        return ()
+    return notices(entry.doc.pixel_ctx) + notices(entry.doc.palette_ctx)
 
 
 def missing_paths(ws: Workspace) -> list[str]:

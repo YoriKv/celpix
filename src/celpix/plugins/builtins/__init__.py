@@ -19,7 +19,16 @@ from celpix.plugins.discovery import PRESET_FOLDER_STAGE, preset_from_toml
 
 from .chunky_codec import ChunkyCodec
 from .color_codec import ColorCodec
-from .container_read import INesReader, SmdReader, SnesInterleavedReader
+from .container_read import (
+    CopierHeaderReader,
+    CopierHeaderWriter,
+    INesReader,
+    INesWriter,
+    SmdReader,
+    SmdWriter,
+    SnesInterleavedReader,
+    SnesInterleavedWriter,
+)
 from .direct_color_codec import DirectColorCodec
 from .gb_rom import GbRomReader, GbRomWriter
 from .indexed_codec import IndexedColorCodec
@@ -34,11 +43,13 @@ from .lz16 import Lz16Compress, Lz16Decompress
 from .lz_command import Lz1Compress, Lz1Decompress, Lz2Compress, Lz2Decompress
 from .m7_interleave import M7VramCompress, M7VramDecompress
 from .n64_rom import N64RomReader, N64RomWriter
+from .nibble_planar_codec import NibblePlanarCodec
 from .packbits import PackBitsCompress, PackBitsDecompress
 from .packed_codec import PackedCodec
 from .passthrough import PassthroughCompress, PassthroughDecompress
 from .planar_codec import PlanarCodec
 from .raw_file import RawFileReader, RawFileWriter
+from .split_planes import split_plane_plugins
 from .wide_codecs import Pce2bpp16Codec, PceSgCodec, Wide1bppCodec
 
 if TYPE_CHECKING:
@@ -50,9 +61,14 @@ def register_builtins(reg: Registry) -> None:
     for plugin in (
         RawFileReader(),
         RawFileWriter(),
+        CopierHeaderReader(),
+        CopierHeaderWriter(),
         INesReader(),
+        INesWriter(),
         SmdReader(),
+        SmdWriter(),
         SnesInterleavedReader(),
+        SnesInterleavedWriter(),
         GbRomReader(),
         GbRomWriter(),
         N64RomReader(),
@@ -65,6 +81,7 @@ def register_builtins(reg: Registry) -> None:
         KonamiFdsRleCompress(),
         M7VramDecompress(),
         M7VramCompress(),
+        *split_plane_plugins(),
         Lz1Decompress(),
         Lz1Compress(),
         Lz2Decompress(),
@@ -75,6 +92,7 @@ def register_builtins(reg: Registry) -> None:
         PackBitsCompress(),
         PlanarCodec(),
         PackedCodec(),
+        NibblePlanarCodec(),
         ChunkyCodec(),
         LinearBespokeCodec(),
         Wide1bppCodec(),

@@ -169,8 +169,6 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
             "palette_preset_id": session.palette_preset_id,
             "palette_mode": session.palette_mode.value,
             "compression_id": session.compression_id,
-            "headered": session.headered,
-            "header_length": session.header_length,
         }
     # A loaded document carries the live state; a never-activated entry may
     # still hold state a previous load restored into its pending fields.
@@ -322,8 +320,6 @@ def _session_from(raw: object) -> EntrySession:
         palette_preset_id=_str(data.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET),
         palette_mode=PaletteMode.parse(data.get("palette_mode")),
         compression_id=_str(data.get("compression_id"), NO_DECOMPRESS),
-        headered=bool(data.get("headered", False)),
-        header_length=_int(data.get("header_length"), 512),
     )
 
 
@@ -411,7 +407,7 @@ def _palette_from(raw: object, base_dir: str) -> PaletteSource | None:
 
 
 def _int(value: object, default: int | None) -> int | None:
-    # bool is an int subclass; a stray `true` must not become header_length=1.
+    # bool is an int subclass; a stray `true` must not become a count of 1.
     return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 

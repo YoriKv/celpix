@@ -46,7 +46,9 @@ from celpix.core.address import (
     format_hex,
     parse_hex,
 )
+from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.plugins.base import NO_DECOMPRESS
+from celpix.project.workspace import EntryKind
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.undo_commands import (
     OffsetMoveCommand,
@@ -711,15 +713,37 @@ class NavigationMixin:
     def _display_base(self) -> int:
         """The file byte the view's position 0 corresponds to - display policy.
 
-        Raw sources (no decompressor) show source-file-absolute addresses: the
-        header skip for a whole file, the slice offset for a raw slice - so ROM
-        bank addresses stay meaningful wherever the bytes came from. A
-        decompressed stream has no linear mapping back to file offsets, so it
-        shows its own 0-based positions instead of lying with file addresses.
+        Raw sources (no decompressor) show source-file-absolute addresses: past
+        whatever a container skipped for a whole file, the slice offset for a raw
+        slice - so ROM bank addresses stay meaningful wherever the bytes came
+        from. A decompressed stream has no linear mapping back to file offsets, so
+        it shows its own 0-based positions instead of lying with file addresses.
+
+        The base comes from what Read *recorded* rather than from the config's
+        requested offset, because only the reader knows where it actually began:
+        a container works its start out from the format (past a copier header,
+        past the iNES header and the PRG banks) and the host never asked for it.
         """
         assert self._doc is not None
-        cfg = self._doc.pixel_config
-        return cfg.source.offset if cfg.decompress_id == NO_DECOMPRESS else 0
+        if self._doc.pixel_config.decompress_id != NO_DECOMPRESS:
+            return 0
+        return self._doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
+
+    def _container_skip(self) -> int:
+        """Bytes this entry's *container* skipped at the front of its own file.
+
+        The sibling of :meth:`_display_base`, and deliberately not the same
+        number. This one converts between the offset box's coordinate space and
+        real file offsets, so it is **zero for a slice**: a slice reads through
+        its parent's coordinates, its own offsets are already parent-absolute,
+        and so are the palette offsets taken against them. ``_display_base``
+        answers a different question — what file byte the view starts at — for
+        which a slice's own offset is exactly right.
+        """
+        entry = self._workspace.current
+        if self._doc is None or entry is None or entry.kind is not EntryKind.FILE:
+            return 0
+        return self._doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
 
     def _tile_byte_offset(self, tile: int) -> int:
         """The displayed byte offset of ``tile`` on the current (nudged) grid."""

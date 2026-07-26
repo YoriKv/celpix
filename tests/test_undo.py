@@ -108,20 +108,6 @@ def test_pixel_preset_switch_round_trip(qtbot, tmp_path) -> None:
     assert window._doc.pixel_config.interpret_preset_id == "preset.pixel.snes-2bpp"
 
 
-def test_header_toggle_round_trip(qtbot, tmp_path) -> None:
-    window, _ = _open(qtbot, tmp_path)
-    stack = window._undo_stack
-    base = stack.count()
-
-    window._headered.setChecked(True)  # default skip is 512 bytes
-    assert window._doc.pixel_config.source.offset == 512
-    assert stack.count() == base + 1  # syncing the checkbox back must not cascade
-    stack.undo()
-    assert window._doc.pixel_config.source.offset == 0
-    assert not window._headered.isChecked()
-    assert stack.count() == base + 1
-
-
 def test_palette_at_offset_round_trip_and_failed_load(qtbot, tmp_path) -> None:
     window, _ = _open(qtbot, tmp_path)
     stack = window._undo_stack

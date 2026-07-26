@@ -178,14 +178,14 @@ class PixelConfigCommand(QUndoCommand):
         entry: Entry,
         text: str,
         *,
-        before: tuple[str, int, int],
-        after: tuple[str, int, int],
+        before: tuple[str, int],
+        after: tuple[str, int],
         preloaded: pipeline.PixelData | None = None,
     ) -> None:
         super().__init__(text)
         self._window = window
         self._entry = entry
-        self._before = before  # (preset_id, header_offset, byte_position)
+        self._before = before  # (preset_id, byte_position)
         self._after = after
         self._preloaded = preloaded
 

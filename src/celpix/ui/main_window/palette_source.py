@@ -1031,12 +1031,12 @@ class PaletteSourceMixin:
         if last < 0:
             return
         # source.offset is the file-absolute palette offset; step there and
-        # clamp before handing it back (the load re-adds the header skip, so
+        # clamp before handing it back (the load re-adds the container's skip, so
         # strip it to keep the absolute value).
         current = self._doc.palette_config.source.offset
         target = min(max(0, current + delta_tiles * step), last)
         if target != current:
-            self._load_palette_at_offset(target - self._header_offset())
+            self._load_palette_at_offset(target - self._container_skip())
 
     def _selection_palette_source(
         self,
@@ -1067,8 +1067,8 @@ class PaletteSourceMixin:
         """Load palette data from the pixel source file at ``byte_off`` (Offset mode).
 
         The offset is in the pixel *source's* coordinate space (the same numbers
-        the offset box shows - i.e. after any header skip, which is re-added for
-        the file read), and the palette pathway re-reads the raw file - for
+        the offset box shows - i.e. after any skip the container made, which is
+        re-added for the file read), and the palette pathway re-reads the raw file - for
         container/compressed pixel sources the bytes at that offset differ from the
         decoded pixel data. Accepted for now; it mirrors the offset box semantics.
         For a **slice**, the source file is the *parent*, so the offset is an
@@ -1088,7 +1088,7 @@ class PaletteSourceMixin:
         src = self._doc.pixel_config.source
         try:
             ref = self._selection_palette_source(
-                src.path, byte_off + self._header_offset()
+                src.path, byte_off + self._container_skip()
             )
         except PipelineError as exc:
             self._report(exc)

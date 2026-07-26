@@ -111,12 +111,7 @@ class SessionMixin:
         if entry.session is None:
             entry.session = self._seed_session(entry)
         session = entry.session
-        header = (
-            session.header_length
-            if entry.kind is EntryKind.FILE and session.headered
-            else 0
-        )
-        cfg = self._pixel_config(entry, session.pixel_preset_id, header)
+        cfg = self._pixel_config(entry, session.pixel_preset_id)
         # A pending bitmap width re-cuts the codec's tile geometry, so it is an
         # input to this first load rather than something the view applied
         # afterwards can express - the entry would otherwise open at the codec's
@@ -140,7 +135,7 @@ class SessionMixin:
         if backfill_slice_length(entry, px.ctx):
             # The decompressor discovered the slice's true extent: rebuild the
             # config bounded by it, so save-back is slot-enforced from now on.
-            cfg = self._pixel_config(entry, session.pixel_preset_id, header)
+            cfg = self._pixel_config(entry, session.pixel_preset_id)
             self._files_panel.refresh_entry(entry)
         entry.doc = Document(
             pixel_data=px.data,
@@ -183,8 +178,6 @@ class SessionMixin:
                 if entry.kind is EntryKind.SLICE
                 else self._compression_id()
             ),
-            headered=entry.kind is EntryKind.FILE and self._headered.isChecked(),
-            header_length=self._header_len.value(),
         )
 
     def _capture_session(self) -> None:
@@ -203,8 +196,6 @@ class SessionMixin:
             palette_preset_id=self._palette_preset_id(),
             palette_mode=self._palette_mode,
             compression_id=self._compression_id(),
-            headered=self._headered.isChecked(),
-            header_length=self._header_len.value(),
             selected_tile=self._selected_tile,
             selected_last=self._selected_last,
             selection_cells=self._rect_cells,
@@ -239,14 +230,12 @@ class SessionMixin:
             (self._rows, view.rows),
             (self._zoom, view.zoom),
             (self._subpalette, view.subpalette_row),
-            (self._header_len, session.header_length),
             (self._block_cols, view.block_columns),
             (self._block_rows, view.block_rows),
             (self._bitmap_width, view.bitmap_width),
         )
         checks = (
             (self._grid, view.show_grid),
-            (self._headered, session.headered),
             (self._two_d, view.two_dimensional),
         )
         with signals_blocked(*(w for w, _ in (*spins, *checks))):
@@ -261,11 +250,7 @@ class SessionMixin:
         # Reselect the Pattern preset (or Custom) that matches the block/order/2D
         # values just restored, and lock the controls to match.
         self._sync_pattern_selection()
-        # Header skip is FILE display state; a slice's offsets are absolute
-        # file offsets and must not shift under it.
         is_file = entry.kind is EntryKind.FILE
-        self._headered.setEnabled(is_file)
-        self._header_len.setEnabled(is_file)
         self._offset, self._nudge = view.tile_offset, view.byte_nudge
         # The rearrangement belongs to the entry, like the offset: switching away
         # and back must find the tiles where they were left. Any drag in flight
@@ -318,6 +303,9 @@ class SessionMixin:
         # and a menu row does not inherit that bar's disabled state.
         self._sync_rearrange_actions()
         self._canvas.set_image(QImage())
+        # Also after _doc is cleared: nothing else runs on the way out of a
+        # document, so the tile size would otherwise still read the old entry's.
+        self._refresh_tile_size()
         self._overlay.hide_overlay()
         self._hex_panel.clear()
         # No document, no palette source - blank the dock's per-mode widgets

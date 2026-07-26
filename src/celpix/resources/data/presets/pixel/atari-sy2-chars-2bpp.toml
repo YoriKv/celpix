@@ -1,0 +1,12 @@
+# Atari System 2 alphanumeric layer — 8x8 2bpp, one byte per 4 pixels.
+# High nibble = index bit 1, low nibble = bit 0; nibble bit 3 = leftmost pixel.
+# Needs no region join: both planes are already in the same byte.
+# See docs/graphics-formats-reference/mame-formats.md §3.1.
+id = "preset.pixel.atari-sy2-chars-2bpp"
+name = "Atari System 2 chars (8x8, 2bpp)"
+engine_id = "codec.nibble-planar"
+
+[params]
+bpp = 2
+tile_width = 8
+tile_height = 8

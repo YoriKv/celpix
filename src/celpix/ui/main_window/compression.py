@@ -33,7 +33,6 @@ from celpix.pipeline import pipeline
 from celpix.plugins.base import NO_DECOMPRESS
 from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS
 from celpix.project.workspace import (
-    EntryKind,
     default_slice_name,
     new_slice,
 )
@@ -296,21 +295,15 @@ class CompressionMixin:
             self._pixel_preset,
             self._pixel_filter,
             self._compression,
-            self._headered,
-            self._header_len,
             self._jump_next,
             self._promote_button,
         ):
             widget.setEnabled(not active)
         # The blanket re-enable above must not resurrect controls that the
-        # current entry keeps off (header skip is a whole-file setting; the block
-        # controls stay locked unless the Pattern picker is on Custom; and Jump /
-        # promote are armed only by the overlay's structure state, not by a scan
-        # ending).
+        # current entry keeps off (the block controls stay locked unless the
+        # Pattern picker is on Custom, and Jump / promote are armed only by the
+        # overlay's structure state, not by a scan ending).
         current = self._workspace.current
         if not active and current is not None:
-            is_file = current.kind is EntryKind.FILE
-            self._headered.setEnabled(is_file)
-            self._header_len.setEnabled(is_file)
             self._apply_pattern_lock()
             self._refresh_structure_actions()

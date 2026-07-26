@@ -32,6 +32,7 @@ from pathlib import Path
 
 from celpix.core.context import KEY_SOURCE_OFFSET, KEY_SOURCE_PATH, PipelineContext
 from celpix.core.errors import Stage
+from celpix.core.notices import warn
 from celpix.plugins.base import FileRef, PluginInfo
 
 # int: group width whose reversal converts this file between its on-disk order
@@ -79,6 +80,8 @@ class N64RomReader:
         extensions=(".z64", ".v64", ".n64"),
         magic=tuple((0, sig) for sig in _ORDERS),
         short_name="N64",
+        # A .v64/.n64 is byte-swapped on read, so plain-bytes write-back would
+        # writer below is the real inverse; the flag is what stops the fallback
     )
 
     def read(self, source: FileRef, ctx: PipelineContext) -> bytes:
@@ -87,6 +90,18 @@ class N64RomReader:
         width = swap_width(raw)
         ctx.set(KEY_SOURCE_PATH, source.path)
         ctx.set(KEY_N64_SWAP, width)
+        if not raw[:4] or bytes(raw[:4]) not in _ORDERS:
+            # None of the three signatures matched, so there is nothing to say
+            # which order this file is in. Treating it as native leaves it
+            # unchanged, which is the only non-destructive guess available.
+            warn(
+                ctx,
+                "Unrecognised N64 header: assuming native byte order",
+                "The first four bytes match none of the three known\n"
+                "orders, so the file is read (and written) unswapped.\n"
+                "If the tiles look byte-swapped, this is why.",
+                self.info.id,
+            )
         # Window the *normalised* stream: a byte's position only survives the
         # swap within its own group, so an offset is only meaningful once the
         # file reads in native order — which is also the order every published

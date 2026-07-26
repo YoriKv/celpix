@@ -106,11 +106,32 @@ class PluginInfo:
     to matching on ``extensions`` alone, which is the best some wrappers offer
     (Sega ``.smd`` carries no reliable marker).
 
+    ``size_modulo`` (``(modulus, remainder)``) and ``min_size`` are the size
+    signature, and they **narrow** a match rather than making one: a container
+    that sets them claims a file only when its extension or magic already matched
+    *and* the file's length agrees. They exist because some wrappers have no
+    marker at all and are identifiable only by the shape of the file — a 512-byte
+    copier header is spotted by the ROM being 512 bytes over a whole number of
+    KiB, since carts never are.
+
+    ``min_size`` is not a detail: a modulo rule on its own also matches files far
+    too small to be what it is describing, and celPix is routinely pointed at
+    those. A 512-byte ``.4bpp.sfc`` tile sheet is 512 bytes over zero KiB, so the
+    copier rule would claim it and hand back nothing at all. The floor is the
+    statement that the rule only means something once there is a plausible
+    cartridge behind the header.
+
+    Narrowing rather than claiming on its own is the other half of that safety: a
+    size rule alone would seize any binary of the right length. Like the other
+    terms these are inert data, so detection stays a comparison and never runs a
+    plugin.
+
     ``short_name`` is a compact form of ``name`` for places that show a plugin
     *inline with other text* rather than on a row of its own — the Files list
     tags each file with its container, where the full "Game Boy ROM (checksum
     repair on write)" would bury the filename it is annotating. Empty means
     ``name`` is already short enough.
+
     """
 
     id: str
@@ -119,6 +140,8 @@ class PluginInfo:
     self_delimiting: bool = True
     extensions: tuple[str, ...] = ()
     magic: tuple[tuple[int, bytes], ...] = ()
+    size_modulo: tuple[int, int] | None = None
+    min_size: int = 0
     short_name: str = ""
 
 

@@ -147,9 +147,11 @@ def test_slice_entry_views_bounded_region_with_absolute_addresses(
     window._activate_entry(entry)
     assert window._doc.tile_count == 2
     # A raw slice displays parent-file-absolute addresses, so its first tile
-    # reads as the slice offset — and the header skip is a whole-file setting.
+    # reads as the slice offset. It has no container of its own — it reads
+    # through its parent's coordinates — so nothing was skipped in front of it.
     assert window._offset_text() == "0x000040"
-    assert not window._headered.isEnabled()
+    assert window._container_skip() == 0
+    assert not window._change_container_action.isEnabled()
     assert window._write_action.isEnabled()
     # Slices never nest: a slice on screen offers no slice-creation actions.
     window._on_tiles_selected(0, 0)  # a selection can't unlock from-selection
@@ -161,7 +163,7 @@ def test_slice_entry_views_bounded_region_with_absolute_addresses(
     # the file *does* spawn slices.
     window._activate_entry(window._workspace.entries[0])
     assert window._doc.tile_count == 8
-    assert window._headered.isEnabled()
+    assert window._change_container_action.isEnabled()
     assert window._new_slice_action.isEnabled()
     assert window._new_slice_from_view_action.isEnabled()
 
@@ -1109,9 +1111,7 @@ def test_load_palette_from_selection(qtbot, tmp_path, monkeypatch) -> None:
     assert window._palette_offset_edit.text() == "0x000020"
 
     # Reloading pixels must not clobber the from-selection palette...
-    window._apply_pixel_config(
-        window._pixel_preset_id(), window._header_offset(), window._byte_position()
-    )
+    window._apply_pixel_config(window._pixel_preset_id(), window._byte_position())
     assert len(window._doc.palette) == 112
     # ...and Write covers the palette too, since an Offset palette is edited in
     # place and saved back into the bytes it was read from.
@@ -2245,6 +2245,9 @@ def test_bitmap_width_recuts_tiles_and_derives_columns(qtbot, tmp_path) -> None:
     assert window._doc.bytes_per_tile == 6 * 6 * 3
     assert window._columns.value() == 51  # 306 / 6, and no longer the user's
     assert not window._columns.isEnabled()
+    # The re-cut size is what Cols was derived from, so the label beside it has
+    # to report the override rather than the codec's nominal 8x8.
+    assert window._tile_size.text() == "6×6"
     assert "6x6" in window.statusBar().currentMessage()
     # The rendered window really is 306 pixels across, which is the whole point.
     assert window._canvas._image.width() == 306
@@ -2255,6 +2258,7 @@ def test_bitmap_width_recuts_tiles_and_derives_columns(qtbot, tmp_path) -> None:
     assert (window._doc.tile_width, window._doc.tile_height) == (8, 8)
     assert window._columns.isEnabled()
     assert window._columns.value() == 16
+    assert window._tile_size.text() == "8×8"
 
     # Changing the Pattern drops the width outright: it described this one asset,
     # so the geometry, Cols and the field itself all reset rather than the width
@@ -2399,28 +2403,86 @@ def test_compression_overlay_hides_on_invalid_data(qtbot, tmp_path) -> None:
     assert not window._overlay.isVisible()
 
 
-def test_header_skip_shifts_view_and_offsets(qtbot, tmp_path) -> None:
-    header = bytes(range(16))
-    body = bytes((i * 13 + 1) & 0xFF for i in range(32 * 8))
+def test_copier_header_is_detected_and_skipped(qtbot, tmp_path) -> None:
+    """A headered ROM opens on the cartridge, not on the copier header, and its
+    addresses count from the file — the container decides both, with no setting
+    for the user to get wrong.
+
+    Sized past the copier rule's floor on purpose: the same arithmetic on a small
+    file is a tile sheet, not a header (see test_small_rom_sized_file_is_not_headered).
+    """
+    header = bytes(range(256)) * 2  # 512 bytes of copier metadata
+    body = bytes((i * 13 + 1) & 0xFF for i in range(0x8000))
     px = tmp_path / "rom.sfc"
     px.write_bytes(header + body)
 
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(px))
-    assert bytes(window._doc.pixel_data[:16]) == header  # unchecked: raw file
 
-    window._header_len.setValue(16)  # no re-render while unchecked
-    window._headered.setChecked(True)
-    assert window._doc.pixel_config.source.offset == 16
+    assert window._workspace.current.container_id == "read.copier-header"
     assert bytes(window._doc.pixel_data) == body
-    assert window._doc.tile_count == 8
+    # Offsets stay file-absolute, so ROM addresses still mean what they say.
+    assert window._display_base() == 512
+    assert window._offset_text() == "0x000200"
 
-    window._header_len.setValue(32)  # a length edit re-applies while checked
-    assert bytes(window._doc.pixel_data) == body[16:]
 
-    window._headered.setChecked(False)  # unchecking restores the full file
-    assert bytes(window._doc.pixel_data) == header + body
+def test_container_notices_land_in_the_row_tooltip(qtbot, tmp_path) -> None:
+    """A non-fatal container notice washes the entry's row and spells itself out
+    in that row's tooltip — the one place a user already looks to ask what is
+    wrong with a row, alongside "Referenced file is missing".
+
+    The row is the part that needs a test: the panel refreshes an entry when it is
+    *added*, which is before its document exists and so before it has any notices
+    to show — so this only works if something refreshes it after the load.
+    """
+    from PySide6.QtCore import Qt
+
+    # A CHR-RAM cart declares zero CHR banks: the read succeeds, but what it
+    # hands back is program code rather than tiles.
+    chr_ram = tmp_path / "chrram.nes"
+    chr_ram.write_bytes(
+        bytes([*b"NES\x1a", 2, 0, 0, 0])
+        + bytes(8)
+        + bytes((i * 7) & 0xFF for i in range(0x8000))
+    )
+    clean = tmp_path / "clean.bin"
+    clean.write_bytes(bytes((i * 13) & 0xFF for i in range(4096)))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(chr_ram))
+
+    row = window._files_panel._tree.topLevelItem(0)
+    assert row.background(0).style() != Qt.BrushStyle.NoBrush  # amber
+    tip = row.toolTip(0)
+    assert "CHR-RAM cart: no tile data in this file" in tip  # the summary...
+    assert "0 CHR banks" in tip  # ...and the explanation under it
+    assert row.toolTip(1) == tip  # the glyph answers too, not just the name
+
+    # An entry with nothing to report carries no wash and no extra tooltip lines.
+    window._load_pixel(str(clean))
+    plain = window._files_panel._tree.topLevelItem(1)
+    assert plain.background(0).style() == Qt.BrushStyle.NoBrush
+    assert plain.toolTip(0) == str(clean)
+    # Switching back restores it, since it is derived rather than one-shot.
+    window._activate_entry(window._workspace.entries[0])
+    assert "CHR-RAM" in window._files_panel._tree.topLevelItem(0).toolTip(0)
+
+
+def test_small_rom_sized_file_is_not_headered(qtbot, tmp_path) -> None:
+    """A 512-byte `.sfc` is a tile sheet that happens to fit the copier
+    arithmetic, not a header with nothing behind it — claiming it would hand the
+    view an empty document."""
+    px = tmp_path / "tiles.4bpp.sfc"
+    px.write_bytes(bytes((i * 13 + 1) & 0xFF for i in range(512)))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+
+    assert window._workspace.current.container_id == RAW_READ
+    assert len(window._doc.pixel_data) == 512
 
 
 def test_jump_and_scan_navigate_structures(qtbot, tmp_path) -> None:

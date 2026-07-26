@@ -30,6 +30,11 @@ from celpix.plugins.builtins.lz_command import (
 )
 from celpix.plugins.builtins.m7_interleave import M7VramCompress, M7VramDecompress
 from celpix.plugins.builtins.packbits import PackBitsCompress, PackBitsDecompress
+from celpix.plugins.builtins.split_planes import (
+    PART_COUNTS,
+    SplitPlanesCompress,
+    SplitPlanesDecompress,
+)
 
 # -- LZ1/LZ2 command stream -------------------------------------------------
 
@@ -253,6 +258,30 @@ def test_m7_vram_split_round_trips_odd_length() -> None:
     data = bytes((i * 37 + 5) & 0xFF for i in range(129))
     split = M7VramDecompress().decompress(data, PipelineContext())
     assert M7VramCompress().compress(split, PipelineContext()) == data
+
+
+# -- Split bitplanes (N equal parts, one per plane) --------------------------
+
+
+def test_split_planes_join_interleaves_parts_in_order() -> None:
+    """Part *k* must land on tile byte ``k + N * y``, which is what makes the
+    shipped ``{ base = k, stride = N }`` planar presets read the joined buffer."""
+    parts = bytes((0x10, 0x11, 0x12)) + bytes((0x20, 0x21, 0x22))
+    joined = SplitPlanesDecompress(2).decompress(parts, PipelineContext())
+    assert joined == bytes((0x10, 0x20, 0x11, 0x21, 0x12, 0x22))
+    assert SplitPlanesCompress(2).compress(joined, PipelineContext()) == parts
+
+
+@pytest.mark.parametrize("parts", PART_COUNTS)
+def test_split_planes_round_trips_including_ragged_tail(parts: int) -> None:
+    """Both directions are exact for every part count, and a length that isn't a
+    whole number of parts keeps its tail rather than shearing the image."""
+    dec, enc = SplitPlanesDecompress(parts), SplitPlanesCompress(parts)
+    ctx = PipelineContext()
+    for length in (0, 1, parts * 8 - 1, parts * 8, parts * 8 + 3):
+        data = bytes((i * 37 + 5) & 0xFF for i in range(length))
+        assert enc.compress(dec.decompress(data, ctx), ctx) == data
+        assert dec.decompress(enc.compress(data, ctx), ctx) == data
 
 
 # -- Konami NES RLE ---------------------------------------------------------

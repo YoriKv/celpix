@@ -25,6 +25,14 @@ reports which scheme they use, and the user picks "PackBits" in the Compression
 dropdown to unpack them. The two layers compose — that is why they are separate
 pipeline stages.
 
+**Telling the user something.** Two channels, and the difference matters. Raise
+when the read cannot proceed — celPix stops and reports it, and nothing opens.
+Call ``warn``/``inform`` when it *can* proceed but the result deserves a caveat:
+an unsupported compression, strips joined out of a scattered file. Those mark the
+entry in the files list and spell themselves out in its tooltip, without
+interrupting anyone. A plugin may also record notices and *then* raise, so a hard failure can
+carry what led up to it.
+
 **What it deliberately doesn't do**, being an example: tiled TIFFs
 (``TileOffsets``, tag 324), multi-page files (only the first IFD is read),
 BigTIFF, and any compression beyond none/PackBits. Each would be more parsing,
@@ -35,6 +43,7 @@ from pathlib import Path
 
 from celpix.core.context import KEY_SOURCE_OFFSET, KEY_SOURCE_PATH, PipelineContext
 from celpix.core.errors import Stage
+from celpix.core.notices import inform, warn
 from celpix.plugins import FileRef, PluginInfo
 
 _LITTLE = b"II*\x00"  # byte order + magic 42, together the whole signature
@@ -118,6 +127,30 @@ class TiffReader:
         # Advisory, like everything on the context: it tells the user which
         # Compression entry to pick without this reader deciding for them.
         ctx.set("tiff.compression", name)
+        # A *notice* is the other half of that: the context entry above is for
+        # another stage to read, this is for the person looking at the result.
+        # Use it whenever the read succeeded but the bytes are not quite what
+        # was asked for — celPix marks the entry in the files list and puts them
+        # in its tooltip. Raising is still the right answer when the read cannot
+        # proceed at all (see _strips below).
+        if compression not in _COMPRESSION_NAMES:
+            warn(
+                ctx,
+                f"Unsupported TIFF compression ({compression})",
+                "The strips are handed over exactly as stored, so they\n"
+                "will look like noise until a matching Compression\n"
+                "plugin unpacks them - and this reader ships none.",
+                self.info.id,
+            )
+        if len(strips) > 1:
+            inform(
+                ctx,
+                f"Joined {len(strips)} strips",
+                "The image is stored in pieces scattered through the\n"
+                "file. They are shown end to end here, and written back\n"
+                "to their own places on save.",
+                self.info.id,
+            )
         joined = b"".join(raw[at : at + length] for at, length in strips)
         if source.length is not None:
             joined = joined[: source.length]

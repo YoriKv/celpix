@@ -11,6 +11,33 @@
   reads `.v64`/`.n64` in native byte order and writes them back as they were.
 - **Plugin examples**: a worked TIFF container example, plus corrections to the
   compression and container reference plugins and the contracts they document.
+- **Containers can now say something without failing.** When a file opens but
+  isn't quite what it looks like — a CHR-RAM `.nes` that holds no tiles at all, a
+  `.smd` with a tail too short to deinterleave — the Files list highlights it and
+  its tooltip explains what was dropped or assumed. Previously those cases were
+  silent. Each condition has its own marker in the list, so a row says which it
+  is at a glance: **?** for a file that needs locating, **!** for something a
+  container had to assume.
+- **Copier headers are detected, not configured.** A headered ROM
+  (`.smc`/`.swc`/`.fig`/`.sfc`) now opens straight onto the cartridge through a
+  container of its own, and saves back behind the header. The **Header**
+  checkbox and size box are gone with it — a custom header size returns later as
+  a container setting. Addresses now come from whatever the container skipped, so
+  a `.nes` finally shows real file offsets instead of counting from zero.
+- **Fixed: saving corrupted `.nes`, `.smd` and interleaved SNES files.** These
+  containers unwrap the file on open but had no matching writer, so saving wrote
+  the unwrapped bytes straight back — replacing a `.nes` with just its CHR ROM,
+  and scrambling a `.smd`. Even opening and saving with no edit destroyed the
+  file. Each now writes back through its own container, and a container that
+  cannot reproduce its framing is refused rather than silently degraded.
+- **Arcade tile formats**: new **Split bitplanes** compression option joins
+  graphics stored as 2, 3 or 4 separate plane ROMs, which makes a large family of
+  arcade tile layouts readable with the existing planar formats. Three new Atari
+  System 2 formats (8×8 chars, 8×8 playfield, 16×16 sprites) on a new
+  nibble-planar codec.
+- **New pixel formats**: Nintendo 64 I8, IA8 and IA16 intensity textures.
+- **Tile size on the view bar**: the size the tiles on screen are cut to is now
+  shown beside Cols, including when a bitmap width has re-cut it.
 - **Format reference**: new MAME reference notes — its universal tile-layout
   model, how arcade graphics ROM regions are assembled, and the Atari System 2
   pixel format.

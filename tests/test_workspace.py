@@ -5,6 +5,7 @@ from __future__ import annotations
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
+    KEY_SOURCE_OFFSET,
     PipelineContext,
 )
 from celpix.core.document import Document
@@ -114,7 +115,7 @@ def test_pixel_config_for_slice_bounds_source_and_derives_compressor(tmp_path) -
     rom = ws.open_file(str(tmp_path / "rom.sfc"))
 
     lz = ws.add_slice(rom.path, "lz", 0x200, 0x80, "decompress.lz16")
-    cfg = pixel_config_for(lz, "preset.pixel.snes-4bpp", 0, reg)
+    cfg = pixel_config_for(lz, "preset.pixel.snes-4bpp", reg)
     assert cfg.source == FileRef(rom.path, offset=0x200, length=0x80)
     assert cfg.decompress_id == "decompress.lz16"
     assert cfg.compress_id == "compress.lz16"
@@ -126,22 +127,23 @@ def test_pixel_config_for_slice_bounds_source_and_derives_compressor(tmp_path) -
     # decompress.X ↔ compress.X id convention, so an unregistered counterpart
     # (compress.view-only-example) disables write-back.
     rle = ws.add_slice(rom.path, "rle", 0x0, None, "decompress.view-only-example")
-    cfg = pixel_config_for(rle, "preset.pixel.snes-4bpp", 0, reg)
+    cfg = pixel_config_for(rle, "preset.pixel.snes-4bpp", reg)
     assert not cfg.write_enabled
     assert cfg.compress_id == "compress.none"
 
-    # A FILE entry keeps today's behaviour: header offset, unbounded.
-    cfg = pixel_config_for(rom, "preset.pixel.snes-4bpp", 512, reg)
-    assert cfg.source == FileRef(rom.path, offset=512)
+    # A FILE entry is unbounded and starts at the file: any header skip is the
+    # container's to make and to record, not something the config asks for.
+    cfg = pixel_config_for(rom, "preset.pixel.snes-4bpp", reg)
+    assert cfg.source == FileRef(rom.path)
     assert cfg.write_enabled
 
 
 def test_slice_of_dirty_parent_reads_the_unsaved_bytes_past_a_header(tmp_path) -> None:
-    """A slice of an edited parent sees the edits, rebased across the header skip.
+    """A slice of an edited parent sees the edits, rebased across the container's skip.
 
-    The parent's buffer starts at its header skip, so serving a slice from it is
-    an offset rebase — the case that silently reads the wrong region if the base
-    is dropped. Write must stay file-absolute regardless.
+    The parent's buffer starts past whatever its container skipped, so serving a
+    slice from it is an offset rebase — the case that silently reads the wrong
+    region if the base is dropped. Write must stay file-absolute regardless.
     """
     reg = default_registry()
     rom = tmp_path / "rom.sfc"
@@ -151,21 +153,24 @@ def test_slice_of_dirty_parent_reads_the_unsaved_bytes_past_a_header(tmp_path) -
     sl = ws.add_slice(parent.path, "gfx", 0x220, 0x10)  # absolute file offset
 
     # Clean parent: the slice reads the file, and reads it correctly.
-    cfg = pixel_config_for(sl, "preset.pixel.snes-4bpp", 0, reg, ws)
+    cfg = pixel_config_for(sl, "preset.pixel.snes-4bpp", reg, ws)
     assert cfg.source.data is None
     assert pipeline.load_pixel_data(cfg, reg).data == bytes(range(0x20, 0x30))
 
     # The parent is loaded past its header and edited in memory but not written.
     parent.doc = _fake_doc()
     parent.doc.pixel_config = PathwayConfig(
-        source=FileRef(parent.path, offset=512), interpret_preset_id="p"
+        source=FileRef(parent.path), interpret_preset_id="p"
     )
+    # What Read recorded is the rebase base — the container's own start, which
+    # the config never names.
+    parent.doc.pixel_ctx.set(KEY_SOURCE_OFFSET, 512)
     parent.doc.pixel_data = bytes(range(256))  # file bytes 512.. as loaded
     parent.doc.replace_bytes(0x20, b"\xaa" * 0x10)  # edit at file offset 0x220
     ws.set_pixel_revision(parent, ws.next_revision())
     assert parent.pixel_dirty
 
-    cfg = pixel_config_for(sl, "preset.pixel.snes-4bpp", 0, reg, ws)
+    cfg = pixel_config_for(sl, "preset.pixel.snes-4bpp", reg, ws)
     assert cfg.source.data_base == 512  # rebased onto the parent's window
     assert pipeline.load_pixel_data(cfg, reg).data == b"\xaa" * 0x10
     # Reading from memory must not move where a save lands.
@@ -173,7 +178,7 @@ def test_slice_of_dirty_parent_reads_the_unsaved_bytes_past_a_header(tmp_path) -
 
     # Without the workspace the factory can't know about the parent - it reads
     # the file, which is the pre-edit truth rather than a wrong region.
-    cfg = pixel_config_for(sl, "preset.pixel.snes-4bpp", 0, reg)
+    cfg = pixel_config_for(sl, "preset.pixel.snes-4bpp", reg)
     assert pipeline.load_pixel_data(cfg, reg).data == bytes(range(0x20, 0x30))
 
 

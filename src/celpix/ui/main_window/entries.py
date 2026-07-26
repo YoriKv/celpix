@@ -787,9 +787,6 @@ class EntriesMixin:
         # is landed after load, once the new preset's tile size is known. Read
         # before _jump_into_parent drops the document it may live on.
         prior_view = parent.doc.view if parent.doc is not None else parent.pending_view
-        # Adopt the slice's interpretation but keep the parent's own header skip
-        # - a slice has no header concept, and its offsets are absolute anyway.
-        prior = parent.session
         self._jump_into_parent(
             parent,
             slice_entry,
@@ -797,8 +794,6 @@ class EntriesMixin:
                 pixel_preset_id=src.pixel_preset_id,
                 palette_preset_id=src.palette_preset_id,
                 palette_mode=src.palette_mode,
-                headered=prior.headered if prior is not None else False,
-                header_length=prior.header_length if prior is not None else 512,
             ),
             view=(
                 replace(prior_view, tile_offset=0, byte_nudge=0)
@@ -954,8 +949,8 @@ class EntriesMixin:
         if self._workspace.current is not parent or self._doc is None:
             return  # vanished file / bad codec - leave the view untouched
         # slice_offset is file-absolute; _load_palette_at_offset re-adds the
-        # header skip, so strip it to land on the absolute byte.
-        self._load_palette_at_offset(bookmark.slice_offset - self._header_offset())
+        # container's skip, so strip it to land on the absolute byte.
+        self._load_palette_at_offset(bookmark.slice_offset - self._container_skip())
 
     def _create_slice_via_dialog(
         self,

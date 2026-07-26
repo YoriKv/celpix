@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import RAW_READ
-from celpix.plugins.detect import container_write_id, detect_container
+from celpix.plugins.detect import container_write_enabled, detect_container
 from celpix.plugins.registry import Registry
 
 __all__ = ["ContainerDialog"]
@@ -90,15 +90,13 @@ class ContainerDialog(QDialog):
 
     def _refresh_note(self) -> None:
         chosen = self._container.currentData()
-        own_writer = chosen.replace("read.", "write.", 1)
-        unwritable = chosen != RAW_READ and (
-            container_write_id(self._registry, chosen) != own_writer
-        )
+        unwritable = not container_write_enabled(self._registry, chosen)
         self._note.setVisible(unwritable)
         if unwritable:
             self._note.setText(
-                "This container has no writer, so saving writes plain bytes "
-                "without re-wrapping them."
+                "This container has no writer, so the file opens read-only.\n"
+                "Saving plain bytes back would undo the unwrapping rather\n"
+                "than reverse it, leaving the file corrupt."
             )
 
     def container_id(self) -> str:
