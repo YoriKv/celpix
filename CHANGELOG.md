@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.1 - unreleased
+## v0.3.1 - 2026-07-27
 
 - **Paste/Import fix**: pasted and imported images now work correctly on block
   layouts.
