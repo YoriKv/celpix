@@ -4,32 +4,32 @@ load it (code plugins ask for confirmation the first time, since they run with
 the app's privileges).
 
 A container is **one plugin with both directions on it**: ``read`` strips whatever
-framing the pixel codec shouldn't see (a header, an interleave, a checksum block),
-handing downstream contiguous tile data, and ``write`` is its inverse, re-wrapping
-the edited bytes on save. They live together because they are two ends of one
-on-disk wrapper and have to stay each other's inverse.
+framing the pixel codec shouldn't see — a header, an interleave, a checksum block
+— handing downstream contiguous tile data, and ``write`` re-wraps the edited bytes
+on save. They live together because they are two ends of one on-disk wrapper and
+have to stay each other's inverse.
 
 **``write`` is optional**, and a container without one is view-only: its files
-open and cannot be saved. That is deliberate — unwrapping is not something plain
-bytes can undo, so a missing inverse must cost a save rather than a file.
+open and cannot be saved. Unwrapping is not something plain bytes can undo, so a
+missing inverse costs a save rather than a file.
 
 This toy container is a fixed 8-byte magic header (``CELPIXEX``) in front of the
-payload — ``read`` skips it, ``write`` puts it back. Note the offset ``read``
-publishes: it lets a plain write default the bytes back to exactly where they came
-from, so an unedited open/save round-trips byte-identically.
+payload: ``read`` skips it, ``write`` puts it back. Note the offset ``read``
+publishes — it lets a plain write default the bytes back to where they came from,
+so an unedited open/save round-trips byte-identically. See _tiff.py for a worked
+example on a real format.
 
 **Neither direction touches the disk.** The host opens the file and hands ``read``
-the bytes (:class:`ReadSource`); ``write`` is shown the destination as it
-currently stands (:class:`WriteTarget`) and *returns* what should replace it. So a
-container is a byte transform both ways — which is what keeps it working whether
-its bytes came from a file, from a parent's unsaved buffer, or from several files
-joined together.
+the bytes (:class:`ReadSource`); ``write`` is shown the destination as it stands
+(:class:`WriteTarget`) and *returns* what should replace it. That keeps a
+container working whether its bytes came from a file, a parent's unsaved buffer,
+or several files joined together.
 
 Two cases still need handling, and they are most of what separates a container
 that works from one that quietly eats data:
 
 - ``source.offset`` / ``source.length`` — the caller wants a bounded window, not
-  everything to EOF. ``source.window()`` applies both when your container has no
+  everything to EOF. ``source.window()`` applies both, for a container with no
   opinion of its own about where the payload starts.
 - ``dest.offset`` / ``dest.length`` — the save target is a slot *inside* a larger
   file. Returning just the payload truncates the file to it; ``splice`` lays the
@@ -48,6 +48,12 @@ class ExampleContainer:
         id="container.example",
         name="Example container (magic header)",
         stage=Stage.CONTAINER,
+        # Detection is declarative: describe the file, never inspect it. This is
+        # what lets the container claim its own files instead of being picked by
+        # hand. See _tiff.py for extensions/size_modulo/min_size too.
+        magic=((0, _MAGIC),),
+        # The tag the Files list shows beside a filename: "art.bin (Example)".
+        short_name="Example",
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
@@ -57,27 +63,31 @@ class ExampleContainer:
         splice edits back into the right place and the UI can show real file
         addresses. That offset is the one thing only the container knows.
 
-        Where the payload begins is the *container's* answer, not the caller's,
-        so ``source.offset`` is deliberately not consulted here. A container that
-        does honour it (celPix's own raw-file one is the model) should use
-        ``source.window()``, which keeps the offset file-absolute even when the
-        bytes came from a buffer starting part way into the file.
+        Where the payload begins is the *container's* answer, not the caller's, so
+        ``source.offset`` is not consulted here. A container stripping no framing
+        at all wants ``plain_read(source, ctx)`` instead (importable from
+        ``celpix.plugins``), which publishes the offset and windows the bytes in
+        one line.
+
+        ``source.base`` is added because the offset is **file-absolute**: the
+        buffer can begin part way into the file, as when a slice reads its parent's
+        unsaved bytes, and a buffer-relative number would put every address and
+        every save-back in the wrong place.
         """
         raw = source.data
         start = len(_MAGIC) if raw[: len(_MAGIC)] == _MAGIC else 0
-        ctx.set(KEY_SOURCE_OFFSET, start)
+        ctx.set(KEY_SOURCE_OFFSET, source.base + start)
         end = len(raw) if source.length is None else start + source.length
         return raw[start:end]
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         """Re-wrap ``data`` in the magic header — the inverse of ``read``.
 
-        Only the whole-file case re-wraps: the framing *is* the file, so the
+        Only the whole-file case re-wraps, the framing *being* the file, so the
         returned bytes are the whole of it. A bounded target is a slot inside a
-        file that already has its own framing, so the payload is spliced into
-        what is there and every byte around it is left alone. Skipping that
-        branch — always returning ``magic + data`` — truncates the file to one
-        slice's worth of bytes.
+        file that already has its own framing, so the payload is spliced into what
+        is there and every byte around it left alone. Skipping that branch and
+        always returning ``magic + data`` truncates the file to one slice.
         """
         if dest.whole_file:
             return _MAGIC + data

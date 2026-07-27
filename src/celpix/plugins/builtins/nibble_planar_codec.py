@@ -3,35 +3,34 @@
 Neither planar nor packed. A planar format gives each plane its own byte and a
 packed one gives each pixel its own field; this family splits the difference:
 **one byte carries four pixels, its high nibble holding one bitplane of those four
-and its low nibble the next**, with bit 3 of a nibble being the leftmost pixel. So
-a byte is 8 bits of picture either way, but the two bits of a pixel sit four bits
-apart in the same byte rather than in two different bytes.
+and its low nibble the next**, bit 3 of a nibble being the leftmost pixel. A byte
+is 8 bits of picture either way, but a pixel's two bits sit four bits apart in one
+byte rather than in two different bytes.
 
     index[i] = ((byte >> (7 - i)) & 1) << hi | ((byte >> (3 - i)) & 1) << lo
 
 Depths past 2bpp add more bytes per group of four pixels, most significant plane
-pair first: at 4bpp the first byte of a group carries index bits 3 and 2 and the
-second carries bits 1 and 0. That is the Atari System 2 encoding, used at three
-geometries across its whole library
-(``docs/graphics-formats-reference/mame-formats.md`` §3), and the same shape
-recurs on Atari's other raster boards.
+pair first: at 4bpp the first byte of a group carries index bits 3 and 2, the
+second bits 1 and 0. That is the Atari System 2 encoding, used at three geometries
+across its library (``docs/graphics-formats-reference/mame-formats.md`` §3), and
+the same shape recurs on Atari's other raster boards.
 
-**The deeper formats need their region joined first.** On the hardware the two
-plane pairs of a 4bpp tile come from opposite halves of the graphics region, not
-from adjacent bytes, so a 4bpp preset here expects a buffer that
+**The deeper formats need their region joined first.** On the hardware a 4bpp
+tile's two plane pairs come from opposite halves of the graphics region rather
+than from adjacent bytes, so a 4bpp preset expects a buffer
 ``reshape.split-planes-2`` has already interleaved
-(:mod:`celpix.plugins.builtins.split_planes`) — after which a group's bytes *are*
-adjacent and this codec stays buffer-relative, which is what keeps windowed
-decoding of a large file working. 2bpp formats carry both planes in one byte
-already and need no such step.
+(:mod:`celpix.plugins.builtins.split_planes`). After that a group's bytes *are*
+adjacent and this codec stays buffer-relative, keeping windowed decoding of a
+large file working. 2bpp formats carry both planes in one byte and need no such
+step.
 
 Any even depth from 2 to 8 works, and any tile width that is a whole number of
-four-pixel groups, because nothing in the kernel is tied to a particular size —
-unlike the planar and packed engines, whose per-row layout assumes eight pixels.
-Both directions run **group byte at a time over the whole buffer**: a given byte
-of a given group sits at a fixed offset inside every tile, so one strided slice
-collects it from all of them and a 256-entry table
-(:mod:`celpix.plugins.builtins._bits`) does the bit shuffle in C.
+four-pixel groups: nothing in the kernel is tied to a size, unlike the planar and
+packed engines whose per-row layout assumes eight pixels. Both directions run
+**group byte at a time over the whole buffer** — a given byte of a given group
+sits at a fixed offset inside every tile, so one strided slice collects it from
+all of them and a 256-entry table (:mod:`celpix.plugins.builtins._bits`) does the
+shuffle in C.
 """
 
 from __future__ import annotations
@@ -43,13 +42,17 @@ from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._bits import (
-    merge_planes,
     nibble_plane_expansion,
     nibble_plane_packing,
+    or_all,
 )
-from celpix.plugins.builtins._tile import check_tile_size, require_whole_tiles
+from celpix.plugins.builtins._tile import (
+    flatten_tiles,
+    require_whole_tiles,
+    tiles_from_rows,
+)
 
-# Four pixels share a byte, two bitplanes to a nibble — both are properties of the
+# Four pixels share a byte, two bitplanes to a nibble. Both are properties of the
 # encoding rather than of any one format, so they are constants, not parameters.
 PIXELS_PER_GROUP = 4
 PLANES_PER_BYTE = 2
@@ -92,8 +95,8 @@ class NibblePlanarGeometry:
     def offset(self, y: int, group: int, group_byte: int) -> int:
         """Byte offset inside a tile of ``group_byte`` of ``group`` on row ``y``.
 
-        Groups run left to right along the row and each group's bytes are adjacent,
-        which is what the split-planes join arranges for the deeper depths.
+        Groups run left to right along the row and each group's bytes are
+        adjacent, which the split-planes join arranges for the deeper depths.
         """
         return y * self.row_bytes + group * self.group_bytes + group_byte
 
@@ -123,14 +126,7 @@ class NibblePlanarCodec:
             return []
         count = len(data) // geo.tile_bytes
         rows = [self._decode_row(data, geo, y, count) for y in range(geo.height)]
-        return [
-            IndexGrid(
-                geo.width,
-                geo.height,
-                b"".join(row[t * geo.width : (t + 1) * geo.width] for row in rows),
-            )
-            for t in range(count)
-        ]
+        return tiles_from_rows(rows, geo.width, geo.height, count)
 
     @staticmethod
     def _decode_row(
@@ -141,7 +137,7 @@ class NibblePlanarCodec:
         for group in range(geo.groups_per_row):
             # A group's four pixels are the OR of one table lookup per group byte,
             # each applied to that byte in all tiles at once.
-            pixels = merge_planes(
+            pixels = or_all(
                 [
                     b"".join(
                         map(
@@ -152,7 +148,7 @@ class NibblePlanarCodec:
                     for gb in range(geo.group_bytes)
                 ]
             )
-            # `pixels` is four bytes per tile; scatter them into the group's columns.
+            # Four bytes per tile; scatter them into the group's columns.
             base = group * PIXELS_PER_GROUP
             for pos in range(PIXELS_PER_GROUP):
                 row[base + pos :: geo.width] = pixels[pos::PIXELS_PER_GROUP]
@@ -162,19 +158,17 @@ class NibblePlanarCodec:
         self, tiles: list[IndexGrid], params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
         geo = NibblePlanarGeometry(params)
-        for t, grid in enumerate(tiles):
-            check_tile_size(grid, geo.width, geo.height, t)
+        pixels = flatten_tiles(tiles, geo.width, geo.height)
         out = bytearray(len(tiles) * geo.tile_bytes)
         if not tiles:
             return bytes(out)
-        pixels = b"".join(bytes(grid.data) for grid in tiles)
         stride = geo.width * geo.height  # one tile's worth of pixels
         for y in range(geo.height):
             for group in range(geo.groups_per_row):
                 base = y * geo.width + group * PIXELS_PER_GROUP
                 for gb in range(geo.group_bytes):
                     # One byte per tile: the OR of the four pixels' contributions.
-                    packed = merge_planes(
+                    packed = or_all(
                         [
                             pixels[base + pos :: stride].translate(
                                 nibble_plane_packing(geo.bpp, gb, pos)

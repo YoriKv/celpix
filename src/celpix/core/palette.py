@@ -150,9 +150,7 @@ class Palette:
         """The fallback for viewing pixels before a real palette is loaded:
         a contrasting first row, a grayscale ramp second, then generated colors.
         Deterministic in ``count``."""
-        if count <= 0:
-            return Palette([])
-        return Palette([_default_color(i) for i in range(count)])
+        return Palette().resized(count)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Palette):

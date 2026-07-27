@@ -1,11 +1,11 @@
-# Direct-color RGB555 direct (8x8) — Tile Molester DC catalogue (§3).
+# Direct-color RGB555 direct (8x8).
 # See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
+# 15 significant bits in a 2-byte pixel.
 id = "preset.pixel.dc-rgb555"
 name = "Direct RGB555 (8x8)"
 engine_id = "codec.direct-color"
 
 [params]
-bpp = 15
 bytes_per_pixel = 2
 byte_order = "little"
 

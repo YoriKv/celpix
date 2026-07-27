@@ -24,7 +24,6 @@ from PySide6.QtGui import (
     QIcon,
     QImage,
     QKeySequence,
-    QPainter,
     QPalette,
     QPixmap,
 )
@@ -39,17 +38,23 @@ from PySide6.QtWidgets import (
 
 from celpix import resources
 from celpix.core.address import format_hex
-from celpix.core.errors import Stage
 from celpix.core.notices import Notice
 from celpix.plugins.detect import container_label
 from celpix.plugins.registry import Registry
 from celpix.project.workspace import (
     Entry,
     EntryKind,
+    data_missing,
     entry_notices,
-    entry_reference_missing,
+    entry_palette_path,
+    palette_missing,
 )
-from celpix.ui.widgets import signals_blocked, take_editing_shortcut
+from celpix.ui.widgets import (
+    icon_cache_key,
+    signals_blocked,
+    take_editing_shortcut,
+    tinted_glyph,
+)
 
 # Translucent amber behind an entry that needs the user's attention — a missing
 # referenced file, or a container that had to assume something. Reads as a
@@ -152,6 +157,7 @@ class FileListPanel(QWidget):
     jump_to_source_requested = Signal(object)  # Entry (a SLICE) — show it in its parent
     jump_to_bookmark_requested = Signal(object)  # Entry (a BOOKMARK) — apply + jump
     bookmark_as_palette_requested = Signal(object)  # Entry (BOOKMARK) — offset palette
+    show_in_manager_requested = Signal(object)  # Entry — reveal its file on disk
     rename_committed = Signal(object, str)  # Entry, new name — a finished rename
 
     def __init__(
@@ -189,10 +195,7 @@ class FileListPanel(QWidget):
         self._editing: Entry | None = None
         # Both built lazily and theme-colored; cached against the palette and
         # pixel ratio they were rasterized for (see _drop_stale_icons).
-        self._bookmark_icon: QIcon | None = None
-        self._missing_icon: QIcon | None = None
-        self._notice_icon: QIcon | None = None
-        self._slice_icon: QIcon | None = None
+        self._icons: dict[str, QIcon] = {}
         self._icon_key: tuple[int, float] | None = None
         # The "Palettes" section header — created with the first palette entry,
         # removed with the last, so an all-pixel-files list stays flat.
@@ -440,11 +443,10 @@ class FileListPanel(QWidget):
                 f"{n}. {path}" for n, path in enumerate(entry.paths, 1)
             )
         if entry.kind is EntryKind.FILE and self._registry is not None:
-            # The full container name, since the label only had room for a tag.
-            full = container_label(self._registry, entry.container_id)
+            # The full container name, since the list column only had room for a tag.
+            full = container_label(self._registry, entry.container_id, short=False)
             if full:
-                plugin = self._registry.plugin(Stage.CONTAINER, entry.container_id)
-                tip += f"\nContainer {plugin.info.name}"
+                tip += f"\nContainer {full}"
         if entry.kind is EntryKind.SLICE:
             # A picture glyph marks a slice as its own little graphic, telling it
             # apart from the ribbon-marked bookmarks it sits among.
@@ -478,11 +480,12 @@ class FileListPanel(QWidget):
             )
             tip += f"\nUnsaved {what}"
         # Two conditions that leave an entry working but not on the bytes the user
-        # thinks: its file has moved, or a container had to drop, assume or
-        # substitute something. Both wash the row amber, and each has its own
-        # glyph, because the fixes differ — go and find the file, versus read what
-        # the container did. Missing wins when both apply: a file that isn't there
-        # cannot have been read, so any notice on the entry is from an older load.
+        # thinks: a file it references (its own, or its palette) has moved, or a
+        # container had to drop, assume or substitute something. Both wash the row
+        # amber, and each has its own glyph, because the fixes differ — go and find
+        # the file, versus read what the container did. Missing wins when both
+        # apply: a file that isn't there cannot have been read, so any notice on
+        # the entry is from an older load.
         #
         # The whole explanation goes in the tooltip. It is the one place a user
         # already looks to ask "what is wrong with this row", so a notice belongs
@@ -490,8 +493,9 @@ class FileListPanel(QWidget):
         notes = entry_notices(entry)
         warnings = [n for n in notes if n.is_warning]
         status: QIcon | None = None
-        if entry_reference_missing(entry):
-            tip += "\nReferenced file is missing - File ▸ Locate missing files"
+        gone = self._missing_lines(entry)
+        if gone:
+            tip += gone + "\nFile ▸ Locate missing files"
             status = self._missing_glyph()
         else:
             # Every notice, not only the warnings that earn the glyph: an info one
@@ -507,6 +511,33 @@ class FileListPanel(QWidget):
         # The glyph is the thing a user points at to ask what is wrong with this
         # one, so it has to answer rather than showing nothing.
         item.setToolTip(_STATUS_COL, tip)
+
+    @staticmethod
+    def _missing_lines(entry: Entry) -> str:
+        """The tooltip lines for whichever of the entry's files is gone; ``""``
+        when both are there.
+
+        Which one is named matters more than that something is: a graphic whose
+        *palette* file moved still opens and still draws (on the default
+        palette), so a row flagged with the same wording as one whose own bytes
+        are gone sends the user looking for a file that never went anywhere. The
+        palette line carries its path too — unlike the data file, it is nowhere
+        else in the tooltip.
+        """
+        lines = []
+        if data_missing(entry):
+            # A slice/bookmark has no file of its own: what's missing is the
+            # parent it reads through, which is what the user has to go and find.
+            lines.append(
+                {
+                    EntryKind.PALETTE: "Palette file is missing",
+                    EntryKind.SLICE: "Parent file is missing",
+                    EntryKind.BOOKMARK: "Parent file is missing",
+                }.get(entry.kind, "File is missing")
+            )
+        if palette_missing(entry):
+            lines.append(f"Palette file is missing:\n  {entry_palette_path(entry)}")
+        return "".join(f"\n{line}" for line in lines)
 
     @staticmethod
     def _notice_lines(notice: Notice) -> str:
@@ -525,39 +556,42 @@ class FileListPanel(QWidget):
 
     def _ribbon_icon(self) -> QIcon:
         """The bookmark marker: a flag glyph in the theme's accent color."""
-        self._drop_stale_icons()
-        if self._bookmark_icon is None:
-            self._bookmark_icon = self._role_icon(
-                "bookmark.png", QPalette.ColorRole.Highlight
-            )
-        return self._bookmark_icon
+        return self._icon("bookmark.png", role=QPalette.ColorRole.Highlight)
 
     def _picture_icon(self) -> QIcon:
         """The slice marker: a framed-picture glyph in the theme's text
         color — the universal "this is a graphic" symbol."""
-        self._drop_stale_icons()
-        if self._slice_icon is None:
-            self._slice_icon = self._role_icon("slice.png", QPalette.ColorRole.Text)
-        return self._slice_icon
+        return self._icon("slice.png", role=QPalette.ColorRole.Text)
 
     def _missing_glyph(self) -> QIcon:
         """A question mark: this entry's file is unaccounted for, and the fix is
         to go and find it (File ▸ Locate missing files). Deliberately not a cross
         — at this size, next to rows the user can close, a cross reads as a close
         button rather than a state."""
-        self._drop_stale_icons()
-        if self._missing_icon is None:
-            self._missing_icon = self._tinted_icon("missing.png", _WARNING_INK)
-        return self._missing_icon
+        return self._icon("missing.png", tint=_WARNING_INK)
 
     def _notice_glyph(self) -> QIcon:
         """An exclamation mark: the entry opened, but a stage had to drop, assume
         or substitute something on the way in, and the row's own tooltip spells
         out what."""
+        return self._icon("notice.png", tint=_WARNING_INK)
+
+    def _icon(self, filename: str, *, role=None, tint: QColor | None = None) -> QIcon:  # noqa: ANN001
+        """A baked glyph, kept until what it was rasterized from moves.
+
+        Keyed on the file, since each one is baked in exactly one color — either
+        a theme ``role`` (which follows the palette) or a fixed ``tint``.
+        """
         self._drop_stale_icons()
-        if self._notice_icon is None:
-            self._notice_icon = self._tinted_icon("notice.png", _WARNING_INK)
-        return self._notice_icon
+        icon = self._icons.get(filename)
+        if icon is None:
+            icon = (
+                self._role_icon(filename, role)
+                if role is not None
+                else self._tinted_icon(filename, tint)
+            )
+            self._icons[filename] = icon
+        return icon
 
     def _drop_stale_icons(self) -> None:
         """Discard the cached glyphs when what they were rasterized *from* has
@@ -565,13 +599,10 @@ class FileListPanel(QWidget):
         (the window dragged to a differently scaled monitor). Both are baked
         into the finished pixmap, so a cache kept across either change would
         show yesterday's color at the wrong resolution."""
-        key = (self.palette().cacheKey(), self.devicePixelRatioF())
+        key = icon_cache_key(self)
         if key != self._icon_key:
             self._icon_key = key
-            self._bookmark_icon = None
-            self._slice_icon = None
-            self._missing_icon = None
-            self._notice_icon = None
+            self._icons.clear()
 
     def changeEvent(self, event) -> None:  # Qt override
         # A theme switch repaints the rows, but the icons are pixmaps baked in
@@ -636,31 +667,9 @@ class FileListPanel(QWidget):
 
     def _glyph_pixmap(self, glyph: QImage, color: QColor) -> QPixmap:
         """``glyph`` tinted ``color`` and centred in the icon box, at device scale."""
-        tinted = QImage(glyph)  # per-color copy: the tint is destructive
-        # SourceIn keeps the glyph's alpha but replaces its color with the tint.
-        tinting = QPainter(tinted)
-        tinting.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        tinting.fillRect(tinted.rect(), color)
-        tinting.end()
-        ratio = self.devicePixelRatioF()
-        box_w, box_h = round(_ICON_W * ratio), round(_ICON_H * ratio)
-        scaled = QPixmap.fromImage(tinted).scaled(
-            box_w,
-            box_h,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
+        return tinted_glyph(
+            glyph, color, QSize(_ICON_W, _ICON_H), self.devicePixelRatioF()
         )
-        canvas = QPixmap(box_w, box_h)
-        canvas.fill(Qt.GlobalColor.transparent)
-        placing = QPainter(canvas)
-        placing.drawPixmap(
-            (box_w - scaled.width()) // 2,
-            (box_h - scaled.height()) // 2,
-            scaled,
-        )
-        placing.end()
-        canvas.setDevicePixelRatio(ratio)
-        return canvas
 
     # -- interaction ---------------------------------------------------------
     def _on_current_item_changed(self, item: QTreeWidgetItem | None, _prev) -> None:
@@ -766,6 +775,10 @@ class FileListPanel(QWidget):
         entry: Entry | None = item.data(0, Qt.ItemDataRole.UserRole)
         if entry is None:  # the Palettes header has no actions
             return
+        # "&" marks the keyboard mnemonic - the letter that picks the entry once
+        # the menu is open. It matches the action's shortcut letter where one is
+        # free (Write/Ctrl+W, Edit File Container/Ctrl+E). Each entry kind builds
+        # its own menu below, so the letters only need to be unique per branch.
         menu = QMenu(self)
         if entry.kind is EntryKind.FILE:
             # Only files spawn slices and bookmarks (neither nests), so the
@@ -773,27 +786,27 @@ class FileListPanel(QWidget):
             # additionally need the file on screen — the viewport, selection
             # and settings snapshot live only there.
             sliceable = entry is self._current and entry.doc is not None
-            new_slice = menu.addAction("New Slice…")
+            new_slice = menu.addAction("New &Slice…")
             new_slice.triggered.connect(lambda: self.new_slice_requested.emit(entry))
-            here = menu.addAction("New Slice from View")
+            here = menu.addAction("New Slice from &View")
             here.triggered.connect(
                 lambda: self.new_slice_from_view_requested.emit(entry)
             )
             here.setEnabled(sliceable)
-            from_sel = menu.addAction("New Slice from Selection")
+            from_sel = menu.addAction("New Slice &from Selection")
             from_sel.triggered.connect(
                 lambda: self.new_slice_from_selection_requested.emit(entry)
             )
             from_sel.setEnabled(sliceable and self._has_selection)
-            bookmark = menu.addAction("New Bookmark")
+            bookmark = menu.addAction("New &Bookmark")
             bookmark.triggered.connect(lambda: self.new_bookmark_requested.emit(entry))
             bookmark.setEnabled(sliceable)
             menu.addSeparator()
-            rename = menu.addAction("Rename…")
+            rename = menu.addAction("Re&name…")
             rename.triggered.connect(lambda: self._begin_rename(entry))
             # Always offered, and needs no document: correcting the container is
             # exactly what a file that failed to make sense needs.
-            container = menu.addAction("Edit File Container…")
+            container = menu.addAction("&Edit File Container…")
             # Display-only, like Remove's below: the working binding is the File
             # menu's action, which acts on the *current* entry rather than the
             # right-clicked one.
@@ -810,48 +823,48 @@ class FileListPanel(QWidget):
             # real binding here would fire from anywhere in the app. The working
             # one is the tree's own key handling, which the navigation filter
             # already defers to while the list has focus.
-            up = menu.addAction("Move Up\tShift+Up")
+            up = menu.addAction("Move &Up\tShift+Up")
             up.triggered.connect(lambda: self.move_requested.emit(entry, -1))
             up.setEnabled(self._can_move(item, -1))
-            down = menu.addAction("Move Down\tShift+Down")
+            down = menu.addAction("Move &Down\tShift+Down")
             down.triggered.connect(lambda: self.move_requested.emit(entry, 1))
             down.setEnabled(self._can_move(item, 1))
             menu.addSeparator()
         elif entry.kind is EntryKind.SLICE:
             # A slice's primary navigation action: reopen its region in the
             # parent file, decoded the slice's way, at the slice's offset.
-            jump = menu.addAction("Jump to Source")
+            jump = menu.addAction("&Jump to Source")
             jump.triggered.connect(lambda: self.jump_to_source_requested.emit(entry))
             menu.addSeparator()
-            rename = menu.addAction("Rename…")
+            rename = menu.addAction("Re&name…")
             rename.triggered.connect(lambda: self._begin_rename(entry))
-            edit = menu.addAction("Edit…")
+            edit = menu.addAction("&Edit…")
             edit.triggered.connect(lambda: self.edit_slice_requested.emit(entry))
             menu.addSeparator()
         elif entry.kind is EntryKind.PALETTE:
             # The double-click action, discoverable.
-            use = menu.addAction("Use as Current Palette")
+            use = menu.addAction("&Use as Current Palette")
             use.triggered.connect(lambda: self.use_palette_requested.emit(entry))
             # A file palette owns its colors and is edited in place, so it Writes
             # back to its own .pal from here — offered only with unsaved edits (the
             # graphic that renders it is never dirtied by a color change).
-            write = menu.addAction("Write")
+            write = menu.addAction("&Write")
             write.triggered.connect(lambda: self.write_requested.emit(entry))
             write.setEnabled(entry.doc is not None and entry.palette_dirty)
             menu.addSeparator()
         else:
             # The double-click action, discoverable; a bookmark holds no bytes
             # of its own, so there is no Write here.
-            jump = menu.addAction("Jump to Bookmark")
+            jump = menu.addAction("&Jump to Bookmark")
             jump.triggered.connect(lambda: self.jump_to_bookmark_requested.emit(entry))
             # Reuse the bookmarked offset as a palette offset — the graphics
             # position often marks where the palette sits.
-            as_palette = menu.addAction("Use as Palette")
+            as_palette = menu.addAction("&Use as Palette")
             as_palette.triggered.connect(
                 lambda: self.bookmark_as_palette_requested.emit(entry)
             )
             menu.addSeparator()
-            rename = menu.addAction("Rename…")
+            rename = menu.addAction("Re&name…")
             rename.triggered.connect(lambda: self._begin_rename(entry))
             menu.addSeparator()
         if entry.kind in (EntryKind.FILE, EntryKind.SLICE):
@@ -859,14 +872,14 @@ class FileListPanel(QWidget):
             # view, so an entry can leave as an image without being activated
             # first — the window loads it on demand. Always offered: whether the
             # bytes decode is only knowable by trying.
-            export = menu.addMenu("Export")
-            png = export.addAction("As PNG…")
+            export = menu.addMenu("E&xport")
+            png = export.addAction("As &PNG…")
             png.triggered.connect(lambda: self.export_png_requested.emit(entry))
-            raw = export.addAction("Raw…")
+            raw = export.addAction("&Raw…")
             raw.triggered.connect(lambda: self.export_raw_requested.emit(entry))
             if entry.kind is EntryKind.FILE and self._has_slices(item):
                 export.addSeparator()
-                slices = export.addAction("Slices as PNGs…")
+                slices = export.addAction("&Slices as PNGs…")
                 slices.triggered.connect(
                     lambda: self.export_slices_requested.emit(entry)
                 )
@@ -874,9 +887,9 @@ class FileListPanel(QWidget):
             # the start of the entry. Unlike export it needs the entry on screen
             # (it is fitted to the view's palette and arrangement), so the window
             # activates it first.
-            import_png = menu.addAction("Import from PNG…")
+            import_png = menu.addAction("&Import from PNG…")
             import_png.triggered.connect(lambda: self.import_png_requested.emit(entry))
-            write = menu.addAction("Write")
+            write = menu.addAction("&Write")
             write.triggered.connect(lambda: self.write_requested.emit(entry))
             # Writing needs a loaded, write-capable document; a never-activated
             # or view-only entry has nothing to write.
@@ -884,7 +897,16 @@ class FileListPanel(QWidget):
                 entry.doc is not None and entry.doc.pixel_config.write_enabled
             )
             menu.addSeparator()
-        remove = menu.addAction("Remove")
+        if entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
+            # The two kinds that *are* a file on disk - a slice or bookmark only
+            # borrows its parent's, so revealing one would point at a file the
+            # row isn't. Named for the job rather than for any one desktop's
+            # file manager, since the same item opens Explorer, Finder or
+            # whatever the session runs.
+            reveal = menu.addAction("Show in File &Manager")
+            reveal.triggered.connect(lambda: self.show_in_manager_requested.emit(entry))
+            menu.addSeparator()
+        remove = menu.addAction("&Remove")
         # Display-only shortcut hint: the working binding is the tree-focused
         # QShortcut; a menu action's own shortcut is inert while the menu is
         # closed, so this just labels the key in the shortcut column.

@@ -115,12 +115,3 @@ def notices(ctx: PipelineContext) -> tuple[Notice, ...]:
     if not isinstance(value, tuple):
         return ()
     return tuple(item for item in value if isinstance(item, Notice))
-
-
-def worst_level(items: tuple[Notice, ...]) -> NoticeLevel | None:
-    """The most severe level present, or None for an empty list."""
-    if not items:
-        return None
-    if any(item.is_warning for item in items):
-        return NoticeLevel.WARNING
-    return NoticeLevel.INFO

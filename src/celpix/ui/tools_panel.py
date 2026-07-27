@@ -31,10 +31,10 @@ from PySide6.QtWidgets import (
 
 from celpix import resources
 from celpix.ui.tools import TOOL_SPECS, Tool, ToolSpec
+from celpix.ui.widgets import icon_cache_key
 
 # A single vertical column: the panel is a rail down the right edge of the canvas,
 # so the nine tools read top-to-bottom like a paint program's toolbox.
-_COLUMNS = 1
 # The rail follows TOOL_SPECS order, which is also the 1..9 key order — so a
 # button's position in the column is its number key. Reorder there, not here.
 
@@ -79,7 +79,7 @@ class ToolsPanel(QWidget):
             # Bind the spec's tool per-iteration so every button reports its own.
             button.clicked.connect(lambda _=False, tool=spec.tool: self._pick(tool))
             self._group.addButton(button)
-            grid.addWidget(button, i // _COLUMNS, i % _COLUMNS)
+            grid.addWidget(button, i, 0)
             self._buttons[spec.tool] = button
         self._rebuild_icons()
         # Start on the pen without announcing it — the controller seeds its own
@@ -125,7 +125,7 @@ class ToolsPanel(QWidget):
             QPalette.ColorGroup.Active, QPalette.ColorRole.ButtonText
         )
         ratio = self.devicePixelRatioF()
-        key = (self.palette().cacheKey(), ratio)
+        key = icon_cache_key(self)
         if key == self._icon_key:
             return
         self._icon_key = key

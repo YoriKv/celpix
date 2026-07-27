@@ -15,13 +15,10 @@ greens weigh heaviest, and red/blue trade weight with how red the pair is.
 targets can't store a partial alpha, so a pixel with *any* opacity is a drawn
 color and only a fully clear pixel (alpha 0) is transparent. A transparent pixel
 always resolves to index 0 — the retro convention — unconditionally, so a paste
-from an external editor drops its clear background on the hole regardless of how
-this matcher is configured. Opaque pixels, symmetrically, never match a
+from an external editor always drops its clear background on the hole. Opaque
+pixels, symmetrically, never match a
 transparent palette entry while any opaque candidate exists, so an opaque black
-can't land on a transparent slot that merely stores black. (The cut is the
-``alpha_threshold`` knob — raised above 1, a band of faint pixels snaps to the
-designated transparent entry instead; the default treats alpha 0 as the only
-hole.)
+can't land on a transparent slot that merely stores black.
 
 The exception is a source with *no* alpha anywhere — an editor that ignores the
 channel and leaves every pixel clear. There the zeros carry no meaning, so the
@@ -36,11 +33,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-
-# Below this alpha an incoming pixel counts as transparent rather than as a
-# color. Retro targets have no partial transparency to store, so any pixel with
-# *any* opacity is a drawn color; only a fully clear pixel (alpha 0) is the hole.
-DEFAULT_ALPHA_THRESHOLD = 1
 
 
 def color_distance(a: int, b: int) -> int:
@@ -73,25 +65,10 @@ class ColorMatcher:
     across thousands of pixels, so the scan over candidates runs once each.
     """
 
-    __slots__ = (
-        "_colors",
-        "_opaque",
-        "_transparent",
-        "_threshold",
-        "_ignore_alpha",
-        "_cache",
-    )
+    __slots__ = ("_colors", "_opaque", "_ignore_alpha", "_cache")
 
-    def __init__(
-        self,
-        colors: Sequence[int],
-        *,
-        transparent_index: int | None = 0,
-        alpha_threshold: int = DEFAULT_ALPHA_THRESHOLD,
-        ignore_alpha: bool = False,
-    ) -> None:
+    def __init__(self, colors: Sequence[int], *, ignore_alpha: bool = False) -> None:
         self._colors = list(colors)
-        self._threshold = alpha_threshold
         # A whole source with no alpha at all comes from an editor that doesn't
         # write the channel; its zeros are noise, not holes, so every pixel is
         # taken as opaque and matched by RGB. The caller — which sees all the
@@ -101,15 +78,8 @@ class ColorMatcher:
         # are excluded so an opaque color can't be swallowed by a slot that is
         # never drawn. If *every* entry is transparent the distinction is
         # meaningless, so fall back to the full set.
-        opaque = [
-            i for i, c in enumerate(self._colors) if (c >> 24) & 0xFF >= alpha_threshold
-        ]
+        opaque = [i for i, c in enumerate(self._colors) if (c >> 24) & 0xFF]
         self._opaque = opaque or list(range(len(self._colors)))
-        self._transparent = (
-            transparent_index
-            if transparent_index is not None and 0 <= transparent_index < len(colors)
-            else None
-        )
         self._cache: dict[int, tuple[int, bool]] = {}
 
     def __len__(self) -> int:
@@ -119,11 +89,25 @@ class ColorMatcher:
     def cache(self) -> dict[int, tuple[int, bool]]:
         """Every source color matched so far → its ``(index, exact)`` result.
 
-        Doubles as the histogram of *distinct* colors an import saw, which is
-        what makes a "3 of 27 colors approximated" summary possible without a
-        second pass over the pixels.
+        Doubles as the set of *distinct* colors an import saw, which is what
+        makes a "3 of 27 colors approximated" summary possible without a second
+        pass over the pixels.
         """
         return self._cache
+
+    def report(self, pixels: int, exact_pixels: int) -> QuantizeReport:
+        """The faithfulness summary for a run of ``pixels`` through this matcher.
+
+        The distinct-color half comes out of the cache, so a caller only has to
+        count the pixels it fed in — the colors were already tallied on the way
+        through.
+        """
+        return QuantizeReport(
+            pixels=pixels,
+            exact_pixels=exact_pixels,
+            source_colors=len(self._cache),
+            exact_colors=sum(1 for _index, exact in self._cache.values() if exact),
+        )
 
     def match(self, argb: int) -> tuple[int, bool]:
         """``(index, exact)`` for ``argb`` — ``exact`` when the color is in the
@@ -134,25 +118,16 @@ class ColorMatcher:
             hit = self._cache[argb] = self._match_uncached(argb)
         return hit
 
-    def index_of(self, argb: int) -> int:
-        return self.match(argb)[0]
-
     def _match_uncached(self, argb: int) -> tuple[int, bool]:
         if not self._colors:
             return 0, False
         alpha = 0xFF if self._ignore_alpha else (argb >> 24) & 0xFF
         if alpha == 0:
-            # A *fully* transparent source pixel is always index 0 — the retro
+            # A transparent source pixel is always index 0 — the retro
             # convention, and unconditional so it holds even for a matcher with
-            # no designated hole ("no-hole" import) or a threshold that has been
-            # moved. "exact" only if index 0 is itself transparent, else the
-            # paste gained a color there.
-            return 0, (self._colors[0] >> 24) & 0xFF < self._threshold
-        if alpha < self._threshold and self._transparent is not None:
-            # Partly transparent input: the designated hole, and "exact" only if
-            # that entry really is transparent (otherwise the paste gained one).
-            entry = self._colors[self._transparent]
-            return self._transparent, (entry >> 24) & 0xFF < self._threshold
+            # no designated hole ("no-hole" import). "exact" only if index 0 is
+            # itself transparent, else the paste gained a color there.
+            return 0, not (self._colors[0] >> 24) & 0xFF
         rgb = argb & 0xFFFFFF
         best = self._opaque[0]
         best_d = -1

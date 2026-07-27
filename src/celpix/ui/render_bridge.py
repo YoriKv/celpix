@@ -5,10 +5,11 @@ The model, pipeline, and plugins are Qt-free and produce *indices* — an
 something on screen is this component's job, and it is the only place index→color
 happens (``docs/design/overview.md`` §4).
 
-The MVP renders to a ``QImage.Format_Indexed8`` whose color table *is* the
+An index grid renders to a ``QImage.Format_Indexed8`` whose color table *is* the
 palette window: the stored index byte maps straight to a color, so a palette or
-subpalette change is just a new color table, no re-rasterization. Pixmap caching
-and per-region invalidation are the documented next step here, not built yet.
+subpalette change is just a new color table, no re-rasterization. A direct-color
+grid (:class:`~celpix.core.argb_grid.ArgbGrid`) skips the palette entirely — its
+buffer is already ``Format_ARGB32``'s layout, so it is wrapped, not converted.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ def render(grid, palette: Palette, subpalette_base: int = 0) -> QImage:
     direct-color :class:`~celpix.core.argb_grid.ArgbGrid` already carries ARGB and
     is blitted straight to ``Format_ARGB32``, ignoring the palette.
     """
-    if getattr(grid, "bytes_per_pixel", 1) == 4:
+    if grid.bytes_per_pixel == 4:
         return _render_argb(grid)
     # QRgb is 0xAARRGGBB — exactly what Palette stores — so colors pass straight
     # through. A too-short palette yields the magenta sentinel per Palette.color.

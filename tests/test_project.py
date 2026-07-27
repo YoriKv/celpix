@@ -8,7 +8,7 @@ from os.path import normcase, samefile
 from celpix.core.document import Document, ViewOptions
 from celpix.core.palette import Palette
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_COMPRESSION, RAW_CONTAINER, FileRef
+from celpix.plugins.base import RAW_CONTAINER, FileRef
 from celpix.project.projectfile import (
     PROJECT_VERSION,
     ProjectError,
@@ -64,7 +64,7 @@ def test_round_trip_preserves_entries_sessions_and_state(tmp_path) -> None:
 
     slice_entry = ws.add_slice(str(rom), "title GFX", 0x100, None, "compression.lz2")
     slice_entry.session = _session(
-        palette_mode="offset", compression_id="compression.lz1"
+        palette_mode="offset", preview_compression_id="compression.lz1"
     )
     # Exercise the arrangement fields (block grouping / interleave / 2D) so the
     # round-trip assertion below covers their persistence.
@@ -346,20 +346,6 @@ def test_tolerant_load_defaults_unknowns_and_garbage(tmp_path) -> None:
     assert entry.pending_view is None
 
 
-def test_legacy_row_interleave_bool_loads_as_block_order(tmp_path) -> None:
-    # Early v0.0.6 projects stored the arrangement as a row_interleave bool before
-    # the block-order selector; it must still load as the equivalent order.
-    (tmp_path / "x.bin").write_bytes(b"\x00")
-    document = {
-        "version": 1,
-        "entries": [{"path": "x.bin", "view": {"row_interleave": True}}],
-    }
-    project = tmp_path / "p.celpix"
-    project.write_text(json.dumps(document), encoding="utf-8")
-    loaded = load_project(str(project))
-    assert loaded.entries[0].pending_view.block_order == "row-interleave"
-
-
 def test_unreadable_or_non_project_file_raises(tmp_path) -> None:
     bad = tmp_path / "bad.celpix"
     bad.write_text("not json", encoding="utf-8")
@@ -418,57 +404,10 @@ def test_container_round_trips_and_the_default_is_omitted(tmp_path) -> None:
     assert load_project(str(project)).entries[0].container_id == "container.ines"
 
 
-def test_a_pre_v8_project_keeps_its_container_and_compression(tmp_path) -> None:
-    """v7 named a stage's two halves separately, so its ids carry a direction
-    prefix this build no longer registers.
-
-    Reading them as-is would resolve to nothing and silently reopen every file on
-    plain bytes and every slice uncompressed — the graphics would be wrong with
-    nothing to point at, which is worse than refusing to load. So the ids are
-    translated to their merged spelling.
-    """
-    rom = tmp_path / "game.nes"
-    rom.write_bytes(b"\x00" * 64)
-    project = tmp_path / "old.celpix"
-    project.write_text(
-        json.dumps(
-            {
-                "version": 7,
-                "current": 0,
-                "entries": [
-                    {
-                        "kind": "file",
-                        "name": "game.nes",
-                        "path": "game.nes",
-                        "container_id": "read.ines",
-                        "session": {"compression_id": "decompress.lz2"},
-                    },
-                    {
-                        "kind": "slice",
-                        "name": "gfx",
-                        "path": "game.nes",
-                        "slice_offset": 16,
-                        "slice_length": 32,
-                        "decompress_id": "decompress.lz1",
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    loaded = load_project(str(project))
-    file_entry, slice_entry = loaded.entries
-    assert loaded.version == 7  # reported as it was, so the UI can say so
-    assert file_entry.container_id == "container.ines"
-    assert file_entry.session.compression_id == "compression.lz2"
-    assert slice_entry.compression_id == "compression.lz1"
-
-
 def test_reshape_round_trips_and_the_default_is_omitted(tmp_path) -> None:
     # A reshape is part of how a region is read, on files and slices alike —
-    # but the pass-through default is left out entirely, so projects written
-    # before the Reshape stage existed keep round-tripping unchanged.
+    # but the pass-through default is left out entirely, so a project nobody
+    # reshaped carries no trace of the stage.
     rom = tmp_path / "pair.bin"
     rom.write_bytes(b"\x00" * 64)
     ws = Workspace()
@@ -486,61 +425,6 @@ def test_reshape_round_trips_and_the_default_is_omitted(tmp_path) -> None:
     loaded_file, loaded_slice = load_project(str(project)).entries
     assert loaded_file.reshape_id == "reshape.split-words-2"
     assert loaded_slice.reshape_id == "reshape.split-planes-2"
-
-
-def test_a_pre_v10_project_moves_reorders_out_of_the_compression_slot(
-    tmp_path,
-) -> None:
-    """Before the Reshape stage the reorder plugins lived under Compression, so
-    a v9 slice names one as its codec. Read as-is it would resolve to nothing
-    and quietly reopen the slice as plain, scrambled-looking bytes; instead the
-    id moves to the reshape slot. A *session's* preview combo naming one drops
-    to none — previewing a region-scoped reorder over the view window was the
-    misbehaviour the stage split ends. The pre-v8 direction prefix chains
-    through the same translation.
-    """
-    rom = tmp_path / "game.sfc"
-    rom.write_bytes(b"\x00" * 64)
-    project = tmp_path / "old.celpix"
-    project.write_text(
-        json.dumps(
-            {
-                "version": 9,
-                "entries": [
-                    {
-                        "kind": "file",
-                        "name": "game.sfc",
-                        "path": "game.sfc",
-                        "session": {"compression_id": "compression.snes-m7-vram"},
-                    },
-                    {
-                        "kind": "slice",
-                        "name": "gfx",
-                        "path": "game.sfc",
-                        "slice_offset": 16,
-                        "slice_length": 32,
-                        "compression_id": "compression.split-planes-2",
-                    },
-                    {
-                        "kind": "slice",
-                        "name": "old-gfx",
-                        "path": "game.sfc",
-                        "slice_offset": 0,
-                        "slice_length": 16,
-                        "decompress_id": "decompress.split-planes-3",
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    file_entry, slice_entry, pre_v8 = load_project(str(project)).entries
-    assert file_entry.session.compression_id == NO_COMPRESSION
-    assert slice_entry.reshape_id == "reshape.split-planes-2"
-    assert slice_entry.compression_id == NO_COMPRESSION
-    assert pre_v8.reshape_id == "reshape.split-planes-3"
-    assert pre_v8.compression_id == NO_COMPRESSION
 
 
 def test_a_regions_extra_files_survive_a_project_round_trip(tmp_path) -> None:

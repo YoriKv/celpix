@@ -1,0 +1,18 @@
+# BGR444 — 12-bit: B=bits 8-11, G=4-7, R=0-3, top nibble unused. Common on
+# arcade hardware; note the GBA's own palette is 15-bit BGR555, not this.
+# YY-CHR ships this layout as "R4G4B4" (it lists components from the low bits
+# up; our names read MSB-first — docs/design/plugin-system.md §2). The id keeps
+# that historic spelling: ids are stable, project files reference them.
+# See docs/graphics-formats-reference/implementation-guide.md §4.
+id = "preset.palette.r4g4b4"
+name = "BGR444 (12-bit)"
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"
+
+[params.masks]
+r = 0x000F
+g = 0x00F0
+b = 0x0F00

@@ -1,0 +1,20 @@
+# Example preset for the `codec.nibble-planar` engine. Copy, drop the
+# underscore, edit, press F5. See _planar.toml for what a preset is.
+id = "preset.pixel.example-nibble-planar"
+name = "Example nibble-planar 2bpp"
+
+# codec.nibble-planar is neither planar nor packed: **one byte carries four
+# pixels**, its high nibble holding one bitplane of those four and its low nibble
+# the next, with bit 3 of a nibble the leftmost pixel. Atari System 2 and Atari's
+# other raster boards use it at several geometries.
+#
+# Depths past 2bpp add more bytes per group of four pixels, most significant
+# plane pair first. On the hardware those extra bytes come from opposite halves
+# of the region, so a 4bpp preset expects a buffer the two-part split-plane
+# reshape has already interleaved.
+engine_id = "codec.nibble-planar"
+
+[params]
+bpp = 2            # any even depth 2..8
+tile_width = 8     # any whole number of four-pixel groups
+tile_height = 8

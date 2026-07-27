@@ -290,7 +290,7 @@ class InterpretationMixin:
         # width, which an 8-px tile can't do for (say) 306. Deliberately outside
         # _arrangement_controls: a Pattern preset picks the arrangement, not the
         # width of one particular asset, so it stays editable under a preset.
-        self._bitmap_width = self._spin(0, 8192, 0, self._on_bitmap_width_change)
+        self._bitmap_width = self._spin(0, 8192, 0, self._recut_tile_geometry)
         self._bitmap_width.setSuffix(" px")
         add_labelled(
             arrange,
@@ -312,7 +312,7 @@ class InterpretationMixin:
 
         Exactly the four axes a preset states — the bitmap width is not one of
         them (no preset carries a width), so it is not locked away with these;
-        :meth:`_sync_bitmap_width` gates it on its own condition instead.
+        :meth:`_settle_bitmap_width_and_columns` gates it on its own condition instead.
         """
         return (
             self._block_cols,
@@ -327,13 +327,14 @@ class InterpretationMixin:
 
         Locked is not inert — every one of these still drives the view while a
         preset holds it; the lock only says the preset is the thing choosing.
-        The width is gated separately (see :meth:`_sync_bitmap_width`), so it is
-        settled afterwards rather than by the blanket rule.
+        The width is gated separately (see
+        :meth:`_settle_bitmap_width_and_columns`), so it is settled afterwards
+        rather than by the blanket rule.
         """
         custom = self._pattern.currentData() == "custom"
         for widget in self._arrangement_controls:
             widget.setEnabled(custom)
-        self._sync_bitmap_width()
+        self._settle_bitmap_width_and_columns()
 
     def _set_arrangement(
         self, block_columns: int, block_rows: int, block_order: str, two_d: bool
@@ -358,7 +359,7 @@ class InterpretationMixin:
         arrangement - and leaving it set would be worse than untidy: it stays in
         force invisibly (the spin greys out under a preset) and springs back the
         moment the new arrangement is 2D. Clearing it hands the tile size and
-        Cols back at the same time (:meth:`_sync_bitmap_width`).
+        Cols back at the same time (:meth:`_settle_bitmap_width_and_columns`).
         """
         data = self._pattern.currentData()
         applied = self._effective_bitmap_width() > 0
@@ -376,7 +377,7 @@ class InterpretationMixin:
         # is a geometry change and takes the re-interpretation path; otherwise
         # this is an ordinary re-render.
         if applied:
-            self._on_bitmap_width_change()
+            self._recut_tile_geometry()
         else:
             self._on_view_change()
 
@@ -397,7 +398,7 @@ class InterpretationMixin:
 
     def _preset_combo(self, stage: Stage, default_suffix: str) -> QComboBox:
         # Compact: preset names are long and the combo shares a row with other
-        # controls, so the closed button takes 3/4 of its natural width; the
+        # controls, so the closed button takes 60% of its natural width; the
         # popup stays full.
         combo = CompactComboBox(0.60)
         for preset in sorted(self._registry.presets(stage), key=lambda p: p.name):
@@ -514,6 +515,15 @@ class InterpretationMixin:
     def _pixel_bpp(self) -> int:
         return pipeline.pixel_bpp(self._pixel_preset_id(), self._registry)
 
+    def _palette_base(self) -> int:
+        """The first palette index the active subpalette row addresses.
+
+        A tile stores an index into a window of the palette, so every render of
+        decoded pixels needs this to turn those indices into colors. One
+        definition, because the row and the window size are separate controls.
+        """
+        return self._subpalette.value() * self._index_space()
+
     def _index_space(self, preset_id: str | None = None) -> int:
         """The pixel format's color count - the subpalette row size.
 
@@ -553,11 +563,11 @@ class InterpretationMixin:
         geometry path rather than merely repaint.
         """
         if self._bitmap_width.value() > 0:
-            self._on_bitmap_width_change()
+            self._recut_tile_geometry()
         else:
             self._on_view_change()
 
-    def _on_bitmap_width_change(self) -> None:
+    def _recut_tile_geometry(self) -> None:
         """Re-cut the codec's tiles to the new bitmap width.
 
         Alone among the view controls this changes the document's *geometry* —
@@ -596,7 +606,7 @@ class InterpretationMixin:
             f"{width // tile_w} columns"
         )
 
-    def _sync_bitmap_width(self) -> None:
+    def _settle_bitmap_width_and_columns(self) -> None:
         """Gate the width, and point Cols at it while it is in force.
 
         Editable wherever it means anything, which is exactly: the 2D walk is on
@@ -661,7 +671,7 @@ class InterpretationMixin:
             return self._doc.tile_width, self._doc.tile_height
         return 8, 8
 
-    def _store_pixel_data(self, px: pipeline.PixelData, cfg: PathwayConfig) -> None:
+    def _adopt_pixel_data(self, px: pipeline.PixelData, cfg: PathwayConfig) -> None:
         """Update the open document's pixel bytes + geometry from a fresh load."""
         assert self._doc is not None
         self._doc.pixel_data = px.data
@@ -790,7 +800,7 @@ class InterpretationMixin:
         # Rebuild rather than a plain select: the applied format may be one the
         # filter hides, and you can never hide the format actually in force.
         self._fill_pixel_combo(preset_id)
-        self._store_pixel_data(px, cfg)
+        self._adopt_pixel_data(px, cfg)
         # _refresh_view clamps the offset; the nudge stays < the new tile size.
         self._offset, self._nudge = divmod(byte_position, px.bytes_per_tile)
         anchor = self._palette_panel.selected_index()
@@ -854,7 +864,7 @@ class InterpretationMixin:
                             loaded.palette,
                             cfg,
                             loaded.ctx,
-                            data=loaded.data,
+                            base_bytes=loaded.data,
                         )
                     )
 

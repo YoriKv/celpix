@@ -1,4 +1,4 @@
-# SNES 8bpp planar — four interleaved plane-pairs, 16 bytes apart (CP03).
+# SNES 8bpp planar — four interleaved plane-pairs, 16 bytes apart.
 # See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
 id = "preset.pixel.snes-8bpp"
 name = "SNES 8bpp (8x8)"

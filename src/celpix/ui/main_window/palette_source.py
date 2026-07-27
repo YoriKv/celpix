@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core import emustate
+from celpix.core.address import format_hex
 from celpix.core.context import (
     KEY_SOURCE_OFFSET,
     PipelineContext,
@@ -47,10 +48,11 @@ from celpix.project.workspace import (
 from celpix.ui.undo_commands import (
     AddEntryCommand,
     PaletteCommand,
+    PaletteConsumerLink,
     PaletteState,
-    PaletteUserLink,
 )
 from celpix.ui.widgets import (
+    ask_save_path,
     select_combo_data,
 )
 
@@ -154,13 +156,14 @@ class PaletteSourceMixin:
 
     def _link_file_palette(
         self, graphics: Entry, path: str, offset: int, preset_id: str
-    ) -> bool:
+    ) -> None:
         """Point ``graphics`` at the PALETTE entry for ``path``, loading it once.
 
         Registers the palette entry if the project never had one (a hand-authored
         or older file), builds its live document on first use, then mirrors the
-        colors onto ``graphics``. Raising on a bad load is deliberate: the caller
-        (:meth:`_restore_palette_source`) degrades to the default palette.
+        colors onto ``graphics``. There is no failure return: a bad load raises,
+        which the caller (:meth:`_restore_palette_source`) catches and degrades
+        to the default palette.
         """
         assert graphics.doc is not None
         entry = self._workspace.find_palette(path)
@@ -180,7 +183,6 @@ class PaletteSourceMixin:
             entry.doc.palette_config, write_enabled=False
         )
         graphics.missing_palette = None
-        return True
 
     # -- previewing a palette file with nothing open ------------------------
     # The dock is never dead: with no document it shows the generated default,
@@ -285,7 +287,7 @@ class PaletteSourceMixin:
             return []
         return list(loaded.palette.colors)
 
-    def _convert_user_to_custom(
+    def _convert_graphic_to_custom(
         self, entry: Entry, colors: list[int], preset_id: str
     ) -> None:
         """Re-home a graphic onto a Custom palette of ``colors`` - what removing a
@@ -299,15 +301,15 @@ class PaletteSourceMixin:
         if entry.doc is not None:
             entry.doc.palette = Palette(list(colors))
             entry.doc.palette_config = self._placeholder_palette_config(preset_id)
-            entry.doc.palette_bytes = b""
+            entry.doc.palette_base_bytes = b""
             entry.doc.palette_edits = set()
             entry.pending_palette = None
         else:
             # Never loaded: seed the custom colors as the restore a first load reads.
             entry.pending_palette = PaletteSource(colors=list(colors))
 
-    def _relink_user_to_file_palette(self, link: PaletteUserLink) -> None:
-        """Undo of :meth:`_convert_user_to_custom`: point the graphic back at the
+    def _relink_graphic_to_file_palette(self, link: PaletteConsumerLink) -> None:
+        """Undo of :meth:`_convert_graphic_to_custom`: point the graphic back at the
         (restored) file palette, re-mirroring its colors when it is loaded."""
         entry = link.entry
         if entry.session is not None:
@@ -343,9 +345,10 @@ class PaletteSourceMixin:
             if session.palette_mode is PaletteMode.FILE and source.path is not None:
                 # A file palette is owned by its PALETTE entry; register/load it
                 # and mirror onto this graphic rather than loading colours here.
-                return self._link_file_palette(
+                self._link_file_palette(
                     entry, source.path, source.offset, session.palette_preset_id
                 )
+                return True
             if session.palette_mode is PaletteMode.EMULATOR and source.path is not None:
                 # Re-detect the save state: the palette offset and the console's
                 # codec are derived from the file, not carried in the project.
@@ -375,7 +378,7 @@ class PaletteSourceMixin:
                 )
             loaded = pipeline.load_palette(cfg, self._registry)
             doc.palette, doc.palette_ctx = loaded.palette, loaded.ctx
-            doc.palette_bytes, doc.palette_edits = loaded.data, set()
+            doc.palette_base_bytes, doc.palette_edits = loaded.data, set()
             doc.palette_config = cfg
             entry.missing_palette = None
             return True
@@ -392,18 +395,6 @@ class PaletteSourceMixin:
     # Shared by the two dialogs that name a .pal - the export that writes one and
     # the open that registers one - so both offer the same filter.
     _PALETTE_FILTER = "Palette files (*.pal);;All files (*)"
-
-    # What Export to File writes, always - never the palette's own read format.
-    # A .pal carries no marker of its encoding, so the one thing every reader
-    # (ours included) has to guess should be the plainest, most widely
-    # understood option rather than whichever codec these colors arrived
-    # through: three bytes R, G, B per entry, which is what emulator and editor
-    # .pal files overwhelmingly are. It is also the only choice that survives
-    # every source - the modes that can export include an emulator state, whose
-    # console-dictated codec may be an *index* into a fixed table (NES), and
-    # writing those index bytes out under a .pal name would export something no
-    # other tool could read as color.
-    _EXPORT_PRESET_ID = "preset.palette.rgb888"
 
     def _prompt_add_palette_file(self) -> None:
         # No .pal filter: palette data is just bytes reinterpreted through the
@@ -439,44 +430,70 @@ class PaletteSourceMixin:
         registered in the Palettes section straight away, so it is one
         double-click from being re-applied and it travels with the project.
 
-        Always written as :data:`_EXPORT_PRESET_ID` (RGB888), and the entry is
-        registered under that same format so the round-trip reads back the
-        colors that went out. Deliberately *not* the format dropdown's value:
-        in two of the three exporting modes that combo is hidden, so it holds
-        whatever it was last left on - an invisible setting silently deciding
-        the encoding of a file meant to be shared.
+        Written in the format the palette is **read** with - the codec named on
+        the document's palette config, which is what the dock's format label is
+        showing - and the entry is registered under that same format, so the
+        round-trip reads back the colors that went out. A ``.pal`` records
+        nothing about its own encoding, so exporting a BGR555 palette as
+        anything else would hand the user a file whose bytes don't match the
+        format they were just looking at; the status line names what was
+        written so it can be told to another tool.
         """
         doc = self._palette_doc()
         if doc is None or not self._palette_mode.is_exportable:
             return
+        preset_id = doc.palette_config.interpret_preset_id
         entry = self._workspace.current
-        suggested = f"{export_basename(entry)}.pal" if entry is not None else "palette"
-        path, _ = QFileDialog.getSaveFileName(
+        suffix = self._export_offset_suffix()
+        suggested = (
+            f"{export_basename(entry)}{suffix}.pal" if entry is not None else "palette"
+        )
+        path = ask_save_path(
             self,
             "Export palette",
             str(Path(self._export_dir(entry)) / suggested),
             self._PALETTE_FILTER,
+            ".pal",
         )
-        if not path:
+        if path is None:
             return
-        if not path.lower().endswith(".pal"):
-            path += ".pal"
         try:
-            pipeline.export_palette(doc, path, self._registry, self._EXPORT_PRESET_ID)
+            pipeline.export_palette(doc, path, self._registry, preset_id)
         except PipelineError as exc:
             self._report(exc)
             return
         except OSError as exc:
             self._alert(f"Cannot write {path}: {exc}", title="celPix - palette")
             return
-        added = self._add_palette_file(
-            path, quiet=True, preset_id=self._EXPORT_PRESET_ID
-        )
+        added = self._add_palette_file(path, quiet=True, preset_id=preset_id)
         name = Path(path).name
         self.statusBar().showMessage(
-            f"Exported palette to {name} as RGB888"
+            f"Exported palette to {name} as {self._format_label(preset_id)}"
             + (" and added it to Palettes." if added else " (already in Palettes).")
         )
+
+    def _format_label(self, preset_id: str) -> str:
+        """A palette format's display name for a message - its id's tail if the
+        registry doesn't have it (a project can name a format this build lacks)."""
+        try:
+            return self._registry.preset(preset_id).name
+        except KeyError:
+            return preset_id.rsplit(".", 1)[-1]
+
+    def _export_offset_suffix(self) -> str:
+        """``_0x001000`` for an Offset-mode palette, else empty.
+
+        Offset is the one exporting mode whose palette bytes live in the very
+        file the export basename names, so the offset is what tells the several
+        palettes one ROM yields apart - a Custom palette has no offset at all,
+        and an Emulator state's belongs to the save state rather than to the
+        graphics file the name comes from. Plain hex rather than the address
+        box's format: a bank address carries a colon, which Windows won't take
+        in a filename.
+        """
+        if self._doc is None or self._palette_mode is not PaletteMode.OFFSET:
+            return ""
+        return f"_{format_hex(self._doc.palette_config.source.offset)}"
 
     def _add_palette_file(
         self, path: str, *, quiet: bool = False, preset_id: str | None = None
@@ -592,7 +609,7 @@ class PaletteSourceMixin:
             # the file, which would discard them. The entry owns the colors now.
             doc = entry.doc
             loaded = pipeline.PaletteData(
-                doc.palette, doc.palette_ctx, doc.palette_bytes
+                doc.palette, doc.palette_ctx, doc.palette_base_bytes
             )
             cfg = doc.palette_config
             edits = frozenset(doc.palette_edits)
@@ -630,24 +647,12 @@ class PaletteSourceMixin:
         or the usual pipeline/OS errors; the read window is floored to what fits.
         """
         data = Path(path).read_bytes()
-        fmt, region = emustate.locate_palette(data, Path(path).suffix)
-        if region.data is not None:
-            # The palette was extracted from a container/memory image, not found
-            # at a file offset - feed those bytes straight through the pipeline.
-            entry_bytes = pipeline.palette_entry_size(region.preset_id, self._registry)
-            length = min(len(region.data), region.count * entry_bytes)
-            ref: FileRef | None = FileRef(
-                path, offset=0, length=length, data=region.data
-            )
-        else:
-            ref = self._file_palette_source(
-                path, region.offset, region.preset_id, max_entries=region.count
-            )
-        if ref is None:
-            raise emustate.StateError(
-                f"{fmt.name} state: no palette data at the detected offset "
-                f"({self._format_offset(region.offset)})."
-            )
+        fmt, region = emustate.locate_palette(data)
+        # A locator extracts the palette out of a container/memory image rather
+        # than pointing at a file offset, so those bytes feed the pipeline direct.
+        entry_bytes = pipeline.palette_entry_size(region.preset_id, self._registry)
+        length = min(len(region.data), region.count * entry_bytes)
+        ref = FileRef(path, offset=0, length=length, data=region.data)
         return fmt, PathwayConfig(
             source=ref, interpret_preset_id=region.preset_id, write_enabled=False
         )
@@ -709,7 +714,7 @@ class PaletteSourceMixin:
             palette=doc.palette,
             config=doc.palette_config,
             ctx=doc.palette_ctx,
-            data=doc.palette_bytes,
+            base_bytes=doc.palette_base_bytes,
             edits=frozenset(doc.palette_edits),
         )
 
@@ -732,7 +737,7 @@ class PaletteSourceMixin:
             self._doc.palette_ctx = state.ctx
             # The splice base travels with the colors: a fresh load resets it (no
             # entry is edited yet), and an undo restores whatever it was before.
-            self._doc.palette_bytes = state.data
+            self._doc.palette_base_bytes = state.base_bytes
             self._doc.palette_edits = set(state.edits)
         self._set_palette_mode(state.mode)  # already signal-safe
         self._sync_palette_entry_format(state)
@@ -755,13 +760,13 @@ class PaletteSourceMixin:
             return
         if entry.doc is None:
             entry.doc = Document.palette_only(
-                state.palette, state.config, state.ctx, state.data
+                state.palette, state.config, state.ctx, state.base_bytes
             )
         else:
             entry.doc.palette = state.palette
             entry.doc.palette_config = state.config
             entry.doc.palette_ctx = state.ctx
-            entry.doc.palette_bytes = state.data
+            entry.doc.palette_base_bytes = state.base_bytes
             entry.doc.palette_edits = set(state.edits)
         self._mirror_palette(entry)
         # Mid-switch the current graphic still names its old palette source, so it
@@ -842,7 +847,7 @@ class PaletteSourceMixin:
                     loaded.palette,
                     cfg,
                     loaded.ctx,
-                    data=loaded.data,
+                    base_bytes=loaded.data,
                     edits=edits,
                 ),
             )
@@ -1184,7 +1189,6 @@ class PaletteSourceMixin:
         self,
         byte_off: int,
         preset_id: str | None = None,
-        max_entries: int = 256,
         entry: Entry | None = None,
     ) -> tuple[FileRef | None, bool]:
         """The read window for an Offset palette at ``byte_off``, and whether a
@@ -1204,7 +1208,7 @@ class PaletteSourceMixin:
         Floored to whole entries - the color codecs reject a partial trailing
         one, so clamping at the end alone is not enough. ``(None, ...)`` when not
         even one entry fits. ``preset_id`` overrides the combo when sizing
-        entries for a non-current entry's palette format, and ``entry`` names
+        colors for a non-current entry's palette format, and ``entry`` names
         whose palette is being resolved - both default to the live document, and
         both are passed when a project restore loads an entry that is not (yet)
         the one on screen.
@@ -1218,32 +1222,26 @@ class PaletteSourceMixin:
         writable = view is None
         base = 0 if view is None else view[1]
         avail = end - byte_off if byte_off >= base else 0
-        entries = min(max_entries, avail // bpe)
-        if entries <= 0:
+        colors = min(FULL_PALETTE_COUNT, avail // bpe)
+        if colors <= 0:
             return None, writable
         # The whole file list, as the pixel pathway reads it: the offset
         # addresses the joined buffer, so a several-chip region cannot be
         # answered from its first chip alone.
         paths = entry.doc.pixel_config.source.paths
         if view is None:
-            return FileRef(paths, offset=byte_off, length=entries * bpe), True
+            return FileRef(paths, offset=byte_off, length=colors * bpe), True
         data, base = view
         return (
             FileRef(
-                paths, offset=byte_off, length=entries * bpe, data=data, data_base=base
+                paths, offset=byte_off, length=colors * bpe, data=data, data_base=base
             ),
             False,
         )
 
-    def _file_palette_source(
-        self,
-        path: str,
-        byte_off: int,
-        preset_id: str | None = None,
-        max_entries: int = 256,
-    ) -> FileRef | None:
-        """A read window for up to ``max_entries`` palette entries at ``byte_off``
-        in the **named file**, read as plain bytes.
+    def _file_palette_source(self, path: str, byte_off: int) -> FileRef | None:
+        """A read window of palette colors at ``byte_off`` in the **named file**,
+        read as plain bytes.
 
         The source builder for palette data that lives in a file of its own
         rather than at a position in an entry's coordinate space - an emulator
@@ -1255,18 +1253,14 @@ class PaletteSourceMixin:
 
         Floored to whole entries - the color codecs reject a partial trailing
         entry, so clamping at EOF alone is not enough. ``None`` when not even one
-        entry fits. ``max_entries`` caps the window: the 256-entry default suits a
-        free offset read; an emulator state passes its console's exact palette
-        size instead.
+        entry fits, and capped at a full palette.
         """
-        bpe = pipeline.palette_entry_size(
-            preset_id or self._palette_preset_id(), self._registry
-        )
+        bpe = pipeline.palette_entry_size(self._palette_preset_id(), self._registry)
         avail = Path(path).stat().st_size - byte_off
-        entries = min(max_entries, max(0, avail) // bpe)
-        if entries == 0:
+        colors = min(FULL_PALETTE_COUNT, max(0, avail) // bpe)
+        if colors == 0:
             return None
-        return FileRef(path, offset=byte_off, length=entries * bpe)
+        return FileRef(path, offset=byte_off, length=colors * bpe)
 
     def _load_palette_at_offset(self, byte_off: int) -> bool:
         """Load palette data at ``byte_off`` in the owning file's coordinates.

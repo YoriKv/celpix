@@ -1,0 +1,18 @@
+# ABGR8888 — one byte per component, file bytes A,B,G,R (the RGBA8888 masks
+# assembled big-endian; the byte sequence is the name, so no endian qualifier —
+# docs/design/plugin-system.md §2). The id keeps its historic spelling: ids are
+# stable, project files reference them.
+# See docs/graphics-formats-reference/implementation-guide.md §4.
+id = "preset.palette.argb8888-be"
+name = "ABGR8888 (bytes A,B,G,R)"
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 4
+byte_order = "big"
+
+[params.masks]
+a = 0xFF000000
+r = 0x000000FF
+g = 0x0000FF00
+b = 0x00FF0000

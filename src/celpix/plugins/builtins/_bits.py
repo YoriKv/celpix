@@ -1,36 +1,31 @@
 """Byte-parallel primitives the tile codecs decode and encode through.
 
-Every codec here is a per-pixel bit shuffle, and written as a per-pixel Python
-loop each one costs a few hundred nanoseconds a pixel — which is the difference
-between a view that repaints instantly and one that stalls for a quarter of a
-second on a full-screen window of a large file. The way out is that all of these
-shuffles are **byte-wise and position-independent**: what a source byte
-contributes to the output depends only on its value, never on where in the
-buffer it sits. So each one can be expressed as a 256-entry table applied to a
-whole strided slice at once, with the contributions of several source bytes
-combined by OR — and both of those run in C over the entire buffer rather than
-in Python per pixel.
+Every codec is a per-pixel bit shuffle, and a per-pixel Python loop costs a few
+hundred nanoseconds a pixel — the difference between a view that repaints
+instantly and one that stalls for a quarter of a second on a full-screen window.
+All these shuffles are **byte-wise and position-independent**: what a source byte
+contributes depends only on its value, never on where in the buffer it sits. So
+each is a 256-entry table applied to a whole strided slice at once, with several
+source bytes' contributions combined by OR — both running in C over the entire
+buffer.
 
-The primitives are:
-
-- :func:`or_bytes` / :func:`merge_planes` — a byte-wise OR of equal-length
-  buffers, done as one big-integer OR (the widest OR the interpreter offers).
+- :func:`or_bytes` / :func:`or_all` — byte-wise OR of equal-length buffers, as
+  one big-integer OR (the widest the interpreter offers).
 - :func:`bit_expansion` / :func:`bit_packing` — the planar kernel both ways: one
   plane byte to the eight pixels its bits land in, and back.
 - :func:`field_expansion` / :func:`field_packing` — the packed kernel both ways:
   one byte to the sub-byte index fields inside it, and back.
-- :func:`nibble_plane_expansion` / :func:`nibble_plane_packing` — the nibble-planar
-  kernel both ways: one byte carrying *two* bitplanes of four pixels, and back.
-- :func:`expand_row` / :func:`pack_row` — the planar kernel applied to a *single*
+- :func:`nibble_plane_expansion` / :func:`nibble_plane_packing` — the
+  nibble-planar kernel: one byte carrying *two* bitplanes of four pixels, both
+  ways.
+- :func:`expand_row` / :func:`pack_row` — the planar kernel over a *single*
   eight-pixel row, for the wide/odd tiles whose bytes are too scattered for a
-  strided slice to gather. They go through the tables above rather than their own
-  loop, so the ``7 - x`` rule that says which bit is which pixel is written once.
+  strided slice to gather. They go through the tables above, so the ``7 - x`` rule
+  saying which bit is which pixel is written once.
 
 The mask-based colour kernel has the same shape and lives with the rest of its
-maths in :mod:`celpix.plugins.builtins._mask`.
-
-The tables are cached, since a view refresh re-enters the codec for every window
-it draws and the parameters rarely change.
+maths in :mod:`celpix.plugins.builtins._mask`. Tables are cached: a view refresh
+re-enters the codec for every window it draws, and the parameters rarely change.
 """
 
 from __future__ import annotations
@@ -42,22 +37,27 @@ from functools import cache
 def or_bytes(a: bytes, b: bytes) -> bytes:
     """Byte-wise OR of two equal-length buffers.
 
-    Via ``int``: an arbitrary-precision OR is a single word-at-a-time loop in C,
-    where the obvious comprehension would be a Python call per byte. Big-endian
-    both ways, so byte *i* of the result is byte *i* of each input OR-ed — the
-    conversion is a formality, not an interpretation of the bytes as a number.
+    Via ``int``: an arbitrary-precision OR is one word-at-a-time loop in C where
+    the obvious comprehension would be a Python call per byte. Big-endian both
+    ways, so byte *i* of the result is byte *i* of each input OR-ed — the
+    conversion is a formality, not a reading of the bytes as a number.
     """
     n = len(a)
     return (int.from_bytes(a, "big") | int.from_bytes(b, "big")).to_bytes(n, "big")
 
 
-def merge_planes(planes: list[bytes]) -> bytes:
-    """OR a list of equal-length buffers together (empty list → ``b""``)."""
-    if not planes:
+def or_all(buffers: list[bytes]) -> bytes:
+    """OR a list of equal-length buffers together (empty list → ``b""``).
+
+    What callers OR together varies — bitplanes, the per-pixel field contributions
+    inside one packed byte, the component bytes of an ARGB pixel — so this is
+    about buffers rather than any one of them.
+    """
+    if not buffers:
         return b""
-    merged = planes[0]
-    for plane in planes[1:]:
-        merged = or_bytes(merged, plane)
+    merged = buffers[0]
+    for buffer in buffers[1:]:
+        merged = or_bytes(merged, buffer)
     return merged
 
 
@@ -65,8 +65,8 @@ def merge_planes(planes: list[bytes]) -> bytes:
 def bit_expansion(plane: int) -> tuple[bytes, ...]:
     """One plane byte → the eight pixels it contributes bit ``plane`` to.
 
-    The planar kernel's ``index[x] |= ((byte >> (7 - x)) & 1) << plane``, done for
-    all eight pixels at once: entry *v* is the eight-byte row that plane byte *v*
+    The planar kernel's ``index[x] |= ((byte >> (7 - x)) & 1) << plane`` for all
+    eight pixels at once: entry *v* is the eight-byte row plane byte *v*
     contributes, so a whole tile row is the OR of one lookup per plane.
     """
     return tuple(
@@ -80,9 +80,9 @@ def bit_packing(plane: int, x: int) -> bytes:
     """The inverse of :func:`bit_expansion` for one pixel column of a row.
 
     A 256-byte ``bytes.translate`` table: what the index at pixel ``x`` contributes
-    to its row's plane-``plane`` byte. Packing needs one table per column, not the
-    single table expanding does, because the destination *bit* is the pixel's
-    position — so a plane byte is the OR of eight tables, one per column.
+    to its row's plane-``plane`` byte. Packing needs one table per column, where
+    expanding needs only one in total, because the destination *bit* is the pixel's
+    position — so a plane byte is the OR of eight tables.
     """
     return bytes(((value >> plane) & 1) << (7 - x) for value in range(256))
 
@@ -92,10 +92,10 @@ def expand_row(plane_bytes: Iterable[int]) -> bytes:
 
     The row-at-a-time form of the planar kernel, for the wide/odd tiles: their
     planes sit at format-specific offsets rather than a fixed stride, so the
-    buffer-wide walk the 8×8 engine uses has nothing regular to slice along, but
-    the kernel inside one row is the same one.
+    buffer-wide walk the 8×8 engine uses has nothing regular to slice along. The
+    kernel inside one row is unchanged.
     """
-    return merge_planes(
+    return or_all(
         [bit_expansion(plane)[byte] for plane, byte in enumerate(plane_bytes)]
     )
 
@@ -115,13 +115,18 @@ def _field_shift(pos: int, pixels_per_byte: int, bpp: int, msb_first: bool) -> i
 
 @cache
 def field_expansion(
-    pixels_per_byte: int, bpp: int, msb_first: bool
+    pixels_per_byte: int, bpp: int, msb_first: bool, dest_shift: int = 0
 ) -> tuple[bytes, ...]:
     """One packed byte → the ``pixels_per_byte`` indices packed into it.
 
     The packed kernel's sub-byte fields, left-to-right. ``msb_first`` puts pixel 0
-    in the byte's high field (Genesis/MSX, Neo Geo Pocket); otherwise it is the
-    low one (GBA, Virtual Boy).
+    in the byte's high field (Genesis/MSX, Neo Geo Pocket); otherwise the low one
+    (GBA, Virtual Boy).
+
+    ``dest_shift`` lifts each field into the *top* half of a wider index, for
+    formats whose index is assembled from two bytes: the byte carrying the high
+    half expands through a shifted table and the low half's through a plain one,
+    so the two combine with an ordinary :func:`or_bytes`.
     """
     mask = (1 << bpp) - 1
     shifts = [
@@ -129,7 +134,8 @@ def field_expansion(
         for pos in range(pixels_per_byte)
     ]
     return tuple(
-        bytes((value >> shift) & mask for shift in shifts) for value in range(256)
+        bytes(((value >> shift) & mask) << dest_shift for shift in shifts)
+        for value in range(256)
     )
 
 
@@ -147,9 +153,9 @@ def nibble_plane_expansion(bpp: int, group_byte: int) -> tuple[bytes, ...]:
     """One nibble-planar byte → the four pixels its two bitplanes contribute to.
 
     The byte's **high nibble is the more significant plane** and its low nibble the
-    less significant one, with bit 3 of a nibble being the leftmost of the four
-    pixels. Entry *v* is the four-byte pixel run byte value *v* contributes, so a
-    group's pixels are the OR of one lookup per byte of the group.
+    less significant one, bit 3 of a nibble being the leftmost of the four pixels.
+    Entry *v* is the four-byte pixel run byte value *v* contributes, so a group's
+    pixels are the OR of one lookup per byte of the group.
     """
     hi, lo = _nibble_planes(bpp, group_byte)
     return tuple(
@@ -166,9 +172,9 @@ def nibble_plane_packing(bpp: int, group_byte: int, pos: int) -> bytes:
     """The inverse of :func:`nibble_plane_expansion` for one of the four pixels.
 
     A 256-byte ``bytes.translate`` table: what the index at pixel ``pos`` of the
-    group contributes to that group byte. Packing needs one table per position
-    because the destination *bit* within each nibble is the pixel's position, so a
-    group byte is the OR of four of these.
+    group contributes to that group byte. One table per position, the destination
+    *bit* within each nibble being the pixel's position, so a group byte is the OR
+    of four of these.
     """
     hi, lo = _nibble_planes(bpp, group_byte)
     return bytes(
@@ -178,13 +184,27 @@ def nibble_plane_packing(bpp: int, group_byte: int, pos: int) -> bytes:
 
 
 @cache
-def field_packing(pos: int, pixels_per_byte: int, bpp: int, msb_first: bool) -> bytes:
+def field_packing(
+    pos: int,
+    pixels_per_byte: int,
+    bpp: int,
+    msb_first: bool,
+    source_shift: int = 0,
+    source_mask: int = 0xFF,
+) -> bytes:
     """The inverse of :func:`field_expansion` for one pixel of a packed byte.
 
     A 256-byte ``bytes.translate`` table placing an index in the field pixel
     ``pos`` occupies, so a packed byte is the OR of ``pixels_per_byte`` of these.
     An index wider than the field overflows into the neighbouring one, which is
-    the packing this format has always done rather than something to guard.
+    what the format does rather than something to guard against.
+
+    ``source_shift`` and ``source_mask`` take *part* of the index instead of all of
+    it — the inverse of :func:`field_expansion`'s ``dest_shift``, for an index
+    split across two bytes. Masking is opt-in so the overflow above stays default.
     """
     shift = _field_shift(pos, pixels_per_byte, bpp, msb_first)
-    return bytes((value << shift) & 0xFF for value in range(256))
+    return bytes(
+        (((value >> source_shift) & source_mask) << shift) & 0xFF
+        for value in range(256)
+    )

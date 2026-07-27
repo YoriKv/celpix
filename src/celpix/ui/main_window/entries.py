@@ -11,6 +11,13 @@ snapshot they install on the parent before re-reading it. Writing is per pathway
 - a palette-only edit leaves the graphic untouched, since the two live in
 different files.
 
+**One region, one authority** (``docs/design/slices-and-parents.md``). A slice's
+bytes are a derived view of a window of its parent's, so the parent owns them:
+:meth:`_propagate_pixel_edit` folds a slice edit into that buffer as it lands,
+:meth:`_fold_slice_edits_into` is the fold, and every save routes through the
+parent (:meth:`_write_pixels_through_parent`) so its container runs. This module
+owns all four; the rule is not local to any one of them.
+
 Removal closes the list off at the other end, and is the one path that has to
 look outside the entry being removed: a file takes its slices and bookmarks with
 it, and a **palette** other graphics are rendering with cannot simply vanish -
@@ -31,10 +38,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
+from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import PipelineError
 from celpix.pipeline import pipeline
-from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
+from celpix.plugins.base import NO_COMPRESSION
 from celpix.project import projectfile
 from celpix.project.workspace import (
     Entry,
@@ -43,21 +51,23 @@ from celpix.project.workspace import (
     PaletteSource,
     SliceParams,
     missing_paths,
-    new_slice,
     palette_source_for,
+    path_is_palette_only,
     relocate_path,
     retarget_files,
     slice_of,
 )
-from celpix.ui.container_dialog import ContainerDialog
+from celpix.ui.container_dialog import ContainerDialog, ContainerEdit
 from celpix.ui.slice_dialog import SliceDialog
 from celpix.ui.undo_commands import (
     AddEntryCommand,
-    PaletteUserLink,
+    ContainerEditCommand,
+    PaletteConsumerLink,
     RemoveEntriesCommand,
-    RemovePaletteWithUsersCommand,
+    RemovePaletteWithConsumersCommand,
     SliceEditCommand,
 )
+from celpix.ui.widgets import ask_save_path, show_in_file_manager
 
 
 class EntriesMixin:
@@ -99,10 +109,14 @@ class EntriesMixin:
             self._alert(str(exc), title="celPix - project")
             return
         if loaded.version > projectfile.PROJECT_VERSION:
+            # No upgrade shims while the format is in alpha, so a file written at
+            # a version this build doesn't know opens on key-level tolerance
+            # alone - and says so, since what it loses it loses silently.
             self._alert(
-                "This project was saved by a newer celPix. It opens with what "
-                "this version understands, but saving will rewrite it at "
-                f"version {projectfile.PROJECT_VERSION}, dropping the rest.",
+                f"This project is at format version {loaded.version}, which this "
+                f"build doesn't know (it writes version "
+                f"{projectfile.PROJECT_VERSION}). It opens with what this build "
+                "understands; saving will rewrite it, dropping the rest.",
                 title="celPix - project",
             )
         # Seed the pixel-format filter before the replace: showing the restored
@@ -152,6 +166,12 @@ class EntriesMixin:
         if not paths:
             self.statusBar().showMessage("No missing files.")
             return
+        # Which files, and what each is *for*: a palette file the user never
+        # picked by hand (it followed the graphic that uses it) is otherwise an
+        # unexplained name in a file picker, and a graphic that still opens on
+        # the default palette looks like a missing ROM rather than a missing
+        # palette.
+        palette_only = {p for p in paths if path_is_palette_only(self._workspace, p)}
         if prompt_summary:
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Warning)
@@ -160,6 +180,7 @@ class EntriesMixin:
                 f"This project references {len(paths)} file(s) that couldn't be "
                 "found. Locate them now?"
             )
+            box.setInformativeText(self._missing_summary(paths, palette_only))
             locate = box.addButton("Locate…", QMessageBox.ButtonRole.AcceptRole)
             box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
             box.exec()
@@ -168,8 +189,9 @@ class EntriesMixin:
         start_dir = str(Path(self._project_path).parent) if self._project_path else ""
         relocated = 0
         for old in paths:
+            what = "palette file " if old in palette_only else ""
             new, _ = QFileDialog.getOpenFileName(
-                self, f"Locate {Path(old).name}", start_dir
+                self, f"Locate {what}{Path(old).name}", start_dir
             )
             if not new:
                 continue  # skipped - leave it missing
@@ -187,7 +209,7 @@ class EntriesMixin:
                 )
                 continue
             for entry in relocate_path(self._workspace, old, new):
-                self._reload_relocated_entry(entry)
+                self._refresh_relocated_entry(entry)
             relocated += 1
         self._sync_locate_action()
         # Re-show the current entry: a now-resolvable one loads; one whose picked
@@ -199,7 +221,25 @@ class EntriesMixin:
             + (f"; {remaining} still missing." if remaining else ".")
         )
 
-    def _reload_relocated_entry(self, entry: Entry) -> None:
+    @staticmethod
+    def _missing_summary(paths: list[str], palette_only: set[str]) -> str:
+        """The missing files listed by name, each tagged with what it is for.
+
+        Bounded, because the count is already in the headline and a project can
+        reference a lot of files - the list is here to answer "which, and is it
+        my graphics or my colors", not to be the worklist (the pickers that
+        follow are).
+        """
+        shown = paths[:6]
+        lines = [
+            f"{Path(p).name} (palette)" if p in palette_only else Path(p).name
+            for p in shown
+        ]
+        if len(paths) > len(shown):
+            lines.append(f"…and {len(paths) - len(shown)} more")
+        return "\n".join(lines)
+
+    def _refresh_relocated_entry(self, entry: Entry) -> None:
         """Refresh one entry after its path(s) were corrected.
 
         A loaded entry whose palette became reachable reloads that palette in
@@ -211,6 +251,18 @@ class EntriesMixin:
             self._restore_palette_source(entry, entry.missing_palette)
         self._files_panel.refresh_entry(entry)
 
+    def _show_entry_in_manager(self, entry: Entry) -> None:
+        """Files list ▸ Show in File Manager: reveal the entry's file on disk.
+
+        The answer to "which file is this row, and where did it come from" -
+        the one question the list itself can only answer with a tooltip. A
+        missing file still says something useful (its folder opens, if that is
+        even there), so it is reported rather than pre-disabled: the entry's
+        path is exactly what the user is trying to go look at.
+        """
+        if not show_in_file_manager(entry.path):
+            self.statusBar().showMessage(f"Cannot show {entry.path} in a file manager.")
+
     def _save_project(self) -> None:
         if self._project_path is None:
             self._save_project_as()
@@ -218,14 +270,15 @@ class EntriesMixin:
             self._save_project_to(self._project_path)
 
     def _save_project_as(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save project", self._project_path or "", self._PROJECT_FILTER
+        path = ask_save_path(
+            self,
+            "Save project",
+            self._project_path or "",
+            self._PROJECT_FILTER,
+            projectfile.PROJECT_EXTENSION,
         )
-        if not path:
-            return
-        if not path.endswith(projectfile.PROJECT_EXTENSION):
-            path += projectfile.PROJECT_EXTENSION
-        self._save_project_to(path)
+        if path is not None:
+            self._save_project_to(path)
 
     def _save_project_to(self, path: str) -> None:
         if not self._resolve_dirty_entries(
@@ -376,7 +429,8 @@ class EntriesMixin:
         if entry.doc is None:
             return
         # A PALETTE entry writes its own .pal (its pixel half is inert); every
-        # other entry writes its graphic, which is view-only without a compressor.
+        # other entry writes its graphic, which is view-only when any stage it
+        # reads through has no save-side half to put the bytes back with.
         writable = (
             entry.doc.palette_config.write_enabled
             if entry.kind is EntryKind.PALETTE
@@ -384,8 +438,10 @@ class EntriesMixin:
         )
         if not writable:
             self._alert(
-                f"{entry.name} is view-only (its compression has no compressor), "
-                "so it can't be written back.",
+                f"{entry.name} is view-only - one of the stages it reads through "
+                "has no way to write back (a compression scheme with no "
+                "compressor, a reshape with no inverse, a missing plugin), so it "
+                "can't be saved.",
                 title="celPix - write",
             )
             return
@@ -409,24 +465,193 @@ class EntriesMixin:
         Pixels still floating over the current entry are set down first: a float
         is on screen but not in the document, and a file that doesn't match what
         the user is looking at is not what Write means.
+
+        A slice inside a region its parent reorders takes the long way round
+        (:meth:`_write_pixels_through_parent`) — its bytes have no file position
+        of their own.
         """
         assert entry.doc is not None
         if entry is self._workspace.current:
             self._commit_float()
         self._capture_session()  # keep the current entry's session snapshot fresh
         palette_only = entry.palette_dirty and not entry.pixel_dirty
+        via_parent = not palette_only and entry.doc.pixel_config.writes_through_parent
+        writes_region = not (palette_only or via_parent)
         try:
-            pipeline.save(entry.doc, self._registry, pixel=not palette_only)
+            if via_parent and not self._write_pixels_through_parent(entry):
+                return False
+            if writes_region:
+                # Belt and braces over the fold each slice edit already did: a
+                # slice edited while this had no document folds here instead.
+                self._fold_slice_edits_into(entry)
+            pipeline.save(entry.doc, self._registry, pixel=writes_region)
         except PipelineError as exc:
             self._report(exc)
             return False
         self._workspace.mark_saved(entry, pixel=not palette_only)
+        if writes_region and entry.kind is EntryKind.FILE:
+            self._mark_region_saved(entry)
         # Invalidated even for a palette-only write: in Offset mode the palette's
         # target *is* this entry's own file, so other entries on it are stale too.
         # Every file of a region, since a save can have rewritten any of them.
         for path in entry.paths:
             self._workspace.invalidate_path(path, keep=entry)
         self._refresh_stale_current()
+        return True
+
+    def _fold_slice_edits_into(
+        self, parent: Entry, also: Entry | None = None
+    ) -> list[Entry]:
+        """Bring ``parent``'s buffer up to date with its slices' unsaved edits.
+
+        A slice's bytes are a **derived** view of a window of its parent's
+        region — the identity for a plain slice, a decode for a compressed or
+        reshaped one, which is why the two cannot simply share one buffer. So
+        they are separate copies with the parent's as the file's authority, and
+        reconciliation runs one way: each dirty slice is re-encoded exactly as a
+        save would lay it down (``pipeline.encoded_pixel_bytes``) and spliced in
+        at the offset it was read from.
+
+        Called wherever that buffer is about to be *believed* — shown, or
+        written — so looking at a file shows what was edited through its slices,
+        and writing it puts those edits on disk. Idempotent: the same bytes over
+        the same range. ``also`` folds one more slice whether or not it is dirty,
+        for an explicit Write on a clean one. Returns what was folded, so a write
+        can mark exactly those saved.
+
+        A slice that cannot encode (no compressor, no unshape) is skipped rather
+        than failing the fold: it has nothing to contribute and never had, and
+        its own Write reports the problem in its own right.
+        """
+        if parent.kind is not EntryKind.FILE or parent.doc is None:
+            return []
+        base = parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
+        folded: list[Entry] = []
+        for child in self._workspace.children_of(parent):
+            if child.kind is not EntryKind.SLICE or child.doc is None:
+                continue
+            if not (child.pixel_dirty or child is also):
+                continue
+            try:
+                shaped = pipeline.encoded_pixel_bytes(child.doc, self._registry)
+            except PipelineError:
+                if child is also:
+                    raise  # the one being written reports its own failure
+                continue
+            start = child.slice_offset - base
+            # A slice anchored outside the parent's window was never cut from
+            # this buffer (`workspace._parent_view_bytes`), so it has no place
+            # in it to fold back into.
+            if start < 0 or start + len(shaped) > len(parent.doc.pixel_data):
+                continue
+            parent.doc.replace_bytes(start, shaped)
+            folded.append(child)
+        return folded
+
+    def _propagate_pixel_edit(self, entry: Entry, owner_revision: int) -> None:
+        """Carry a pixel edit across the file/slice boundary **as it lands**.
+
+        The file's buffer is the authority for its bytes, so an edit made
+        through a slice is folded into it immediately rather than at show or
+        write time. That is what keeps the two from racing: the parent then
+        holds every unsaved change to the region, so a later edit made *on* the
+        parent composes on top of them instead of being reverted by a stale
+        slice window folded in behind it. Its revision is stamped alongside -
+        the file has unsaved changes, and both rows say so; writing either
+        clears both, because it is one set of bytes.
+
+        Editing the parent goes the other way: every slice cache is dropped, the
+        **dirty ones included**. Dropping those is safe only because of the fold
+        above - their edits are already in this buffer, so re-deriving from it
+        loses nothing and picks up what was just edited besides.
+        """
+        if entry.kind is EntryKind.SLICE:
+            parent = self._workspace.find_file(entry.path)
+            if parent is None:
+                return
+            # Only a loaded parent needs folding; an unloaded one folds on the
+            # way in (:meth:`_on_current_entry_changed`), which is necessarily
+            # before anyone can look at or write it.
+            #
+            # ``also`` names this slice whatever its dirty state, because an
+            # **undo** back to the saved bytes leaves it clean and those clean
+            # bytes are exactly what the parent has to be given back - folding
+            # only what is dirty would strand the edit in the parent's buffer
+            # after it had been undone in the slice's.
+            if parent.doc is not None:
+                try:
+                    self._fold_slice_edits_into(parent, also=entry)
+                except PipelineError:
+                    # An edit that cannot be encoded still belongs on screen;
+                    # the write path is where that failure is worth reporting.
+                    pass
+            self._workspace.set_pixel_revision(parent, owner_revision)
+            self._files_panel.refresh_entry(parent)
+        elif entry.kind is EntryKind.FILE:
+            for child in self._workspace.children_of(entry):
+                if child.kind is EntryKind.SLICE and child.doc is not None:
+                    self._workspace.drop_document(child)
+
+    def _mark_region_saved(self, parent: Entry) -> None:
+        """Mark clean everything whose unsaved bytes just went to disk with
+        ``parent``.
+
+        A write of a file writes its whole region, and every dirty slice of it
+        has its edits inside that region already - folded as they landed
+        (:meth:`_propagate_pixel_edit`) - so they are on disk too. Leaving them
+        marked dirty would claim otherwise, and a later write of one would put
+        its own window back over whatever has happened since.
+        """
+        self._workspace.mark_saved(parent, palette=False)
+        for child in self._workspace.children_of(parent):
+            if child.kind is EntryKind.SLICE and child.pixel_dirty:
+                self._workspace.mark_saved(child, palette=False)
+
+    def _write_pixels_through_parent(self, entry: Entry) -> bool:
+        """Persist a slice by folding it into its parent and writing that.
+
+        A slice is a region *of* a file, so it is saved as part of that file
+        rather than deposited at its own bounds: its edits are folded into the
+        parent's buffer (:meth:`_fold_slice_edits_into`) and the parent's write
+        carries the whole region out — through ``unshape`` and the container,
+        split back across the region's chips. Where the parent reorders that is
+        the only thing that *can* work; everywhere else it is what lets the
+        parent's container run its own write half over bytes that changed inside
+        it (a checksum repair, a re-wrapped header), which depositing around it
+        skips.
+
+        Its **sibling** slices' unsaved edits go too, and so do the parent's own:
+        one write of one region cannot honour some of what that region currently
+        holds and not the rest. Everything folded comes back clean.
+
+        False (already reported) when there is no parent to write through; a
+        pipeline failure raises for the caller to report.
+        """
+        assert entry.doc is not None
+        parent = self._workspace.find_file(entry.path)
+        if parent is None:
+            self._alert(
+                f"{entry.name} is a region of {Path(entry.path).name}, so it is "
+                "written as part of that file - which is no longer open.",
+                title="celPix - write",
+            )
+            return False
+        # Loudly, not quietly: if the parent won't open, *why* is what the user
+        # needs, and this method has nothing to add to it.
+        if parent.doc is None and not self._load_entry(parent):
+            return False
+        folded = self._fold_slice_edits_into(parent, also=entry)
+        if entry not in folded:
+            self._alert(
+                f"{entry.name} lies outside {parent.name}'s region, so there is "
+                "nowhere in it to write these bytes back to.",
+                title="celPix - write",
+            )
+            return False
+        # The parent's pixel pathway alone: its palette is a separate source in a
+        # separate file, and this write says nothing about it.
+        pipeline.save(parent.doc, self._registry, palette=False)
+        self._mark_region_saved(parent)
         return True
 
     def _refresh_stale_current(self) -> None:
@@ -483,7 +708,7 @@ class EntriesMixin:
             palette_preset_id=src.palette_preset_id,
             palette_mode=src.palette_mode,
             # A slice's bytes are already decompressed - no preview codec.
-            compression_id=NO_COMPRESSION,
+            preview_compression_id=NO_COMPRESSION,
         )
         slice_entry.pending_palette = palette_source_for(parent)
         # Only the subpalette row and the arrangement: the rest of the geometry
@@ -502,37 +727,37 @@ class EntriesMixin:
                 bitmap_width=view.bitmap_width,
             )
 
-    def _slice_prefill_offset(self) -> int:
-        """The view position in the coordinates a slice offset is written in.
+    def _slice_prefill_offset(self, position: int | None = None) -> int:
+        """A view position in the coordinates a slice offset is written in.
 
         The same numbers the offset box shows, which is what a slice addresses:
-        past whatever the container skipped for a whole file, the slice offset
-        for a raw slice. Taking the *config's* requested offset instead would
-        prefill a headered file's slices short by its header - the config never
-        names the start the container worked out for itself.
+        past whatever the container skipped for a whole file, 0-based in the
+        reordered buffer under a reshape. Taking the *config's* requested offset
+        instead would prefill a headered file's slices short by its header - the
+        config never names the start the container worked out for itself.
+
+        ``position`` defaults to the grid's current byte position; the selection
+        and structure gestures pass their own document-relative start.
         """
         assert self._doc is not None
-        return self._display_base() + self._byte_position()
+        at = self._byte_position() if position is None else position
+        return self._display_base() + at
 
-    def _raw_slice_source(self) -> tuple[Entry, Document] | None:
+    def _slice_source(self) -> tuple[Entry, Document] | None:
         """The current entry + document if a slice can be carved from the view.
 
-        A slice reads its parent's bytes directly, so only a live document whose
-        pixel source is *raw* (no decompressor, no reshape in the view)
-        qualifies - a decompressed view can't spawn one, and a reshaped view is
-        a byte permutation whose positions name no file offset. ``None`` when
-        nothing qualifies; callers add any gesture-specific guard (a selection,
-        a found structure).
+        Whatever is on screen can be carved out of, as long as its positions are
+        the coordinates a slice offset is written in
+        (:attr:`~celpix.pipeline.pathway.PathwayConfig.positions_are_slice_offsets`)
+        - which a reshaped or interleaved view's are, because a slice of such a
+        parent reads that same reordered buffer. Only a decompressed view is
+        excluded. ``None`` when nothing qualifies; callers add any
+        gesture-specific guard (a selection, a found structure).
         """
         entry, doc = self._workspace.current, self._doc
-        if (
-            entry is None
-            or doc is None
-            or doc.pixel_config.compression_id != NO_COMPRESSION
-            or doc.pixel_config.reshape_id != NO_RESHAPE
-        ):
+        if entry is None or doc is None:
             return None
-        return entry, doc
+        return (entry, doc) if doc.pixel_config.positions_are_slice_offsets else None
 
     def _new_slice_current(self) -> None:
         """File ▸ New Slice… on the current entry's file."""
@@ -550,7 +775,7 @@ class EntriesMixin:
             if entry is self._workspace.current and self._doc is not None
             else 0
         )
-        self._create_slice_via_dialog(entry.path, offset=offset)
+        self._create_slice_via_dialog(entry, offset=offset)
 
     def _new_slice_from_view_for(self, entry: Entry) -> None:
         """The files dock's New Slice from View - only the on-screen entry has
@@ -563,7 +788,7 @@ class EntriesMixin:
         current viewport - the structure in view when the compression preview
         found one (its true extent beats the window's), else the visible
         window's bytes - plus the compression combo."""
-        src = self._raw_slice_source()
+        src = self._slice_source()
         if src is None:
             return
         entry, doc = src
@@ -578,7 +803,7 @@ class EntriesMixin:
             page = self._columns.value() * self._rows.value() * doc.bytes_per_tile
             length = min(page, len(doc.pixel_data) - self._byte_position())
         self._create_slice_via_dialog(
-            entry.path,
+            entry,
             offset=self._slice_prefill_offset(),
             length=length,
             compression_id=self._compression_id(),
@@ -603,7 +828,7 @@ class EntriesMixin:
         widened to the enclosing span, which would take in tiles either side
         of every row that the user never selected.
         """
-        src = self._raw_slice_source()
+        src = self._slice_source()
         if src is None:
             return
         entry, doc = src
@@ -631,8 +856,8 @@ class EntriesMixin:
         if end <= start:
             return
         self._create_slice_via_dialog(
-            entry.path,
-            offset=doc.pixel_config.source.offset + start,
+            entry,
+            offset=self._slice_prefill_offset(start),
             length=end - start,
         )
 
@@ -657,7 +882,7 @@ class EntriesMixin:
         params = SliceDialog.get_slice(
             self,
             self._registry,
-            path=entry.path,
+            paths=entry.paths,  # a slice carries its parent's whole file list
             offset=entry.slice_offset,
             length=entry.slice_length,
             compression_id=entry.compression_id,
@@ -699,16 +924,31 @@ class EntriesMixin:
         # so it restores the setup its own re-read is about to discard.
         if entry is self._workspace.current:
             self._capture_session()
-        if entry.doc is not None:
-            entry.pending_view = entry.doc.view
         # Pixel edits die with the old region; the palette does not - it isn't
         # tied to the slice's coordinates, so drop_document carries it across.
         # Nothing is unsaved once the edits themselves are gone.
-        self._workspace.mark_saved(entry)
-        self._workspace.drop_document(entry)
-        self._files_panel.refresh_entry(entry)
-        if entry is self._workspace.current:
-            self._on_current_entry_changed(entry)  # reload the new region now
+        self._reread_entries([entry])
+
+    def _reread_entries(self, entries: list[Entry]) -> None:
+        """Drop each entry's document so its next activation re-reads the file.
+
+        The view is stashed as ``pending_view`` on the way out and the entry is
+        marked saved: what changed is which bytes arrive, not how they are read
+        once they do, so the format, arrangement and view have to survive the
+        re-read rather than coming back on the codec's defaults. The current
+        entry is reloaded immediately — the rest wait until they are activated.
+        The caller captures the session first if it needs the *live* widget state
+        rather than what was last stored.
+        """
+        for entry in entries:
+            if entry.doc is not None:
+                entry.pending_view = entry.doc.view
+            self._workspace.mark_saved(entry)
+            self._workspace.drop_document(entry)
+            self._files_panel.refresh_entry(entry)
+        current = self._workspace.current
+        if current in entries:
+            self._on_current_entry_changed(current)  # re-read the new bytes now
 
     # -- containers ----------------------------------------------------------
     def _change_container_current(self) -> None:
@@ -757,6 +997,21 @@ class EntriesMixin:
         family = [entry, *self._workspace.children_of(entry)] if moved else [entry]
         if not self._confirm_container_discard(family):
             return
+        before = ContainerEdit(entry.container_id, entry.paths, entry.reshape_id)
+        self._push_command(ContainerEditCommand(self, entry, before=before, after=edit))
+
+    def _apply_container_edit(self, entry: Entry, edit: ContainerEdit) -> None:
+        """Put ``edit``'s file list, container and reshape on ``entry`` and
+        re-read - the application path for container edits and their undos.
+
+        The children come along whenever the file list moved: a slice's offset
+        addresses the parent's *joined* buffer, so it has to be joined the same
+        way to mean anything, and it finds its parent by the path that is about
+        to change (:func:`~celpix.project.workspace.retarget_files`). They are
+        collected before the move, while that path is still the old one.
+        """
+        moved = edit.paths != entry.paths
+        family = [entry, *self._workspace.children_of(entry)] if moved else [entry]
         entry.container_id = edit.container_id
         entry.reshape_id = edit.reshape_id
         # Format, arrangement and view survive the re-read for the same reason
@@ -766,15 +1021,8 @@ class EntriesMixin:
             self._capture_session()
         if moved:
             retarget_files(self._workspace, entry, edit.paths)
-        for touched in family:
-            if touched.doc is not None:
-                touched.pending_view = touched.doc.view
-            self._workspace.mark_saved(touched)
-            self._workspace.drop_document(touched)
-            self._files_panel.refresh_entry(touched)
         self._sync_locate_action()  # the new list may name a file that isn't there
-        if self._workspace.current in family:
-            self._on_current_entry_changed(self._workspace.current)  # re-read now
+        self._reread_entries(family)
 
     def _retarget_allowed(self, entry: Entry, first: str) -> bool:
         """Whether ``entry`` may take ``first`` as its file — i.e. its identity.
@@ -1023,30 +1271,32 @@ class EntriesMixin:
 
     def _create_slice_via_dialog(
         self,
-        path: str,
+        parent: Entry,
         *,
         offset: int = 0,
         length: int | None = None,
         compression_id: str = NO_COMPRESSION,
     ) -> None:
+        # The parent's whole file list, both to bound the dialog's offsets (a
+        # region spread over several chips is addressed as the concatenation)
+        # and so the slice inherits the list its offsets are relative to.
         params = SliceDialog.get_slice(
             self,
             self._registry,
-            path=path,
+            paths=parent.paths,
             offset=offset,
             length=length,
             compression_id=compression_id,
         )
         if params is None:
             return
-        # Through the parent entry when it is open, so a slice of a several-file
-        # region inherits the whole list its offsets are relative to.
-        parent = self._workspace.find_file(path)
-        args = (params.name, params.offset, params.length, params.compression_id)
-        entry = (
-            slice_of(parent, *args, reshape_id=params.reshape_id)
-            if parent is not None
-            else new_slice(path, *args, reshape_id=params.reshape_id)
+        entry = slice_of(
+            parent,
+            params.name,
+            params.offset,
+            params.length,
+            params.compression_id,
+            reshape_id=params.reshape_id,
         )
         self._seed_slice_from_parent(entry)
         self._push_command(AddEntryCommand(self, entry, f'new slice "{entry.name}"'))
@@ -1061,9 +1311,9 @@ class EntriesMixin:
             # a switch, so snapshot it first - otherwise a palette in use *right
             # now* looks unused and would be dropped without re-homing it.
             self._capture_session()
-            users = self._workspace.palette_users(entry)
+            users = self._workspace.palette_consumers(entry)
             if users:
-                self._remove_used_palette(entry, users)
+                self._remove_palette_with_consumers(entry, users)
                 return
         victims = [entry, *self._workspace.children_of(entry)]
         dirty = [e.name for e in victims if e.pixel_dirty or e.palette_dirty]
@@ -1096,18 +1346,20 @@ class EntriesMixin:
             )
         )
 
-    def _remove_used_palette(self, palette: Entry, users: list[Entry]) -> None:
-        """Confirm, then remove a file palette that graphics use - re-homing each
-        graphic onto a Custom copy so none is left rendering a palette that's gone.
+    def _remove_palette_with_consumers(
+        self, palette: Entry, consumers: list[Entry]
+    ) -> None:
+        """Confirm, then remove a file palette that graphics render - re-homing
+        each onto a Custom copy so none is left showing a palette that's gone.
 
         The user is told exactly where it is used before the colors are frozen into
         each graphic's own Custom palette. Undoable as one step.
         """
-        names = ", ".join(u.name for u in users)
+        names = ", ".join(c.name for c in consumers)
         answer = QMessageBox.question(
             self,
             "celPix - remove palette",
-            f"Remove {palette.name}? It is used by {len(users)} "
+            f"Remove {palette.name}? It is used by {len(consumers)} "
             f"graphic(s): {names}.\n\nEach keeps these colors as its own custom "
             "palette, stored in the project.",
         )
@@ -1115,47 +1367,49 @@ class EntriesMixin:
             return
         index = self._workspace.entries.index(palette)
         links = []
-        for user in users:
-            src = palette_source_for(user)
+        for consumer in consumers:
+            src = palette_source_for(consumer)
             links.append(
-                PaletteUserLink(
-                    entry=user,
+                PaletteConsumerLink(
+                    entry=consumer,
                     path=src.path if src and src.path else palette.path,
                     offset=src.offset if src else 0,
                     preset_id=(
-                        user.session.palette_preset_id
-                        if user.session is not None
+                        consumer.session.palette_preset_id
+                        if consumer.session is not None
                         else self._palette_preset_id()
                     ),
-                    loaded=user.doc is not None,
+                    loaded=consumer.doc is not None,
                 )
             )
         self._push_command(
-            RemovePaletteWithUsersCommand(self, palette, index=index, users=links)
+            RemovePaletteWithConsumersCommand(
+                self, palette, index=index, consumers=links
+            )
         )
 
     def _apply_remove_palette_to_custom(
-        self, palette: Entry, users: list[PaletteUserLink]
+        self, palette: Entry, consumers: list[PaletteConsumerLink]
     ) -> None:
-        """Freeze the palette's colors into each user as a Custom copy, then drop
-        the palette from the list - :class:`RemovePaletteWithUsersCommand`'s redo."""
+        """Freeze the palette's colors into each graphic as a Custom copy, then
+        drop the palette - :class:`RemovePaletteWithConsumersCommand`'s redo."""
         colors = self._file_palette_colors(palette)
         preset = palette.palette_preset_id or self._palette_preset_id()
-        for link in users:
-            self._convert_user_to_custom(link.entry, colors, preset)
+        for link in consumers:
+            self._convert_graphic_to_custom(link.entry, colors, preset)
         self._workspace.close(palette)
-        self._refresh_current_palette()
+        self._reshow_current_entry()
 
-    def _apply_restore_palette_users(
-        self, palette: Entry, index: int, users: list[PaletteUserLink]
+    def _apply_restore_palette_consumers(
+        self, palette: Entry, index: int, consumers: list[PaletteConsumerLink]
     ) -> None:
-        """Re-register the palette and relink every user - the command's undo."""
+        """Re-register the palette and relink every graphic - the command's undo."""
         self._workspace.insert(palette, index)
-        for link in users:
-            self._relink_user_to_file_palette(link)
-        self._refresh_current_palette()
+        for link in consumers:
+            self._relink_graphic_to_file_palette(link)
+        self._reshow_current_entry()
 
-    def _refresh_current_palette(self) -> None:
+    def _reshow_current_entry(self) -> None:
         """Re-apply the current entry's (possibly changed) palette to the dock and
         canvas after a re-home, so the on-screen mode/label follow the entry."""
         current = self._workspace.current

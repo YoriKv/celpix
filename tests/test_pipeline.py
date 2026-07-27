@@ -333,13 +333,15 @@ def test_find_next_structure_locates_reports_and_aborts() -> None:
     packed = lz_command.compress(tiles, big_endian_offsets=True)
     # A junk lead-in no scheme accepts (backrefs into nothing), then a structure.
     junk = (b"\x83\xff\xff" * 40)[:120]
-    window_len = 512
+    probe_bytes = 512
 
-    hit = pipeline.find_next_structure(junk + packed + bytes(64), plugin, window_len, 0)
+    hit = pipeline.find_next_structure(
+        junk + packed + bytes(64), plugin, probe_bytes, 0
+    )
     assert hit.found == len(junk)
     assert not hit.stopped
 
-    miss = pipeline.find_next_structure(junk, plugin, window_len, 0)
+    miss = pipeline.find_next_structure(junk, plugin, probe_bytes, 0)
     assert miss.found is None
     assert miss.end == len(junk)
     assert not miss.stopped
@@ -351,7 +353,7 @@ def test_find_next_structure_locates_reports_and_aborts() -> None:
         return True  # abort on the first progress tick
 
     aborted = pipeline.find_next_structure(
-        junk + packed, plugin, window_len, 0, progress_every=1, on_tick=_stop
+        junk + packed, plugin, probe_bytes, 0, progress_every=1, on_tick=_stop
     )
     assert aborted.found is None
     assert aborted.stopped
@@ -408,7 +410,7 @@ def _pal_doc(tmp_path, raw: bytes, preset="preset.palette.bgr555"):
         ),
         palette_config=cfg,
         palette_ctx=loaded.ctx,
-        palette_bytes=loaded.data,
+        palette_base_bytes=loaded.data,
     )
     return doc, pal, reg
 

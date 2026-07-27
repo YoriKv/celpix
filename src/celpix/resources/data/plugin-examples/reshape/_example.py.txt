@@ -3,48 +3,54 @@ the underscore from the name, edit it, and press F5 in celPix to load it (code
 plugins ask for confirmation the first time, since they run with the app's
 privileges).
 
-A reshape is a **region-scoped byte reordering**: a length-preserving
-permutation applied to the *whole* region — an arcade board's plane-per-chip
-split joined back together, an interleaved ROM pair woven into one stream. It
-runs between the container and the decompressor, so by the time compression and
-the pixel codec see the bytes they are already in one contiguous, decodable
-order.
+A reshape is a **region-scoped byte reordering**: a length-preserving permutation
+applied to the *whole* region — an arcade board's plane-per-chip split joined back
+together, an interleaved ROM pair woven into one stream. It runs between the
+container and the decompressor, so by the time compression and the pixel codec see
+the bytes they are in one contiguous, decodable order.
 
-It is deliberately not a compression scheme: it has no extent and no end
-marker, cannot be scanned for, and is only correct over the entire buffer (its
-boundaries are fractions of ``len(data)``). That is also why celPix blanks the
-address display and refuses to carve slices while a reshape is active — view
-positions no longer name file offsets.
+It is not a compression scheme: it has no extent and no end marker, cannot be
+scanned for, and is only correct over the entire buffer, its boundaries being
+fractions of ``len(data)``. That is also why celPix blanks the address display and
+refuses to carve slices while a reshape is active — view positions no longer name
+file offsets.
 
-**``unshape`` is optional.** ``reshape`` runs on load and ``unshape`` is its
-exact inverse, run on save so every byte returns to where it came from. A
-reordering understood well enough to view but not to restore ships ``reshape``
-alone; celPix then opens its data read-only. Nothing has to declare that —
-shipping the method is the declaration.
+**``unshape`` is optional.** ``reshape`` runs on load and ``unshape`` is its exact
+inverse, run on save so every byte returns where it came from. A reordering
+understood well enough to view but not to restore ships ``reshape`` alone, and
+celPix opens its data read-only. Shipping the method is the declaration.
 
-This toy reshape swaps the two halves of the region (some boards store the
-second half of a sprite sheet first). Real ones (a plane split, a word
-interleave) are more involved, but the plumbing is identical.
+**Address permutations need no code.** If a board scrambles its graphics by
+rotating address lines, or substitutes byte values through a table, write a TOML
+preset instead — see _bitswap.toml and _data-lut.toml in this folder. Code is for
+reorderings neither engine expresses, like the shipped split-plane joins.
+
+This toy reshape swaps the two halves of the region; some boards store the second
+half of a sprite sheet first. Real ones are more involved, but the plumbing is
+identical.
 """
 
 from celpix.core.context import PipelineContext
+from celpix.core.errors import Stage
 from celpix.plugins import PluginInfo
 
 
 class ExampleSwapHalves:
     info = PluginInfo(
-        # Ids are namespaced by stage; the folder this file sits in already
-        # declares the stage, so the descriptor need not repeat it.
+        # Ids are namespaced by stage. The folder this file sits in declares the
+        # stage, so the line below is optional — stated anyway, as the other
+        # examples do, so the file describes itself wherever it is read.
         id="reshape.example-swap-halves",
         name="Example half swap",
+        stage=Stage.RESHAPE,
     )
 
     def reshape(self, data: bytes, ctx: PipelineContext) -> bytes:
         """Whole region in, whole region out — never a window of one.
 
-        An odd byte has no partner half, so it is passed through at the end
-        rather than folded in: degrading to "the last byte is not interpreted"
-        beats shearing the whole image by one.
+        An odd byte has no partner half, so it passes through at the end rather
+        than being folded in: "the last byte is not interpreted" beats shearing
+        the whole image by one.
         """
         half = len(data) // 2
         return data[half : half * 2] + data[:half] + data[half * 2 :]
@@ -52,9 +58,9 @@ class ExampleSwapHalves:
     def unshape(self, data: bytes, ctx: PipelineContext) -> bytes:
         """The exact inverse, so a save writes back byte-identical files.
 
-        A half swap happens to be its own inverse; most reshapes are not, and
-        celPix trusts the pair blindly — a mismatch corrupts saves, so test the
-        round trip: ``unshape(reshape(x)) == x`` for odd and even lengths.
+        A half swap is its own inverse; most reshapes are not. celPix trusts the
+        pair blindly and a mismatch corrupts saves, so test the round trip:
+        ``unshape(reshape(x)) == x`` for odd and even lengths.
         """
         return self.reshape(data, ctx)
 

@@ -1,20 +1,16 @@
-"""Self-contained code formats — the code pathway for data-tier plugins.
+"""Self-contained code formats — a preset's behaviour written directly.
 
 A *format* is what a preset describes (one selectable pixel or palette
-interpretation), implemented directly in code instead of as engine parameters.
-It exists for interpretations no engine's parameters can express, without
-forcing the author through the engine-plus-companion-preset ceremony: one class,
-one ``registry.register_format(...)`` call, and it appears in the format picker
-like any preset.
+interpretation) implemented in code rather than as engine parameters, for
+interpretations no engine's parameters can express. One class and one
+``registry.register_format(...)`` call put it in the format picker like any
+preset, with no companion preset to author.
 
-The host adapts a format into the existing machinery rather than teaching the
-pipeline a new tier: :func:`adapt_format` wraps it as a codec engine (the
-``params`` dict every codec method carries is simply ignored — a format *is* its
-own parameterisation) plus an auto-generated empty-params :class:`Preset` whose
-``engine_id`` is the format itself. The pipeline's preset → engine resolution
-and the UI's preset listing then work unchanged.
-
-Like everything under ``plugins``, this module is Qt-free.
+:func:`adapt_format` folds it into the existing machinery rather than teaching
+the pipeline a new tier: the format becomes a codec engine (ignoring the
+``params`` every codec method carries — a format *is* its own parameterisation)
+plus an empty-params :class:`Preset` naming that engine. Preset → engine
+resolution and the UI's preset listing then work unchanged. Qt-free.
 """
 
 from __future__ import annotations
@@ -41,8 +37,9 @@ class FormatInfo:
 class PixelFormat(Protocol):
     """A pixel interpretation implemented directly: bytes ⇄ tiles.
 
-    The same contract as ``PixelCodecPlugin`` minus ``params`` — decode/encode
-    stay buffer-relative and stateless so windowed decoding keeps working.
+    :class:`~celpix.plugins.base.PixelCodecPlugin`'s contract minus ``params``.
+    Decode and encode stay buffer-relative and stateless, so windowed decoding of
+    a large file keeps working.
     """
 
     info: FormatInfo

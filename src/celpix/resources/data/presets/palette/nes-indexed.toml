@@ -5,7 +5,6 @@ name = "NES/Famicom (64-color indexed)"
 engine_id = "codec.color-indexed"
 
 [params]
-bytes_per_entry = 1
 colors = [
   0x5D5D5D, 0x00218E, 0x120BAF, 0x3900A6,
   0x5B0078, 0x6C0033, 0x670500, 0x4E1C00,

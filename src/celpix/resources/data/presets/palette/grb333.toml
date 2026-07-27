@@ -1,0 +1,19 @@
+# GRB333 — 9-bit, one nibble per component with green in the high nibble:
+# G=bits 8-10, R=4-6, B=0-2, top nibble unused. The odd component order is not
+# a transcription slip: this is bit-exact to the format YY-CHR ships as
+# "R3G3B3" (it lists components from the low bits up; our names read MSB-first
+# — docs/design/plugin-system.md §2). The id keeps that historic spelling: ids
+# are stable, project files reference them.
+# See docs/graphics-formats-reference/implementation-guide.md §4.
+id = "preset.palette.r3g3b3"
+name = "GRB333 (9-bit; YY-CHR R3G3B3)"
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"
+
+[params.masks]
+r = 0x0070
+g = 0x0700
+b = 0x0007

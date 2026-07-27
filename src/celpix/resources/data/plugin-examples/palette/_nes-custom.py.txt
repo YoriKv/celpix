@@ -4,20 +4,20 @@ Files starting with "_" are ignored — copy this file, drop the underscore from
 the name, edit it, and press F5 in celPix to load it (code plugins ask for
 confirmation the first time, since they run with the app's privileges).
 
-celPix already ships "NES/Famicom (64-color indexed)", but its 64 RGB colors are
-baked in. The NES PPU doesn't store RGB at all — a palette byte is a 6-bit index
-(0..63) into a *master palette* the hardware/emulator decides, and everyone has a
-favourite (Bisqwit, FCEUX, Nestopia, Blargg…). This format lets you supply your
-own, so your tiles preview in exactly the colors your target emulator shows.
+celPix ships "NES/Famicom (64-color indexed)", but its 64 RGB colors are baked in.
+The NES PPU doesn't store RGB at all — a palette byte is a 6-bit index (0..63)
+into a *master palette* the hardware or emulator decides, and everyone has a
+favourite. This format lets you supply your own, so tiles preview in the colors
+your target emulator shows.
 
-**Providing your palette:** drop a standard 192-byte ``.pal`` file (64 entries ×
-R,G,B — what emulators load) named to match this plugin next to it. Activated as
-``nes-custom.py``, it reads ``nes-custom.pal`` from the same folder. With no such
+**Providing your palette:** drop a standard 192-byte ``.pal`` file (64 entries of
+R,G,B, what emulators load) beside the plugin, named to match it. Activated as
+``nes-custom.py``, it reads ``nes-custom.pal`` from the same folder; with no such
 file it falls back to the baked default below, so the format always works.
 
 Like the built-in indexed codec, decode is a table lookup and encode is
-nearest-entry by RGB distance (the master palette has duplicate colors, so it has
-no exact inverse). It appears in the palette format picker like any preset.
+nearest-entry by RGB distance — the master palette has duplicate colors, so it
+has no exact inverse.
 """
 
 from pathlib import Path
@@ -25,7 +25,7 @@ from pathlib import Path
 from celpix.core.palette import MISSING_COLOR, Palette
 from celpix.plugins import FormatInfo
 
-# Fallback master palette (0xRRGGBB), used when no companion .pal is found — one
+# Fallback master palette (0xRRGGBB), used when no companion .pal is found: one
 # common NES rendering, so the example is self-contained. Replace it by dropping
 # your own .pal beside the plugin rather than editing these numbers.
 _DEFAULT_MASTER = [
@@ -45,8 +45,8 @@ _PAL_BYTES = _MASTER_COLORS * 3  # are read as their base 64 only.
 
 def _load_master_palette():
     """The 64 master colors: from the companion ``.pal`` if present and valid,
-    else the baked default. Called once at register() time — the master palette
-    is fixed for the session, so re-reading the file per decode would be waste."""
+    else the baked default. Called once at register() time, the master palette
+    being fixed for the session."""
     try:
         raw = Path(__file__).with_suffix(".pal").read_bytes()
     except OSError:

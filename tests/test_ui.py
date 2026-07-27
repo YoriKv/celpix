@@ -153,7 +153,7 @@ def test_slice_entry_views_bounded_region_with_absolute_addresses(
     assert not window._change_container_action.isEnabled()
     assert window._write_action.isEnabled()
     # Slices never nest: a slice on screen offers no slice-creation actions.
-    window._on_tiles_selected(0, 0)  # a selection can't unlock from-selection
+    window._on_slots_selected(0, 0)  # a selection can't unlock from-selection
     assert not window._new_slice_action.isEnabled()
     assert not window._new_slice_from_view_action.isEnabled()
     assert not window._new_slice_from_selection_action.isEnabled()
@@ -389,21 +389,28 @@ def test_palette_export_writes_a_pal_and_registers_it(qtbot, tmp_path, monkeypat
     assert window._export_palette_action.isEnabled()
 
     out = tmp_path / "gfx.pal"
-    monkeypatch.setattr(
-        QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out), ""))
-    )
-    # The palette was read as BGR555; the export must ignore that (and the
-    # hidden dropdown) and write plain RGB triplets.
+    asked: list[str] = []
+
+    def _save(_parent, _title, default, *a, **k):
+        asked.append(default)
+        return (str(out), "")
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(_save))
+    # The palette is read as BGR555, so that is what the export writes: two
+    # bytes an entry, not the three a plain RGB dump would take.
     assert window._palette_preset_id() == "preset.palette.bgr555"
     window._export_palette_file()
-    assert out.stat().st_size == 3 * len(window._doc.palette)
+    # One pixel file yields as many palettes as it has offsets, so the offset -
+    # not just the source file - is what makes the suggested name unique.
+    assert Path(asked[0]).name == "s.4bpp_0x000020.pal"
+    assert out.stat().st_size == 2 * len(window._doc.palette)
 
     # The file holds the whole palette on screen - every entry, not just the
     # ones an edit touched, as a save-back into an existing file would.
     reloaded = pipeline.load_palette(
         PathwayConfig(
             source=FileRef(str(out)),
-            interpret_preset_id="preset.palette.rgb888",
+            interpret_preset_id="preset.palette.bgr555",
         ),
         window._registry,
     )
@@ -411,17 +418,17 @@ def test_palette_export_writes_a_pal_and_registers_it(qtbot, tmp_path, monkeypat
     palettes = [e for e in window._workspace.entries if e.kind is EntryKind.PALETTE]
     assert [e.name for e in palettes] == ["gfx.pal"]
     # Registered as what was written, so the double-click round-trips: applying
-    # it decodes RGB888 and lands the very colors that were exported.
-    assert palettes[0].palette_preset_id == "preset.palette.rgb888"
+    # it decodes BGR555 and lands the very colors that were exported.
+    assert palettes[0].palette_preset_id == "preset.palette.bgr555"
 
     # Exporting over an already-registered path re-stamps it: the entry has to
     # describe the bytes now on disk, not the file they replaced.
-    palettes[0].palette_preset_id = "preset.palette.bgr555"
+    palettes[0].palette_preset_id = "preset.palette.rgb888"
     window._export_palette_file()
-    assert palettes[0].palette_preset_id == "preset.palette.rgb888"
+    assert palettes[0].palette_preset_id == "preset.palette.bgr555"
 
     window._use_palette_entry(palettes[0])
-    assert window._palette_preset_id() == "preset.palette.rgb888"
+    assert window._palette_preset_id() == "preset.palette.bgr555"
     assert window._doc.palette.colors == reloaded.palette.colors
 
 
@@ -679,7 +686,7 @@ def test_palette_dock_header_tracks_mode(qtbot, tmp_path, monkeypatch) -> None:
 
     # Offset mode decodes raw bytes: the offset field, its step arrows, and the
     # format row all appear.
-    window._on_tiles_selected(1, 1)
+    window._on_slots_selected(1, 1)
     window._load_palette_from_selection()
     assert window._palette_mode == "offset"
     assert window._palette_offset_edit.isVisibleTo(window)
@@ -704,7 +711,7 @@ def test_palette_grid_never_scrolls_a_full_palette(qtbot) -> None:
     qtbot.addWidget(window)
     window.show()
     qtbot.waitExposed(window)
-    window._palette_panel.set_palette(Palette.default(FULL_PALETTE_COUNT).colors)
+    window._palette_panel.set_colors(Palette.default(FULL_PALETTE_COUNT).colors)
     window.resizeDocks([window._palette_dock], [1], Qt.Orientation.Vertical)
     window.resizeDocks([window._palette_dock], [1], Qt.Orientation.Horizontal)
     qtbot.wait(10)
@@ -772,15 +779,15 @@ def test_typing_hex_offset_jumps_byte_exact(qtbot, tmp_path, monkeypatch) -> Non
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
     window._columns.setValue(16)
     window._rows.setValue(2)
-    window._offset_edit.setText("0x210")  # tile 16 plus a 16-byte nudge
-    window._offset_edit.commit()
+    window._address_edit.setText("0x210")  # tile 16 plus a 16-byte nudge
+    window._address_edit.commit()
     assert (window._offset, window._nudge) == (16, 16)
-    assert window._offset_edit.text() == "0x000210"  # normalised, byte-exact
+    assert window._address_edit.text() == "0x000210"  # normalised, byte-exact
     # Past the end clamps to the last full page, which sits on the tile grid.
-    window._offset_edit.setText("0xFFFF")
-    window._offset_edit.commit()
+    window._address_edit.setText("0xFFFF")
+    window._address_edit.commit()
     assert (window._offset, window._nudge) == (32, 0)
-    assert window._offset_edit.text() == "0x000400"
+    assert window._address_edit.text() == "0x000400"
 
 
 def test_byte_nudge_steps_wrap_and_clamp(qtbot, tmp_path, monkeypatch) -> None:
@@ -791,7 +798,7 @@ def test_byte_nudge_steps_wrap_and_clamp(qtbot, tmp_path, monkeypatch) -> None:
     window._nav_bytes(1)
     assert (window._offset, window._nudge) == (0, 1)
     assert window._nudge_info.text() == "+1 B"
-    assert window._offset_edit.text() == "0x000001"
+    assert window._address_edit.text() == "0x000001"
     # Tile-based moves keep the nudge — it is alignment, not position.
     window._nav_rows(1)
     assert (window._offset, window._nudge) == (16, 1)
@@ -869,35 +876,35 @@ def test_the_address_format_dropdown_drives_the_offset_box(
     # offset. The commit path is focus-independent (CommittingLineEdit always
     # re-renders), so this one case covers focused and unfocused alike.
     assert not window._bank_size.isEnabled()
-    window._offset_edit.setText("nonsense")
-    window._offset_edit.commit()
+    window._address_edit.setText("nonsense")
+    window._address_edit.commit()
     assert window._offset == before
-    assert window._offset_edit.text() == f"0x{before * 32:06X}"
+    assert window._address_edit.text() == f"0x{before * 32:06X}"
 
     # A banked preset re-renders the displayed text and parses typed addresses
     # under the new layout, and fills the spins it is described by.
     _select_address_format(window, "snes-lorom")
-    assert window._offset_edit.text() == "$00:8200"
+    assert window._address_edit.text() == "$00:8200"
     assert window._bank_size.isEnabled()
     assert (
         window._bank_size.value(),
         window._bank_addr.value(),
         window._bank_first.value(),
     ) == (0x8000, 0x8000, 0x00)
-    window._offset_edit.setText("$00:8400")  # byte 0x400 -> tile 32
-    window._offset_edit.commit()
+    window._address_edit.setText("$00:8400")  # byte 0x400 -> tile 32
+    window._address_edit.commit()
     assert window._offset == 32
-    assert window._offset_edit.text() == "$00:8400"
+    assert window._address_edit.text() == "$00:8400"
 
     # Hand-editing a spin flips the dropdown to Custom - the preset no longer
     # describes the settings - and re-renders under the edited layout. Re-selecting
     # the preset restores its values.
     window._bank_first.setValue(0x40)  # e.g. SuperFX-style bank numbering
     assert window._addr_format.currentData() == "custom"
-    assert window._offset_edit.text() == "$40:8400"
+    assert window._address_edit.text() == "$40:8400"
     _select_address_format(window, "snes-lorom")
     assert window._bank_first.value() == 0x00
-    assert window._offset_edit.text() == "$00:8400"
+    assert window._address_edit.text() == "$00:8400"
 
     # ExHiROM/ExLoROM are piecewise mappings the three-spin model can't express:
     # selecting one hides the settings entirely and renders through the split
@@ -905,7 +912,7 @@ def test_the_address_format_dropdown_drives_the_offset_box(
     window._nav_home()
     _select_address_format(window, "snes-exhirom")
     assert window._bank_settings.isHidden()
-    assert window._offset_edit.text() == "$C0:0000"
+    assert window._address_edit.text() == "$C0:0000"
     _select_address_format(window, "snes-lorom")
     assert not window._bank_settings.isHidden()
 
@@ -914,20 +921,20 @@ def test_offset_scrollbar_jumps_and_stays_in_sync(qtbot, tmp_path, monkeypatch) 
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
     window._columns.setValue(16)
     window._rows.setValue(2)  # page = 32 tiles; scrollbar max = 64 - 32 = 32.
-    assert window._offset_bar.maximum() == 32
-    assert window._offset_bar.pageStep() == 32
-    assert window._offset_bar.singleStep() == 16  # one row
+    assert window._tile_offset_bar.maximum() == 32
+    assert window._tile_offset_bar.pageStep() == 32
+    assert window._tile_offset_bar.singleStep() == 16  # one row
 
     # A drag can land on any tile; the offset snaps to the nearest whole row
     # and the bar is pulled back onto it.
-    window._offset_bar.setValue(20)
+    window._tile_offset_bar.setValue(20)
     assert window._offset == 16
-    assert window._offset_bar.value() == 16
+    assert window._tile_offset_bar.value() == 16
 
     # Moving via keys/buttons keeps the scrollbar in step (no feedback loop).
     window._nav_home()
     assert window._offset == 0
-    assert window._offset_bar.value() == 0
+    assert window._tile_offset_bar.value() == 0
 
 
 def test_block_pattern_scales_vertical_step(qtbot, tmp_path, monkeypatch) -> None:
@@ -942,8 +949,8 @@ def test_block_pattern_scales_vertical_step(qtbot, tmp_path, monkeypatch) -> Non
     window._pattern.setCurrentIndex(window._pattern.findText(_pattern_name("nes-8x16")))
     window._nav_keys[(Qt.Key.Key_Down, False, False)]()
     assert window._offset == 16  # two rows of 8 tiles
-    assert window._offset_bar.singleStep() == 16
-    window._offset_bar.setValue(28)  # nearest block-row multiple is 32
+    assert window._tile_offset_bar.singleStep() == 16
+    window._tile_offset_bar.setValue(28)  # nearest block-row multiple is 32
     assert window._offset == 32
 
 
@@ -1028,7 +1035,7 @@ def test_nav_keys_act_unless_an_arrow_input_is_focused(
         monkeypatch.setattr(QApplication, "focusWidget", staticmethod(lambda: widget))
 
     # Arrow-consuming inputs keep the key: not handled, no navigation.
-    for control in (window._pixel_preset, window._rows, window._offset_edit):
+    for control in (window._pixel_preset, window._rows, window._address_edit):
         focus_is(control)
         assert window._handle_nav_key(down) is False
         assert window._offset == 0
@@ -1151,7 +1158,7 @@ def test_click_on_blank_padding_is_ignored(qtbot, tmp_path, monkeypatch) -> None
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=8)
     window._columns.setValue(16)
     window._rows.setValue(2)
-    window._on_tiles_selected(10, 10)
+    window._on_slots_selected(10, 10)
     assert window._selected_tile is None
 
 
@@ -1174,7 +1181,7 @@ def _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch) -> MainWindow:
 
 def test_load_palette_from_selection(qtbot, tmp_path, monkeypatch) -> None:
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    window._on_tiles_selected(1, 1)  # byte offset 32
+    window._on_slots_selected(1, 1)  # byte offset 32
     window._load_palette_from_selection()
 
     doc = window._doc
@@ -1203,7 +1210,7 @@ def test_palette_preset_switch_refloors_from_selection_window(
     qtbot, tmp_path, monkeypatch
 ) -> None:
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    window._on_tiles_selected(1, 1)
+    window._on_slots_selected(1, 1)
     window._load_palette_from_selection()
 
     window._palette_preset.setCurrentIndex(
@@ -1223,10 +1230,10 @@ def test_palette_panel_click_maps_to_subpalette(qtbot, tmp_path, monkeypatch) ->
 
     panel = PalettePanel()
     qtbot.addWidget(panel)
-    panel.set_palette(list(range(256)))
+    panel.set_colors(list(range(256)))
     panel.set_active_range(8, 4)  # 2bpp: 4-entry subpalettes, a quarter-row range
     got: list[int] = []
-    panel.subpalette_clicked.connect(got.append)
+    panel.subpalette_row_selected.connect(got.append)
     # Swatch 40 = display row 2, col 8; with 4-entry subpalettes that's
     # subpalette 10 — the index space sizes the mapping, not the 16-wide display.
     qtbot.mouseClick(
@@ -1239,9 +1246,9 @@ def test_palette_panel_click_maps_to_subpalette(qtbot, tmp_path, monkeypatch) ->
     # Window-level wiring: the panel's signal drives the subpalette spin. Needs
     # a palette that actually has row 5 (the view clamps rows to the palette).
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    window._on_tiles_selected(0, 0)
+    window._on_slots_selected(0, 0)
     window._load_palette_from_selection()  # 128 colors = rows 0..7
-    window._palette_panel.subpalette_clicked.emit(5)
+    window._palette_panel.subpalette_row_selected.emit(5)
     assert window._subpalette.value() == 5
 
 
@@ -1254,7 +1261,7 @@ def test_palette_mode_starts_default_and_default_restores_fallback(
     # intended visibility even though this test never shows the window).
     assert not window._palette_offset_edit.isVisibleTo(window)
 
-    window._on_tiles_selected(1, 1)
+    window._on_slots_selected(1, 1)
     window._load_palette_from_selection()
     assert window._palette_mode.is_real
     # Offset mode reveals the field.
@@ -1629,7 +1636,7 @@ def test_palette_mode_file_cancel_reverts_dropdown(
     from PySide6.QtWidgets import QFileDialog
 
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    window._on_tiles_selected(1, 1)
+    window._on_slots_selected(1, 1)
     window._load_palette_from_selection()
     before = list(window._doc.palette.colors)
 
@@ -1648,7 +1655,7 @@ def test_palette_offset_box_follows_address_format(
     qtbot, tmp_path, monkeypatch
 ) -> None:
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    window._on_tiles_selected(1, 1)
+    window._on_slots_selected(1, 1)
     window._load_palette_from_selection()
     _select_address_format(window, "snes-lorom")
     assert window._palette_offset_edit.text() == "$00:8020"
@@ -1664,10 +1671,10 @@ def test_palette_panel_arrows_move_selection_and_subpalette_follows(
 
     panel = PalettePanel()
     qtbot.addWidget(panel)
-    panel.set_palette(list(range(64)))  # 4 subpalettes of 16
+    panel.set_colors(list(range(64)))  # 4 subpalettes of 16
     panel.set_active_range(16, 16)  # row 1 active
     got: list[int] = []
-    panel.subpalette_clicked.connect(got.append)
+    panel.subpalette_row_selected.connect(got.append)
 
     # Up/Down move the *selection* one display row; the subpalette follows it.
     # With no selection yet, movement starts from the active range's first entry.
@@ -1705,14 +1712,14 @@ def test_p_key_loads_palette_from_selection(qtbot, tmp_path, monkeypatch) -> Non
     from PySide6.QtWidgets import QApplication
 
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    window._on_tiles_selected(1, 1)
+    window._on_slots_selected(1, 1)
     press_p = QKeyEvent(
         QEvent.Type.KeyPress, Qt.Key.Key_P, Qt.KeyboardModifier.NoModifier
     )
 
     # Focused text input keeps the letter (it may be typing).
     monkeypatch.setattr(
-        QApplication, "focusWidget", staticmethod(lambda: window._offset_edit)
+        QApplication, "focusWidget", staticmethod(lambda: window._address_edit)
     )
     assert window._handle_nav_key(press_p) is False
     assert not window._palette_mode.is_real
@@ -1738,7 +1745,7 @@ def test_g_key_toggles_grid(qtbot, tmp_path, monkeypatch) -> None:
 
     # Focused text input keeps the letter (it may be typing).
     monkeypatch.setattr(
-        QApplication, "focusWidget", staticmethod(lambda: window._offset_edit)
+        QApplication, "focusWidget", staticmethod(lambda: window._address_edit)
     )
     assert window._handle_nav_key(press_g) is False
     assert not window._grid.isChecked()
@@ -1795,7 +1802,7 @@ def test_palette_panel_color_selection_click_and_arrows(qtbot) -> None:
 
     panel = PalettePanel()
     qtbot.addWidget(panel)
-    panel.set_palette(list(range(32)))  # two rows of 16
+    panel.set_colors(list(range(32)))  # two rows of 16
     panel.set_active_range(16, 16)
     picked: list[int] = []
     panel.color_selected.connect(picked.append)
@@ -1831,16 +1838,16 @@ def test_palette_panel_color_selection_click_and_arrows(qtbot) -> None:
     # With no selection, Right starts from the active subpalette's first entry.
     fresh = PalettePanel()
     qtbot.addWidget(fresh)
-    fresh.set_palette(list(range(32)))
+    fresh.set_colors(list(range(32)))
     fresh.set_active_range(16, 16)
     qtbot.keyClick(fresh, Qt.Key.Key_Right)
     assert fresh.selected_index() == 17
 
     # A shrunken palette clamps a stranded selection back inside (or clears it
     # when nothing is left).
-    panel.set_palette(list(range(8)))
+    panel.set_colors(list(range(8)))
     assert panel.selected_index() == 7
-    panel.set_palette([])
+    panel.set_colors([])
     assert panel.selected_index() is None
 
 
@@ -1852,11 +1859,11 @@ def test_palette_panel_drag_scrubs_selection_and_clamps(qtbot) -> None:
 
     panel = PalettePanel()
     qtbot.addWidget(panel)
-    panel.set_palette(list(range(20)))  # row of 16 + a short second row (4)
+    panel.set_colors(list(range(20)))  # row of 16 + a short second row (4)
     picked: list[int] = []
     panel.color_selected.connect(picked.append)
     rows: list[int] = []
-    panel.subpalette_clicked.connect(rows.append)
+    panel.subpalette_row_selected.connect(rows.append)
     panel.set_active_range(0, 4)  # 4-wide subpalettes, so a drag crosses several
 
     device = QPointingDevice.primaryPointingDevice()
@@ -1933,7 +1940,7 @@ def test_palette_panel_copy_paste_keys_emit(qtbot) -> None:
 
     panel = PalettePanel()
     qtbot.addWidget(panel)
-    panel.set_palette(list(range(16)))
+    panel.set_colors(list(range(16)))
     panel._select(3)
     events: list[str] = []
     panel.copy_requested.connect(lambda: events.append("copy"))
@@ -1956,7 +1963,7 @@ def test_palette_panel_right_click_selects(qtbot) -> None:
 
     panel = PalettePanel()
     qtbot.addWidget(panel)
-    panel.set_palette(list(range(32)))
+    panel.set_colors(list(range(32)))
     # Right-clicking a swatch moves the selection onto it (so the menu acts there).
     qtbot.mouseClick(
         panel, Qt.MouseButton.RightButton, pos=QPoint(5 * SWATCH_SIZE + 1, 1)
@@ -1966,7 +1973,7 @@ def test_palette_panel_right_click_selects(qtbot) -> None:
 
 def test_palette_copy_paste_color_and_undo(qtbot, tmp_path, monkeypatch) -> None:
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    window._on_tiles_selected(1, 1)
+    window._on_slots_selected(1, 1)
     window._load_palette_from_selection()  # Offset mode: editable in place
     panel = window._palette_panel
 
@@ -1998,7 +2005,7 @@ def test_palette_copy_paste_color_and_undo(qtbot, tmp_path, monkeypatch) -> None
 
 def test_palette_copy_paste_subpalette_and_undo(qtbot, tmp_path, monkeypatch) -> None:
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    window._on_tiles_selected(1, 1)
+    window._on_slots_selected(1, 1)
     window._load_palette_from_selection()  # Offset mode: editable in place
     space = window._index_space()
 
@@ -2031,7 +2038,7 @@ def test_mode_switch_resets_row_and_selection_into_palette(
 
     # Switching to a shorter palette (128 colors = rows 0..7) has to pull both
     # the row and the swatch selection back inside it.
-    window._on_tiles_selected(0, 0)
+    window._on_slots_selected(0, 0)
     window._load_palette_from_selection()
     assert len(window._doc.palette) == 128
     assert window._subpalette.value() == 7
@@ -2134,7 +2141,7 @@ def test_pixel_mode_switch_reanchors_subpalette_on_selection(
     # preset switch recomputes it from the selected color: entry 20 is row 1
     # under 4bpp (16-entry rows) but row 5 under 2bpp (4-entry rows).
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
-    window._on_tiles_selected(0, 0)
+    window._on_slots_selected(0, 0)
     window._load_palette_from_selection()  # 128 colors
     window._palette_panel._select(20)
     window._subpalette.setValue(1)
@@ -2149,8 +2156,8 @@ def test_pixel_mode_switch_reanchors_subpalette_on_selection(
 
     # Without a color selection the old base anchors instead, so the view
     # keeps showing the same palette region.
-    window._palette_panel.set_palette([])  # drops the selection
-    window._palette_panel.set_palette(window._doc.palette.colors)
+    window._palette_panel.set_colors([])  # drops the selection
+    window._palette_panel.set_colors(window._doc.palette.colors)
     window._subpalette.setValue(2)  # base 32 under 4bpp
     window._pixel_preset.setCurrentIndex(
         window._pixel_preset.findData("preset.pixel.gb-2bpp")
@@ -2170,7 +2177,7 @@ def test_color_details_show_selected_color(qtbot, tmp_path, monkeypatch) -> None
     assert "R 255  G 255  B 255  A 255" in window._color_details.text()
 
     # A palette reload recolors the same index; the readout follows on refresh.
-    window._on_tiles_selected(1, 1)
+    window._on_slots_selected(1, 1)
     window._load_palette_from_selection()
     assert "#FFFFFFFF" not in window._color_details.text()  # index 1 changed
 
@@ -2442,28 +2449,33 @@ def test_copier_header_is_detected_and_skipped(qtbot, tmp_path) -> None:
     assert window._offset_text() == "0x000200"
 
 
-def test_reshape_shows_joined_bytes_and_gates_offsets(qtbot, tmp_path) -> None:
-    """Under an active reshape the view shows the reordered region, and every
-    view-position-to-file-offset mapping goes dark: the address display falls
-    back to 0-based positions and no slice can be carved from the view. These
-    gates keyed on compression alone before the Reshape stage existed, so a
-    reshaped view silently minting garbage file offsets is the regression this
-    guards (docs/design/reshape-stage.md §3).
+def test_slice_carved_from_a_reshaped_view_reads_what_was_on_screen(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Under an active reshape the view shows the reordered region on 0-based
+    addresses, and a slice carved from it comes back holding exactly those
+    bytes.
+
+    The two halves are one rule: a slice offset is a position in its parent's
+    own coordinates, which under a reshape are the reordered buffer's - the same
+    ones the view displays. So the carve must round-trip, and the regression to
+    fear is it silently reading the *file* at that number instead, which decodes
+    to plausible-looking garbage (docs/design/reshape-stage.md §3).
     """
     from celpix.core.context import PipelineContext
     from celpix.plugins.builtins.split_planes import SplitPartsReshape
+    from celpix.ui.slice_dialog import SliceDialog, SliceParams
 
-    data = bytes((i * 13 + 1) & 0xFF for i in range(256))
-    px = tmp_path / "pair.bin"
+    data = bytes((i * 13 + 1) & 0xFF for i in range(1024))
+    px = tmp_path / "pair.4bpp.sfc"
     px.write_bytes(data)
 
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(px))
     entry = window._workspace.current
-    assert window._raw_slice_source() is not None  # raw view: carving allowed
 
-    # What _change_container_for does once the dialog returns a reshape.
+    # What _apply_container_edit does once the dialog returns a reshape.
     entry.reshape_id = "reshape.split-planes-2"
     window._capture_session()
     window._workspace.drop_document(entry)
@@ -2471,8 +2483,127 @@ def test_reshape_shows_joined_bytes_and_gates_offsets(qtbot, tmp_path) -> None:
 
     joined = SplitPartsReshape(2).reshape(data, PipelineContext())
     assert bytes(window._doc.pixel_data) == joined
-    assert window._display_base() == 0
-    assert window._raw_slice_source() is None
+    assert window._display_base() == 0  # positions are the buffer's, not the file's
+
+    window._columns.setValue(4)
+    window._rows.setValue(2)  # a page of 8 SNES tiles = 256 bytes
+    window._nav_rows(1)  # ...starting one row in, at buffer byte 128
+    monkeypatch.setattr(
+        SliceDialog,
+        "get_slice",
+        staticmethod(
+            lambda *_a, **kw: SliceParams(
+                "cut", kw["offset"], kw["length"], kw["compression_id"]
+            )
+        ),
+    )
+    window._new_slice_from_view()
+
+    cut = window._workspace.entries[-1]
+    assert (cut.slice_offset, cut.slice_length) == (128, 256)
+    window._workspace.set_current(cut)
+    assert bytes(window._doc.pixel_data) == joined[128:384]
+    assert joined[128:384] != data[128:384]  # the file at that offset is other bytes
+
+
+def test_slice_of_a_reshaped_two_chip_region_writes_back_through_its_parent(
+    qtbot, tmp_path
+) -> None:
+    """Editing a slice inside a reordered region saves, and its bytes land
+    scattered across *both* chips the way the reshape says they must.
+
+    The slice's own bounds name a position in the parent's joined buffer, not in
+    any file, so it cannot be deposited at them: the edit is spliced into the
+    parent's buffer and the parent's write carries the whole region back through
+    ``unshape``. The regression this guards is the direct deposit — writing the
+    slice's bytes contiguously at that offset in the first chip, which both
+    corrupts that chip and leaves the second one untouched.
+    """
+    from celpix.core.context import PipelineContext
+    from celpix.plugins.base import RAW_CONTAINER
+    from celpix.plugins.builtins.split_planes import SplitPartsReshape
+    from celpix.ui.container_dialog import ContainerEdit
+
+    first, second = tmp_path / "a.4bpp.sfc", tmp_path / "b.bin"
+    chip_a = bytes((i * 7 + 3) & 0xFF for i in range(512))
+    chip_b = bytes((i * 11 + 5) & 0xFF for i in range(512))
+    first.write_bytes(chip_a)
+    second.write_bytes(chip_b)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(first))
+    parent = window._workspace.current
+    paths = (str(first), str(second))
+    window._apply_container_edit(
+        parent, ContainerEdit(RAW_CONTAINER, paths, "reshape.split-planes-2")
+    )
+    reshape = SplitPartsReshape(2)
+    joined = reshape.reshape(chip_a + chip_b, PipelineContext())
+    assert bytes(window._doc.pixel_data) == joined
+
+    cut = window._workspace.add_slice(parent.path, "cut", 128, 64)
+    window._workspace.set_current(cut)
+    assert window._doc.pixel_config.write_enabled  # writable — through the parent
+    edit = b"\xa5" * 16
+    window._doc.replace_bytes(0, edit)
+    window._workspace.set_pixel_revision(cut, window._workspace.next_revision())
+
+    assert window._write_entry(cut)
+
+    # The joined region reads back with the edit in place...
+    expected = joined[:128] + edit + joined[144:]
+    assert (
+        reshape.reshape(first.read_bytes() + second.read_bytes(), PipelineContext())
+        == expected
+    )
+    # ...which took *both* chips to express: split-planes-2 lays alternate bytes
+    # on each, so a 16-byte edit is 8 bytes in each file, not 16 in the first.
+    assert first.read_bytes() != chip_a
+    assert second.read_bytes() != chip_b
+    assert not cut.pixel_dirty and not parent.pixel_dirty
+
+
+def test_a_slice_edit_reaches_its_parent_and_the_parents_container(
+    qtbot, tmp_path
+) -> None:
+    """A slice is a region *of* a file, so an edit made through it is an edit to
+    that file: the file's own view shows it, and saving goes out through the
+    file's container rather than around it.
+
+    The container half is the sharp regression. A slice used to deposit raw bytes
+    at its own bounds, which skipped the parent container's write - so editing a
+    slice of a Game Boy ROM left the header checksums describing the *old* bytes
+    and the ROM failed its own boot check. `container.gb-rom` exists only to
+    repair those on write, which makes it the honest witness for "did the
+    parent's container run?".
+    """
+    from celpix.plugins.builtins.gb_rom import repair_checksums
+    from celpix.ui.container_dialog import ContainerEdit
+
+    rom = tmp_path / "game.gb"
+    rom.write_bytes(repair_checksums(bytes((i * 7) & 0xFF for i in range(0x8000))))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+    window._apply_container_edit(parent, ContainerEdit("container.gb-rom", (str(rom),)))
+
+    cut = window._workspace.add_slice(parent.path, "gfx", 0x4000, 0x100)
+    window._workspace.set_current(cut)
+    window._apply_pixel_bytes([(0, b"\x5a" * 32)], window._workspace.next_revision())
+
+    # The file's own view holds the edit made through the slice - same bytes.
+    window._workspace.set_current(parent)
+    assert bytes(window._doc.pixel_data[0x4000:0x4020]) == b"\x5a" * 32
+
+    window._workspace.set_current(cut)
+    assert window._write_entry(cut)
+    written = rom.read_bytes()
+    assert written[0x4000:0x4020] == b"\x5a" * 32
+    # The parent's container ran: a raw deposit would leave these stale.
+    assert written == repair_checksums(written)
+    assert not cut.pixel_dirty and not parent.pixel_dirty
 
 
 def test_offset_palette_under_a_reshape_reads_the_joined_bytes(qtbot, tmp_path):
@@ -2502,7 +2633,7 @@ def test_offset_palette_under_a_reshape_reads_the_joined_bytes(qtbot, tmp_path):
 
     assert window._load_palette_at_offset(32)
     doc = window._doc
-    assert doc.palette_bytes[:2] == b"\xff\x7f"
+    assert doc.palette_base_bytes[:2] == b"\xff\x7f"
     assert doc.palette.colors[0] == 0xFFFFFFFF
     assert doc.palette_config.source.data is not None  # cut from the joined buffer
     # Reordered bytes have no file offset for a splice to land on.
@@ -2635,7 +2766,7 @@ def test_format_switch_refloors_buffer_backed_offset_palette_in_place(qtbot, tmp
     # owner's buffer again, not re-read from the raw file at that number.
     src = window._doc.palette_config.source
     assert (src.offset, src.data_base) == (32, 0)
-    assert window._doc.palette_bytes[:2] == b"\xff\x7f"
+    assert window._doc.palette_base_bytes[:2] == b"\xff\x7f"
 
 
 def test_offset_palette_lands_on_the_offset_shown_past_a_header(qtbot, tmp_path):
@@ -2661,7 +2792,7 @@ def test_offset_palette_lands_on_the_offset_shown_past_a_header(qtbot, tmp_path)
 
     assert window._load_palette_at_offset(chr_start + 32)
     doc = window._doc
-    assert doc.palette_bytes[:2] == b"\xff\x7f"
+    assert doc.palette_base_bytes[:2] == b"\xff\x7f"
     assert doc.palette_config.source.offset == chr_start + 32
     assert doc.palette_config.source.data is None  # read straight from the file
     assert doc.palette_config.write_enabled is True
@@ -2676,7 +2807,7 @@ def test_offset_palette_lands_on_the_offset_shown_past_a_header(qtbot, tmp_path)
 def test_container_notices_land_in_the_row_tooltip(qtbot, tmp_path) -> None:
     """A non-fatal container notice washes the entry's row and spells itself out
     in that row's tooltip — the one place a user already looks to ask what is
-    wrong with a row, alongside "Referenced file is missing".
+    wrong with a row, alongside the missing-file lines.
 
     The row is the part that needs a test: the panel refreshes an entry when it is
     *added*, which is before its document exists and so before it has any notices
@@ -2839,6 +2970,36 @@ def test_new_slice_from_view_prefills_viewport_extent(
     assert (captured["offset"], captured["length"]) == (0, 192)
 
 
+def test_slice_dialog_bounds_offsets_by_the_whole_joined_region(
+    qtbot, tmp_path
+) -> None:
+    """A region spread over several ROM chips is addressed as the concatenation,
+    so the dialog's end-of-region check is their combined size.
+
+    Bounding by the first chip alone is the regression: it refuses every offset
+    past the first file as running off the end, putting most of a multi-chip
+    region out of reach with a message that looks like the user's arithmetic
+    was wrong.
+    """
+    from celpix.plugins.registry import default_registry
+    from celpix.ui.slice_dialog import SliceDialog
+
+    first, second = tmp_path / "a.bin", tmp_path / "b.bin"
+    first.write_bytes(bytes(0x100))
+    second.write_bytes(bytes(0x100))
+    registry = default_registry()
+    paths = (str(first), str(second))
+
+    def validated(offset: int, length: int):
+        dialog = SliceDialog(registry, paths=paths, offset=offset, length=length)
+        qtbot.addWidget(dialog)
+        dialog._validate_and_accept()
+        return dialog._params
+
+    assert validated(0x180, 0x40).offset == 0x180  # in the second chip
+    assert validated(0x1F0, 0x40) is None  # past the joined end, still refused
+
+
 def test_rows_past_end_of_file_are_not_clamped_or_black_filled(qtbot, tmp_path) -> None:
     small = tmp_path / "small.4bpp.sfc"
     small.write_bytes(bytes(32 * 6))  # 6 tiles of 32 B (SNES 4bpp)
@@ -2875,16 +3036,16 @@ def test_drag_selects_range_and_new_slice_from_selection(
     window._columns.setValue(4)
     window._rows.setValue(2)  # all 8 tiles in view
 
-    window._on_tiles_selected(1, 5)  # a drag spanning slots 1..5
+    window._on_slots_selected(1, 5)  # a drag spanning slots 1..5
     assert (window._selected_tile, window._selected_last) == (1, 5)
     assert window._canvas._selected_slots == {1, 2, 3, 4, 5}
     assert window._new_slice_from_selection_action.isEnabled()
     # A drag reaching into blank padding clamps to the tiles that exist; the
     # anchor order doesn't matter.
-    window._on_tiles_selected(12, 6)
+    window._on_slots_selected(12, 6)
     assert (window._selected_tile, window._selected_last) == (6, 7)
 
-    window._on_tiles_selected(1, 5)
+    window._on_slots_selected(1, 5)
     captured: dict = {}
     monkeypatch.setattr(
         SliceDialog,
@@ -2948,7 +3109,7 @@ def test_delete_key_removes_entry_even_with_a_tile_selection(
 
     # A live tile selection arms the canvas's Clear (Delete) action - the
     # ingredient that used to make the list's Delete ambiguous.
-    window._on_tiles_selected(0, 0)
+    window._on_slots_selected(0, 0)
     window._sync_edit_actions()
     assert window._clear_action.isEnabled()
 
@@ -3136,7 +3297,7 @@ def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
     assert slice_entry.session is not None
     assert slice_entry.session.pixel_preset_id == "preset.pixel.snes-2bpp"
     assert slice_entry.session.palette_mode == "offset"
-    assert slice_entry.session.compression_id == "compression.none"
+    assert slice_entry.session.preview_compression_id == "compression.none"
     # The subpalette row and the arrangement ride on the view options rather than
     # the session, so they take a hand-off of their own to come across.
     assert slice_entry.doc.view.subpalette_row == 3
@@ -3844,6 +4005,14 @@ def test_missing_palette_file_degrades_quietly_and_keeps_reference(
     raw = json.loads(reproject.read_text(encoding="utf-8"))
     assert raw["entries"][0]["palette"]["path"] == "s.pal"
 
+    # The row names *which* reference is gone. Its ROM is on disk, so wording that
+    # only said "referenced file is missing" would send the user hunting for a
+    # graphic that never moved.
+    tip = window._files_panel._tree.topLevelItem(0).toolTip(0)
+    assert "Palette file is missing" in tip
+    assert str(pal) in tip  # the path, which is nowhere else in the tooltip
+    assert "File is missing" not in tip  # the entry's own file is fine
+
 
 # -- color editing (docs/design/palette-editing.md) ------------------------
 def _open_for_color_edit(qtbot, tmp_path, monkeypatch):
@@ -4543,7 +4712,7 @@ def test_switching_pixel_format_keeps_unsaved_edits(qtbot, tmp_path) -> None:
     """
     window = _open_pixels(qtbot, tmp_path)
     window._select_tiles(0, 0)
-    window._clear_pixels()
+    window._clear_selection_contents()
     edited = bytes(window._doc.pixel_data)
     assert edited != (tmp_path / "clip.4bpp.sfc").read_bytes()  # unsaved: memory only
 
@@ -4591,7 +4760,7 @@ def test_the_tile_clipboard_round_trip(qtbot, tmp_path) -> None:
 
     # Clear blanks exactly the selected tiles and nothing beyond them.
     window._select_tiles(2, 3)
-    window._clear_pixels()
+    window._clear_selection_contents()
     assert window._doc.pixel_data[64:128] == bytes(64)
     assert window._doc.pixel_data[128:160] != bytes(32)  # tile 4 untouched
 
@@ -4689,23 +4858,23 @@ def test_rectangle_drag_selects_a_block_and_shape_switch_collapses(
     window._rows.setValue(8)
 
     # A linear drag first: switching shape must not reinterpret it as a block.
-    window._on_tiles_selected(0, 9)
+    window._on_slots_selected(0, 9)
     assert window._selection_tiles() == list(range(10))
-    assert not window._canvas._selection_as_block
+    assert not window._canvas._selection_as_rect
     # A run filling whole rows fills a rectangle, but was picked as a run and
     # must keep outlining row by row.
-    window._on_tiles_selected(0, 15)
-    assert not window._canvas._selection_as_block
+    window._on_slots_selected(0, 15)
+    assert not window._canvas._selection_as_rect
     _rect_shape(window, tmp_path)
     assert (window._selected_tile, window._selected_last) == (0, 0)
 
     # Slots 0..9 now read as the corners of a 2x2 cell block, so the selection
     # is two runs of two tiles a row apart — not the ten tiles between them.
-    window._on_tiles_selected(0, 9)
-    assert window._rect_cells == (2, 2)
+    window._on_slots_selected(0, 9)
+    assert window._rect_size == (2, 2)
     assert window._selection_tiles() == [0, 1, 8, 9]
     assert window._canvas._selected_slots == {0, 1, 8, 9}
-    assert window._canvas._selection_as_block
+    assert window._canvas._selection_as_rect
 
 
 def test_rectangle_collapses_when_the_view_reshuffles_its_tiles(
@@ -4715,12 +4884,12 @@ def test_rectangle_collapses_when_the_view_reshuffles_its_tiles(
     window._columns.setValue(8)
     window._rows.setValue(8)
     _rect_shape(window, tmp_path)
-    window._on_tiles_selected(0, 9)  # tiles 0, 1, 8, 9
+    window._on_slots_selected(0, 9)  # tiles 0, 1, 8, 9
 
     # Half the columns: those same four cells now sit over tiles 0, 1, 4, 5, so
     # the rectangle no longer covers what was selected and drops to its corner.
     window._columns.setValue(4)
-    assert window._rect_cells is None
+    assert window._rect_size is None
     assert (window._selected_tile, window._selected_last) == (0, 0)
     assert window._canvas._selected_slots == {0}
 
@@ -4741,13 +4910,13 @@ def test_new_slice_from_selection_refuses_a_disjoint_rectangle(
         staticmethod(lambda *_args, **kwargs: captured.update(kwargs)),
     )
 
-    window._on_tiles_selected(0, 9)  # 2x2 — its rows sit apart in the file
+    window._on_slots_selected(0, 9)  # 2x2 — its rows sit apart in the file
     window._new_slice_from_selection()
     assert not captured
     assert "continuous run" in captured_alerts[-1][1]
 
     # Full width: the rows are back-to-back, so it is one run and is offered.
-    window._on_tiles_selected(0, 15)
+    window._on_slots_selected(0, 15)
     window._new_slice_from_selection()
     assert (captured["offset"], captured["length"]) == (0, 16 * 32)
 
@@ -4767,21 +4936,21 @@ def test_rectangle_copy_paste_and_clear_touch_only_their_cells(
     def tile_bytes(data, index):
         return data[index * tb : (index + 1) * tb]
 
-    window._on_tiles_selected(0, 9)  # the 2x2 block of tiles 0, 1, 8, 9
+    window._on_slots_selected(0, 9)  # the 2x2 block of tiles 0, 1, 8, 9
     assert window._copy_selection()
     payload = clipboard.take_payload()
     assert (payload.count, payload.columns) == (4, 2)
 
     # Anchored on tile 4 the copy lands as a 2x2 block, not a run of four.
-    window._on_tiles_selected(4, 4)
+    window._on_slots_selected(4, 4)
     window._paste()
     for src, dst in ((0, 4), (1, 5), (8, 12), (9, 13)):
         assert tile_bytes(window._doc.pixel_data, dst) == tile_bytes(original, src)
     assert tile_bytes(window._doc.pixel_data, 6) == tile_bytes(original, 6)
 
     # Clear blanks the rectangle's own cells and leaves the gap between rows.
-    window._on_tiles_selected(0, 9)
-    window._clear_pixels()
+    window._on_slots_selected(0, 9)
+    window._clear_selection_contents()
     for blanked in (0, 1, 8, 9):
         assert tile_bytes(window._doc.pixel_data, blanked) == bytes(tb)
     assert tile_bytes(window._doc.pixel_data, 2) == tile_bytes(original, 2)
@@ -5023,7 +5192,7 @@ def test_tile_and_block_transforms(qtbot, tmp_path) -> None:
 
     # -- A 2×2 Rectangle selection, made the way the canvas makes one --
     select_combo_data(window._selection_shape, SelectionShape.RECT)
-    window._on_tiles_selected(0, 5)  # cells (0,0)..(1,1) → tiles 0,1,4,5
+    window._on_slots_selected(0, 5)  # cells (0,0)..(1,1) → tiles 0,1,4,5
     assert window._rect_tiles == (0, 1, 4, 5)
     assert block.flip_h.isEnabled() and block.rotate_cw.isEnabled()  # square block
 
@@ -5041,8 +5210,8 @@ def test_tile_and_block_transforms(qtbot, tmp_path) -> None:
     assert decode(0) == t0
 
     # -- A non-square rectangle: block rotate off, block flip on; tile rotate on --
-    window._on_tiles_selected(0, 1)  # a 2×1 rectangle
-    assert window._rect_cells == (2, 1)
+    window._on_slots_selected(0, 1)  # a 2×1 rectangle
+    assert window._rect_size == (2, 1)
     assert block.flip_h.isEnabled()
     assert not block.rotate_cw.isEnabled() and not block.rotate_ccw.isEnabled()
     assert tile.rotate_cw.isEnabled()
@@ -5090,7 +5259,7 @@ def test_block_transform_of_single_tile_uses_arrangement_block(qtbot, tmp_path) 
 
     # Select a single tile in the block; in Rectangle mode that is a 1×1 selection.
     select_combo_data(window._selection_shape, SelectionShape.RECT)
-    window._on_tiles_selected(0, 0)
+    window._on_slots_selected(0, 0)
     assert len(window._selection_tiles()) == 1
     # A square arrangement block means block rotate is available off one tile.
     assert block.flip_h.isEnabled() and block.rotate_cw.isEnabled()
@@ -5119,7 +5288,7 @@ def test_block_transform_of_single_tile_uses_arrangement_block(qtbot, tmp_path) 
     # but a block flip is still fine.
     window._block_cols.setValue(1)
     window._block_rows.setValue(2)
-    window._on_tiles_selected(0, 0)
+    window._on_slots_selected(0, 0)
     assert block.flip_h.isEnabled()
     assert not block.rotate_cw.isEnabled()
 
@@ -5128,14 +5297,14 @@ def test_a_solid_block_of_cells_gets_one_outline() -> None:
     from celpix.ui.canvas import Canvas
 
     # A rectangle selection is one shape on screen and must read as one box.
-    assert Canvas._solid_block({0: [2, 3], 1: [2, 3]}) == (2, 0, 2, 2)
-    assert Canvas._solid_block({4: [0, 1, 2]}) == (0, 4, 3, 1)
+    assert Canvas._solid_rect({0: [2, 3], 1: [2, 3]}) == (2, 0, 2, 2)
+    assert Canvas._solid_rect({4: [0, 1, 2]}) == (0, 4, 3, 1)
     # Anything ragged has no single box: rows that don't line up, a hole in a
     # row, or a skipped row all fall back to per-row outlines.
-    assert Canvas._solid_block({0: [1, 2], 1: [0, 1, 2]}) is None
-    assert Canvas._solid_block({0: [0, 2]}) is None
-    assert Canvas._solid_block({0: [0], 2: [0]}) is None
-    assert Canvas._solid_block({}) is None
+    assert Canvas._solid_rect({0: [1, 2], 1: [0, 1, 2]}) is None
+    assert Canvas._solid_rect({0: [0, 2]}) is None
+    assert Canvas._solid_rect({0: [0], 2: [0]}) is None
+    assert Canvas._solid_rect({}) is None
 
 
 def test_every_input_has_a_tooltip_shared_with_its_label(qtbot) -> None:
@@ -5229,7 +5398,8 @@ def test_the_help_menu_builds_its_dialogs_and_documents_both_key_styles(
     # Hold the menubar's action list: dropping it collects the QAction wrappers,
     # and the submenu each owns goes with them.
     bar_actions = window.menuBar().actions()
-    help_menu = next(a.menu() for a in bar_actions if a.text() == "Help")
+    # "&" is the mnemonic marker, not part of the name.
+    help_menu = next(a.menu() for a in bar_actions if a.text() == "&Help")
     for action in help_menu.actions():
         if not action.isSeparator():
             action.trigger()  # conftest stops exec() from blocking
@@ -5259,6 +5429,78 @@ def test_the_help_menu_builds_its_dialogs_and_documents_both_key_styles(
     transform_keys = dict(sections["Transform"])
     assert all(transform_keys[s.label] == s.key for s in TRANSFORM_SPECS)
     assert all(name and keys for entries in sections.values() for name, keys in entries)
+
+
+def test_menu_mnemonics_never_collide(qtbot, tmp_path, opened_menus) -> None:
+    """No two entries of one menu answer to the same mnemonic letter.
+
+    A clash is silent - Qt cycles between the entries instead of activating one -
+    and the letters are hand-picked per menu, so adding an entry anywhere is what
+    breaks it. Every right-click menu is covered as well as the menu bar: the
+    files panel builds a different one per entry kind, and the canvas menu shares
+    its actions with the Edit, File and Palette menus, which is what makes the
+    letters awkward to keep unique in the first place.
+    """
+    import re
+
+    from PySide6.QtCore import QPoint, Qt
+
+    def clashes(menu, path: str) -> list[str]:
+        found: list[str] = []
+        seen: dict[str, str] = {}
+        for action in menu.actions():
+            if action.isSeparator():
+                continue
+            label = action.text().split("\t", 1)[0]
+            mnemonic = re.search(r"&(\w)", label)
+            if mnemonic is not None:
+                key = mnemonic.group(1).lower()
+                if key in seen:
+                    found.append(f"{path}: {key!r} is {seen[key]!r} and {label!r}")
+                seen[key] = label
+            submenu = action.menu()
+            if submenu is not None:
+                found += clashes(submenu, f"{path} > {label}")
+        return found
+
+    px = _make_snes_file(tmp_path)
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(bytes(range(32)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._workspace.add_slice(str(px), "slice", 64, 64)
+    window._add_palette_file(str(pal))
+    window._new_bookmark_current()
+
+    found: list[str] = []
+    for action in window.menuBar().actions():
+        found += clashes(action.menu(), action.text())
+
+    # One right-click menu per entry kind, taken off the tree so each is built
+    # the way the panel builds it.
+    tree = window._files_panel._tree
+    kinds = set()
+
+    def visit(item) -> None:
+        entry = item.data(0, Qt.ItemDataRole.UserRole)
+        if entry is not None and entry.kind not in kinds:
+            kinds.add(entry.kind)
+            window._files_panel._show_menu(tree.visualItemRect(item).center())
+            found.extend(clashes(opened_menus[-1], f"files:{entry.kind.name}"))
+        for i in range(item.childCount()):
+            visit(item.child(i))
+
+    for i in range(tree.topLevelItemCount()):
+        visit(tree.topLevelItem(i))
+    assert len(kinds) == 4  # file, slice, palette, bookmark - all four covered
+
+    window._show_canvas_menu(QPoint(4, 4))
+    found += clashes(opened_menus[-1], "canvas")
+    window._show_palette_menu(QPoint(4, 4))
+    found += clashes(opened_menus[-1], "palette grid")
+
+    assert not found, "\n".join(found)
 
 
 def test_opening_a_file_detects_its_container(qtbot, tmp_path) -> None:

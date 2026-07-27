@@ -25,7 +25,6 @@ from celpix.pipeline import pipeline
 from celpix.project.workspace import (
     Entry,
     EntryKind,
-    PaletteMode,
 )
 from celpix.ui import clipboard
 from celpix.ui.color_editor import ColorEditorDialog
@@ -118,7 +117,7 @@ class ColorEditingMixin:
             return
         color = doc.palette.color(index)
         if retarget:
-            dialog.set_entry(self._color_entry_label(index))
+            dialog.set_entry_label(self._color_entry_label(index))
             dialog.editor.set_alpha_enabled(self._palette_stores_alpha())
             dialog.editor.set_quantizer(self._palette_quantizer())
         if retarget or color != dialog.editor.color():
@@ -174,9 +173,8 @@ class ColorEditingMixin:
         index = self._palette_panel.selected_index()
         if index is None:
             return
-        # Default and Emulator palettes can't hold an edit; forking to Custom
-        # first is what makes the edit land somewhere (and is its own undo step).
-        if self._palette_mode in (PaletteMode.DEFAULT, PaletteMode.EMULATOR):
+        # Forking is its own undo step, so it happens before the edit itself.
+        if not self._palette_mode.holds_edits:
             self._fork_custom_palette()
         owner = self._palette_owner_entry()
         doc = self._palette_doc()
@@ -220,7 +218,7 @@ class ColorEditingMixin:
         doc.palette = doc.palette.with_color(index, argb)
         # Mark the entry so Write splices just this one back, leaving every
         # other entry's bytes exactly as they were read (a color codec doesn't
-        # round-trip bytes - see Document.palette_bytes). The mark survives an
+        # round-trip bytes - see Document.palette_base_bytes). The mark survives an
         # undo: re-encoding an unchanged color is harmless, and the entry is
         # clean again anyway once its revision walks back to the saved one.
         doc.palette_edits.add(index)
@@ -363,9 +361,8 @@ class ColorEditingMixin:
         grouped = len(changed) > 1
         if grouped:
             self._undo_stack.beginMacro(f"paste {label}")
-        # Default/Emulator palettes can't hold an edit; forking to Custom first is
-        # what makes it land (inside the macro, so undo peels it with the edits).
-        if self._palette_mode in (PaletteMode.DEFAULT, PaletteMode.EMULATOR):
+        # Inside the macro, so undo peels the fork off with the edits.
+        if not self._palette_mode.holds_edits:
             self._fork_custom_palette()
         owner = self._palette_owner_entry()
         doc = self._palette_doc()
@@ -386,7 +383,9 @@ class ColorEditingMixin:
         """The palette grid's right-click menu: copy/paste a color or the subpalette.
 
         Built on demand (like the canvas menu) so Paste reflects the live
-        clipboard. The shortcuts shown mirror what the grid handles itself.
+        clipboard. The shortcuts shown mirror what the grid handles itself, and
+        "&" marks each entry's mnemonic - the Copy/Paste pair takes the letter of
+        its own shortcut, the subpalette pair what is left.
         Copying works off whatever is displayed; pasting needs a palette that
         can hold the colors, which the read-only idle default is not.
         """
@@ -396,20 +395,20 @@ class ColorEditingMixin:
         menu = QMenu(self)
         for label, slot, shortcut, enabled in (
             (
-                "Copy Color",
+                "&Copy Color",
                 self._copy_palette_color,
                 QKeySequence.StandardKey.Copy,
                 has_selection,
             ),
             (
-                "Paste Color",
+                "&Paste Color",
                 self._paste_palette_color,
                 QKeySequence.StandardKey.Paste,
                 has_selection and can_paste,
             ),
             (None, None, None, None),  # separator
-            ("Copy Subpalette", self._copy_subpalette, "Ctrl+Shift+C", True),
-            ("Paste Subpalette", self._paste_subpalette, "Ctrl+Shift+V", can_paste),
+            ("Copy &Subpalette", self._copy_subpalette, "Ctrl+Shift+C", True),
+            ("Paste Su&bpalette", self._paste_subpalette, "Ctrl+Shift+V", can_paste),
         ):
             if label is None:
                 menu.addSeparator()

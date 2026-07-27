@@ -245,8 +245,8 @@ class MainWindow(
         # than recomputed on demand because they are the *record* of what was
         # selected: when a view/arrangement change would resolve the same
         # rectangle to different tiles, the selection collapses to its top-left
-        # tile instead of silently sliding onto other data (_refresh_selection).
-        self._rect_cells: tuple[int, int] | None = None
+        # tile instead of silently sliding onto other data (_revalidate_selection).
+        self._rect_size: tuple[int, int] | None = None
         self._rect_tiles: tuple[int, ...] = ()
         # Compression navigation: byte position right after the structure in
         # view (the Jump-to-Next target, None = end unknown/invalid), and the
@@ -269,7 +269,7 @@ class MainWindow(
 
         self._canvas = Canvas()
         self._overlay = DecompressOverlay(self)
-        self._canvas.tiles_selected.connect(self._on_tiles_selected)
+        self._canvas.slots_selected.connect(self._on_slots_selected)
         self._canvas.color_picked.connect(self._on_color_picked)
         self._connect_pixel_canvas()
         self._canvas.rearrange_started.connect(self._on_rearrange_started)
@@ -310,10 +310,10 @@ class MainWindow(
         # step (with signals blocked).
         # It sits to the LEFT of the canvas and is styled as an accent-colored rail
         # so it reads as a file navigator, not one of the canvas's own scrollbars.
-        self._offset_bar = QScrollBar(Qt.Orientation.Vertical)
-        self._offset_bar.setToolTip("File position\nDrag to jump")
-        self._offset_bar.setStyleSheet(self._offset_bar_style())
-        self._offset_bar.valueChanged.connect(self._on_offset_bar_change)
+        self._tile_offset_bar = QScrollBar(Qt.Orientation.Vertical)
+        self._tile_offset_bar.setToolTip("Tile position in the file\nDrag to jump")
+        self._tile_offset_bar.setStyleSheet(self._tile_offset_bar_style())
+        self._tile_offset_bar.valueChanged.connect(self._on_tile_offset_bar_change)
 
         # Every bar lives in this column rather than in QMainWindow's toolbar
         # area: that area spans the whole window width and would cut across the
@@ -339,7 +339,7 @@ class MainWindow(
         view_row = QHBoxLayout()
         view_row.setContentsMargins(0, 0, 0, 0)
         view_row.setSpacing(0)
-        view_row.addWidget(self._offset_bar)
+        view_row.addWidget(self._tile_offset_bar)
         view_row.addLayout(canvas_column, 1)
 
         central = QWidget()
@@ -359,7 +359,7 @@ class MainWindow(
         self._build_toolbar()
         # After _build_toolbar: the spin exists only then. setValue clamps to the
         # spin's range and re-renders through _on_view_change.
-        self._palette_panel.subpalette_clicked.connect(self._subpalette.setValue)
+        self._palette_panel.subpalette_row_selected.connect(self._subpalette.setValue)
         self._build_nav_keys()
         self._sync_nav()
         # Navigation keys are handled window-wide via an application event filter (see
@@ -407,6 +407,7 @@ class MainWindow(
         self._files_panel.bookmark_as_palette_requested.connect(
             self._use_bookmark_as_palette
         )
+        self._files_panel.show_in_manager_requested.connect(self._show_entry_in_manager)
         self._files_panel.rename_committed.connect(self._rename_entry)
         self._files_dock = QDockWidget("Files", self)
         self._files_dock.setObjectName("files-dock")  # keeps saveState usable
@@ -589,7 +590,7 @@ class MainWindow(
         if self._project_path is None:
             return None
         self._capture_session()
-        return projectfile.project_document(self._workspace, self._project_path)
+        return projectfile.project_dict(self._workspace, self._project_path)
 
     def _project_is_dirty(self) -> bool:
         """True when the open project differs from what is on disk."""
@@ -665,26 +666,33 @@ class MainWindow(
         self._hex_dock.visibilityChanged.connect(lambda _visible: self._refresh_hex())
 
     def _build_menus(self) -> None:
-        file_menu = self.menuBar().addMenu("File")
+        # "&" in an action's text marks its mnemonic - the letter that picks the
+        # entry while the menu is open, and the reason several are not the
+        # obvious first letter: the letters have to be unique within a menu, and
+        # an action shown in more than one (the canvas's right-click menu shares
+        # File's and Edit's) has to keep clear of every menu it appears in. Where
+        # a free letter matches the action's shortcut it takes it (Write/Ctrl+W,
+        # Edit File Container/Ctrl+E, Quit/Ctrl+Q).
+        file_menu = self.menuBar().addMenu("&File")
 
-        open_pixel = QAction("Open pixel data…", self)
+        open_pixel = QAction("Open &pixel data…", self)
         open_pixel.triggered.connect(self._open_pixel)
         file_menu.addAction(open_pixel)
 
-        open_palette_data = QAction("Open palette data…", self)
+        open_palette_data = QAction("Open palette &data…", self)
         open_palette_data.setToolTip("Add a palette file to the Palettes list")
         open_palette_data.triggered.connect(self._prompt_add_palette_file)
         file_menu.addAction(open_palette_data)
 
         file_menu.addSeparator()
 
-        open_project = QAction("Open Project…", self)
+        open_project = QAction("&Open Project…", self)
         open_project.setToolTip("Open a .celpix project")
         open_project.setShortcut(QKeySequence.StandardKey.Open)  # Ctrl+O
         open_project.triggered.connect(self._open_project)
         file_menu.addAction(open_project)
 
-        save_project = QAction("Save Project", self)
+        save_project = QAction("&Save Project", self)
         save_project.setToolTip(
             "Save the session to a .celpix project\nReferences, not bytes"
         )
@@ -692,12 +700,12 @@ class MainWindow(
         save_project.triggered.connect(self._save_project)
         file_menu.addAction(save_project)
 
-        save_project_as = QAction("Save Project As…", self)
+        save_project_as = QAction("Save Project &As…", self)
         save_project_as.setShortcut(QKeySequence.StandardKey.SaveAs)  # Ctrl+Shift+S
         save_project_as.triggered.connect(self._save_project_as)
         file_menu.addAction(save_project_as)
 
-        self._locate_missing_action = QAction("Locate missing files…", self)
+        self._locate_missing_action = QAction("Locate &missing files…", self)
         self._locate_missing_action.setToolTip("Re-point entries whose file has moved")
         self._locate_missing_action.triggered.connect(
             lambda: self._relocate_missing(prompt_summary=False)
@@ -707,13 +715,13 @@ class MainWindow(
 
         file_menu.addSeparator()
 
-        self._new_slice_action = QAction("New Slice…", self)
+        self._new_slice_action = QAction("&New Slice…", self)
         self._new_slice_action.setToolTip("Mark a region of this file as its own entry")
         self._new_slice_action.triggered.connect(self._new_slice_current)
         self._new_slice_action.setEnabled(False)
         file_menu.addAction(self._new_slice_action)
 
-        self._new_slice_from_view_action = QAction("New Slice from View", self)
+        self._new_slice_from_view_action = QAction("New Slice from &View", self)
         self._new_slice_from_view_action.setToolTip(
             "New slice covering the current view"
         )
@@ -722,7 +730,7 @@ class MainWindow(
         file_menu.addAction(self._new_slice_from_view_action)
 
         self._new_slice_from_selection_action = QAction(
-            "New Slice from Selection", self
+            "New Slice &from Selection", self
         )
         self._new_slice_from_selection_action.setToolTip(
             "New slice covering the selected tile range"
@@ -733,14 +741,14 @@ class MainWindow(
         self._new_slice_from_selection_action.setEnabled(False)
         file_menu.addAction(self._new_slice_from_selection_action)
 
-        self._new_bookmark_action = QAction("New Bookmark", self)
+        self._new_bookmark_action = QAction("New &Bookmark", self)
         self._new_bookmark_action.setToolTip("Bookmark this position and its settings")
         self._new_bookmark_action.setShortcut(QKeySequence("Ctrl+B"))
         self._new_bookmark_action.triggered.connect(self._new_bookmark_current)
         self._new_bookmark_action.setEnabled(False)
         file_menu.addAction(self._new_bookmark_action)
 
-        self._change_container_action = QAction("Edit File Container…", self)
+        self._change_container_action = QAction("&Edit File Container…", self)
         self._change_container_action.setToolTip(
             "Change how this file is unwrapped before decoding:\n"
             "a header to skip, an interleave to undo, or none at all"
@@ -752,14 +760,14 @@ class MainWindow(
 
         file_menu.addSeparator()
 
-        self._write_action = QAction("Write", self)
+        self._write_action = QAction("&Write", self)
         self._write_action.setToolTip("Write this file or slice back to disk")
         self._write_action.setShortcut(QKeySequence("Ctrl+W"))
         self._write_action.triggered.connect(self._write_current)
         self._write_action.setEnabled(False)
         file_menu.addAction(self._write_action)
 
-        self._write_all_action = QAction("Write All", self)
+        self._write_all_action = QAction("Write A&ll", self)
         self._write_all_action.setToolTip("Write all unsaved files and slices")
         self._write_all_action.setShortcut(QKeySequence("Ctrl+Shift+W"))
         self._write_all_action.triggered.connect(self._write_all)
@@ -772,13 +780,13 @@ class MainWindow(
 
         file_menu.addSeparator()
 
-        open_plugins = QAction("Open plugins folder…", self)
+        open_plugins = QAction("Open plu&gins folder…", self)
         open_plugins.setToolTip("Drop .toml presets or .py plugins here")
         open_plugins.triggered.connect(self._open_plugins_folder)
         open_plugins.setEnabled(self._plugin_dir is not None)
         file_menu.addAction(open_plugins)
 
-        refresh = QAction("Refresh plugins", self)
+        refresh = QAction("&Refresh plugins", self)
         refresh.setShortcut(QKeySequence.StandardKey.Refresh)  # F5
         refresh.setToolTip("Reload plugins and re-run on the open file")
         refresh.triggered.connect(self._refresh_plugins)
@@ -787,7 +795,7 @@ class MainWindow(
 
         file_menu.addSeparator()
 
-        quit_action = QAction("Quit", self)
+        quit_action = QAction("&Quit", self)
         # Spelled out rather than StandardKey.Quit: on X11 that role resolves to
         # the bare "Exit" media key, which most keyboards don't have. Ctrl+Q is
         # what the menu should promise, and Qt maps Ctrl to Cmd on macOS.
@@ -808,14 +816,14 @@ class MainWindow(
         Built last so the guide, which reads the finished menu bar, sees every
         other menu (see :mod:`celpix.ui.help_dialogs`).
         """
-        menu = self.menuBar().addMenu("Help")
-        shortcuts = QAction("Shortcuts…", self)
+        menu = self.menuBar().addMenu("&Help")
+        shortcuts = QAction("&Shortcuts…", self)
         shortcuts.setToolTip("Every keyboard shortcut in one page")
         shortcuts.setShortcut(QKeySequence.StandardKey.HelpContents)  # F1
         shortcuts.triggered.connect(self._show_shortcuts)
         menu.addAction(shortcuts)
         menu.addSeparator()
-        about = QAction("About celPix", self)
+        about = QAction("&About celPix", self)
         about.triggered.connect(self._show_about)
         menu.addAction(about)
 
@@ -829,11 +837,11 @@ class MainWindow(
         """View ▸ display toggles that change how the pixels are drawn (as
         opposed to Navigate, which moves the window): the grid toggle, the
         app-wide grid style, and the zoom steps."""
-        menu = self.menuBar().addMenu("View")
+        menu = self.menuBar().addMenu("&View")
         # A checkable action, not a toolbar checkbox: same isChecked/setChecked/
         # toggled surface the rest of the code already drives, so the view-state
         # capture/restore paths need no special-casing.
-        self._grid = QAction("Grid", self, checkable=True)
+        self._grid = QAction("&Grid", self, checkable=True)
         self._grid.setToolTip("Overlay a tile grid (zoom >= 2)")
         self._grid.toggled.connect(self._on_view_change)
         # Display-only shortcut, like Palette ▸ Load from Selection: the bare "G"
@@ -861,14 +869,14 @@ class MainWindow(
         thing in the shortcut column, and the tooltip names them so they stay
         discoverable.
         """
-        zoom_in = QAction("Zoom In\tCtrl + Scroll Up", self)
+        zoom_in = QAction("Zoom &In\tCtrl + Scroll Up", self)
         sequences = QKeySequence.keyBindings(QKeySequence.StandardKey.ZoomIn)
         sequences.append(QKeySequence("Ctrl+="))
         zoom_in.setShortcuts(sequences)
         zoom_in.setToolTip("Zoom in (Ctrl++)")
         zoom_in.triggered.connect(lambda: self._zoom_steps(1))
         view_menu.addAction(zoom_in)
-        zoom_out = QAction("Zoom Out\tCtrl + Scroll Down", self)
+        zoom_out = QAction("Zoom &Out\tCtrl + Scroll Down", self)
         zoom_out.setShortcut(QKeySequence.StandardKey.ZoomOut)
         zoom_out.setToolTip("Zoom out (Ctrl+-)")
         zoom_out.triggered.connect(lambda: self._zoom_steps(-1))
@@ -884,14 +892,14 @@ class MainWindow(
         """
         style = load_enum_setting(GRID_STYLE_KEY, GridStyle.LINE)
         self._canvas.set_grid_style(style)
-        submenu = view_menu.addMenu("Grid Style")
+        submenu = view_menu.addMenu("Grid &Style")
         group = QActionGroup(self)  # exclusive: one style checked at a time
         self._grid_style_group = group
         labels = (
-            (GridStyle.POINT, "Point"),
-            (GridStyle.DOT, "Dot"),
-            (GridStyle.DASH, "Dash"),
-            (GridStyle.LINE, "Line"),
+            (GridStyle.POINT, "&Point"),
+            (GridStyle.DOT, "&Dot"),
+            (GridStyle.DASH, "D&ash"),
+            (GridStyle.LINE, "&Line"),
         )
         for value, text in labels:
             action = QAction(text, self, checkable=True)
@@ -908,21 +916,18 @@ class MainWindow(
 
     def _build_panels_menu(self) -> None:
         """Panels ▸ show/hide the dockable panels (Files, Palette, Hex)."""
-        menu = self.menuBar().addMenu("Panels")
+        menu = self.menuBar().addMenu("Pane&ls")
         files_toggle = self._files_dock.toggleViewAction()
-        files_toggle.setText("Files Panel")
+        files_toggle.setText("&Files Panel")
         menu.addAction(files_toggle)
         palette_toggle = self._palette_dock.toggleViewAction()
-        palette_toggle.setText("Palette Panel")
+        palette_toggle.setText("&Palette Panel")
         menu.addAction(palette_toggle)
-        # The tools rail is a plain widget, not a dock, so its toggle is a plain
-        # checkable action driving the widget's visibility.
-        tools_toggle = QAction("Tools Panel", self, checkable=True)
-        tools_toggle.setChecked(self._tools_panel.isVisible())
-        tools_toggle.toggled.connect(self._tools_panel.setVisible)
-        menu.addAction(tools_toggle)
+        # The tools rail is not listed: it is a plain widget rather than a dock,
+        # always on screen beside the canvas, and greys itself out whenever pixel
+        # editing is off - so there is nothing for a show/hide entry to do.
         hex_toggle = self._hex_dock.toggleViewAction()
-        hex_toggle.setText("Hex Panel")
+        hex_toggle.setText("&Hex Panel")
         menu.addAction(hex_toggle)
 
     def _open_plugins_folder(self) -> None:

@@ -1,0 +1,23 @@
+# Example preset for the `codec.direct-color` engine. Copy, drop the underscore,
+# edit, press F5. See _planar.toml for what a preset is.
+id = "preset.pixel.example-direct-color"
+name = "Example direct color RGB565"
+
+# codec.direct-color decodes **palette-less** pixels: each carries its own colour,
+# so there is no index and no palette. Masks are plain bit masks over the pixel
+# value once `byte_order` has assembled its bytes; each channel scales to 8 bits,
+# so a 5-bit channel is lossy and round-trips through the decoded value rather
+# than the raw bits. Omit `a` for an opaque format.
+#
+# Tile size is free here, as with codec.chunky, so this reads bitmaps of any
+# width as well as console tiles.
+engine_id = "codec.direct-color"
+
+[params]
+bytes_per_pixel = 2
+byte_order = "little"    # or "big"
+
+[params.masks]
+r = 0xF800
+g = 0x07E0
+b = 0x001F

@@ -30,7 +30,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.pipeline import pipeline
-from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
+from celpix.plugins.base import NO_COMPRESSION
 from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS
 from celpix.project.workspace import (
     default_slice_name,
@@ -66,12 +66,12 @@ class CompressionMixin:
         terminator, or, for a scheme that has none, the point the view window
         ran out at.
         """
-        src = self._raw_slice_source()
+        src = self._slice_source()
         if src is None or self._structure_extent is None:
             return
-        entry, doc = src
+        entry, _doc = src
         start, consumed = self._structure_extent
-        abs_off = doc.pixel_config.source.offset + start
+        abs_off = self._slice_prefill_offset(start)
         compression_id = self._compression_id()
         slice_entry = slice_of(
             entry,
@@ -112,8 +112,8 @@ class CompressionMixin:
         Jump is armed only while a whole structure (known end) is in view.
         Promote arms on any extent worth recording — that structure, or a
         stream-based scheme's window end — but also needs the view's positions
-        to map to file offsets, so it stays off while the main view is itself
-        showing decompressed bytes.
+        to be coordinates the new slice can be anchored at, so it stays off while
+        the main view is itself showing decompressed bytes.
 
         Kept separate from :meth:`_refresh_overlay` because it is the single
         source of truth for these two buttons: a scan's blanket UI re-enable
@@ -121,25 +121,22 @@ class CompressionMixin:
         than leave them switched on.
         """
         self._jump_next.setEnabled(self._next_structure is not None)
-        # The reshape check mirrors _raw_slice_source: a reshaped view's
-        # positions name no file offset, so a promoted slice would carry
-        # garbage coordinates.
         self._promote_button.setEnabled(
-            self._structure_extent is not None
-            and self._doc is not None
-            and self._doc.pixel_config.compression_id == NO_COMPRESSION
-            and self._doc.pixel_config.reshape_id == NO_RESHAPE
+            self._structure_extent is not None and self._slice_source() is not None
         )
 
     def _present_overlay(self, compression_id: str | None) -> None:
         """The overlay body of :meth:`_refresh_overlay` (which owns the button
         state around every early exit here)."""
         assert self._doc is not None
+        if compression_id is None:
+            self._overlay.hide_overlay()
+            return
         view = self._doc.view
         window = self._doc.window_bytes(
             view.tile_offset, view.columns * view.rows, view.byte_nudge
         )
-        if compression_id is None or not window:
+        if not window:
             self._overlay.hide_overlay()
             return
         ctx = PipelineContext()
@@ -248,7 +245,9 @@ class CompressionMixin:
             return
         plugin = self._registry.plugin(Stage.COMPRESSION, compression_id)
         data = self._doc.pixel_data
-        window_len = max(
+        # Probe as many compressed bytes as one screenful decompresses to: a
+        # structure bigger than the view can show is not worth confirming here.
+        probe_bytes = max(
             1,
             self._columns.value() * self._rows.value() * self._doc.bytes_per_tile,
         )
@@ -259,7 +258,7 @@ class CompressionMixin:
             result = pipeline.find_next_structure(
                 data,
                 plugin,
-                window_len,
+                probe_bytes,
                 self._byte_position() + 1,
                 on_tick=self._scan_tick,
             )

@@ -27,6 +27,7 @@ from celpix.core.errors import Stage
 from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
 from celpix.plugins.registry import Registry
 from celpix.project.workspace import SliceParams, default_slice_name
+from celpix.ui.widgets import fill_stage_combo
 
 __all__ = ["SliceDialog", "SliceParams"]
 
@@ -36,7 +37,7 @@ class SliceDialog(QDialog):
         self,
         registry: Registry,
         *,
-        path: str,
+        paths: tuple[str, ...],
         offset: int = 0,
         length: int | None = None,
         compression_id: str = NO_COMPRESSION,
@@ -46,8 +47,11 @@ class SliceDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle(f"{title} - {basename(path)}")
-        self._path = path
+        self.setWindowTitle(f"{title} - {basename(paths[0])}")
+        # Every file of the parent's region: offsets address the concatenation
+        # (:class:`~celpix.plugins.base.FileRef`), so bounding them against the
+        # first chip alone would put most of a several-chip region out of reach.
+        self._paths = paths
         self._params: SliceParams | None = None
 
         self._name = QLineEdit(name)
@@ -65,19 +69,13 @@ class SliceDialog(QDialog):
             "(a plane-per-chip split, an interleave). Applies to\n"
             "the whole region, before any decompression"
         )
-        for plugin in registry.plugins(Stage.RESHAPE):
-            self._reshape.addItem(plugin.info.name, plugin.info.id)
-        index = self._reshape.findData(reshape_id)
-        if index >= 0:
-            self._reshape.setCurrentIndex(index)
+        fill_stage_combo(self._reshape, registry.plugins(Stage.RESHAPE), reshape_id)
 
         self._decompress = QComboBox()
         self._decompress.setToolTip("Decompress with this codec on load")
-        for plugin in registry.plugins(Stage.COMPRESSION):
-            self._decompress.addItem(plugin.info.name, plugin.info.id)
-        index = self._decompress.findData(compression_id)
-        if index >= 0:
-            self._decompress.setCurrentIndex(index)
+        fill_stage_combo(
+            self._decompress, registry.plugins(Stage.COMPRESSION), compression_id
+        )
 
         self._error = QLabel()
         self._error.setStyleSheet("color: #c04040;")
@@ -165,12 +163,13 @@ class SliceDialog(QDialog):
             self._fail("A raw slice needs a length (compressed ones can discover it).")
             return
         try:
-            size = getsize(self._path)
+            size = sum(getsize(path) for path in self._paths)
         except OSError as exc:
             self._fail(f"Cannot stat the file: {exc}")
             return
         if offset >= size or (length is not None and offset + length > size):
-            self._fail(f"Region runs past the file's end ({format_hex(size)} bytes).")
+            noun = "region's" if len(self._paths) > 1 else "file's"
+            self._fail(f"Region runs past the {noun} end ({format_hex(size)} bytes).")
             return
         # Default name from the *validated* values, not the placeholder text.
         name = self._name.text().strip() or default_slice_name(
@@ -184,7 +183,7 @@ class SliceDialog(QDialog):
         parent: QWidget | None,
         registry: Registry,
         *,
-        path: str,
+        paths: tuple[str, ...],
         offset: int = 0,
         length: int | None = None,
         compression_id: str = NO_COMPRESSION,
@@ -195,7 +194,7 @@ class SliceDialog(QDialog):
         """Run the dialog modally; the validated parameters, or None on cancel."""
         dialog = SliceDialog(
             registry,
-            path=path,
+            paths=paths,
             offset=offset,
             length=length,
             compression_id=compression_id,

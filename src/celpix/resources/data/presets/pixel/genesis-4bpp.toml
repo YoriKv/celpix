@@ -1,4 +1,4 @@
-# Genesis/Mega Drive/32X/X68000/MSX 4bpp packed nibbles — high nibble = left (LN04).
+# Genesis/Mega Drive/32X/X68000/MSX 4bpp packed nibbles — high nibble = left.
 # See docs/graphics-formats-reference/implementation-guide.md §2 (packed / linear).
 id = "preset.pixel.genesis-4bpp"
 name = "Genesis 4bpp (MD/X68000/MSX, 8x8)"

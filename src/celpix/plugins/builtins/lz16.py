@@ -1,39 +1,35 @@
 """LZ16 — the Yoshi's Island Super FX bit-stream graphics codec.
 
 Unlike the byte-oriented LZ1/LZ2 family, LZ16 is a predictive bit-stream codec
-specialized to 4bpp tile graphics. The uncompressed unit is a **tile row**: 16
+specialised to 4bpp tile graphics. The uncompressed unit is a **tile row**: 16
 SNES 4bpp tiles = 512 bytes = a 128-pixel-wide, 8-pixel-tall strip. The stream
-carries no row count of its own — the decoder must be told how many tile rows to
-produce, and consumes bits until it has decoded them.
+carries no row count, so the decoder must be told how many tile rows to produce
+and consumes bits until it has.
 
-Stream shape (full details + provenance:
+Stream shape (full details and provenance in
 ``docs/graphics-formats-reference/implementation-guide.md`` §6):
 
-- **Header** — 4 bytes = 8 nibbles: the first 7 seed the predictor palette
-  ``pred[0..6]`` (4-bit colors); the 8th primes the LSB-first bit stream.
+- **Header** — 4 bytes = 8 nibbles. The first 7 seed the predictor table
+  ``pred[0..6]`` with 4-bit colors; the 8th primes the LSB-first bit stream.
   ``pred[7]`` is a dynamic slot refreshed inline by an escape code.
-- **Rows** — each 128-pixel row starts with one mode bit (0 = pure RLE row,
-  1 = delta row edited against a copy of the previous row), then run commands
-  walking a cursor right-to-left: a unary-style count followed by one of four
-  ops (fill with a predictor color / skip unchanged runs / a run grew /
-  a run shrank).
-- After all rows decode, the row-major pixels transpose into standard SNES
-  4bpp planar tiles.
+- **Rows** — each 128-pixel row starts with one mode bit (0 = pure RLE row, 1 =
+  delta row against a copy of the previous row), then run commands walking a
+  cursor right-to-left: a unary-style count followed by one of four ops — fill
+  with a predictor color, skip unchanged runs, a run grew, a run shrank.
+- The decoded row-major pixels then transpose into SNES 4bpp planar tiles.
 
-The row count normally comes from context outside the stream (game pointer
-tables). When the caller doesn't know it, :func:`probe_rows` recovers it from
-the compressed length: decode consumption grows strictly with the row count, so
-at most one count consumes the buffer exactly. That only works when the buffer
-ends exactly where the compressed structure does — an over-read buffer (offset
-to end-of-file) defeats it, which is why the plugin lets a context key supply
-the count explicitly.
+The row count normally comes from outside the stream (game pointer tables). When
+the caller doesn't know it, :func:`probe_rows` recovers it from the compressed
+length: consumption grows strictly with the row count, so at most one count
+consumes the buffer exactly. That needs the buffer to end exactly where the
+structure does — an over-read buffer defeats it, which is why a context key can
+supply the count explicitly.
 
-The compressor mirrors the scheme the original tooling used: encode every row
-both ways (RLE and delta), keep the shorter, and choose the 7 predictor colors
-by ranking. Two rankings are tried — color-change frequency across the delta
-encoding (the original's rule) and maximal-run frequency — and the smaller
-result wins. Byte-identity with any particular original blob is a non-goal;
-round-tripping is the contract.
+The compressor encodes every row both ways, keeps the shorter, and picks the 7
+predictor colors by ranking. Two rankings are tried, color-change frequency across
+the delta encoding and maximal-run frequency, and the smaller result wins.
+Byte-identity with a particular original blob is a non-goal; round-tripping is the
+contract.
 """
 
 from __future__ import annotations
@@ -71,24 +67,23 @@ def _decode_pixel_rows(
     stop_len: int | None = None,
     partial: bool = False,
 ) -> tuple[bytearray, int, int]:
-    """The core row decoder: bit stream -> row-major pixels (one byte each).
+    """The core row decoder: bit stream -> row-major pixels, one byte each.
 
-    Decodes up to ``tile_rows`` tile rows. With ``stop_len`` set, returns early
-    at the first tile-row boundary where exactly that many source bytes have
-    been consumed (the probe's exact-fit test). With ``partial`` (a bounded
-    buffer that may cut the stream short), any decode failure past the first
-    complete tile row returns the rows completed so far instead of raising —
-    without a terminator or size in the stream, "ran out of buffer" and
-    "decoded into trailing garbage" are indistinguishable, so the first tile
-    row doubles as the validity test. Returns
-    ``(pixels, tile_rows_done, consumed)``.
+    Decodes up to ``tile_rows`` tile rows and returns
+    ``(pixels, tile_rows_done, consumed)``. With ``stop_len`` set it returns early
+    at the first tile-row boundary where exactly that many source bytes have been
+    consumed — the probe's exact-fit test. With ``partial``, for a bounded buffer
+    that may cut the stream short, a decode failure past the first complete tile
+    row returns the rows finished so far rather than raising: with no terminator or
+    size in the stream, "ran out of buffer" and "decoded into trailing garbage" are
+    indistinguishable, so the first tile row doubles as the validity test.
     """
     n = len(data)
     if n < 4:
         raise _fail("shorter than the 4-byte header")
 
-    total_rows = tile_rows * 8
-    pixels = bytearray(ROW_PIXELS * total_rows)
+    pixel_rows = tile_rows * 8
+    pixels = bytearray(ROW_PIXELS * pixel_rows)
 
     # LSB-first bit reader. `pos` is the index of the next unread byte; the
     # low `bit_count` bits of `bit_buf` are already-fetched unread bits.
@@ -120,11 +115,11 @@ def _decode_pixel_rows(
         return value
 
     # Snapshot after each *complete* tile row so partial mode can rewind a
-    # failure mid-row to the last whole row (pixels past it are junk-in-progress).
+    # mid-row failure to the last whole one; pixels past it are half-decoded.
     done_rows = 0
     done_pos = 0
     try:
-        for row in range(total_rows):
+        for row in range(pixel_rows):
             base = row * ROW_PIXELS
             if row > 0:
                 pixels[base : base + ROW_PIXELS] = pixels[base - ROW_PIXELS : base]
@@ -264,8 +259,8 @@ def probe_rows(data: bytes) -> int:
     """Recover the tile-row count of a stream whose exact length is known.
 
     Consumption is strictly monotonic in the row count, so at most one count
-    consumes ``len(data)`` exactly. Raises when none fits — over-read data,
-    or not LZ16 at all.
+    consumes ``len(data)`` exactly. Raises when none fits: over-read data, or not
+    LZ16 at all.
     """
     try:
         _, done, consumed = _decode_pixel_rows(
@@ -286,10 +281,9 @@ def probe_rows(data: bytes) -> int:
 def decompress_partial(data: bytes) -> tuple[bytes, int, int]:
     """Best-effort decode of a bounded buffer (a view window).
 
-    Decodes as many *complete* tile rows as the buffer's bits support, up to
-    the probe ceiling. Returns ``(tiles, tile_rows, consumed)``; raises when
-    not even the first tile row decodes — the validity test for "this isn't
-    LZ16 data at all".
+    Decodes as many *complete* tile rows as the buffer's bits support, up to the
+    probe ceiling, returning ``(tiles, tile_rows, consumed)``. Raises when not even
+    the first tile row decodes — the test for "this isn't LZ16 data at all".
     """
     pixels, rows, consumed = _decode_pixel_rows(data, _PROBE_MAX_ROWS, partial=True)
     return _pixels_to_tiles(pixels, rows), rows, consumed
@@ -318,11 +312,11 @@ def _emit_number(bits: list[int], value: int) -> None:
     bits.append(0)
 
 
-def _emit_color_coded(bits: list[int], color: int, palette: bytearray) -> None:
+def _emit_color_coded(bits: list[int], color: int, predictors: bytearray) -> None:
     """3-bit predictor index (MSB-first), or index 7 + the raw 4-bit color."""
     idx = 7
     for k in range(7):
-        if palette[k] == color:
+        if predictors[k] == color:
             idx = k
             break
     bits += ((idx >> 2) & 1, (idx >> 1) & 1, idx & 1)
@@ -330,23 +324,25 @@ def _emit_color_coded(bits: list[int], color: int, palette: bytearray) -> None:
         bits += ((color >> 3) & 1, (color >> 2) & 1, (color >> 1) & 1, color & 1)
 
 
-def _encode_rle_row(line: bytearray, palette: bytearray) -> list[int]:
+def _encode_rle_row(line: bytearray, predictors: bytearray) -> list[int]:
     """Row mode 0: plain right-to-left RLE of the row."""
     bits = [0]
     x = ROW_PIXELS - 1
     while x >= 0:
         count = _run_length(line, x)
         _emit_number(bits, count)
-        _emit_color_coded(bits, line[x], palette)
+        _emit_color_coded(bits, line[x], predictors)
         x -= count
     return bits
 
 
-def _encode_delta_row(now: bytearray, old: bytearray, palette: bytearray) -> list[int]:
+def _encode_delta_row(
+    now: bytearray, old: bytearray, predictors: bytearray
+) -> list[int]:
     """Row mode 1: delta against the previous row.
 
-    ``old`` is mutated with the same boundary carries the decoder applies —
-    pass a disposable copy.
+    ``old`` is mutated with the same boundary carries the decoder applies, so pass
+    a disposable copy.
     """
     bits = [1]
     x = ROW_PIXELS - 1
@@ -358,8 +354,8 @@ def _encode_delta_row(now: bytearray, old: bytearray, palette: bytearray) -> lis
 
         if now_color != old_color:  # color changed
             _emit_number(bits, now_cnt)
-            bits += (0, 1)  # mode 1, 2 bits LSB-first pairs (flag & 1, flag & 2)
-            _emit_color_coded(bits, now_color, palette)
+            bits += (0, 1)  # mode 1 (2 bits, MSB-first: read_bits_msb(2) decodes it)
+            _emit_color_coded(bits, now_color, predictors)
             x -= now_cnt
             continue
         if now_cnt != old_cnt:
@@ -403,16 +399,16 @@ def _rank_colors(counts: list[int]) -> bytearray:
     return order
 
 
-def _palette_by_color_changes(pixels: bytearray, total_rows: int) -> bytearray:
-    """Rank colors by delta-mode color-change frequency (the original rule).
+def _predictors_by_color_changes(pixels: bytearray, pixel_rows: int) -> bytearray:
+    """Rank colors by delta-mode color-change frequency.
 
-    Replays the delta walk — including its boundary carries — so the counts
-    match what :func:`_encode_delta_row` will actually emit.
+    Replays the delta walk, boundary carries included, so the counts match what
+    :func:`_encode_delta_row` will emit.
     """
     counts = [0] * 16
     now = bytearray(ROW_PIXELS)
     old = bytearray(ROW_PIXELS)
-    for row in range(total_rows):
+    for row in range(pixel_rows):
         old[:] = now
         now[:] = pixels[row * ROW_PIXELS : (row + 1) * ROW_PIXELS]
         x = ROW_PIXELS - 1
@@ -447,11 +443,11 @@ def _palette_by_color_changes(pixels: bytearray, total_rows: int) -> bytearray:
     return _rank_colors(counts)
 
 
-def _palette_by_run_frequency(pixels: bytearray, total_rows: int) -> bytearray:
-    """Rank colors by how many maximal runs each forms — often favours the
+def _predictors_by_run_frequency(pixels: bytearray, pixel_rows: int) -> bytearray:
+    """Rank colors by how many maximal runs each forms. Tends to favour the
     background color, which the color-change ranking under-weights."""
     counts = [0] * 16
-    for row in range(total_rows):
+    for row in range(pixel_rows):
         base = row * ROW_PIXELS
         x = 0
         while x < ROW_PIXELS:
@@ -464,20 +460,20 @@ def _palette_by_run_frequency(pixels: bytearray, total_rows: int) -> bytearray:
     return _rank_colors(counts)
 
 
-def _encode_with_palette(
-    pixels: bytearray, total_rows: int, palette: bytearray
+def _encode_with_predictors(
+    pixels: bytearray, pixel_rows: int, predictors: bytearray
 ) -> list[int]:
     bits: list[int] = []
     for k in range(7):  # 28-bit header, each color LSB-first
-        color = palette[k]
+        color = predictors[k]
         bits += (color & 1, (color >> 1) & 1, (color >> 2) & 1, (color >> 3) & 1)
     now = bytearray(ROW_PIXELS)
     old = bytearray(ROW_PIXELS)
-    for row in range(total_rows):
+    for row in range(pixel_rows):
         old[:] = now
         now[:] = pixels[row * ROW_PIXELS : (row + 1) * ROW_PIXELS]
-        rle = _encode_rle_row(now, palette)
-        delta = _encode_delta_row(now, bytearray(old), palette)
+        rle = _encode_rle_row(now, predictors)
+        delta = _encode_delta_row(now, bytearray(old), predictors)
         bits += rle if len(rle) <= len(delta) else delta
     return bits
 
@@ -491,14 +487,14 @@ def compress(tiles: bytes) -> bytes:
         )
     tile_rows = len(tiles) // BYTES_PER_TILE_ROW
     pixels = _tiles_to_pixels(tiles)
-    total_rows = tile_rows * 8
+    pixel_rows = tile_rows * 8
 
     best: list[int] | None = None
-    for palette in (
-        _palette_by_color_changes(pixels, total_rows),
-        _palette_by_run_frequency(pixels, total_rows),
+    for predictors in (
+        _predictors_by_color_changes(pixels, pixel_rows),
+        _predictors_by_run_frequency(pixels, pixel_rows),
     ):
-        bits = _encode_with_palette(pixels, total_rows, palette)
+        bits = _encode_with_predictors(pixels, pixel_rows, predictors)
         if best is None or len(bits) < len(best):
             best = bits
 
@@ -514,8 +510,8 @@ class Lz16Compression:
         id="compression.lz16",
         name="LZ16 (Yoshi's Island Super FX)",
         stage=Stage.COMPRESSION,
-        # No terminator: the extent comes from the row count (context or probe),
-        # both of which need a bound the bit stream itself never carries.
+        # No terminator: the extent comes from the row count, by context or
+        # probe, and both need a bound the bit stream never carries.
         self_delimiting=False,
     )
 

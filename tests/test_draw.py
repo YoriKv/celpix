@@ -171,10 +171,3 @@ def test_blit_region_round_trips_and_clips() -> None:
     draw.blit_region(dst, _grid([[7, 8], [9, 1]]), 2, 2)  # only (2,2) lands
     assert dst.get(2, 2) == 7
     assert _rows(dst) == [[0, 0, 0], [0, 0, 0], [0, 0, 7]]
-
-
-def test_blit_region_transparent_skips_matching_pixels() -> None:
-    dst = _grid([[5, 5], [5, 5]])
-    draw.blit_region(dst, _grid([[0, 1], [1, 0]]), 0, 0, transparent=0)
-    # The 0s are skipped, so the dst's original 5s show through under them.
-    assert _rows(dst) == [[5, 1], [1, 5]]

@@ -1,12 +1,15 @@
 """Example palette code format. Files starting with "_" are ignored — copy this
-file, drop the underscore from the name, edit it, and press F5 in celPix to
-load it (code plugins ask for confirmation the first time, since they run with
-the app's privileges).
+file, drop the underscore from the name, edit it, and press F5 in celPix to load
+it (code plugins ask for confirmation the first time, since they run with the
+app's privileges).
 
 A code format implements a palette interpretation directly, for encodings no
-built-in engine's parameters can express (table lookups, packed shares, ...).
-It appears in the palette format picker like any preset. decode returns a
-Palette of 0xAARRGGBB ints; encode is its exact inverse.
+built-in engine's parameters can express, and appears in the palette format picker
+like any preset. Try a preset first: see _color-mask.toml. decode returns a
+Palette of 0xAARRGGBB ints and encode is its exact inverse.
+
+_nes-custom.py is a worked example: a real format that loads its colour table
+from a companion file.
 """
 
 from celpix.core.palette import Palette

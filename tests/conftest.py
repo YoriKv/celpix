@@ -94,6 +94,35 @@ def _container_dialog_never_blocks(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def opened_menus(monkeypatch):
+    """Record context menus instead of popping them up, for every test.
+
+    ``QMenu.exec`` blocks exactly like a modal dialog's, and under the offscreen
+    platform it never returns — so any test that reaches a right-click menu
+    would wedge the run. The class itself can't be patched (Shiboken resolves
+    ``exec`` past the Python attribute), so each ``celpix.ui`` module's imported
+    ``QMenu`` name is swapped for a subclass that records the popup and returns.
+    A test can request this fixture by name to inspect the menu that was built.
+    Guarded like :func:`captured_alerts` so headless suites stay Qt-free.
+    """
+    widgets = sys.modules.get("PySide6.QtWidgets")
+    if widgets is None:
+        return []
+    opened: list = []
+
+    class RecordingMenu(widgets.QMenu):
+        def exec(self, *_args, **_kwargs):
+            opened.append(self)
+
+    for name, module in list(sys.modules.items()):
+        if name.startswith("celpix.ui") and (
+            getattr(module, "QMenu", None) is widgets.QMenu
+        ):
+            monkeypatch.setattr(module, "QMenu", RecordingMenu)
+    return opened
+
+
+@pytest.fixture(autouse=True)
 def _close_discards_edits(monkeypatch):
     """Let pytest-qt close windows without the unsaved-changes prompt.
 

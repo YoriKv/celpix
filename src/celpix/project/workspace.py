@@ -19,19 +19,21 @@ only *carries* its lazily loaded :class:`~celpix.core.document.Document` and
 the config factory (:func:`pixel_config_for`) that tells the pipeline how to
 read it.
 
-**Slices reference their parent by path.** A slice is an ordinary bounded
-:class:`~celpix.plugins.base.FileRef` into the parent, so the ordinary container
-serves it — from the file on disk, *except* while the parent holds unsaved pixel
-edits. Then the file is the stale copy, so :func:`pixel_config_for` points the
-slice's source at the parent's live buffer instead (``FileRef.data``) while
-leaving the write target on disk: carving a slice out of a ROM you have been
-editing shows the edits, and writing it back still lands in the file.
+**Slices reference their parent by path**, and **one region has one authority**:
+the parent owns its bytes and a slice is a derived view of a window of them
+(``docs/design/slices-and-parents.md``). Reading is an ordinary bounded
+:class:`~celpix.plugins.base.FileRef` served by the ordinary container — from the
+file on disk, *except* where the parent's own buffer is the only truth (it holds
+unsaved pixel edits, or it reorders), when :func:`pixel_config_for` points the
+source at that buffer instead (``FileRef.data``). Writing never deposits at those
+bounds: the pathway is flagged ``writes_through_parent`` and the host folds the
+slice into the parent's buffer and writes the *parent*, so the parent's container
+runs over bytes that changed inside it.
 
 Cached documents of other entries on the same path go stale only when one of them
 saves — :meth:`Workspace.invalidate_path` drops those caches (except dirty ones:
 an invalidation must never discard in-memory changes) so they reload fresh on next
-activation. External changes to the file on disk are ignored, as they always were
-for the single document.
+activation. External changes to the file on disk are ignored.
 """
 
 from __future__ import annotations
@@ -58,9 +60,8 @@ from celpix.plugins.base import (
     NO_RESHAPE,
     RAW_CONTAINER,
     FileRef,
-    writes_back,
 )
-from celpix.plugins.detect import container_id_for, container_write_enabled
+from celpix.plugins.detect import resolved_container_id
 from celpix.plugins.registry import Registry
 
 
@@ -130,14 +131,28 @@ class PaletteMode(str, Enum):
         are read. DEFAULT and CUSTOM carry their own colors (generated, or ARGB
         stored in the project), so no codec choice applies — CUSTOM shows the
         format it carries, but read-only.
+
+        Coincides with :attr:`has_source` — anything with bytes to re-read has
+        bytes to reinterpret — and is defined from it so the two cannot drift.
         """
-        return self in (PaletteMode.FILE, PaletteMode.OFFSET, PaletteMode.EMULATOR)
+        return self.has_source
 
     @property
     def has_external_file(self) -> bool:
         """Whether the colors come from a file of their own, whose name the
         palette dock shows and whose loss degrades the entry."""
         return self in (PaletteMode.FILE, PaletteMode.EMULATOR)
+
+    @property
+    def holds_edits(self) -> bool:
+        """Whether a color edit can land on this palette as it stands.
+
+        The generated default has nowhere to store one, and an emulator state is
+        never written back — so an edit on either forks to Custom first. Named
+        here with the other mode questions rather than as a literal mode set at
+        each editing entry point.
+        """
+        return self not in (PaletteMode.DEFAULT, PaletteMode.EMULATOR)
 
     @property
     def is_exportable(self) -> bool:
@@ -196,7 +211,10 @@ class EntrySession:
     pixel_preset_id: str
     palette_preset_id: str
     palette_mode: PaletteMode = PaletteMode.DEFAULT
-    compression_id: str = NO_COMPRESSION  # the preview combo, not a slice codec
+    # The decompression-preview combo's position, which is a *view* setting: it
+    # says what the toolbar was showing, not how the entry's bytes are read.
+    # Entry.compression_id is that, and the two move independently.
+    preview_compression_id: str = NO_COMPRESSION
     # The selection. ``selected_tile`` is the anchor (and what single-selection
     # consumers read); ``selected_last`` >= it bounds a range, None when the
     # selection is a single tile (or absent). ``selection_cells`` is set only for
@@ -421,22 +439,21 @@ class Workspace:
         # path identity must survive case differences on the same file.
         return normcase(abspath(path))
 
-    def find_file(self, path: str) -> Entry | None:
-        """The FILE entry for ``path``, if one is open (slices never match)."""
+    def _find(self, kind: EntryKind, path: str) -> Entry | None:
         key = self._path_key(path)
         for entry in self.entries:
-            if entry.kind is EntryKind.FILE and self._path_key(entry.path) == key:
+            if entry.kind is kind and self._path_key(entry.path) == key:
                 return entry
         return None
+
+    def find_file(self, path: str) -> Entry | None:
+        """The FILE entry for ``path``, if one is open (slices never match)."""
+        return self._find(EntryKind.FILE, path)
 
     def find_palette(self, path: str) -> Entry | None:
         """The PALETTE entry for ``path``, if one is registered — same
         path-is-identity rule as :meth:`find_file`, per kind."""
-        key = self._path_key(path)
-        for entry in self.entries:
-            if entry.kind is EntryKind.PALETTE and self._path_key(entry.path) == key:
-                return entry
-        return None
+        return self._find(EntryKind.PALETTE, path)
 
     def palette_render_targets(self, path: str) -> list[Entry]:
         """Loaded FILE/SLICE entries whose document currently renders ``path``.
@@ -477,7 +494,7 @@ class Workspace:
         self._notify(self.on_added, entry)
         return entry
 
-    def palette_users(self, palette: Entry) -> list[Entry]:
+    def palette_consumers(self, palette: Entry) -> list[Entry]:
         """The graphics entries whose File-mode palette *is* this PALETTE file.
 
         The reverse of the file → palette reference: a File-mode graphic records
@@ -810,38 +827,55 @@ def pixel_config_for(
     be written back. A whole file is the same rule applied to its **container**
     (``Entry.container_id``) — a slice does not go through one, for the reason
     given on that field — and both kinds apply it to their **reshape**
-    (``Entry.reshape_id``), which either may carry.
+    (``Entry.reshape_id``), which either may carry. A stage whose plugin this
+    build hasn't got at all is view-only too, and named in ``missing_plugins`` so
+    the load can tell the user which one to install
+    (:meth:`~celpix.plugins.registry.Registry.resolve_stage`).
+
+    A slice is saved **through its parent** (``writes_through_parent``) rather
+    than deposited at its own bounds, so its writability is its own stages'
+    *and* its parent's — see the comment at the branch.
     """
-    reshape_id, reshape_writes = _resolve_reshape(entry, registry)
+    stages = [(Stage.RESHAPE, entry.reshape_id)]
+    if entry.kind is EntryKind.FILE:
+        stages.append((Stage.CONTAINER, entry.container_id))
+    else:
+        stages.append((Stage.COMPRESSION, entry.compression_id))
+    resolved = {
+        stage: registry.resolve_stage(stage, wanted) for stage, wanted in stages
+    }
+    missing = tuple(
+        (stage, wanted) for stage, wanted in stages if resolved[stage][0] != wanted
+    )
+    writable = all(writes for _id, writes in resolved.values())
+    reshape_id = resolved[Stage.RESHAPE][0]
     if entry.kind is EntryKind.FILE:
         return PathwayConfig(
             source=FileRef(entry.paths),
             interpret_preset_id=preset_id,
-            container_id=container_id_for(registry, entry.container_id),
+            container_id=resolved[Stage.CONTAINER][0],
             reshape_id=reshape_id,
-            # A container that rewrites bytes and ships no write half is
-            # view-only, exactly as a compression scheme with no compressor is:
-            # writing unwrapped bytes back through plain bytes would destroy the
-            # framing rather than restore it.
-            write_enabled=container_write_enabled(registry, entry.container_id)
-            and reshape_writes,
+            write_enabled=writable,
+            missing_plugins=missing,
         )
-    compression_id, write_enabled = entry.compression_id, True
-    try:
-        plugin = registry.plugin(Stage.COMPRESSION, compression_id)
-    except KeyError:
-        compression_id, write_enabled = NO_COMPRESSION, False
-    else:
-        write_enabled = writes_back(plugin, "compress")
     parent = workspace.find_file(entry.path) if workspace is not None else None
     reordered = parent is not None and reorders_bytes(parent, registry)
     live, live_base = _parent_view_bytes(entry, parent, reordered, registry, preset_id)
-    if reordered:
-        # The slice's offset is a position in the parent's buffer, and a bounded
-        # FileRef into the files cannot say where a permuted splice belongs - so
-        # it views correctly and saves not at all. Editing that region goes
-        # through the parent entry, whose own write re-wraps it.
-        write_enabled = False
+    if parent is not None:
+        # **Every** slice is saved by splicing into the parent's buffer and
+        # writing the parent, not by depositing at its own bounds. Under a
+        # reordering parent that is the only thing that *can* work; everywhere
+        # else it is what keeps the file whole - the parent's container gets to
+        # run its write half (repair a checksum, re-wrap a header) over bytes
+        # that changed inside it, which a splice around it silently skips.
+        #
+        # So the parent's own write is the thing this can fail on: a parent that
+        # cannot save (a reshape with no unshape, a container with no write, a
+        # plugin this build hasn't got) leaves the slice with nowhere to land.
+        # A slice is part of the larger whole and cannot outrank it.
+        writable = (
+            writable and pixel_config_for(parent, preset_id, registry).write_enabled
+        )
     return PathwayConfig(
         # The parent's *whole* file list, not just the file the slice is named
         # after: a slice's offset addresses the parent's joined buffer, so
@@ -854,31 +888,20 @@ def pixel_config_for(
             data=live,
             data_base=live_base,
         ),
-        # Write always targets the files, whatever the source above reads from;
-        # whether a write is allowed at all is `write_enabled`'s business.
+        # The slice's own bounds: a file position where the parent reads
+        # straight, a position in its buffer where it reorders. Either way they
+        # bound the splice and the slot checks rather than naming a deposit —
+        # `writes_through_parent` says the parent performs the delivery. Without
+        # a workspace there is no parent to route through, and the config falls
+        # back to depositing here (the factory's caller-beware form).
         dest=FileRef(entry.paths, offset=entry.slice_offset, length=entry.slice_length),
         interpret_preset_id=preset_id,
         reshape_id=reshape_id,
-        compression_id=compression_id,
-        write_enabled=write_enabled and reshape_writes,
+        compression_id=resolved[Stage.COMPRESSION][0],
+        write_enabled=writable,
+        writes_through_parent=parent is not None,
+        missing_plugins=missing,
     )
-
-
-def _resolve_reshape(entry: Entry, registry: Registry) -> tuple[str, bool]:
-    """The entry's reshape as ``(usable id, writes back)``.
-
-    An id the registry no longer has degrades exactly as an unknown compression
-    does on a slice: the read falls back to pass-through — the bytes still open,
-    unreordered — and the entry goes view-only, because the entry *means* to be
-    reshaped and writing what is on screen would put unreordered bytes where
-    reordered ones belong the moment the plugin returns. A reshape that ships no
-    ``unshape`` is view-only the same way its stage siblings are.
-    """
-    try:
-        plugin = registry.plugin(Stage.RESHAPE, entry.reshape_id)
-    except KeyError:
-        return NO_RESHAPE, False
-    return entry.reshape_id, writes_back(plugin, "unshape")
 
 
 def reorders_bytes(entry: Entry, registry: Registry) -> bool:
@@ -896,14 +919,11 @@ def reorders_bytes(entry: Entry, registry: Registry) -> bool:
     does an Offset palette (``docs/design/palette-editing.md`` §2). A plugin the
     registry no longer has reads as plain bytes, which preserve positions.
     """
-    if _resolve_reshape(entry, registry)[0] != NO_RESHAPE:
+    if registry.resolve_stage(Stage.RESHAPE, entry.reshape_id)[0] != NO_RESHAPE:
         return True
-    try:
-        plugin = registry.plugin(
-            Stage.CONTAINER, container_id_for(registry, entry.container_id)
-        )
-    except KeyError:  # pragma: no cover - container_id_for already falls back
-        return False
+    plugin = registry.plugin(
+        Stage.CONTAINER, resolved_container_id(registry, entry.container_id)
+    )
     return not plugin.info.preserves_offsets
 
 
@@ -949,8 +969,9 @@ def _parent_view_bytes(
 
     - **A parent that reorders** (``reordered``, from :func:`reorders_bytes`).
       Then the file simply does not hold the bytes the slice's offset names,
-      dirty or not — so the buffer is read even when the parent is closed, since
-      falling back to disk would quietly hand back a scrambled region.
+      dirty or not — so the buffer is read even when the parent has no document
+      of its own (it is re-read for this), since falling back to disk would
+      quietly hand back a scrambled region.
     - **Unsaved pixel edits.** A dirty parent's live bytes are what the slice is a
       view of; the file still holds the old ones. A dirty *palette* doesn't
       qualify — it lives on the other pathway and in another file, so it says
@@ -962,14 +983,12 @@ def _parent_view_bytes(
     """
     if parent is None:
         return (None, 0)
-    if reordered:
-        data, base = entry_view_bytes(parent, registry, preset_id)
-        return (data, base) if entry.slice_offset >= base else (None, 0)
-    if parent.doc is not None and parent.pixel_dirty:
-        base = parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
-        if entry.slice_offset >= base:
-            return (parent.doc.pixel_data, base)
-    return (None, 0)
+    if not (reordered or (parent.doc is not None and parent.pixel_dirty)):
+        return (None, 0)
+    # Both cases want exactly what the parent's own view shows, which is the one
+    # definition of that; with a loaded document it costs no read.
+    data, base = entry_view_bytes(parent, registry, preset_id)
+    return (data, base) if entry.slice_offset >= base else (None, 0)
 
 
 def palette_source_for(entry: Entry) -> PaletteSource | None:
@@ -1046,10 +1065,21 @@ def palette_missing(entry: Entry) -> bool:
     return path is not None and not exists(path)
 
 
-def entry_reference_missing(entry: Entry) -> bool:
-    """Whether either file the entry references (its data or its palette) is
-    gone — the condition the files list flags with a warning highlight."""
-    return data_missing(entry) or palette_missing(entry)
+def path_is_palette_only(ws: Workspace, path: str) -> bool:
+    """Whether nothing in ``ws`` reads ``path`` as pixel data.
+
+    True for a file referenced only as a palette — an entry's external palette
+    source, or a registered ``.pal`` row. What tells the two kinds of missing
+    file apart when the user is being asked to find one: a palette file follows
+    the graphic that uses it and may never have been picked by hand, so being
+    asked for it by bare name reads as "which of my ROMs is this?".
+    """
+    key = Workspace._path_key(path)
+    return not any(
+        entry.kind is not EntryKind.PALETTE
+        and any(Workspace._path_key(p) == key for p in entry.paths)
+        for entry in ws.entries
+    )
 
 
 def entry_notices(entry: Entry) -> tuple[Notice, ...]:

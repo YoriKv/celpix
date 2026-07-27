@@ -14,6 +14,7 @@ from celpix.project.workspace import Entry, EntryKind
 from celpix.ui.main_window import MainWindow
 from celpix.ui.undo_commands import (
     AddEntryCommand,
+    PixelEditCommand,
     RemoveEntriesCommand,
     SliceEditCommand,
     SliceParams,
@@ -227,6 +228,94 @@ def test_slice_edit_round_trip(qtbot, tmp_path) -> None:
 
     window._undo_stack.undo()
     assert (sl.slice_offset, sl.slice_length, sl.name) == (0, 256, "sliceA")
+
+
+def test_slice_edits_and_parent_edits_compose_and_undo_together(
+    qtbot, tmp_path
+) -> None:
+    """A slice and its file are one set of bytes, so an edit through either
+    reaches the other as it lands — and undo takes it back out of both.
+
+    The regression this guards is the two buffers racing. Each edit is folded
+    into the file's buffer immediately, so an edit made *on* the file inside a
+    dirty slice's window composes on top instead of being reverted when that
+    slice's stale window is folded in behind it. And because the file carries
+    the unsaved state too, its revision has to travel through undo alongside the
+    slice's — otherwise undoing a slice edit leaves the file reading dirty for a
+    change that no longer exists anywhere.
+    """
+    window, path = _open(qtbot, tmp_path)
+    parent = window._workspace.current
+    original = bytes(parent.doc.pixel_data[0x100:0x180])
+    sl = window._workspace.add_slice(path, "gfx", 0x100, 0x80)
+
+    # An edit through the slice reaches the file, and dirties both.
+    window._workspace.set_current(sl)
+    window._push_command(
+        PixelEditCommand(
+            window, sl, "paint", regions=[(0x00, original[:0x10], b"\x5a" * 16)]
+        )
+    )
+    assert sl.pixel_dirty and parent.pixel_dirty
+    window._workspace.set_current(parent)
+    assert bytes(parent.doc.pixel_data[0x100:0x110]) == b"\x5a" * 16
+
+    # An edit on the file *inside* that slice's window composes with it rather
+    # than either one winning.
+    file_edit = [(0x120, original[0x20:0x30], b"\x3c" * 16)]
+    window._push_command(PixelEditCommand(window, parent, "paint", regions=file_edit))
+    window._workspace.set_current(sl)
+    assert bytes(sl.doc.pixel_data[0x00:0x10]) == b"\x5a" * 16  # the slice's own
+    assert bytes(sl.doc.pixel_data[0x20:0x30]) == b"\x3c" * 16  # the file's
+
+    # Undoing back past both takes the slice's edit out of the file's buffer
+    # too, and leaves neither reading dirty for it.
+    window._undo_stack.undo()
+    window._undo_stack.undo()
+    window._workspace.set_current(parent)
+    assert bytes(parent.doc.pixel_data[0x100:0x180]) == original
+    assert not sl.pixel_dirty and not parent.pixel_dirty
+
+
+def test_container_edit_round_trip(qtbot, tmp_path, monkeypatch) -> None:
+    """Edit File Container… is one undoable step covering all three of what the
+    dialog settles — the file list, the container and the reshape — and a
+    re-pointed file carries its slices in *both* directions: a child left on the
+    old path would no longer find its parent, and its offsets address the joined
+    buffer either way.
+    """
+    from celpix.plugins.base import NO_RESHAPE, RAW_CONTAINER
+    from celpix.ui.container_dialog import ContainerDialog, ContainerEdit
+
+    window, path = _open(qtbot, tmp_path)
+    second = tmp_path / "gfx2.bin"
+    second.write_bytes(bytes(range(256)) * 64)
+    entry = window._workspace.current
+    sl = window._workspace.add_slice(path, "sliceA", 0, 256)
+    steps = window._undo_stack.count()
+
+    joined = (path, str(second))
+    monkeypatch.setattr(
+        ContainerDialog,
+        "edit_container",
+        staticmethod(
+            lambda *_a, **_k: ContainerEdit(
+                RAW_CONTAINER, joined, "reshape.split-planes-2"
+            )
+        ),
+    )
+    window._change_container_for(entry)
+    assert window._undo_stack.count() == steps + 1
+    assert (entry.paths, entry.reshape_id) == (joined, "reshape.split-planes-2")
+    assert sl.paths == joined
+
+    window._undo_stack.undo()
+    assert (entry.paths, entry.reshape_id) == ((path,), NO_RESHAPE)
+    assert sl.paths == (path,)
+
+    window._undo_stack.redo()
+    assert (entry.paths, entry.reshape_id) == (joined, "reshape.split-planes-2")
+    assert sl.paths == joined
 
 
 def test_open_file_round_trip_and_reopen_dedupe(qtbot, tmp_path) -> None:

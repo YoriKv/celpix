@@ -1,7 +1,8 @@
-# Big-endian variant of BGR555 (SNES/GB CGRAM) — for big-endian palette data.
+# Big-endian variant of the BGR555 layout — for palette data stored big-endian.
+# The SNES CGRAM and GBC/GBA palette RAM are little-endian: that is the plain preset.
 # See docs/graphics-formats-reference/implementation-guide.md §4 (packed color formats).
 id = "preset.palette.bgr555-be"
-name = "BGR555 (SNES/GB CGRAM) (big-endian)"
+name = "BGR555 (big-endian)"
 engine_id = "codec.color-mask"
 
 [params]

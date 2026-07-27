@@ -57,7 +57,7 @@ def _fceux_state(*, pram: bytes = bytes(range(32)), compressed: bool = False) ->
 
 def test_fceux_reads_pram_from_the_ppu_section() -> None:
     pram = bytes(range(32))
-    fmt, region = emustate.locate_palette(_fceux_state(pram=pram), ".fc0")
+    fmt, region = emustate.locate_palette(_fceux_state(pram=pram))
     assert (fmt.id, fmt.console) == ("fceux", "NES")
     assert (region.count, region.preset_id) == (32, "preset.palette.nes-indexed")
     assert region.data == pram
@@ -65,9 +65,7 @@ def test_fceux_reads_pram_from_the_ppu_section() -> None:
 
 def test_fceux_decompresses_a_zlib_payload() -> None:
     pram = bytes(range(31, -1, -1))
-    _, region = emustate.locate_palette(
-        _fceux_state(pram=pram, compressed=True), ".fc0"
-    )
+    _, region = emustate.locate_palette(_fceux_state(pram=pram, compressed=True))
     assert region.data == pram
 
 
@@ -75,7 +73,7 @@ def test_fceux_without_pram_field_raises() -> None:
     payload = _fceux_section(3, _fceux_field(b"NTAR", b"\x00" * 0x800))
     state = b"FCSX" + _u32(len(payload)) + _u32(0) + _u32(0xFFFFFFFF) + payload
     with pytest.raises(emustate.StateError, match="PRAM"):
-        emustate.locate_palette(state, ".fc0")
+        emustate.locate_palette(state)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +99,7 @@ def _snes9x_state(
 
 def test_snes9x_reads_cgdata_at_offset_64_for_v11plus() -> None:
     cgram = bytes(range(256)) * 2  # 512 distinct-ish bytes
-    fmt, region = emustate.locate_palette(_snes9x_state(cgram=cgram), ".000")
+    fmt, region = emustate.locate_palette(_snes9x_state(cgram=cgram))
     assert (fmt.id, fmt.console) == ("snes9x", "SNES")
     # Big-endian CGRAM decodes through the big-endian BGR555 preset, not the plain one.
     assert (region.count, region.preset_id) == (256, "preset.palette.bgr555-be")
@@ -111,23 +109,21 @@ def test_snes9x_reads_cgdata_at_offset_64_for_v11plus() -> None:
 def test_snes9x_cgdata_offset_is_63_before_v11() -> None:
     cgram = b"\xab" * 512
     _, region = emustate.locate_palette(
-        _snes9x_state(cgram=cgram, version=10, offset=63), ".000"
+        _snes9x_state(cgram=cgram, version=10, offset=63)
     )
     assert region.data == cgram
 
 
 def test_snes9x_reads_an_uncompressed_state() -> None:
     cgram = b"\xcd" * 512
-    _, region = emustate.locate_palette(
-        _snes9x_state(cgram=cgram, gzipped=False), ".000"
-    )
+    _, region = emustate.locate_palette(_snes9x_state(cgram=cgram, gzipped=False))
     assert region.data == cgram
 
 
 def test_snes9x_without_ppu_block_raises() -> None:
     raw = b"#!s9xsnp:0012\n" + _snes9x_block(b"CPU", b"\x00" * 5)
     with pytest.raises(emustate.StateError, match="PPU"):
-        emustate.locate_palette(gzip.compress(raw), ".000")
+        emustate.locate_palette(gzip.compress(raw))
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +171,7 @@ def _mesen_state(
 def test_mesen_snes_reads_cgram_by_label() -> None:
     cgram = _cgram_bytes(_CGRAM_COLORS)
     records = _mesen_records((b"ppu.vramaddress", b"\x00\x00"), (b"ppu.cgram", cgram))
-    fmt, region = emustate.locate_palette(_mesen_state(records=records), ".mss")
+    fmt, region = emustate.locate_palette(_mesen_state(records=records))
     assert (fmt.id, fmt.console) == ("mesen", "NES / SNES / Game Boy Color")
     assert (region.count, region.preset_id) == (256, "preset.palette.bgr555")
     assert region.data == cgram
@@ -184,9 +180,7 @@ def test_mesen_snes_reads_cgram_by_label() -> None:
 def test_mesen_nes_reads_palette_ram() -> None:
     pram = bytes(range(32))
     records = _mesen_records((b"ppu.paletteRam", pram))
-    _, region = emustate.locate_palette(
-        _mesen_state(console=2, records=records), ".mss"
-    )
+    _, region = emustate.locate_palette(_mesen_state(console=2, records=records))
     assert (region.count, region.preset_id) == (32, "preset.palette.nes-indexed")
     assert region.data == pram
 
@@ -195,9 +189,7 @@ def test_mesen_gbc_concatenates_bg_then_object_palettes() -> None:
     bg = bytes(range(64))
     obj = bytes(range(64, 128))
     records = _mesen_records((b"ppu.cgbBgPalettes", bg), (b"ppu.cgbObjPalettes", obj))
-    _, region = emustate.locate_palette(
-        _mesen_state(console=1, records=records), ".mss"
-    )
+    _, region = emustate.locate_palette(_mesen_state(console=1, records=records))
     assert (region.count, region.preset_id) == (64, "preset.palette.bgr555")
     assert region.data == bg + obj
 
@@ -207,14 +199,14 @@ def test_mesen_dmg_state_without_color_records_raises() -> None:
     # the DMG signal and must surface as a clear "GBC only" error.
     records = _mesen_records((b"ppu.bgPalette", b"\xe4"))
     with pytest.raises(emustate.StateError, match="Game Boy Color"):
-        emustate.locate_palette(_mesen_state(console=1, records=records), ".mss")
+        emustate.locate_palette(_mesen_state(console=1, records=records))
 
 
 def test_mesen_handles_uncompressed_blob_and_legacy_header() -> None:
     cgram = _cgram_bytes(_CGRAM_COLORS)
     records = _mesen_records((b"ppu.cgram", cgram))
     _, region = emustate.locate_palette(
-        _mesen_state(format_version=2, records=records, compressed=False), ".mss"
+        _mesen_state(format_version=2, records=records, compressed=False)
     )
     assert region.data == cgram
 
@@ -222,7 +214,7 @@ def test_mesen_handles_uncompressed_blob_and_legacy_header() -> None:
 def test_mesen_unsupported_console_names_itself() -> None:
     records = _mesen_records((b"ppu.cgram", _cgram_bytes(_CGRAM_COLORS)))
     with pytest.raises(emustate.StateError, match="GBA"):
-        emustate.locate_palette(_mesen_state(console=5, records=records), ".mss")
+        emustate.locate_palette(_mesen_state(console=5, records=records))
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +234,7 @@ def test_gpgx_expands_packed_cram_to_the_spaced_genesis_layout() -> None:
     packed = struct.pack(
         "<64H", 0b000_000_111, 0b000_111_000, 0b111_000_000, *([0] * 61)
     )
-    fmt, region = emustate.locate_palette(_gpgx_state(packed_cram=packed), ".gp0")
+    fmt, region = emustate.locate_palette(_gpgx_state(packed_cram=packed))
     assert (fmt.id, fmt.console) == ("gpgx", "Genesis")
     assert (region.count, region.preset_id) == (64, "preset.palette.genesis-9bpp")
     # R=7 → 0x000E; G=7 → 0x00E0; B=7 → 0x0E00, each big-endian.
@@ -251,16 +243,14 @@ def test_gpgx_expands_packed_cram_to_the_spaced_genesis_layout() -> None:
 
 def test_gpgx_reads_an_uncompressed_state() -> None:
     packed = b"\x00" * 128
-    _, region = emustate.locate_palette(
-        _gpgx_state(packed_cram=packed, gzipped=False), ".gp0"
-    )
+    _, region = emustate.locate_palette(_gpgx_state(packed_cram=packed, gzipped=False))
     assert region.data == b"\x00" * 128
 
 
 def test_gpgx_too_short_for_mega_drive_cram_raises() -> None:
     short = gzip.compress(b"GENPLUS-GX 1.7.6" + b"\x00" * 16)
     with pytest.raises(emustate.StateError, match="Mega Drive"):
-        emustate.locate_palette(short, ".gp0")
+        emustate.locate_palette(short)
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +280,7 @@ def _bess_state(*, bg: bytes | None, obj: bytes | None) -> bytes:
 def test_bess_reads_palettes_via_the_core_block_pointers() -> None:
     bg = bytes(range(0x40))
     obj = bytes(range(0x40, 0x80))
-    fmt, region = emustate.locate_palette(_bess_state(bg=bg, obj=obj), ".sav")
+    fmt, region = emustate.locate_palette(_bess_state(bg=bg, obj=obj))
     assert (fmt.id, fmt.console) == ("bess", "Game Boy Color")
     assert (region.count, region.preset_id) == (64, "preset.palette.bgr555")
     assert region.data == bg + obj
@@ -298,7 +288,7 @@ def test_bess_reads_palettes_via_the_core_block_pointers() -> None:
 
 def test_bess_dmg_state_with_zero_sized_palettes_raises() -> None:
     with pytest.raises(emustate.StateError, match="Game Boy Color"):
-        emustate.locate_palette(_bess_state(bg=None, obj=None), ".sav")
+        emustate.locate_palette(_bess_state(bg=None, obj=None))
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +309,7 @@ def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
 
 def test_mgba_reads_pram_from_a_raw_struct() -> None:
     pram = bytes(i & 0xFF for i in range(1024))
-    fmt, region = emustate.locate_palette(_mgba_struct(pram=pram), ".ss0")
+    fmt, region = emustate.locate_palette(_mgba_struct(pram=pram))
     assert (fmt.id, fmt.console) == ("mgba", "Game Boy Advance")
     assert (region.count, region.preset_id) == (512, "preset.palette.bgr555")
     assert region.data == pram
@@ -334,14 +324,14 @@ def test_mgba_reads_pram_from_a_png_wrapped_state() -> None:
         + _png_chunk(b"gbAs", zlib.compress(struct_bytes))
         + _png_chunk(b"IEND", b"")
     )
-    _, region = emustate.locate_palette(png, ".ss0")
+    _, region = emustate.locate_palette(png)
     assert region.data == pram
 
 
 def test_mgba_ignores_a_png_that_is_not_a_state() -> None:
     png = _PNG_SIG + _png_chunk(b"IHDR", b"\x00" * 13) + _png_chunk(b"IEND", b"")
     with pytest.raises(emustate.StateError, match="Unrecognised"):
-        emustate.locate_palette(png, ".png")
+        emustate.locate_palette(png)
 
 
 # ---------------------------------------------------------------------------
@@ -351,11 +341,11 @@ def test_mgba_ignores_a_png_that_is_not_a_state() -> None:
 
 def test_unrecognised_state_raises() -> None:
     with pytest.raises(emustate.StateError, match="Unrecognised"):
-        emustate.locate_palette(b"not a save state", ".bin")
+        emustate.locate_palette(b"not a save state")
 
 
 def test_detection_is_content_not_extension() -> None:
     # A correct FCEUX state under a wrong (SNES-ish) extension still resolves by
     # its "FCSX" magic — extensions are never consulted.
-    fmt, _ = emustate.locate_palette(_fceux_state(), ".000")
+    fmt, _ = emustate.locate_palette(_fceux_state())
     assert fmt.id == "fceux"

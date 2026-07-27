@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
@@ -9,10 +11,12 @@ from celpix.core.context import (
     PipelineContext,
 )
 from celpix.core.document import Document
+from celpix.core.errors import PipelineError, Stage
+from celpix.core.notices import notices
 from celpix.core.palette import Palette
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import FileRef
+from celpix.plugins.base import NO_COMPRESSION, RAW_CONTAINER, FileRef
 from celpix.plugins.registry import default_registry
 from celpix.project.workspace import (
     Entry,
@@ -27,6 +31,7 @@ from celpix.project.workspace import (
     exportable_entries,
     missing_paths,
     palette_source_for,
+    path_is_palette_only,
     pixel_config_for,
     relocate_path,
     reorders_bytes,
@@ -184,17 +189,19 @@ def test_slice_of_dirty_parent_reads_the_unsaved_bytes_past_a_header(tmp_path) -
     assert pipeline.load_pixel_data(cfg, reg).data == bytes(range(0x20, 0x30))
 
 
-def test_slice_of_a_permuting_parent_reads_its_buffer_and_cannot_write(
+def test_slice_of_a_permuting_parent_reads_its_buffer_and_writes_through_it(
     tmp_path,
 ) -> None:
     """A parent whose container *reorders* bytes makes its offsets positions in
     the deinterleaved ROM, not in the file — so a slice has to read through the
-    parent's buffer, closed parent or not, and must not write.
+    parent's buffer, closed parent or not, and its write has to go back the same
+    way.
 
     Reading the file instead is silently wrong (a scrambled region that still
-    looks like tiles), and writing there is worse: the splice lands on bytes the
-    offset never named. Both were reachable before the parent's reordering was
-    declared.
+    looks like tiles), and depositing there is worse: the splice lands on bytes
+    the offset never named. So the slice stays writable but is flagged
+    ``writes_through_parent``, and the pipeline refuses to deposit it itself —
+    a `save` that quietly wrote it to `dest` is the regression to fear.
     """
     reg = default_registry()
     # .smd: 512-byte header, then a 16 KB block holding all the odd bytes and
@@ -217,8 +224,14 @@ def test_slice_of_a_permuting_parent_reads_its_buffer_and_cannot_write(
     assert cfg.source.data is not None
     assert cfg.source.data_base == 512
     assert pipeline.load_pixel_data(cfg, reg).data[:2] == b"\x22\x11"
-    # No file offset for a permuted splice to land on.
-    assert cfg.write_enabled is False
+    # Writable, but not by depositing at `dest` — the host has to route it
+    # through the parent, and the pipeline says so rather than guessing.
+    assert (cfg.write_enabled, cfg.writes_through_parent) == (True, True)
+    doc = _fake_doc()
+    doc.pixel_config = cfg
+    with pytest.raises(PipelineError):
+        pipeline.save(doc, reg, palette=False)
+    assert smd.read_bytes()[512:514] == bytes(body[:2])  # nothing was written
 
 
 def test_invalidate_path_spares_the_saver_and_dirty_siblings(tmp_path) -> None:
@@ -320,6 +333,14 @@ def test_missing_paths_dedupes_shared_rom_and_includes_palette(tmp_path) -> None
 
     # The shared ROM collapses to a single worklist item; the palette is unioned in.
     assert missing_paths(ws) == [rom, pal]
+
+    # And the two are told apart by what reads them: the ROM is pixel data, the
+    # .pal is only ever a palette, so the prompts can name which is which.
+    assert not path_is_palette_only(ws, rom)
+    assert path_is_palette_only(ws, pal)
+    # A .pal registered as its own row is still a palette file, not pixel data.
+    ws.add_palette(pal, "preset.palette.bgr555")
+    assert path_is_palette_only(ws, pal)
 
 
 def test_relocate_path_repoints_shared_rom_and_palette_sources(tmp_path) -> None:
@@ -706,3 +727,49 @@ def test_can_move_file_counts_only_files(tmp_path) -> None:
     other = ws.open_file(str(tmp_path / "other.sfc"))
     assert ws.can_move_file(rom, 1)
     assert ws.can_move_file(other, -1)
+
+
+def test_a_missing_plugin_opens_view_only_and_names_itself(tmp_path) -> None:
+    """A stored plugin this build hasn't got degrades to the pass-through so the
+    file still opens, but the entry is view-only and says which plugin is gone.
+
+    The pair matters together: degrading silently would leave the user with a
+    file that looks wrong and a greyed-out Write with no reason given, and
+    letting the save through would put untransformed bytes back over the real
+    ones — for a compressed slice, raw bytes over the compressed structure.
+    Choosing a plugin the registry *does* have clears both, with nothing to
+    reset: the config is rebuilt from the entry's id.
+    """
+    reg = default_registry()
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(256))
+    ws = Workspace()
+    entry = ws.open_file(str(rom))
+    entry.container_id = "container.not-installed"
+
+    cfg = pixel_config_for(entry, "preset.pixel.snes-4bpp", reg)
+    assert cfg.container_id == RAW_CONTAINER  # it still opens, as plain bytes
+    assert cfg.write_enabled is False
+    assert cfg.missing_plugins == ((Stage.CONTAINER, "container.not-installed"),)
+
+    # The load is what reaches the user, so the notice rides the read's context.
+    reported = notices(pipeline.load_pixel_data(cfg, reg).ctx)
+    assert [n.summary for n in reported] == ["Missing plugin: container.not-installed"]
+    assert reported[0].is_warning
+
+    # Same rule on the slice's own stage, where saving through the pass-through
+    # would write raw bytes over a compressed structure.
+    sliced = ws.add_slice(str(rom), "gfx", 0x10, 0x40, "compression.not-installed")
+    slice_cfg = pixel_config_for(sliced, "preset.pixel.snes-4bpp", reg, ws)
+    assert slice_cfg.compression_id == NO_COMPRESSION
+    assert slice_cfg.write_enabled is False
+    assert slice_cfg.missing_plugins == (
+        (Stage.COMPRESSION, "compression.not-installed"),
+    )
+
+    # Pointing either at a plugin that exists makes the entry whole again.
+    entry.container_id = RAW_CONTAINER
+    healed = pixel_config_for(entry, "preset.pixel.snes-4bpp", reg)
+    assert healed.write_enabled is True
+    assert healed.missing_plugins == ()
+    assert notices(pipeline.load_pixel_data(healed, reg).ctx) == ()

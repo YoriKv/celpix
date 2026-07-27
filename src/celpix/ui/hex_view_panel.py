@@ -84,8 +84,14 @@ def hex_rows(
     hi_start, hi_end = (
         (highlight[0], highlight[0] + highlight[1]) if highlight else (0, 0)
     )
+    # Addresses first: they are right-justified to the widest one, and building
+    # every row twice to discover that width is a whole extra pass over a dump
+    # the view rebuilds on each offset move.
+    starts = list(range(region_start, region_end, per_row))
+    addresses = [addr_of(base) for base in starts]
+    width = max((len(address) for address in addresses), default=0)
     rows: list[HexRow] = []
-    for base in range(region_start, region_end, per_row):
+    for address, base in zip(addresses, starts):
         cells: list[str] = []
         chars: list[str] = []
         for col in range(per_row):
@@ -104,15 +110,8 @@ def hex_rows(
             hi_from, hi_to = lo - base, hi - base
         else:
             hi_from, hi_to = None, 0
-        rows.append(HexRow(addr_of(base), cells, "".join(chars), hi_from, hi_to))
-
-    width = max((len(row.address) for row in rows), default=0)
-    return [
-        HexRow(
-            row.address.rjust(width), row.hex_cells, row.ascii, row.hi_from, row.hi_to
-        )
-        for row in rows
-    ]
+        rows.append(HexRow(address.rjust(width), cells, "".join(chars), hi_from, hi_to))
+    return rows
 
 
 class HexViewPanel(QWidget):

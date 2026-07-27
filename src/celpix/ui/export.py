@@ -54,7 +54,7 @@ def document_image(doc: Document, registry: Registry) -> QImage:
         view.two_dimensional,
         None,
     )
-    if getattr(grid, "bytes_per_pixel", 1) == 4:
+    if grid.bytes_per_pixel == 4:
         # Direct-color: no palette; the ARGB carries its own alpha.
         return render_bridge.render(grid, doc.palette)
     index_space = min(

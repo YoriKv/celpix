@@ -1,12 +1,12 @@
 """Indexed color codec — a fixed hardware palette (NES, EGA, MSX).
 
-Where the console's "color" is really an index into fixed silicon colors, a
-palette entry is one byte selecting an ARGB from a precomputed table
-(``docs/graphics-formats-reference/implementation-guide.md`` §4, indexed palettes).
-Decode is a table lookup; encode is **nearest entry by Manhattan RGB distance**
-(the table has no inverse — several slots can share a color). The table is the
-preset's data (``colors`` = a list of ``0xRRGGBB``), so a new fixed palette is a
-data file, not code.
+Where a console's "color" is really an index into fixed silicon colors, a palette
+entry is one byte selecting an ARGB from a precomputed table
+(``docs/graphics-formats-reference/implementation-guide.md`` §4, indexed
+palettes). Decode is a table lookup; encode is **nearest entry by Manhattan RGB
+distance**, the table having no inverse since several slots can share a color.
+The table is the preset's data (``colors``, a list of ``0xRRGGBB``), so a new
+fixed palette is a data file.
 """
 
 from __future__ import annotations
@@ -50,8 +50,10 @@ class IndexedColorCodec:
         return bytes(self._nearest(table, argb) for argb in palette.colors)
 
     def bytes_per_entry(self, params: dict[str, Any]) -> int:
-        # Always one byte in practice; the param keeps the preset self-contained.
-        return int(params.get("bytes_per_entry", 1))
+        # Always one byte: an entry *is* an index into the master table, and both
+        # directions walk the data a byte at a time. A preset declaring anything
+        # else would be silently mis-read, so the size is not a parameter.
+        return 1
 
     @staticmethod
     def _nearest(table: list[int], argb: int) -> int:

@@ -1,11 +1,11 @@
 # Big-endian variant of BGR555 direct (8x8) — for big-endian ROM data (e.g. N64).
 # See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
+# 15 significant bits in a 2-byte pixel.
 id = "preset.pixel.dc-bgr555-be"
 name = "Direct BGR555 (8x8, big-endian)"
 engine_id = "codec.direct-color"
 
 [params]
-bpp = 15
 bytes_per_pixel = 2
 byte_order = "big"
 

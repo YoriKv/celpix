@@ -1,17 +1,18 @@
 """Wide / odd-tile pixel codecs (16-wide tiles with bespoke intra-tile layouts).
 
-These tiles are 16 pixels wide and/or a non-power-of-two height, so each row is two
-8-pixel halves with format-specific byte placement — no *preset* over the 8×8 planar
-engine expresses that walk (``docs/graphics-formats-reference/implementation-guide.md``
-§2, odd/wide-tile formats). Every tile's bytes are still **contiguous**, so they slot
-into the deferred windowed view like any other codec; only the intra-tile walk is
-custom, and each half-row still goes through the shared planar kernel
-(:func:`~celpix.plugins.builtins._bits.expand_row` / :func:`.pack_row`) rather than
-its own bit loop.
+These tiles are 16 pixels wide and/or a non-power-of-two height, so each row is
+two 8-pixel halves with format-specific byte placement that no *preset* over the
+8×8 planar engine expresses
+(``docs/graphics-formats-reference/implementation-guide.md`` §2, odd/wide-tile
+formats). Every tile's bytes are still **contiguous**, so these slot into the
+deferred windowed view like any other codec; only the intra-tile walk is custom,
+each half-row going through the shared planar kernel
+(:func:`~celpix.plugins.builtins._bits.expand_row` / :func:`.pack_row`) rather
+than its own bit loop.
 
-That kernel is applied a row at a time here, not over the whole buffer as the 8×8
-engines do: a plane's bytes sit at offsets these formats each choose differently,
-so there is no single stride to gather every tile's copy of one byte along.
+That kernel runs a row at a time here rather than over the whole buffer as the 8×8
+engines do: each of these formats places a plane's bytes differently, so there is
+no single stride to gather every tile's copy of one byte along.
 
 Covered: 1bpp 16×16 / 16×12 (FF5) / 16×11 (FF6); PCE 2bpp 16×16; PCE SG 4bpp 16×16.
 """

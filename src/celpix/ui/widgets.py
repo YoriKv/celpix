@@ -5,9 +5,13 @@ Qt lives here (this is the ``ui`` layer); the model stays Qt-free.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from enum import Enum
+from pathlib import Path
 from typing import TypeVar
 
 from PySide6.QtCore import (
@@ -18,11 +22,14 @@ from PySide6.QtCore import (
     QSettings,
     QSize,
     Qt,
+    QUrl,
     Signal,
 )
 from PySide6.QtGui import (
     QColor,
+    QDesktopServices,
     QIcon,
+    QImage,
     QKeySequence,
     QPainter,
     QPen,
@@ -32,6 +39,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -117,6 +125,68 @@ def select_combo_data(combo: QComboBox, data: object) -> None:
             combo.setCurrentIndex(index)
 
 
+def ask_save_path(
+    parent: QWidget, title: str, default: str, file_filter: str, suffix: str
+) -> str | None:
+    """A Save-As dialog whose answer always carries ``suffix``.
+
+    ``None`` when the user cancels. The suffix is appended rather than assumed,
+    because a typed name without one is the common case and every export here
+    writes exactly one format — so the extension is not the user's decision to
+    forget. One helper so no export path silently omits it.
+    """
+    path, _ = QFileDialog.getSaveFileName(parent, title, default, file_filter)
+    if not path:
+        return None
+    return path if path.lower().endswith(suffix.lower()) else path + suffix
+
+
+def show_in_file_manager(path: str) -> bool:
+    """Reveal ``path`` in the desktop's file manager; False if that failed.
+
+    Windows Explorer and macOS Finder can both *select* the file, which is what
+    the gesture is really for - "where did this come from" answered without
+    reading a path out of a tooltip. Elsewhere there is no portable select (it
+    needs the ``org.freedesktop.FileManager1`` D-Bus service, which plenty of
+    sessions don't run), so the containing folder is opened instead. Same
+    fallback when the launch itself fails - a stripped container may have no
+    ``explorer.exe`` on PATH, and under WSL the Windows binaries may be off.
+    """
+    target = Path(path)
+    folder = target.parent
+    if target.exists():
+        # One comma-joined argument: explorer parses "/select,<path>" as a unit
+        # and ignores a path passed separately. Native separators too - it opens
+        # the user's home rather than the folder for a forward-slash path.
+        if sys.platform == "win32" and _spawn(
+            ["explorer", f"/select,{os.path.normpath(target)}"]
+        ):
+            return True
+        if sys.platform == "darwin" and _spawn(["open", "-R", str(target)]):
+            return True
+    if not folder.is_dir():
+        return False
+    return QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+
+def _spawn(argv: list[str]) -> bool:
+    """Start ``argv`` detached, False if the program isn't there.
+
+    Detached because the file manager outlives us, and we never read back from
+    it: a ``Popen`` we don't wait on would otherwise leave a zombie.
+    """
+    try:
+        subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def add_labelled(layout, text: str, widget: QWidget, tooltip: str) -> QLabel:
     """Add ``text`` then ``widget`` to ``layout``, tooltipping *both*.
 
@@ -138,7 +208,62 @@ def add_labelled(layout, text: str, widget: QWidget, tooltip: str) -> QLabel:
     return label
 
 
-def paint_selection_outline(painter: QPainter, rect: QRect) -> None:
+def fill_stage_combo(combo: QComboBox, plugins, selected: str) -> None:
+    """Fill ``combo`` with a stage's plugins by name, and select ``selected``.
+
+    Every picker over a stage is the same two steps — list the registered
+    plugins, snap to the stored id — and the snap has to survive an id the
+    registry no longer has (:func:`select_combo_data`).
+    """
+    for plugin in plugins:
+        combo.addItem(plugin.info.name, plugin.info.id)
+    select_combo_data(combo, selected)
+
+
+def icon_cache_key(widget: QWidget) -> tuple[int, float]:
+    """What a widget's baked icons depend on: the theme, and the device scale.
+
+    Both arrive as a ``changeEvent`` storm — Qt sends a burst of PaletteChange on
+    startup and again on every theme switch — so every panel that rasterizes its
+    own glyphs guards the re-bake on this rather than re-doing it per event.
+    """
+    return (widget.palette().cacheKey(), widget.devicePixelRatioF())
+
+
+def tinted_glyph(source: QImage, color: QColor, box: QSize, ratio: float) -> QPixmap:
+    """``source`` recolored to ``color``, fitted and centred in a ``box`` square.
+
+    The bundled glyphs ship as solid silhouettes cropped to their opaque bounds;
+    SourceIn keeps only the alpha and stamps the tint through, so one piece of
+    art tracks the theme in light and dark. Rasterized at ``ratio`` and stamped
+    with it, so a scaled display gets crisp edges rather than a stretched 1x
+    bitmap, and the pixmap still measures ``box`` in layout units. Centred
+    because a glyph is rarely square.
+    """
+    tinted = source.convertToFormat(QImage.Format.Format_ARGB32)
+    tinting = QPainter(tinted)
+    tinting.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    tinting.fillRect(tinted.rect(), color)
+    tinting.end()
+    box_w, box_h = round(box.width() * ratio), round(box.height() * ratio)
+    scaled = QPixmap.fromImage(tinted).scaled(
+        box_w,
+        box_h,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    canvas = QPixmap(box_w, box_h)
+    canvas.fill(Qt.GlobalColor.transparent)
+    placing = QPainter(canvas)
+    placing.drawPixmap(
+        (box_w - scaled.width()) // 2, (box_h - scaled.height()) // 2, scaled
+    )
+    placing.end()
+    canvas.setDevicePixelRatio(ratio)
+    return canvas
+
+
+def paint_selection_outline(painter: QPainter, rect: QRect, alpha: int = 255) -> None:
     """The app's shared selection outline: a white ring over a black one.
 
     One outline language for every "this is the active thing" highlight (the
@@ -146,16 +271,17 @@ def paint_selection_outline(painter: QPainter, rect: QRect) -> None:
     layers rather than one line: whichever color the art under the edge happens
     to be, the other layer still shows, so the outline never disappears into it.
     Both are fixed colors — the highlight stays put whatever the theme is and
-    wherever focus is, because the selection is the state, not the focus.
+    wherever focus is, because the selection is the state, not the focus;
+    ``alpha`` softens both layers together where the ring sits over small art.
 
     The white layer sits flush on the selected area's boundary and the black one
     just inside it, so the whole 2px band lands *within* ``rect``: an aliased
     ``drawRect`` renders one pixel past its path, hence the -1 insets.
     """
     painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.setPen(QPen(QColor(255, 255, 255), 1))
+    painter.setPen(QPen(QColor(255, 255, 255, alpha), 1))
     painter.drawRect(rect.adjusted(0, 0, -1, -1))
-    painter.setPen(QPen(QColor(0, 0, 0), 1))
+    painter.setPen(QPen(QColor(0, 0, 0, alpha), 1))
     painter.drawRect(rect.adjusted(1, 1, -2, -2))
 
 

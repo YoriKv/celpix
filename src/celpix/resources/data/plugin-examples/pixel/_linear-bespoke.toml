@@ -1,0 +1,14 @@
+# Example preset for the `codec.linear-bespoke` engine. Copy, drop the
+# underscore, edit, press F5. See _planar.toml for what a preset is.
+id = "preset.pixel.example-linear-bespoke"
+name = "Example bespoke linear 3bpp"
+
+# codec.linear-bespoke covers the two linear depths that do not divide 8, so
+# their fields straddle byte boundaries: at 3bpp a row is three bytes with pixels
+# spanning them, at 6bpp six bytes read in reversed byte order. Both packings are
+# hard-coded, so `bpp` is the only knob and takes only 3 or 6 — for 1/2/4/8bpp
+# use _packed.toml.
+engine_id = "codec.linear-bespoke"
+
+[params]
+bpp = 3        # 3 or 6

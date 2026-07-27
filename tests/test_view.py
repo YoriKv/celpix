@@ -95,32 +95,32 @@ def test_window_bytes_zero_pads_a_trailing_partial_tile() -> None:
     assert doc.window_bytes(8, 2) == bytes(range(32, 37)) + bytes(3)
 
 
-def test_clamp_offset_stops_at_the_last_full_page() -> None:
+def test_clamp_tile_offset_stops_at_the_last_full_page() -> None:
     doc = _doc(100)
     # 4 cols x 4 rows = 16-tile page; last valid top-left is 100 - 16 = 84.
-    assert doc.clamp_offset(0, 4, 4) == 0
-    assert doc.clamp_offset(84, 4, 4) == 84
-    assert doc.clamp_offset(999, 4, 4) == 84
-    assert doc.clamp_offset(-5, 4, 4) == 0
+    assert doc.clamp_tile_offset(0, 4, 4) == 0
+    assert doc.clamp_tile_offset(84, 4, 4) == 84
+    assert doc.clamp_tile_offset(999, 4, 4) == 84
+    assert doc.clamp_tile_offset(-5, 4, 4) == 0
 
 
-def test_clamp_offset_keeps_the_last_page_on_a_row_boundary() -> None:
+def test_clamp_tile_offset_keeps_the_last_page_on_a_row_boundary() -> None:
     doc = _doc(103)  # 25 rows of 4 tiles + a partial row of 3
     # The exact bound (103 - 16 = 87) would start the last page three tiles into
     # a row, sliding every column across — and under the 2D walk re-cutting the
     # whole window from a mid-stripe origin. It rounds up to the row instead.
-    assert doc.clamp_offset(999, 4, 4) == 88
+    assert doc.clamp_tile_offset(999, 4, 4) == 88
     # Rounding up never scrolls into all-blank space: the last row still holds
     # tiles (88 + 15 rows... the 4th row of the page starts at tile 100 < 103).
-    assert doc.clamp_offset(999, 4, 4) + 3 * 4 < doc.tile_count
+    assert doc.clamp_tile_offset(999, 4, 4) + 3 * 4 < doc.tile_count
     # Byte-space moves land on the same page.
     assert doc.clamp_byte_position(10**6, 4, 4) == (88, 0)
 
 
-def test_clamp_offset_small_file_pins_to_zero() -> None:
+def test_clamp_tile_offset_small_file_pins_to_zero() -> None:
     doc = _doc(10)
     # A window bigger than the file can only sit at the top.
-    assert doc.clamp_offset(5, 8, 8) == 0
+    assert doc.clamp_tile_offset(5, 8, 8) == 0
 
 
 def test_window_bytes_nudge_shifts_the_grid_and_pads_the_tail() -> None:
@@ -132,8 +132,8 @@ def test_window_bytes_nudge_shifts_the_grid_and_pads_the_tail() -> None:
     assert doc.window_bytes(8, 5, nudge=1) == bytes(range(33, 40)) + bytes(1)
 
 
-def test_clamp_offset_accounts_for_the_nudge() -> None:
+def test_clamp_tile_offset_accounts_for_the_nudge() -> None:
     doc = _doc(100)
     # The nudged grid's trailing partial tile still counts (it renders padded):
     # 100 usable tiles, last top-left 100 - 16.
-    assert doc.clamp_offset(999, 4, 4, nudge=1) == 84
+    assert doc.clamp_tile_offset(999, 4, 4, nudge=1) == 84

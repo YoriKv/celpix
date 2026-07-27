@@ -31,7 +31,7 @@ in one 256-entry block.
 from __future__ import annotations
 
 from PySide6.QtCore import QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen
+from PySide6.QtGui import QColor, QKeySequence, QPainter
 from PySide6.QtWidgets import QWidget
 
 from celpix.core import ceil_div
@@ -43,7 +43,7 @@ SWATCH_COLUMNS = 16
 
 
 class PalettePanel(QWidget):
-    subpalette_clicked = Signal(int)  # clicked entry index // subpalette size
+    subpalette_row_selected = Signal(int)  # clicked entry index // subpalette size
     color_selected = Signal(int)  # entry index of the newly selected color
     edit_requested = Signal(int)  # double-clicked entry index — open the editor
     # ARGB sampled while the eyedropper is armed. ``object``, not ``int``: Qt's
@@ -115,7 +115,7 @@ class PalettePanel(QWidget):
         # last color — dragging off the end selects the end.
         return min(row * SWATCH_COLUMNS + col, len(self._colors) - 1)
 
-    def set_palette(self, colors: list[int]) -> None:
+    def set_colors(self, colors: list[int]) -> None:
         # Called on every view refresh, including pure navigation where the
         # palette hasn't changed — skip the copy and repaint then.
         if colors == self._colors:
@@ -145,12 +145,12 @@ class PalettePanel(QWidget):
 
         The programmatic equivalent of clicking a swatch — used by the pixel
         eyedropper to make the picked color the active drawing color. Emits the
-        same ``color_selected`` / ``subpalette_clicked`` signals a click does, so
+        same ``color_selected`` / ``subpalette_row_selected`` signals a click does, so
         the readout and the view follow. Ignored for an out-of-range index.
         """
         if 0 <= index < len(self._colors):
             self._select(index)
-            self.subpalette_clicked.emit(index // self._count)
+            self.subpalette_row_selected.emit(index // self._count)
 
     def _select(self, index: int) -> None:
         if index != self._selected:
@@ -187,7 +187,7 @@ class PalettePanel(QWidget):
                     event.accept()
                     return
                 self._select(index)
-                self.subpalette_clicked.emit(index // self._count)
+                self.subpalette_row_selected.emit(index // self._count)
         elif event.button() == Qt.MouseButton.RightButton and not self._eyedropper:
             # Move the selection (and the active subpalette with it) onto the
             # right-clicked swatch, so the menu that follows acts on it — the
@@ -195,7 +195,7 @@ class PalettePanel(QWidget):
             index = self._index_at(event.position().x(), event.position().y())
             if index is not None and index != self._selected:
                 self._select(index)
-                self.subpalette_clicked.emit(index // self._count)
+                self.subpalette_row_selected.emit(index // self._count)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
@@ -213,12 +213,12 @@ class PalettePanel(QWidget):
         index = self._index_near(event.position().x(), event.position().y())
         if index is not None and index != self._selected:
             self._select(index)
-            self.subpalette_clicked.emit(index // self._count)
+            self.subpalette_row_selected.emit(index // self._count)
         event.accept()
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        """Double-click opens the color editor on that entry (the Tile
-        Molester idiom — see ``docs/design-reference/palette-workflow.md``)."""
+        """Double-click opens the color editor on that entry — the established
+        idiom for a swatch grid (``docs/design-reference/palette-workflow.md``)."""
         if event.button() == Qt.MouseButton.LeftButton and not self._eyedropper:
             index = self._index_at(event.position().x(), event.position().y())
             if index is not None:
@@ -291,7 +291,7 @@ class PalettePanel(QWidget):
             return
         target = min(max(0, target), len(self._colors) - 1)
         self._select(target)
-        self.subpalette_clicked.emit(target // self._count)
+        self.subpalette_row_selected.emit(target // self._count)
         event.accept()
 
     def paintEvent(self, event) -> None:  # noqa: ARG002 — Qt supplies the event
@@ -302,16 +302,20 @@ class PalettePanel(QWidget):
         # rounds to whole device pixels), and adjacent cells share a logical
         # boundary so they tile with no gap or overlap.
         for i, color in enumerate(self._colors):
-            rect = QRect(
-                (i % SWATCH_COLUMNS) * SWATCH_SIZE,
-                (i // SWATCH_COLUMNS) * SWATCH_SIZE,
-                SWATCH_SIZE,
-                SWATCH_SIZE,
-            )
-            painter.fillRect(rect, QColor.fromRgba(color & 0xFFFFFFFF))
+            painter.fillRect(self._swatch_rect(i), QColor.fromRgba(color & 0xFFFFFFFF))
         self._paint_active_range(painter)
         self._paint_selection(painter)
         painter.end()
+
+    @staticmethod
+    def _swatch_rect(index: int) -> QRect:
+        """Where swatch ``index`` sits — the grid geometry, in one place."""
+        return QRect(
+            (index % SWATCH_COLUMNS) * SWATCH_SIZE,
+            (index // SWATCH_COLUMNS) * SWATCH_SIZE,
+            SWATCH_SIZE,
+            SWATCH_SIZE,
+        )
 
     def _paint_active_range(self, painter: QPainter) -> None:
         # start = subpalette_row * count with count a power of two, so the range
@@ -320,12 +324,8 @@ class PalettePanel(QWidget):
         # rows). Drawn even when the range lies past the loaded colors: a short
         # palette still shows where the active window sits.
         if self._count <= SWATCH_COLUMNS:
-            rect = QRect(
-                (self._start % SWATCH_COLUMNS) * SWATCH_SIZE,
-                (self._start // SWATCH_COLUMNS) * SWATCH_SIZE,
-                self._count * SWATCH_SIZE,
-                SWATCH_SIZE,
-            )
+            rect = self._swatch_rect(self._start)
+            rect.setWidth(self._count * SWATCH_SIZE)
         else:
             rect = QRect(
                 0,
@@ -338,20 +338,11 @@ class PalettePanel(QWidget):
     def _paint_selection(self, painter: QPainter) -> None:
         if self._selected is None:
             return
-        rect = QRect(
-            (self._selected % SWATCH_COLUMNS) * SWATCH_SIZE,
-            (self._selected // SWATCH_COLUMNS) * SWATCH_SIZE,
-            SWATCH_SIZE,
-            SWATCH_SIZE,
-        )
-        # The same nested white/black language as the active-range outline
-        # (paint_selection_outline), one pixel further in so a one-swatch
-        # selection inside the active range still reads as its own ring.
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor(255, 255, 255, 230), 1))
-        painter.drawRect(rect.adjusted(1, 1, -2, -2))
-        painter.setPen(QPen(QColor(0, 0, 0, 230), 1))
-        painter.drawRect(rect.adjusted(2, 2, -3, -3))
+        # The same outline as the active range, one pixel further in so a
+        # one-swatch selection inside that range still reads as its own ring,
+        # and slightly soft so it doesn't overpower a single swatch.
+        rect = self._swatch_rect(self._selected).adjusted(1, 1, -1, -1)
+        paint_selection_outline(painter, rect, alpha=230)
 
     def sizeHint(self):  # noqa: ANN201 — Qt override
         return self.size()

@@ -37,6 +37,7 @@ from celpix.project.workspace import (
     exportable_entries,
 )
 from celpix.ui import clipboard, export
+from celpix.ui.widgets import ask_save_path
 
 
 class TransferMixin:
@@ -59,9 +60,9 @@ class TransferMixin:
         single-entry PNG). Enabled state depends on the current entry and the
         list contents, so it is refreshed each time the File menu opens.
         """
-        export_menu = file_menu.addMenu("Export")
+        export_menu = file_menu.addMenu("E&xport")
 
-        self._export_png_action = QAction("Export as PNG…", self)
+        self._export_png_action = QAction("Export as &PNG…", self)
         self._export_png_action.setToolTip(
             "Export as an indexed PNG\nIndex 0 is transparent"
         )
@@ -70,7 +71,7 @@ class TransferMixin:
         )
         export_menu.addAction(self._export_png_action)
 
-        self._export_raw_action = QAction("Export Raw…", self)
+        self._export_raw_action = QAction("Export &Raw…", self)
         self._export_raw_action.setToolTip("Export decoded bytes as a raw binary")
         self._export_raw_action.triggered.connect(
             lambda: self._export_raw(self._workspace.current)
@@ -79,14 +80,14 @@ class TransferMixin:
 
         export_menu.addSeparator()
 
-        self._export_slices_action = QAction("Export File's Slices as PNGs…", self)
+        self._export_slices_action = QAction("Export File's &Slices as PNGs…", self)
         self._export_slices_action.setToolTip("Export each slice of this file as a PNG")
         self._export_slices_action.triggered.connect(
             lambda: self._export_file_slices(self._workspace.current)
         )
         export_menu.addAction(self._export_slices_action)
 
-        self._export_all_action = QAction("Export All as PNGs…", self)
+        self._export_all_action = QAction("Export &All as PNGs…", self)
         self._export_all_action.setToolTip(
             "Export every slice and unsliced file as a PNG"
         )
@@ -212,13 +213,9 @@ class TransferMixin:
         if not self._ensure_entry_loaded(entry):
             return
         default = str(Path(self._export_dir(entry)) / f"{export_basename(entry)}.png")
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export as PNG", default, self._PNG_FILTER
-        )
-        if not path:
+        path = ask_save_path(self, "Export as PNG", default, self._PNG_FILTER, ".png")
+        if path is None:
             return
-        if not path.lower().endswith(".png"):
-            path += ".png"
         try:
             image = export.document_image(entry.doc, self._registry)
         except PipelineError as exc:
@@ -234,10 +231,8 @@ class TransferMixin:
         if not self._ensure_entry_loaded(entry):
             return
         default = str(Path(self._export_dir(entry)) / f"{export_basename(entry)}.bin")
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Raw", default, self._RAW_FILTER
-        )
-        if not path:
+        path = ask_save_path(self, "Export Raw", default, self._RAW_FILTER, ".bin")
+        if path is None:
             return
         try:
             export.save_raw(entry.doc, path)

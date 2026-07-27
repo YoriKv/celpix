@@ -228,7 +228,9 @@ class PaletteDockMixin:
         # modes where they exist nowhere else as a palette - see
         # _sync_palette_export_action.
         self._export_palette_action = QPushButton("Export to File…")
-        self._export_palette_action.setToolTip("Write these colors to a .pal file")
+        self._export_palette_action.setToolTip(
+            "Write these colors to a .pal file,\nencoded in the Format selected above"
+        )
         self._export_palette_action.clicked.connect(self._export_palette_file)
         export_row = QHBoxLayout()
         export_row.setContentsMargins(4, 0, 4, 4)
@@ -277,9 +279,11 @@ class PaletteDockMixin:
     def _build_palette_menu(self) -> None:
         """Palette ▸ everything palette-flavoured: palette-from-selection,
         panel."""
-        menu = self.menuBar().addMenu("Palette")
+        menu = self.menuBar().addMenu("&Palette")
 
-        self._palette_from_selection_action = QAction("Palette from Selection", self)
+        # Mnemonic "P", the letter of its own shortcut, which the canvas menu
+        # (where this action also sits) keeps clear for it.
+        self._palette_from_selection_action = QAction("&Palette from Selection", self)
         self._palette_from_selection_action.setToolTip(
             "Read a palette from the selected tile's offset"
         )
@@ -321,11 +325,10 @@ class PaletteDockMixin:
             self._palette_offset_edit.refresh()
         self._palette_format_label.setVisible(mode.is_real)
         self._palette_preset.setVisible(mode.is_real)
-        # Live for every real palette: the raw-bytes modes re-decode under it,
-        # Custom only relabels (its colors are stored verbatim). Only the
-        # generated Default has no format to pick, and it hides the row outright.
-        self._palette_format_label.setEnabled(mode.is_real)
-        self._palette_preset.setEnabled(mode.is_real)
+        # Shown for every real palette, and live whenever it is shown: the
+        # raw-bytes modes re-decode under it, Custom only relabels (its colors
+        # are stored verbatim). The generated Default has no format to pick at
+        # all, so the row goes away rather than greying out.
         # Quantize applies only to Custom's verbatim colors; the raw-bytes modes
         # already hold values their format can store, so it would be a no-op.
         self._quantize_palette_action.setVisible(mode is PaletteMode.CUSTOM)

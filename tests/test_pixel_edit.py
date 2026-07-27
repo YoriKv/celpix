@@ -62,7 +62,7 @@ def test_switching_mode_clears_the_selection_and_what_the_status_says(
     the status line still announcing it."""
     window = _window(qtbot, tmp_path)
     window._set_edit_mode(EditMode.TILE)
-    window._on_tiles_selected(1, 1)
+    window._on_slots_selected(1, 1)
     assert window._selected_tile == 1
     assert "Selected" in window.statusBar().currentMessage()
     window._set_edit_mode(EditMode.PIXEL)
@@ -113,7 +113,7 @@ def test_canvas_emits_pixel_gesture_only_in_pixel_mode(qtbot) -> None:
 
     # Tile mode instead reports a tile slot and never a pixel gesture.
     canvas.set_edit_mode(EditMode.TILE)
-    with qtbot.waitSignal(canvas.tiles_selected, timeout=500):
+    with qtbot.waitSignal(canvas.slots_selected, timeout=500):
         canvas.mousePressEvent(press())
 
 
@@ -972,7 +972,7 @@ def test_history_steps_revert_in_the_mode_they_were_made_in(qtbot, tmp_path) -> 
 
     # A tile-mode step on top of it, so the history spans both modes.
     window._set_edit_mode(EditMode.TILE)
-    window._on_tiles_selected(0, 0)
+    window._on_slots_selected(0, 0)
     flipped = _pixel(window, 0, 0)
     window._transform_tiles(OP_FLIP_H)
     assert _pixel(window, 0, 0) != flipped

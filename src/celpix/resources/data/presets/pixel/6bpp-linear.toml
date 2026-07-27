@@ -1,4 +1,4 @@
-# 6bpp linear bespoke packing, reversed row bytes — Tile Molester LN99.
+# 6bpp linear bespoke packing, reversed row bytes.
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.6bpp-linear"
 name = "6bpp linear (8x8)"

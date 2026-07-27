@@ -1,11 +1,11 @@
-"""Bespoke linear-packed pixel codecs — 3bpp (LN98) and 6bpp (LN99).
+"""Bespoke linear-packed pixel codecs — 3bpp and 6bpp.
 
-These pack indices whose bit-depth doesn't divide 8, so the fields straddle byte
-boundaries in a fixed, format-specific pattern (no shared kernel expresses them —
-``docs/graphics-formats-reference/implementation-guide.md`` §2, "Packed / linear").
-The exact bit maps are transcribed from Tile Molester's ``_3BPPLinearTileCodec`` /
-``_6BPPLinearTileCodec``; 6bpp additionally reads each row's bytes in reverse order.
-Fixed 8×8.
+These depths do not divide 8, so their index fields straddle byte boundaries in a
+fixed pattern no shared kernel expresses
+(``docs/graphics-formats-reference/implementation-guide.md`` §2, "Packed /
+linear"). A 3bpp row is three bytes; a 6bpp row is six, read in reverse byte
+order. Both packings are hard-coded, so ``bpp`` selects between them and is the
+only parameter. Fixed 8×8.
 """
 
 from __future__ import annotations

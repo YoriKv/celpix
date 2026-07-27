@@ -15,6 +15,8 @@ from celpix.core.context import (
 from celpix.core.errors import Stage
 from celpix.plugins import discovery
 from celpix.plugins.base import ReadSource, WriteTarget
+from celpix.plugins.bitswap import BitswapReshape
+from celpix.plugins.data_lut import DataLutReshape
 from celpix.plugins.registry import default_registry
 from celpix.plugins.trust import TrustStore
 
@@ -401,37 +403,54 @@ def test_underscore_files_are_ignored(tmp_path) -> None:
 
 
 def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
-    # Seeding lays down _example.* reference files (never overwriting), and each
-    # must actually work once renamed — examples drifting from the real schema
-    # or format contract is exactly the regression this guards.
+    # Seeding lays down the `_`-prefixed reference files, and each must actually
+    # work once renamed — examples drifting from the real schema or format
+    # contract is exactly the regression this guards.
     for sub in discovery.FOLDER_STAGE:
         (tmp_path / sub).mkdir()
     discovery.seed_examples(str(tmp_path))
 
+    assert (tmp_path / discovery.PLUGIN_README).is_file()
     seeded = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("_*"))
     assert seeded == [
         "compression/_example.py",
         "containers/_example.py",
         "containers/_tiff.py",
+        "palette/_color-indexed.toml",
+        "palette/_color-mask.toml",
         "palette/_example.py",
-        "palette/_example.toml",
         "palette/_nes-custom.py",
+        "pixel/_chunky.toml",
+        "pixel/_direct-color.toml",
         "pixel/_example.py",
-        "pixel/_example.toml",
+        "pixel/_linear-bespoke.toml",
+        "pixel/_nibble-planar.toml",
+        "pixel/_packed.toml",
+        "pixel/_pce-2bpp16.toml",
+        "pixel/_pce-sg.toml",
+        "pixel/_planar.toml",
+        "pixel/_wide-1bpp.toml",
+        "reshape/_bitswap.toml",
+        "reshape/_data-lut.toml",
         "reshape/_example.py",
-        "reshape/_example.toml",
     ]
 
-    # Re-seeding must not clobber a user's edits.
-    marker = "# user edit\n"
-    edited = tmp_path / "pixel" / "_example.toml"
-    edited.write_text(marker, encoding="utf-8")
+    # A stale reference file is replaced rather than left behind, so the examples
+    # track the running build. Both the README and the `_` examples, and matched
+    # by name, so this is what keeps an upgraded celPix from documenting itself
+    # with a previous version's files.
+    for stale in (tmp_path / "pixel" / "_planar.toml", tmp_path / "README.md"):
+        shipped = stale.read_text(encoding="utf-8")
+        stale.write_text("# stale\n", encoding="utf-8")
+        discovery.seed_examples(str(tmp_path))
+        assert stale.read_text(encoding="utf-8") == shipped
+
+    # An activated copy is a different filename, so it is never matched.
+    mine = tmp_path / "pixel" / "planar.toml"
+    mine.write_text("# mine\n", encoding="utf-8")
     discovery.seed_examples(str(tmp_path))
-    assert edited.read_text(encoding="utf-8") == marker
-    # Drop the marker and re-seed so the shipped pixel preset is restored — it,
-    # too, gets decoded below (activating the marker file would just be ignored).
-    edited.unlink()
-    discovery.seed_examples(str(tmp_path))
+    assert mine.read_text(encoding="utf-8") == "# mine\n"
+    mine.unlink()
 
     # Activate every example (drop the underscore) and load for real.
     for path in tmp_path.rglob("_*"):
@@ -455,15 +474,59 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         eng = reg.plugin(Stage.INTERPRET_PALETTE, engine_id)
         return eng.encode(eng.decode(data, params, ctx), params, ctx) == data
 
-    pixel_preset = reg.preset("preset.pixel.example-2bpp")
-    assert pixel_round_trips(pixel_preset.engine_id, pixel_preset.params)
+    # There is one TOML example per engine, and each is only useful for the
+    # engine it names — so they are enumerated from the seeded files rather than
+    # listed here, and a new engine's example is covered the moment it lands.
+    def toml_examples(folder: str, stage: Stage) -> list:
+        return [
+            discovery.preset_from_toml(path.read_text(encoding="utf-8"), stage)
+            for path in sorted((tmp_path / folder).glob("*.toml"))
+        ]
+
+    # Coverage is checked against a *clean* registry: `reg` also holds the code
+    # formats the examples above registered, which are not preset engines.
+    builtin = default_registry()
+    pixel_examples = toml_examples("pixel", Stage.INTERPRET_PIXEL)
+    assert {p.engine_id for p in pixel_examples} == {
+        plugin.info.id for plugin in builtin.plugins(Stage.INTERPRET_PIXEL)
+    }
+    for preset in pixel_examples:
+        engine = reg.plugin(Stage.INTERPRET_PIXEL, preset.engine_id)
+        data = bytes(
+            (i * 61 + 7) & 0xFF for i in range(engine.bytes_per_tile(preset.params))
+        )
+        again = engine.encode(
+            engine.decode(data, preset.params, ctx), preset.params, ctx
+        )
+        if preset.engine_id == "codec.direct-color":
+            # Fewer than 8 bits a channel is lossy, so only the decoded value
+            # round-trips — the raw bits cannot, and never could.
+            assert engine.decode(again, preset.params, ctx) == engine.decode(
+                data, preset.params, ctx
+            )
+        else:
+            assert again == data
     assert pixel_round_trips("format.pixel.example-4x4", {})  # code format
 
-    palette_preset = reg.preset("preset.palette.example-rgb555")
-    # Two BGR555 entries, little-endian; exact bytes so encode must reproduce them.
-    assert palette_round_trips(
-        palette_preset.engine_id, palette_preset.params, bytes([0x1F, 0x7C, 0xE0, 0x03])
-    )
+    palette_examples = toml_examples("palette", Stage.INTERPRET_PALETTE)
+    assert {p.engine_id for p in palette_examples} == {
+        plugin.info.id for plugin in builtin.plugins(Stage.INTERPRET_PALETTE)
+    }
+    for preset in palette_examples:
+        engine = reg.plugin(Stage.INTERPRET_PALETTE, preset.engine_id)
+        size = engine.bytes_per_entry(preset.params)
+        # An indexed preset's bytes are table indices, so keep them in range;
+        # a mask preset takes any byte.
+        limit = len(preset.params.get("colors", ())) or 256
+        data = bytes(i % limit for i in range(size * 8))
+        pal = engine.decode(data, preset.params, ctx)
+        assert len(pal) == 8
+        # Idempotent rather than byte-exact: the sub-8-bit mask formats do not
+        # preserve unused bits, but the colour they decode to must survive.
+        assert (
+            engine.decode(engine.encode(pal, preset.params, ctx), preset.params, ctx)
+            == pal
+        )
     # The gray ramp only preserves the top nibble, so feed bytes whose low nibble
     # is already zero for an exact round-trip.
     assert palette_round_trips(
@@ -502,14 +565,48 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         assert swap.unshape(swap.reshape(data, ctx), ctx) == data
     assert swap.reshape(b"aabb", ctx) == b"bbaa"
 
-    # Bitswap preset example: the TOML registers as an ordinary reshape plugin
-    # whose table swaps address bits 4 and 3 — the middle quarters of every
-    # 32-byte block — and the pair stays its own inverse.
-    bs = reg.plugin(Stage.RESHAPE, "reshape.example-bitswap")
-    block = bytes(range(32))
-    swapped = block[:8] + block[16:24] + block[8:16] + block[24:]
-    assert bs.reshape(block, ctx) == swapped
-    assert bs.unshape(swapped, ctx) == block
+    # reshape/ carries one TOML example per engine too — engine_id there is a
+    # discriminator picking the adapter, so the two produce different classes.
+    reshapes = reg.plugins(Stage.RESHAPE)
+    assert len(discovery.RESHAPE_ENGINES) == 2
+    assert sum(isinstance(p, BitswapReshape) for p in reshapes) == 1
+    assert sum(isinstance(p, DataLutReshape) for p in reshapes) == 1
+
+    # Bitswap preset example: the TOML registers as an ordinary reshape plugin.
+    # It carries a real table — Gaelco's Modular System 16x16 tile scramble,
+    # the only one celPix ships anywhere — so this checks it against the MAME
+    # driver's bitswap<20> rather than against a toy the example alone defines.
+    bs = reg.plugin(Stage.RESHAPE, "reshape.gaelco-16x16")
+    bits = [19, 18, 17, 16, 15, 12, 11, 10, 9, 8, 7, 6, 5, 14, 13, 4, 3, 2, 1, 0]
+    block = bytes(range(256)) * 4096  # exactly one 1 MiB block
+    out = bs.reshape(block, ctx)
+    for i in (0, 1 << 5, 1 << 13, 1 << 14, (1 << 19) | 0x1F, 0xABCDE):
+        # out[bitswap(i)] == in[i]: the scatter direction the driver writes.
+        assert (
+            out[sum(((i >> s) & 1) << (19 - k) for k, s in enumerate(bits))] == block[i]
+        )
+    assert bs.unshape(out, ctx) == block
+
+    # Data-LUT example: the value-side engine, dispatched from the same folder
+    # by its engine_id. Its table set is NMK's decode_data_bg, so this checks it
+    # against that driver's loop — three address bits pick one of eight
+    # permutations, which is the part a constant-table engine could not do.
+    nmk = reg.plugin(Stage.RESHAPE, "reshape.nmk-bg")
+    bg = [
+        [3, 0, 7, 2, 5, 1, 4, 6], [1, 2, 6, 5, 4, 0, 3, 7],
+        [7, 6, 5, 4, 3, 2, 1, 0], [7, 6, 5, 0, 1, 4, 3, 2],
+        [2, 0, 1, 4, 3, 5, 7, 6], [5, 3, 7, 0, 4, 6, 2, 1],
+        [2, 7, 0, 6, 5, 3, 1, 4], [3, 4, 7, 6, 2, 0, 5, 1],
+    ]  # fmt: skip
+    data = bytes((i * 61 + 7) & 0xFF for i in range(1 << 19))
+    out = nmk.reshape(data, ctx)
+    # Spot-checked rather than fully reproduced: a byte-at-a-time reference over
+    # half a megabyte costs more than the whole rest of this test. These offsets
+    # hit all eight selector values, which is what the table pick has to get right.
+    for i in (0, 4, 0x800, 0x804, 0x40000, 0x40004, 0x40800, 0x40804, 0x7FFFF):
+        s = ((i & 4) >> 2) | ((i & 0x800) >> 10) | ((i & 0x40000) >> 16)
+        assert out[i] == sum(((data[i] >> bg[s][7 - k]) & 1) << k for k in range(8))
+    assert nmk.unshape(out, ctx) == data
 
     # Container example: write wraps the payload in its magic; read strips it back.
     example = reg.plugin(Stage.CONTAINER, "container.example")

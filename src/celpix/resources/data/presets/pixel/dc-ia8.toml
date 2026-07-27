@@ -3,11 +3,10 @@
 # why that shared mask is intended.
 # See docs/graphics-formats-reference/mame-formats.md §4.3.
 id = "preset.pixel.dc-ia8"
-name = "Direct IA8 intensity+alpha (N64, 8x8)"
+name = "N64 IA8 (intensity+alpha, 8x8)"
 engine_id = "codec.direct-color"
 
 [params]
-bpp = 8
 bytes_per_pixel = 1
 
 [params.masks]

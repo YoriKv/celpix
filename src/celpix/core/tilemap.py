@@ -53,9 +53,8 @@ from celpix.core import transform
 # transpose plus a mirror, so keeping the swap as its own bit is what makes the
 # eight closed under composition instead of needing a lookup table.
 #
-# Read as: mirror per bits 0/1, **then** transpose — which is why the two mirror
-# values mean exactly what they meant before turning was possible, and a stored
-# rearrangement from then still reads correctly.
+# Read as: mirror per bits 0/1, **then** transpose. Bits 0/1 alone therefore mean
+# exactly what the hardware attribute means, whatever bit 2 holds.
 TILE_ORIENT_NONE = 0
 TILE_FLIP_H = 1
 TILE_FLIP_V = 2
@@ -98,15 +97,16 @@ class TileMap:
     def __post_init__(self) -> None:
         virtuals = [v for v, _ in self.pairs]
         actuals = [a for _, a in self.pairs]
+        virtual_set, actual_set = set(virtuals), set(actuals)
         # A repeat on either side is the failure mode the class exists to
         # prevent: two virtual slots sharing one actual tile makes an edit to
         # either overwrite the other.
-        if len(set(virtuals)) != len(virtuals) or len(set(actuals)) != len(actuals):
+        if len(virtual_set) != len(virtuals) or len(actual_set) != len(actuals):
             raise ValueError("a tile map must be a permutation (repeated index)")
         # Same *set* on both sides, or the map would move tiles in from — or out
         # to — indices it doesn't account for, and would not be a permutation of
         # the whole index space.
-        if set(virtuals) != set(actuals):
+        if virtual_set != actual_set:
             raise ValueError("a tile map must be a permutation (unbalanced)")
         if any(v < 0 or a < 0 for v, a in self.pairs):
             raise ValueError("tile indices cannot be negative")
@@ -129,8 +129,10 @@ class TileMap:
         them in would make two equal rearrangements compare unequal, which undo
         and the project file both rely on.
         """
-        moved = {int(v): int(a) for v, a in pairs if int(v) != int(a)}
-        turned = {int(t): int(f) for t, f in orientations if int(f)}
+        # Coerce once per element: a drag rebuilds the whole map every frame, and
+        # re-running int() on both halves of every pair was a third of that cost.
+        moved = {v: a for v, a in ((int(v), int(a)) for v, a in pairs) if v != a}
+        turned = {t: f for t, f in ((int(t), int(f)) for t, f in orientations) if f}
         return cls(tuple(sorted(moved.items())), tuple(sorted(turned.items())))
 
     # The three lookup tables below are built once per map, not once per lookup.
@@ -380,9 +382,8 @@ def coalesce_runs(
     The batching behind every mapped read and write: scattered tile indices
     become as few contiguous runs as is worth it, so the codec is called once per
     region instead of once per tile. Runs no further apart than ``gap`` are
-    merged — see :data:`RUN_MERGE_GAP`. An unrearranged run of indices collapses
-    to the single run it always was, which is what keeps the ordinary view on
-    exactly the code path it had before rearrangement existed.
+    merged — see :data:`RUN_MERGE_GAP`. An unrearranged window's indices collapse
+    to one run, so the ordinary view pays nothing for the machinery.
     """
     ordered = sorted(set(indices))
     if not ordered:

@@ -1,4 +1,4 @@
-# 8bpp per-row interleaved planar (PL07).
+# 8bpp per-row interleaved planar.
 # See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
 id = "preset.pixel.8bpp-planar"
 name = "8bpp planar (8x8)"

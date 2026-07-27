@@ -226,52 +226,31 @@ def compose_window(
     """Lay out ``rows`` rows of ``columns`` tiles starting at tile ``first_tile``.
 
     The image is always ``columns`` × ``rows`` tiles so the canvas size stays stable
-    while navigating; slots outside ``tiles`` (a partial window at the file end, or a
-    negative ``first_tile``) are left blank. ``layout`` places tiles into blocks
-    (default: plain row-major). Returns a grid of the same type as the input tiles.
-    Composing only the visible band is what keeps viewing large files cheap — see the
-    module docstring.
+    while navigating. ``layout`` decides each slot's cell (default: plain row-major);
+    slots whose tile index falls outside ``tiles`` (a partial window at the file end,
+    or a negative ``first_tile``), or whose cell falls outside the image, stay blank —
+    so a full layout, a partial window, and a block grouping all share one path.
+
+    Works for either grid type by blitting in units of the tiles' ``bytes_per_pixel``
+    and returning a grid of their own type. Composing only the visible band is what
+    keeps viewing large files cheap — see the module docstring.
     """
     if not tiles:
         return IndexGrid(0, 0)
     cols = max(1, columns)
     rows = max(1, rows)
-    tw, th = tiles[0].width, tiles[0].height
-    return _compose(
-        tiles, cols, tw, th, first_tile=first_tile, rows=rows, layout=layout
-    )
-
-
-def _compose(
-    tiles: list,
-    cols: int,
-    tw: int,
-    th: int,
-    *,
-    first_tile: int,
-    rows: int,
-    layout: BlockLayout | None,
-):
-    """Blit ``cols`` × ``rows`` tiles from ``first_tile`` into one grid.
-
-    ``layout`` decides each slot's cell (default: row-major); slots whose tile
-    index falls outside ``tiles``, or whose cell falls outside the ``cols`` × ``rows``
-    image, stay blank — so a full layout, a partial window, and a block grouping all
-    share one path. Works for either grid type — index (1 byte/pixel) or
-    direct-color ARGB (4 bytes/pixel) — by blitting in units of the tiles'
-    ``bytes_per_pixel`` and building the output grid of the same type.
-    """
     if layout is None:
         layout = BlockLayout(cols)
-    bpx = tiles[0].bytes_per_pixel
-    image = type(tiles[0])(cols * tw, rows * th)
+    first = tiles[0]
+    tw, th = first.width, first.height
+    bpx = first.bytes_per_pixel
+    image = type(first)(cols * tw, rows * th)
     dst = image.data
     row_bytes = tw * bpx
     if layout.is_plain:
         _compose_plain(dst, tiles, cols, rows, th, row_bytes, first_tile)
         return image
-    dst_stride = cols * tw * bpx
-    src_stride = row_bytes
+    dst_stride = cols * row_bytes
     for slot in range(cols * rows):
         idx = first_tile + slot
         if idx < 0 or idx >= len(tiles):
@@ -279,13 +258,13 @@ def _compose(
         tile_x, tile_y = layout.slot_to_cell(slot)
         if tile_x >= cols or tile_y >= rows:
             continue
-        base_x = tile_x * tw
-        base_y = tile_y * th
         src = tiles[idx].data
-        for y in range(th):
-            d0 = (base_y + y) * dst_stride + base_x * bpx
-            s0 = y * src_stride
+        d0 = tile_y * th * dst_stride + tile_x * row_bytes
+        s0 = 0
+        for _y in range(th):
             dst[d0 : d0 + row_bytes] = src[s0 : s0 + row_bytes]
+            d0 += dst_stride
+            s0 += row_bytes
     return image
 
 
@@ -327,10 +306,10 @@ def _compose_plain(
 def split_grid(
     grid, tile_width: int, tile_height: int, layout: BlockLayout | None = None
 ):
-    """Cut a composed image back into tiles — the inverse of :func:`_compose`.
+    """Cut a composed image back into tiles — the inverse of :func:`compose_window`.
 
-    Returns one tile per slot of the ``cols`` × ``rows`` cell area the image
-    covers, in **linear slot order**, so ``layout`` undoes exactly the placement
+    Returns one tile per slot of the cell area the image covers, in **linear slot
+    order**, so ``layout`` undoes exactly the placement
     that composed it (pass the same one). An image whose size isn't a whole
     number of tiles is zero-padded at the right/bottom edge, and a slot whose
     cell falls outside the image yields a blank tile — a block layout can leave
@@ -344,34 +323,25 @@ def split_grid(
     This is how external pixels (a pasted or imported image) become tiles: the
     importer quantizes the whole image once, then splits it here.
     """
-    cols = max(1, ceil_div(grid.width, tile_width))
-    rows = max(1, ceil_div(grid.height, tile_height))
-    if layout is None:
-        layout = BlockLayout(cols)
     bpx = grid.bytes_per_pixel
     src = grid.data
     src_stride = grid.width * bpx
     row_bytes = tile_width * bpx
     tiles = []
-    for slot in range(cols * rows):
-        tile_x, tile_y = layout.slot_to_cell(slot)
+    cells = _split_cells(grid.width, grid.height, tile_width, tile_height, layout)
+    for base_x, base_y, cover_w, cover_h in cells:
         tile = type(grid)(tile_width, tile_height)
         tiles.append(tile)
-        if tile_x >= cols or tile_y >= rows:
+        if not (cover_w and cover_h):
             continue
         dst = tile.data
-        base_x, base_y = tile_x * tile_width, tile_y * tile_height
-        for y in range(tile_height):
-            src_y = base_y + y
-            if src_y >= grid.height:
-                break
-            # Clipped at the right edge too: the last column of a non-multiple
-            # image contributes fewer bytes and the rest stays zero.
-            take = max(0, min(row_bytes, src_stride - base_x * bpx))
-            if take <= 0:
-                break
-            s0 = src_y * src_stride + base_x * bpx
-            dst[y * row_bytes : y * row_bytes + take] = src[s0 : s0 + take]
+        take = cover_w * bpx
+        s0 = base_y * src_stride + base_x * bpx
+        d0 = 0
+        for _y in range(cover_h):
+            dst[d0 : d0 + take] = src[s0 : s0 + take]
+            s0 += src_stride
+            d0 += row_bytes
     return tiles
 
 
@@ -391,20 +361,42 @@ def split_coverage(
     outside that rectangle is padding :func:`split_grid` invented, which a write
     back into a file must not stamp over real pixels.
     """
+    cells = _split_cells(grid_width, grid_height, tile_width, tile_height, layout)
+    return [(w, h) for _base_x, _base_y, w, h in cells]
+
+
+def _split_cells(
+    grid_width: int,
+    grid_height: int,
+    tile_width: int,
+    tile_height: int,
+    layout: BlockLayout | None,
+) -> list[tuple[int, int, int, int]]:
+    """Per slot, the image pixel the tile starts at and how much of it is real.
+
+    The one place the split geometry lives, so :func:`split_grid` and
+    :func:`split_coverage` cannot disagree about which slot covers what — an
+    importer pairs their results element by element. ``(base_x, base_y, 0, 0)``
+    marks a slot the image never reached: a block-layout gap, or a cell past the
+    right/bottom edge of an image that isn't a whole number of tiles.
+    """
     cols = max(1, ceil_div(grid_width, tile_width))
     rows = max(1, ceil_div(grid_height, tile_height))
     if layout is None:
         layout = BlockLayout(cols)
-    coverage = []
+    cells = []
     for slot in range(cols * rows):
         tile_x, tile_y = layout.slot_to_cell(slot)
         if tile_x >= cols or tile_y >= rows:
-            coverage.append((0, 0))
+            cells.append((0, 0, 0, 0))
             continue
-        width = max(0, min(tile_width, grid_width - tile_x * tile_width))
-        height = max(0, min(tile_height, grid_height - tile_y * tile_height))
-        coverage.append((width, height) if width and height else (0, 0))
-    return coverage
+        base_x, base_y = tile_x * tile_width, tile_y * tile_height
+        width = max(0, min(tile_width, grid_width - base_x))
+        height = max(0, min(tile_height, grid_height - base_y))
+        if not (width and height):
+            width = height = 0
+        cells.append((base_x, base_y, width, height))
+    return cells
 
 
 def bitmap_tile_size(bitmap_width: int, tile_width: int) -> int:
@@ -433,6 +425,18 @@ def bitmap_tile_size(bitmap_width: int, tile_width: int) -> int:
     return 1  # unreachable: 1 divides everything
 
 
+def has_2d_reading(bytes_per_tile: int, tile_height: int) -> bool:
+    """Whether this geometry can be read as a wide bitmap at all.
+
+    The 2D walk splits a tile into ``tile_height`` equal per-row chunks and
+    strides them apart, so geometry whose bytes don't divide into whole chunks
+    has no wide-bitmap reading and everything falls back to the plain 1D order.
+    One predicate for both directions of the walk (:func:`reflow_2d`,
+    :func:`scatter_2d`) and for the callers deciding whether it applies.
+    """
+    return bytes_per_tile > 0 and tile_height > 0 and bytes_per_tile % tile_height == 0
+
+
 def reflow_2d(
     window: bytes, bytes_per_tile: int, tile_height: int, columns: int
 ) -> bytes:
@@ -451,8 +455,8 @@ def reflow_2d(
     returned untouched.
     """
     cols = max(1, columns)
-    th = max(1, tile_height)
-    if bytes_per_tile <= 0 or bytes_per_tile % th != 0:
+    th = tile_height
+    if not has_2d_reading(bytes_per_tile, th):
         return window
     row_bytes = bytes_per_tile // th
     stripe = cols * bytes_per_tile  # one bitmap-row of `cols` tiles
@@ -486,3 +490,31 @@ def reflow_2d(
                     + (pixel_row + 1) * row_bytes
                 ] = window[s0 : s0 + row_bytes]
     return bytes(out)
+
+
+def scatter_2d(
+    out: bytearray,
+    slot: int,
+    data: bytes,
+    bytes_per_tile: int,
+    tile_height: int,
+    columns: int,
+) -> None:
+    """Write one tile's contiguous bytes back into wide-bitmap (2D) order.
+
+    The exact inverse of :func:`reflow_2d`'s gather, for a single tile: its
+    pixel-rows go back to their strided homes ``columns`` tiles apart. It lives
+    beside the gather because the two must stay inverses byte for byte — an
+    edit written at the wrong stride lands in a neighbouring tile. Writes that
+    fall past the buffer (a region clamped at end-of-data) are clipped, never
+    grown.
+    """
+    row_bytes = bytes_per_tile // tile_height
+    stripe_index, tile_x = divmod(slot, columns)
+    stripe_base = stripe_index * columns * bytes_per_tile
+    for row in range(tile_height):
+        dst = stripe_base + row * (columns * row_bytes) + tile_x * row_bytes
+        if dst >= len(out):
+            return
+        take = min(row_bytes, len(out) - dst)
+        out[dst : dst + take] = data[row * row_bytes : row * row_bytes + take]

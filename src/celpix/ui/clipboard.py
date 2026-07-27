@@ -80,7 +80,7 @@ class TilePayload:
         """Pack decoded tiles for the clipboard; None for an empty run."""
         if not tiles:
             return None
-        direct = getattr(tiles[0], "bytes_per_pixel", 1) == 4
+        direct = tiles[0].bytes_per_pixel == 4
         blob = bytearray()
         for tile in tiles:
             blob += tile.data

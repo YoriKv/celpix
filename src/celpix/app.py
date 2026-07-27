@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
 from PySide6.QtGui import QIcon, QPixmap
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QProxyStyle, QStyle
 
 from celpix import __version__, resources
 from celpix.plugins.discovery import FOLDER_STAGE, load_user_plugins, seed_examples
@@ -20,6 +20,29 @@ from celpix.ui.main_window import MainWindow
 # organizationName and applicationName, so setting an org equal to the app would
 # nest the data dir as celPix/celPix. celPix is a single app with no separate org.
 APP_NAME = "celPix"
+
+
+class _UnderlinedMnemonics(QProxyStyle):
+    """Show every menu's mnemonic underline without holding Alt down.
+
+    Windows (and any desktop whose theme asks for it) hides the underlines until
+    Alt is pressed - the platform's "underline access keys" setting - so a menu
+    looks as though it has no keyboard route at all until you already know to
+    reach for one. celPix's menus are built around those letters, so the hint is
+    forced on and they are drawn from the moment a menu opens. Everything else is
+    delegated: this changes no other part of the platform's look.
+    """
+
+    def styleHint(  # noqa: N802 - Qt override
+        self,
+        hint: QStyle.StyleHint,
+        option=None,  # noqa: ANN001 - QStyleOption
+        widget=None,  # noqa: ANN001 - QWidget
+        returnData=None,  # noqa: ANN001, N803 - QStyleHintReturn
+    ) -> int:
+        if hint == QStyle.StyleHint.SH_UnderlineShortcut:
+            return 1
+        return super().styleHint(hint, option, widget, returnData)
 
 
 def _app_data_dir() -> Path:
@@ -53,6 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
+    # Wraps the platform's own style (QProxyStyle with no base takes whatever
+    # QApplication just picked), so it only overrides the one hint.
+    app.setStyle(_UnderlinedMnemonics())
     # The window/taskbar/dock icon while running. Loaded from bytes (not a file
     # path) so it resolves the same in a source checkout and a frozen build,
     # where resources live inside the bundle. The packaged executables also
@@ -70,8 +96,9 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = _app_data_dir()
     plugin_dir = data_dir / "plugins"
     plugin_dir.mkdir(parents=True, exist_ok=True)
-    # Pre-create the typed subfolders so opening the folder shows where each
-    # kind of plugin goes, and seed them with inert _example.* reference files.
+    # Pre-create the typed subfolders so opening the folder shows where each kind
+    # of plugin goes, then seed the README and the inert `_`-prefixed reference
+    # files — refreshed each launch so they match this build.
     for sub in FOLDER_STAGE:
         (plugin_dir / sub).mkdir(exist_ok=True)
     seed_examples(str(plugin_dir))

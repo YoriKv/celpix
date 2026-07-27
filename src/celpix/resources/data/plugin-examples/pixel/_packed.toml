@@ -1,0 +1,28 @@
+# Example preset for the `codec.packed` engine. Copy, drop the underscore, edit,
+# press F5. See _planar.toml for what a preset is; this folder has one example
+# per pixel engine.
+id = "preset.pixel.example-packed"
+name = "Example packed 4bpp"
+
+# codec.packed decodes 8x8 **packed** (linear) formats: a pixel's index is a
+# sub-byte field stored whole, no planes. A row of 8 pixels is 8 / (8 / bpp)
+# bytes. Genesis, GBA, MSX, Virtual Boy and Neo Geo Pocket are all this shape,
+# separated only by the flags below.
+engine_id = "codec.packed"
+
+[params]
+bpp = 4          # must divide 8: 1, 2, 4 or 8
+
+# Is pixel 0 of a byte in its high field or its low one? High = Genesis/MSX/NGP,
+# low = GBA/Virtual Boy. At 4bpp this is "which nibble is the left pixel".
+msb_first = true
+
+# Read each row's bytes right-to-left — the Neo Geo Pocket order, where the odd
+# byte drives the left pixels. Defaults to false.
+# reverse_bytes = false
+
+# Split a pixel's index across *two* bytes this many apart, the nearer giving its
+# high bpp/2 bits and the farther the low ones. Arcade boards that wired each
+# half-index to its own ROM land here once a two-part region join has interleaved
+# the halves (stride 1). 0, the default, is off.
+# nibble_stride = 0

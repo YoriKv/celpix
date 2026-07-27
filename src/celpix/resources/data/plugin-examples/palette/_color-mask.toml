@@ -1,0 +1,39 @@
+# Example preset for the `codec.color-mask` engine. Files starting with "_" are
+# ignored — copy this file, drop the underscore, edit it, press F5 in celPix.
+#
+# A preset is pure data: it names one built-in engine and fills in that engine's
+# parameters, so a file is only useful for the engine it names. This folder has
+# one example per palette engine.
+#
+# Because this file sits in palette/ it is an interpret-palette format — no
+# stage field needed.
+id = "preset.palette.example-color-mask"
+name = "Example RGB555"
+
+# codec.color-mask decodes fixed-size palette entries by masking out each channel
+# and scaling it to 8 bits. Masks are plain bit masks over the entry value once
+# `byte_order` has assembled its bytes. This covers essentially every hardware
+# palette storing colour as packed bit fields. Omit `a` when there is no alpha.
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"    # or "big"
+
+[params.masks]
+r = 0x7C00
+g = 0x03E0
+b = 0x001F
+
+# A channel split across the word — its nibble in one place and its low bit
+# parked elsewhere, which is how several 68000 arcade boards keep the nibbles
+# byte-aligned — is written as a list of contiguous chunks, MOST SIGNIFICANT
+# FIRST. Write the order down; it is not inferred from bit position, because
+# hardware puts the stray bit above the run as often as below:
+#
+#   r = [0xF000, 0x0008]
+#   g = [0x0F00, 0x0004]
+#   b = [0x00F0, 0x0002]
+#
+# Bits no mask names are written back as zero when a palette is saved, so name
+# every bit a channel really uses.

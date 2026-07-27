@@ -5,11 +5,10 @@
 # format and collapses to the OR of the channels on write.
 # See docs/graphics-formats-reference/mame-formats.md §4.3.
 id = "preset.pixel.dc-i8"
-name = "Direct I8 intensity (N64, 8x8)"
+name = "N64 I8 (intensity, 8x8)"
 engine_id = "codec.direct-color"
 
 [params]
-bpp = 8
 bytes_per_pixel = 1
 
 [params.masks]

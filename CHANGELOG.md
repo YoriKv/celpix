@@ -4,24 +4,24 @@
 
 - **New Reshape stage**: add a new reshape stage for byte reodering and split bitplanes.
   Configurable under `Edit File Container`.
-- **Bitswap reshape plugins**: a TOML preset with the `reshape.bitswap` engine
-  and a MAME-style address-permutation table becomes a Reshape entry.
-- **Offsets mean the same thing everywhere**: palettes loaded from an offset,
-  and slices, now read the bytes the view is built from — past a header skip,
-  and through a deinterleaving container or a reshape — instead of the raw file
-  at that number. New Slice… no longer prefills a headered file short by its
-  header. Color edits on a palette inside a reordered region save through the
-  owning file's own write, so they land on the right bytes in every chip;
-  slices of reordered data stay view-only.
-
 - **Navigation**: improved navigation while in block mode.
 - **Rearrange tool**: rotate tiles and blocks added.
 - **Files**: added support for files with multiple component files appended
-  together to support an arcade board's ROM chip. Also, file rows can now be
-  renamed, and reordered with Move Up/Down (`Shift+Up`/`Shift+Down`).
+  together to support an arcade board's ROM chip. File rows can now be renamed,
+  and reordered with Move Up/Down (`Shift+Up`/`Shift+Down`).
 - **Containers**: container auto detection based on magic bytes or extension.
-- **Pixel formats**: added Nintendo 64 I8, IA8 and IA16 intensity textures.
-- Lots of other fixes.
+- Palette, pixel, and reshape name consistency pass
+- Added keyboard mnemonics to all menus
+- **Plugins**:
+- - Added an example for each config based plugin engine
+- - Data-LUT reshap plugins for scrabled values
+- - Byte-swapped word reshape for MAME's ROM_LOAD16_WORD_SWAP (NMK16)
+- - Updated plugin examples
+- - Plugin example folder README
+- Unified offset and slice meanings
+- Added right click show in file manager
+- Big codebase cleanup pass
+- Lots of other fixes
 
 ## v0.2.5 - 2026-07-25
 

@@ -108,7 +108,7 @@ class Document:
     # whole palette to save one edited color would therefore corrupt every
     # other entry, so Write reuses these original bytes for anything the user
     # did not touch (docs/design/palette-editing.md §2).
-    palette_bytes: bytes = b""
+    palette_base_bytes: bytes = b""
     palette_edits: set[int] = field(default_factory=set)
 
     @classmethod
@@ -117,7 +117,7 @@ class Document:
         palette: Palette,
         config: PathwayConfig,
         ctx: PipelineContext,
-        palette_bytes: bytes,
+        palette_base_bytes: bytes,
     ) -> Document:
         """A Document that carries only a palette — a PALETTE entry's live store.
 
@@ -139,7 +139,7 @@ class Document:
             ),
             palette_config=config,
             palette_ctx=ctx,
-            palette_bytes=palette_bytes,
+            palette_base_bytes=palette_base_bytes,
         )
 
     @property
@@ -187,11 +187,13 @@ class Document:
                 self.pixel_data[:start] + data + self.pixel_data[start + len(data) :]
             )
 
-    def clamp_offset(self, offset: int, columns: int, rows: int, nudge: int = 0) -> int:
+    def clamp_tile_offset(
+        self, offset: int, columns: int, rows: int, nudge: int = 0
+    ) -> int:
         """A valid top-left tile offset for a ``columns`` × ``rows`` window."""
-        return max(0, min(offset, self.last_page_offset(columns, rows, nudge)))
+        return max(0, min(offset, self.last_page_tile_offset(columns, rows, nudge)))
 
-    def last_page_offset(self, columns: int, rows: int, nudge: int = 0) -> int:
+    def last_page_tile_offset(self, columns: int, rows: int, nudge: int = 0) -> int:
         """The greatest top-left tile offset a ``columns`` × ``rows`` window may sit at.
 
         The last reachable window is the final page of tiles (the view never
@@ -219,11 +221,11 @@ class Document:
 
         The greatest reachable origin is the last full page at nudge 0, so a
         byte step can never overshoot the end and snap backwards. This is the
-        byte-space companion of :meth:`clamp_offset` (which clamps tile moves
+        byte-space companion of :meth:`clamp_tile_offset` (which clamps tile moves
         that keep their nudge).
         """
         tb = self.bytes_per_tile
         if not tb:
             return (0, 0)
-        max_pos = self.last_page_offset(columns, rows) * tb
+        max_pos = self.last_page_tile_offset(columns, rows) * tb
         return divmod(max(0, min(pos, max_pos)), tb)

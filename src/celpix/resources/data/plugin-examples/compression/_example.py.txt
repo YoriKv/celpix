@@ -4,19 +4,19 @@ load it (code plugins ask for confirmation the first time, since they run with
 the app's privileges).
 
 A compression scheme is **one plugin with both directions on it**: ``decompress``
-runs as a pipeline layer *before* the pixel codec — it turns a packed byte run
-into the raw bytes the pixel format then interprets — and ``compress`` is its
-inverse, run on save so edits write back packed. They live together because they
-are two ends of one format and have to stay each other's inverse.
+runs as a pipeline layer *before* the pixel codec, turning a packed byte run into
+the raw bytes the pixel format then interprets, and ``compress`` is its inverse,
+run on save so edits write back packed. They live together because they are two
+ends of one format and have to stay each other's inverse.
 
 **``compress`` is optional.** A format reverse-engineered far enough to view but
-not to re-encode ships ``decompress`` alone; celPix then opens its data read-only
-rather than saving something it cannot guarantee. Nothing has to declare that —
-shipping the method is the declaration.
+not to re-encode ships ``decompress`` alone, and celPix opens its data read-only
+rather than saving something it cannot guarantee. Shipping the method is the
+declaration.
 
-This toy scheme is byte run-length encoding: the stream is a series of
-``(count, value)`` pairs, ``count`` in 1..255, terminated by a ``count`` of 0.
-Real schemes (LZ, Konami RLE) are more involved, but the plumbing is identical.
+This toy scheme is byte run-length encoding: a series of ``(count, value)`` pairs,
+``count`` in 1..255, terminated by a ``count`` of 0. Real schemes are more
+involved, but the plumbing is identical.
 """
 
 from celpix.core.context import (
@@ -34,11 +34,11 @@ class ExampleRle:
         id="compression.example-rle",
         name="Example byte RLE",
         stage=Stage.COMPRESSION,
-        # About the decode direction, and a property of the *scheme*: this carries a
-        # terminator, so its extent is knowable from the data alone. Set False
-        # for a scheme that ends only where something outside it says (a slice
-        # length, a container's byte count) — celPix words "the decode stopped
-        # here" differently for the two, and Scan can only find the first kind.
+        # A property of the *scheme*, about the decode direction: this one carries
+        # a terminator, so its extent is knowable from the data alone. Set False
+        # for a scheme that ends only where something outside it says — a slice
+        # length, a container's byte count. celPix words "the decode stopped here"
+        # differently for the two, and Scan can only find the first kind.
         self_delimiting=True,
     )
 
@@ -46,22 +46,22 @@ class ExampleRle:
         """Expand ``(count, value)`` pairs until the 0-count terminator.
 
         **Strict by default: raise when the structure does not end inside the
-        buffer.** That is what makes "these bytes are an Example RLE structure"
-        a real question — the Scan tool walks the file trying a decode at every
-        offset and treats a success as a hit, so a decompressor that returns
-        best-effort output for arbitrary bytes reports a structure everywhere.
+        buffer.** That is what makes "these bytes are an Example RLE structure" a
+        real question — the Scan tool tries a decode at every offset and treats
+        success as a hit, so a decompressor returning best-effort output for
+        arbitrary bytes reports a structure everywhere.
 
-        celPix asks for a lenient decode by setting ``KEY_DECOMPRESS_PARTIAL``
-        when — and only when — it knowingly hands over a bounded window that may
-        cut a structure short (the live preview). Honour it by returning the
-        valid prefix; structurally corrupt data should still raise either way.
+        celPix sets ``KEY_DECOMPRESS_PARTIAL`` when, and only when, it knowingly
+        hands over a bounded window that may cut a structure short (the live
+        preview). Honour it by returning the valid prefix; structurally corrupt
+        data should still raise either way.
 
         Two things go back through ``ctx``:
 
-        - ``KEY_COMPRESSED_SIZE`` — bytes consumed, i.e. the packed structure's
-          true length; a save-back must fit this slot.
-        - ``KEY_DECOMPRESS_COMPLETE`` — whether the terminator was reached
-          inside the buffer (False = the window cut the stream short).
+        - ``KEY_COMPRESSED_SIZE`` — bytes consumed, the packed structure's true
+          length, which a save-back must fit.
+        - ``KEY_DECOMPRESS_COMPLETE`` — whether the terminator was reached inside
+          the buffer (False = the window cut the stream short).
         """
         out = bytearray()
         i, n = 0, len(data)
@@ -85,8 +85,8 @@ class ExampleRle:
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
         """Pack ``data`` into ``(count, value)`` pairs — the inverse of decode.
 
-        Runs longer than 255 split across successive pairs; the stream ends with
-        a 0-count terminator so decode knows where it stops.
+        Runs longer than 255 split across successive pairs, and the stream ends
+        with a 0-count terminator so decode knows where it stops.
         """
         out = bytearray()
         i, n = 0, len(data)

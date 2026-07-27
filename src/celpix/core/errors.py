@@ -18,8 +18,7 @@ class Stage(str, Enum):
     *and* write of one on-disk wrapper, a compression scheme is its decompress
     *and* compress halves. They are one stage because they are one thing a user
     picks, one thing a plugin author writes, and one thing that has to stay each
-    other's inverse — splitting them into separate registrations only ever meant
-    two descriptors and an id convention holding the pair together.
+    other's inverse.
 
     Which direction a load or save is going is not lost by that: it is the
     :attr:`PipelineError.action` sub-label, reported when something fails.
@@ -48,8 +47,8 @@ class PipelineError(Exception):
 
     ``action`` names the *direction* within the stage — ``read``/``write`` for a
     container, ``reshape``/``unshape`` for a reshape,
-    ``decompress``/``compress`` for a compression scheme. A stage now
-    spans both, and "the container failed" is a materially different report from
+    ``decompress``/``compress`` for a compression scheme. A stage spans both
+    directions, and "the container failed" is a materially different report from
     "the container failed **while saving**", so the message keeps it:
     ``[pixel/container:write] …``. Empty for a stage where there is nothing to
     disambiguate.

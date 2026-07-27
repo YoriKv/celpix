@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from celpix.core import ceil_div
 from celpix.core.argb_grid import ArgbGrid
 from celpix.core.arrangement import BlockLayout, split_coverage, split_grid
+from celpix.core.draw import copy_rect
 from celpix.core.index_grid import IndexGrid
 from celpix.core.quantize import ColorMatcher, QuantizeReport
 
@@ -55,10 +56,6 @@ class ImportTarget:
     block_columns: int = 1
     block_rows: int = 1
     block_order: str = "row"
-    # Where transparent source pixels land. Index 0 is the retro convention (and
-    # the entry celPix's PNG export marks transparent); None means "no hole" and
-    # transparent pixels are matched on color like any other.
-    transparent_index: int | None = 0
 
     def layout_for(self, columns: int) -> BlockLayout:
         return BlockLayout(
@@ -118,10 +115,11 @@ def import_argb(source: ArgbGrid, target: ImportTarget) -> ImportedTiles:
             source.width, source.height, target.tile_width, target.tile_height, layout
         )
     )
-    if target.direct_color:
-        tiles = split_grid(source, target.tile_width, target.tile_height, layout)
-        return ImportedTiles(tiles, columns, rows, QuantizeReport(), coverage)
-    grid, report = quantize_grid(source, target)
+    grid, report = (
+        (source, QuantizeReport())
+        if target.direct_color
+        else quantize_grid(source, target)
+    )
     tiles = split_grid(grid, target.tile_width, target.tile_height, layout)
     return ImportedTiles(tiles, columns, rows, report, coverage)
 
@@ -153,11 +151,7 @@ def merge_uncovered(tile, base, covered: tuple[int, int] | None):
     if width <= 0 or height <= 0:
         return base
     merged = type(tile)(tile.width, tile.height, bytes(base.data))
-    stride = tile.width * tile.bytes_per_pixel
-    span = width * tile.bytes_per_pixel
-    dst, src = merged.data, tile.data
-    for y in range(height):
-        dst[y * stride : y * stride + span] = src[y * stride : y * stride + span]
+    copy_rect(merged, 0, 0, tile, 0, 0, width, height)
     return merged
 
 
@@ -176,30 +170,22 @@ def quantize_grid(
     # whole image doesn't collapse onto the hole. (Alpha byte is index 3 of each
     # little-endian ARGB pixel; the slice is C-level and short-circuits.)
     ignore_alpha = not any(src[3::4])
-    matcher = ColorMatcher(
-        target.colors,
-        transparent_index=target.transparent_index,
-        ignore_alpha=ignore_alpha,
-    )
+    matcher = ColorMatcher(target.colors, ignore_alpha=ignore_alpha)
     grid = IndexGrid(source.width, source.height)
     dst = grid.data
     exact_pixels = 0
-    for i in range(source.width * source.height):
-        argb = int.from_bytes(src[i * 4 : i * 4 + 4], "little")
+    # Read whole pixels straight out of the buffer rather than slicing four
+    # bytes and unpacking them per pixel — an import is sized by the *image*, so
+    # this loop runs millions of times on a large PNG.
+    for i, argb in enumerate(memoryview(src).cast("I")):
         index, exact = matcher.match(argb)
         dst[i] = index & 0xFF
         exact_pixels += exact
-    seen = matcher.cache
-    return grid, QuantizeReport(
-        pixels=len(dst),
-        exact_pixels=exact_pixels,
-        source_colors=len(seen),
-        exact_colors=sum(1 for _index, exact in seen.values() if exact),
-    )
+    return grid, matcher.report(len(dst), exact_pixels)
 
 
 def import_indexed(
-    tiles: list, source_colors: tuple[int, ...], target: ImportTarget
+    tiles: list, source_palette: tuple[int, ...], target: ImportTarget
 ) -> tuple[list, QuantizeReport]:
     """Re-fit already-indexed tiles whose indices don't suit ``target``.
 
@@ -215,7 +201,7 @@ def import_indexed(
     """
 
     def color_of(index: int) -> int:
-        return source_colors[index] if index < len(source_colors) else 0
+        return source_palette[index] if index < len(source_palette) else 0
 
     if target.direct_color:
         out = []
@@ -229,7 +215,7 @@ def import_indexed(
             out.append(mapped)
         return out, QuantizeReport()
 
-    matcher = ColorMatcher(target.colors, transparent_index=target.transparent_index)
+    matcher = ColorMatcher(target.colors)
     out = []
     exact_pixels = pixels = 0
     for tile in tiles:
@@ -241,10 +227,4 @@ def import_indexed(
             exact_pixels += exact
         pixels += tile.width * tile.height
         out.append(mapped)
-    seen = matcher.cache
-    return out, QuantizeReport(
-        pixels=pixels,
-        exact_pixels=exact_pixels,
-        source_colors=len(seen),
-        exact_colors=sum(1 for _index, exact in seen.values() if exact),
-    )
+    return out, matcher.report(pixels, exact_pixels)

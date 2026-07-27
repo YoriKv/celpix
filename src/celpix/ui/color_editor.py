@@ -6,8 +6,8 @@ palette/document knowledge so a future surface — a direct-color pixel, a
 plugin's color parameter — can host the same control.
 
 **Editing is 8-bit; storage may not be.** The channel inputs are full 0..255
-(``docs/design-reference/palette-workflow.md`` calls this the Tile Molester
-model), because the editor has no single target format: a Custom palette is
+(``docs/design-reference/palette-workflow.md`` names the editors this follows),
+because the editor has no single target format: a Custom palette is
 stored as ARGB, while a File/Offset palette is re-encoded through whatever
 color codec is selected. So the loss is *shown* rather than imposed — set a
 quantizer (:meth:`ColorEditor.set_quantizer`) and the "Stored as" swatch
@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QEvent, QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
@@ -40,7 +40,12 @@ from PySide6.QtWidgets import (
 )
 
 from celpix import resources
-from celpix.ui.widgets import CommittingLineEdit, signals_blocked
+from celpix.ui.widgets import (
+    CommittingLineEdit,
+    icon_cache_key,
+    signals_blocked,
+    tinted_glyph,
+)
 
 # Channel order as edited, most significant first — the same order the hex
 # field spells and the ARGB int packs.
@@ -51,37 +56,9 @@ _CHANNEL_NAMES = {"A": "Alpha", "R": "Red", "G": "Green", "B": "Blue"}
 
 
 def _eyedropper_pixmap(color: QColor, size: int, ratio: float) -> QPixmap:
-    """The bundled eyedropper glyph, recolored to ``color`` at device resolution.
-
-    The art ships as a solid silhouette cropped to its opaque bounds; SourceIn
-    keeps only its alpha and stamps the tint through, so one glyph tracks the
-    theme in light and dark. Rasterized at ``ratio`` (the pixmap then reports
-    ``size`` logical units) so a scaled display gets crisp edges rather than a
-    stretched 1x bitmap, and centred in the square box since the glyph is taller
-    than it is wide.
-    """
+    """The bundled eyedropper glyph, recolored to ``color`` at device resolution."""
     source = QImage.fromData(resources.read_bytes("icons", "eyedropper.png"))
-    glyph = source.convertToFormat(QImage.Format.Format_ARGB32)
-    tinting = QPainter(glyph)
-    tinting.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    tinting.fillRect(glyph.rect(), color)
-    tinting.end()
-    box = round(size * ratio)
-    scaled = QPixmap.fromImage(glyph).scaled(
-        box,
-        box,
-        Qt.AspectRatioMode.KeepAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
-    )
-    canvas = QPixmap(box, box)
-    canvas.fill(Qt.GlobalColor.transparent)
-    placing = QPainter(canvas)
-    placing.drawPixmap(
-        (box - scaled.width()) // 2, (box - scaled.height()) // 2, scaled
-    )
-    placing.end()
-    canvas.setDevicePixelRatio(ratio)
-    return canvas
+    return tinted_glyph(source, color, QSize(size, size), ratio)
 
 
 def parse_hex_color(text: str) -> int | None:
@@ -204,6 +181,7 @@ class ColorEditor(QWidget):
         self._pick.setCheckable(True)
         self._pick.setToolTip("Pick a color from the canvas or palette")
         self._pick.toggled.connect(self.pick_toggled)
+        self._icon_key = icon_cache_key(self)
         self._refresh_pick_icon()
 
         # Both previews sit in identically-shaped columns so their swatches line
@@ -255,10 +233,14 @@ class ColorEditor(QWidget):
         self._pick.setIconSize(QSize(16, 16))
 
     def changeEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        # The eyedropper glyph is a pixmap baked in the old palette's color; a
-        # theme switch has to re-render it or it keeps yesterday's tint.
+        # The eyedropper glyph is a pixmap baked in the old palette's color at
+        # the old resolution; a theme switch or a move to a differently scaled
+        # display has to re-render it. Guarded on the key rather than the event,
+        # because Qt sends a burst of PaletteChange on startup alone.
         super().changeEvent(event)
-        if event.type() is QEvent.Type.PaletteChange:
+        key = icon_cache_key(self)
+        if key != self._icon_key:
+            self._icon_key = key
             self._refresh_pick_icon()
 
     # -- state -------------------------------------------------------------
@@ -429,7 +411,7 @@ class ColorEditorDialog(QDialog):
         layout.addWidget(self.editor)
         layout.addWidget(buttons)
 
-    def set_entry(self, label: str) -> None:
+    def set_entry_label(self, label: str) -> None:
         """Name the palette entry being edited in the title bar."""
         self.setWindowTitle(f"Edit color - {label}")
 

@@ -1,0 +1,25 @@
+# Example preset for the `codec.planar` engine. Files starting with "_" are
+# ignored — copy this file, drop the underscore, edit it, and press F5 in celPix.
+#
+# A preset is pure data: it names one built-in engine and fills in that engine's
+# parameters, so a file is only useful for the engine it names. This folder has
+# one example per pixel engine; pick the one whose layout matches your format.
+#
+# Because this file sits in pixel/ it is an interpret-pixel format — no stage
+# field needed.
+
+# Unique id (never shown; keep it stable) and the name the format picker shows.
+id = "preset.pixel.example-planar"
+name = "Example planar 2bpp (GB-style)"
+
+# codec.planar decodes 8x8 **bitplane** formats: bit k of a pixel's index comes
+# from plane k, and plane k's byte for tile row y sits at offset
+# base + stride * y within the tile. Most console tile formats are this shape.
+engine_id = "codec.planar"
+
+[params]
+bpp = 2                      # one plane entry per bit
+planes = [
+  { base = 0, stride = 2 },  # plane 0: bytes 0, 2, 4, ... of the 16-byte tile
+  { base = 1, stride = 2 },  # plane 1: bytes 1, 3, 5, ...
+]

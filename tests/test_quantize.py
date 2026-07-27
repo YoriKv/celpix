@@ -24,33 +24,26 @@ def test_exact_color_wins_over_a_nearer_looking_neighbour() -> None:
 def test_alpha_is_ignored_when_comparing_colors() -> None:
     # A half-transparent red still reads as red: only the RGB is compared, so
     # source art with soft edges lands on the right hue.
-    matcher = ColorMatcher([BLACK, RED], transparent_index=None)
-    assert matcher.index_of(0x80FF0000) == 1
+    matcher = ColorMatcher([BLACK, RED])
+    assert matcher.match(0x80FF0000)[0] == 1
 
 
-def test_transparent_source_snaps_to_the_transparent_index() -> None:
-    matcher = ColorMatcher([0x00000000, WHITE, RED], transparent_index=0)
-    # Fully transparent white must not be matched as *white*.
-    assert matcher.match(0x00FFFFFF) == (0, True)
+def test_transparent_source_snaps_to_index_zero() -> None:
+    # alpha 0 is the hole unconditionally. A pasted image's transparent
+    # background must never bleed onto a real color.
+    matcher = ColorMatcher([0x00000000, WHITE, RED])
+    assert matcher.match(0x00FFFFFF) == (0, True)  # clear white, not *white*
+    assert matcher.match(0x40FF0000) == (2, True)  # faint red still reads as red
     # Index 0 holding an opaque color means the hole gained one: not exact.
-    opaque_zero = ColorMatcher([BLACK, WHITE], transparent_index=0)
+    opaque_zero = ColorMatcher([BLACK, WHITE])
     assert opaque_zero.match(0x00FFFFFF) == (0, False)
-
-
-def test_fully_transparent_always_snaps_to_index_zero() -> None:
-    # alpha 0 is the hole unconditionally — even in "no-hole" mode, where a
-    # partly-transparent pixel would be matched by color instead. A pasted
-    # image's transparent background must never bleed onto a real color.
-    matcher = ColorMatcher([WHITE, RED], transparent_index=None)
-    assert matcher.match(0x00FF0000) == (0, False)  # clear red → index 0, gained
-    assert matcher.match(0x40FF0000) == (1, True)  # faint red still reads as red
 
 
 def test_only_alpha_zero_is_transparent() -> None:
     # The opacity cut is >0: a pixel with even a sliver of alpha is a drawn
     # color, not a hole. Barely-there red still matches red rather than snapping
-    # to the transparent index at 0.
-    matcher = ColorMatcher([0x00000000, RED], transparent_index=0)
+    # to the hole at index 0.
+    matcher = ColorMatcher([0x00000000, RED])
     assert matcher.match(0x01FF0000) == (1, True)  # alpha 1 → opaque, matched
     assert matcher.match(0x00FF0000) == (0, True)  # alpha 0 → the clear hole
 
@@ -65,8 +58,8 @@ def test_opaque_pixels_never_land_on_a_transparent_entry() -> None:
 def test_all_transparent_palette_still_matches() -> None:
     # Degenerate palette: with no opaque candidate the whole set is fair game
     # rather than an empty search.
-    matcher = ColorMatcher([0x00000000, 0x00FF0000], transparent_index=None)
-    assert matcher.index_of(RED) == 1
+    matcher = ColorMatcher([0x00000000, 0x00FF0000])
+    assert matcher.match(RED)[0] == 1
 
 
 def test_distance_weights_green_over_blue() -> None:

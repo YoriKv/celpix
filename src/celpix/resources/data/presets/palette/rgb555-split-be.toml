@@ -1,0 +1,22 @@
+# 15-bit RGB with each channel's low bit parked at the bottom of the word:
+# bits 15-4 are R4 G4 B4 in order, then bits 3/2/1 are the low bits of R/G/B and
+# bit 0 is unused. Splitting a channel keeps the visible nibbles byte-aligned,
+# which is why a lot of 68000 arcade video hardware stores colour this way
+# (MAME calls the layout RRRRGGGGBBBBRGBx; NMK's 16-bit boards are one family).
+# Big-endian only: the palette lives in 68000 RAM, so it is reached through a
+# save state or a RAM dump, and those are big-endian words.
+#
+# The split masks below list each channel most significant chunk first — see
+# docs/graphics-formats-reference/implementation-guide.md §4.
+id = "preset.palette.r5g5b5-split-be"
+name = "RGB555 split low bits (15-bit, big-endian)"
+engine_id = "codec.color-mask"
+
+[params]
+bytes_per_entry = 2
+byte_order = "big"
+
+[params.masks]
+r = [0xF000, 0x0008]
+g = [0x0F00, 0x0004]
+b = [0x00F0, 0x0002]

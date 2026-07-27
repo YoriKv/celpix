@@ -5,10 +5,13 @@ and *contribute* entries for later ones. **Everything here is advisory** — a
 recommendation a downstream stage or the user may follow, adjust, or ignore, never
 an enforced constraint (see ``docs/design/overview.md`` §5).
 
-For the MVP the one concrete use is **provenance**: the container's read records
+Two things flow through it today. **Provenance**: the container's read records
 where the bytes came from so its write can default to putting them back in the
-same place. The bag is intentionally an open, typed key/value store — plugins may
-define new keys and stages ignore keys they do not understand.
+same place. And the **compression contract**: Decompress records how big the
+structure was and whether it decoded whole, which is what a save-back has to fit
+into. :mod:`celpix.core.notices` rides on the same bag. It is intentionally an
+open, typed key/value store — plugins may define new keys and stages ignore keys
+they do not understand.
 """
 
 from __future__ import annotations
@@ -62,9 +65,6 @@ class PipelineContext:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._entries.get(key, default)
-
-    def __contains__(self, key: str) -> bool:
-        return key in self._entries
 
     def __repr__(self) -> str:
         return f"PipelineContext({sorted(self._entries)})"

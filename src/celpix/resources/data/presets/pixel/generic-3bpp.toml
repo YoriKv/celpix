@@ -1,7 +1,8 @@
-# Generic 3bpp — 3 flat 8-byte planes (NES-style).
+# 3bpp planar, separate planes — 3 whole 8-byte planes one after another
+# (NES-style). The peer layout is the per-row interleave: preset.pixel.3bpp-planar.
 # See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
 id = "preset.pixel.generic-3bpp"
-name = "3bpp planar flat (8x8)"
+name = "3bpp planar, separate planes (8x8, NES-style)"
 engine_id = "codec.planar"
 
 [params]

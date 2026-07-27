@@ -1,4 +1,4 @@
-# 5bpp per-row interleaved planar (PL04).
+# 5bpp per-row interleaved planar.
 # See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
 id = "preset.pixel.5bpp-planar"
 name = "5bpp planar (8x8)"

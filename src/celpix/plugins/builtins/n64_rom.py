@@ -1,9 +1,9 @@
 """Nintendo 64 ROM container — byte-order normalisation.
 
-An N64 dump exists in three byte orders, distinguished by how the same four
-header bytes come out. Nothing else about the file differs: the orders are the
-same ROM seen through copiers that disagreed about endianness, so *every* offset
-in every documentation source is quoted in the native one.
+An N64 dump exists in three byte orders, told apart by how the same four header
+bytes come out. Nothing else differs: the orders are one ROM seen through copiers
+that disagreed about endianness, so *every* documented offset is quoted in the
+native one.
 
 | Order | First four bytes | Relation to native |
 |---|---|---|
@@ -12,16 +12,16 @@ in every documentation source is quoted in the native one.
 | ``.n64`` little-endian | ``40 12 37 80`` | each 4-byte word reversed |
 
 Read normalises to native order so tiles decode and offsets mean what the
-documentation says; Write puts the file back in the order it arrived in, so a
-``.v64`` stays a ``.v64`` and the user's other tools keep reading it.
+documentation says; Write restores the order the file arrived in, so a ``.v64``
+stays a ``.v64`` and the user's other tools keep reading it.
 
-Both transforms are their own inverse (reversing a group twice restores it),
-which is what lets one width describe each direction. The width is carried
-forward on the context rather than re-derived at save time: by then the bytes in
-hand are normalised and no longer say which order they came from.
+Both transforms are their own inverse — reversing a group twice restores it —
+which is what lets one width describe each direction. The width is carried on the
+context rather than re-derived at save time: by then the bytes in hand are
+normalised and no longer say which order they came from.
 
-A trailing partial group is left alone — a truncated dump keeps whatever bytes
-it has instead of losing the tail to a group that was never whole.
+A trailing partial group is left alone, so a truncated dump keeps whatever bytes
+it has rather than losing the tail to a group that was never whole.
 
 See ``docs/graphics-formats-reference/implementation-guide.md`` §5.
 """
@@ -51,9 +51,8 @@ def swap_groups(data: bytes, width: int) -> bytes:
     """``data`` with every whole ``width``-byte group reversed (``width`` 0 = as is).
 
     Written as ``width`` strided slice assignments rather than a loop over the
-    groups, so the work happens inside CPython's slicing rather than once per
-    group — an N64 image is tens of megabytes and a per-group Python loop would
-    be seconds of it.
+    groups, so the work happens inside CPython's slicing: an N64 image is tens of
+    megabytes, and a per-group Python loop would be seconds of it.
     """
     if width < 2:
         return data
@@ -80,8 +79,8 @@ class N64RomContainer:
         short_name="N64",
         # A .z64 passes through untouched, but a .v64/.n64 is reordered within
         # every group, so a native-order offset names a different byte in the
-        # file. Declared statically for the whole container: which of the three
-        # a given file is isn't known until it has been read.
+        # file. Declared for the whole container, since which of the three a
+        # given file is isn't known until it has been read.
         preserves_offsets=False,
     )
 
@@ -89,10 +88,9 @@ class N64RomContainer:
         raw = source.data
         width = swap_width(raw)
         ctx.set(KEY_N64_SWAP, width)
-        if not raw[:4] or bytes(raw[:4]) not in _ORDERS:
-            # None of the three signatures matched, so there is nothing to say
-            # which order this file is in. Treating it as native leaves it
-            # unchanged, which is the only non-destructive guess available.
+        if bytes(raw[:4]) not in _ORDERS:
+            # Nothing says which order this file is in. Treating it as native
+            # leaves it unchanged, the only non-destructive guess available.
             warn(
                 ctx,
                 "Unrecognised N64 header: assuming native byte order",
@@ -102,9 +100,9 @@ class N64RomContainer:
                 self.info.id,
             )
         # Window the *normalised* stream: a byte's position only survives the
-        # swap within its own group, so an offset is only meaningful once the
-        # file reads in native order — which is also the order every published
-        # N64 offset is quoted in.
+        # swap within its own group, so an offset means something only once the
+        # file reads in native order — also the order every published N64 offset
+        # is quoted in.
         native = swap_groups(raw, width)
         start = source.start
         end = len(native) if source.length is None else start + source.length
@@ -112,15 +110,15 @@ class N64RomContainer:
         return native[start:end]
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
-        # The context is the authority — it records the order this file was read
-        # in. Without it (a write with no prior read) the destination's own bytes
-        # still say so, and a file that isn't there yet is written native.
+        # The context records the order this file was read in. Without it — a
+        # write with no prior read — the destination's own bytes still say, and a
+        # file that isn't there yet is written native.
         width = ctx.get(KEY_N64_SWAP)
         if width is None:
             width = swap_width(dest.existing[:4])
-        # Splice in native order and swap the whole result back, rather than
+        # Splice in native order and swap the whole result back rather than
         # splicing into the on-disk order: an offset that is not group-aligned
-        # names different bytes in the two orders, and only the native one is
-        # what the rest of the app has been addressing.
+        # names different bytes in the two orders, and the native one is what the
+        # rest of the app has been addressing.
         native = splice(swap_groups(dest.existing, width), dest.offset, data)
         return swap_groups(native, width)

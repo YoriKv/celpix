@@ -263,6 +263,58 @@ def test_packed_nibble_and_bit_order() -> None:
     assert px("preset.pixel.ngp-2bpp-swapped", [0x00, 0xE4]) == [3, 2, 1, 0]
 
 
+@pytest.mark.parametrize("stride", [1, 4, 32])
+def test_packed_nibble_stride_splits_the_index_across_two_bytes(stride: int) -> None:
+    """With ``nibble_stride`` a pixel's index is assembled from two bytes that far
+    apart, the nearer one carrying its *high* half.
+
+    The stride is also the run length, so 1 alternates the two halves byte by
+    byte, 4 alternates whole rows and 32 puts the tile's high halves before all of
+    its low ones. Getting the halves the wrong way round still round-trips, so the
+    order is pinned directly.
+    """
+    engine = _REG.plugin(Stage.INTERPRET_PIXEL, "codec.packed")
+    params = {"bpp": 8, "msb_first": True, "nibble_stride": stride}
+    assert engine.bytes_per_tile(params) == 64  # an 8x8 8bpp tile, split or not
+
+    data = bytearray(64)
+    data[0] = 0x12  # first high-half byte: pixels 0 and 1 -> index bits 7..4
+    data[stride] = 0x34  # its partner: the same two pixels' index bits 3..0
+    tile = engine.decode(bytes(data), params, PipelineContext())[0]
+    assert [tile.get(x, 0) for x in range(3)] == [0x13, 0x24, 0x00]
+
+    body = bytes((i * 61 + 7) & 0xFF for i in range(128))
+    tiles = engine.decode(body, params, PipelineContext())
+    assert engine.encode(tiles, params, PipelineContext()) == body
+
+
+def test_packed_nibble_stride_1_reads_a_joined_pair_of_4bpp_halves() -> None:
+    """A board wiring each half-index to its own ROM lands on ``nibble_stride=1``
+    once ``reshape.split-planes-2`` has joined the two halves.
+
+    Cross-checked against the shipped 4bpp preset rather than a restatement of the
+    kernel: decode each half alone, and the joined 8bpp index must be the first
+    half's index in its top nibble and the second's in its bottom.
+    """
+    half_engine, half_params = _pixel_engine("preset.pixel.genesis-4bpp")
+    ctx = PipelineContext()
+    high = bytes((i * 37 + 11) & 0xFF for i in range(32))
+    low = bytes((i * 53 + 5) & 0xFF for i in range(32))
+    hi_tile = half_engine.decode(high, half_params, ctx)[0]
+    lo_tile = half_engine.decode(low, half_params, ctx)[0]
+
+    joined = _REG.plugin(Stage.RESHAPE, "reshape.split-planes-2").reshape(
+        high + low, ctx
+    )
+    engine = _REG.plugin(Stage.INTERPRET_PIXEL, "codec.packed")
+    params = {"bpp": 8, "msb_first": True, "nibble_stride": 1}
+    tile = engine.decode(joined, params, ctx)[0]
+
+    assert [[tile.get(x, y) for x in range(8)] for y in range(8)] == [
+        [hi_tile.get(x, y) << 4 | lo_tile.get(x, y) for x in range(8)] for y in range(8)
+    ]
+
+
 def test_nibble_planar_plane_pair_and_nibble_order() -> None:
     """A nibble-planar byte's high nibble is the *more* significant of the two
     planes it carries and bit 3 of a nibble is the leftmost of its four pixels;
@@ -316,6 +368,53 @@ def test_bgr555_known_vector() -> None:
     # Pure blue: B field (0x7C00) all set, LE u16 -> bytes 00 7C.
     pal = engine.decode(b"\x00\x7c", params, PipelineContext())
     assert pal.color(0) == 0xFF0000FF
+
+
+def test_split_mask_palette_gathers_the_stray_low_bits() -> None:
+    """A channel whose low bit sits away from its nibble must read as one field,
+    high chunk first. Pinning the *low* bits is the point: drop them and the
+    colour is still plausible (off by 1/32), so only an exact vector catches it.
+    """
+    engine, params = _color_engine("preset.palette.r5g5b5-split-be")
+    # R nibble full, R low bit clear -> 5-bit 0b11110; G low bit alone -> 0b00001.
+    pal = engine.decode(b"\xf0\x04", params, PipelineContext())
+    assert pal.color(0) == 0xFFF70800
+
+
+def test_split_mask_palette_write_back_keeps_every_defined_bit() -> None:
+    """5 bits a channel survive a decode/encode round trip exactly, so editing one
+    colour cannot quietly clear the low bits of the fifteen beside it. Bit 0 is
+    unused by the hardware and is the only bit allowed to come back zeroed."""
+    engine, params = _color_engine("preset.palette.r5g5b5-split-be")
+    raw = bytes.fromhex("f008 0f04 00f2 ffff 1234 aa55 0000 8001")
+    back = engine.encode(
+        engine.decode(raw, params, PipelineContext()), params, PipelineContext()
+    )
+    assert back == bytes(b & (0xFE if i % 2 else 0xFF) for i, b in enumerate(raw))
+
+
+def test_split_mask_direct_color_matches_the_palette_path() -> None:
+    """Direct colour converts through precomputed byte-plane tables rather than
+    per value, so it is a second implementation of the same gather. Given the same
+    masks the two must agree pixel for pixel."""
+    palette_engine, palette_params = _color_engine("preset.palette.r5g5b5-split-be")
+    pixel_engine = _REG.plugin(Stage.INTERPRET_PIXEL, "codec.direct-color")
+    params = {
+        "bytes_per_pixel": 2,
+        "byte_order": "big",
+        "masks": palette_params["masks"],
+        "tile_width": 2,
+        "tile_height": 2,
+    }
+    data = bytes.fromhex("f008 0f04 00f2 a55a")
+    grid = pixel_engine.decode(data, params, PipelineContext())[0]
+    expected = palette_engine.decode(data, palette_params, PipelineContext())
+    assert [grid.get(x, y) for y in range(2) for x in range(2)] == [
+        expected.color(i) for i in range(4)
+    ]
+    assert pixel_engine.encode([grid], params, PipelineContext()) == bytes(
+        b & (0xFE if i % 2 else 0xFF) for i, b in enumerate(data)
+    )
 
 
 def test_rgb888_known_vector() -> None:

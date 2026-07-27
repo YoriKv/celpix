@@ -100,7 +100,7 @@ class SelectionMixin:
         home is elsewhere on screen (the transform bar); the menu is where they
         are named and their keys written down.
         """
-        menu = self.menuBar().addMenu("Edit")
+        menu = self.menuBar().addMenu("&Edit")
         undo = self._undo_stack.createUndoAction(self)
         undo.setShortcut(QKeySequence.StandardKey.Undo)  # Ctrl+Z
         redo = self._undo_stack.createRedoAction(self)
@@ -149,24 +149,30 @@ class SelectionMixin:
         shortcut, wherever they appear. Added to the window itself so their
         shortcuts fire regardless of which menu is open.
         """
+        # "&" marks the mnemonic. These actions appear in both the Edit menu and
+        # the canvas's right-click menu, so a letter has to stay free of what
+        # either one puts beside them - hence Copy taking the "C" and Clear the
+        # "r", and Paste the "a" rather than the "P" the canvas menu's Palette
+        # from Selection holds (its own shortcut key; Paste's "V" is not a letter
+        # of its label, and a mnemonic can only be one of those).
         specs = (
-            ("_cut_action", "Cut", QKeySequence.StandardKey.Cut, self._cut_selection),
+            ("_cut_action", "Cu&t", QKeySequence.StandardKey.Cut, self._cut_selection),
             (
                 "_copy_action",
-                "Copy",
+                "&Copy",
                 QKeySequence.StandardKey.Copy,
                 self._copy_selection,
             ),
-            ("_paste_action", "Paste", QKeySequence.StandardKey.Paste, self._paste),
+            ("_paste_action", "P&aste", QKeySequence.StandardKey.Paste, self._paste),
             (
                 "_clear_action",
-                "Clear",
+                "Clea&r",
                 QKeySequence.StandardKey.Delete,
-                self._clear_pixels,
+                self._clear_selection_contents,
             ),
             (
                 "_select_all_action",
-                "Select All",
+                "Select A&ll",
                 QKeySequence.StandardKey.SelectAll,
                 self._select_all,
             ),
@@ -194,14 +200,14 @@ class SelectionMixin:
         specs = (
             (
                 "_toggle_selection_mode_action",
-                "Toggle Selection Mode",
+                "Toggle &Selection Mode",
                 "S",
                 "Swap Linear / Rectangle selection",
                 self._toggle_selection_mode,
             ),
             (
                 "_toggle_edit_mode_action",
-                "Toggle Edit Mode",
+                "Toggle &Edit Mode",
                 "E",
                 "Swap tile / pixel editing",
                 self._toggle_edit_mode,
@@ -265,21 +271,16 @@ class SelectionMixin:
         """Converge the clipboard actions with the selection and the clipboard."""
         self._toggle_selection_mode_action.setEnabled(self._can_toggle_selection_mode())
         self._toggle_edit_mode_action.setEnabled(self._can_toggle_edit_mode())
-        if self._edit_mode is EditMode.PIXEL:
-            # Pixel mode gates Cut/Copy/Clear on a pixel marquee, not a tile run.
-            has = self._doc is not None and self._marquee is not None
-            for action in (self._cut_action, self._copy_action, self._clear_action):
-                action.setEnabled(has)
-            self._paste_action.setEnabled(
-                self._doc is not None and clipboard.has_content()
-            )
-            self._select_all_action.setEnabled(self._doc is not None)
-            return
-        has_selection = self._doc is not None and self._selected_tile is not None
+        has_doc = self._doc is not None
+        # Pixel mode gates Cut/Copy/Clear on a pixel marquee, tile mode on a
+        # tile run; everything else about the five is the same in both.
+        target = (
+            self._marquee if self._edit_mode is EditMode.PIXEL else self._selected_tile
+        )
         for action in (self._cut_action, self._copy_action, self._clear_action):
-            action.setEnabled(has_selection)
-        self._paste_action.setEnabled(self._doc is not None and clipboard.has_content())
-        self._select_all_action.setEnabled(self._doc is not None)
+            action.setEnabled(has_doc and target is not None)
+        self._paste_action.setEnabled(has_doc and clipboard.has_content())
+        self._select_all_action.setEnabled(has_doc)
 
     # -- tile selection ----------------------------------------------------
     def _view_layout(self) -> BlockLayout:
@@ -329,7 +330,7 @@ class SelectionMixin:
         self._selection_shape.setEnabled(not forced)
         # The keyboard route to the same swap has to go with it.
         self._sync_edit_actions()
-        if forced and self._rect_cells is None and self._selected_tile is not None:
+        if forced and self._rect_size is None and self._selected_tile is not None:
             self._select_tiles(self._selected_tile, self._selected_tile)
 
     def _rect_tiles_for(
@@ -369,7 +370,7 @@ class SelectionMixin:
         tile = self._offset + slot
         return tile if 0 <= tile < self._doc.tile_count else None
 
-    def _on_tiles_selected(self, anchor_slot: int, moving_slot: int) -> None:
+    def _on_slots_selected(self, anchor_slot: int, moving_slot: int) -> None:
         """Select the pressed slot, or what a drag to ``moving_slot`` spans.
 
         Fired on press (anchor == moving) and again as a drag reaches other
@@ -403,23 +404,23 @@ class SelectionMixin:
 
     def _set_linear_selection(self, first: int, last: int) -> None:
         self._selected_tile, self._selected_last = first, last
-        self._rect_cells, self._rect_tiles = None, ()
+        self._rect_size, self._rect_tiles = None, ()
         self._after_selection_change()
 
     def _set_rect_selection(
-        self, cells: tuple[int, int], tiles: tuple[int, ...]
+        self, size: tuple[int, int], tiles: tuple[int, ...]
     ) -> None:
         # The anchor is the top-left cell's tile, not the lowest index in the
         # block: under a column-major or interleaved arrangement those differ,
         # and everything anchored on the selection (paste, palette-from-selection)
         # means "where the user's rectangle starts on screen".
         self._selected_tile, self._selected_last = tiles[0], max(tiles)
-        self._rect_cells, self._rect_tiles = cells, tiles
+        self._rect_size, self._rect_tiles = size, tiles
         self._after_selection_change()
 
     def _after_selection_change(self) -> None:
         self._sync_selection_actions()
-        self._refresh_selection(self._columns.value() * self._rows.value())
+        self._revalidate_selection(self._columns.value() * self._rows.value())
         self._refresh_hex()  # the hex highlight tracks the selection
 
     def _announce_selection(self) -> None:
@@ -430,8 +431,8 @@ class SelectionMixin:
         first = self._selected_tile
         assert first is not None
         at_first = self._format_offset(self._tile_byte_offset(first))
-        if self._rect_cells is not None:
-            cols, rows = self._rect_cells
+        if self._rect_size is not None:
+            cols, rows = self._rect_size
             self.statusBar().showMessage(
                 f"Selected {cols}×{rows} tiles ({len(tiles)}) from {at_first}"
             )
@@ -446,7 +447,7 @@ class SelectionMixin:
     def _clear_selection(self) -> None:
         self._selected_tile = None
         self._selected_last = None
-        self._rect_cells, self._rect_tiles = None, ()
+        self._rect_size, self._rect_tiles = None, ()
         self._canvas.set_selection(None)
         self._sync_selection_actions()
         self._refresh_hex()
@@ -477,7 +478,7 @@ class SelectionMixin:
         if self._doc is None or self._selected_tile is None:
             return []
         count = self._doc.tile_count
-        if self._rect_cells is not None:
+        if self._rect_size is not None:
             return [t for t in self._rect_tiles if 0 <= t < count]
         last = min(self._selected_last or self._selected_tile, count - 1)
         return list(range(self._selected_tile, last + 1))
@@ -680,8 +681,8 @@ class SelectionMixin:
         A rectangle copies at its own width; a linear run wraps at the view's
         columns, or is a single short row when it doesn't reach that far.
         """
-        if self._rect_cells is not None:
-            return max(1, min(self._rect_cells[0], count))
+        if self._rect_size is not None:
+            return max(1, min(self._rect_size[0], count))
         view_cols = self._columns.value()
         return view_cols if count > view_cols else max(1, count)
 
@@ -698,7 +699,7 @@ class SelectionMixin:
         assert self._doc is not None
         layout = (
             BlockLayout(columns)
-            if self._rect_cells is not None
+            if self._rect_size is not None
             else BlockLayout(
                 columns,
                 self._block_cols.value(),
@@ -708,8 +709,7 @@ class SelectionMixin:
         )
         rows = 1 + max(layout.slot_to_cell(slot)[1] for slot in range(len(tiles)))
         grid = compose_window(tiles, columns, 0, rows, layout)
-        base = self._subpalette.value() * self._index_space()
-        return render_bridge.render(grid, self._doc.palette, base)
+        return render_bridge.render(grid, self._doc.palette, self._palette_base())
 
     def _blank_selection(self, text: str) -> int:
         """Blank every selected tile as one edit; returns how many were written.
@@ -745,7 +745,7 @@ class SelectionMixin:
         if written:
             self.statusBar().showMessage(f"Cut {self._tiles_label(written)}.")
 
-    def _clear_pixels(self) -> None:
+    def _clear_selection_contents(self) -> None:
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_clear()
             return
@@ -1050,7 +1050,7 @@ class SelectionMixin:
         return runs
 
     def _apply_pixel_bytes(
-        self, splices: list[tuple[int, bytes]], revision: int
+        self, splices: list[tuple[int, bytes]], revision: int, owner_revision: int = 0
     ) -> None:
         """Land a pixel edit's byte regions - :class:`PixelEditCommand`'s apply.
 
@@ -1061,6 +1061,9 @@ class SelectionMixin:
         command's token for the state it just produced: stamping it on the
         *pixel* pathway makes the entry read dirty against what was last
         written, so an undo back to those bytes reports clean again.
+
+        The edit then crosses the file/slice boundary (
+        :meth:`_propagate_pixel_edit`), which is where ``owner_revision`` lands.
         """
         if self._doc is None:
             return
@@ -1069,6 +1072,7 @@ class SelectionMixin:
         entry = self._workspace.current
         if entry is not None:
             self._workspace.set_pixel_revision(entry, revision)
+            self._propagate_pixel_edit(entry, owner_revision)
         self._refresh_view()
 
     def _select_tiles(self, first: int, last: int) -> None:
@@ -1118,7 +1122,7 @@ class SelectionMixin:
         menu.addSeparator()
         # Built here rather than shared: import has no shortcut and no other
         # menu shows it, so there is nothing to keep in sync.
-        import_png = menu.addAction("Import from PNG…")
+        import_png = menu.addAction("&Import from PNG…")
         import_png.setToolTip(
             "Fit an image into this format and stamp it at the selected tile"
         )
@@ -1149,7 +1153,7 @@ class SelectionMixin:
         tb = self._doc.bytes_per_tile
         return self._nudge + first * tb, count * tb
 
-    def _refresh_selection(self, window_tiles: int) -> None:
+    def _revalidate_selection(self, window_tiles: int) -> None:
         """Re-derive the canvas highlight after the window moved or resized.
 
         Scrolling away hides the highlight but keeps the selection, so scrolling
@@ -1168,7 +1172,7 @@ class SelectionMixin:
             if self._selected_tile >= self._doc.tile_count:
                 self._clear_selection()
                 return
-            if self._rect_cells is not None:
+            if self._rect_size is not None:
                 self._revalidate_rect()
             else:
                 self._selected_last = min(
@@ -1180,16 +1184,16 @@ class SelectionMixin:
             for tile in self._selection_tiles()
             if 0 <= tile - self._offset < window_tiles
         }
-        self._canvas.set_selection(slots, as_block=self._rect_cells is not None)
+        self._canvas.set_selection(slots, as_rect=self._rect_size is not None)
 
     def _revalidate_rect(self) -> None:
         """Collapse the rectangle selection unless its cells still cover its tiles."""
-        assert self._rect_cells is not None
+        assert self._rect_size is not None
         origin = self._selected_tile
         assert origin is not None
-        if self._rect_tiles_for(origin - self._offset, *self._rect_cells) != (
+        if self._rect_tiles_for(origin - self._offset, *self._rect_size) != (
             self._rect_tiles
         ):
             self._selected_last = origin
-            self._rect_cells, self._rect_tiles = None, ()
+            self._rect_size, self._rect_tiles = None, ()
             self._sync_selection_actions()

@@ -4,39 +4,36 @@ Files starting with "_" are ignored — copy this file, drop the underscore from
 the name, and press F5 in celPix to load it (code plugins ask for confirmation
 the first time, since they run with the app's privileges).
 
-``_example.py`` alongside this file is the minimal shape; this is a real format,
+``_example.py`` alongside this file is the minimal shape. This is a real format,
 and a good one to learn containers from because its framing is a *lookup* rather
-than a fixed header. A TIFF does not store its pixels at a known offset: it
-stores a directory (the IFD) whose entries say where the image data actually
-sits, in one or more "strips" scattered anywhere in the file. So ``read`` parses
-the directory and hands celPix the strips joined end to end, and ``write`` puts
-edited bytes back strip by strip — which is exactly the general container job,
-since the byte range the codec edits has no fixed relationship to the file at all.
+than a fixed header. A TIFF does not store its pixels at a known offset: it stores
+a directory (the IFD) whose entries say where the image data sits, in one or more
+"strips" scattered anywhere in the file. So ``read`` parses the directory and
+hands celPix the strips joined end to end, and ``write`` puts edited bytes back
+strip by strip — the general container job, where the byte range the codec edits
+has no fixed relationship to the file.
 
 **Layout.** ``II``/``MM`` picks the byte order for every number in the file, then
-magic 42, then the offset of the first IFD. An IFD is an entry count, then
-12-byte entries — tag, type, count, and either the value itself (when it fits in
-four bytes) or an offset to it. Three tags matter here: ``StripOffsets`` (273),
+magic 42, then the offset of the first IFD. An IFD is an entry count followed by
+12-byte entries — tag, type, count, and either the value itself when it fits in
+four bytes or an offset to it. Three tags matter here: ``StripOffsets`` (273),
 ``StripByteCounts`` (279) and ``Compression`` (259).
 
 **Compression.** Baseline TIFF's own PackBits is a *celPix* compression plugin,
 not a container concern: this hands over the strips exactly as stored and reports
 which scheme they use, and the user picks "PackBits" in the Compression dropdown
-to unpack them. The two layers compose — that is why they are separate pipeline
-stages.
+to unpack them. The two layers compose, which is why they are separate stages.
 
-**Telling the user something.** Two channels, and the difference matters. Raise
-when the read cannot proceed — celPix stops and reports it, and nothing opens.
-Call ``warn``/``inform`` when it *can* proceed but the result deserves a caveat:
-an unsupported compression, strips joined out of a scattered file. Those mark the
-entry in the files list and spell themselves out in its tooltip, without
-interrupting anyone. A plugin may also record notices and *then* raise, so a hard failure can
-carry what led up to it.
+**Telling the user something.** Two channels. Raise when the read cannot proceed:
+celPix stops, reports it, and nothing opens. Call ``warn``/``inform`` when it
+*can* proceed but the result deserves a caveat — an unsupported compression,
+strips joined out of a scattered file. Those mark the entry in the files list and
+spell themselves out in its tooltip without interrupting anyone. A plugin may also
+record notices and *then* raise, so a hard failure carries what led up to it.
 
-**What it deliberately doesn't do**, being an example: tiled TIFFs
-(``TileOffsets``, tag 324), multi-page files (only the first IFD is read),
-BigTIFF, and any compression beyond none/PackBits. Each would be more parsing,
-not a different shape.
+**What it doesn't do**, being an example: tiled TIFFs (``TileOffsets``, tag 324),
+multi-page files (only the first IFD is read), BigTIFF, and any compression beyond
+none/PackBits. Each is more parsing, not a different shape.
 """
 
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
@@ -68,7 +65,7 @@ def _entry(raw: bytes, order: str, at: int) -> tuple[int, list[int]]:
     if size == 0 or count == 0:
         return tag, []
     # The last four bytes are the value itself when it fits, and a pointer to it
-    # when it doesn't — the one piece of TIFF that catches everybody out.
+    # when it doesn't — the piece of TIFF that catches everybody out.
     field = at + 8
     start = field if size * count <= 4 else int.from_bytes(raw[field : field + 4], order)
     return tag, [
@@ -108,29 +105,33 @@ class TiffContainer:
         magic=((0, _LITTLE), (0, _BIG)),
         # The tag the Files list shows beside a filename: "board.tif (TIFF)".
         short_name="TIFF",
+        # The strips are joined end to end, so a position in the result names no
+        # position in the file. Declaring that stops celPix carving a slice, or
+        # writing an offset palette, at coordinates meaning nothing here: the
+        # read reorders, so only this container can place a write.
+        preserves_offsets=False,
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         """The image strips, joined — the bytes a pixel codec should see."""
         # The host has already acquired the file's bytes, so a container is a
-        # pure transform of them and never opens source.path itself.
+        # pure transform of them and never opens source.path.
         raw = source.data
         strips, compression = _strips(raw)
-        # Provenance is the first strip: it is where the data celPix now holds
-        # begins in the file, which is what the address display and a save-back
-        # want. The strips after it are not contiguous with it, which is exactly
-        # why the write below cannot be a single splice.
+        # Provenance is the first strip: where the data celPix now holds begins in
+        # the file, which is what the address display and a save-back want. The
+        # strips after it are not contiguous with it, which is why the write
+        # below cannot be a single splice.
         ctx.set(KEY_SOURCE_OFFSET, strips[0][0])
         name = _COMPRESSION_NAMES.get(compression, f"unsupported ({compression})")
         # Advisory, like everything on the context: it tells the user which
         # Compression entry to pick without this container deciding for them.
         ctx.set("tiff.compression", name)
-        # A *notice* is the other half of that: the context entry above is for
-        # another stage to read, this is for the person looking at the result.
-        # Use it whenever the read succeeded but the bytes are not quite what
-        # was asked for — celPix marks the entry in the files list and puts them
-        # in its tooltip. Raising is still the right answer when the read cannot
-        # proceed at all (see _strips below).
+        # A *notice* is the other half of that. The context entry above is for
+        # another stage to read; this is for the person looking at the result.
+        # Use it when the read succeeded but the bytes are not quite what was
+        # asked for — celPix marks the entry in the files list and puts them in
+        # its tooltip. Raise instead when the read cannot proceed (see _strips).
         if compression not in _COMPRESSION_NAMES:
             warn(
                 ctx,
@@ -157,13 +158,13 @@ class TiffContainer:
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         """Put edited bytes back into the strips they were read out of.
 
-        ``dest.offset`` is not consulted: the strips say where the bytes go, and
+        ``dest.offset`` is not consulted: the strips say where the bytes go and
         they are not contiguous, so a single file offset could not describe the
-        destination even in principle. Every container that relocates data ends
-        up here — Read's mapping is the only thing that knows how to undo itself.
-        Returning the file *whole* is what makes that expressible: the edit lands
-        in several places at once, and everything between the strips is carried
-        across untouched.
+        destination even in principle. Every container that relocates data ends up
+        here, the read's mapping being the only thing that knows how to undo
+        itself. Returning the file *whole* is what makes that expressible — the
+        edit lands in several places at once, and everything between the strips is
+        carried across untouched.
 
         The strips are a fixed set of slots, so the edited data has to be exactly
         the size it was read as. It always is for an ordinary tile edit, which

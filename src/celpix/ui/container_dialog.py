@@ -54,6 +54,7 @@ from celpix.core.errors import Stage
 from celpix.plugins.base import NO_RESHAPE, RAW_CONTAINER, writes_back
 from celpix.plugins.detect import container_write_enabled, detect_container
 from celpix.plugins.registry import Registry
+from celpix.ui.widgets import fill_stage_combo, select_combo_data
 
 __all__ = ["ContainerDialog", "ContainerEdit"]
 
@@ -100,7 +101,11 @@ class ContainerEdit:
 
 
 class _FileRow(NamedTuple):
-    """One file's row: the path it shows and the four buttons that act on it."""
+    """One file's row: the path it shows and the four buttons that act on it.
+
+    The buttons wire themselves and no production code reaches back for them,
+    but they are what the dialog's tests drive, so the row carries them.
+    """
 
     widget: QWidget
     field: QLineEdit
@@ -141,17 +146,11 @@ class ContainerDialog(QDialog):
         for plugin_id, name in self._names.items():
             self._container.addItem(name, plugin_id)
         self._detected = ""
-        index = self._container.findData(container_id)
-        if index >= 0:
-            self._container.setCurrentIndex(index)
+        select_combo_data(self._container, container_id)
 
         self._reshape = QComboBox()
         self._reshape.setToolTip(_RESHAPE_TIP)
-        for plugin in registry.plugins(Stage.RESHAPE):
-            self._reshape.addItem(plugin.info.name, plugin.info.id)
-        index = self._reshape.findData(reshape_id)
-        if index >= 0:
-            self._reshape.setCurrentIndex(index)
+        fill_stage_combo(self._reshape, registry.plugins(Stage.RESHAPE), reshape_id)
 
         # A container or reshape with no save half of its own can still be read
         # through, but the entry then opens read-only — worth saying before the
@@ -250,29 +249,41 @@ class ContainerDialog(QDialog):
 
         last = len(self._paths) - 1
         specs = (
-            ("▲", "Move this file one place earlier in the join", index > 0),
-            ("▼", "Move this file one place later in the join", index < last),
-            ("…", "Point this row at a different file", True),
+            (
+                "▲",
+                "Move this file one place earlier in the join",
+                index > 0,
+                partial(self._move, index, -1),
+            ),
+            (
+                "▼",
+                "Move this file one place later in the join",
+                index < last,
+                partial(self._move, index, 1),
+            ),
+            (
+                "…",
+                "Point this row at a different file",
+                True,
+                partial(self._browse, index),
+            ),
             (
                 "✕",
                 "Drop this file from the region\n(the list keeps at least one)",
                 last > 0,
+                partial(self._remove, index),
             ),
         )
         made = []
-        for glyph, tip, enabled in specs:
+        for glyph, tip, enabled, handler in specs:
             button = QToolButton()
             button.setText(glyph)
             button.setToolTip(tip)
             button.setEnabled(enabled)
+            button.clicked.connect(handler)
             layout.addWidget(button)
             made.append(button)
-        up, down, browse, remove = made
-        up.clicked.connect(partial(self._move, index, -1))
-        down.clicked.connect(partial(self._move, index, 1))
-        browse.clicked.connect(partial(self._browse, index))
-        remove.clicked.connect(partial(self._remove, index))
-        return _FileRow(widget, field, up, down, browse, remove)
+        return _FileRow(widget, field, *made)
 
     def _move(self, index: int, delta: int) -> None:
         target = index + delta
@@ -353,7 +364,7 @@ class ContainerDialog(QDialog):
             plugin = self._registry.plugin(Stage.RESHAPE, self._reshape.currentData())
         except KeyError:
             return True  # an id this registry lacks isn't this note's problem
-        return writes_back(plugin, "unshape")
+        return writes_back(plugin, Stage.RESHAPE)
 
     # -- results -------------------------------------------------------------
     def container_id(self) -> str:

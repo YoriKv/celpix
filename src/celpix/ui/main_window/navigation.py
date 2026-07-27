@@ -47,7 +47,6 @@ from celpix.core.address import (
     parse_hex,
 )
 from celpix.core.context import KEY_SOURCE_OFFSET
-from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.undo_commands import (
     OffsetMoveCommand,
@@ -76,36 +75,36 @@ class NavigationMixin:
         steps, window resizing) live only here and on the keyboard, so the menu
         doubles as the discoverable list of navigation shortcuts.
         """
-        menu = self.menuBar().addMenu("Navigate")
+        menu = self.menuBar().addMenu("&Navigate")
         groups: tuple[tuple[tuple[str, str, Callable[[], None]], ...], ...] = (
             (
-                ("First page", "Home", self._nav_home),
-                ("Last page", "End", self._nav_end),
+                ("&First page", "Home", self._nav_home),
+                ("&Last page", "End", self._nav_end),
             ),
             (
-                ("Previous byte", "- / Ctrl+Left", lambda: self._nav_bytes(-1)),
-                ("Next byte", "+ / Ctrl+Right", lambda: self._nav_bytes(1)),
-                ("Zero byte offset", "0", self._clear_nudge),
-                ("Previous tile", "Left", lambda: self._nav_tiles(-1)),
-                ("Next tile", "Right", lambda: self._nav_tiles(1)),
-                ("Row up", "Up", lambda: self._nav_rows(-self._row_step())),
-                ("Row down", "Down", lambda: self._nav_rows(self._row_step())),
-                ("Page up", "PgUp", lambda: self._nav_rows(-self._rows.value())),
-                ("Page down", "PgDown", lambda: self._nav_rows(self._rows.value())),
+                ("&Previous byte", "- / Ctrl+Left", lambda: self._nav_bytes(-1)),
+                ("&Next byte", "+ / Ctrl+Right", lambda: self._nav_bytes(1)),
+                ("&Zero byte offset", "0", self._clear_nudge),
+                ("Previous &tile", "Left", lambda: self._nav_tiles(-1)),
+                ("Next til&e", "Right", lambda: self._nav_tiles(1)),
+                ("Row &up", "Up", lambda: self._nav_rows(-self._row_step())),
+                ("Row &down", "Down", lambda: self._nav_rows(self._row_step())),
+                ("Pa&ge up", "PgUp", lambda: self._nav_rows(-self._rows.value())),
+                ("Page do&wn", "PgDown", lambda: self._nav_rows(self._rows.value())),
             ),
             (
                 (
-                    "Fewer columns",
+                    "Fewer &columns",
                     "Shift+Left",
                     lambda: self._adjust_spin(self._columns, -1),
                 ),
                 (
-                    "More columns",
+                    "&More columns",
                     "Shift+Right",
                     lambda: self._adjust_spin(self._columns, 1),
                 ),
-                ("Fewer rows", "Shift+Up", lambda: self._adjust_spin(self._rows, -1)),
-                ("More rows", "Shift+Down", lambda: self._adjust_spin(self._rows, 1)),
+                ("Fewer &rows", "Shift+Up", lambda: self._adjust_spin(self._rows, -1)),
+                ("More r&ows", "Shift+Down", lambda: self._adjust_spin(self._rows, 1)),
             ),
         )
         for i, group in enumerate(groups):
@@ -133,7 +132,7 @@ class NavigationMixin:
         +B/−B nudge the grid one byte (sub-tile alignment) and 0B clears the
         nudge; Pg Up/Dn step a whole window - the same actions the keys drive
         (:meth:`_build_nav_keys`).
-        First/last page are keyboard + View menu only. The position box
+        First/last page are keyboard + Navigate menu only. The position box
         reads/writes addresses in the format the
         dropdown next to it selects: flat hex, or a ``bank:offset`` mapping
         parameterized by the three bank-setting spins (a preset fills them; a
@@ -185,13 +184,13 @@ class NavigationMixin:
         # address becomes the grid's byte nudge); it keeps
         # its own arrow/Home keys, so the navigation shortcuts don't fire while
         # focused.
-        self._offset_edit = CommittingLineEdit(self._parse_address, self._offset_text)
-        self._offset_edit.setFixedWidth(104)
-        self._offset_edit.setToolTip(self._offset_edit_tip())
-        self._offset_label.setToolTip(self._offset_edit.toolTip())
-        self._offset_label.setBuddy(self._offset_edit)
-        self._offset_edit.committed.connect(self._jump_to_offset)
-        row.addWidget(self._offset_edit)
+        self._address_edit = CommittingLineEdit(self._parse_address, self._offset_text)
+        self._address_edit.setFixedWidth(104)
+        self._address_edit.setToolTip(self._address_edit_tip())
+        self._offset_label.setToolTip(self._address_edit.toolTip())
+        self._offset_label.setBuddy(self._address_edit)
+        self._address_edit.committed.connect(self._jump_to_address)
+        row.addWidget(self._address_edit)
         row.addSpacing(12)
 
         # The settings live in one container so the piecewise presets
@@ -297,7 +296,7 @@ class NavigationMixin:
         spin.valueChanged.connect(self._on_bank_setting_change)
         return spin
 
-    def _offset_bar_style(self) -> str:
+    def _tile_offset_bar_style(self) -> str:
         """Accent-colored QSS for the file-position bar.
 
         Derived from the app's Highlight color so it stays theme-appropriate; a
@@ -598,14 +597,14 @@ class NavigationMixin:
     def _nav_home(self) -> None:
         self._set_offset(0)
 
-    def _on_offset_bar_change(self, value: int) -> None:
+    def _on_tile_offset_bar_change(self, value: int) -> None:
         """Scrub the file-position bar in whole rows (block-rows in a block pattern).
 
         A drag can land the raw slider value on any tile, which would shift the
         image sideways by the sub-row remainder - and re-cut every block under
         a block grouping - so the value snaps to the nearest vertical step
         (:meth:`_row_step` rows). The bar's maximum is row-aligned
-        (:meth:`Document.last_page_offset` rounds up to a whole row), so a
+        (:meth:`Document.last_page_tile_offset` rounds up to a whole row), so a
         row snap never overshoots the end clamp; a block-row snap can, and
         :meth:`_set_offset` clamps it back to the last page. Tile-level moves
         stay available on the keys/buttons, and the byte nudge is untouched.
@@ -628,7 +627,7 @@ class NavigationMixin:
             return
         if nudge is None:
             nudge = self._nudge
-        offset = self._doc.clamp_offset(
+        offset = self._doc.clamp_tile_offset(
             offset, self._columns.value(), self._rows.value(), nudge
         )
         if (offset, nudge) == (self._offset, self._nudge):
@@ -702,14 +701,14 @@ class NavigationMixin:
         layout = self._bank_layout()
         return parse_hex(text) if layout is None else layout.parse(text)
 
-    def _offset_edit_tip(self) -> str:
+    def _address_edit_tip(self) -> str:
         return f"File position ({self._addr_format.currentText()})\nEnter to jump"
 
     def _refresh_offset_display(self) -> None:
-        self._offset_edit.setToolTip(self._offset_edit_tip())
-        self._offset_label.setToolTip(self._offset_edit.toolTip())
-        if self._doc is not None and not self._offset_edit.hasFocus():
-            self._offset_edit.refresh()
+        self._address_edit.setToolTip(self._address_edit_tip())
+        self._offset_label.setToolTip(self._address_edit.toolTip())
+        if self._doc is not None and not self._address_edit.hasFocus():
+            self._address_edit.refresh()
         # The palette offset field shares the address conventions, so a format
         # or bank-setting change must re-render it too (its provider returns ""
         # when Offset mode isn't active, so this is safe at any time).
@@ -761,10 +760,7 @@ class NavigationMixin:
         past the iNES header and the PRG banks) and the host never asked for it.
         """
         assert self._doc is not None
-        if (
-            self._doc.pixel_config.compression_id != NO_COMPRESSION
-            or self._doc.pixel_config.reshape_id != NO_RESHAPE
-        ):
+        if not self._doc.pixel_config.reads_raw_bytes:
             return 0
         return self._doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
 
@@ -783,7 +779,7 @@ class NavigationMixin:
             return ""
         return self._format_offset(self._tile_byte_offset(self._offset))
 
-    def _jump_to_offset(self, byte_off: int) -> None:
+    def _jump_to_address(self, byte_off: int) -> None:
         """Jump to a file byte offset - the offset box's commit handler.
 
         Byte-exact: a sub-tile address sets the byte nudge, so typing any offset
@@ -796,27 +792,30 @@ class NavigationMixin:
         self._set_byte_position(byte_off - self._display_base())
 
     def _sync_nav(self) -> None:
-        """Mirror the current offset into the hex box and the position bar."""
+        """Mirror the current position into the address box and the tile-offset
+        bar, and re-scale the bar to the file."""
         has_doc = self._doc is not None
-        self._offset_edit.setEnabled(has_doc)
-        self._offset_bar.setEnabled(has_doc)
+        self._address_edit.setEnabled(has_doc)
+        self._tile_offset_bar.setEnabled(has_doc)
         if not has_doc:
-            self._offset_edit.clear()
+            self._address_edit.clear()
             self._nudge_info.clear()
             return
 
         cols, rows = self._columns.value(), self._rows.value()
         # Don't overwrite what the user is mid-way through typing; a commit re-renders
         # the box itself (CommittingLineEdit.commit), so this guard is safe.
-        if not self._offset_edit.hasFocus():
-            self._offset_edit.refresh()
+        if not self._address_edit.hasFocus():
+            self._address_edit.refresh()
         self._nudge_info.setText(f"+{self._nudge} B" if self._nudge else "")
 
         # Scrollbar spans the whole file: value = offset, page = one window of tiles,
         # so the handle size reflects how much of the file is on screen.
         page = max(1, cols) * max(1, rows)
-        max_off = self._doc.clamp_offset(self._doc.tile_count, cols, rows, self._nudge)
-        bar = self._offset_bar
+        max_off = self._doc.clamp_tile_offset(
+            self._doc.tile_count, cols, rows, self._nudge
+        )
+        bar = self._tile_offset_bar
         with signals_blocked(bar):  # setValue here must not re-enter _set_offset
             bar.setEnabled(max_off > 0)
             bar.setRange(0, max_off)

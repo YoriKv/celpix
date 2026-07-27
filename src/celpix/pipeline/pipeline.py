@@ -19,12 +19,15 @@ from celpix.core.arrangement import (
     BlockLayout,
     bitmap_tile_size,
     compose_window,
+    has_2d_reading,
     reflow_2d,
+    scatter_2d,
 )
 from celpix.core.context import KEY_SOURCE_FILES, KEY_SOURCE_PATH, PipelineContext
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
+from celpix.core.notices import warn
 from celpix.core.palette import Palette
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import (
@@ -45,9 +48,10 @@ T = TypeVar("T")
 class ScanResult:
     """Where a forward structure scan ended (:func:`find_next_structure`).
 
-    ``found`` is the hit offset or ``None``; ``end`` is the last offset examined
-    (where the caller lands when there was no hit); ``stopped`` is True when the
-    caller aborted the scan via its tick callback rather than reaching the end.
+    ``found`` is the hit offset or ``None``; ``end`` is where the scan stopped
+    (where the caller lands when there was no hit — ``len(data)`` once the whole
+    buffer is exhausted); ``stopped`` is True when the caller aborted the scan
+    via its tick callback rather than reaching the end.
     """
 
     found: int | None
@@ -58,7 +62,7 @@ class ScanResult:
 def find_next_structure(
     data: bytes,
     plugin: CompressionPlugin,
-    window_len: int,
+    probe_bytes: int,
     start: int,
     *,
     progress_every: int = 64,
@@ -67,7 +71,7 @@ def find_next_structure(
     """The first offset ≥ ``start`` where ``plugin`` decodes a complete structure.
 
     Walks ``data`` one byte at a time, trying a strict decompress of the
-    ``window_len``-byte window at each offset; a non-empty result is a hit. This
+    ``probe_bytes`` compressed bytes at each offset; a non-empty result is a hit. This
     is the Qt-free core of the toolbar's *Scan* — a hit is a *complete*, non-empty
     structure, since a best-effort partial decode "succeeds" on almost any bytes
     (so non-self-delimiting schemes are effectively unscannable). Every
@@ -78,7 +82,7 @@ def find_next_structure(
     n = len(data)
     while pos < n:
         try:
-            if plugin.decompress(data[pos : pos + window_len], PipelineContext()):
+            if plugin.decompress(data[pos : pos + probe_bytes], PipelineContext()):
                 return ScanResult(pos, pos, False)
         except Exception:  # noqa: BLE001 — not a structure here; keep walking
             pass
@@ -131,7 +135,7 @@ def load_pixel_data(
     (see :func:`bitmap_params`); 0 leaves the codec's own tiles alone.
     """
     ctx = PipelineContext()
-    data = _read_and_decompress(cfg, ctx, reg, Pathway.PIXEL)
+    data = _read_reshape_decompress(cfg, ctx, reg, Pathway.PIXEL)
     return PixelData(data, *_pixel_geometry(cfg, reg, bitmap_width), ctx)
 
 
@@ -153,28 +157,33 @@ def reinterpret_pixel_data(
     return PixelData(data, *_pixel_geometry(cfg, reg, bitmap_width), ctx)
 
 
+def _with_tile_size(engine, params: dict, size: tuple[int, int]) -> dict:  # noqa: ANN001
+    """``params`` re-cut to ``size``, or ``params`` itself if that won't stick.
+
+    Whether a codec honours a tile size at all is **probed, not assumed** from
+    the preset: the merged params are handed back to ``tile_size`` and kept only
+    if the engine reports the size we asked for. A planar or packed codec ignores
+    the keys (its rows are eight pixels by construction), so it keeps its own
+    geometry rather than having the view claim a shape its decode doesn't
+    produce. Returning ``params`` unchanged is therefore the ordinary outcome.
+    """
+    if not all(size) or size == engine.tile_size(params):
+        return params
+    merged = {**params, "tile_width": size[0], "tile_height": size[1]}
+    return merged if engine.tile_size(merged) == size else params
+
+
 def bitmap_params(engine, params: dict, bitmap_width: int) -> dict:  # noqa: ANN001
     """``params`` re-cut to the tile size a ``bitmap_width`` bitmap needs.
 
-    The size itself is :func:`~celpix.core.arrangement.bitmap_tile_size`; this
-    adds the part only the engine can answer — **whether it honours a tile size
-    at all**. Support is probed, not assumed from the preset: the merged params
-    are handed back to ``tile_size`` and kept only if the engine reports the size
-    we asked for. A planar or packed codec ignores the keys (its rows are eight
-    pixels by construction), so it keeps its own geometry rather than having the
-    view claim a shape its decode doesn't produce.
-
-    Returns ``params`` itself when there is nothing to change, so every ordinary
-    format takes exactly the path it always did.
+    The size itself is :func:`~celpix.core.arrangement.bitmap_tile_size`, applied
+    to both axes; whether the codec accepts it is :func:`_with_tile_size`'s probe.
     """
     if bitmap_width <= 0:
         return params
     tile_w, _tile_h = engine.tile_size(params)
     size = bitmap_tile_size(bitmap_width, tile_w)
-    if (size, size) == engine.tile_size(params):
-        return params
-    merged = {**params, "tile_width": size, "tile_height": size}
-    return merged if engine.tile_size(merged) == (size, size) else params
+    return _with_tile_size(engine, params, (size, size))
 
 
 def tile_params(doc: Document, engine, params: dict) -> dict:  # noqa: ANN001
@@ -188,11 +197,7 @@ def tile_params(doc: Document, engine, params: dict) -> dict:  # noqa: ANN001
     it — and leaves params untouched whenever the document is on the codec's
     natural tiles, which is every format that has no tile-size parameter.
     """
-    size = (doc.tile_width, doc.tile_height)
-    if size == engine.tile_size(params) or not all(size):
-        return params
-    merged = {**params, "tile_width": doc.tile_width, "tile_height": doc.tile_height}
-    return merged if engine.tile_size(merged) == size else params
+    return _with_tile_size(engine, params, (doc.tile_width, doc.tile_height))
 
 
 def _pixel_geometry(
@@ -210,7 +215,7 @@ def _pixel_geometry(
         raise PipelineError(
             Stage.INTERPRET_PIXEL,
             Pathway.PIXEL,
-            f"tile size {tile_bytes} is not positive",
+            f"bytes per tile ({tile_bytes}) is not positive",
         )
     return (tile_bytes, *engine.tile_size(params))
 
@@ -267,17 +272,14 @@ class TileRegion:
     length: int
 
 
-def stripe_tiles(doc: Document, columns: int, two_dimensional: bool) -> int:
+def tiles_per_stripe(doc: Document, columns: int, two_dimensional: bool) -> int:
     """How many tiles' bytes interleave together — 1 unless the 2D walk applies.
 
     In wide-bitmap mode a tile's pixel-rows are strided ``columns`` tiles apart,
     so ``columns`` tiles share one interleaved byte stripe and no single tile
-    owns a contiguous byte range. Guarded exactly as
-    :func:`~celpix.core.arrangement.reflow_2d` guards itself: geometry with no
-    whole per-row chunk has no wide-bitmap reading, so it reads as plain 1D.
+    owns a contiguous byte range.
     """
-    tb = doc.bytes_per_tile
-    if not two_dimensional or tb <= 0 or doc.tile_height <= 0 or tb % doc.tile_height:
+    if not two_dimensional or not has_2d_reading(doc.bytes_per_tile, doc.tile_height):
         return 1
     return max(1, columns)
 
@@ -306,11 +308,11 @@ def tile_region(
     tile beats scrambling one.
     """
     tb = doc.bytes_per_tile
-    stripe = stripe_tiles(doc, columns, two_dimensional)
+    stripe = tiles_per_stripe(doc, columns, two_dimensional)
     if stripe > 1:
         phase = anchor % stripe
         start_tile = phase + ((first_tile - phase) // stripe) * stripe
-        while start_tile < 0:  # the run sits in the frame's leading partial stripe
+        if start_tile < 0:  # the run sits in the frame's leading partial stripe
             start_tile += stripe
         end_tile = (
             phase
@@ -344,7 +346,7 @@ def decode_tiles(
     """
     if count <= 0:
         return []
-    if stripe_tiles(doc, columns, two_dimensional) == 1:
+    if tiles_per_stripe(doc, columns, two_dimensional) == 1:
         return decode_window(doc, reg, first_tile, count, nudge)
     region = tile_region(
         doc,
@@ -405,7 +407,7 @@ def encode_tiles(
         Pathway.PIXEL,
         lambda: engine.encode(tiles, params, PipelineContext()),
     )
-    stripe = stripe_tiles(doc, columns, two_dimensional)
+    stripe = tiles_per_stripe(doc, columns, two_dimensional)
     if stripe == 1:
         start = nudge + first_tile * tb
         return start, blob[: max(0, len(doc.pixel_data) - start)]
@@ -423,34 +425,8 @@ def encode_tiles(
         slot = first_tile + i - region.first_tile
         if slot < 0:  # trimmed by tile_region — see there
             continue
-        _scatter_2d(out, slot, blob[i * tb : (i + 1) * tb], tb, doc.tile_height, stripe)
+        scatter_2d(out, slot, blob[i * tb : (i + 1) * tb], tb, doc.tile_height, stripe)
     return region.start, bytes(out)
-
-
-def _scatter_2d(
-    out: bytearray,
-    slot: int,
-    data: bytes,
-    bytes_per_tile: int,
-    tile_height: int,
-    columns: int,
-) -> None:
-    """Write one tile's contiguous bytes back into wide-bitmap (2D) order.
-
-    The exact inverse of the gather :func:`~celpix.core.arrangement.reflow_2d`
-    performs, for a single tile: its pixel-rows go back to their strided homes
-    ``columns`` tiles apart. Writes that fall past the buffer (a region clamped
-    at end-of-data) are clipped, never grown.
-    """
-    row_bytes = bytes_per_tile // tile_height
-    stripe_index, tile_x = divmod(slot, columns)
-    stripe_base = stripe_index * columns * bytes_per_tile
-    for row in range(tile_height):
-        dst = stripe_base + row * (columns * row_bytes) + tile_x * row_bytes
-        if dst >= len(out):
-            return
-        take = min(row_bytes, len(out) - dst)
-        out[dst : dst + take] = data[row * row_bytes : row * row_bytes + take]
 
 
 def decode_and_compose(
@@ -542,7 +518,7 @@ class PaletteData(NamedTuple):
 def load_palette(cfg: PathwayConfig, reg: Registry) -> PaletteData:
     """Run the palette pathway forward: Read -> Decompress -> decode to a Palette."""
     ctx = PipelineContext()
-    data = _read_and_decompress(cfg, ctx, reg, Pathway.PALETTE)
+    data = _read_reshape_decompress(cfg, ctx, reg, Pathway.PALETTE)
     engine, preset = reg.engine_for(cfg.interpret_preset_id)
     colors = _run(
         Stage.INTERPRET_PALETTE,
@@ -555,7 +531,7 @@ def load_palette(cfg: PathwayConfig, reg: Registry) -> PaletteData:
 def read_region(cfg: PathwayConfig, reg: Registry) -> tuple[bytes, PipelineContext]:
     """A pathway's Read alone: container -> reshape -> decompress, no decoding.
 
-    The front half of :func:`load_pixels` without a codec, for a caller that
+    The front half of a load without a codec, for a caller that
     needs an entry's **view buffer** rather than its picture — an Offset palette
     resolving its coordinates against the file entry that owns them, when that
     entry is closed and has no live document to borrow the bytes from
@@ -564,7 +540,7 @@ def read_region(cfg: PathwayConfig, reg: Registry) -> tuple[bytes, PipelineConte
     it reports it as ``KEY_SOURCE_OFFSET``.
     """
     ctx = PipelineContext()
-    return _read_and_decompress(cfg, ctx, reg, Pathway.PIXEL), ctx
+    return _read_reshape_decompress(cfg, ctx, reg, Pathway.PIXEL), ctx
 
 
 def palette_entry_size(preset_id: str, reg: Registry) -> int:
@@ -586,15 +562,7 @@ def quantize_color(argb: int, preset_id: str, reg: Registry) -> int:
     its nearest hardware color. Shown live beside the edited color so the loss
     is visible *before* it is written (docs/design/palette-editing.md).
     """
-    engine, preset = reg.engine_for(preset_id)
-
-    def _round_trip() -> int:
-        ctx = PipelineContext()
-        data = engine.encode(Palette([argb]), preset.params, ctx)
-        decoded = engine.decode(data, preset.params, ctx)
-        return decoded.color(0)
-
-    return _run(Stage.INTERPRET_PALETTE, Pathway.PALETTE, _round_trip)
+    return quantize_palette(Palette([argb]), preset_id, reg).color(0)
 
 
 def quantize_palette(palette: Palette, preset_id: str, reg: Registry) -> Palette:
@@ -645,7 +613,7 @@ def pixel_is_direct_color(preset_id: str, reg: Registry) -> bool:
     def _probe() -> bool:
         blank = bytes(engine.bytes_per_tile(preset.params))
         tiles = engine.decode(blank, preset.params, PipelineContext())
-        return bool(tiles) and getattr(tiles[0], "bytes_per_pixel", 1) == 4
+        return bool(tiles) and tiles[0].bytes_per_pixel == 4
 
     return _run(Stage.INTERPRET_PIXEL, Pathway.PIXEL, _probe)
 
@@ -687,7 +655,7 @@ def load(pixel: PathwayConfig, palette: PathwayConfig, reg: Registry) -> Documen
         palette_config=palette,
         pixel_ctx=px.ctx,
         palette_ctx=pal.ctx,
-        palette_bytes=pal.data,
+        palette_base_bytes=pal.data,
     )
 
 
@@ -703,8 +671,22 @@ def save(
     different files, so a palette-only edit has no business rewriting the graphic
     (which for a compressed slice could even re-encode to equivalent-but-different
     bytes — see :func:`_save_pixel`).
+
+    A pathway marked ``writes_through_parent`` is refused rather than deposited:
+    its target names a file position its bytes do not occupy, so writing it here
+    would scatter them. Routing it is the host's job (it is the one that knows
+    the parent) — see :func:`encoded_pixel_bytes`.
     """
     if pixel and doc.pixel_config.write_enabled:
+        if doc.pixel_config.writes_through_parent:
+            raise PipelineError(
+                Stage.CONTAINER,
+                Pathway.PIXEL,
+                "this region is inside one its parent reorders, so its bytes "
+                "have no file position of their own; it must be written through "
+                "the parent",
+                "write",
+            )
         _save_pixel(doc, reg)
     if palette and doc.palette_config.write_enabled:
         _save_palette(doc, reg)
@@ -780,7 +762,7 @@ def _acquire(ref: FileRef) -> tuple[ReadSource, tuple[SourceFile, ...]]:
     for path, blob in zip(ref.paths, blobs):
         spans.append(SourceFile(path, at, len(blob)))
         at += len(blob)
-    joined = blobs[0] if len(blobs) == 1 else b"".join(blobs)
+    joined = b"".join(blobs)
     return ReadSource(joined, ref.path, ref.offset, ref.length), tuple(spans)
 
 
@@ -827,9 +809,23 @@ def _deposit(ref: FileRef, produce: Callable[[WriteTarget], bytes]) -> None:
             Path(path).write_bytes(chunk)
 
 
-def _read_and_decompress(
+def _read_reshape_decompress(
     cfg: PathwayConfig, ctx: PipelineContext, reg: Registry, pathway: Pathway
 ) -> bytes:
+    # Said once per load, here rather than where the config was built, because a
+    # notice needs the context a load creates. Without it the user meets a file
+    # that opens looking wrong with Write greyed out and nothing saying why.
+    for stage, wanted in cfg.missing_plugins:
+        warn(
+            ctx,
+            f"Missing plugin: {wanted}",
+            f"This entry reads through a {stage.value} plugin this build\n"
+            "does not have, so its bytes are shown untransformed and\n"
+            "cannot be saved. Install the plugin, or choose a different\n"
+            f"{stage.value} to make the entry editable again.",
+            stage.value,
+        )
+
     def read() -> bytes:
         source, files = _acquire(cfg.source)
         # Provenance the host owns, because it is the host that knows where the
@@ -870,8 +866,29 @@ def _save_pixel(doc: Document, reg: Registry) -> None:
     # whole file just to save it. Note that a real compressor may make different
     # encoding choices than the original stream, so writing a *compressed* pathway
     # can rewrite equivalent-but-different bytes inside the slot even where nothing
-    # was edited — harmless, and rare now that dirty tracking gates Write All.
-    _compress_and_write(
+    # was edited — harmless, and rare: dirty tracking gates Write All.
+    _compress_unshape_write(
+        doc.pixel_config, doc.pixel_data, doc.pixel_ctx, reg, Pathway.PIXEL
+    )
+
+
+def encoded_pixel_bytes(doc: Document, reg: Registry) -> bytes:
+    """The pixel buffer as a save would lay it down: compressed and un-reshaped.
+
+    :func:`_save_pixel` without the deposit, for the entry whose bytes have no
+    file position to be deposited *at*: a slice inside a region its parent
+    reorders. Those bytes belong at an offset in the parent's buffer, and only
+    the parent's own write — which carries the whole region through ``unshape``
+    and the container — knows where that lands in the files. The host splices
+    this in and writes the parent (``docs/design/reshape-stage.md`` §3), exactly
+    as an Offset palette in the same position rides its owner
+    (:func:`spliced_palette_bytes`).
+
+    The slot checks still apply and are still made here, against the slice's own
+    bounds: what is produced has to fit the window it came from wherever it is
+    ultimately delivered.
+    """
+    return _compress_unshape(
         doc.pixel_config, doc.pixel_data, doc.pixel_ctx, reg, Pathway.PIXEL
     )
 
@@ -884,18 +901,20 @@ def _save_palette(doc: Document, reg: Registry) -> None:
     a full re-encode would rewrite — and corrupt — entries the user never
     touched. Instead the freshly encoded bytes of edited entries are spliced
     into the buffer the palette was read from, leaving every other byte exactly
-    as it was found (see :attr:`Document.palette_bytes`).
+    as it was found (see :attr:`Document.palette_base_bytes`).
 
     Falls back to a whole-palette encode when there is nothing to splice into —
     no original bytes, or a palette whose length no longer matches them (a
     format switch changes the entry size, so the old buffer doesn't apply).
     """
     data = spliced_palette_bytes(doc, reg)
-    _compress_and_write(doc.palette_config, data, doc.palette_ctx, reg, Pathway.PALETTE)
+    _compress_unshape_write(
+        doc.palette_config, data, doc.palette_ctx, reg, Pathway.PALETTE
+    )
     # The file now holds these bytes, so they become the baseline for the next
     # splice and no entry is outstanding. Skipping this would make a second save
     # splice against pre-save bytes and undo the first one's edits.
-    doc.palette_bytes = data
+    doc.palette_base_bytes = data
     doc.palette_edits = set()
 
 
@@ -919,7 +938,7 @@ def spliced_palette_bytes(doc: Document, reg: Registry) -> bytes:
 
 
 def _splice_palette(doc: Document, encoded: bytes, engine, preset) -> bytes:  # noqa: ANN001
-    original = doc.palette_bytes
+    original = doc.palette_base_bytes
     if not original or len(original) != len(encoded):
         return encoded
     size = _run(
@@ -937,14 +956,37 @@ def _splice_palette(doc: Document, encoded: bytes, engine, preset) -> bytes:  # 
     return bytes(out)
 
 
-def _compress_and_write(
+def _compress_unshape_write(
     cfg: PathwayConfig,
     data: bytes,
     ctx: PipelineContext,
     reg: Registry,
     pathway: Pathway,
 ) -> None:
-    """Compress ``data``, undo any reshape, and write it to the config's target.
+    """Compress ``data``, undo any reshape, and write it to the config's target."""
+    shaped = _compress_unshape(cfg, data, ctx, reg, pathway)
+    target = cfg.write_target()
+
+    def write() -> None:
+        container = reg.plugin(Stage.CONTAINER, cfg.container_id)
+        _deposit(target, lambda dest: container.write(shaped, dest, ctx))
+
+    _run(Stage.CONTAINER, pathway, write, "write")
+
+
+def _compress_unshape(
+    cfg: PathwayConfig,
+    data: bytes,
+    ctx: PipelineContext,
+    reg: Registry,
+    pathway: Pathway,
+) -> bytes:
+    """``data`` compressed and un-reshaped: the bytes that belong in the slot.
+
+    The write minus the deposit, so the checks that make a slot safe are stated
+    once and hold however the bytes are then delivered — through the container to
+    a file, or spliced into a parent's buffer
+    (:func:`encoded_pixel_bytes`).
 
     A bounded target (``length`` set — a slice of a larger file) is a hard slot:
     a result that would overflow it raises before anything touches the file. A
@@ -992,9 +1034,4 @@ def _compress_and_write(
             "different reshape",
             "unshape",
         )
-
-    def write() -> None:
-        container = reg.plugin(Stage.CONTAINER, cfg.container_id)
-        _deposit(target, lambda dest: container.write(shaped, dest, ctx))
-
-    _run(Stage.CONTAINER, pathway, write, "write")
+    return shaped

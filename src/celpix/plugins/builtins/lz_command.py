@@ -18,18 +18,17 @@ Commands (``length`` output bytes each):
                         produced so far (overlap allowed — a forward-copy RLE).
                         All four high commands decode identically.
 
-The one difference between the two family members is the backreference offset's
-byte order: **LZ1 is little-endian, LZ2 big-endian**. Everything else is shared,
-so both plugins parameterize the same engine. Encoding details and provenance:
+The two family members differ only in the backreference offset's byte order:
+**LZ1 is little-endian, LZ2 big-endian**. Everything else is shared, so both
+plugins parameterise one engine. Encoding details and provenance:
 ``docs/graphics-formats-reference/implementation-guide.md`` §6.
 
-The compressor is a greedy parse by benefit (bytes saved vs. literals) with a
-one-step lazy deferral, using a 3-byte-prefix index for backreference search.
-It only ever emits backreference command ``100`` — the decoder treats 5/6/7 as
-aliases, and command 7 in long form can collide with the ``0xFF`` terminator
-(``111 111 11`` = 0xFF), so avoiding them keeps every emitted header
-unambiguous. Any stream that round-trips is valid; matching another
-compressor's exact output is a non-goal.
+The compressor is a greedy parse by benefit — bytes saved against literals — with
+a one-step lazy deferral, using a 3-byte-prefix index for backreference search. It
+emits only backreference command ``100``: the decoder treats 5/6/7 as aliases, and
+command 7 in long form collides with the ``0xFF`` terminator (``111 111 11``), so
+avoiding them keeps every emitted header unambiguous. Any stream that round-trips
+is valid; matching another compressor's exact output is a non-goal.
 """
 
 from __future__ import annotations
@@ -57,9 +56,9 @@ _OP_WORD_FILL = 0x40
 _OP_INCREASING = 0x60
 _OP_BACKREF = 0x80
 
-# Compressor tuning: a run/backref shorter than 3 never beats literals; the
-# candidate cap only bounds pathological inputs (real tile data has few
-# same-prefix positions per chain).
+# Compressor tuning: a run or backref shorter than 3 never beats literals, and
+# the candidate cap bounds pathological inputs only — real tile data has few
+# same-prefix positions per chain.
 _MIN_MATCH = 3
 _MAX_CHAIN = 64
 
@@ -73,18 +72,16 @@ def decompress(
 ) -> tuple[bytes, int]:
     """Decode one compressed structure from the start of ``data``.
 
-    Returns ``(output, consumed)`` — ``consumed`` counts the compressed bytes
-    through the terminator, so callers handing in an over-read buffer (offset to
-    end-of-file) learn the structure's true extent. Trailing bytes after the
-    terminator are never touched.
+    Returns ``(output, consumed)``, ``consumed`` counting the compressed bytes
+    through the terminator, so a caller handing in an over-read buffer learns the
+    structure's true extent. Trailing bytes after the terminator are never touched.
 
-    With ``allow_partial`` (a *bounded* buffer that may cut the structure
-    short), running out of source is not an error: the prefix decoded so far is
-    returned, finishing as much of the current command as the buffer allows.
-    Structural corruption — a backreference into unwritten output, output past
-    the 64 KB cap — still raises either way; that distinction is what lets a
-    window preview tell "a structure continues past the window" from "this is
-    not a structure at all".
+    With ``allow_partial``, for a *bounded* buffer that may cut the structure
+    short, running out of source is not an error: the prefix decoded so far comes
+    back, finishing as much of the current command as the buffer allows.
+    Structural corruption — a backreference into unwritten output, output past the
+    64 KB cap — raises either way, which is what lets a window preview tell "a
+    structure continues past the window" from "this is not a structure at all".
     """
     out = bytearray()
     n = len(data)
@@ -149,8 +146,8 @@ def decompress(
                 raise _fail(
                     f"backreference into unwritten output ({off:#x} >= {len(out):#x})"
                 )
-            # Byte-at-a-time so an overlapping copy re-reads bytes this same
-            # command just produced (the format's run-extension idiom).
+            # Byte-at-a-time so an overlapping copy re-reads bytes this command
+            # just produced — the format's run-extension idiom.
             for k in range(length):
                 out.append(out[off + k])
 
@@ -178,8 +175,8 @@ def compress(data: bytes, *, big_endian_offsets: bool) -> bytes:
     out = bytearray()
 
     # 3-byte-prefix index for backreference search: prefix -> positions, most
-    # recent last. Bounding the scan to the newest _MAX_CHAIN keeps worst-case
-    # inputs (a single repeated byte) from going quadratic.
+    # recent last. Bounding the scan to the newest _MAX_CHAIN keeps a worst-case
+    # input, a single repeated byte, from going quadratic.
     prefixes: dict[bytes, list[int]] = {}
 
     def insert(pos: int) -> None:
@@ -211,7 +208,7 @@ def compress(data: bytes, *, big_endian_offsets: bool) -> bytes:
     def best_command_at(d: int) -> tuple[int, int, int, int] | None:
         """Best non-literal command at ``d``: ``(op, length, cost, off)``.
 
-        Maximum benefit (covered − cost), ties to the cheaper command; ``None``
+        Maximum benefit (covered − cost), ties to the cheaper command. ``None``
         when literals are no worse.
         """
         best: tuple[int, int, int, int] | None = None
@@ -325,9 +322,9 @@ class _LzBase:
     _big_endian: bool
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        # Strict first: reaching the terminator means the structure's true end
-        # is known. Only fall back to a best-effort partial decode when the
-        # caller said the buffer may cut the structure short.
+        # Strict first: reaching the terminator means the structure's true end is
+        # known. Fall back to a best-effort partial decode only when the caller
+        # said the buffer may cut the structure short.
         try:
             out, consumed = decompress(data, big_endian_offsets=self._big_endian)
             complete = True

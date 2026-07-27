@@ -3,11 +3,10 @@
 # data is stored. R/G/B share the intensity byte; see dc-i8 on why.
 # See docs/graphics-formats-reference/mame-formats.md §4.3.
 id = "preset.pixel.dc-ia16-be"
-name = "Direct IA16 intensity+alpha (N64, 8x8, big-endian)"
+name = "N64 IA16 (intensity+alpha, 8x8, big-endian)"
 engine_id = "codec.direct-color"
 
 [params]
-bpp = 16
 bytes_per_pixel = 2
 byte_order = "big"
 

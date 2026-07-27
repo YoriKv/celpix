@@ -13,21 +13,22 @@ Two conventions keep this palette-agnostic:
   value the pen holds (an index, or an ARGB for a direct-color view) and clips to
   the grid — so the same routine serves both grid kinds. Coordinates may fall
   outside any particular grid; that is the caller's clip to make.
-- :func:`flood_fill` and the region helpers *do* read/write a grid, but only
-  through the ``width``/``height``/``get``/``set``/``type(grid)(w, h)`` shape both
-  :class:`~celpix.core.index_grid.IndexGrid` and
-  :class:`~celpix.core.argb_grid.ArgbGrid` expose, so one implementation covers
-  both (the same trick :mod:`celpix.core.transform` uses).
+- :func:`flood_fill` reads a grid (it returns the region's coordinates; the
+  caller does the painting) and the region helpers copy between two, but both do
+  so only through the :class:`~celpix.core.grid.PixelGrid` shape, so one
+  implementation covers index and direct-color grids alike.
 """
 
 from __future__ import annotations
 
 from typing import TypeVar
 
+from celpix.core.grid import PixelGrid
+
 Coord = tuple[int, int]
-# A grid with the IndexGrid/ArgbGrid interface; regions round-trip through
-# type(grid), so a returned grid matches the input's kind exactly.
-Grid = TypeVar("Grid")
+# Regions round-trip through type(grid), so a returned grid matches the input's
+# kind exactly.
+Grid = TypeVar("Grid", bound=PixelGrid)
 
 
 def line(x0: int, y0: int, x1: int, y1: int) -> list[Coord]:
@@ -209,6 +210,31 @@ def flood_fill(
     return pixels
 
 
+def copy_rect(
+    dst: Grid, dx: int, dy: int, src: Grid, sx: int, sy: int, w: int, h: int
+) -> None:
+    """Copy a ``w × h`` block from ``src`` at ``(sx, sy)`` to ``dst`` at ``(dx, dy)``.
+
+    Clipped against both grids, then copied a whole row at a time — a lifted
+    selection can be the entire window, and every rearrange or marquee drag
+    re-lifts and re-stamps it as the cursor moves, so the per-row slice store
+    rather than a per-pixel loop is what keeps a drag smooth.
+    """
+    left = max(0, -dx, -sx)
+    right = min(w, dst.width - dx, src.width - sx)
+    top = max(0, -dy, -sy)
+    bottom = min(h, dst.height - dy, src.height - sy)
+    if right <= left or bottom <= top:
+        return
+    bpx = dst.bytes_per_pixel
+    src_buf, dst_buf = src.data, dst.data
+    span = (right - left) * bpx
+    for row in range(top, bottom):
+        s0 = ((sy + row) * src.width + sx + left) * bpx
+        d0 = ((dy + row) * dst.width + dx + left) * bpx
+        dst_buf[d0 : d0 + span] = src_buf[s0 : s0 + span]
+
+
 def extract_region(grid: Grid, x: int, y: int, w: int, h: int) -> Grid:
     """Copy the ``w × h`` block at ``(x, y)`` into a fresh grid of the same kind.
 
@@ -218,57 +244,24 @@ def extract_region(grid: Grid, x: int, y: int, w: int, h: int) -> Grid:
     copy.
     """
     out = type(grid)(max(0, w), max(0, h))
-    # A row at a time: a lifted selection can be the whole window, and every
-    # rearrange or marquee drag re-lifts it as the cursor moves.
-    bpx = grid.bytes_per_pixel
-    left = max(0, -x)
-    right = min(w, grid.width - x)
-    if right <= left:
-        return out
-    src, dst = grid.data, out.data
-    span = (right - left) * bpx
-    for yy in range(h):
-        sy = y + yy
-        if not (0 <= sy < grid.height):
-            continue
-        s0 = (sy * grid.width + x + left) * bpx
-        d0 = (yy * w + left) * bpx
-        dst[d0 : d0 + span] = src[s0 : s0 + span]
+    copy_rect(out, 0, 0, grid, x, y, w, h)
     return out
 
 
-def blit_region(
-    dst: Grid, src: Grid, x: int, y: int, *, transparent: int | None = None
-) -> None:
+def clear_region(grid: Grid, x: int, y: int, w: int, h: int) -> None:
+    """Zero the ``w × h`` block at ``(x, y)``, clipped to ``grid``.
+
+    Zero is empty for both grid kinds — index 0, and transparent black — so
+    lifting a selection out of the picture is a blit from a fresh grid rather
+    than a per-pixel walk. That matters because a *move* float re-blanks its
+    source rectangle on every repaint while it is in the air.
+    """
+    copy_rect(grid, x, y, type(grid)(max(0, w), max(0, h)), 0, 0, w, h)
+
+
+def blit_region(dst: Grid, src: Grid, x: int, y: int) -> None:
     """Paste ``src`` into ``dst`` at ``(x, y)``, clipped to ``dst``'s bounds.
 
-    In place — how a floating selection stamps down. ``transparent``, when given,
-    is a source value to skip (leaving whatever ``dst`` already held), so a
-    non-rectangular stamp can preserve the pixels around it; ``None`` copies every
-    pixel verbatim.
+    In place — how a floating selection stamps down.
     """
-    left = max(0, -x)
-    right = min(src.width, dst.width - x)
-    if right <= left:
-        return
-    if transparent is None:
-        # Nothing to test per pixel, so the clipped span copies as one row.
-        bpx = dst.bytes_per_pixel
-        src_buf, dst_buf = src.data, dst.data
-        span = (right - left) * bpx
-        for yy in range(src.height):
-            dy = y + yy
-            if not (0 <= dy < dst.height):
-                continue
-            s0 = (yy * src.width + left) * bpx
-            d0 = (dy * dst.width + x + left) * bpx
-            dst_buf[d0 : d0 + span] = src_buf[s0 : s0 + span]
-        return
-    for yy in range(src.height):
-        dy = y + yy
-        if not (0 <= dy < dst.height):
-            continue
-        for xx in range(left, right):
-            value = src.get(xx, yy)
-            if value != transparent:
-                dst.set(x + xx, dy, value)
+    copy_rect(dst, x, y, src, 0, 0, src.width, src.height)

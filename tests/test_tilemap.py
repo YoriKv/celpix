@@ -8,8 +8,6 @@ is read and written *there*, and the bytes land at its real home.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
@@ -520,7 +518,7 @@ def test_dragging_a_selection_moves_the_whole_block_and_the_selection(
     rather than on the ones they swapped with."""
     window = _window(qtbot, tmp_path)
     window._set_rearranging(True)
-    window._on_tiles_selected(0, 1)  # a 2x1 rectangle: the tool forces Rectangle
+    window._on_slots_selected(0, 1)  # a 2x1 rectangle: the tool forces Rectangle
     window._on_rearrange_started(0)
     window._on_rearrange_dropped(4)  # shift right by four cells
     assert window._tile_map == TileMap().swap_many([(0, 4), (1, 5)])
@@ -530,7 +528,7 @@ def test_dragging_a_selection_moves_the_whole_block_and_the_selection(
 def test_a_block_drop_overlapping_its_source_is_refused(qtbot, tmp_path) -> None:
     window = _window(qtbot, tmp_path)
     window._set_rearranging(True)
-    window._on_tiles_selected(0, 2)
+    window._on_slots_selected(0, 2)
     window._on_rearrange_started(0)
     window._on_rearrange_dropped(1)  # one cell right — destinations overlap
     assert window._tile_map.is_identity()
@@ -734,23 +732,6 @@ def test_orientations_alone_survive_a_project_round_trip(qtbot, tmp_path) -> Non
     qtbot.addWidget(reopened)
     reopened._load_project(path)
     assert reopened._tile_map == TileMap().oriented([4], TILE_FLIP_V)
-
-
-def test_a_project_written_before_turning_keeps_its_mirrors(qtbot, tmp_path) -> None:
-    """`tile_flips` is where those projects hold them, and its two bits are the low
-    two of an orientation — so it is read as one rather than silently dropped."""
-    window = _window(qtbot, tmp_path)
-    path = tmp_path / "p.celpix"
-    window._set_tile_map(TileMap().swap(2, 9))
-    window._save_project_to(str(path))
-    data = json.loads(path.read_text())
-    data["entries"][0]["view"]["tile_flips"] = [[5, TILE_FLIP_BOTH]]
-    path.write_text(json.dumps(data))
-
-    reopened = MainWindow()
-    qtbot.addWidget(reopened)
-    reopened._load_project(str(path))
-    assert reopened._tile_map == TileMap().swap(2, 9).oriented([5], TILE_FLIP_BOTH)
 
 
 def test_an_unrearranged_project_writes_no_map(qtbot, tmp_path) -> None:

@@ -1,67 +1,60 @@
-"""Geometric transforms of a decoded tile: flip, 90° rotation, transpose.
+"""Geometric transforms of a decoded grid: flip, 90° rotation, transpose.
 
 These are **content edits** — they rewrite the interpreted pixels, unlike the
 byte-nudge that only realigns where tiles start (a display option). Each function
-takes an :class:`~celpix.core.index_grid.IndexGrid` or
-:class:`~celpix.core.argb_grid.ArgbGrid` and returns a **new** grid of the same
-class, leaving the input untouched (callers snapshot then overwrite).
+takes a :class:`~celpix.core.grid.PixelGrid` and returns a **new** grid of the
+same class, leaving the input untouched (callers snapshot then overwrite).
 
-Both grids expose the same shape — a ``(width, height)`` constructor and
-``get(x, y)`` / ``set(x, y, value)`` — so one implementation serves both with no
-special-casing; ``type(grid)(w, h)`` builds the empty result of the right kind.
-Qt-free, like the rest of ``core``. Tiles are small (typically 8×8), so plain
-loops are more than fast enough.
+Everything works on ``grid.data`` in whole pixels of ``bytes_per_pixel``, so one
+implementation serves both grid types and the cost is a handful of buffer slices
+per row or column rather than a Python call per pixel. That matters because the
+callers are not only 8×8 tiles: a marquee transform covers the whole window, and
+rendering a rearranged tile map re-orients every visible tile on each repaint.
+Qt-free, like the rest of ``core``.
 """
 
 from __future__ import annotations
 
 from typing import TypeVar
 
-# Any grid with the IndexGrid/ArgbGrid interface; the concrete class round-trips
-# through type(grid), so the return matches the input exactly.
-Grid = TypeVar("Grid")
+from celpix.core.grid import PixelGrid
+
+# The concrete class round-trips through type(grid), so the return matches the
+# input exactly.
+Grid = TypeVar("Grid", bound=PixelGrid)
 
 
 def flip_horizontal(grid: Grid) -> Grid:
     """Mirror left↔right: column ``x`` becomes column ``w-1-x``."""
     w, h = grid.width, grid.height
-    out = type(grid)(w, h)
+    bpx = grid.bytes_per_pixel
+    stride = w * bpx
+    src = grid.data
+    out = bytearray(len(src))
     for y in range(h):
-        for x in range(w):
-            out.set(x, y, grid.get(w - 1 - x, y))
-    return out
+        row = src[y * stride : (y + 1) * stride]
+        if bpx == 1:
+            out[y * stride : (y + 1) * stride] = row[::-1]
+        else:
+            # Reverse pixel order without reversing the bytes *within* a pixel:
+            # take each byte lane of the pixel separately and reverse that.
+            rev = bytearray(stride)
+            for b in range(bpx):
+                rev[b::bpx] = row[b::bpx][::-1]
+            out[y * stride : (y + 1) * stride] = rev
+    return type(grid)(w, h, out)
 
 
 def flip_vertical(grid: Grid) -> Grid:
     """Mirror top↔bottom: row ``y`` becomes row ``h-1-y``."""
     w, h = grid.width, grid.height
-    out = type(grid)(w, h)
+    stride = w * grid.bytes_per_pixel
+    src = grid.data
+    out = bytearray(len(src))
     for y in range(h):
-        for x in range(w):
-            out.set(x, y, grid.get(x, h - 1 - y))
-    return out
-
-
-def rotate_cw(grid: Grid) -> Grid:
-    """Rotate 90° clockwise. The result is ``h×w`` (dimensions swap)."""
-    w, h = grid.width, grid.height
-    out = type(grid)(h, w)
-    for y in range(h):
-        for x in range(w):
-            # (x, y) → (h-1-y, x): the top row becomes the right column.
-            out.set(h - 1 - y, x, grid.get(x, y))
-    return out
-
-
-def rotate_ccw(grid: Grid) -> Grid:
-    """Rotate 90° counter-clockwise. The result is ``h×w`` (dimensions swap)."""
-    w, h = grid.width, grid.height
-    out = type(grid)(h, w)
-    for y in range(h):
-        for x in range(w):
-            # (x, y) → (y, w-1-x): the top row becomes the left column.
-            out.set(y, w - 1 - x, grid.get(x, y))
-    return out
+        d = (h - 1 - y) * stride
+        out[d : d + stride] = src[y * stride : (y + 1) * stride]
+    return type(grid)(w, h, out)
 
 
 def transpose(grid: Grid) -> Grid:
@@ -74,8 +67,25 @@ def transpose(grid: Grid) -> Grid:
     rather than a table.
     """
     w, h = grid.width, grid.height
-    out = type(grid)(h, w)
-    for y in range(h):
-        for x in range(w):
-            out.set(y, x, grid.get(x, y))
-    return out
+    bpx = grid.bytes_per_pixel
+    src = grid.data
+    out = bytearray(len(src))
+    # Source column x is destination row x: gather it with one strided slice per
+    # byte lane, stepping a whole source row at a time.
+    for x in range(w):
+        d0 = x * h * bpx
+        for b in range(bpx):
+            out[d0 + b : d0 + h * bpx : bpx] = src[x * bpx + b :: w * bpx]
+    return type(grid)(h, w, out)
+
+
+def rotate_cw(grid: Grid) -> Grid:
+    """Rotate 90° clockwise. The result is ``h×w`` (dimensions swap)."""
+    # Mirror-then-transpose, the same composition tilemap's TILE_ROTATE_CW flag
+    # combination stands for, so the two can never disagree about turn direction.
+    return transpose(flip_vertical(grid))
+
+
+def rotate_ccw(grid: Grid) -> Grid:
+    """Rotate 90° counter-clockwise. The result is ``h×w`` (dimensions swap)."""
+    return transpose(flip_horizontal(grid))

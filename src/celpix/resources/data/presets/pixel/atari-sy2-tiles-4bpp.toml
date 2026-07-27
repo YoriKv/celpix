@@ -1,6 +1,6 @@
 # Atari System 2 playfield tiles — 8x8 4bpp, two plane pairs.
 # The pairs live in opposite halves of the graphics region, so select
-# "Split bitplanes (2 parts, join)" under Compression first; after that each
+# "Split bitplanes (2 ROMs, join)" under Reshape first; after that each
 # 4-pixel group is two adjacent bytes (bits 3/2 then bits 1/0).
 # See docs/graphics-formats-reference/mame-formats.md §3.2.
 id = "preset.pixel.atari-sy2-tiles-4bpp"

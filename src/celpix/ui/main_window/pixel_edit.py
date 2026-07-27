@@ -169,7 +169,7 @@ class PixelEditMixin:
         self._canvas.set_edit_mode(mode)
         self._sync_selection_shape()
         self._clear_stroke()
-        self._clear_float()
+        self._clear_pixel_selection()
         self._clear_selection()
         self.statusBar().clearMessage()
         if not pixel:
@@ -252,7 +252,7 @@ class PixelEditMixin:
         value = self._pen_value()
         if self._is_direct_color():
             return value
-        base = self._subpalette.value() * self._index_space()
+        base = self._palette_base()
         return self._doc.palette.color(base + value)
 
     # -- the window-grid round-trip ---------------------------------------
@@ -270,8 +270,9 @@ class PixelEditMixin:
         return compose_window(tiles, cols, 0, rows, self._view_layout())
 
     @staticmethod
-    def _clone_grid(grid):
-        return type(grid)(grid.width, grid.height, bytes(grid.data))
+    def _clear_rect(grid, rect: QRect) -> None:
+        """Empty ``rect`` in ``grid`` — what Cut/Clear and a lifted move leave."""
+        draw.clear_region(grid, rect.x(), rect.y(), rect.width(), rect.height())
 
     def _paint_pixels(self, grid, pixels, value: int | None = None) -> None:
         """Set ``pixels`` on ``grid`` to the pen (or ``value``), clipped to bounds.
@@ -292,8 +293,9 @@ class PixelEditMixin:
     def _render_preview(self, grid) -> None:
         """Show a working grid on the canvas without committing it (live preview)."""
         assert self._doc is not None
-        base = self._subpalette.value() * self._index_space()
-        self._canvas.set_image(render_bridge.render(grid, self._doc.palette, base))
+        self._canvas.set_image(
+            render_bridge.render(grid, self._doc.palette, self._palette_base())
+        )
 
     def _commit_grid(
         self, grid, base_grid, text: str, *, no_op_step: bool = True
@@ -356,7 +358,7 @@ class PixelEditMixin:
 
     def _on_pixel_moved(self, x: int, y: int) -> None:
         if self._stroke_active:
-            self._extend_stroke(x, y)
+            self._paint_stroke(x, y)
         elif self._marquee is not None or self._float_grid is not None:
             self._marquee_drag(x, y)
 
@@ -372,13 +374,10 @@ class PixelEditMixin:
         if grid is None:
             return
         self._stroke_base_grid = grid
-        self._stroke_grid = self._clone_grid(grid)
+        self._stroke_grid = grid.copy()
         self._stroke_anchor = (x, y)
         self._stroke_last = (x, y)
         self._stroke_active = True
-        self._paint_stroke(x, y)
-
-    def _extend_stroke(self, x: int, y: int) -> None:
         self._paint_stroke(x, y)
 
     def _paint_stroke(self, x: int, y: int) -> None:
@@ -395,7 +394,7 @@ class PixelEditMixin:
             lx, ly = self._stroke_last
             self._paint_pixels(self._stroke_grid, spec.rasterize(lx, ly, x, y))
         else:
-            self._stroke_grid = self._clone_grid(self._stroke_base_grid)
+            self._stroke_grid = self._stroke_base_grid.copy()
             ax, ay = self._stroke_anchor
             self._paint_pixels(self._stroke_grid, spec.rasterize(ax, ay, x, y))
         self._stroke_last = (x, y)
@@ -405,8 +404,7 @@ class PixelEditMixin:
         self._paint_stroke(x, y)
         grid, base = self._stroke_grid, self._stroke_base_grid
         text = f"draw {SPEC_BY_TOOL[self._tool].label.lower()}"
-        self._stroke_active = False
-        self._stroke_grid = self._stroke_base_grid = None
+        self._clear_stroke()
         self._commit_grid(grid, base, text)
 
     def _clear_stroke(self) -> None:
@@ -419,7 +417,7 @@ class PixelEditMixin:
         base = self._window_grid()
         if base is None:
             return
-        grid = self._clone_grid(base)
+        grid = base.copy()
         mask = self._marquee
         bounds = None
         if mask is not None:
@@ -437,7 +435,7 @@ class PixelEditMixin:
             self._pen_argb = value
             self.statusBar().showMessage(f"Picked color #{value & 0xFFFFFFFF:08X}.")
         else:
-            base = self._subpalette.value() * self._index_space()
+            base = self._palette_base()
             self._palette_panel.select_index(base + value)
             self.statusBar().showMessage(f"Picked color index {value}.")
         # The direct-colour branch sets the pen behind the palette panel's back,
@@ -489,7 +487,7 @@ class PixelEditMixin:
         if self._doc is None or SPEC_BY_TOOL[self._tool].gesture is not Gesture.MARQUEE:
             return
         if self._lifted_on_press:
-            self._clear_float()  # also drops the press's marquee
+            self._clear_pixel_selection()  # also drops the press's marquee
             self._refresh_view()  # repaint over the blanked-source preview
         else:
             self._commit_float()
@@ -551,7 +549,7 @@ class PixelEditMixin:
         """End a marquee gesture: park a moved float, or treat a bare click as
         deselect.
 
-        A **move** sets nothing down here (see :meth:`_land_float`): the pixels
+        A **move** sets nothing down here (see :meth:`_park_float`): the pixels
         stay in the air with the selection on them, so they can be dragged on and
         on — each drag its own undo step — until the selection is cleared or
         replaced. Releasing without having dragged leaves everything as it was.
@@ -562,7 +560,7 @@ class PixelEditMixin:
         reads as.
         """
         if self._float_grid is not None:
-            self._land_float()
+            self._park_float()
             self._after_pixel_change()
             return
         before = self._marquee_before
@@ -571,14 +569,14 @@ class PixelEditMixin:
             and self._marquee.width() == 1
             and self._marquee.height() == 1
         ):
-            self._clear_float()  # drops the marquee and its canvas overlay
+            self._clear_pixel_selection()  # drops the marquee and its canvas overlay
         # Making, replacing or dropping a selection is an interaction of its own —
         # but a click that left the selection exactly as it was is not.
         if before != self._marquee:
             self._push_pixel_interaction(before, self._marquee, "select pixels")
         self._after_pixel_change()
 
-    def _land_float(self) -> None:
+    def _park_float(self) -> None:
         """Park a dragged float: the pixels stay in the air, the selection on them.
 
         Releasing the mouse writes **nothing**. A move's source is *shown* blank
@@ -659,17 +657,16 @@ class PixelEditMixin:
         landed = self._float_rect()
         state = FloatState(float_grid, source)
         base = self._window_grid()
-        self._clear_float()
+        self._clear_pixel_selection()
         if keep_selection:
             self._marquee = landed
-            if hasattr(self, "_canvas"):
-                self._canvas.set_marquee(landed)
+            self._canvas.set_marquee(landed)
         if base is None:
             return
         text = "move pixels" if moved else "paste pixels"
-        dest = self._clone_grid(base)
+        dest = base.copy()
         if source is not None:
-            self._blank_rect(dest, source)
+            self._clear_rect(dest, source)
         draw.blit_region(dest, float_grid, fx, fy)
         with self._float_leaves_the_air(
             text, state, was=landed, becomes=landed if keep_selection else None
@@ -691,14 +688,14 @@ class PixelEditMixin:
         state = FloatState(self._float_grid, source)
         was = self._float_rect()
         base = self._window_grid()
-        self._clear_float()
+        self._clear_pixel_selection()
         with self._float_leaves_the_air(text, state, was=was, becomes=None):
             if source is None or base is None:
                 if self._doc is not None:
                     self._refresh_view()  # take the float's overlay off the canvas
                 return
-            dest = self._clone_grid(base)
-            self._blank_rect(dest, source)
+            dest = base.copy()
+            self._clear_rect(dest, source)
             self._commit_grid(dest, base, text, no_op_step=False)
 
     @contextmanager
@@ -750,8 +747,7 @@ class PixelEditMixin:
         The canvas draws the float's own outline, so it needs no marquee over it.
         """
         self._marquee = self._float_rect()
-        if hasattr(self, "_canvas"):
-            self._canvas.set_marquee(None)
+        self._canvas.set_marquee(None)
 
     def _refresh_float_preview(self, base=None) -> None:  # noqa: ANN001 — a grid
         """Show the hole a lifted float owes, over the base image as it stands.
@@ -767,8 +763,8 @@ class PixelEditMixin:
             base = self._window_grid()
             if base is None:
                 return
-        preview = self._clone_grid(base)
-        self._blank_rect(preview, self._float_source_rect)
+        preview = base.copy()
+        self._clear_rect(preview, self._float_source_rect)
         self._render_preview(preview)
 
     def _clear_selection_on_background(self) -> None:
@@ -788,7 +784,7 @@ class PixelEditMixin:
         before = self._marquee
         if before is None:
             return
-        self._clear_float()  # drops the marquee and its canvas overlay
+        self._clear_pixel_selection()  # drops the marquee and its canvas overlay
         self._push_pixel_interaction(before, None, "clear selection")
         self._after_pixel_change()
 
@@ -804,16 +800,15 @@ class PixelEditMixin:
         which is what puts that blanked source on screen or takes it off again.
         """
         had_float = self._float_grid is not None
-        self._clear_float()
+        self._clear_pixel_selection()
         self._marquee = None if rect is None else QRect(rect)
         if float_state is not None and rect is not None:
             self._float_grid = float_state.grid
             self._float_pos = (rect.x(), rect.y())
             self._float_source_rect = float_state.source
-        if hasattr(self, "_canvas"):
-            self._canvas.set_marquee(
-                None if self._float_grid is not None else self._marquee
-            )
+        self._canvas.set_marquee(
+            None if self._float_grid is not None else self._marquee
+        )
         if (had_float or self._float_grid is not None) and self._doc is not None:
             self._refresh_view()  # re-renders the base, hole preview included
         self._show_float()
@@ -849,32 +844,17 @@ class PixelEditMixin:
             )
         )
 
-    def _drop_float(self) -> None:
-        """Take the floating pixels off the canvas without writing them.
+    def _clear_pixel_selection(self) -> None:
+        """Drop the pixel selection, and any float in the air with it.
 
-        The marquee is left alone: a float that is dropped rather than landed has
-        changed nothing, so what it hovers over — and what it was lifted from —
-        are both still exactly as the document has them.
+        Nothing is written: a float that is dropped rather than landed changed
+        nothing, so the document still holds exactly what it was lifted from.
         """
         self._float_grid = None
         self._float_source_rect = None
-        if hasattr(self, "_canvas"):
-            self._canvas.set_float(None)
-
-    def _clear_float(self) -> None:
-        """Drop the float and the selection with it (no commit)."""
-        self._drop_float()
+        self._canvas.set_float(None)
         self._marquee = None
-        if hasattr(self, "_canvas"):
-            self._canvas.set_marquee(None)
-
-    def _blank_rect(self, grid, rect: QRect) -> None:
-        """Set every pixel of ``rect`` in ``grid`` to the empty value (index 0 /
-        transparent black), clipped to the grid — what Cut/Clear leave behind."""
-        for py in range(rect.y(), rect.y() + rect.height()):
-            for px in range(rect.x(), rect.x() + rect.width()):
-                if 0 <= px < grid.width and 0 <= py < grid.height:
-                    grid.set(px, py, 0)
+        self._canvas.set_marquee(None)
 
     def _after_pixel_change(self) -> None:
         """Reconverge the actions gated on a pixel selection (clipboard/transform)."""
@@ -919,9 +899,9 @@ class PixelEditMixin:
         base = self._window_grid()
         if base is None:
             return
-        grid = self._clone_grid(base)
-        self._blank_rect(grid, rect)
-        self._clear_float()
+        grid = base.copy()
+        self._clear_rect(grid, rect)
+        self._clear_pixel_selection()
         if self._commit_grid(grid, base, text):
             self.statusBar().showMessage(done)
 
@@ -1019,8 +999,9 @@ class PixelEditMixin:
         round-trip is lossless.
         """
         assert self._doc is not None
-        base = self._subpalette.value() * self._index_space()
-        clipboard.put(None, render_bridge.render(region, self._doc.palette, base))
+        clipboard.put(
+            None, render_bridge.render(region, self._doc.palette, self._palette_base())
+        )
 
     def _take_pixel_clipboard(self):
         """The clipboard image as a region grid fitted to this view, or None.
@@ -1051,7 +1032,7 @@ class PixelEditMixin:
                 self._commit_float()
                 return True
             if self._marquee is not None:
-                self._clear_float()
+                self._clear_pixel_selection()
                 self._after_pixel_change()
                 return True
             return False
@@ -1070,9 +1051,8 @@ class PixelEditMixin:
         there is nothing to transform — the transform bar's enabled state reads
         this.
         """
-        if self._float_grid is not None:
-            fx, fy = self._float_pos
-            return QRect(fx, fy, self._float_grid.width, self._float_grid.height)
+        # Every path that puts a float in the air syncs the marquee to it, so
+        # the marquee *is* the region in both cases.
         return self._marquee
 
     def _transform_pixel_region(self, op) -> None:
@@ -1094,7 +1074,7 @@ class PixelEditMixin:
         base = self._window_grid()
         if base is None:
             return
-        grid = self._clone_grid(base)
+        grid = base.copy()
         rect = self._marquee
         region = draw.extract_region(
             grid, rect.x(), rect.y(), rect.width(), rect.height()
@@ -1107,7 +1087,8 @@ class PixelEditMixin:
         """Render the current floating grid onto the canvas overlay (no-op if none)."""
         if self._float_grid is None or self._doc is None:
             return
-        base = self._subpalette.value() * self._index_space()
-        image = render_bridge.render(self._float_grid, self._doc.palette, base)
+        image = render_bridge.render(
+            self._float_grid, self._doc.palette, self._palette_base()
+        )
         fx, fy = self._float_pos
         self._canvas.set_float(image, fx, fy)

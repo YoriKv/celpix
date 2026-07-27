@@ -15,6 +15,7 @@ temp dir, which ``__file__``-relative lookups miss).
 
 from __future__ import annotations
 
+from functools import cache
 from importlib.resources import files
 from typing import TYPE_CHECKING
 
@@ -39,8 +40,15 @@ def resource(*parts: str) -> Traversable:
     return node
 
 
+@cache
 def read_bytes(*parts: str) -> bytes:
-    """Read a bundled resource as bytes."""
+    """Read a bundled resource as bytes.
+
+    Cached: bundled data cannot change while the app runs, and these are the
+    toolbar icons — re-read on every window construction, and on every theme or
+    DPI change that re-tints them. On a Windows drive mounted into WSL those
+    reads are most of what building the tools rail costs.
+    """
     return resource(*parts).read_bytes()
 
 

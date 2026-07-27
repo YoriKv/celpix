@@ -12,7 +12,6 @@ from celpix.core.notices import (
     inform,
     notices,
     warn,
-    worst_level,
 )
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
@@ -36,9 +35,9 @@ from celpix.plugins.builtins.n64_rom import (
     swap_groups,
 )
 from celpix.plugins.detect import (
-    container_id_for,
     container_write_enabled,
     detect_container,
+    resolved_container_id,
 )
 from celpix.plugins.registry import default_registry
 from celpix.project.workspace import Entry, EntryKind, new_slice, pixel_config_for
@@ -190,7 +189,7 @@ def _container_config(reg, path, container_id):
     return PathwayConfig(
         source=FileRef(str(path), offset=0),  # the host's header box, unticked
         interpret_preset_id="preset.pixel.chunky-8bpp",
-        container_id=container_id_for(reg, container_id),
+        container_id=resolved_container_id(reg, container_id),
         write_enabled=container_write_enabled(reg, container_id),
     )
 
@@ -248,8 +247,8 @@ def test_container_id_degrades_when_the_plugin_is_gone() -> None:
     # behind it can be uninstalled or left untrusted before the next launch —
     # that must show raw bytes, not fail the load.
     reg = default_registry()
-    assert container_id_for(reg, "container.ines") == "container.ines"
-    assert container_id_for(reg, "container.no-such-plugin") == RAW_CONTAINER
+    assert resolved_container_id(reg, "container.ines") == "container.ines"
+    assert resolved_container_id(reg, "container.no-such-plugin") == RAW_CONTAINER
 
 
 def test_a_container_without_a_write_half_is_view_only() -> None:
@@ -271,9 +270,10 @@ def test_a_container_without_a_write_half_is_view_only() -> None:
 
     reg.register(_ReadOnly())
     assert container_write_enabled(reg, "container.probe") is False
-    # An id the registry has lost is a different case: the *read* degrades to
-    # plain bytes too, so the two agree and the file stays saveable.
-    assert container_write_enabled(reg, "container.no-such-plugin") is True
+    # An id the registry has lost reads as plain bytes so the file still opens,
+    # but it is view-only for the same reason: what is on screen is not what the
+    # entry means, so saving it would put the wrong bytes back.
+    assert container_write_enabled(reg, "container.no-such-plugin") is False
 
 
 def test_file_entry_reads_through_its_container(tmp_path) -> None:
@@ -373,15 +373,13 @@ def test_notices_accumulate_across_stages_and_survive_junk() -> None:
     must not take the reader down with it."""
     ctx = PipelineContext()
     assert notices(ctx) == ()
-    assert worst_level(()) is None
 
     warn(ctx, "first", "detail", "container.a")
     inform(ctx, "second", source="compression.b")
     got = notices(ctx)
     assert [n.summary for n in got] == ["first", "second"]  # oldest first
     assert [n.source for n in got] == ["container.a", "compression.b"]
-    assert worst_level(got) is NoticeLevel.WARNING
-    assert worst_level(got[1:]) is NoticeLevel.INFO
+    assert [n.is_warning for n in got] == [True, False]
 
     ctx.set(KEY_NOTICES, "not a tuple of notices")
     assert notices(ctx) == ()

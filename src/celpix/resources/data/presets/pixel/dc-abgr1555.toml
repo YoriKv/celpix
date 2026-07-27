@@ -1,11 +1,10 @@
-# Direct-color ABGR1555 direct (8x8) — Tile Molester DC catalogue (§3).
+# Direct-color ABGR1555 direct (8x8).
 # See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
 id = "preset.pixel.dc-abgr1555"
 name = "Direct ABGR1555 (8x8)"
 engine_id = "codec.direct-color"
 
 [params]
-bpp = 16
 bytes_per_pixel = 2
 byte_order = "little"
 

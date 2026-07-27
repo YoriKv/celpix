@@ -5,7 +5,6 @@ name = "MSX (16-color indexed)"
 engine_id = "codec.color-indexed"
 
 [params]
-bytes_per_entry = 1
 colors = [
   0x000000, 0x000000, 0x3EB849, 0x74D07D,
   0x5955E0, 0x8076F1, 0xB95E51, 0x65DBEF,

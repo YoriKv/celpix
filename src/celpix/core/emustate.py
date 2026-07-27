@@ -73,15 +73,12 @@ class PaletteRegion:
     ``count`` is the console's full palette size; the caller floors it to what
     actually fits ``data``, so a truncated state still yields the colors it does
     contain. ``data`` holds the extracted palette bytes and ``preset_id`` names
-    the color codec that decodes them. (``offset`` indexes into ``data`` and is
-    0 for every current format — the field is retained for a future locator that
-    wants to point into a raw file instead of extracting.)
+    the color codec that decodes them.
     """
 
-    offset: int
     count: int
     preset_id: str
-    data: bytes | None = None
+    data: bytes
 
 
 @dataclass(frozen=True)
@@ -98,7 +95,7 @@ class StateFormat:
     id: str
     name: str
     console: str
-    locate: Callable[[bytes, str], PaletteRegion | None]
+    locate: Callable[[bytes], PaletteRegion | None]
 
 
 def _u32le(data: bytes, at: int) -> int:
@@ -129,7 +126,7 @@ def _maybe_gunzip(data: bytes) -> bytes:
 # 0x00-0x3F, decoded by the same NES-indexed preset the dropdown offers.
 
 
-def _locate_fceux(data: bytes, ext: str) -> PaletteRegion | None:
+def _locate_fceux(data: bytes) -> PaletteRegion | None:
     if not data.startswith(b"FCSX"):
         return None
     if len(data) < 16:
@@ -147,7 +144,7 @@ def _locate_fceux(data: bytes, ext: str) -> PaletteRegion | None:
     pram = _fceux_pram(body)
     if pram is None:
         raise StateError("FCEUX state: no PPU 'PRAM' palette record found.")
-    return PaletteRegion(0, _NES_ENTRIES, _NES_PRESET, data=pram)
+    return PaletteRegion(_NES_ENTRIES, _NES_PRESET, data=pram)
 
 
 def _fceux_pram(body: bytes) -> bytes | None:
@@ -198,7 +195,7 @@ _SNES9X_CGDATA_V11 = 64  # byte offset of CGDATA within the PPU block
 _SNES9X_CGDATA_PRE_V11 = 63
 
 
-def _locate_snes9x(data: bytes, ext: str) -> PaletteRegion | None:
+def _locate_snes9x(data: bytes) -> PaletteRegion | None:
     raw = _maybe_gunzip(data)
     if not raw.startswith(_SNES9X_MAGIC):
         return None
@@ -213,7 +210,7 @@ def _locate_snes9x(data: bytes, ext: str) -> PaletteRegion | None:
     end = offset + _SNES_ENTRIES * 2
     if len(ppu) < end:
         raise StateError("Snes9x PPU block is too short to contain CGRAM.")
-    return PaletteRegion(0, _SNES_ENTRIES, _BGR555_BE_PRESET, data=ppu[offset:end])
+    return PaletteRegion(_SNES_ENTRIES, _BGR555_BE_PRESET, data=ppu[offset:end])
 
 
 def _snes9x_block(raw: bytes, name: bytes) -> bytes | None:
@@ -295,7 +292,7 @@ def _mesen_record(blob: bytes, key: bytes, size: int) -> bytes | None:
     return None
 
 
-def _locate_mesen(data: bytes, ext: str) -> PaletteRegion | None:
+def _locate_mesen(data: bytes) -> PaletteRegion | None:
     if not data.startswith(b"MSS"):
         return None
     try:
@@ -320,12 +317,12 @@ def _mesen_palette(blob: bytes, console: int) -> PaletteRegion:
         cgram = _mesen_record(blob, b"cgram", _SNES_ENTRIES * 2)
         if cgram is None:
             raise StateError("Mesen SNES state: no 'cgram' palette record found.")
-        return PaletteRegion(0, _SNES_ENTRIES, _BGR555_PRESET, data=cgram)
+        return PaletteRegion(_SNES_ENTRIES, _BGR555_PRESET, data=cgram)
     if console == 2:  # NES: 32 bytes of master-palette-index RAM
         pram = _mesen_record(blob, b"paletteram", _NES_ENTRIES)
         if pram is None:
             raise StateError("Mesen NES state: no palette RAM record found.")
-        return PaletteRegion(0, _NES_ENTRIES, _NES_PRESET, data=pram)
+        return PaletteRegion(_NES_ENTRIES, _NES_PRESET, data=pram)
     if console == 1:  # Game Boy / Game Boy Color
         # The CGB palette RAM is serialized only in color mode; a monochrome DMG
         # state simply has no such records, so its absence *is* the DMG signal.
@@ -336,7 +333,7 @@ def _mesen_palette(blob: bytes, console: int) -> PaletteRegion:
                 "Mesen Game Boy state carries no color palette - only Game Boy "
                 "Color states do (the original DMG has no palette RAM)."
             )
-        return PaletteRegion(0, _GBC_ENTRIES, _BGR555_PRESET, data=bg + obj)
+        return PaletteRegion(_GBC_ENTRIES, _BGR555_PRESET, data=bg + obj)
     name = _MESEN_CONSOLES[console] if console < len(_MESEN_CONSOLES) else "?"
     raise StateError(
         f"Mesen {name} state: only NES, SNES and Game Boy Color states are supported."
@@ -359,7 +356,7 @@ _GPGX_CRAM_OFFSET = 16 + 0x10000 + 0x2000 + 1 + 4 + 0x10 + 0x400 + 0x10000  # 0x
 _GPGX_CRAM_BYTES = _GENESIS_ENTRIES * 2
 
 
-def _locate_gpgx(data: bytes, ext: str) -> PaletteRegion | None:
+def _locate_gpgx(data: bytes) -> PaletteRegion | None:
     raw = _maybe_gunzip(data)
     if not raw.startswith(_GPGX_MAGIC):
         return None
@@ -370,9 +367,7 @@ def _locate_gpgx(data: bytes, ext: str) -> PaletteRegion | None:
             "(an SMS / Game Gear state is not supported)."
         )
     packed = raw[_GPGX_CRAM_OFFSET:end]
-    return PaletteRegion(
-        0, _GENESIS_ENTRIES, _GENESIS_PRESET, data=_gpgx_expand(packed)
-    )
+    return PaletteRegion(_GENESIS_ENTRIES, _GENESIS_PRESET, _gpgx_expand(packed))
 
 
 def _gpgx_expand(packed: bytes) -> bytes:
@@ -407,7 +402,7 @@ _BESS_OBJ_FIELD = 0xC8  # ... and the OBJ palettes
 _BESS_PAL_BYTES = 0x40
 
 
-def _locate_bess(data: bytes, ext: str) -> PaletteRegion | None:
+def _locate_bess(data: bytes) -> PaletteRegion | None:
     if len(data) < 8 or data[-4:] != b"BESS":
         return None
     core = _bess_block(data, _u32le(data, len(data) - 8), b"CORE")
@@ -422,7 +417,7 @@ def _locate_bess(data: bytes, ext: str) -> PaletteRegion | None:
             "BESS state carries no color palette - only Game Boy Color states "
             "do (the original DMG has no palette RAM)."
         )
-    return PaletteRegion(0, _GBC_ENTRIES, _BGR555_PRESET, data=bg + obj)
+    return PaletteRegion(_GBC_ENTRIES, _BGR555_PRESET, data=bg + obj)
 
 
 def _bess_block(data: bytes, start: int, want: bytes) -> bytes | None:
@@ -465,7 +460,7 @@ _MGBA_MAGIC_MIN = 0x01000000  # versionMagic = 0x01000000 + state version
 _MGBA_MAGIC_MAX = 0x0100000B  # newest version this layout is known good for
 
 
-def _locate_mgba(data: bytes, ext: str) -> PaletteRegion | None:
+def _locate_mgba(data: bytes) -> PaletteRegion | None:
     if data.startswith(_PNG_SIG):
         state = _mgba_from_png(data)
         if state is None:
@@ -481,9 +476,7 @@ def _locate_mgba(data: bytes, ext: str) -> PaletteRegion | None:
     end = _MGBA_PRAM_OFFSET + _MGBA_PRAM_BYTES
     if len(state) < end:
         raise StateError("mGBA state is truncated (no palette RAM).")
-    return PaletteRegion(
-        0, _GBA_ENTRIES, _BGR555_PRESET, data=state[_MGBA_PRAM_OFFSET:end]
-    )
+    return PaletteRegion(_GBA_ENTRIES, _BGR555_PRESET, state[_MGBA_PRAM_OFFSET:end])
 
 
 def _mgba_from_png(data: bytes) -> bytes | None:
@@ -525,17 +518,15 @@ STATE_FORMATS: tuple[StateFormat, ...] = (
 )
 
 
-def locate_palette(data: bytes, ext: str) -> tuple[StateFormat, PaletteRegion]:
+def locate_palette(data: bytes) -> tuple[StateFormat, PaletteRegion]:
     """Detect the emulator behind ``data`` and locate its palette.
 
-    ``ext`` is the file's extension; it is currently unused (every supported
-    format is detected by content), retained for API stability and any future
-    extension-keyed locator. Returns the matched :class:`StateFormat` and its
-    :class:`PaletteRegion`. Raises :class:`StateError` if nothing matches, or a
-    matched format's palette can't be located.
+    Returns the matched :class:`StateFormat` and its :class:`PaletteRegion`.
+    Raises :class:`StateError` if nothing matches, or a matched format's palette
+    can't be located.
     """
     for fmt in STATE_FORMATS:
-        region = fmt.locate(data, ext)
+        region = fmt.locate(data)
         if region is not None:
             return fmt, region
     raise StateError("Unrecognised save state - no known emulator format matched.")

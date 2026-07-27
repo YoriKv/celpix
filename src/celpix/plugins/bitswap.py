@@ -14,27 +14,28 @@ engine_id = "reshape.bitswap"
 bits = [19, 18, 17, 16, 15, 12, 11, 10, 9, 8, 7, 6, 5, 14, 13, 4, 3, 2, 1, 0]
 ```
 
-Unlike a pixel/palette preset — which stays data resolved through its engine at
-decode time — a bitswap preset is adapted into an **ordinary reshape plugin
-instance** at load time (:func:`bitswap_from_toml`), because the Reshape stage
+Unlike a pixel or palette preset, which stays data resolved through its engine at
+decode time, a bitswap preset is adapted into an **ordinary reshape plugin
+instance** at load (:func:`bitswap_from_spec`), because the Reshape stage
 resolves plain plugin ids everywhere: the pipeline, the combos, and the
-``reshape_id`` a project persists. Adapting at the edge keeps all of that
+``reshape_id`` a project persists. Adapting at the edge leaves all of that
 untouched — the mirror of what ``formats.adapt_format`` does for code formats.
 
-``bits`` is **MAME's argument order** (most significant bit first), so a
-driver's table can be copied verbatim: entry *k* names the source bit of output
-bit ``N-1-k``, i.e. ``j = bitswap<N>(i, *bits)``. The load direction *scatters*
-— ``out[bitswap(i)] = in[i]`` — matching the common ``buffer[j] = src[i]``
-descramble form; drivers written the other way round (``dst[i] =
-src[bitswap(i)]``) set ``gather = true`` instead of hand-inverting the table.
+``bits`` is **MAME's argument order** (most significant bit first), so a driver's
+table copies verbatim: entry *k* names the source bit of output bit ``N-1-k``,
+i.e. ``j = bitswap<N>(i, *bits)``. The load direction *scatters* —
+``out[bitswap(i)] = in[i]`` — matching the common ``buffer[j] = src[i]``
+descramble form; a driver written the other way round (``dst[i] =
+src[bitswap(i)]``) sets ``gather = true`` rather than hand-inverting its table.
 
-The table defines a ``2**N``-byte block. The region is permuted block-wise, so
-a table for one chip pair serves a region of several; a tail short of a block
-passes through untouched (the same degradation rule as the split-plane joins);
-a region smaller than one block hard-stops — nothing at all would be
-transformed, which is a misconfiguration, not a tail.
+The table defines a ``2**N``-byte block and the region is permuted block-wise, so
+a table for one chip pair serves a region of several. A tail short of a block
+passes through untouched, as with the split-plane joins; a region smaller than
+one block raises, since nothing at all would be transformed.
 
-Qt-free, like everything under ``plugins``.
+Two separate bounds apply: :data:`MAX_BITS` caps how far the table *spans*, and
+:data:`MAX_PERMUTED_BITS` how many of those lines actually *move*. Only the
+second costs anything. Qt-free.
 """
 
 from __future__ import annotations
@@ -48,35 +49,54 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
 
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
+from celpix.plugins.base import PluginInfo, check_declared_stage
 
-ENGINE_ID = "reshape.bitswap"
+BITSWAP_ENGINE = "reshape.bitswap"
 
-# The largest table accepted: 2^20 = 1 MiB blocks, the biggest region the MAME
-# corpus swaps in one go (bitswap<20>). The bound is what keeps the chunk plan
-# below a sane size for a table with no identity tail.
-MAX_BITS = 20
+# The largest table accepted: 2^24 = 16 MiB blocks, which covers the widest
+# swaps in the MAME corpus (PGM's sprite ROMs and Dynax's graphics both use
+# bitswap<24>).
+MAX_BITS = 24
+
+# Span is not what costs anything: the chunk plan is sized by how many address
+# lines actually *move*, and a table permuting all 24 would build a 16-million-
+# entry plan. Real tables leave the low lines alone — they reorder tiles, not the
+# bytes inside them (PGM's 24-line table holds its low 9 fixed) — so bounding the
+# moving lines bounds the cost. 2^16 plan entries is comfortably above every
+# table in the corpus.
+MAX_PERMUTED_BITS = 16
+
+
+def _identity_low(src_of: tuple[int, ...]) -> int:
+    """How many low address lines the table leaves alone.
+
+    Everything above them is what permutes, so this is both the chunk size the
+    plan below copies in and the width :data:`MAX_PERMUTED_BITS` bounds. A
+    permutation's inverse fixes the same low lines, so both directions of one
+    preset always agree on it.
+    """
+    low = 0
+    while low < len(src_of) and src_of[low] == low:
+        low += 1
+    return low
 
 
 @lru_cache(maxsize=32)
 def _chunk_plan(src_of: tuple[int, ...]) -> tuple[int, tuple[int, ...]]:
     """``(chunk_size, destination chunk per source chunk)`` for one block.
 
-    ``src_of`` is lsb-indexed: output bit *k* comes from input bit
-    ``src_of[k]``. Every low bit that maps to itself grows the chunk — bytes
-    whose indices differ only in identity bits move together — so the per-block
-    loop runs ``2^(N-low)`` slice copies instead of ``2^N`` byte moves. Real
-    tables keep several low bits intact (they reorder tiles or rows, not the
-    bytes inside them), which is what makes the pure-Python loop fast enough.
+    ``src_of`` is lsb-indexed: output bit *k* comes from input bit ``src_of[k]``.
+    Every low bit mapping to itself grows the chunk — bytes whose indices differ
+    only in identity bits move together — so the per-block loop runs ``2^(N-low)``
+    slice copies instead of ``2^N`` byte moves, which is what makes the
+    pure-Python loop fast enough on real tables.
 
-    Because the table is a permutation and the low positions map to
-    themselves, the remaining positions permute among themselves, so the high
-    field reduces to its own smaller bitswap.
+    The table being a permutation whose low positions map to themselves, the
+    remaining positions permute among themselves, so the high field reduces to its
+    own smaller bitswap.
     """
     n = len(src_of)
-    low = 0
-    while low < n and src_of[low] == low:
-        low += 1
+    low = _identity_low(src_of)
     reduced = tuple(b - low for b in src_of[low:])
     dst = tuple(
         sum(((hi >> src) & 1) << k for k, src in enumerate(reduced))
@@ -111,8 +131,8 @@ def _permute(data: bytes, src_of: tuple[int, ...]) -> bytes:
 class BitswapReshape:
     """One bitswap table as a reshape plugin — built from preset data.
 
-    The two directions are the permutation and its inverse, derived from one
-    table, so they cannot fall out of step the way a hand-written pair could.
+    Both directions derive from the one table, as the permutation and its
+    inverse, so they cannot fall out of step the way a hand-written pair could.
     """
 
     def __init__(
@@ -132,6 +152,14 @@ class BitswapReshape:
             )
         # The TOML is msb-first (MAME's argument order); index by output bit.
         src_of = tuple(reversed(tuple(bits)))
+        moving = n - _identity_low(src_of)
+        if moving > MAX_PERMUTED_BITS:
+            raise ValueError(
+                f"params.bits may move at most {MAX_PERMUTED_BITS} address "
+                f"lines, but this table moves {moving} - the chunk plan for it "
+                f"would need {1 << moving:,} entries. A real table of this span "
+                "leaves its low lines alone"
+            )
         inverse = [0] * n
         for k, src in enumerate(src_of):
             inverse[src] = k
@@ -152,22 +180,19 @@ class BitswapReshape:
 def bitswap_from_spec(spec: dict) -> BitswapReshape:
     """Build the plugin a parsed preset spec describes.
 
-    ``engine_id`` is required and must name this engine — the field is what
-    keeps the preset self-describing and leaves room for other reshape engines
-    to dispatch on it later. A stated ``stage`` is tolerated when it agrees,
-    exactly as :func:`~celpix.plugins.discovery.preset_from_spec` tolerates it.
+    ``engine_id`` is required and must name this engine. On a reshape preset it is
+    a **discriminator** rather than a registry key: the spec is adapted into a
+    :class:`BitswapReshape` here instead of resolving to a registered plugin. That
+    keeps the preset self-describing and is what
+    :data:`~celpix.plugins.discovery.RESHAPE_ENGINES` dispatches on.
     """
     engine = spec.get("engine_id")
-    if engine != ENGINE_ID:
+    if engine != BITSWAP_ENGINE:
         raise ValueError(
-            f"engine_id {engine!r} is not a reshape engine (expected {ENGINE_ID!r})"
+            f"engine_id {engine!r} is not a reshape engine "
+            f"(expected {BITSWAP_ENGINE!r})"
         )
-    declared = spec.get("stage")
-    if declared is not None and declared != Stage.RESHAPE.value:
-        raise ValueError(
-            f"stage {declared!r} conflicts with the folder's stage "
-            f"{Stage.RESHAPE.value!r} - remove the stage field"
-        )
+    check_declared_stage(spec, Stage.RESHAPE)
     params = spec.get("params", {})
     if not isinstance(params, dict):
         raise ValueError("params must be a table")

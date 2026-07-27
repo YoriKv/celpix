@@ -1,14 +1,13 @@
 """Trust gate for code plugins.
 
-A ``*.py`` plugin runs with the app's privileges, so before celPix executes one it
-asks the user to approve it, and remembers the approval so it loads silently next
-time. Trust is keyed on the **content hash**, not the path: approving a plugin
-trusts *that exact code*. If the file's bytes change, the hash changes and the user
-is asked again — moving/renaming keeps trust, editing the code does not.
+A ``*.py`` plugin runs with the app's privileges, so celPix asks the user to
+approve one before executing it and remembers the approval. Trust is keyed on the
+**content hash**, not the path: approving a plugin trusts *that exact code*, so
+moving or renaming keeps trust and editing the code does not.
 
-This module is Qt-free. The confirmation itself is a callback the caller injects
-(the app supplies a Qt dialog; tests supply a stub), so the trust policy stays
-testable and headless. TOML presets are pure data and never gated — only code is.
+The confirmation is a callback the caller injects (the app supplies a Qt dialog,
+tests a stub), keeping the policy headless and testable. TOML presets are pure
+data and never gated. Qt-free.
 """
 
 from __future__ import annotations
@@ -47,11 +46,10 @@ class TrustStore:
 
     def __init__(self, path: str | None = None) -> None:
         self._path = path
-        self._trusted: dict[str, str] = {}  # digest -> last-seen label (path)
-        # Paths approved during *this* run. Lets a developer edit-and-refresh a
-        # plugin they already okayed without a prompt on every change, while a
-        # brand-new launch still re-prompts for changed code (this set starts
-        # empty each run). Session-only — never persisted.
+        self._trusted: dict[str, str] = {}  # digest -> the path it was last seen at
+        # Paths approved during *this* run: a developer can edit-and-refresh a
+        # plugin they already okayed without a prompt on every change. Starts
+        # empty each launch, so changed code still re-prompts across runs.
         self._session_paths: set[str] = set()
         if path is not None:
             self._load()
@@ -59,13 +57,13 @@ class TrustStore:
     def is_trusted(self, digest: str) -> bool:
         return digest in self._trusted
 
-    def is_session_path(self, label: str) -> bool:
+    def is_session_path(self, path: str) -> bool:
         """True if this path was approved earlier in this run (developer loop)."""
-        return label in self._session_paths
+        return path in self._session_paths
 
-    def trust(self, digest: str, label: str) -> None:
-        self._trusted[digest] = label
-        self._session_paths.add(label)
+    def trust(self, digest: str, path: str) -> None:
+        self._trusted[digest] = path
+        self._session_paths.add(path)
         self._save()
 
     def _load(self) -> None:
@@ -74,9 +72,7 @@ class TrustStore:
             trusted = data.get("trusted", {})
             if isinstance(trusted, dict):
                 self._trusted = {str(k): str(v) for k, v in trusted.items()}
-        except FileNotFoundError:
-            pass
-        except Exception:  # noqa: BLE001 — corrupt store: start empty, never crash
+        except Exception:  # noqa: BLE001 — missing or corrupt: start empty
             pass
 
     def _save(self) -> None:

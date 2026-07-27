@@ -1,13 +1,14 @@
 """Chunky 8bpp pixel codec — one byte per pixel, row-major (a straight copy).
 
-The simplest pixel layout: each byte *is* a palette index, tiles are row-major, so a
-tile is a contiguous ``width × height`` byte block
-(``docs/graphics-formats-reference/implementation-guide.md`` §2, "Chunky"). Covers
-SNES Mode 7, Nintendo DS 2D, generic 8bpp (8×8), and the SNES whole-bank 8bpp view
-(a single 128×128 "tile") — the tile size is the only parameter.
+The simplest pixel layout: each byte *is* a palette index and tiles are row-major,
+so a tile is a contiguous ``width × height`` byte block
+(``docs/graphics-formats-reference/implementation-guide.md`` §2, "Chunky"). Tile
+size is the only parameter, which covers SNES Mode 7, Nintendo DS 2D, generic 8bpp
+and the SNES whole-bank view (one 128×128 "tile").
 
-Higher-bpp chunky is *direct color* (truecolor, no palette): a separate concern, not
-this index-producing engine.
+Higher-bpp chunky is *direct color* — truecolor, no palette — and belongs to
+:mod:`celpix.plugins.builtins.direct_color_codec` rather than this
+index-producing engine.
 """
 
 from __future__ import annotations

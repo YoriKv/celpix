@@ -1,4 +1,6 @@
 # Neo Geo Pocket 2bpp — YY-CHR ordering: the odd row byte drives the left pixels.
+# reverse_bytes is the byte order *along a row*, not endianness within a value
+# (that is byte_order, which the packed codec does not use).
 # See docs/graphics-formats-reference/implementation-guide.md §2 (packed / linear).
 id = "preset.pixel.ngp-2bpp-swapped"
 name = "Neo Geo Pocket 2bpp byte-swapped (8x8)"

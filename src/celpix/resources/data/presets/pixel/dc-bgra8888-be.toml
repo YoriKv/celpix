@@ -5,7 +5,6 @@ name = "Direct BGRA8888 (8x8, big-endian)"
 engine_id = "codec.direct-color"
 
 [params]
-bpp = 32
 bytes_per_pixel = 4
 byte_order = "big"
 

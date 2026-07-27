@@ -45,6 +45,7 @@ from celpix.core.tilemap import TileMap
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.project.workspace import Entry, EntryKind, PaletteMode, SliceParams
+from celpix.ui.container_dialog import ContainerEdit
 
 if TYPE_CHECKING:
     from celpix.ui.main_window import MainWindow
@@ -72,11 +73,10 @@ class PaletteState:
     palette: Palette
     config: PathwayConfig
     ctx: PipelineContext
-    # The bytes the palette was read from, and which entries have been edited
-    # since — the splice base a save needs (see Document.palette_bytes). Carried
-    # through undo so reverting a palette change restores the right base, not
-    # just the right colors.
-    data: bytes = b""
+    # The bytes the palette was read from — the splice base a save needs (see
+    # Document.palette_base_bytes). Carried through undo so reverting a palette
+    # change restores the right base, not just the right colors.
+    base_bytes: bytes = b""
     edits: frozenset[int] = frozenset()
 
 
@@ -378,10 +378,27 @@ class PixelEditCommand(QUndoCommand):
         # undo hands the entry back the exact unsaved-state it had before.
         self._before_revision = entry.pixel_revision
         self._after_revision = window._workspace.next_revision()
+        # A slice's bytes live inside its parent's region, so an edit to one is
+        # an edit to that file: it is folded into the parent's buffer as it
+        # lands (``_propagate_pixel_edit``) and the file carries the unsaved
+        # state too. That revision therefore has to travel through undo as well,
+        # exactly as a color edit inside a reordered region carries its owner's
+        # (:class:`ColorEditCommand`). The *after* token is shared - one edit,
+        # one state - while the *before* pair differs, since the parent may have
+        # been at an unsaved state of its own before this command.
+        self._owner = (
+            window._workspace.find_file(entry.path)
+            if entry.kind is EntryKind.SLICE
+            else None
+        )
+        self._before_owner_revision = (
+            self._owner.pixel_revision if self._owner is not None else 0
+        )
 
     def redo(self) -> None:
         self._apply(
             [(start, after) for start, _before, after in self._regions],
+            self._after_revision,
             self._after_revision,
         )
 
@@ -389,9 +406,12 @@ class PixelEditCommand(QUndoCommand):
         self._apply(
             [(start, before) for start, before, _after in self._regions],
             self._before_revision,
+            self._before_owner_revision,
         )
 
-    def _apply(self, splices: list[tuple[int, bytes]], revision: int) -> None:
+    def _apply(
+        self, splices: list[tuple[int, bytes]], revision: int, owner_revision: int
+    ) -> None:
         """Land every splice, as one refresh.
 
         The regions are disjoint (the push site merges anything that touches),
@@ -401,7 +421,7 @@ class PixelEditCommand(QUndoCommand):
         """
         with self._window._undo_apply():
             if self._window._ensure_edit_context(self._entry, self._mode):
-                self._window._apply_pixel_bytes(splices, revision)
+                self._window._apply_pixel_bytes(splices, revision, owner_revision)
 
 
 @dataclass(frozen=True)
@@ -524,6 +544,42 @@ class SliceEditCommand(QUndoCommand):
             self._window._apply_slice_params(self._entry, self._before)
 
 
+class ContainerEditCommand(QUndoCommand):
+    """Re-pointing a file's file list, container and reshape (Edit File
+    Container…).
+
+    The three settle together because they decide the same thing between them —
+    which bytes the region even has — so one command carries all three, and undo
+    puts the whole :class:`~celpix.ui.container_dialog.ContainerEdit` back and
+    re-reads. Like :class:`SliceEditCommand` it restores the *coordinates*, not
+    unsaved edits discarded when the documents were dropped (the dialog confirms
+    before discarding them). A re-pointed file's slices and bookmarks move with
+    it in both directions, since they are keyed by its first file.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        *,
+        before: ContainerEdit,
+        after: ContainerEdit,
+    ) -> None:
+        super().__init__(f'edit container "{entry.name}"')
+        self._window = window
+        self._entry = entry
+        self._before = before
+        self._after = after
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            self._window._apply_container_edit(self._entry, self._after)
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            self._window._apply_container_edit(self._entry, self._before)
+
+
 class MoveEntryCommand(QUndoCommand):
     """Reordering a file in the files pane — one place up or down.
 
@@ -601,7 +657,7 @@ class RemoveEntriesCommand(QUndoCommand):
 
 
 @dataclass(frozen=True)
-class PaletteUserLink:
+class PaletteConsumerLink:
     """A graphic's File-mode link to a palette, captured before it is re-homed.
 
     Removing a file palette that graphics use converts each to a Custom copy; this
@@ -617,7 +673,7 @@ class PaletteUserLink:
     loaded: bool
 
 
-class RemovePaletteWithUsersCommand(QUndoCommand):
+class RemovePaletteWithConsumersCommand(QUndoCommand):
     """Remove a file palette that graphics use, re-homing each as a Custom copy.
 
     Deleting a shared palette would strand the graphics that render it, so each
@@ -632,20 +688,20 @@ class RemovePaletteWithUsersCommand(QUndoCommand):
         palette: Entry,
         *,
         index: int,
-        users: list[PaletteUserLink],
+        consumers: list[PaletteConsumerLink],
     ) -> None:
         super().__init__(f'remove "{palette.name}"')
         self._window = window
         self._palette = palette
         self._index = index
-        self._users = users
+        self._consumers = consumers
 
     def redo(self) -> None:
         with self._window._undo_apply():
-            self._window._apply_remove_palette_to_custom(self._palette, self._users)
+            self._window._apply_remove_palette_to_custom(self._palette, self._consumers)
 
     def undo(self) -> None:
         with self._window._undo_apply():
-            self._window._apply_restore_palette_users(
-                self._palette, self._index, self._users
+            self._window._apply_restore_palette_consumers(
+                self._palette, self._index, self._consumers
             )

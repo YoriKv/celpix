@@ -226,12 +226,12 @@ class TransformMixin:
         # Pixel: shown only in pixel mode, flips/rotates the pixel selection (or the
         # whole window when nothing is lifted) rather than tiles.
         pixel_label = self._group_caption(
-            bar, " Pixel: ", "Flip / rotate the pixel selection, else the view"
+            bar, " Pixel: ", "Flip / rotate the pixel selection"
         )
         self._pixel_group = self._add_transform_group(
             bar,
             self._transform_pixel_region,
-            "the pixel selection, else the view",
+            "the pixel selection",
             "",
         )
         # Rearrange: shown only while that tool is armed, over *either* mode. Its
@@ -452,17 +452,25 @@ class TransformMixin:
             return
         has = self._doc is not None and self._selected_tile is not None
         square_tiles = has and self._square_tiles()
-        for action in self._tile_group.flips:
-            action.setEnabled(has)
-        for action in self._tile_group.rotates:
-            action.setEnabled(square_tiles)
-
-        geom = self._block_geometry() if has else None
-        for action in self._block_group.flips:
-            action.setEnabled(geom is not None)
+        self._arm_transform_group(self._tile_group, has, square_tiles)
+        geom = self._block_geometry()
         square_block = geom is not None and geom[0] == geom[1]
-        for action in self._block_group.rotates:
-            action.setEnabled(square_block and square_tiles)
+        self._arm_transform_group(
+            self._block_group, geom is not None, square_block and square_tiles
+        )
+
+    @staticmethod
+    def _arm_transform_group(group, has: bool, square: bool) -> None:
+        """Enable one transform group: flips need a target, rotates a square one.
+
+        A quarter turn swaps width and height, so it is only offered where the
+        result still fits its footprint. Shared by every group — destructive,
+        block and rearrange — so the three cannot disagree about that rule.
+        """
+        for action in group.flips:
+            action.setEnabled(has)
+        for action in group.rotates:
+            action.setEnabled(has and square)
 
     def _square_tiles(self) -> bool:
         """Whether this codec's tile can be turned at all.
@@ -493,8 +501,8 @@ class TransformMixin:
             bc = max(1, min(self._block_cols.value(), self._columns.value()))
             br = max(1, self._block_rows.value())
             return bc, br, (cx // bc) * bc, (cy // br) * br
-        if self._rect_cells is not None:
-            cols, rows = self._rect_cells
+        if self._rect_size is not None:
+            cols, rows = self._rect_size
             return cols, rows, cx, cy
         return None  # a linear multi-tile run has no 2D block
 
@@ -563,15 +571,12 @@ class TransformMixin:
     def _sync_pixel_transform_actions(self) -> None:
         """Enable the Pixel group for what the pixel selection supports.
 
-        The Pixel group flips/rotates the floating selection (or the whole visible
-        window when nothing is lifted); a rectangle needs to be square to rotate,
+        The Pixel group flips/rotates the lifted selection; a rectangle needs to
+        be square to rotate,
         matching the tile-mode rule. The Tile/Block groups are hidden in pixel mode
         (see :meth:`_sync_transform_bar_mode`), so only this group is touched.
         """
         region = self._pixel_transform_source()
         has = self._doc is not None and region is not None
         square = has and region.width() == region.height()
-        for action in self._pixel_group.flips:
-            action.setEnabled(has)
-        for action in self._pixel_group.rotates:
-            action.setEnabled(square)
+        self._arm_transform_group(self._pixel_group, has, square)

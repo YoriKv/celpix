@@ -101,7 +101,7 @@ class RenderingMixin:
         # A bitmap width owns the column count (it *is* the width, in tiles), so
         # settle Cols - and whether the width applies at all - before anything
         # reads them.
-        self._sync_bitmap_width()
+        self._settle_bitmap_width_and_columns()
         cols = self._columns.value()
         # Rows is a free display-window height (bounded only by the spin's own 256
         # cap), not by the data. Asking for more rows than the file fills just
@@ -110,7 +110,7 @@ class RenderingMixin:
         # switching to a format whose larger tiles leave far fewer rows of data.
         # Re-clamp the offset next: a smaller file, or a bigger window (cols/rows),
         # can push the previous offset past the last page.
-        self._offset = self._doc.clamp_offset(
+        self._offset = self._doc.clamp_tile_offset(
             self._offset, cols, self._rows.value(), self._nudge
         )
         rows = self._rows.value()
@@ -168,7 +168,7 @@ class RenderingMixin:
         # A lifted float's source is shown blank, never written, so a fresh base
         # image has to have that hole punched back into it.
         self._refresh_float_preview()
-        self._refresh_selection(cols * rows)
+        self._revalidate_selection(cols * rows)
         # Follows the Pattern picker: a 2D pattern locks the rearrange tool out
         # (see rearrange.py), and nothing else tells it the pattern changed.
         self._sync_rearrange_actions()
@@ -207,7 +207,7 @@ class RenderingMixin:
         """
         palette = self._shown_palette()
         group = self._clamp_subpalette(palette)
-        self._palette_panel.set_palette(palette.colors)
+        self._palette_panel.set_colors(palette.colors)
         self._palette_panel.set_active_range(self._subpalette.value() * group, group)
         self._refresh_color_details()
         self._sync_color_editor()

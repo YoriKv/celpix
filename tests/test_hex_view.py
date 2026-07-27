@@ -88,6 +88,6 @@ def test_hex_panel_highlights_selected_tiles(qtbot, tmp_path) -> None:
     # Selecting a run of on-screen slots highlights those tiles' bytes: the run
     # maps to a contiguous byte range (nudge + tile*bytes_per_tile) and the
     # dump gains a highlighted span.
-    window._on_tiles_selected(0, 2)  # slots 0..2 at offset 0 -> tiles 0..2
+    window._on_slots_selected(0, 2)  # slots 0..2 at offset 0 -> tiles 0..2
     assert window._selection_byte_range() == (0, 3 * tb)
     assert "<span" in window._hex_panel._view.toHtml()

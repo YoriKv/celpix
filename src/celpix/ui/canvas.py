@@ -1,9 +1,10 @@
 """The tile canvas: draws the rendered image at integer zoom, optional tile grid
 (a two-level grid in a selectable :class:`GridStyle` — see :meth:`Canvas._draw_grid`).
 
-Deliberately minimal for the MVP — a fixed-size widget the main window drops into
-a scroll area. It owns no model; it is handed a ready :class:`QImage` by the render
-bridge and only scales/paints it. Selection is expressed in **window slot indices**
+A fixed-size widget the main window drops into a scroll area. It owns no model;
+it is handed a ready :class:`QImage` by the render bridge and only scales/paints
+it, plus the overlays a gesture needs (marquee, float, pen preview, rearrange
+drop target). Selection is expressed in **window slot indices**
 (0 .. visible tiles - 1): the canvas reports the pressed and dragged-to slots and
 paints whatever *set* of slots it is told to highlight, while the main window owns
 which absolute tiles are selected and what shape the two gesture slots describe —
@@ -93,20 +94,20 @@ _GRID_PEN_STYLES = {
 # The grid is periodic, so it is painted as a repeating pixmap rather than line by
 # line. That is not a micro-optimisation: Qt's raster engine strokes a *translucent*
 # one-pixel line at roughly two hundred times the cost per pixel of blitting one, so
-# a full repaint of a large window at high zoom spent longer on the lattice than on
-# the art. Blitting a prepared cell composites identically — source-over is
+# a full repaint of a large window at high zoom would spend longer on the lattice
+# than on the art. Blitting a prepared cell composites identically — source-over is
 # associative, so blending the crossings into the cell first and the cell onto the
 # canvas after lands on the same colours.
 #
 # The cell spans one coarse block, which is the mapping's true period. Past this
 # many pixels a side it is not worth holding (the cap is one tile at the maximum
 # zoom), and a cell that large means so few lines that stroking them is cheap
-# anyway — so the line path below stays as the fallback rather than as dead code.
+# anyway — which is what the line path below is for.
 #
 # Solid lines and corner dots come out pixel-identical this way. The dotted and
-# dashed styles restart their dash phase at each repeat, where one long stroke
-# would have carried it the length of the line: a one- or two-pixel shift in the
-# rhythm, once every coarse block, landing on the coarse line that crosses there.
+# dashed styles restart their dash phase at each repeat rather than carrying it
+# the length of the line: a one- or two-pixel shift in the rhythm, once every
+# coarse block, landing on the coarse line that crosses there.
 # The phase is texture rather than information, so it is not worth a cell sized to
 # the lowest common multiple of the two periods — that is up to nine times the
 # area, which would push every ordinary zoom back onto the slow path.
@@ -121,7 +122,7 @@ class _GridPattern:
     line at *x = period* paints one at *x = 0* too — and the image's left edge
     carries no grid line. So those two lines are held separately, each the cell's
     edge with the origin line taken out, and laid down after the tiling. They are
-    what keeps every line's first pixel where stroking it used to put it.
+    what keeps every line's first pixel where a single stroke would put it.
     """
 
     __slots__ = ("key", "pixmap", "top", "left")
@@ -143,7 +144,7 @@ class Canvas(QWidget):
     # (anchor slot, current slot) — emitted on press and whenever a drag
     # reaches another slot. The anchor stays the pressed slot, so the window
     # can grow/shrink the range live; a plain click emits (slot, slot).
-    tiles_selected = Signal(int, int)
+    slots_selected = Signal(int, int)
     # ARGB sampled under the cursor while the eyedropper is armed. The rendered
     # image is sampled rather than the palette, so the value is right for any
     # view — indexed through a subpalette, or a direct-color codec with no
@@ -153,7 +154,7 @@ class Canvas(QWidget):
     # Pixel-mode gestures, in **image pixel** coordinates (not tile slots). The
     # controller (PixelEditMixin) reads the button to tell left-draw from a
     # right-click eyedropper. Emitted only in EditMode.PIXEL; tile mode still
-    # uses tiles_selected.
+    # uses slots_selected.
     pixel_pressed = Signal(int, int, object)  # x, y, Qt.MouseButton
     pixel_moved = Signal(int, int)  # x, y — while the left button is held
     pixel_released = Signal(int, int)  # x, y — the drag's final pixel
@@ -193,7 +194,7 @@ class Canvas(QWidget):
         self._block_rows = 1
         self._block_order = "row"
         self._selected_slots: frozenset[int] = frozenset()
-        self._selection_as_block = False
+        self._selection_as_rect = False
         self._drag_anchor: int | None = None
         self._drag_slot: int | None = None  # last emitted, to skip no-op moves
         # Eyedropper: while armed, a press samples a color instead of selecting
@@ -298,17 +299,17 @@ class Canvas(QWidget):
         self.update()
 
     def set_selection(
-        self, slots: Iterable[int] | None, *, as_block: bool = False
+        self, slots: Iterable[int] | None, *, as_rect: bool = False
     ) -> None:
         """Highlight this set of window slots (``None``/empty clears it).
 
-        ``as_block`` says the slots were picked as a cell *rectangle*, which is
+        ``as_rect`` says the slots were picked as a cell *rectangle*, which is
         the only selection outlined as a single box. A linear run stays drawn as
         one box per row even when it happens to fill a rectangle, so the shape on
         screen always tells the user which mode made it.
         """
         self._selected_slots = frozenset(slots or ())
-        self._selection_as_block = as_block
+        self._selection_as_rect = as_rect
         self.update()
 
     def set_eyedropper(self, on: bool) -> None:
@@ -361,10 +362,8 @@ class Canvas(QWidget):
             return
         self._rearranging = on
         if not on and self._rearrange_drag:
-            self._end_rearrange_drag()
+            self._end_rearrange_drag()  # clears the drag and its hovered slot
             self.rearrange_cancelled.emit()
-        self._rearrange_drag = False
-        self._rearrange_slot = None
         self._drag_anchor = self._drag_slot = None
         self._apply_cursor()
         self.update()
@@ -479,11 +478,8 @@ class Canvas(QWidget):
 
     def _color_at(self, pos: QPointF) -> int | None:
         """ARGB of the rendered pixel under ``pos``; None outside the image."""
-        img_x = int(pos.x()) // self._zoom
-        img_y = int(pos.y()) // self._zoom
-        if not (0 <= img_x < self._image.width() and 0 <= img_y < self._image.height()):
-            return None
-        return self._image.pixel(img_x, img_y) & 0xFFFFFFFF
+        pixel = self._pixel_at(pos)
+        return None if pixel is None else self._image.pixel(*pixel) & 0xFFFFFFFF
 
     def _columns(self) -> int:
         # The composed image is exactly columns * tile_w wide, so the count is
@@ -505,16 +501,12 @@ class Canvas(QWidget):
         ``clamp`` snaps an outside position to the nearest edge slot instead —
         a drag that leaves the widget keeps extending to the boundary.
         """
-        img_x = int(pos.x()) // self._zoom
-        img_y = int(pos.y()) // self._zoom
-        if clamp:
-            img_x = max(0, min(img_x, self._image.width() - 1))
-            img_y = max(0, min(img_y, self._image.height() - 1))
-        elif not (
-            0 <= img_x < self._image.width() and 0 <= img_y < self._image.height()
-        ):
+        pixel = self._pixel_at(pos, clamp)
+        if pixel is None:
             return None
-        return self._layout().cell_to_slot(img_x // self._tile_w, img_y // self._tile_h)
+        return self._layout().cell_to_slot(
+            pixel[0] // self._tile_w, pixel[1] // self._tile_h
+        )
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         # Space-drag panning is modal: while armed a left press grabs the view and
@@ -555,12 +547,12 @@ class Canvas(QWidget):
             # survives being right-clicked.
             slot = self._slot_at(event.position())
             if slot is not None and slot not in self._selected_slots:
-                self.tiles_selected.emit(slot, slot)
+                self.slots_selected.emit(slot, slot)
         if event.button() == Qt.MouseButton.LeftButton and not self._image.isNull():
             slot = self._slot_at(event.position())
             if slot is not None:
                 self._drag_anchor = self._drag_slot = slot
-                self.tiles_selected.emit(slot, slot)
+                self.slots_selected.emit(slot, slot)
         # Let the default handling run too so ClickFocus keeps focusing us.
         super().mousePressEvent(event)
 
@@ -614,7 +606,7 @@ class Canvas(QWidget):
             slot = self._slot_at(event.position(), clamp=True)
             if slot is not None and slot != self._drag_slot:
                 self._drag_slot = slot
-                self.tiles_selected.emit(self._drag_anchor, slot)
+                self.slots_selected.emit(self._drag_anchor, slot)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
@@ -678,7 +670,7 @@ class Canvas(QWidget):
             slot = self._slot_at(event.position())
             if slot is not None:
                 self._drag_anchor = self._drag_slot = slot
-                self.tiles_selected.emit(slot, slot)
+                self.slots_selected.emit(slot, slot)
             return
         if event.button() != Qt.MouseButton.LeftButton:
             return
@@ -697,7 +689,7 @@ class Canvas(QWidget):
             slot = self._slot_at(event.position(), clamp=True)
             if slot is not None and slot != self._drag_slot:
                 self._drag_slot = slot
-                self.tiles_selected.emit(self._drag_anchor, slot)
+                self.slots_selected.emit(self._drag_anchor, slot)
             return
         if not (self._rearrange_drag and buttons & Qt.MouseButton.LeftButton):
             return
@@ -865,10 +857,10 @@ class Canvas(QWidget):
         if self._show_grid and self._grid_style is not GridStyle.NONE and z >= 2:
             self._draw_grid(painter, z, exposed)
         self._paint_selection(painter, exposed)
-        self._paint_pixel_overlays(painter, exposed)
+        self._paint_overlays(painter, exposed)
         painter.end()
 
-    def _paint_pixel_overlays(self, painter: QPainter, exposed: QRect) -> None:
+    def _paint_overlays(self, painter: QPainter, exposed: QRect) -> None:
         """Draw the float, and whatever else the armed interaction wants.
 
         The float goes down first (a lifted image the user is dragging), then its
@@ -1119,7 +1111,7 @@ class Canvas(QWidget):
             tile_x, tile_y = layout.slot_to_cell(slot)
             if 0 <= tile_x < cols and 0 <= tile_y < rows:
                 cells_by_row.setdefault(tile_y, []).append(tile_x)
-        block = self._solid_block(cells_by_row) if self._selection_as_block else None
+        block = self._solid_rect(cells_by_row) if self._selection_as_rect else None
         if block is not None:
             x0, y0, width, height = block
             rect = QRect(
@@ -1149,7 +1141,7 @@ class Canvas(QWidget):
                 run_start = prev = x
 
     @staticmethod
-    def _solid_block(
+    def _solid_rect(
         cells_by_row: dict[int, list[int]],
     ) -> tuple[int, int, int, int] | None:
         """``(x, y, columns, rows)`` when the cells fill their bounding box.

@@ -97,6 +97,11 @@ class SessionMixin:
         if entry.doc is None and not self._load_entry(entry):
             self._show_unavailable(entry)
             return
+        # A file's buffer is the authority for its bytes, but its slices hold
+        # their edits in derived buffers of their own until something reconciles
+        # them - so reconcile before showing it. Looking at a ROM has to show
+        # what was edited through a slice of it; they are the same bytes.
+        self._fold_slice_edits_into(entry)
         self._restore_session(entry)
         self._refresh_view()
 
@@ -173,7 +178,7 @@ class SessionMixin:
         return EntrySession(
             pixel_preset_id=self._pixel_preset_id(),
             palette_preset_id=self._palette_preset_id(),
-            compression_id=(
+            preview_compression_id=(
                 NO_COMPRESSION
                 if entry.kind is EntryKind.SLICE
                 else self._compression_id()
@@ -195,10 +200,10 @@ class SessionMixin:
             pixel_preset_id=self._pixel_preset_id(),
             palette_preset_id=self._palette_preset_id(),
             palette_mode=self._palette_mode,
-            compression_id=self._compression_id(),
+            preview_compression_id=self._compression_id(),
             selected_tile=self._selected_tile,
             selected_last=self._selected_last,
-            selection_cells=self._rect_cells,
+            selection_cells=self._rect_size,
         )
 
     def _restore_session(self, entry: Entry) -> None:
@@ -221,28 +226,25 @@ class SessionMixin:
         self._fill_pixel_combo(session.pixel_preset_id)
         for combo, data in (
             (self._palette_preset, session.palette_preset_id),
-            (self._compression, session.compression_id),
-            (self._block_order, view.block_order),
+            (self._compression, session.preview_compression_id),
         ):
             select_combo_data(combo, data)
+        # The four arrangement axes move as one coherent change, through the
+        # method that owns that rule.
+        self._set_arrangement(
+            view.block_columns, view.block_rows, view.block_order, view.two_dimensional
+        )
         spins = (
             (self._columns, view.columns),
             (self._rows, view.rows),
             (self._zoom, view.zoom),
             (self._subpalette, view.subpalette_row),
-            (self._block_cols, view.block_columns),
-            (self._block_rows, view.block_rows),
             (self._bitmap_width, view.bitmap_width),
         )
-        checks = (
-            (self._grid, view.show_grid),
-            (self._two_d, view.two_dimensional),
-        )
-        with signals_blocked(*(w for w, _ in (*spins, *checks))):
+        with signals_blocked(*(w for w, _ in spins), self._grid):
             for spin, value in spins:
                 spin.setValue(value)
-            for check, value in checks:
-                check.setChecked(value)
+            self._grid.setChecked(view.show_grid)
         # The Cols the outgoing entry had before its bitmap width took over means
         # nothing to this one, whose Cols has just been restored from its own
         # view - drop it before the sync below can read it back.
@@ -267,26 +269,35 @@ class SessionMixin:
         )
         # A stored rectangle is re-resolved against the view that was restored
         # with it, so it comes back covering the same cells it was drawn over.
-        self._rect_cells, self._rect_tiles = None, ()
+        self._rect_size, self._rect_tiles = None, ()
         if session.selected_tile is not None and session.selection_cells is not None:
             tiles = self._rect_tiles_for(
                 session.selected_tile - self._offset, *session.selection_cells
             )
             if tiles:
-                self._rect_cells, self._rect_tiles = session.selection_cells, tiles
+                self._rect_size, self._rect_tiles = session.selection_cells, tiles
                 self._selected_last = max(tiles)
         self._sync_selection_actions()
         self._set_palette_mode(session.palette_mode)  # also arms Write
-        # Only whole files spawn slices and bookmarks - neither nests (and a
-        # file's byte stream is always raw, so its positions map straight to
-        # file offsets).
-        self._new_slice_action.setEnabled(is_file)
-        self._new_slice_from_view_action.setEnabled(is_file)
-        self._new_bookmark_action.setEnabled(is_file)
-        # A slice has no container of its own — it reads through its parent's
-        # coordinates — so this follows the same is_file rule as the rest.
-        self._change_container_action.setEnabled(is_file)
+        self._set_file_actions_enabled(is_file)
         self._refresh_window_title()
+
+    def _set_file_actions_enabled(self, enabled: bool) -> None:
+        """Arm (or disarm) the actions only a whole FILE entry offers.
+
+        Slices and bookmarks don't nest, and a file's byte stream is always raw,
+        so its positions map straight to file offsets. A slice also has no
+        container of its own — it reads through its parent's coordinates — so
+        that follows the same rule. One list, so the enable and the disable paths
+        cannot disagree about what is on it.
+        """
+        for action in (
+            self._new_slice_action,
+            self._new_slice_from_view_action,
+            self._new_bookmark_action,
+            self._change_container_action,
+        ):
+            action.setEnabled(enabled)
 
     def _clear_document_view(self) -> None:
         """Blank the canvas and disable every document-bound action - shared by
@@ -294,7 +305,7 @@ class SessionMixin:
         self._doc = None
         self._selected_tile = None
         self._selected_last = None
-        self._rect_cells, self._rect_tiles = None, ()
+        self._rect_size, self._rect_tiles = None, ()
         self._canvas.set_selection(None)
         self._sync_selection_actions()
         # Called after _doc is cleared, so it settles on "unavailable": the tool
@@ -320,10 +331,7 @@ class SessionMixin:
         self._sync_palette_export_action()  # no document, nothing to export
         self._sync_palette_mode_items()  # ...and only File left to load
         self._write_action.setEnabled(False)
-        self._new_slice_action.setEnabled(False)
-        self._new_slice_from_view_action.setEnabled(False)
-        self._new_bookmark_action.setEnabled(False)
-        self._change_container_action.setEnabled(False)
+        self._set_file_actions_enabled(False)
 
     def _set_document_ui_enabled(self, enabled: bool) -> None:
         """Grey out (or restore) the document-editing surfaces as a block.

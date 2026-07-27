@@ -9,7 +9,6 @@ engine_id = "codec.direct-color"
 
 [params]
 bytes_per_pixel = 1
-byte_order = "little"
 
 [params.masks]
 r = 0x07

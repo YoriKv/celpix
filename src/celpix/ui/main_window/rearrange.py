@@ -282,15 +282,11 @@ class RearrangeMixin:
         )
         square_tiles = self._square_tiles()
         geom = self._block_geometry() if available else None
-        for action in self._rearrange_group.flips:
-            action.setEnabled(has_target)
-        for action in self._rearrange_group.rotates:
-            action.setEnabled(has_target and square_tiles)
-        for action in self._rearrange_block_group.flips:
-            action.setEnabled(geom is not None)
         square_block = geom is not None and geom[0] == geom[1]
-        for action in self._rearrange_block_group.rotates:
-            action.setEnabled(square_block and square_tiles)
+        self._arm_transform_group(self._rearrange_group, has_target, square_tiles)
+        self._arm_transform_group(
+            self._rearrange_block_group, geom is not None, square_block and square_tiles
+        )
 
     def _set_tile_map(self, tile_map: TileMap) -> None:
         """Land a rearrangement — :class:`TileMapCommand`'s apply, and the
@@ -665,5 +661,4 @@ class RearrangeMixin:
             tile = extract_region(grid, cx * tw, cy * th, tw, th)
             tile = apply_orientation(tile, drag.orient)
             blit_region(out, tile, (cx - left) * tw, (cy - top) * th)
-        base = self._subpalette.value() * self._index_space()
-        return render_bridge.render(out, self._doc.palette, base)
+        return render_bridge.render(out, self._doc.palette, self._palette_base())

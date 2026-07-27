@@ -1,11 +1,12 @@
-# Big-endian variant of RGBA5551 direct (N64, 8x8) — for big-endian ROM data (e.g. N64).
+# N64 RGBA16 — the N64 SDK's name for big-endian RGBA5551 direct color, the
+# spelling N64 hackers use. Big-endian because N64 ROM data is stored that way;
+# the little-endian dc-rgba5551 preset stays in the generic Direct matrix.
 # See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
 id = "preset.pixel.dc-rgba5551-be"
-name = "Direct RGBA5551 (N64, 8x8, big-endian)"
+name = "N64 RGBA16 (5551, 8x8, big-endian)"
 engine_id = "codec.direct-color"
 
 [params]
-bpp = 16
 bytes_per_pixel = 2
 byte_order = "big"
 

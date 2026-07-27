@@ -1,16 +1,16 @@
 """Konami RLE codecs — two mutually-exclusive framings of one RLE scheme.
 
-Run-length-encoded NES/FDS CHR used by many Konami titles; decompresses to
-ordinary NES 2bpp, which the normal pixel codec then interprets
-(``docs/graphics-formats-reference/implementation-guide.md`` §6). Compression is a
-distinct pipeline layer, so these are Compression-stage plugins, not codec
-variants. Pair either with the NES 2bpp pixel preset.
+Run-length-encoded NES/FDS CHR used by many Konami titles. It decompresses to
+ordinary NES 2bpp, which the pixel codec then interprets
+(``docs/graphics-formats-reference/implementation-guide.md`` §6), so these are
+Compression-stage plugins rather than codec variants — pair either with the NES
+2bpp pixel preset.
 
-Every reference agrees on the core scheme — a control byte ``c`` with bit 7 clear
-is a **fill** (repeat the next byte ``c`` times), bit 7 set is a **literal copy**
-of ``c & 0x7F`` bytes, and ``0xFF`` ends the stream — but two game lineages read
-the reserved ``0x7F`` / ``0x80`` bytes incompatibly, and no structural signal
-tells them apart. So each lineage is its own selectable scheme:
+The core scheme is agreed: a control byte ``c`` with bit 7 clear is a **fill**
+(repeat the next byte ``c`` times), bit 7 set a **literal copy** of ``c & 0x7F``
+bytes, and ``0xFF`` ends the stream. But two game lineages read the reserved
+``0x7F`` / ``0x80`` bytes incompatibly and no structural signal tells them apart,
+so each is its own selectable scheme:
 
 - **Contra family** (``decompress.konami-nes-rle``): ``0x7F`` is a **PPU address
   change** — the next 2 little-endian bytes reload the VRAM write cursor to place
@@ -23,18 +23,17 @@ tells them apart. So each lineage is its own selectable scheme:
 - **Simon's Quest / FDS family** (``decompress.konami-fds-rle``): no address
   command — ``0x7F`` is a plain **127-byte fill** and ``0x80`` a **256-byte
   literal** (an incompressible block). Covers *Dracula II* / Simon's Quest, Ai
-  Senshi Nicol, Rampart; matches the *GraveyardDuck* tool.
+  Senshi Nicol and Rampart.
 
 In both, the leading per-group 2-byte PPU destination is not modelled — point the
 read past it.
 
-**One shared compressor.** Both schemes encode with the same :func:`compress`,
-which stays inside the *unambiguous subset* every reference decodes alike: it
-never emits ``0x7F`` or ``0x80`` (runs cap at ``0x7E``), so its output round-trips
-under either family's decoder — and under the rle_konami reading too. Byte-identity
-with a game's original blob is a non-goal; round-tripping is the contract. So the
-two schemes differ only in how they *decode*, and share a base class carrying the
-one encoder.
+**One shared compressor.** Both schemes encode through the same :func:`compress`,
+which stays inside the *unambiguous subset* every reading decodes alike: it never
+emits ``0x7F`` or ``0x80`` (runs cap at ``0x7E``), so its output round-trips under
+either family's decoder. Byte-identity with a game's original blob is a non-goal;
+round-tripping is the contract. The two schemes differ only in how they *decode*,
+and share a base class carrying the one encoder.
 """
 
 from __future__ import annotations
@@ -48,13 +47,13 @@ from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
 
 # Largest byte count one fill or literal control byte can safely encode. 0x7F and
-# 0xFF are reserved in the Contra reading (address-change / terminator) and
-# literals mask with 0x7F, so 0x7E is the ceiling the shared compressor stays under
-# to keep output valid for every variant.
+# 0xFF are reserved in the Contra reading (address change, terminator) and
+# literals mask with 0x7F, so the shared compressor stays under 0x7E to keep its
+# output valid for every variant.
 _MAX_CHUNK = 0x7E
-# Shortest run worth encoding as a fill. A fill always costs 2 bytes; the same
-# bytes left in a literal cost one each plus an amortised control byte, so a run
-# only pays for itself once it reaches 3 — shorter runs stay literals.
+# Shortest run worth encoding as a fill. A fill costs 2 bytes; the same bytes left
+# in a literal cost one each plus an amortised control byte, so a run only pays
+# for itself at 3.
 _MIN_FILL_RUN = 3
 
 
@@ -66,9 +65,9 @@ def decompress(data: bytes, *, fds: bool = False) -> tuple[bytes, int, bool]:
 
     Returns ``(output, consumed, complete)``. ``complete`` is true when the
     ``0xFF`` terminator was reached inside the buffer, making ``consumed`` the
-    structure's true byte length (the slot a save-back must fit); a buffer that
-    ends mid-stream — a bounded view window, or a truncated dump — yields the
-    best-effort prefix decoded so far with ``complete`` false.
+    structure's true byte length — the slot a save-back must fit. A buffer ending
+    mid-stream, a bounded view window or a truncated dump, yields the best-effort
+    prefix with ``complete`` false.
     """
     out = bytearray()
     i, n = 0, len(data)
@@ -110,11 +109,11 @@ def decompress(data: bytes, *, fds: bool = False) -> tuple[bytes, int, bool]:
 def compress(data: bytes) -> bytes:
     """Encode raw bytes into a Konami RLE stream every variant decodes back.
 
-    Emits a fill for every run of ``_MIN_FILL_RUN`` or more equal bytes and
-    packs everything else into literal chunks, both capped at ``_MAX_CHUNK``.
-    Any run remainder too short for its own fill folds back into the literal
-    buffer, so it still ships verbatim. Never emits ``0x7F`` or ``0x80``, so the
-    output is unambiguous under both the Contra and FDS readings.
+    Emits a fill for every run of ``_MIN_FILL_RUN`` or more equal bytes and packs
+    everything else into literal chunks, both capped at ``_MAX_CHUNK``. A run
+    remainder too short for its own fill folds back into the literal buffer.
+    Never emits ``0x7F`` or ``0x80``, so the output is unambiguous under both the
+    Contra and FDS readings.
     """
     out = bytearray()
     literals = bytearray()
@@ -158,8 +157,8 @@ def compress(data: bytes) -> bytes:
 class _KonamiRle:
     """Shared base: the two schemes differ only in how ``decompress`` reads them.
 
-    Encoding is common to both — the portable subset every variant accepts — so
-    it lives here and each scheme supplies only its own ``fds`` flag.
+    Encoding is the portable subset every variant accepts, so it lives here and
+    each scheme supplies only its own ``fds`` flag.
     """
 
     fds: bool

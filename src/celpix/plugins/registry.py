@@ -1,15 +1,20 @@
-"""The plugin registry — the single place stages and presets are discovered.
+"""The plugin registry — the single place plugins and presets are looked up.
 
-For the MVP, built-ins register themselves in-process (see
-:func:`default_registry`). This is the one seam a later discovery mechanism —
-Python entry points or a plugins folder — plugs into, without any stage code
-changing.
+Built-ins register themselves in-process (see :func:`default_registry`); a
+user's plugins folder registers through the same seam
+(:mod:`celpix.plugins.discovery`), so no stage code knows where a plugin came
+from.
 """
 
 from __future__ import annotations
 
 from celpix.core.errors import Stage
-from celpix.plugins.base import Plugin, Preset
+from celpix.plugins.base import (
+    STAGE_PASSTHROUGH,
+    Plugin,
+    Preset,
+    writes_back,
+)
 
 
 class Registry:
@@ -24,8 +29,8 @@ class Registry:
         """Register ``plugin``, at ``stage`` when the caller knows better.
 
         Folder-drop discovery passes the stage its folder implies, so a dropped
-        plugin need not repeat it (:class:`~celpix.plugins.base.PluginInfo`).
-        Registering directly — as the built-ins do — has no folder behind it, so
+        plugin need not repeat it (:class:`~celpix.plugins.base.PluginInfo`). A
+        direct registration — as the built-ins do — has no folder behind it, so
         the descriptor has to say.
         """
         stage = stage or plugin.info.stage
@@ -66,13 +71,34 @@ class Registry:
         return [p for p in items if p.stage == stage]
 
     # -- convenience -------------------------------------------------------
+    def resolve_stage(self, stage: Stage, plugin_id: str) -> tuple[str, bool]:
+        """``plugin_id`` as ``(usable id, writes back)`` for a byte-handling stage.
+
+        A stored plugin id outlives the plugin that provided it: a project names
+        what its files were opened with, and that plugin can be uninstalled,
+        renamed, or left untrusted at the next launch. Opening degrades to the
+        stage's pass-through rather than failing, so the file still opens showing
+        its untransformed bytes.
+
+        **A degraded stage is view-only**, whatever the pass-through could do: the
+        entry means to be read through something this build hasn't got, so what is
+        on screen is not what the file holds. The user is told which plugin is
+        missing (:func:`~celpix.pipeline.pipeline.load_pixel_data`) and Write comes
+        back once they install it or pick another plugin for the stage.
+        """
+        try:
+            plugin = self.plugin(stage, plugin_id)
+        except KeyError:
+            return STAGE_PASSTHROUGH[stage], False
+        return plugin_id, writes_back(plugin, stage)
+
     def engine_for(self, preset_id: str) -> tuple[Plugin, Preset]:
         """The interpret engine a preset resolves to, plus the preset itself.
 
         A preset names its own interpret stage and an ``engine_id`` within it, so
-        this is the single place that hop is made — callers stop respelling
-        ``plugin(Stage.INTERPRET_*, preset.engine_id)`` (and stop having to know
-        which interpret stage a preset belongs to).
+        this is the single place that hop is made — no caller has to respell
+        ``plugin(Stage.INTERPRET_*, preset.engine_id)`` or know which interpret
+        stage a preset belongs to.
         """
         preset = self.preset(preset_id)
         return self.plugin(preset.stage, preset.engine_id), preset
@@ -81,8 +107,8 @@ class Registry:
 def default_registry() -> Registry:
     """A registry populated with every built-in plugin and preset.
 
-    Imported lazily so ``celpix.plugins.registry`` stays free of the built-in
-    engines (and their resource loads) until something actually asks for them.
+    Imported lazily so this module stays free of the built-in engines, and their
+    resource loads, until something asks for them.
     """
     from celpix.plugins.builtins import register_builtins
 
