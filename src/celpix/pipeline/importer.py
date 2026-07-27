@@ -11,9 +11,13 @@ pipeline never asks:
    nearest one (:mod:`celpix.core.quantize`). A direct-color target skips this —
    it stores colors, and its codec's masks do the narrowing.
 2. **Where do the tiles start and stop?** The image is one rectangle; the model
-   is a linear stream of fixed-size tiles. It is cut on the tile grid and walked
-   back into slot order through the same :class:`BlockLayout` the view composes
-   with, so a blocked view (a 2×2 metatile, an 8×16 sprite) round-trips.
+   is a linear stream of fixed-size tiles. It is cut on the tile grid in screen
+   reading order (row-major), because an image is *pixels* — it says what the
+   canvas should look like, not which storage slots to fill. The caller stamps
+   each cut tile at its canvas cell and lets the view's arrangement decide
+   which stored tile that cell is, exactly as if the user had painted the
+   pixels by hand — so a blocked view (a 2×2 metatile, an 8×16 sprite) shows
+   the image as pasted.
 
 The result is a list of tiles, a report of how lossy the fit was, and how far
 into each edge tile the image reached — the caller merges the uncovered
@@ -29,7 +33,7 @@ from dataclasses import dataclass, field
 
 from celpix.core import ceil_div
 from celpix.core.argb_grid import ArgbGrid
-from celpix.core.arrangement import BlockLayout, split_coverage, split_grid
+from celpix.core.arrangement import split_coverage, split_grid
 from celpix.core.draw import copy_rect
 from celpix.core.index_grid import IndexGrid
 from celpix.core.quantize import ColorMatcher, QuantizeReport
@@ -43,24 +47,12 @@ class ImportTarget:
     produced index is exactly what a tile stores. It is empty for a
     ``direct_color`` target, which keeps ARGB pixels and lets its codec's masks
     do the narrowing.
-
-    The block axes mirror the view's, so an image is cut into slots the same way
-    the view composed them; ``columns`` for the layout comes from the image's own
-    width, not the view's, since a pasted image carries its own extent.
     """
 
     tile_width: int
     tile_height: int
     colors: tuple[int, ...] = ()
     direct_color: bool = False
-    block_columns: int = 1
-    block_rows: int = 1
-    block_order: str = "row"
-
-    def layout_for(self, columns: int) -> BlockLayout:
-        return BlockLayout(
-            max(1, columns), self.block_columns, self.block_rows, self.block_order
-        )
 
 
 @dataclass(frozen=True)
@@ -102,17 +94,18 @@ def import_argb(source: ArgbGrid, target: ImportTarget) -> ImportedTiles:
     """Fit a full-color image into ``target``'s tiles.
 
     Quantizes the whole image once (so the matcher's per-color cache is shared
-    across every tile) and then cuts it on the tile grid. A direct-color target
-    skips quantization entirely and carries the ARGB pixels through.
+    across every tile) and then cuts it on the tile grid in **screen reading
+    order** (row-major) — see the module docstring for why an image is always
+    a picture, never a storage run. A direct-color target skips quantization
+    entirely and carries the ARGB pixels through.
     """
     columns = ceil_div(source.width, target.tile_width) if source.width else 0
     rows = ceil_div(source.height, target.tile_height) if source.height else 0
     if not columns or not rows:
         return ImportedTiles([], 0, 0, QuantizeReport())
-    layout = target.layout_for(columns)
     coverage = tuple(
         split_coverage(
-            source.width, source.height, target.tile_width, target.tile_height, layout
+            source.width, source.height, target.tile_width, target.tile_height
         )
     )
     grid, report = (
@@ -120,7 +113,7 @@ def import_argb(source: ArgbGrid, target: ImportTarget) -> ImportedTiles:
         if target.direct_color
         else quantize_grid(source, target)
     )
-    tiles = split_grid(grid, target.tile_width, target.tile_height, layout)
+    tiles = split_grid(grid, target.tile_width, target.tile_height)
     return ImportedTiles(tiles, columns, rows, report, coverage)
 
 

@@ -563,9 +563,6 @@ class SelectionMixin:
             if direct
             else tuple(self._doc.palette.color(base + i) for i in range(space)),
             direct_color=direct,
-            block_columns=self._block_cols.value(),
-            block_rows=self._block_rows.value(),
-            block_order=self._block_order.currentData(),
         )
 
     def _blank_tiles(self, count: int) -> list:
@@ -762,10 +759,13 @@ class SelectionMixin:
         scrolled off-screen (:meth:`_stamp_anchor`) - it lands at the top-left
         tile of the view.
 
-        In **Rectangle** shape the anchor is a *cell*, so the clipboard is
-        stamped as a block of its own width down from there - copy a 2×2
-        metatile, click anywhere, and it lands as a 2×2 metatile. In Linear
-        shape a paste is what it has always been: a contiguous run.
+        A foreign **image** is pixels, not tiles, so it always stamps as the
+        picture it shows, anchored at the selection's cell - the same landing
+        Import from PNG gives it. A celPix **tile** payload follows the
+        selection shape: in Rectangle it is stamped as a block of its own
+        width down from the anchor cell - copy a 2×2 metatile, click anywhere,
+        and it lands as a 2×2 metatile - while in Linear shape a paste is what
+        it has always been: a contiguous run.
         """
         if self._doc is None:
             return
@@ -773,12 +773,12 @@ class SelectionMixin:
             self._pixel_paste()
             return
         first = self._stamp_anchor()
-        incoming = self._clipboard_tiles()
+        incoming, picture = self._clipboard_tiles()
         if not incoming.tiles:
             self.statusBar().showMessage("Nothing on the clipboard to paste here.")
             return
         note = self._fit_note(incoming.report)
-        if self._selection_shape.currentData() is SelectionShape.RECT:
+        if picture or self._selection_shape.currentData() is SelectionShape.RECT:
             written = self._stamp_block(first, incoming, "paste tiles")
         else:
             written = self._stamp_run(first, incoming, "paste tiles")
@@ -794,36 +794,26 @@ class SelectionMixin:
     def _stamp_run(self, first: int, incoming: ImportedTiles, text: str) -> int:
         """Write ``incoming`` as a contiguous run from ``first`` - a linear paste.
 
-        Partly covered edge tiles are filled out from the run already in the file
-        before the write, so an image that doesn't end on a tile boundary leaves
-        the pixels it never covered alone.
+        Only celPix tile payloads land here (an image always stamps as a
+        picture), and those carry whole tiles - no partial coverage to merge.
         """
-        tiles = incoming.tiles
-        if incoming.partial:
-            existing = self._decode_run(first, len(tiles))
-            if existing:
-                tiles = [
-                    importer.merge_uncovered(
-                        tile,
-                        existing[i] if i < len(existing) else None,
-                        incoming.covered(i),
-                    )
-                    for i, tile in enumerate(tiles)
-                ]
-        written = self._apply_tile_edit(first, tiles, text)
+        written = self._apply_tile_edit(first, incoming.tiles, text)
         if written:
             self._select_tiles(first, first + written - 1)
         return written
 
     def _stamp_block(self, anchor: int, incoming: ImportedTiles, text: str) -> int:
-        """Stamp ``incoming`` as a block of its own width at ``anchor``'s cell.
+        """Stamp ``incoming`` as the picture it is, at ``anchor``'s cell.
 
-        The block's cells become absolute tiles through the view's arrangement,
-        so the write lands where it looks like it lands; cells that fall off the
-        right edge of the view are dropped rather than wrapped, since wrapping
-        would scatter the block. The write itself goes out over the enclosing
-        run, with the untouched tiles decoded and put back unchanged - and each
-        partly covered edge tile merged with the one already there, so only the
+        ``incoming.tiles`` are the picture's cells in screen reading order,
+        ``incoming.columns`` wide - the pasted pixels as they should *look*.
+        Each cell becomes an absolute tile through the view's arrangement, so
+        the write lands where it looks like it lands, exactly as if the pixels
+        had been painted by hand; cells that fall off the right edge of the
+        view are dropped rather than wrapped, since wrapping would scatter the
+        picture. The write itself goes out over the enclosing run, with the
+        untouched tiles decoded and put back unchanged - and each partly
+        covered edge tile merged with the one already there, so only the
         pixels the source actually reached change.
         """
         assert self._doc is not None
@@ -832,12 +822,9 @@ class SelectionMixin:
         x0, y0 = layout.slot_to_cell(anchor - self._offset)
         placed: dict[int, tuple[object, tuple[int, int] | None]] = {}
         for i, tile in enumerate(incoming.tiles):
-            covered = incoming.covered(i)
-            if covered == (0, 0):
-                continue  # a block-layout gap the image never reached
             target = self._cell_tile(layout, x0 + i % columns, y0 + i // columns)
             if target is not None:
-                placed[target] = (tile, covered)
+                placed[target] = (tile, incoming.covered(i))
         if not placed:
             return 0
         first, last = min(placed), max(placed)
@@ -858,10 +845,10 @@ class SelectionMixin:
             self._set_rect_selection(cells, rect)
         return len(placed)
 
-    def _clipboard_tiles(self) -> ImportedTiles:
-        """The clipboard as tiles in this document's format, with the fit report
-        and how many cells wide the copy read on screen (what a block stamp uses
-        as its width; ignored by a linear paste).
+    def _clipboard_tiles(self) -> tuple[ImportedTiles, bool]:
+        """The clipboard as tiles in this document's format, plus whether they
+        arrived as a *picture* (an image, which always stamps as one) rather
+        than a celPix tile payload (which follows the selection shape).
 
         Three ways in, in decreasing fidelity:
 
@@ -892,20 +879,20 @@ class SelectionMixin:
                 target.direct_color or fits
             ):
                 tiles = payload.tiles()
-                return ImportedTiles(tiles, payload.columns, 0, QuantizeReport())
+                return ImportedTiles(tiles, payload.columns, 0, QuantizeReport()), False
             if not payload.direct_color:
                 tiles, report = importer.import_indexed(
                     payload.tiles(), payload.colors, target
                 )
-                return ImportedTiles(tiles, payload.columns, 0, report)
+                return ImportedTiles(tiles, payload.columns, 0, report), False
             # A direct-color copy into an indexed view: fall through to the
             # image, which the same copy also put on the clipboard.
         image = clipboard.take_image()
         if image is None:
-            return ImportedTiles()
-        # A foreign image has no tile grid of its own; import_argb takes its own
-        # pixel width in whole tiles as the block width it visibly has.
-        return importer.import_argb(clipboard.image_to_argb(image), target)
+            return ImportedTiles(), False
+        # A foreign image has no tile grid of its own; import_argb cuts it in
+        # reading order at its own pixel width in whole tiles.
+        return importer.import_argb(clipboard.image_to_argb(image), target), True
 
     @staticmethod
     def _fit_note(report: QuantizeReport) -> str:

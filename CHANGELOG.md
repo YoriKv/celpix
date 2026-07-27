@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.1 - unreleased
+
+- **Paste/Import fix**: pasted and imported images now work correctly on block
+  layouts.
+
 ## v0.3.0 - 2026-07-27
 
 - **New Reshape stage**: add a new reshape stage for byte reodering and split bitplanes.

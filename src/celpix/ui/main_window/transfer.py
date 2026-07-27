@@ -385,10 +385,12 @@ class TransferMixin:
 
         The same import pathway a cross-application paste uses, so an image
         arrives identically whether it came through the clipboard or off disk:
-        quantized to the active subpalette, cut on the view's arrangement, and
-        written as a block of the image's own width. Pixels the image doesn't
-        cover - the remainder of an edge tile whose size isn't a whole number of
-        tiles - keep whatever the file already holds.
+        quantized to the active subpalette, cut on the tile grid in reading
+        order, and stamped as the picture it shows - the view's arrangement
+        decides which stored tile each cell of it lands in, as if the pixels
+        had been painted by hand. Pixels the image doesn't cover - the
+        remainder of an edge tile whose size isn't a whole number of tiles -
+        keep whatever the file already holds.
         """
         assert self._doc is not None
         image = QImage(path)

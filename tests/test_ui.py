@@ -4994,6 +4994,57 @@ def test_paste_of_an_odd_sized_image_keeps_the_pixels_it_never_covered(
             assert after[1].get(x, y) == before[1].get(x, y)
 
 
+def test_image_paste_into_a_block_view_lands_as_the_picture_it_shows(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A pasted image is pixels, not a run of tiles: it has to end up looking the
+    way it looked, so it is the *arrangement* that decides which storage tile each
+    cell of the picture goes to.
+
+    The image is a 4×2 grid of solid cells numbered 1..8 in reading order, pasted
+    into a view of 8 columns of 2×2 row-major blocks. There storage tiles 0..3 are
+    block 0's cells (0,0),(1,0),(0,1),(1,1) and tiles 4..7 are block 1's, so a
+    faithful paste stores the picture's cells 1,2 / 5,6 then 3,4 / 7,8. Plain
+    row-major storage (1..8) is the scrambled result — bytes in reading order that
+    the block layout then displays as a shuffle.
+
+    The Shape picker deliberately stays on Linear: an image is a picture whatever
+    shape a *tile* paste would have taken, so it stamps as a block regardless.
+    """
+    from PySide6.QtGui import QGuiApplication, QImage
+
+    from celpix.pipeline import pipeline
+    from celpix.ui.main_window.selection import SelectionShape
+
+    # A fresh window reads the persisted shape preference; isolate it so "the
+    # default is Linear" is true of the run and not of the developer's config.
+    _isolate_settings(tmp_path)
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
+    window._columns.setValue(8)
+    window._rows.setValue(8)
+    window._block_cols.setValue(2)
+    window._block_rows.setValue(2)
+    window._block_order.setCurrentIndex(window._block_order.findData("row"))
+    assert window._selection_shape.currentData() is SelectionShape.LINEAR
+
+    image = QImage(32, 16, QImage.Format.Format_ARGB32)
+    for cy in range(2):
+        for cx in range(4):
+            color = window._doc.palette.color(1 + cy * 4 + cx)
+            for y in range(8):
+                for x in range(8):
+                    image.setPixel(cx * 8 + x, cy * 8 + y, color)
+    QGuiApplication.clipboard().setImage(image)
+
+    window._select_tiles(0, 0)
+    window._paste()
+
+    tiles = pipeline.decode_tiles(window._doc, window._registry, 0, 8)
+    assert [set(tile.data) for tile in tiles] == [
+        {index} for index in (1, 2, 5, 6, 3, 4, 7, 8)
+    ]
+
+
 def test_import_png_from_the_files_list_lands_at_the_start_of_the_file(
     qtbot, tmp_path, monkeypatch
 ) -> None:
