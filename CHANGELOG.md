@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.0 - unreleased
+## v0.3.0 - 2026-07-27
 
 - **New Reshape stage**: add a new reshape stage for byte reodering and split bitplanes.
   Configurable under `Edit File Container`.
