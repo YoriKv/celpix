@@ -9,18 +9,25 @@ each plane (MSB = leftmost). The universal kernel is
     encode:  plane[k] |= ((index[x] >> k) & 1) << (7 - x)
 
 The **only** thing that varies between planar formats is which byte each plane is
-read from on a given row. A preset supplies that as a per-plane linear rule
-``offset(k, y) = base[k] + stride[k] * y``, which expresses every planar layout we
-document (GB, SNES, NES, SMS, …), so a new planar format is a data file.
+read from. A preset supplies that as a per-plane linear rule
 
-This engine handles the 8-pixel-wide case, the ``7 - x`` bit rule being specific
-to 8-wide rows; wider and odd planar tiles go through
-:mod:`celpix.plugins.builtins.wide_codecs`.
+    offset(k, y, g) = base[k] + stride[k] * y + group_stride[k] * g
+
+where *g* indexes the eight-pixel **group** across the row (``g = x // 8``). The
+``7 - x`` bit rule is what fixes the group at eight pixels wide, but nothing fixes
+how many groups a row has, so ``tile_width``/``tile_height`` are parameters and a
+row is ``width / 8`` groups. At the 8×8 default there is one group, ``group_stride``
+never multiplies anything, and the rule collapses to ``base[k] + stride[k] * y``.
+
+Between them those three terms express every planar layout we document — GB, SNES,
+NES, SMS, the 16-wide arcade tiles, and the odd sizes whose halves sit at a
+format-specific distance (``group_stride`` may be negative, which is how a tile
+storing its right half *first* is written). So a new planar format is a data file.
 
 Both directions run **plane at a time over the whole buffer** rather than pixel by
-pixel. A plane's byte for one tile row sits at a fixed offset inside every tile, so
-one strided slice collects it from every tile at once and the kernel above is a
-256-entry table (:mod:`celpix.plugins.builtins._bits`) applied to that slice.
+pixel. A plane's byte for one tile row and group sits at a fixed offset inside every
+tile, so one strided slice collects it from every tile at once and the kernel above
+is a 256-entry table (:mod:`celpix.plugins.builtins._bits`) applied to that slice.
 """
 
 from __future__ import annotations
@@ -53,92 +60,134 @@ class PlanarCodec:
         stage=Stage.INTERPRET_PIXEL,
     )
 
-    # The "bit 7-x = pixel x" rule is specific to 8-pixel rows and every planar
-    # format this kernel expresses is 8x8, so the atomic tile is the engine's
-    # fixed unit rather than a preset field — a preset is only (bpp, plane
-    # offsets). Displaying tiles grouped into larger units is a *view* option, not
-    # a decode parameter: the same codec serves games with different groupings
-    # (docs/design/overview.md §4, decode axes vs display axes).
-    TILE = 8
+    # The "bit 7-x = pixel x" rule is what makes eight pixels the engine's atomic
+    # unit; the *tile* is a whole number of those groups and is a preset field.
+    # Displaying tiles grouped into larger units stays a *view* option rather than
+    # a decode parameter — the same codec serves games with different groupings
+    # (docs/design/overview.md §4, decode axes vs display axes). A 16-wide tile is
+    # not that: its halves interleave inside the tile's own bytes.
+    GROUP = 8
 
     @classmethod
-    def _geometry(cls, params: dict[str, Any]) -> tuple[int, list[list[int]], int]:
-        """``(bpp, per-plane row offsets, bytes per tile)``.
+    def _geometry(
+        cls, params: dict[str, Any]
+    ) -> tuple[int, list[list[list[int]]], int, int, int, int]:
+        """``(bpp, offsets[plane][row][group], tile bytes, width, height, groups)``.
 
-        The plane rules resolve to the eight byte offsets each plane occupies
-        inside a tile, which is what both directions index by. Every offset has to
-        land inside the tile: the walks below address a plane's byte across all
-        tiles with one strided slice, which only describes the format while each
-        tile's bytes stay its own.
+        The plane rules resolve to the byte offsets each plane occupies inside a
+        tile, which is what both directions index by. Every offset has to land
+        inside the tile: the walks below address a plane's byte across all tiles
+        with one strided slice, which only describes the format while each tile's
+        bytes stay its own.
         """
         bpp = int(params["bpp"])
         planes = params["planes"]
+        width = int(params.get("tile_width", cls.GROUP))
+        height = int(params.get("tile_height", cls.GROUP))
         if len(planes) != bpp:
             raise ValueError(
                 f"planar preset needs one plane per bit: bpp={bpp}, got {len(planes)}"
             )
-        tile_bytes = cls.TILE * cls.TILE * bpp // 8
+        if width <= 0 or height <= 0:
+            raise ValueError(f"planar tile size must be positive: {width}x{height}")
+        if width % cls.GROUP:
+            raise ValueError(
+                f"planar tile_width must be a multiple of {cls.GROUP} "
+                f"(a pixel is one bit of one byte): got {width}"
+            )
+        groups = width // cls.GROUP
+        tile_bytes = width * height * bpp // 8
         offsets = [
-            [p["base"] + p["stride"] * y for y in range(cls.TILE)] for p in planes
+            [
+                [
+                    p["base"] + p["stride"] * y + p.get("group_stride", 0) * g
+                    for g in range(groups)
+                ]
+                for y in range(height)
+            ]
+            for p in planes
         ]
         for plane, rows in enumerate(offsets):
-            for y, off in enumerate(rows):
-                if not 0 <= off < tile_bytes:
-                    raise ValueError(
-                        f"planar plane {plane} row {y} reads byte {off}, "
-                        f"outside the {tile_bytes}-byte tile"
-                    )
-        return bpp, offsets, tile_bytes
+            for y, row in enumerate(rows):
+                for g, off in enumerate(row):
+                    if not 0 <= off < tile_bytes:
+                        raise ValueError(
+                            f"planar plane {plane} row {y} group {g} reads byte "
+                            f"{off}, outside the {tile_bytes}-byte tile"
+                        )
+        return bpp, offsets, tile_bytes, width, height, groups
 
     def bytes_per_tile(self, params: dict[str, Any]) -> int:
-        _, _, tile_bytes = self._geometry(params)
-        return tile_bytes
+        return self._geometry(params)[2]
 
     def tile_size(self, params: dict[str, Any]) -> tuple[int, int]:
-        return self.TILE, self.TILE
+        _bpp, _offs, _tb, width, height, _g = self._geometry(params)
+        return width, height
 
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> list[IndexGrid]:
         """Expand every tile's plane bytes at once, one pixel row at a time."""
-        bpp, offsets, tile_bytes = self._geometry(params)
-        tile = self.TILE
+        bpp, offsets, tile_bytes, width, height, groups = self._geometry(params)
         require_whole_tiles(len(data), tile_bytes)
         if not data:
             return []
-        # rows[y] holds pixel row y of every tile, back to back: the OR of one
-        # table lookup per plane, each applied to that plane's byte in all tiles.
-        rows = [
-            or_all(
-                [
-                    b"".join(
-                        map(bit_expansion(k).__getitem__, data[offs[y] :: tile_bytes])
-                    )
-                    for k, offs in enumerate(offsets)
-                ]
-            )
-            for y in range(tile)
-        ]
-        return tiles_from_rows(rows, tile, tile, len(data) // tile_bytes)
+        count = len(data) // tile_bytes
+        rows = []
+        for y in range(height):
+            # One group's eight pixels, for every tile: the OR of one table lookup
+            # per plane, each applied to that plane's byte in all tiles at once.
+            chunks = [
+                or_all(
+                    [
+                        b"".join(
+                            map(
+                                bit_expansion(k).__getitem__,
+                                data[offsets[k][y][g] :: tile_bytes],
+                            )
+                        )
+                        for k in range(bpp)
+                    ]
+                )
+                for g in range(groups)
+            ]
+            if groups == 1:
+                # The whole row already, in tile order — the common 8-wide case,
+                # kept free of the interleave below.
+                rows.append(chunks[0])
+                continue
+            # Groups arrive tile-major; the strided writes lace them into pixel
+            # order so rows[y] is again row y of every tile back to back.
+            row_buf = bytearray(count * width)
+            for g, chunk in enumerate(chunks):
+                for i in range(self.GROUP):
+                    row_buf[g * self.GROUP + i :: width] = chunk[i :: self.GROUP]
+            rows.append(bytes(row_buf))
+        return tiles_from_rows(rows, width, height, count)
 
     def encode(
         self, tiles: list[IndexGrid], params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
         """The inverse: pack each plane across every tile, then scatter it home."""
-        bpp, offsets, tile_bytes = self._geometry(params)
-        tile = self.TILE
-        pixels = flatten_tiles(tiles, tile, tile)
+        bpp, offsets, tile_bytes, width, height, groups = self._geometry(params)
+        pixels = flatten_tiles(tiles, width, height)
         out = bytearray(len(tiles) * tile_bytes)
         if not tiles:
             return bytes(out)
-        for k, offs in enumerate(offsets):
-            # One byte per (tile, row): the OR of the eight columns' contributions.
-            packed = or_all(
-                [pixels[x::tile].translate(bit_packing(k, x)) for x in range(tile)]
-            )
-            for y in range(tile):
-                # OR into place rather than assign, so two planes naming one byte
-                # both land there as the per-pixel form would have them.
-                column = out[offs[y] :: tile_bytes]
-                out[offs[y] :: tile_bytes] = or_bytes(bytes(column), packed[y::tile])
+        group = self.GROUP
+        for k in range(bpp):
+            for g in range(groups):
+                # One byte per (tile, row): the OR of this group's eight columns.
+                packed = or_all(
+                    [
+                        pixels[g * group + i :: width].translate(bit_packing(k, i))
+                        for i in range(group)
+                    ]
+                )
+                for y in range(height):
+                    # OR into place rather than assign, so two planes naming one
+                    # byte both land there as the per-pixel form would have them.
+                    off = offsets[k][y][g]
+                    column = out[off::tile_bytes]
+                    out[off::tile_bytes] = or_bytes(bytes(column), packed[y::height])
         return bytes(out)

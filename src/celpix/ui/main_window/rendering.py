@@ -119,7 +119,6 @@ class RenderingMixin:
             columns=cols,
             rows=rows,
             zoom=self._zoom.value(),
-            show_grid=self._grid.isChecked(),
             subpalette_row=self._subpalette.value(),
             tile_offset=self._offset,
             byte_nudge=self._nudge,
@@ -159,7 +158,9 @@ class RenderingMixin:
         tw, th = self._pixel_tile_size()
         self._canvas.set_tile_size(tw, th)
         self._canvas.set_zoom(view.zoom)
-        self._canvas.set_grid(view.show_grid)
+        # Off the workspace, not the view: the grid is one project-wide setting
+        # (see MainWindow._on_grid_change), so it survives switching entries.
+        self._canvas.set_grid(*self._grid_settings())
         self._canvas.set_arrangement(
             view.block_columns, view.block_rows, view.block_order
         )

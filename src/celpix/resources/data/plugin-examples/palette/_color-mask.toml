@@ -7,29 +7,56 @@
 #
 # Because this file sits in palette/ it is an interpret-palette format — no
 # stage field needed.
+#
+# WHAT THE ENGINE DOES
+# --------------------
+# codec.color-mask decodes fixed-size palette entries that store colour as packed
+# bit fields — essentially every hardware palette that isn't a lookup into fixed
+# silicon colours (for those, see _color-indexed.toml). An entry's bytes are
+# assembled into one value by `byte_order`, each channel is masked out of it and
+# scaled up to 8 bits. A channel narrower than 8 bits is lossy: the *decoded
+# colour* round-trips, the raw bits cannot.
+#
+# It shares its mask arithmetic with codec.direct-color (_direct-color.toml) —
+# the same maths, applied to a palette entry rather than to a pixel.
+#
+# SHIPPED PRESETS BUILT ON IT
+# ---------------------------
+#   bgr555          2 bytes little-endian, r 0x001F / g 0x03E0 / b 0x7C00 — SNES,
+#                   Game Boy Color, GBA.
+#   genesis-9bpp    2 bytes big-endian, three bits a channel three bits apart
+#                   (0x000E / 0x00E0 / 0x0E00) — the Mega Drive's CRAM.
+#   rgb888          3 bytes, a whole byte a channel, nothing lossy.
+#   rgb555-split-be a channel split into two runs — the list form below.
+
 id = "preset.palette.example-color-mask"
 name = "Example RGB555"
-
-# codec.color-mask decodes fixed-size palette entries by masking out each channel
-# and scaling it to 8 bits. Masks are plain bit masks over the entry value once
-# `byte_order` has assembled its bytes. This covers essentially every hardware
-# palette storing colour as packed bit fields. Omit `a` when there is no alpha.
 engine_id = "codec.color-mask"
 
 [params]
+
+# How many bytes one palette entry occupies. Typically 1, 2, 3 or 4 — enough to
+# hold every mask below. This is what the host uses to size a "load N entries"
+# window, so it has to match the hardware exactly.
 bytes_per_entry = 2
-byte_order = "little"    # or "big"
 
-[params.masks]
-r = 0x7C00
-g = 0x03E0
-b = 0x001F
+# How those bytes are assembled into the value the masks apply to.
+#   "little"  first byte is least significant   (the default)
+#   "big"     first byte is most significant
+# Only meaningful when bytes_per_entry is more than 1.
+byte_order = "little"
 
-# A channel split across the word — its nibble in one place and its low bit
-# parked elsewhere, which is how several 68000 arcade boards keep the nibbles
+# One bit mask per channel over the assembled entry value. Keys are `r`, `g`, `b`
+# and optionally `a`; omit `a` when the hardware has no alpha and every entry
+# decodes opaque. Each channel scales from however many bits its mask names up to
+# 8, so masks of different widths are fine — the Mega Drive's three bits a
+# channel and a full 8 both work.
+#
+# A channel split across the entry — its main run in one place and a stray low
+# bit parked elsewhere, which is how several 68000 arcade boards keep the nibbles
 # byte-aligned — is written as a list of contiguous chunks, MOST SIGNIFICANT
-# FIRST. Write the order down; it is not inferred from bit position, because
-# hardware puts the stray bit above the run as often as below:
+# FIRST. Write that order down deliberately; it is not inferred from bit
+# position, because hardware puts the stray bit above the run as often as below:
 #
 #   r = [0xF000, 0x0008]
 #   g = [0x0F00, 0x0004]
@@ -37,3 +64,8 @@ b = 0x001F
 #
 # Bits no mask names are written back as zero when a palette is saved, so name
 # every bit a channel really uses.
+[params.masks]
+r = 0x7C00
+g = 0x03E0
+b = 0x001F
+# a = 0x8000

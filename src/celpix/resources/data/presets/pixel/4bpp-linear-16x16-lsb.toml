@@ -1,0 +1,17 @@
+# 4bpp linear 16x16 — low nibble = left pixel. The most-used 16-wide tile format
+# in arcade hardware; MAME factors it out as gfx_16x16x4_packed_lsb, where the
+# nibble order is written as a permuted xoffset rather than as a flag.
+#
+# Note this is *not* four 8x8 tiles in a 2x2 block: a row is eight bytes running
+# the full 16 pixels, so the left and right halves interleave every row. Reading
+# it as 8x8 tiles shears the image.
+# See docs/graphics-formats-reference/mame-formats.md §1.3.
+id = "preset.pixel.4bpp-linear-16x16-lsb"
+name = "4bpp linear, low nibble left (16x16)"
+engine_id = "codec.packed"
+
+[params]
+bpp = 4
+msb_first = false
+tile_width = 16
+tile_height = 16

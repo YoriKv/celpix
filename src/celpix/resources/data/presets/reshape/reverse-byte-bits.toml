@@ -1,0 +1,14 @@
+# A whole byte read least-significant bit first: bit 0 is the leftmost pixel
+# rather than bit 7. Every 8-pixel-row codec here assumes the opposite, so this
+# is the adapter — reverse the byte and the ordinary planar and packed presets
+# apply unchanged, at any depth.
+#
+# This is what MAME's GFXENTRY_REVERSE flag does, which its decoder spells as an
+# XOR of 7 on the bit index; a value substitution is the equivalent when the bit
+# numbering lives in the data rather than in the decoder.
+id = "reshape.reverse-byte-bits"
+name = "Reverse bit order within each byte"
+engine_id = "reshape.data-lut"
+
+[params]
+bitswaps = [[0, 1, 2, 3, 4, 5, 6, 7]]

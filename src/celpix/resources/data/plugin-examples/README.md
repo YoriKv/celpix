@@ -32,11 +32,16 @@ most formats need nothing more.
 layout matches your format:
 
 - `_planar.toml` — bit *k* of a pixel comes from plane *k* (most console formats)
-- `_packed.toml` — a pixel is a sub-byte field stored whole (Genesis, GBA, …)
-- `_chunky.toml` — one byte per pixel
+- `_packed.toml` — a pixel is a field stored whole: sub-byte (Genesis, GBA, …)
+  or, at 8bpp, one whole byte per pixel
+- `_nibble-planar.toml` — one byte holds four pixels, a bitplane to each nibble
+- `_linear-bespoke.toml` — the 3bpp and 6bpp packings, whose fields straddle bytes
 - `_direct-color.toml` — the pixel carries its own colour, no palette
 - `_color-mask.toml` — a palette entry's channels as bit masks (RGB555, …)
 - `_color-indexed.toml` — palette bytes index a table baked into the hardware
+
+Each names what its engine does, which shipped presets are built on it, and every
+parameter it takes with the values that parameter accepts.
 
 `reshape/` takes presets too: `_bitswap.toml` for boards that scramble the byte
 *address*, `_data-lut.toml` for boards that substitute byte *values*.

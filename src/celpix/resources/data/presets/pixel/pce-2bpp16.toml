@@ -1,7 +1,15 @@
-# PC Engine 2bpp 16x16 sprite tiles.
+# PC Engine 2bpp 16x16 sprite tiles — each plane is a 32-byte block, two bytes per
+# row, left half first.
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.pce-2bpp16"
 name = "PC Engine 2bpp (16x16)"
-engine_id = "codec.pce-2bpp16"
+engine_id = "codec.planar"
 
 [params]
+bpp = 2
+tile_width = 16
+tile_height = 16
+planes = [
+  { base = 0, stride = 2, group_stride = 1 },
+  { base = 32, stride = 2, group_stride = 1 },
+]

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.2 - unreleased
+
+- **Grid**: More grid settings, improved grid visuals, and grid saved to local
+  preferences
+- **Reshape presets**: expanded the number of reshape presets and support for
+  more kinds of reshape plugins to support a wider variety of MAME graphics
+- Cleaned up some plugin examples and documentation.
+- `Open Recent` menu in the file menu
+
 ## v0.3.1 - 2026-07-27
 
 - **Paste/Import fix**: pasted and imported images now work correctly on block

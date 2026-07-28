@@ -1,0 +1,16 @@
+# 4bpp linear 16x16 — high nibble = left pixel, the other nibble order of
+# 4bpp-linear-16x16-lsb. MAME factors it out as gfx_16x16x4_packed_msb.
+#
+# Note this is *not* four 8x8 tiles in a 2x2 block: a row is eight bytes running
+# the full 16 pixels, so the left and right halves interleave every row. Reading
+# it as 8x8 tiles shears the image.
+# See docs/graphics-formats-reference/mame-formats.md §1.3.
+id = "preset.pixel.4bpp-linear-16x16-msb"
+name = "4bpp linear, high nibble left (16x16)"
+engine_id = "codec.packed"
+
+[params]
+bpp = 4
+msb_first = true
+tile_width = 16
+tile_height = 16

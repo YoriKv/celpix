@@ -21,3 +21,9 @@ other subsystem stays Qt-free so it is testable and reusable headless.
 """
 
 __version__ = "0.3.1"
+
+# The application's own name, as the platform files its data and preferences
+# under. Here rather than in the Qt bootstrap because both the bootstrap (data
+# location) and the Qt-side preference store (:func:`celpix.ui.widgets.settings`)
+# need it, and they must agree.
+APP_NAME = "celPix"

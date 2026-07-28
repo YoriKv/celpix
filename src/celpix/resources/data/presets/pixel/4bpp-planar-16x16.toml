@@ -1,0 +1,20 @@
+# 4bpp planar 16x16 — the standard wide arcade tile, once its four bitplanes are
+# joined out of the region's quarters (reshape.split-planes-4). A row is eight
+# bytes: planes 0-3 for the left half, then the same four for the right, so
+# group_stride is 4 and the row stride 8.
+# MAME calls this gfx_16x16x4_planar.
+# See docs/graphics-formats-reference/mame-formats.md §1.3.
+id = "preset.pixel.4bpp-planar-16x16"
+name = "4bpp planar, interleaved (16x16)"
+engine_id = "codec.planar"
+
+[params]
+bpp = 4
+tile_width = 16
+tile_height = 16
+planes = [
+  { base = 0, stride = 8, group_stride = 4 },
+  { base = 1, stride = 8, group_stride = 4 },
+  { base = 2, stride = 8, group_stride = 4 },
+  { base = 3, stride = 8, group_stride = 4 },
+]

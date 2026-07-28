@@ -1,11 +1,11 @@
 # 8bpp linear as a wide bitmap page rather than 8x8 tiles — one byte per pixel,
-# 256-px stride. Sized for Super FX (GSU) chunky bitmap banks, which store art
-# as a 256-wide linear bitmap (32 KB = 256x128 pages; larger banks are several
-# of them stacked). Use the plain 8bpp linear preset with 2D view for other
-# widths. See docs/graphics-formats-reference/implementation-guide.md §2 (chunky).
+# 256-px stride. Sized for Super FX (GSU) bitmap banks, which store art as a
+# 256-wide linear bitmap (32 KB = 256x128 pages; larger banks are several of them
+# stacked). Use the plain 8bpp linear preset with 2D view for other widths.
+# See docs/graphics-formats-reference/implementation-guide.md §2 (chunky).
 id = "preset.pixel.chunky-8bpp-wide"
 name = "8bpp linear bitmap (256x128, Super FX)"
-engine_id = "codec.chunky"
+engine_id = "codec.packed"
 
 [params]
 bpp = 8

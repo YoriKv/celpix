@@ -1,0 +1,17 @@
+# 4bpp planar 32x32 — the same encoding as 4bpp-planar-16x16 two groups wider: a
+# row is sixteen bytes, four eight-pixel groups of four planes each.
+# See docs/graphics-formats-reference/mame-formats.md §1.3.
+id = "preset.pixel.4bpp-planar-32x32"
+name = "4bpp planar, interleaved (32x32)"
+engine_id = "codec.planar"
+
+[params]
+bpp = 4
+tile_width = 32
+tile_height = 32
+planes = [
+  { base = 0, stride = 16, group_stride = 4 },
+  { base = 1, stride = 16, group_stride = 4 },
+  { base = 2, stride = 16, group_stride = 4 },
+  { base = 3, stride = 16, group_stride = 4 },
+]

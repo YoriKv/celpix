@@ -18,6 +18,7 @@ writes the buffer as it stands.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 
 from celpix.core import ceil_div
 from celpix.core.context import PipelineContext
@@ -25,6 +26,41 @@ from celpix.core.palette import Palette
 from celpix.core.tilemap import TileMap
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef
+
+
+class GridMode(str, Enum):
+    """Which scale the canvas's grid is drawn at, when it is shown at all.
+
+    The grid always has two levels — a fine one and a stronger one a step up
+    from it — and this picks what the fine one counts. It is **one setting for
+    the whole project**, not per entry: it says how the user wants to look at
+    pixels, which does not change from one file to the next, so it rides on the
+    :class:`~celpix.project.workspace.Workspace` beside the pixel-format filter
+    rather than in :class:`ViewOptions`. ``value`` is the stable string
+    persisted in the project file (str-valued for exactly that reason, like
+    :class:`~celpix.project.workspace.PaletteMode`).
+
+    - ``TILE`` — fine on every tile, coarse on the 8×8-tile square.
+    - ``PIXEL`` — fine on every image pixel, coarse on every tile. Only useful
+      zoomed in, and the canvas drops the pixel level again when the zoom is too
+      low for it to read as a lattice rather than a wash.
+
+    ``Workspace.block_grid`` moves the coarse level of *either* onto the
+    arrangement's own block, and ``Workspace.show_grid`` is the on/off switch
+    over both — kept apart from the scale so that turning the grid off and on
+    again brings back the scale it was last read at.
+    """
+
+    TILE = "tile"
+    PIXEL = "pixel"
+
+    @classmethod
+    def parse(cls, value: object, default: GridMode) -> GridMode:
+        """``value`` as a mode, falling back to ``default`` for anything else."""
+        try:
+            return cls(value)
+        except ValueError:
+            return default
 
 
 @dataclass
@@ -75,7 +111,6 @@ class ViewOptions:
     columns: int = 16
     rows: int = 16
     zoom: int = 4
-    show_grid: bool = False
     subpalette_row: int = 0
     tile_offset: int = 0  # top-left tile index into the pixel bytes
     byte_nudge: int = 0  # sub-tile byte shift of the whole grid

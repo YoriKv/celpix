@@ -120,6 +120,54 @@ def test_marquee_glyph_is_centred_like_the_other_tool_shapes() -> None:
         assert rows == rows[::-1]
 
 
+def test_preferences_land_in_a_file_named_for_the_app(qtbot, tmp_path) -> None:
+    # celPix sets no organization on the QApplication (it would nest the data dir
+    # celPix/celPix), and a bare QSettings() with none files everything under a
+    # literal "Unknown Organization". The store names its own instead.
+    from PySide6.QtCore import QSettings
+
+    from celpix.ui.widgets import settings
+
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(
+        QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path)
+    )
+    # ".ini" because the test redirected the store to IniFormat; the name is the
+    # part under test — no "Unknown Organization" between it and the base path.
+    assert settings().fileName() == str(tmp_path / "celPix.ini")
+
+
+def test_recent_projects_survive_the_ini_backends_quirks(qtbot, tmp_path) -> None:
+    # Two shapes the INI backend gets to decide for itself, both of which have to
+    # come back as the list that went in: a *single* entry, which it stores (and
+    # returns) as a bare string rather than a one-item list, and a path holding
+    # the comma it separates list items with.
+    from PySide6.QtCore import QSettings
+
+    from celpix.ui.widgets import (
+        clear_recent_projects,
+        load_recent_projects,
+        remember_recent_project,
+        settings,
+    )
+
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(
+        QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path)
+    )
+    clear_recent_projects()
+
+    lone = tmp_path / "solo.celpix"
+    remember_recent_project(str(lone))
+    settings().sync()  # round-trip through the file, not the in-memory cache
+    assert load_recent_projects() == [str(lone)]
+
+    comma = tmp_path / "hack, revised.celpix"
+    remember_recent_project(str(comma))
+    settings().sync()
+    assert load_recent_projects() == [str(comma), str(lone)]
+
+
 def test_a_stale_enum_preference_falls_back_to_the_default(qtbot, tmp_path) -> None:
     # Every app-global preference (grid style, selection shape, active tool) is
     # stored by its enum's string value, so a settings file written by an older or
@@ -129,7 +177,7 @@ def test_a_stale_enum_preference_falls_back_to_the_default(qtbot, tmp_path) -> N
 
     from PySide6.QtCore import QSettings
 
-    from celpix.ui.widgets import load_enum_setting, save_enum_setting
+    from celpix.ui.widgets import load_enum_setting, save_enum_setting, settings
 
     class Style(Enum):
         LINE = "line"
@@ -139,10 +187,10 @@ def test_a_stale_enum_preference_falls_back_to_the_default(qtbot, tmp_path) -> N
     QSettings.setPath(
         QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path)
     )
-    QSettings().clear()
+    settings().clear()
 
     assert load_enum_setting("probe/style", Style.LINE) is Style.LINE  # unset
     save_enum_setting("probe/style", Style.DOT)
     assert load_enum_setting("probe/style", Style.LINE) is Style.DOT  # round trip
-    QSettings().setValue("probe/style", "bogus")  # stale / foreign value
+    settings().setValue("probe/style", "bogus")  # stale / foreign value
     assert load_enum_setting("probe/style", Style.LINE) is Style.LINE

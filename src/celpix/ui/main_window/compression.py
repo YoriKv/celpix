@@ -212,8 +212,8 @@ class CompressionMixin:
         self._overlay.show_result(
             image,
             engine.tile_size(preset.params),
-            view.zoom,
-            view.show_grid,
+            view,
+            self._grid_settings(),
             f"Decompressed - {plugin.info.name}",
             ", ".join(parts),
             badge,

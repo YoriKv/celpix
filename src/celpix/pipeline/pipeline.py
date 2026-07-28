@@ -162,15 +162,21 @@ def _with_tile_size(engine, params: dict, size: tuple[int, int]) -> dict:  # noq
 
     Whether a codec honours a tile size at all is **probed, not assumed** from
     the preset: the merged params are handed back to ``tile_size`` and kept only
-    if the engine reports the size we asked for. A planar or packed codec ignores
-    the keys (its rows are eight pixels by construction), so it keeps its own
-    geometry rather than having the view claim a shape its decode doesn't
-    produce. Returning ``params`` unchanged is therefore the ordinary outcome.
+    if the engine reports the size we asked for. A codec can decline in either of
+    two ways — by ignoring the keys and reporting its own geometry, or by
+    rejecting them outright, as the planar engine does for a width that is not a
+    whole number of eight-pixel groups — and the two mean the same thing here, so
+    a raise counts as "no" rather than propagating. Returning ``params``
+    unchanged is therefore the ordinary outcome.
     """
     if not all(size) or size == engine.tile_size(params):
         return params
     merged = {**params, "tile_width": size[0], "tile_height": size[1]}
-    return merged if engine.tile_size(merged) == size else params
+    try:
+        accepted = engine.tile_size(merged) == size
+    except Exception:  # noqa: BLE001 — a probe must not be able to fail the load
+        accepted = False
+    return merged if accepted else params
 
 
 def bitmap_params(engine, params: dict, bitmap_width: int) -> dict:  # noqa: ANN001

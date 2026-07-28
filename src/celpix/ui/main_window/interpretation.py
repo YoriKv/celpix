@@ -212,7 +212,7 @@ class InterpretationMixin:
         self._columns.setFixedWidth(rows_width)
         self._rows.setFixedWidth(rows_width)
 
-        self._zoom = self._spin(1, 16, 4, self._on_view_change)
+        self._zoom = self._spin(1, 24, 4, self._on_view_change)
         add_labelled(
             view,
             "Zoom:",

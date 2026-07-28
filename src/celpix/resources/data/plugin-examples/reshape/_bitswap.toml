@@ -3,38 +3,59 @@
 # Presets are data: nothing here executes, so unlike a .py plugin there is no
 # confirmation step.
 #
+# WHAT THE ENGINE DOES
+# --------------------
 # A bitswap is how most arcade boards scramble a graphics region: a permutation
-# of the byte *address*, one algorithm with a per-board table. This preset names
-# that engine and supplies the table; celPix turns it into an ordinary Reshape
-# entry in the pickers. For value substitutions see _data-lut.toml, and for
-# reorderings neither engine expresses, _example.py.
+# of the byte **address**, one algorithm with a per-board table. It never changes
+# a byte's value, only where that byte sits. For the complement — substituting a
+# value without moving it — see _data-lut.toml; a board doing both needs one of
+# each. For reorderings neither engine expresses, _example.py.
 #
-# No bitswap table ships active, a table meaning something only for the board it
-# came from. This is a real, working one to copy and adapt.
+# A table of N entries defines a 2^N-byte block: the region is permuted block by
+# block, a tail short of one block passes through untouched, and a region smaller
+# than one block refuses to load, the table and the region disagreeing about what
+# hardware they describe.
+#
+# SHIPPED PRESETS BUILT ON IT
+# ---------------------------
+# None — a table means something only for the board it came from, so celPix ships
+# no active one and this example carries a real, working table to copy and adapt.
+# (The Reshape stage does ship *board-independent* tables, but those are all
+# data-LUTs; see _data-lut.toml.)
+
 id = "reshape.gaelco-16x16"
 name = "Gaelco 16x16 tiles (bitswap)"
 engine_id = "reshape.bitswap"
 
 [params]
-# Gaelco "Modular System" 16x16 tile scramble: the background ROMs store each
-# tile in an order the single-pass codecs can't walk, undone in hardware terms by
-# rotating address lines 14..5. Shared by Splash!, Big Karnak, World Rally,
-# Xorworld, Gals Panic, Blood Bros., Raiden and Toki on that board (MAME:
-# descramble_16x16tiles in each of the *_ms.cpp drivers, bitswap<20>). Once
-# applied, the region reads with the stock sms-4bpp preset, 16x16 tiles under a
-# 2x2 block arrangement.
+
+# The address-line permutation, in MAME's `bitswap<N>` argument order — most
+# significant bit first, so entry k names the source address bit of output bit
+# N-1-k and a driver's argument list copies in verbatim.
 #
-# The table is MAME's argument order, most significant bit first: entry k names
-# the source address bit of output bit N-1-k, and j = bitswap<N>(i, ...) says
-# where byte i lands (out[j] = in[i], the descramble scatter form; a driver
-# written as dst[i] = src[bitswap(i)] sets `gather = true` instead of
-# hand-inverting its table). A table of N entries defines a 2^N-byte block: the
-# region is permuted block by block, a tail short of one block passes through
-# untouched, and a region smaller than one block refuses to load, the table and
-# the region disagreeing about the hardware.
+# Length N sets the block size at 2^N bytes. Up to 24 entries are accepted, of
+# which at most 16 may actually *move*: real tables hold their low lines fixed
+# because they reorder tiles rather than the bytes inside them, and it is the
+# moving lines that cost anything. This one leaves A4..A0 alone and moves 15.
 #
-# To lift your own: grep a board's init_ function in MAME for bitswap and copy
-# the argument list. A table may span up to 24 address lines, of which at most 16
-# may move — real tables hold their low lines fixed, and this one leaves A4..A0
-# alone and moves 15.
+# To lift your own: grep a board's init_ function in MAME for `bitswap` and copy
+# the argument list.
+#
+# This table is the Gaelco "Modular System" 16x16 tile scramble — the background
+# ROMs store each tile in an order the single-pass codecs can't walk, undone in
+# hardware terms by rotating address lines 14..5. Shared by Splash!, Big Karnak,
+# World Rally, Xorworld, Gals Panic, Blood Bros., Raiden and Toki on that board
+# (MAME: descramble_16x16tiles in each of the *_ms.cpp drivers, bitswap<20>).
+# Once applied, the region reads with the stock sms-4bpp preset, 16x16 tiles
+# under a 2x2 block arrangement.
 bits = [19, 18, 17, 16, 15, 12, 11, 10, 9, 8, 7, 6, 5, 14, 13, 4, 3, 2, 1, 0]
+
+# Which way round the table is read.
+#   false  scatter: out[bitswap(i)] = in[i]. Matches the common descramble form
+#          `buffer[j] = src[i]`, and is the default.
+#   true   gather:  out[i] = in[bitswap(i)]. Use this when the driver you are
+#          copying from is written `dst[i] = src[bitswap(i)]`, rather than
+#          inverting its table by hand.
+# Getting this backwards applies the inverse permutation, which usually looks
+# like a *differently* scrambled image rather than an obviously broken one.
+gather = false

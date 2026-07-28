@@ -1,8 +1,12 @@
-# 1bpp 16x12 (Final Fantasy 5) — the two 8-wide columns are 12 bytes apart.
+# 1bpp 16x12 (Final Fantasy 5) — the two 8-wide columns are 12 bytes apart, so a
+# row is one byte per column and the right column is a whole column further on.
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.1bpp16-ff5"
 name = "1bpp (16x12, FF5)"
-engine_id = "codec.wide-1bpp"
+engine_id = "codec.planar"
 
 [params]
-mode = "ff5"
+bpp = 1
+tile_width = 16
+tile_height = 12
+planes = [{ base = 0, stride = 1, group_stride = 12 }]

@@ -38,7 +38,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix.ui.canvas import Canvas
+from celpix.core.document import GridMode, ViewOptions
+from celpix.ui.canvas import Canvas, GridStyle
 
 # Amber for the warning level. The QToolTip rule is not decoration: Qt applies a
 # bare `color:` to the widget's *tooltip* as well, which would render the whole
@@ -93,16 +94,19 @@ class DecompressOverlay(QWidget):
         self,
         image: QImage,
         tile_size: tuple[int, int],
-        zoom: int,
-        show_grid: bool,
+        view: ViewOptions,
+        grid: tuple[bool, GridMode, bool],
         title: str,
         status: str,
         badge: Badge | None = None,
     ) -> None:
         """Present a freshly rendered decompression (showing the window if hidden).
 
-        ``status`` is the sizes line; ``badge`` annotates it, or None when the
-        decode has nothing to add.
+        ``view`` is the main view's options and ``grid`` the project's grid
+        settings, since the preview is drawn through the same zoom, arrangement
+        and lattice — the point of it is to look like the picture would if the
+        bytes were already decompressed. ``status`` is the sizes line; ``badge``
+        annotates it, or None when the decode has nothing to add.
         """
         self.setWindowTitle(title)
         self._status.showMessage(status)
@@ -112,8 +116,11 @@ class DecompressOverlay(QWidget):
         self._badge.setVisible(badge is not None)
         tw, th = tile_size
         self._canvas.set_tile_size(tw, th)
-        self._canvas.set_zoom(zoom)
-        self._canvas.set_grid(show_grid)
+        self._canvas.set_zoom(view.zoom)
+        self._canvas.set_arrangement(
+            view.block_columns, view.block_rows, view.block_order
+        )
+        self._canvas.set_grid(*grid)
         self._canvas.set_image(image)
         if not self.isVisible():
             if not self._positioned and self.parentWidget() is not None:
@@ -121,6 +128,10 @@ class DecompressOverlay(QWidget):
                 self.move(anchor + QPoint(12, 0))
                 self._positioned = True
             self.show()
+
+    def set_grid_style(self, style: GridStyle) -> None:
+        """Follow the app-wide grid style, which the main window owns."""
+        self._canvas.set_grid_style(style)
 
     def hide_overlay(self) -> None:
         """Hide (compression off, or the current window doesn't decompress)."""

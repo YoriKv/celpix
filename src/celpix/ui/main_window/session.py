@@ -241,10 +241,11 @@ class SessionMixin:
             (self._subpalette, view.subpalette_row),
             (self._bitmap_width, view.bitmap_width),
         )
-        with signals_blocked(*(w for w, _ in spins), self._grid):
+        # The grid is deliberately absent: it is project-wide, so an entry switch
+        # leaves it exactly where the user set it.
+        with signals_blocked(*(w for w, _ in spins)):
             for spin, value in spins:
                 spin.setValue(value)
-            self._grid.setChecked(view.show_grid)
         # The Cols the outgoing entry had before its bitmap width took over means
         # nothing to this one, whose Cols has just been restored from its own
         # view - drop it before the sync below can read it back.

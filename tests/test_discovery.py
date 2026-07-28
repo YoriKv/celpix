@@ -420,16 +420,12 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         "palette/_color-mask.toml",
         "palette/_example.py",
         "palette/_nes-custom.py",
-        "pixel/_chunky.toml",
         "pixel/_direct-color.toml",
         "pixel/_example.py",
         "pixel/_linear-bespoke.toml",
         "pixel/_nibble-planar.toml",
         "pixel/_packed.toml",
-        "pixel/_pce-2bpp16.toml",
-        "pixel/_pce-sg.toml",
         "pixel/_planar.toml",
-        "pixel/_wide-1bpp.toml",
         "reshape/_bitswap.toml",
         "reshape/_data-lut.toml",
         "reshape/_example.py",
@@ -567,10 +563,11 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
 
     # reshape/ carries one TOML example per engine too — engine_id there is a
     # discriminator picking the adapter, so the two produce different classes.
-    reshapes = reg.plugins(Stage.RESHAPE)
+    # Asserted per example rather than by counting instances: the shipped
+    # bit-order tables are data-LUTs as well (builtins.register_builtins).
     assert len(discovery.RESHAPE_ENGINES) == 2
-    assert sum(isinstance(p, BitswapReshape) for p in reshapes) == 1
-    assert sum(isinstance(p, DataLutReshape) for p in reshapes) == 1
+    assert isinstance(reg.plugin(Stage.RESHAPE, "reshape.gaelco-16x16"), BitswapReshape)
+    assert isinstance(reg.plugin(Stage.RESHAPE, "reshape.nmk-bg"), DataLutReshape)
 
     # Bitswap preset example: the TOML registers as an ordinary reshape plugin.
     # It carries a real table — Gaelco's Modular System 16x16 tile scramble,

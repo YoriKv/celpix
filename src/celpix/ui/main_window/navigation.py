@@ -389,6 +389,7 @@ class NavigationMixin:
             # depends on the group it is showing.
             (Qt.Key.Key_P, *no_mod): self._load_palette_from_selection,
             (Qt.Key.Key_G, *no_mod): self._grid.toggle,
+            (Qt.Key.Key_G, *shift): self._cycle_grid_style,
             (Qt.Key.Key_S, *no_mod): self._toggle_selection_mode,
             (Qt.Key.Key_E, *no_mod): self._toggle_edit_mode,
             (Qt.Key.Key_R, *no_mod): self._toggle_rearranging,

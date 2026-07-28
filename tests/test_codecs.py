@@ -351,7 +351,14 @@ def test_nibble_planar_plane_pair_and_nibble_order() -> None:
 
 
 def test_chunky_is_row_major_index_per_byte() -> None:
+    """One byte per pixel, row-major — the 8bpp end of the packed engine.
+
+    There is no separate chunky codec: at ``bpp = 8`` a packed field fills the
+    byte, so this pins that the degenerate depth really is a straight copy rather
+    than something the field machinery reorders.
+    """
     engine, params = _pixel_engine("preset.pixel.chunky-8bpp")
+    assert params["bpp"] == 8
     tile = engine.decode(bytes(range(64)), params, PipelineContext())[0]
     assert [tile.get(x, 0) for x in range(8)] == list(range(8))  # row 0 = bytes 0..7
     assert tile.get(0, 1) == 8  # row 1 starts at byte 8
@@ -426,3 +433,236 @@ def test_rgb888_known_vector() -> None:
 def test_missing_color_sentinel() -> None:
     pal = Palette([0xFF000000])
     assert pal.color(5) == MISSING_COLOR
+
+
+# The shipped `reshape/` tables are pixel-order *conventions* rather than
+# board-specific scrambles: each converts a widespread bit ordering into the one
+# a codec here already reads. That pairing is the whole content of the preset, so
+# it is checked against a reference decode of the layout it claims to unlock.
+def _mame_decode(
+    data: bytes,
+    layout: tuple[int, int, list[int], list[int], list[int], int],
+    code: int,
+) -> list[list[int]]:
+    """Tile ``code`` of a MAME ``gfx_layout``, by a port of ``gfx_element::decode``.
+
+    All four offset arrays are counted in bits, MSB-first inside a byte, and
+    ``planeoffset[0]`` supplies the *most* significant index bit — the two
+    conventions that make an otherwise plausible decode wrong
+    (``docs/graphics-formats-reference/mame-formats.md`` §1.1).
+    """
+    width, height, planeoffset, xoffset, yoffset, charincrement = layout
+    planes = len(planeoffset)
+
+    def bit(n: int) -> int:
+        return (data[n // 8] >> (7 - n % 8)) & 1
+
+    return [
+        [
+            sum(
+                bit(code * charincrement + planeoffset[p] + yoffset[y] + xoffset[x])
+                << (planes - 1 - p)
+                for p in range(planes)
+            )
+            for x in range(width)
+        ]
+        for y in range(height)
+    ]
+
+
+def _step(count: int, start: int, step: int) -> list[int]:
+    return [start + i * step for i in range(count)]
+
+
+@pytest.mark.parametrize(
+    ("reshape_id", "preset_id", "layout"),
+    [
+        # Two 4bpp pixels woven bit by bit through a byte: planes two bits apart,
+        # pixels one. De-interleaved, the odd bits become the high nibble.
+        (
+            "reshape.deinterleave-nibbles",
+            "preset.pixel.genesis-4bpp",
+            (8, 8, [0, 2, 4, 6], [0, 1, 8, 9, 16, 17, 24, 25], _step(8, 0, 32), 8 * 32),
+        ),
+        # The other weave phase — left pixel in the even bits. It needs no second
+        # table: the phases differ by a nibble swap, which is `msb_first`.
+        (
+            "reshape.deinterleave-nibbles",
+            "preset.pixel.gba-4bpp",
+            (8, 8, [0, 2, 4, 6], [1, 0, 9, 8, 17, 16, 25, 24], _step(8, 0, 32), 8 * 32),
+        ),
+        # Nibble-planar with the four-pixel groups counted the other way round:
+        # bit 0 of a nibble is the leftmost pixel instead of bit 3.
+        (
+            "reshape.reverse-nibble-bits",
+            "preset.pixel.atari-sy2-chars-2bpp",
+            (8, 8, [0, 4], [3, 2, 1, 0, 11, 10, 9, 8], _step(8, 0, 16), 8 * 16),
+        ),
+        # A plain interleaved-planar tile whose rows are read lsb-first, which is
+        # what MAME spells as the GFXENTRY_REVERSE flag.
+        (
+            "reshape.reverse-byte-bits",
+            "preset.pixel.snes-2bpp",
+            (8, 8, [8, 0], _step(8, 7, -1), _step(8, 0, 16), 8 * 16),
+        ),
+    ],
+)
+def test_shipped_reshape_table_unlocks_its_layout(
+    reshape_id: str, preset_id: str, layout: tuple
+) -> None:
+    """Reshaping then decoding must equal the layout the preset names, and the
+    write path must put every byte back exactly as it was."""
+    engine, params = _pixel_engine(preset_id)
+    tiles_wanted = 3
+    charincrement = layout[5]
+    region = bytes(
+        (i * 61 + 7) & 0xFF for i in range(tiles_wanted * charincrement // 8)
+    )
+    ctx = PipelineContext()
+    reshape = _REG.plugin(Stage.RESHAPE, reshape_id)
+
+    grids = engine.decode(reshape.reshape(region, ctx), params, ctx)
+    assert len(grids) == tiles_wanted
+    for code, grid in enumerate(grids):
+        actual = [[grid.get(x, y) for x in range(8)] for y in range(8)]
+        assert actual == _mame_decode(region, layout, code), f"tile {code}"
+
+    assert reshape.unshape(engine.encode(grids, params, ctx), ctx) == region
+
+
+@pytest.mark.parametrize(
+    ("preset_id", "layout"),
+    [
+        # gfx_16x16x4_packed_msb / _lsb (src/emu/video/generic.cpp) — the two
+        # nibble orders of the most-used 16-wide arcade tile. The _lsb form is
+        # written as a permuted xoffset rather than as a flag, which is what
+        # `msb_first` recovers.
+        (
+            "preset.pixel.4bpp-linear-16x16-msb",
+            (16, 16, [0, 1, 2, 3], _step(16, 0, 4), _step(16, 0, 64), 16 * 16 * 4),
+        ),
+        (
+            "preset.pixel.4bpp-linear-16x16-lsb",
+            (
+                16,
+                16,
+                [0, 1, 2, 3],
+                [4, 0, 12, 8, 20, 16, 28, 24, 36, 32, 44, 40, 52, 48, 60, 56],
+                _step(16, 0, 64),
+                16 * 16 * 4,
+            ),
+        ),
+        (
+            "preset.pixel.4bpp-linear-32x32-msb",
+            (32, 32, [0, 1, 2, 3], _step(32, 0, 4), _step(32, 0, 128), 32 * 32 * 4),
+        ),
+    ],
+)
+def test_wide_packed_preset_matches_its_layout(preset_id: str, layout: tuple) -> None:
+    """The wide packed presets decode exactly as MAME's layout of the same name.
+
+    Tile size is a codec parameter rather than a fixed 8×8, so what needs pinning
+    is that a row runs the *full* width — a 16-wide tile is eight bytes across,
+    not two 8×8 tiles side by side, and reading it the other way shears the image
+    without failing.
+    """
+    engine, params = _pixel_engine(preset_id)
+    width, height = layout[0], layout[1]
+    assert engine.tile_size(params) == (width, height)
+    tiles_wanted = 2
+    data = bytes(
+        (i * 61 + 7) & 0xFF for i in range(tiles_wanted * engine.bytes_per_tile(params))
+    )
+    ctx = PipelineContext()
+    grids = engine.decode(data, params, ctx)
+    assert len(grids) == tiles_wanted
+    for code, grid in enumerate(grids):
+        actual = [[grid.get(x, y) for x in range(width)] for y in range(height)]
+        assert actual == _mame_decode(data, layout, code), f"tile {code}"
+    assert engine.encode(grids, params, ctx) == data
+
+
+# Presets that decode identically on purpose, because the *name* is the point:
+# a reader looking for their hardware should find it without knowing which other
+# machine shares the encoding. Two symmetries generate all of them — reversing
+# both the byte order and the channel order of a direct-color format cancels, and
+# the interleaved-planar 2bpp layout is shared hardware to hardware.
+_INTENTIONAL_PIXEL_ALIASES = frozenset(
+    {
+        frozenset({"preset.pixel.dc-abgr8888", "preset.pixel.dc-rgba8888-be"}),
+        frozenset({"preset.pixel.dc-abgr8888-be", "preset.pixel.dc-rgba8888"}),
+        frozenset({"preset.pixel.dc-argb8888", "preset.pixel.dc-bgra8888-be"}),
+        frozenset({"preset.pixel.dc-argb8888-be", "preset.pixel.dc-bgra8888"}),
+        frozenset({"preset.pixel.dc-bgr888", "preset.pixel.dc-rgb888-be"}),
+        frozenset({"preset.pixel.dc-bgr888-be", "preset.pixel.dc-rgb888"}),
+        frozenset({"preset.pixel.dc-bbgggrrr", "preset.pixel.dc-snes-direct"}),
+        frozenset(
+            {"preset.pixel.gb-2bpp", "preset.pixel.snes-2bpp", "preset.pixel.ws-2bpp"}
+        ),
+    }
+)
+
+
+def test_pixel_presets_duplicate_only_where_intended() -> None:
+    """No preset may restate another except the documented aliases above.
+
+    Engines overlap in ways parameters don't show — a 16-wide 1bpp packed tile is
+    byte for byte the wide-1bpp `halves` mode, across two different engines — so a
+    new preset can silently duplicate a shipped one. Comparing *decodes* is what
+    catches that; pinning the alias set rather than forbidding aliases keeps the
+    deliberate ones without letting an accidental one through.
+    """
+    ctx = PipelineContext()
+    groups: dict[tuple, set[str]] = {}
+    for preset_id in _pixel_ids():
+        engine, params = _pixel_engine(preset_id)
+        data = bytes(
+            (i * 61 + 7) & 0xFF for i in range(engine.bytes_per_tile(params) * 2)
+        )
+        grids = engine.decode(data, params, ctx)
+        key = (engine.tile_size(params), tuple(bytes(g.data) for g in grids))
+        groups.setdefault(key, set()).add(preset_id)
+    found = {frozenset(ids) for ids in groups.values() if len(ids) > 1}
+    assert found == _INTENTIONAL_PIXEL_ALIASES
+
+
+@pytest.mark.parametrize(
+    ("preset_id", "width", "height"),
+    [
+        ("preset.pixel.4bpp-planar-16x16", 16, 16),
+        ("preset.pixel.4bpp-planar-32x32", 32, 32),
+    ],
+)
+def test_wide_planar_preset_matches_the_region_split_layout(
+    preset_id: str, width: int, height: int
+) -> None:
+    """A wide planar preset over a 4-way join equals MAME's `gfx_16x16x4_planar`.
+
+    The 8×8 pairing is checked by ``test_split_plane_join_feeds_interleaved_planar
+    _presets``; what is new here is the *group* term, so this pins that pixel
+    ``x`` reads byte ``x // 8`` of its row across the whole width. Getting the
+    group stride wrong still round-trips — it just shows the halves swapped or
+    sheared — so the round-trip test cannot catch it.
+    """
+    planes, count = 4, 2
+    per_tile = width * height // 8  # one fraction's bytes for one tile
+    region = bytes((i * 61 + 7) & 0xFF for i in range(per_tile * count * planes))
+    ctx = PipelineContext()
+    join = _REG.plugin(Stage.RESHAPE, f"reshape.split-planes-{planes}")
+
+    engine, params = _pixel_engine(preset_id)
+    assert engine.tile_size(params) == (width, height)
+    grids = engine.decode(join.reshape(region, ctx), params, ctx)
+    assert len(grids) == count
+
+    part, row_bytes = len(region) // planes, width // 8
+    for code, grid in enumerate(grids):
+        for y in range(height):
+            for x in range(width):
+                byte = code * per_tile + y * row_bytes + x // 8
+                assert grid.get(x, y) == sum(
+                    ((region[k * part + byte] >> (7 - x % 8)) & 1) << k
+                    for k in range(planes)
+                ), f"tile {code} pixel ({x},{y})"
+
+    assert join.unshape(engine.encode(grids, params, ctx), ctx) == region

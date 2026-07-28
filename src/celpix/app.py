@@ -9,17 +9,18 @@ from PySide6.QtCore import QStandardPaths
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QMessageBox, QProxyStyle, QStyle
 
-from celpix import __version__, resources
+from celpix import APP_NAME, __version__, resources
 from celpix.plugins.discovery import FOLDER_STAGE, load_user_plugins, seed_examples
 from celpix.plugins.registry import default_registry
 from celpix.plugins.trust import PendingCodePlugin, TrustStore
 from celpix.ui.main_window import MainWindow
 
-# Application identifier — backs QSettings and the platform data location. We set
-# *only* the application name (no organization name): QStandardPaths appends both
-# organizationName and applicationName, so setting an org equal to the app would
-# nest the data dir as celPix/celPix. celPix is a single app with no separate org.
-APP_NAME = "celPix"
+# The application name is the *only* identity set on the QApplication (no
+# organization name): QStandardPaths appends both organizationName and
+# applicationName, so setting an org equal to the app would nest the data dir as
+# celPix/celPix. celPix is a single app with no separate org — which is also why
+# the preference store names its organization explicitly rather than relying on
+# this (:func:`celpix.ui.widgets.settings`).
 
 
 class _UnderlinedMnemonics(QProxyStyle):

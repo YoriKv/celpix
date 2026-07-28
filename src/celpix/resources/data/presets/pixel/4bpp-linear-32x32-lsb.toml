@@ -1,0 +1,14 @@
+# 4bpp linear 32x32 — low nibble = left pixel. The counterpart to
+# 4bpp-linear-32x32-msb, so both nibble orders are available at both wide sizes:
+# which one a dump uses is something you find by trying, and the 16x16 pair
+# proves both orders occur.
+# See docs/graphics-formats-reference/mame-formats.md §1.3.
+id = "preset.pixel.4bpp-linear-32x32-lsb"
+name = "4bpp linear, low nibble left (32x32)"
+engine_id = "codec.packed"
+
+[params]
+bpp = 4
+msb_first = false
+tile_width = 32
+tile_height = 32

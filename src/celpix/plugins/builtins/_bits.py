@@ -18,11 +18,6 @@ buffer.
 - :func:`nibble_plane_expansion` / :func:`nibble_plane_packing` — the
   nibble-planar kernel: one byte carrying *two* bitplanes of four pixels, both
   ways.
-- :func:`expand_row` / :func:`pack_row` — the planar kernel over a *single*
-  eight-pixel row, for the wide/odd tiles whose bytes are too scattered for a
-  strided slice to gather. They go through the tables above, so the ``7 - x`` rule
-  saying which bit is which pixel is written once.
-
 The mask-based colour kernel has the same shape and lives with the rest of its
 maths in :mod:`celpix.plugins.builtins._mask`. Tables are cached: a view refresh
 re-enters the codec for every window it draws, and the parameters rarely change.
@@ -30,7 +25,6 @@ re-enters the codec for every window it draws, and the parameters rarely change.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
 from functools import cache
 
 
@@ -85,27 +79,6 @@ def bit_packing(plane: int, x: int) -> bytes:
     position — so a plane byte is the OR of eight tables.
     """
     return bytes(((value >> plane) & 1) << (7 - x) for value in range(256))
-
-
-def expand_row(plane_bytes: Iterable[int]) -> bytes:
-    """The eight pixels one byte per plane decodes to (byte *k* carries bit *k*).
-
-    The row-at-a-time form of the planar kernel, for the wide/odd tiles: their
-    planes sit at format-specific offsets rather than a fixed stride, so the
-    buffer-wide walk the 8×8 engine uses has nothing regular to slice along. The
-    kernel inside one row is unchanged.
-    """
-    return or_all(
-        [bit_expansion(plane)[byte] for plane, byte in enumerate(plane_bytes)]
-    )
-
-
-def pack_row(pixels: Sequence[int], plane: int) -> int:
-    """The inverse of :func:`expand_row` for one plane: eight pixels to one byte."""
-    byte = 0
-    for x in range(8):
-        byte |= bit_packing(plane, x)[pixels[x]]
-    return byte
 
 
 def _field_shift(pos: int, pixels_per_byte: int, bpp: int, msb_first: bool) -> int:

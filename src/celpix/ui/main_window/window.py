@@ -54,7 +54,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix.core.document import Document
+from celpix.core.document import Document, GridMode
 from celpix.core.errors import PipelineError
 from celpix.core.palette import Palette
 from celpix.plugins.detect import detect_container
@@ -100,7 +100,9 @@ from celpix.ui.undo_commands import (
     RenameEntryCommand,
 )
 from celpix.ui.widgets import (
+    load_bool_setting,
     load_enum_setting,
+    save_bool_setting,
     save_enum_setting,
 )
 
@@ -109,9 +111,14 @@ from celpix.ui.widgets import (
 # without knowing about data dirs, the trust store, or the confirm dialog.
 ReloadPlugins = Callable[[], "tuple[Registry, list[PluginLoadIssue]]"]
 
-# QSettings key for the app-wide grid style (an appearance preference shared by
-# every view, unlike the per-document Grid toggle).
+# QSettings keys for the grid. All four parts of it are **local preferences**,
+# not project state: how you want to look at pixels is a property of the person
+# looking, and carrying it in the .celpix would mean opening someone else's
+# project rearranged your view.
 GRID_STYLE_KEY = "view/grid_style"
+GRID_SHOWN_KEY = "view/grid_shown"
+GRID_SCALE_KEY = "view/grid_scale"
+BLOCK_GRID_KEY = "view/block_grid"
 
 
 class MainWindow(
@@ -692,6 +699,8 @@ class MainWindow(
         open_project.triggered.connect(self._open_project)
         file_menu.addAction(open_project)
 
+        self._build_recent_menu(file_menu)
+
         save_project = QAction("&Save Project", self)
         save_project.setToolTip(
             "Save the session to a .celpix project\nReferences, not bytes"
@@ -835,24 +844,58 @@ class MainWindow(
 
     def _build_view_menu(self) -> None:
         """View ▸ display toggles that change how the pixels are drawn (as
-        opposed to Navigate, which moves the window): the grid toggle, the
+        opposed to Navigate, which moves the window): the grid level, the
         app-wide grid style, and the zoom steps."""
         menu = self.menuBar().addMenu("&View")
-        # A checkable action, not a toolbar checkbox: same isChecked/setChecked/
-        # toggled surface the rest of the code already drives, so the view-state
-        # capture/restore paths need no special-casing.
-        self._grid = QAction("&Grid", self, checkable=True)
-        self._grid.setToolTip("Overlay a tile grid (zoom >= 2)")
-        self._grid.toggled.connect(self._on_view_change)
-        # Display-only shortcut, like Palette ▸ Load from Selection: the bare "G"
-        # is routed by the app-wide event filter (_handle_nav_key), which yields
-        # to focused text inputs - a live shortcut here would steal it from them.
-        self._grid.setShortcut(QKeySequence("G"))
-        self._grid.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
-        menu.addAction(self._grid)
+        self._build_grid_action(menu)
         self._build_grid_style_menu(menu)
         menu.addSeparator()
         self._build_zoom_actions(menu)
+
+    def _build_grid_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
+        """View ▸ Grid - the on/off switch, over everything Grid Style configures.
+
+        A plain checkable action: what the grid *is* — its scale, its structure,
+        its line style — is one menu down, so this stays the single question
+        worth a key. Display-only shortcut, like Palette ▸ Load from Selection:
+        the bare "G" is routed by the app-wide event filter (_handle_nav_key),
+        which yields to focused text inputs - a live shortcut here would steal it
+        from them.
+        """
+        self._grid = QAction("&Grid", self, checkable=True)
+        self._grid.setToolTip("Overlay a grid (zoom >= 2)")
+        self._grid.setChecked(load_bool_setting(GRID_SHOWN_KEY, False))
+        self._grid.toggled.connect(self._on_grid_change)
+        self._grid.setShortcut(QKeySequence("G"))
+        self._grid.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        view_menu.addAction(self._grid)
+
+    def _grid_mode(self) -> GridMode:
+        """The checked grid scale.
+
+        Through ``parse`` because an action's data makes a round trip through
+        QVariant, which hands a str-valued enum back as the bare string.
+        """
+        checked = self._grid_mode_group.checkedAction()
+        return GridMode.parse(checked.data() if checked else None, GridMode.TILE)
+
+    def _on_grid_change(self) -> None:
+        """Persist the menu's grid as a local preference, and redraw with it.
+
+        The canvas is told directly rather than only through the view refresh,
+        because the grid can be changed with no entry open at all - the refresh
+        below does nothing then.
+        """
+        show, mode, block_grid = self._grid_settings()
+        save_bool_setting(GRID_SHOWN_KEY, show)
+        save_enum_setting(GRID_SCALE_KEY, mode)
+        save_bool_setting(BLOCK_GRID_KEY, block_grid)
+        self._canvas.set_grid(show, mode, block_grid)
+        self._on_view_change()
+
+    def _grid_settings(self) -> tuple[bool, GridMode, bool]:
+        """The grid as the menu has it, in the order every canvas takes it."""
+        return self._grid.isChecked(), self._grid_mode(), self._block_grid.isChecked()
 
     def _build_zoom_actions(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Zoom In / Zoom Out - the keyboard route to the zoom spin.
@@ -883,25 +926,31 @@ class MainWindow(
         view_menu.addAction(zoom_out)
 
     def _build_grid_style_menu(self, view_menu) -> None:  # noqa: ANN001 - QMenu
-        """View ▸ Grid Style ▸ the YY-CHR style set (Point/Dot/Dash/Line).
+        """View ▸ Grid Style - everything about the grid except whether it shows.
 
-        Unlike the Grid toggle (per-view session state), the style is one
-        app-wide appearance choice persisted in QSettings - remembered across
-        launches and shared by every view, so it isn't part of a document's
-        saved ViewOptions.
+        Three sections, because they answer three different questions and two of
+        them are radio groups that would otherwise run together: **Style** is the
+        line itself (the YY-CHR set, Point/Dot/Dash/Line), **Scale** is what the
+        fine lines count, **Blocks** is what the strong ones do. Shift+G cycles
+        the style, on the same event-filter routing as the bare G that switches
+        the whole grid on.
+
+        All of it is a local preference in QSettings, remembered across launches
+        and shared by every project (see the keys above).
         """
+        submenu = view_menu.addMenu("Grid &Style\tShift+G")
+
+        submenu.addSection("Style")
         style = load_enum_setting(GRID_STYLE_KEY, GridStyle.LINE)
-        self._canvas.set_grid_style(style)
-        submenu = view_menu.addMenu("Grid &Style")
+        self._apply_grid_style(style)
         group = QActionGroup(self)  # exclusive: one style checked at a time
         self._grid_style_group = group
-        labels = (
+        for value, text in (
             (GridStyle.POINT, "&Point"),
             (GridStyle.DOT, "&Dot"),
             (GridStyle.DASH, "D&ash"),
             (GridStyle.LINE, "&Line"),
-        )
-        for value, text in labels:
+        ):
             action = QAction(text, self, checkable=True)
             action.setData(value)
             action.setChecked(value is style)
@@ -909,10 +958,70 @@ class MainWindow(
             submenu.addAction(action)
         group.triggered.connect(self._on_grid_style_change)
 
+        submenu.addSection("Scale")
+        scale = load_enum_setting(GRID_SCALE_KEY, GridMode.TILE)
+        scales = QActionGroup(self)  # exclusive: one scale checked at a time
+        self._grid_mode_group = scales
+        self._grid_actions: dict[GridMode, QAction] = {}
+        for value, text, tip in (
+            (GridMode.TILE, "&Tile", "Grey lines on every tile, blue every\n8 tiles"),
+            (
+                GridMode.PIXEL,
+                "Pi&xel",
+                "Grey lines on every pixel, blue on every tile\n(needs a high zoom)",
+            ),
+        ):
+            action = QAction(text, self, checkable=True)
+            action.setData(value)
+            action.setChecked(value is scale)
+            action.setToolTip(tip)
+            scales.addAction(action)
+            submenu.addAction(action)
+            self._grid_actions[value] = action
+        scales.triggered.connect(self._on_grid_change)
+
+        submenu.addSection("Blocks")
+        # Not part of either group: it re-scales the strong level rather than
+        # being a scale of its own, so it is on or off beside any of them.
+        self._block_grid = QAction("&Block Grid", self, checkable=True)
+        self._block_grid.setToolTip(
+            "Put the blue lines on the arrangement's Block W×H\n"
+            "instead of the step the grid marks without it\n"
+            "(the 8-tile square, or the tile at Pixel scale)"
+        )
+        self._block_grid.setChecked(load_bool_setting(BLOCK_GRID_KEY, False))
+        self._block_grid.toggled.connect(self._on_grid_change)
+        submenu.addAction(self._block_grid)
+        # Every part is on the canvas before the first render, since the menu is
+        # built from the stored preferences rather than the canvas's defaults.
+        self._canvas.set_grid(*self._grid_settings())
+
     def _on_grid_style_change(self, action: QAction) -> None:
         style = action.data()
         save_enum_setting(GRID_STYLE_KEY, style)
+        self._apply_grid_style(style)
+
+    def _apply_grid_style(self, style: GridStyle) -> None:
+        """Show ``style`` on every canvas - the main one and the preview overlay.
+
+        The style is app-wide, so the decompression preview has to follow it too:
+        the whole point of that window is to look like the view would with the
+        bytes unpacked.
+        """
         self._canvas.set_grid_style(style)
+        self._overlay.set_grid_style(style)
+
+    def _cycle_grid_style(self) -> None:
+        """Shift+G: step the app-wide grid style on, in the menu's own order."""
+        actions = self._grid_style_group.actions()
+        checked = self._grid_style_group.checkedAction()
+        following = (
+            actions[(actions.index(checked) + 1) % len(actions)]
+            if checked
+            else actions[0]
+        )
+        following.setChecked(True)
+        self._on_grid_style_change(following)
 
     def _build_panels_menu(self) -> None:
         """Panels ▸ show/hide the dockable panels (Files, Palette, Hex)."""

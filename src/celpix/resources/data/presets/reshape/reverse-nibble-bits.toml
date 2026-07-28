@@ -1,0 +1,14 @@
+# Four-pixel groups counted the other way round: bit 0 of a nibble is the
+# leftmost pixel, where `codec.nibble-planar` puts the leftmost pixel at bit 3
+# (docs/graphics-formats-reference/mame-formats.md §3). Reversing the bit order
+# inside each nibble — the nibbles themselves stay put — converts one convention
+# into the other, after which the nibble-planar presets read the tile directly.
+#
+# In MAME terms: a gfx_layout whose xoffset counts *down* within each group of
+# four ({ 3, 2, 1, 0, 11, 10, 9, 8 }) rather than up.
+id = "reshape.reverse-nibble-bits"
+name = "Reverse bit order within each nibble"
+engine_id = "reshape.data-lut"
+
+[params]
+bitswaps = [[4, 5, 6, 7, 0, 1, 2, 3]]

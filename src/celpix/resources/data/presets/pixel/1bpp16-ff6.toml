@@ -1,8 +1,12 @@
-# 1bpp 16x11 (Final Fantasy 6) — byte-swapped pair per row.
+# 1bpp 16x11 (Final Fantasy 6) — byte-swapped pair per row: the *right* half comes
+# first, which is a negative group_stride off the left half's base.
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.1bpp16-ff6"
 name = "1bpp (16x11, FF6)"
-engine_id = "codec.wide-1bpp"
+engine_id = "codec.planar"
 
 [params]
-mode = "ff6"
+bpp = 1
+tile_width = 16
+tile_height = 11
+planes = [{ base = 1, stride = 2, group_stride = -1 }]

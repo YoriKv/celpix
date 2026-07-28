@@ -59,7 +59,7 @@ def test_round_trip_preserves_entries_sessions_and_state(tmp_path) -> None:
     ws = Workspace()
     file_entry = ws.open_file(str(rom))
     file_entry.session = _session(palette_mode="file", selected_tile=3)
-    file_view = ViewOptions(columns=8, rows=4, zoom=2, show_grid=True, tile_offset=16)
+    file_view = ViewOptions(columns=8, rows=4, zoom=2, tile_offset=16)
     file_entry.doc = _doc(FileRef(str(pal), offset=4), file_view)
 
     slice_entry = ws.add_slice(str(rom), "title GFX", 0x100, None, "compression.lz2")

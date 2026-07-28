@@ -1,7 +1,17 @@
-# PC Engine SG 4bpp 16x16 sprite tiles — 4 plane blocks 32 bytes apart.
+# PC Engine SG 4bpp 16x16 sprite tiles — 4 plane blocks 32 bytes apart, and inside
+# a block the odd byte of each row drives the *left* half (negative group_stride).
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.pce-sg-4bpp"
 name = "PC Engine SG 4bpp (16x16)"
-engine_id = "codec.pce-sg"
+engine_id = "codec.planar"
 
 [params]
+bpp = 4
+tile_width = 16
+tile_height = 16
+planes = [
+  { base = 1, stride = 2, group_stride = -1 },
+  { base = 33, stride = 2, group_stride = -1 },
+  { base = 65, stride = 2, group_stride = -1 },
+  { base = 97, stride = 2, group_stride = -1 },
+]

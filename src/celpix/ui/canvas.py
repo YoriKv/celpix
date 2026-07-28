@@ -1,5 +1,6 @@
-"""The tile canvas: draws the rendered image at integer zoom, optional tile grid
-(a two-level grid in a selectable :class:`GridStyle` — see :meth:`Canvas._draw_grid`).
+"""The tile canvas: draws the rendered image at integer zoom, optional grid
+(two levels at a selectable :class:`~celpix.core.document.GridMode` scale, in a
+selectable :class:`GridStyle` — see :meth:`Canvas._draw_grid`).
 
 A fixed-size widget the main window drops into a scroll area. It owns no model;
 it is handed a ready :class:`QImage` by the render bridge and only scales/paints
@@ -39,6 +40,7 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import QWidget
 
 from celpix.core.arrangement import BlockLayout
+from celpix.core.document import GridMode
 from celpix.ui.tools import EditMode
 from celpix.ui.widgets import paint_selection_outline
 
@@ -50,8 +52,12 @@ CANVAS_BACKGROUND = QColor(0x80, 0x80, 0x80)
 
 
 class GridStyle(Enum):
-    """How the tile grid is drawn (the YY-CHR style set). ``value`` is the stable
-    string persisted in app settings."""
+    """How the grid is drawn (the YY-CHR style set). ``value`` is the stable
+    string persisted in app settings.
+
+    Orthogonal to :class:`~celpix.core.document.GridMode`, which says what the
+    lattice *counts*: the style is one app-wide look, the mode is the project's.
+    """
 
     NONE = "none"
     POINT = "point"  # a dot at every tile corner, no lines
@@ -60,15 +66,36 @@ class GridStyle(Enum):
     LINE = "line"  # solid lines
 
 
-# Two fixed grid colors: translucent white at two opacities, so the levels stay
-# distinct while tinting the art rather than overwriting it. A stronger line every
-# GRID_COARSE_TILES tiles, a lighter one on every tile in between. Both sit well
-# above YY-CHR's original bank-grid alphas (α128/α32), whose fine line all but
-# disappeared over mid-tone art — enough opacity to read as a lattice, still short
-# of opaque so the pixels underneath stay judgeable.
-GRID_COARSE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0xD0)  # α208 — every 8 tiles
-GRID_FINE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0x70)  # α112 — per tile
-# The coarse grid falls every N tiles — YY-CHR's 8×8 block convention.
+# The lattice's two colors, following the convention modern pixel editors settled
+# on (analysed in `docs/design-reference/editing-features.md`). They go by *role*,
+# which is what makes the grid readable without being told which mode it is in:
+# a neutral light grey for the **fine** level — the unit being worked in, pixels
+# or tiles — and a saturated blue for the **structural** one above it, the tile,
+# block or 8-tile square that unit sits inside.
+#
+# Hue rather than two opacities of white is what makes a grid line separable from
+# the art at a glance — white lines vanish into white pixels, which is most of
+# what a light sprite is, while nothing in a retro palette reads as this blue at
+# this opacity.
+GRID_FINE_COLOR = QColor(0xC8, 0xC8, 0xC8)
+GRID_STRUCTURE_COLOR = QColor(0x00, 0x00, 0xFF)
+# The opacity a level is drawn at once it is fully faded in, and the stronger one
+# the coarse step gets so the two levels stay distinct where both are solid.
+GRID_ALPHA = 160
+GRID_COARSE_ALPHA = 255
+# Below this alpha a level is not worth drawing at all — it would be a smudge on
+# the art rather than a lattice. This is what retires a level, in place of a hard
+# zoom cutoff: a level *fades* out as its cells shrink and simply stops.
+GRID_MIN_ALPHA = 8
+# Auto-opacity. A level whose cells are smaller than this many device pixels is
+# drawn proportionally fainter, so a dense lattice tints the art instead of
+# burying it and thins away smoothly as the view zooms out — no popping.
+GRID_FADE_PX = 32
+# The pixel level has no cell size to measure (its cell *is* the zoom), so it
+# fades on the zoom directly: invisible at 2x, full at this zoom and beyond.
+GRID_PIXEL_FULL_ZOOM = 16
+# The tile grid's coarse step, in tiles — YY-CHR's 8×8 block convention, and what
+# Workspace.block_grid replaces with the arrangement's own block size.
 GRID_COARSE_TILES = 8
 
 # Outline around the one-pixel paint preview. Translucent white reads against the
@@ -83,6 +110,14 @@ PREVIEW_OUTLINE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0xC0)
 DROP_TARGET_COLOR = QColor(0x40, 0xC0, 0xFF)
 DROP_REFUSED_COLOR = QColor(0xFF, 0x50, 0x50)
 DROP_TARGET_WIDTH = 2
+
+
+def _tinted(color: QColor, alpha: int) -> QColor:
+    """``color`` at ``alpha``, clamped to a drawable opacity."""
+    tinted = QColor(color)
+    tinted.setAlpha(max(0, min(255, alpha)))
+    return tinted
+
 
 # Line styles per drawing style; POINT/NONE are handled separately.
 _GRID_PEN_STYLES = {
@@ -100,9 +135,12 @@ _GRID_PEN_STYLES = {
 # canvas after lands on the same colours.
 #
 # The cell spans one coarse block, which is the mapping's true period. Past this
-# many pixels a side it is not worth holding (the cap is one tile at the maximum
-# zoom), and a cell that large means so few lines that stroking them is cheap
-# anyway — which is what the line path below is for.
+# many pixels a side it is not worth holding, and a cell that large means so few
+# lines that stroking them is cheap anyway — which is what the line path below is
+# for. The two go together: a cell only exceeds the cap at a high zoom or on a
+# big block, and both of those are exactly when the lines are far enough apart to
+# be sparse in the viewport the stroking is clipped to. The dense lattice the
+# cache exists for sits well inside it at any zoom.
 #
 # Solid lines and corner dots come out pixel-identical this way. The dotted and
 # dashed styles restart their dash phase at each repeat rather than carrying it
@@ -185,6 +223,8 @@ class Canvas(QWidget):
         self._image = QImage()
         self._zoom = 4
         self._show_grid = False
+        self._grid_mode = GridMode.TILE
+        self._block_grid = False
         self._grid_style = GridStyle.LINE
         self._tile_w = 8
         self._tile_h = 8
@@ -272,8 +312,21 @@ class Canvas(QWidget):
         self._zoom = max(1, zoom)
         self._update_size()
 
-    def set_grid(self, on: bool) -> None:
-        self._show_grid = on
+    def set_grid(
+        self, show: bool, mode: GridMode = GridMode.TILE, block_grid: bool = False
+    ) -> None:
+        """Set whether a lattice is drawn, at what scale, and on what structure.
+
+        ``mode`` and ``block_grid`` are kept even while ``show`` is off, so the
+        switch restores the grid the user last had rather than a default one.
+        ``block_grid`` claims the structural (blue) level for the arrangement's
+        block size (:meth:`set_arrangement`), in either mode — displacing the
+        8×8-tile square the tile grid uses without it, and the tile the pixel
+        grid does.
+        """
+        self._show_grid = show
+        self._grid_mode = mode
+        self._block_grid = block_grid
         self.update()
 
     def set_grid_style(self, style: GridStyle) -> None:
@@ -948,19 +1001,79 @@ class Canvas(QWidget):
         # adjusted(): a 1px pen straddles the path, so inset to keep it inside.
         painter.drawRect(rect.adjusted(0, 0, -1, -1))
 
-    def _draw_grid(self, painter: QPainter, z: int, exposed: QRect) -> None:
-        """Draw the two-level tile grid in the current style (device coords).
+    def _grid_levels(self, z: int) -> list[tuple[tuple[int, int], QColor]]:
+        """The lattice at zoom ``z``: each level's step, in **image pixels**, and
+        the color to stroke it in — fine level first, empty when nothing is drawn.
 
-        POINT dots the tile corners in the coarse color; the line styles draw a
-        fine grid on every tile (grey) with a coarse grid every
-        :data:`GRID_COARSE_TILES` tiles (white) laid over it, so block boundaries
-        stand out from the tile lattice.
+        What each level counts is the mode's whole job
+        (:class:`~celpix.core.document.GridMode`), and the two questions are
+        independent. The **fine** (grey) level is the unit being worked in — a
+        pixel in pixel mode, a tile in tile mode. The **structural** (blue) level
+        is what that unit sits inside: the arrangement's **block** whenever
+        ``block_grid`` is on, and otherwise the step that reads as structure
+        without one — the tile in pixel mode, the 8-tile square in tile mode.
+        Everything below works from this list alone, so neither the drawing nor
+        the cached cell has to know which mode produced it.
+
+        Each level's opacity follows its cell size (:data:`GRID_FADE_PX`), and a
+        level faded past :data:`GRID_MIN_ALPHA` is dropped rather than drawn as a
+        smudge — which is how the pixel level bows out as the view zooms away
+        from it, leaving its coarse level holding the lattice alone. Whether the
+        grid is shown at all is the caller's question, not this one's.
+        """
+        tile = (self._tile_w, self._tile_h)
+        if self._grid_mode is GridMode.PIXEL:
+            fine = (1, 1)
+            # On the zoom rather than the cell size, since for a one-pixel cell
+            # they are the same number and the zoom curve is the gentler of the
+            # two — the pixel level is the one being zoomed *in* to see.
+            fine_alpha = GRID_ALPHA * (z - 2) // (GRID_PIXEL_FULL_ZOOM - 2)
+            unblocked = tile
+        else:
+            fine = tile
+            fine_alpha = self._faded(fine, z, GRID_ALPHA)
+            unblocked = (tile[0] * GRID_COARSE_TILES, tile[1] * GRID_COARSE_TILES)
+        # A block grid on the default 1×1 arrangement lands the structural step on
+        # every tile — right, if degenerate: there every tile *is* a block.
+        coarse = (
+            (tile[0] * self._block_cols, tile[1] * self._block_rows)
+            if self._block_grid
+            else unblocked
+        )
+        levels = [
+            (fine, _tinted(GRID_FINE_COLOR, min(GRID_ALPHA, fine_alpha))),
+            (
+                coarse,
+                _tinted(
+                    GRID_STRUCTURE_COLOR, self._faded(coarse, z, GRID_COARSE_ALPHA)
+                ),
+            ),
+        ]
+        return [
+            (step, color) for step, color in levels if color.alpha() > GRID_MIN_ALPHA
+        ]
+
+    @staticmethod
+    def _faded(step: tuple[int, int], z: int, full: int) -> int:
+        """``full`` opacity, scaled down while ``step``'s cell is small on screen."""
+        cell = (step[0] * z + step[1] * z) / 2
+        return min(full, int(full * cell / GRID_FADE_PX))
+
+    def _draw_grid(self, painter: QPainter, z: int, exposed: QRect) -> None:
+        """Draw the two-level grid in the current style (device coords).
+
+        POINT dots the finest level's corners in the fine color; the line
+        styles draw the fine grid (grey) with the coarse one (white) laid over
+        it, so the bigger boundaries stand out from the lattice between them.
 
         Both are one repeating cell, so the whole lattice is a tiled blit of that
         cell (:data:`GRID_PATTERN_MAX`) — falling back to stroking the lines when
         the cell is too big to be worth holding, which is also when there are few
         enough of them for it not to matter.
         """
+        levels = self._grid_levels(z)
+        if not levels:
+            return
         pattern = self._grid_pattern_for(z)
         if pattern is not None:
             self._tile_grid(painter, pattern, exposed)
@@ -971,22 +1084,24 @@ class Canvas(QWidget):
         top, bottom = exposed.top(), exposed.bottom()
         left, right = exposed.left(), exposed.right()
         if self._grid_style is GridStyle.POINT:
-            painter.setPen(GRID_COARSE_COLOR)
-            for gx in range(self._tile_w, img_w, self._tile_w):
+            step_x, step_y = levels[0][0]
+            # Always the fine color, at full strength: dots mark one level only,
+            # so there is no second one for the structural color to distinguish
+            # them from — and one pixel of a faded color is nothing at all.
+            painter.setPen(_tinted(GRID_FINE_COLOR, GRID_COARSE_ALPHA))
+            for gx in range(step_x, img_w, step_x):
                 if not left <= gx * z <= right:
                     continue
-                for gy in range(self._tile_h, img_h, self._tile_h):
+                for gy in range(step_y, img_h, step_y):
                     if top <= gy * z <= bottom:
                         painter.drawPoint(gx * z, gy * z)
             return
         pen_style = _GRID_PEN_STYLES[self._grid_style]
-        # Fine first, then coarse over it: shared ×N boundaries read as coarse.
-        levels = ((1, GRID_FINE_COLOR), (GRID_COARSE_TILES, GRID_COARSE_COLOR))
-        for step_tiles, color in levels:
+        # Fine first, then coarse over it: shared boundaries read as coarse.
+        for (step_x, step_y), color in levels:
             pen = QPen(color)
             pen.setStyle(pen_style)
             painter.setPen(pen)
-            step_x, step_y = self._tile_w * step_tiles, self._tile_h * step_tiles
             for gx in range(step_x, img_w, step_x):
                 if left <= gx * z <= right:
                     painter.drawLine(gx * z, top, gx * z, bottom)
@@ -1024,31 +1139,40 @@ class Canvas(QWidget):
             painter.drawTiledPixmap(strip, pattern.left, QPoint(0, strip.y() % height))
 
     def _grid_pattern_for(self, z: int) -> _GridPattern | None:
-        """The cached lattice cell for the current style/zoom/tile size.
+        """The cached lattice cell for the current style/zoom/mode/steps.
 
         ``None`` when one period is larger than :data:`GRID_PATTERN_MAX` a side,
-        which sends :meth:`_draw_grid` down the line-stroking path instead.
+        which sends :meth:`_draw_grid` down the line-stroking path instead — the
+        block grid on a tall block is the usual way there.
         """
+        levels = self._grid_levels(z)
+        if not levels:
+            return None
         style = self._grid_style
-        # POINT's period is a single tile — it marks corners, with no second level.
-        span = 1 if style is GridStyle.POINT else GRID_COARSE_TILES
-        width, height = self._tile_w * z * span, self._tile_h * z * span
+        # POINT's period is the level it dots — it marks corners, with no second
+        # level; the line styles repeat over one coarse cell.
+        period = levels[0][0] if style is GridStyle.POINT else levels[-1][0]
+        width, height = period[0] * z, period[1] * z
         if width > GRID_PATTERN_MAX or height > GRID_PATTERN_MAX:
             return None
-        key = (style, z, self._tile_w, self._tile_h)
+        # The colors are part of what shapes the cell, not just the steps: both
+        # fade with the zoom, so the same lattice at two zooms is two cells.
+        key = (style, z, tuple((step, color.rgba()) for step, color in levels))
         cached = self._grid_pattern
         if cached is not None and cached.key == key:
             return cached
         if style is GridStyle.POINT:
             # Corner dots never fall on the image's first row or column, so this
             # style needs no edge strips.
-            pattern = _GridPattern(key, self._grid_cell(z, width, height))
+            pattern = _GridPattern(key, self._grid_cell(z, width, height, levels))
         else:
             pattern = _GridPattern(
                 key,
-                self._grid_cell(z, width, height),
-                self._grid_cell(z, width, height, only="vertical").copy(0, 0, width, 1),
-                self._grid_cell(z, width, height, only="horizontal").copy(
+                self._grid_cell(z, width, height, levels),
+                self._grid_cell(z, width, height, levels, only="vertical").copy(
+                    0, 0, width, 1
+                ),
+                self._grid_cell(z, width, height, levels, only="horizontal").copy(
                     0, 0, 1, height
                 ),
             )
@@ -1056,7 +1180,12 @@ class Canvas(QWidget):
         return pattern
 
     def _grid_cell(
-        self, z: int, width: int, height: int, only: str | None = None
+        self,
+        z: int,
+        width: int,
+        height: int,
+        levels: list[tuple[tuple[int, int], QColor]],
+        only: str | None = None,
     ) -> QPixmap:
         """Draw one period of the lattice into a transparent pixmap.
 
@@ -1068,21 +1197,22 @@ class Canvas(QWidget):
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         if self._grid_style is GridStyle.POINT:
-            painter.setPen(GRID_COARSE_COLOR)
+            painter.setPen(_tinted(GRID_FINE_COLOR, GRID_COARSE_ALPHA))
             painter.drawPoint(0, 0)
             painter.end()
             return pixmap
         pen_style = _GRID_PEN_STYLES[self._grid_style]
-        step_x, step_y = self._tile_w * z, self._tile_h * z
-        # The cell's own origin is the coarse boundary; the tile boundaries inside
-        # it are the fine ones. Fine first, so a crossing reads coarse — and from 0
-        # rather than the first tile inside, because a coarse boundary is a tile
-        # boundary too and the fine line under it is what gives the coarse line its
-        # brightness.
-        for color, positions in (
-            (GRID_FINE_COLOR, (range(0, width, step_x), range(0, height, step_y))),
-            (GRID_COARSE_COLOR, (range(1), range(1))),
-        ):
+        # The cell's own origin is the coarse boundary; the steps inside it are the
+        # fine ones. Fine first, so a crossing reads coarse — and from 0 rather than
+        # the first step inside, because a coarse boundary is a fine boundary too
+        # and the fine line under it is what gives the coarse line its brightness.
+        # The last level *is* the cell, so it needs only its origin line.
+        drawn = [
+            (color, (range(0, width, step[0] * z), range(0, height, step[1] * z)))
+            for step, color in levels[:-1]
+        ]
+        drawn.append((levels[-1][1], (range(1), range(1))))
+        for color, positions in drawn:
             pen = QPen(color)
             pen.setStyle(pen_style)
             painter.setPen(pen)

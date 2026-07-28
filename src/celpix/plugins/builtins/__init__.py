@@ -13,11 +13,19 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
+    import tomli as tomllib
+
 from celpix import resources
-from celpix.plugins.discovery import INTERPRET_FOLDER_STAGE, preset_from_toml
+from celpix.plugins.discovery import (
+    INTERPRET_FOLDER_STAGE,
+    RESHAPE_ENGINES,
+    preset_from_toml,
+)
 
 from .byte_swap import ByteSwapReshape
-from .chunky_codec import ChunkyCodec
 from .color_codec import ColorCodec
 from .containers import (
     CopierHeaderContainer,
@@ -41,10 +49,9 @@ from .passthrough import PassthroughCompression, PassthroughReshape
 from .planar_codec import PlanarCodec
 from .raw_file import RawFileContainer
 from .split_planes import split_part_plugins
-from .wide_codecs import Pce2bpp16Codec, PceSgCodec, Wide1bppCodec
 
 if TYPE_CHECKING:
-    from celpix.plugins.base import Preset
+    from celpix.plugins.base import Preset, ReshapePlugin
     from celpix.plugins.registry import Registry
 
 
@@ -71,11 +78,7 @@ def register_builtins(reg: Registry) -> None:
         PlanarCodec(),
         PackedCodec(),
         NibblePlanarCodec(),
-        ChunkyCodec(),
         LinearBespokeCodec(),
-        Wide1bppCodec(),
-        Pce2bpp16Codec(),
-        PceSgCodec(),
         DirectColorCodec(),
         ColorCodec(),
         IndexedColorCodec(),
@@ -84,10 +87,8 @@ def register_builtins(reg: Registry) -> None:
 
     for preset in _shipped_presets():
         reg.register_preset(preset)
-    # No bitswap or data-LUT table ships: a table is specific to one board, so it
-    # belongs to whoever is looking at that board rather than in everyone's
-    # picker. Users drop their own TOML into the `reshape/` plugin folder,
-    # starting from the seeded examples (see discovery._load_reshape_preset).
+    for plugin in _shipped_reshape_plugins():
+        reg.register(plugin)
 
 
 @lru_cache(maxsize=8)
@@ -126,3 +127,19 @@ def _shipped_presets() -> tuple[Preset, ...]:
         for subdir, stage in INTERPRET_FOLDER_STAGE.items()
         for text in _read_preset_dir(subdir)
     )
+
+
+def _shipped_reshape_plugins() -> list[ReshapePlugin]:
+    """The shipped ``reshape/*.toml`` tables, adapted into reshape plugins.
+
+    A reshape preset becomes a *plugin* rather than a ``Preset``: its engine_id
+    discriminates which adapter builds it instead of naming an engine to resolve
+    at decode time, exactly as for user-dropped ones
+    (:func:`~celpix.plugins.discovery._load_reshape_preset`). Built per registry
+    rather than cached, since only the file read is expensive and
+    :func:`_read_preset_dir` already caches that.
+    """
+    return [
+        RESHAPE_ENGINES[spec["engine_id"]](spec)
+        for spec in (tomllib.loads(text) for text in _read_preset_dir("reshape"))
+    ]

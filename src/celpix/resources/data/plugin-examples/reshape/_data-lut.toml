@@ -1,45 +1,80 @@
 # Example preset for the `reshape.data-lut` engine — the value-side counterpart
 # of _bitswap.toml. Copy it, drop the leading underscore, edit, press F5.
 #
-# A bitswap preset permutes the byte *address* and never changes a value; this
-# engine substitutes the *value* and never moves a byte. Arcade boards scramble
-# both ways and the two are independent, so a board doing both needs one of each
-# (Reshape holds one at a time, so those boards are not fully readable yet).
+# WHAT THE ENGINE DOES
+# --------------------
+# A bitswap preset permutes the byte **address** and never changes a value; this
+# engine substitutes the **value** and never moves a byte. Neither can express
+# the other, so a board scrambling both ways needs one of each (Reshape holds one
+# at a time, so those boards are not fully readable yet).
 #
 # The kernel is a 256-entry lookup table, which covers more than the bit
 # permutations hardware usually does: give it `bitswaps` and the permutations
 # compile to LUTs at load, or give it `luts` directly for an XOR mask or an
-# outright substitution. Either way every table must be a bijection, so the
+# outright substitution. Either way every table must be a **bijection**, so the
 # inverse exists and edits still write back byte-exactly.
+#
+# SHIPPED PRESETS BUILT ON IT
+# ---------------------------
+# Board-specific descramblers like the one below do not ship — a table means
+# something only for the board it came from. What does ship are the tables that
+# are *pixel-order conventions* rather than scrambles, each turning a widespread
+# bit ordering into one an existing codec already reads:
+#
+#   reshape.deinterleave-nibbles  [[7,5,3,1,6,4,2,0]] — two 4bpp pixels woven bit
+#                                 by bit through a byte, gathered back into a
+#                                 nibble each, then read with codec.packed.
+#   reshape.reverse-nibble-bits   [[4,5,6,7,0,1,2,3]] — four-pixel groups whose
+#                                 leftmost pixel is bit 0 of a nibble instead of
+#                                 bit 3; feeds codec.nibble-planar.
+#   reshape.reverse-byte-bits     [[0,1,2,3,4,5,6,7]] — a row read lsb-first,
+#                                 which is MAME's GFXENTRY_REVERSE.
+
 id = "reshape.nmk-bg"
 name = "NMK background GFX descramble"
 engine_id = "reshape.data-lut"
 
 [params]
-# 1 = one byte at a time (default), 2 = big-endian 16-bit words. NMK's two
-# descrambler chips are one of each: backgrounds byte-wise, sprites word-wise.
+
+# How wide a value the substitution applies to.
+#   1  one byte at a time   (the default)
+#   2  big-endian 16-bit words — the only way to move bits *between* the two
+#      bytes of a word, which no byte-wise table can do. A trailing byte that
+#      cannot form a word passes through untouched.
+# NMK's two descrambler chips are one of each: backgrounds byte-wise, sprites
+# word-wise.
 unit = 1
 
-# Which table applies can depend on *where* the byte is — NMK picks one of eight
-# permutations from three address lines. These are bit positions in the region
-# offset, least significant first, and there must be 2^N tables below.
+# Which table applies can depend on **where** the byte is. These are bit
+# positions in the region offset, least significant first, and there must be
+# exactly 2^N tables below. Up to 4 bits, spanning offset bits up to 20.
+#
+# Omit this line entirely — and give a single table — for boards using one
+# permutation throughout, such as the Thunder Dragon and Sonic Wings bootlegs.
+# With `unit = 2`, bit 0 may not be used: both bytes of a word have to resolve to
+# the same table, and bit 0 is the one that differs between them.
 #
 # Taken from bjtwin_address_map_bg0 in MAME's nmk16.cpp, which spells the same
 # pick as ((A & 0x00004) >> 2) | ((A & 0x00800) >> 10) | ((A & 0x40000) >> 16).
-# Drop this line, and give a single table, for boards using one throughout —
-# the Thunder Dragon and Sonic Wings bootlegs, for instance.
 selector_bits = [2, 11, 18]
 
-# Some boards put a lookup between those address bits and the table index; add
-# `selector_remap = [...]` with one table index per selector value for those.
-# NMK's own 214 chip is one — its 215 MCU programs the mapping at boot.
+# Some boards put a lookup *between* those address bits and the table index. This
+# reorders the table set to absorb it: one table index per selector value, all
+# distinct, as many entries as there are tables. NMK's own 214 chip is such a
+# board — its 215 MCU programs the mapping at boot.
+#
+# Omit it when the selector indexes the tables directly, as here.
+# selector_remap = [0, 4, 2, 6, 1, 5, 3, 7]
 
-# Each table is MAME's bitswap<> argument order, most significant bit first, so a
-# driver's table copies verbatim: entry k names the source bit of output bit
-# N-1-k. These eight are decode_data_bg from nmk16.cpp's decode_gfx, used by
-# Cactus and the GunNail bootleg. (The same eight permutations, seen through the
-# chip's data pins, are what the NMK214 device applies to every NMK original:
-# Macross, GunNail, Saboten Bombers, Bombjack Twin, Nouryoku Koujou Iinkai.)
+# The tables, as bit permutations — the authoring form hardware almost always
+# wants. Each is MAME's `bitswap<>` argument order, most significant bit first,
+# so entry k names the source bit of output bit N-1-k and a driver's table copies
+# in verbatim. One table per selector value, in selector order.
+#
+# These eight are decode_data_bg from nmk16.cpp's decode_gfx, used by Cactus and
+# the GunNail bootleg. (The same eight permutations, seen through the chip's data
+# pins, are what the NMK214 device applies to every NMK original: Macross,
+# GunNail, Saboten Bombers, Bombjack Twin, Nouryoku Koujou Iinkai.)
 bitswaps = [
     [3, 0, 7, 2, 5, 1, 4, 6],
     [1, 2, 6, 5, 4, 0, 3, 7],
@@ -51,9 +86,12 @@ bitswaps = [
     [3, 4, 7, 6, 2, 0, 5, 1],
 ]
 
-# The alternative authoring form, for transforms no permutation expresses: one
-# entry per input byte value, 256 of them, a bijection. `bitswaps` and `luts` are
-# mutually exclusive, and `luts` is byte-only (a 16-bit table would need 65536
-# entries, and the boards wanting wider units all use permutations).
+# The alternative authoring form, for transforms no permutation expresses — an
+# XOR mask, or an outright substitution. One entry per input byte value, 256 of
+# them, and a bijection.
+#
+# `bitswaps` and `luts` are mutually exclusive: give exactly one. `luts` is
+# byte-only, a 16-bit table needing 65536 entries and every board wanting a wider
+# unit using permutations anyway.
 #
 # luts = [[ 210, 211, 208, ... ]]   # e.g. XOR 0xd2

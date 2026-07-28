@@ -1,0 +1,13 @@
+# 4bpp linear 32x32 — high nibble = left pixel. The large-sprite size on several
+# arcade boards, the same encoding as the 16x16 pair one step wider: a row is 16
+# bytes running the full 32 pixels.
+# See docs/graphics-formats-reference/mame-formats.md §1.3.
+id = "preset.pixel.4bpp-linear-32x32-msb"
+name = "4bpp linear, high nibble left (32x32)"
+engine_id = "codec.packed"
+
+[params]
+bpp = 4
+msb_first = true
+tile_width = 32
+tile_height = 32

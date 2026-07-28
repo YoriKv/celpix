@@ -100,7 +100,9 @@ def _menu_entries(menu: QMenu) -> list[tuple[str, str]]:
     """Every ``(label, keys)`` pair in ``menu``, submenus flattened in place.
 
     Actions with no key are dropped — they are reachable by mouse and the menu
-    itself is their documentation.
+    itself is their documentation. A submenu's *own* key is kept where it has
+    one: a key that cycles a group of radios (View ▸ Grid) belongs to the group
+    rather than to any one of its entries, so the parent is where it is written.
     """
     entries: list[tuple[str, str]] = []
     for action in menu.actions():
@@ -108,6 +110,9 @@ def _menu_entries(menu: QMenu) -> list[tuple[str, str]]:
             continue
         submenu = action.menu()
         if submenu is not None:
+            keys = _key_text(action)
+            if keys:
+                entries.append((_label_text(action), keys))
             entries.extend(_menu_entries(submenu))
             continue
         keys = _key_text(action)

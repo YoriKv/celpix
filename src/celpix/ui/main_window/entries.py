@@ -67,7 +67,14 @@ from celpix.ui.undo_commands import (
     RemovePaletteWithConsumersCommand,
     SliceEditCommand,
 )
-from celpix.ui.widgets import ask_save_path, show_in_file_manager
+from celpix.ui.widgets import (
+    ask_save_path,
+    clear_recent_projects,
+    forget_recent_project,
+    load_recent_projects,
+    remember_recent_project,
+    show_in_file_manager,
+)
 
 
 class EntriesMixin:
@@ -88,6 +95,60 @@ class EntriesMixin:
         )
         if path:
             self._load_project(path)
+
+    def _build_recent_menu(self, file_menu) -> None:  # noqa: ANN001 - QMenu
+        """File ▸ Open Recent: the projects opened before this one.
+
+        Filled from app settings each time the File menu opens, not once at
+        build time - the list changes as projects are opened and saved, and a
+        second window shares the same one.
+        """
+        self._recent_menu = file_menu.addMenu("Open Re&cent")
+        self._recent_menu.setToolTip("Reopen a recently opened project")
+        file_menu.aboutToShow.connect(self._sync_recent_menu)
+
+    def _sync_recent_menu(self) -> None:
+        """Rebuild the recent-projects submenu from settings."""
+        menu = self._recent_menu
+        menu.clear()
+        recent = load_recent_projects()
+        # Nothing opened yet: the submenu greys out rather than opening onto an
+        # empty box (with no rows there is nothing to clear either).
+        menu.menuAction().setEnabled(bool(recent))
+        for number, path in enumerate(recent, start=1):
+            # Names are shown, not paths - a menu row is not a place to read a
+            # path out of, and the full one is on the action for the tooltip.
+            # "&" in a file name would otherwise be eaten as a mnemonic marker.
+            label = Path(path).name.replace("&", "&&")
+            # 1-9 get a digit mnemonic; a tenth row keeps the number as plain
+            # text, since Qt has no second digit to give it.
+            action = menu.addAction(f"&{number} {label}" if number < 10 else label)
+            action.setToolTip(path)
+            action.triggered.connect(
+                lambda _checked=False, p=path: self._open_recent(p)
+            )
+        if recent:
+            menu.addSeparator()
+            clear = menu.addAction("Clear &List")
+            clear.setToolTip("Forget every recent project")
+            clear.triggered.connect(lambda *_: clear_recent_projects())
+
+    def _open_recent(self, path: str) -> None:
+        """Open a project off the recent list, dropping a row that has gone.
+
+        The list outlives the files it names - a project deleted, renamed, or on
+        a drive that isn't mounted is a dead row the user has no other way to
+        get rid of, so a miss prunes it instead of failing again next time.
+        """
+        if not Path(path).exists():
+            forget_recent_project(path)
+            self._alert(
+                f"{path} is no longer there. It has been removed from the "
+                "recent projects list.",
+                title="celPix - project",
+            )
+            return
+        self._load_project(path)
 
     def _load_project(self, path: str) -> None:
         """Replace the workspace with the session saved in ``path``.
@@ -131,6 +192,7 @@ class EntriesMixin:
         # history goes with them.
         self._undo_stack.clear()
         self._project_path = path
+        remember_recent_project(path)
         # Baseline *after* the replace has settled: showing the restored entry
         # runs its session through the live widgets, which legitimately clamps
         # (an offset past a shrunken file, a subpalette row past the palette).
@@ -293,6 +355,9 @@ class EntriesMixin:
             self._alert(f"Cannot write {path}: {exc}", title="celPix - project")
             return
         self._project_path = path
+        # Saved as well as opened: a Save As is how a session first becomes a
+        # project, and it is exactly the one you would reach back for.
+        remember_recent_project(path)
         self._saved_project = self._project_snapshot()  # the new clean baseline
         # A first Save Project As gives the session a project file - title to it.
         self._refresh_window_title()

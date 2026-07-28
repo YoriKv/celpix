@@ -530,6 +530,12 @@ def test_dropped_celpix_opens_as_a_project_and_claims_the_drop(qtbot, tmp_path):
     assert window._project_path is not None
     assert Path(window._project_path).samefile(project)
     assert [e.name for e in window._workspace.entries] == [px.name]
+    # A drop is an open like any other, so it heads the Open Recent list. Qt
+    # hands back drop URLs with POSIX separators, so what is stored is the
+    # normalized path, not the spelling the drop arrived in.
+    from celpix.ui.widgets import _recent_path, load_recent_projects
+
+    assert load_recent_projects()[0] == _recent_path(str(project))
 
 
 def test_dropped_pal_becomes_a_palette_entry_applied_on_use(
@@ -1733,10 +1739,12 @@ def test_p_key_loads_palette_from_selection(qtbot, tmp_path, monkeypatch) -> Non
     assert window._doc.palette.colors[0] == 0xFFFFFFFF
 
 
-def test_g_key_toggles_grid(qtbot, tmp_path, monkeypatch) -> None:
+def test_g_key_cycles_grid(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtCore import QEvent, Qt
     from PySide6.QtGui import QKeyEvent
     from PySide6.QtWidgets import QApplication
+
+    from celpix.core.document import GridMode
 
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=8)
     press_g = QKeyEvent(
@@ -1750,30 +1758,63 @@ def test_g_key_toggles_grid(qtbot, tmp_path, monkeypatch) -> None:
     assert window._handle_nav_key(press_g) is False
     assert not window._grid.isChecked()
 
-    # Otherwise G flips View > Grid, flowing through to the stored view state.
+    # Otherwise G flips View > Grid, flowing through to the project-wide setting.
     monkeypatch.setattr(
         QApplication, "focusWidget", staticmethod(lambda: window._canvas)
     )
     assert window._handle_nav_key(press_g) is True
     assert window._grid.isChecked()
-    assert window._doc.view.show_grid
+    assert window._canvas._show_grid
+    # The scale it comes on at is the menu's, and survives being switched off.
+    window._grid_actions[GridMode.PIXEL].setChecked(True)
+    window._on_grid_change()
+    window._handle_nav_key(press_g)
+    assert not window._canvas._show_grid
+    window._handle_nav_key(press_g)
+    assert window._canvas._show_grid
+    assert window._canvas._grid_mode is GridMode.PIXEL
+
+    # Shift+G cycles the app-wide grid style, on the same routing.
+    from celpix.ui.canvas import GridStyle
+
+    press_shift_g = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_G, Qt.KeyboardModifier.ShiftModifier
+    )
+    styles = [action.data() for action in window._grid_style_group.actions()]
+    start = styles.index(window._grid_style_group.checkedAction().data())
+    for step in range(1, len(styles) + 1):  # all the way round, back to the start
+        assert window._handle_nav_key(press_shift_g) is True
+        expected = styles[(start + step) % len(styles)]
+        assert window._grid_style_group.checkedAction().data() is expected
+        assert window._canvas._grid_style is expected
+    assert isinstance(window._canvas._grid_style, GridStyle)
+
+    # The grid is a preference, not entry state: switching files leaves it be.
+    window._workspace.add_slice(window._workspace.entries[0].path, "gfx", 0, 32)
+    window._activate_entry(window._workspace.entries[1])
+    assert window._grid.isChecked()
+    assert window._grid_mode() is GridMode.PIXEL
 
 
 def _isolate_settings(tmp_path) -> None:
     """Point QSettings at a throwaway INI so grid-style writes don't touch the
     user's real config, and reads are deterministic across a fresh window."""
     from PySide6.QtCore import QSettings
-    from PySide6.QtWidgets import QApplication
 
-    QApplication.instance().setApplicationName("celPixTest")
+    from celpix.ui.widgets import settings
+
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(
         QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path)
     )
-    QSettings().clear()
+    settings().clear()
 
 
-def test_grid_style_menu_applies_and_persists(qtbot, tmp_path) -> None:
+def test_grid_menu_applies_and_persists_as_a_local_preference(qtbot, tmp_path) -> None:
+    # Every part of the grid is a local preference, not project state: a fresh
+    # window comes up with the grid the last one was left on, whatever project it
+    # opens.
+    from celpix.core.document import GridMode
     from celpix.ui.canvas import GridStyle
 
     _isolate_settings(tmp_path)
@@ -1785,14 +1826,23 @@ def test_grid_style_menu_applies_and_persists(qtbot, tmp_path) -> None:
     )
     dot.trigger()
     assert window._canvas._grid_style is GridStyle.DOT
+    window._grid.setChecked(True)
+    window._grid_actions[GridMode.PIXEL].trigger()
+    window._block_grid.setChecked(True)
+    assert window._canvas._grid_mode is GridMode.PIXEL
 
-    # A fresh window reads the persisted style back (app-global, not per-project)
-    # and reflects it in the radio group.
     reopened = MainWindow()
     qtbot.addWidget(reopened)
     assert reopened._canvas._grid_style is GridStyle.DOT
     checked = [a.data() for a in reopened._grid_style_group.actions() if a.isChecked()]
     assert checked == [GridStyle.DOT]
+    # The scale and the two toggles come back on both the menu and the canvas.
+    assert (reopened._grid.isChecked(), reopened._block_grid.isChecked()) == (
+        True,
+        True,
+    )
+    assert reopened._grid_mode() is GridMode.PIXEL
+    assert reopened._canvas._grid_levels(4)[0][0] == (1, 1)  # drawing at that scale
 
 
 def test_palette_panel_color_selection_click_and_arrows(qtbot) -> None:
@@ -3611,6 +3661,63 @@ def test_past_end_region_maps_linear_padding_to_last_row_block(qtbot) -> None:
     assert c._background_region() is None
 
 
+def test_grid_levels_follow_the_mode_the_block_and_the_zoom(qtbot) -> None:
+    # The steps the whole grid is drawn from: everything below _grid_levels works
+    # from this list alone, so this is where the mode's meaning lives.
+    from celpix.core.document import GridMode
+    from celpix.ui import canvas as canvas_mod
+
+    c = _canvas_with_3x2_red(qtbot)  # 8x8 tiles
+
+    def steps(z: int) -> list[tuple[int, int]]:
+        return [step for step, _color in c._grid_levels(z)]
+
+    def alphas(z: int) -> list[int]:
+        return [color.alpha() for _step, color in c._grid_levels(z)]
+
+    # The fine (grey) level is the unit being worked in; the structural (blue)
+    # one is what it sits inside — the 8-tile square at tile scale, the tile at
+    # pixel scale.
+    c.set_grid(True, GridMode.TILE)
+    assert steps(4) == [(8, 8), (64, 64)]
+    c.set_grid(True, GridMode.PIXEL)
+    assert steps(4) == [(1, 1), (8, 8)]
+
+    # Block Grid moves that structural level onto the arrangement's own block,
+    # at either scale.
+    c.set_arrangement(2, 4, "row")
+    c.set_grid(True, GridMode.TILE, True)
+    assert steps(4) == [(8, 8), (16, 32)]
+    c.set_grid(True, GridMode.PIXEL, True)
+    assert steps(4) == [(1, 1), (16, 32)]
+
+    # Off it again, and each scale is back to its own step — the block being set
+    # is not what draws it.
+    c.set_grid(True, GridMode.PIXEL)
+    assert steps(4) == [(1, 1), (8, 8)]
+    c.set_grid(True, GridMode.TILE)
+    assert steps(4) == [(8, 8), (64, 64)]
+    c.set_arrangement(1, 1, "row")
+    c.set_grid(True, GridMode.PIXEL)
+
+    # The pixel level fades in with the zoom instead of popping: gone at 2x (the
+    # coarse level carries the lattice alone), partway at 4x, full from
+    # GRID_PIXEL_FULL_ZOOM on.
+    assert steps(2) == [(8, 8)]
+    assert 0 < alphas(4)[0] < canvas_mod.GRID_ALPHA
+    assert alphas(canvas_mod.GRID_PIXEL_FULL_ZOOM)[0] == canvas_mod.GRID_ALPHA
+
+    # And the levels are told apart by hue, not opacity alone — by role, so the
+    # tile level is the grey one in tile mode and the blue one in pixel mode.
+    fine, coarse = (color for _step, color in c._grid_levels(16))
+    assert (fine.rgb(), coarse.rgb()) == (
+        canvas_mod.GRID_FINE_COLOR.rgb(),
+        canvas_mod.GRID_STRUCTURE_COLOR.rgb(),
+    )
+    c.set_grid(True, GridMode.TILE)
+    assert c._grid_levels(16)[0][1].rgb() == canvas_mod.GRID_FINE_COLOR.rgb()
+
+
 def test_arrangement_controls_reach_the_view_and_canvas(qtbot, tmp_path) -> None:
     # The toolbar's block/order/2D controls must flow through _refresh_view into
     # the stored ViewOptions and the canvas's placement — otherwise the feature
@@ -4632,6 +4739,50 @@ def test_window_title_names_project_and_marks_it_unsaved(qtbot, tmp_path):
     # in one must never leave it looking unsaved.
     window._select_tiles(1, 3)
     assert not window._project_is_dirty()
+
+
+def test_open_recent_lists_projects_newest_first_and_prunes_a_missing_one(
+    qtbot, tmp_path, captured_alerts
+) -> None:
+    """The recent list is settings-backed, so it has to survive the window: a
+    fresh one shows what an earlier session opened, newest first and with no
+    duplicate for the project it reopened. A row whose file has gone is dropped
+    on use - nothing else ever notices."""
+    from celpix.ui.widgets import clear_recent_projects, load_recent_projects
+
+    clear_recent_projects()
+    px = _make_snes_file(tmp_path)
+    first = MainWindow()
+    qtbot.addWidget(first)
+    first._load_pixel(str(px))
+    one = tmp_path / "one.celpix"
+    two = tmp_path / "two.celpix"
+    first._save_project_to(str(one))
+    first._save_project_to(str(two))
+    first._load_project(str(one))  # reopening moves it up rather than repeating
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._sync_recent_menu()
+    assert [a.toolTip() for a in window._recent_menu.actions()[:2]] == [
+        str(one),
+        str(two),
+    ]
+    assert [a.text() for a in window._recent_menu.actions()[:2]] == [
+        "&1 one.celpix",
+        "&2 two.celpix",
+    ]
+
+    two.unlink()
+    window._recent_menu.actions()[1].trigger()
+    assert captured_alerts  # told, not silently ignored
+    assert load_recent_projects() == [str(one)]
+
+    # ...and with the list empty the submenu has nothing to offer, so it greys
+    # out rather than opening onto an empty box.
+    clear_recent_projects()
+    window._sync_recent_menu()
+    assert not window._recent_menu.menuAction().isEnabled()
 
 
 def test_loading_over_an_unsaved_project_offers_to_save_it(

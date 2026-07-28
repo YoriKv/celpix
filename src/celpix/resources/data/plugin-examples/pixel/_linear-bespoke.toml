@@ -1,14 +1,31 @@
 # Example preset for the `codec.linear-bespoke` engine. Copy, drop the
 # underscore, edit, press F5. See _planar.toml for what a preset is.
+#
+# WHAT THE ENGINE DOES
+# --------------------
+# codec.linear-bespoke covers the two linear depths that do **not** divide 8, so
+# their index fields straddle byte boundaries and no field-per-byte kernel
+# expresses them. At 3bpp a row is three bytes with pixels spanning them; at 6bpp
+# six bytes, read in reversed byte order. Both packings are hard-coded from the
+# formats themselves, which is why this engine has one parameter and no layout
+# description — there is nothing about them left to vary. Fixed 8x8.
+#
+# For 1, 2, 4 or 8bpp — the depths that *do* divide a byte — use _packed.toml,
+# which is data-driven instead.
+#
+# SHIPPED PRESETS BUILT ON IT
+# ---------------------------
+#   3bpp-linear   bpp 3 — 24 bytes a tile.
+#   6bpp-linear   bpp 6 — 48 bytes a tile, the row's bytes reversed.
+
 id = "preset.pixel.example-linear-bespoke"
 name = "Example bespoke linear 3bpp"
-
-# codec.linear-bespoke covers the two linear depths that do not divide 8, so
-# their fields straddle byte boundaries: at 3bpp a row is three bytes with pixels
-# spanning them, at 6bpp six bytes read in reversed byte order. Both packings are
-# hard-coded, so `bpp` is the only knob and takes only 3 or 6 — for 1/2/4/8bpp
-# use _packed.toml.
 engine_id = "codec.linear-bespoke"
 
 [params]
-bpp = 3        # 3 or 6
+
+# Which of the two hard-coded packings to use — the engine's only parameter.
+#   3   a row is three bytes, pixels spanning byte boundaries
+#   6   a row is six bytes, read in reversed byte order
+# Any other value is rejected rather than approximated.
+bpp = 3
