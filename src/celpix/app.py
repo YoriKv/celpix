@@ -7,13 +7,15 @@ from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
 from PySide6.QtGui import QIcon, QPixmap
-from PySide6.QtWidgets import QApplication, QMessageBox, QProxyStyle, QStyle
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from celpix import APP_NAME, __version__, resources
 from celpix.plugins.discovery import FOLDER_STAGE, load_user_plugins, seed_examples
 from celpix.plugins.registry import default_registry
 from celpix.plugins.trust import PendingCodePlugin, TrustStore
 from celpix.ui.main_window import MainWindow
+from celpix.ui.theme import THEME_KEY, Theme, apply_theme
+from celpix.ui.widgets import load_enum_setting
 
 # The application name is the *only* identity set on the QApplication (no
 # organization name): QStandardPaths appends both organizationName and
@@ -21,29 +23,6 @@ from celpix.ui.main_window import MainWindow
 # celPix/celPix. celPix is a single app with no separate org — which is also why
 # the preference store names its organization explicitly rather than relying on
 # this (:func:`celpix.ui.widgets.settings`).
-
-
-class _UnderlinedMnemonics(QProxyStyle):
-    """Show every menu's mnemonic underline without holding Alt down.
-
-    Windows (and any desktop whose theme asks for it) hides the underlines until
-    Alt is pressed - the platform's "underline access keys" setting - so a menu
-    looks as though it has no keyboard route at all until you already know to
-    reach for one. celPix's menus are built around those letters, so the hint is
-    forced on and they are drawn from the moment a menu opens. Everything else is
-    delegated: this changes no other part of the platform's look.
-    """
-
-    def styleHint(  # noqa: N802 - Qt override
-        self,
-        hint: QStyle.StyleHint,
-        option=None,  # noqa: ANN001 - QStyleOption
-        widget=None,  # noqa: ANN001 - QWidget
-        returnData=None,  # noqa: ANN001, N803 - QStyleHintReturn
-    ) -> int:
-        if hint == QStyle.StyleHint.SH_UnderlineShortcut:
-            return 1
-        return super().styleHint(hint, option, widget, returnData)
 
 
 def _app_data_dir() -> Path:
@@ -77,9 +56,10 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
-    # Wraps the platform's own style (QProxyStyle with no base takes whatever
-    # QApplication just picked), so it only overrides the one hint.
-    app.setStyle(_UnderlinedMnemonics())
+    # Style and palette both come from the theme, before the window is built: a
+    # widget that bakes a palette color into a pixmap should rasterize it once,
+    # in the color it will be shown in (View ▸ Theme switches it live afterwards).
+    apply_theme(load_enum_setting(THEME_KEY, Theme.LIGHT))
     # The window/taskbar/dock icon while running. Loaded from bytes (not a file
     # path) so it resolves the same in a source checkout and a frozen build,
     # where resources live inside the bundle. The packaged executables also

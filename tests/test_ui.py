@@ -1845,6 +1845,45 @@ def test_grid_menu_applies_and_persists_as_a_local_preference(qtbot, tmp_path) -
     assert reopened._canvas._grid_levels(4)[0][0] == (1, 1)  # drawing at that scale
 
 
+def test_theme_menu_repaints_the_app_and_persists(qtbot, tmp_path) -> None:
+    # The theme is one palette on the QApplication, so what proves it took is the
+    # *application's* palette going dark - not the window's own. Like the grid, it
+    # is a local preference: a fresh window comes up on the last theme chosen.
+    from PySide6.QtGui import QPalette
+    from PySide6.QtWidgets import QApplication
+
+    from celpix.ui.theme import Theme, apply_theme
+
+    def surface_lightness() -> int:
+        return app.palette().color(QPalette.ColorRole.Window).lightness()
+
+    _isolate_settings(tmp_path)
+    app = QApplication.instance()
+    try:
+        window = MainWindow()
+        qtbot.addWidget(window)
+        light = surface_lightness()
+        assert light > 128
+
+        dark = next(a for a in window._theme_group.actions() if a.data() is Theme.DARK)
+        dark.trigger()
+        assert surface_lightness() < 128
+        # The rail's accent is baked into a stylesheet string, so it is the one
+        # thing a repolish can't refresh: it has to name the new Highlight.
+        accent = app.palette().color(QPalette.ColorRole.Highlight).name()
+        assert accent in window._tile_offset_bar.styleSheet()
+
+        reopened = MainWindow()
+        qtbot.addWidget(reopened)
+        checked = [a.data() for a in reopened._theme_group.actions() if a.isChecked()]
+        assert checked == [Theme.DARK]
+    finally:
+        # The QApplication outlives the test; leave it as the rest of the suite
+        # expects to find it.
+        apply_theme(Theme.LIGHT)
+    assert surface_lightness() == light
+
+
 def test_palette_panel_color_selection_click_and_arrows(qtbot) -> None:
     from PySide6.QtCore import QPoint, Qt
 

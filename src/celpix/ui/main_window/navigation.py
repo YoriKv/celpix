@@ -302,8 +302,14 @@ class NavigationMixin:
         Derived from the app's Highlight color so it stays theme-appropriate; a
         rounded accent handle on a tinted rail with the step arrows hidden makes it
         read clearly as a file navigator, distinct from the canvas's own scrollbars.
+
+        The accent is read off the **application** rather than off this window: a
+        theme switch installs the new palette on the application immediately but
+        propagates it to the widgets through the event loop, so the window's own
+        palette is still the outgoing one at the moment the switch regenerates
+        this string.
         """
-        accent = self.palette().color(QPalette.ColorRole.Highlight)
+        accent = QApplication.palette().color(QPalette.ColorRole.Highlight)
         r, g, b = accent.red(), accent.green(), accent.blue()
         handle = accent.name()
         handle_hover = accent.lighter(120).name()

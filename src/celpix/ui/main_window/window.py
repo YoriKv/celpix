@@ -93,6 +93,7 @@ from celpix.ui.main_window.selection import (
 from celpix.ui.main_window.session import SessionMixin
 from celpix.ui.main_window.transfer import TransferMixin
 from celpix.ui.main_window.transform import TransformMixin
+from celpix.ui.theme import THEME_KEY, Theme, apply_theme
 from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
     AddEntryCommand,
@@ -845,12 +846,54 @@ class MainWindow(
     def _build_view_menu(self) -> None:
         """View ▸ display toggles that change how the pixels are drawn (as
         opposed to Navigate, which moves the window): the grid level, the
-        app-wide grid style, and the zoom steps."""
+        app-wide grid style, the zoom steps, and the app's own light/dark look."""
         menu = self.menuBar().addMenu("&View")
         self._build_grid_action(menu)
         self._build_grid_style_menu(menu)
         menu.addSeparator()
         self._build_zoom_actions(menu)
+        menu.addSeparator()
+        self._build_theme_menu(menu)
+
+    def _build_theme_menu(self, view_menu) -> None:  # noqa: ANN001 - QMenu
+        """View ▸ Theme - the app's light/dark appearance.
+
+        Under View because it *is* a view setting, but below the separator with
+        the rest: everything above changes how the pixels are drawn, this changes
+        the frame around them. The canvas itself looks the same in both themes by
+        design - its backing gray, the grid and the selection outline are fixed
+        colors so the art reads identically whichever theme is on.
+
+        A local preference like the grid's, applied to the running application
+        the moment it is chosen (:func:`~celpix.ui.theme.apply_theme`).
+        """
+        submenu = view_menu.addMenu("&Theme")
+        current = load_enum_setting(THEME_KEY, Theme.LIGHT)
+        group = QActionGroup(self)  # exclusive: one theme checked at a time
+        self._theme_group = group
+        for value, text in ((Theme.LIGHT, "&Light"), (Theme.DARK, "&Dark")):
+            action = QAction(text, self, checkable=True)
+            action.setData(value)
+            action.setChecked(value is current)
+            group.addAction(action)
+            submenu.addAction(action)
+        group.triggered.connect(self._on_theme_change)
+
+    def _on_theme_change(self, action: QAction) -> None:
+        """Persist the chosen theme and put it on immediately.
+
+        Reconstructed through ``Theme(...)`` because an action's data makes a
+        round trip through QVariant, which hands a str-valued enum back as the
+        bare string.
+        """
+        theme = Theme(action.data())
+        save_enum_setting(THEME_KEY, theme)
+        apply_theme(theme)
+        # Qt re-polishes every widget against the new palette, which covers the
+        # whole window bar one thing: the file-position rail is a *stylesheet*,
+        # and its accent was written into that string as a literal when the bar
+        # was built. Only regenerating it re-reads the palette.
+        self._tile_offset_bar.setStyleSheet(self._tile_offset_bar_style())
 
     def _build_grid_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Grid - the on/off switch, over everything Grid Style configures.

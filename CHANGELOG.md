@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.3 - unreleased
+
+- Added dark mode
+
 ## v0.3.2 - 2026-07-27
 
 - **Grid**: More grid settings, improved grid visuals, and grid saved to local
