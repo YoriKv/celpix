@@ -62,6 +62,11 @@ from celpix.ui.widgets import (
 # selection highlight. Which of the two it is, is what the status glyph says.
 _MISSING_HIGHLIGHT = QBrush(QColor(255, 193, 7, 70))
 
+# Alpha for the tint behind the entry currently on the canvas (the theme's
+# Highlight, see _open_entry_wash). Deliberately fainter than the amber above:
+# that one is asking to be dealt with, this one only says "here".
+_OPEN_ENTRY_ALPHA = 45
+
 # The status glyphs' own color: opaque amber, matching the row wash it sits on.
 # Fixed rather than a palette role, because a warning that took the theme's text
 # color would stop reading as a warning.
@@ -355,9 +360,15 @@ class FileListPanel(QWidget):
         return None
 
     def set_current(self, entry: Entry | None) -> None:
-        self._current = entry
+        previous, self._current = self._current, entry
         with signals_blocked(self._tree):
             self._tree.setCurrentItem(self._items.get(entry) if entry else None)
+        # The wash marks what the canvas is showing, so it moves with it: repaint
+        # the row losing it and the row taking it, and nothing else.
+        for changed in (previous, entry):
+            item = self._items.get(changed) if changed is not None else None
+            if item is not None:
+                self._refresh_item(changed, item)
 
     def set_has_selection(self, active: bool) -> None:
         """Mirror whether the canvas has a tile selection (gates the
@@ -503,7 +514,18 @@ class FileListPanel(QWidget):
             tip += "".join(self._notice_lines(n) for n in notes)
             if warnings:
                 status = self._notice_glyph()
-        wash = _MISSING_HIGHLIGHT if status is not None else QBrush()
+        # Which row the canvas is showing, kept visible after the *selection*
+        # has moved off it - clicking a palette to apply it, or a bookmark to
+        # read its offset, leaves the list highlighting something that is not
+        # what is on screen. A problem wash outranks it: it is rarer, it is
+        # actionable, and the shown entry is still the one the tooltip and title
+        # name.
+        if status is not None:
+            wash = _MISSING_HIGHLIGHT
+        elif entry is self._current:
+            wash = self._open_entry_wash()
+        else:
+            wash = QBrush()
         item.setBackground(0, wash)
         item.setBackground(_STATUS_COL, wash)
         item.setIcon(_STATUS_COL, status if status is not None else QIcon())
@@ -511,6 +533,24 @@ class FileListPanel(QWidget):
         # The glyph is the thing a user points at to ask what is wrong with this
         # one, so it has to answer rather than showing nothing.
         item.setToolTip(_STATUS_COL, tip)
+
+    def _open_entry_wash(self) -> QBrush:
+        """The tint behind the entry the canvas is showing.
+
+        The theme's own Highlight, at an alpha low enough to read as a tint
+        rather than a second selection - the real selection sits on top of it
+        whenever the two are the same row, and must stay the stronger of the
+        two. Taken from the palette rather than fixed like the amber warning,
+        since this one is a *neutral* marker and should follow the theme's accent
+        (:meth:`changeEvent` repaints every row when that changes).
+        """
+        color = QColor(
+            self.palette().color(
+                QPalette.ColorGroup.Active, QPalette.ColorRole.Highlight
+            )
+        )
+        color.setAlpha(_OPEN_ENTRY_ALPHA)
+        return QBrush(color)
 
     @staticmethod
     def _missing_lines(entry: Entry) -> str:

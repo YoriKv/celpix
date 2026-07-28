@@ -2929,11 +2929,64 @@ def test_container_notices_land_in_the_row_tooltip(qtbot, tmp_path) -> None:
     # An entry with nothing to report carries no wash and no extra tooltip lines.
     window._load_pixel(str(clean))
     plain = window._files_panel._tree.topLevelItem(1)
-    assert plain.background(0).style() == Qt.BrushStyle.NoBrush
+    # Not the amber: what this row carries is the open-entry tint, since loading
+    # it made it the one on screen.
+    assert plain.background(0).color() != row.background(0).color()
     assert plain.toolTip(0) == str(clean)
     # Switching back restores it, since it is derived rather than one-shot.
     window._activate_entry(window._workspace.entries[0])
     assert "CHR-RAM" in window._files_panel._tree.topLevelItem(0).toolTip(0)
+
+
+def test_switching_entries_does_not_dirty_the_project(qtbot, tmp_path) -> None:
+    """Which entry is shown is saved but is not a *change*: browsing to another
+    file - to read it, or to take a palette off it - would otherwise put a save
+    prompt in front of someone who only looked around. Anything that changes how
+    an entry is set up still counts."""
+    a = _make_snes_file(tmp_path)
+    b = tmp_path / "b.4bpp.sfc"
+    b.write_bytes(bytes((i * 7) & 0xFF for i in range(32 * 8)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(a))
+    window._load_pixel(str(b))
+    window._save_project_to(str(tmp_path / "p.celpix"))
+    assert not window._project_is_dirty()
+
+    window._activate_entry(window._workspace.entries[0])
+    assert not window._project_is_dirty()
+    # ...and the switch is still written, so reopening lands where it was left.
+    assert window._project_snapshot()["current"] == 0
+
+    window._columns.setValue(window._columns.value() + 1)
+    assert window._project_is_dirty()
+
+
+def test_the_shown_entry_stays_marked_after_the_selection_moves_off_it(
+    qtbot, tmp_path
+) -> None:
+    """The list's own highlight follows the *selection*, which a click on a
+    palette or a bookmark takes away - so which entry the canvas is showing is
+    marked separately, and has to move with it rather than being painted once."""
+    from PySide6.QtCore import Qt
+
+    first = _make_snes_file(tmp_path)
+    second = tmp_path / "second.bin"
+    second.write_bytes(bytes((i * 7) & 0xFF for i in range(32 * 8)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(first))
+    window._load_pixel(str(second))
+
+    tree = window._files_panel._tree
+    rows = [tree.topLevelItem(i) for i in range(2)]
+    assert rows[1].background(0).style() != Qt.BrushStyle.NoBrush
+    assert rows[0].background(0).style() == Qt.BrushStyle.NoBrush
+
+    # Back to the first: the mark moves rather than accumulating.
+    window._activate_entry(window._workspace.entries[0])
+    assert rows[0].background(0).style() != Qt.BrushStyle.NoBrush
+    assert rows[1].background(0).style() == Qt.BrushStyle.NoBrush
 
 
 def test_small_rom_sized_file_is_not_headered(qtbot, tmp_path) -> None:

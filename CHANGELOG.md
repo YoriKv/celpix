@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.4 - unreleased
+
+- Highlight for currently viewed file
+- Some project save cleanup
+
 ## v0.3.3 - 2026-07-27
 
 - **Dark Mode**: added

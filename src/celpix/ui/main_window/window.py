@@ -604,10 +604,31 @@ class MainWindow(
         return projectfile.project_dict(self._workspace, self._project_path)
 
     def _project_is_dirty(self) -> bool:
-        """True when the open project differs from what is on disk."""
+        """True when the open project differs from what is on disk.
+
+        **Which entry is shown is not a change.** It is still written - a project
+        reopens on the view you left - but browsing to another file, to read it
+        or to take a palette off it, is a pointer at the work rather than a
+        change to how the work is set up. Marking the project unsaved for it puts
+        a save prompt in front of anyone who merely looked around, which is the
+        same reasoning that keeps the tile selection out of the file altogether
+        (:func:`~celpix.project.projectfile._entry_dict`). Everything else the
+        document holds counts, including the display-only state (a rearrangement,
+        pinned regions) that deliberately doesn't dirty the *entry*.
+        """
         if self._saved_project is None:
             return False
-        return self._project_snapshot() != self._saved_project
+        snapshot = self._project_snapshot()
+        if snapshot is None:
+            return True  # a project baseline with no path to compare it against
+        return self._comparable_project(snapshot) != self._comparable_project(
+            self._saved_project
+        )
+
+    @staticmethod
+    def _comparable_project(document: dict[str, object]) -> dict[str, object]:
+        """``document`` minus the fields a change to is not a project change."""
+        return {key: value for key, value in document.items() if key != "current"}
 
     # -- list commands apply through here ---------------------------------------
     def _apply_add_entry(self, entry: Entry) -> None:
