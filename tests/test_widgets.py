@@ -134,7 +134,9 @@ def test_preferences_land_in_a_file_named_for_the_app(qtbot, tmp_path) -> None:
     )
     # ".ini" because the test redirected the store to IniFormat; the name is the
     # part under test — no "Unknown Organization" between it and the base path.
-    assert settings().fileName() == str(tmp_path / "celPix.ini")
+    # as_posix() because Qt reports paths with "/" separators on every platform,
+    # Windows included, where str(Path) would hand back backslashes.
+    assert settings().fileName() == (tmp_path / "celPix.ini").as_posix()
 
 
 def test_recent_projects_survive_the_ini_backends_quirks(qtbot, tmp_path) -> None:
