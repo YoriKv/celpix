@@ -269,32 +269,44 @@ def test_both_switches_are_dead_with_nothing_open(qtbot, tmp_path, monkeypatch) 
 
     def switches(win) -> list[bool]:
         return [
-            win._rearrange_action.isEnabled(),
+            win._toggle_rearrange_action.isEnabled(),  # the tool's menu row
+            win._rearrange_action.isEnabled(),  # ...and its bar button
             win._show_rearranged_action.isEnabled(),
         ]
 
     fresh = MainWindow()
     qtbot.addWidget(fresh)
-    assert switches(fresh) == [False, False]
+    assert switches(fresh) == [False, False, False]
 
     window = _window(qtbot, tmp_path)
-    assert switches(window) == [True, True]
+    assert switches(window) == [True, True, True]
     monkeypatch.setattr(
         QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
     )
     window._remove_entry(window._workspace.current)
-    assert switches(window) == [False, False]
+    assert switches(window) == [False, False, False]
 
 
-def test_the_toolbar_button_keeps_the_short_rearrange_label(qtbot, tmp_path) -> None:
-    """One action, two labels: the Edit menu (and the F1 guide) name it beside
-    the other mode toggles, the bar button stays narrow. The split rides on
-    QToolButton taking its text from iconText, which is easy to undo by accident.
+def test_the_rearrange_tool_is_a_bar_button_and_a_plain_menu_row(
+    qtbot, tmp_path
+) -> None:
+    """One state, two actions. The bar button latches (that is how an armed modal
+    tool shows it is armed) and keeps the short label QToolButton takes from
+    iconText; the Edit menu row is plain, like the Toggle Selection / Edit Mode
+    rows it sits with. Both splits are easy to undo by accident.
     """
     window = _window(qtbot, tmp_path)
     button = window._transform_toolbar.widgetForAction(window._rearrange_action)
-    assert button.text() == "Rearrange"
+    assert button.text() == "Rearrange Mode"
     assert window._rearrange_action.text() == "Toggle Rearrange Mode"
+    assert window._rearrange_action.isCheckable()
+    assert not window._toggle_rearrange_action.isCheckable()
+
+    # The menu row drives the button, so the two can't drift apart.
+    window._toggle_rearrange_action.trigger()
+    assert window._rearranging and window._rearrange_action.isChecked()
+    window._toggle_rearrange_action.trigger()
+    assert not window._rearranging and not window._rearrange_action.isChecked()
 
 
 def test_a_pixel_edit_writes_back_to_the_tiles_real_home(qtbot, tmp_path) -> None:

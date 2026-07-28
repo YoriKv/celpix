@@ -5,6 +5,9 @@
 - **Compression**: added LZSS (4 KiB ring, size-prefixed), PRS (Sega LZ + RLE), and
   PowerVR (Dreamcast) textures
 - **Presets**: added ARGB4444
+- **View**: Entire File toggle - show the whole file at once instead of a row window.
+  Should be used carefully on bigger iles, performance for anything other than viewing
+  the canvas will probably be poor.
 
 ## v0.3.4 - 2026-07-27
 

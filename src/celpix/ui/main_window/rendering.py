@@ -26,6 +26,7 @@ from the tail of the same cycle rather than each watching for its own trigger.
 
 from __future__ import annotations
 
+from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, tile_first_pixel
 from celpix.core.document import ViewOptions
 from celpix.core.palette import Palette
@@ -47,6 +48,31 @@ class RenderingMixin:
     def _on_view_change(self, *_args) -> None:
         if self._doc is not None:
             self._refresh_view()
+
+    def _view_rows(self) -> int:
+        """Tile-rows the window actually shows - the Rows setting, or the file.
+
+        View ▸ Entire File (:meth:`MainWindow._on_entire_file_change`) lifts the
+        window to every row the data fills whenever Rows would cut the file
+        short, so the offset clamps to 0 and the whole file is on screen in one
+        piece instead of being paged through. Only ever a *rise*: a file that
+        already fits inside Rows is shown whole as it is, and shrinking the
+        canvas to it would move the picture for no gain.
+
+        Rows itself stays the user's own number throughout - it is the setting a
+        project stores and the one the spin comes back to when the toggle goes
+        off - so this, not the spin, is what every window calculation reads.
+        """
+        rows = self._rows.value()
+        if self._doc is None or not self._entire_file.isChecked():
+            return rows
+        tb = self._doc.bytes_per_tile
+        if not tb:
+            return rows
+        # The usable tile count the offset clamp works from: the nudge eats into
+        # the data, and a trailing partial tile still renders (zero-padded).
+        tiles = ceil_div(len(self._doc.pixel_data) - self._nudge, tb)
+        return max(rows, ceil_div(tiles, max(1, self._columns.value())))
 
     def _render_arrangement(
         self,
@@ -180,14 +206,17 @@ class RenderingMixin:
         # switching to a format whose larger tiles leave far fewer rows of data.
         # Re-clamp the offset next: a smaller file, or a bigger window (cols/rows),
         # can push the previous offset past the last page.
+        rows = self._view_rows()  # the height on screen; Rows, or the whole file
         self._offset = self._doc.clamp_tile_offset(
-            self._offset, cols, self._rows.value(), self._nudge
+            self._offset, cols, rows, self._nudge
         )
-        rows = self._rows.value()
         self._clamp_subpalette(self._doc.palette)
         self._doc.view = ViewOptions(
             columns=cols,
-            rows=rows,
+            # The *setting*, not the height above: under View ▸ Entire File the
+            # two differ, and it is the setting a project stores and an entry
+            # switch restores - saving a file-sized row count would overwrite it.
+            rows=self._rows.value(),
             zoom=self._zoom.value(),
             subpalette_row=self._subpalette.value(),
             tile_offset=self._offset,
@@ -305,7 +334,7 @@ class RenderingMixin:
         origin = self._byte_position()
         window = len(
             self._doc.window_bytes(
-                self._offset, self._columns.value() * self._rows.value(), self._nudge
+                self._offset, self._columns.value() * self._view_rows(), self._nudge
             )
         )
         row_start = (origin // BYTES_PER_ROW) * BYTES_PER_ROW

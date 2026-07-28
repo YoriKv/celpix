@@ -263,7 +263,7 @@ class PixelEditMixin:
         so a pixel edit works on exactly the pixels on screen.
         """
         assert self._doc is not None
-        cols, rows = self._columns.value(), self._rows.value()
+        cols, rows = self._columns.value(), self._view_rows()
         tiles = self._decode_run(self._offset, cols * rows)
         if not tiles:
             return None
@@ -547,7 +547,7 @@ class PixelEditMixin:
         side = max(abs(dx), abs(dy))
         if self._doc is not None:
             win_w = self._columns.value() * self._doc.tile_width
-            win_h = self._rows.value() * self._doc.tile_height
+            win_h = self._view_rows() * self._doc.tile_height
             room_x = (win_w - 1 - ax) if dx >= 0 else ax
             room_y = (win_h - 1 - ay) if dy >= 0 else ay
             side = min(side, room_x, room_y)
@@ -979,7 +979,7 @@ class PixelEditMixin:
         assert self._doc is not None
         cx, cy = self._viewport_centre_pixel()
         window_w = self._columns.value() * self._doc.tile_width
-        window_h = self._rows.value() * self._doc.tile_height
+        window_h = self._view_rows() * self._doc.tile_height
         return (
             max(0, min(cx - width // 2, window_w - width)),
             max(0, min(cy - height // 2, window_h - height)),

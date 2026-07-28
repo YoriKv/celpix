@@ -131,11 +131,12 @@ class SelectionMixin:
         menu.addSeparator()
         menu.addAction(self._toggle_selection_mode_action)
         menu.addAction(self._toggle_edit_mode_action)
-        # The rearrange pair: the tool, which is also a transform-bar button, and
-        # the view toggle, which lives here alone. Both are listed so the shortcut
-        # guide - which reads the menu bar - documents R/Shift+R by the same route
-        # every other key is.
-        menu.addAction(self._rearrange_action)
+        # The rearrange pair: the tool - as a plain row like the two mode toggles
+        # above it, the transform bar holding the checkable button form of it
+        # (see _build_rearrange_actions) - and the view toggle, which lives here
+        # alone. Both are listed so the shortcut guide - which reads the menu bar
+        # - documents R/Shift+R by the same route every other key is.
+        menu.addAction(self._toggle_rearrange_action)
         menu.addAction(self._show_rearranged_action)
         # Enabled state depends on the clipboard's contents, which any other
         # program can change while we sit idle - so track the signal rather than
@@ -436,7 +437,7 @@ class SelectionMixin:
 
     def _after_selection_change(self) -> None:
         self._sync_selection_actions()
-        self._revalidate_selection(self._columns.value() * self._rows.value())
+        self._revalidate_selection(self._columns.value() * self._view_rows())
         self._refresh_hex()  # the hex highlight tracks the selection
 
     def _announce_selection(self) -> None:
@@ -511,7 +512,7 @@ class SelectionMixin:
         """
         if self._doc is None or self._selected_tile is None:
             return False
-        window_tiles = self._columns.value() * self._rows.value()
+        window_tiles = self._columns.value() * self._view_rows()
         return not (0 <= self._selected_tile - self._offset < window_tiles)
 
     def _anchor_tile(self) -> int:
@@ -1112,7 +1113,7 @@ class SelectionMixin:
             self._pixel_select_all()
             return
         count = min(
-            self._columns.value() * self._rows.value(),
+            self._columns.value() * self._view_rows(),
             self._doc.tile_count - self._offset,
         )
         if count <= 0:

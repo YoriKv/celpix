@@ -897,7 +897,7 @@ class EntriesMixin:
         if length is None:
             # The visible window's byte extent, clamped to the data so a
             # partially blank last page doesn't slice past the end.
-            page = self._columns.value() * self._rows.value() * doc.bytes_per_tile
+            page = self._columns.value() * self._view_rows() * doc.bytes_per_tile
             length = min(page, len(doc.pixel_data) - self._byte_position())
         self._create_slice_via_dialog(
             entry,

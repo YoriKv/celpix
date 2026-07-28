@@ -171,8 +171,8 @@ class RearrangeMixin:
 
     # -- toolbar -----------------------------------------------------------
     def _build_rearrange_actions(self, bar) -> None:  # noqa: ANN001 — a QToolBar
-        """The two rearrange actions: the tool on ``bar``, the view toggle in the
-        Edit menu.
+        """The three rearrange actions: the tool button on ``bar``, the tool's
+        Edit menu row, and the view toggle (menu only).
 
         Only the tool is a switch you reach for mid-gesture, so only it earns a
         place beside Pixel Mode past the bar's spacer. Whether the view shows a
@@ -180,23 +180,37 @@ class RearrangeMixin:
         while armed anyway (:meth:`_showing_rearranged`) — so it lives on the
         menu, which is also where the F1 guide reads it from.
 
+        The tool takes **two** actions over the one state because a bar button
+        and a menu row want opposite things from Qt's checkable flag: the button
+        needs it (a latched button is how an armed modal tool says it is armed),
+        while the menu row must not have it — it sits with Toggle Selection Mode
+        and Toggle Edit Mode, which are plain rows, and a lone checkbox among
+        three mode switches reads as a different kind of thing from its
+        neighbours. Both drive the same :meth:`_set_rearranging`, and
+        :meth:`_sync_rearrange_actions` converges them, so they cannot disagree.
+
         ``R``/``Shift+R`` are set as shortcuts for the label they put in the menu
         and the F1 guide, but with a widget context so they never fire: the bare
         letters are routed by the app-wide event filter (``_handle_nav_key``),
         which yields to focused text inputs — the same treatment View ▸ Grid gets.
+        The key is on the menu row, since the guide reads the menu bar.
         """
-        # Two labels for the one action: the Edit menu (and the F1 guide, which
-        # reads it) name it the way the mode toggles beside it are named, while
-        # the toolbar button — which QToolButton takes from iconText — keeps the
-        # short form so it doesn't stretch the bar.
+        # The bar button carries the short label: QToolButton takes its text from
+        # iconText, and the full "Toggle Rearrange Mode" would stretch the bar.
         self._rearrange_action = QAction("Toggle Rearrange Mode", self)
-        self._rearrange_action.setIconText("Rearrange")
+        self._rearrange_action.setIconText("Rearrange Mode")
         self._rearrange_action.setCheckable(True)
-        self._rearrange_action.setShortcut(QKeySequence("R"))
-        self._rearrange_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
         self._rearrange_action.setToolTip(REARRANGE_TIP)
         self._rearrange_action.toggled.connect(self._set_rearranging)
         bar.addAction(self._rearrange_action)
+        self._toggle_rearrange_action = QAction("Toggle Rearrange Mode", self)
+        self._toggle_rearrange_action.setShortcut(QKeySequence("R"))
+        self._toggle_rearrange_action.setShortcutContext(
+            Qt.ShortcutContext.WidgetShortcut
+        )
+        self._toggle_rearrange_action.setToolTip(REARRANGE_TIP)
+        self._toggle_rearrange_action.triggered.connect(self._toggle_rearranging)
+        self._toggle_rearrange_action.setEnabled(False)  # nothing open yet
         self._show_rearranged_action = QAction("Show Rearranged Tiles", self)
         self._show_rearranged_action.setCheckable(True)
         self._show_rearranged_action.setChecked(True)
@@ -270,10 +284,10 @@ class RearrangeMixin:
             self._refresh_view()
 
     def _sync_rearrange_actions(self) -> None:
-        """Converge the two actions with the state they drive.
+        """Converge the three actions with the state they drive.
 
         Also the one place the 2D lockout lands: switching a view to a 2D pattern
-        disarms the tool and greys both actions, saying why. Called from
+        disarms the tool and greys every one of them, saying why. Called from
         ``_refresh_view``, so it follows the pattern picker without the
         arrangement toolbar needing to know this module exists.
         """
@@ -289,10 +303,13 @@ class RearrangeMixin:
                 with signals_blocked(action):
                     action.setChecked(checked)
             action.setEnabled(available)
+        # The tool's menu row holds no state of its own - it only ever needs to
+        # be as reachable, and say as much, as the button it stands in for.
+        self._toggle_rearrange_action.setEnabled(available)
         blocked = self._doc is not None and not available
-        self._rearrange_action.setToolTip(
-            REARRANGE_BLOCKED_TIP if blocked else REARRANGE_TIP
-        )
+        tip = REARRANGE_BLOCKED_TIP if blocked else REARRANGE_TIP
+        self._rearrange_action.setToolTip(tip)
+        self._toggle_rearrange_action.setToolTip(tip)
         # The transform buttons need something to act on: the carried tiles
         # mid-drag, else the selection. The block group additionally needs a 2D
         # block, exactly as the destructive Block group does — and both groups'
@@ -618,7 +635,7 @@ class RearrangeMixin:
         """Every cell of the visible window, row by row."""
         return [
             (cx, cy)
-            for cy in range(self._rows.value())
+            for cy in range(self._view_rows())
             for cx in range(self._columns.value())
         ]
 

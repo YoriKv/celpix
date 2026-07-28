@@ -51,6 +51,12 @@ from celpix.ui.widgets import (
     signals_blocked,
 )
 
+# The Rows control's tooltip, in its two states: it is the window height until
+# View > Entire File takes that over, and a locked input has to say what locked
+# it (see MainWindow._sync_entire_file).
+ROWS_TIP = "Tile rows shown"
+ROWS_LOCKED_TIP = "Tile rows shown\nLocked by View > Entire File"
+
 
 def _same_bytes(a: PathwayConfig, b: PathwayConfig) -> bool:
     """Would both configs' Read + Decompress produce the same bytes?
@@ -204,8 +210,10 @@ class InterpretationMixin:
         add_labelled(view, "Cols:", self._columns, "Tiles per row")
 
         # How many tile-rows the window shows - the "render N rows" view setting.
+        # Kept on self with its caption because View > Entire File locks the pair
+        # (see MainWindow._sync_entire_file), which retooltips and greys both.
         self._rows = self._spin(1, 256, 16, self._on_view_change)
-        add_labelled(view, "Rows:", self._rows, "Tile rows shown")
+        self._rows_label = add_labelled(view, "Rows:", self._rows, ROWS_TIP)
         # Cols maxes at 2 digits, rows at 3, so their hints differ - pin both
         # to the rows hint so the pair reads as a matched set.
         rows_width = self._rows.sizeHint().width()

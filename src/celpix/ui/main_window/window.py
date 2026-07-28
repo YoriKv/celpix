@@ -77,7 +77,11 @@ from celpix.ui.hex_view_panel import HexViewPanel
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
 from celpix.ui.main_window.entries import EntriesMixin
-from celpix.ui.main_window.interpretation import InterpretationMixin
+from celpix.ui.main_window.interpretation import (
+    ROWS_LOCKED_TIP,
+    ROWS_TIP,
+    InterpretationMixin,
+)
 from celpix.ui.main_window.navigation import NavigationMixin
 from celpix.ui.main_window.palette_dock import PaletteDockMixin
 from celpix.ui.main_window.palette_regions import PaletteRegionsMixin
@@ -121,6 +125,9 @@ GRID_STYLE_KEY = "view/grid_style"
 GRID_SHOWN_KEY = "view/grid_shown"
 GRID_SCALE_KEY = "view/grid_scale"
 BLOCK_GRID_KEY = "view/block_grid"
+# View ▸ Entire File, a local preference for the same reason: how much of a file
+# you want in front of you belongs to the person looking, not to the project.
+ENTIRE_FILE_KEY = "view/entire_file"
 
 
 class MainWindow(
@@ -368,9 +375,10 @@ class MainWindow(
         self._build_clipboard_actions()  # before _build_menus: shared with it
         self._build_menus()
         self._build_toolbar()
-        # After _build_toolbar: the spin exists only then. setValue clamps to the
-        # spin's range and re-renders through _on_view_change.
+        # Both after _build_toolbar: the spins exist only then. setValue clamps to
+        # the spin's range and re-renders through _on_view_change.
         self._palette_panel.subpalette_row_selected.connect(self._subpalette.setValue)
+        self._sync_entire_file()  # apply the restored View > Entire File to Rows
         self._build_nav_keys()
         self._sync_nav()
         # Navigation keys are handled window-wide via an application event filter (see
@@ -878,14 +886,76 @@ class MainWindow(
     def _build_view_menu(self) -> None:
         """View ▸ display toggles that change how the pixels are drawn (as
         opposed to Navigate, which moves the window): the grid level, the
-        app-wide grid style, the zoom steps, and the app's own light/dark look."""
+        app-wide grid style, how much of the file is shown and how big, and the
+        app's own light/dark look."""
         menu = self.menuBar().addMenu("&View")
         self._build_grid_action(menu)
         self._build_grid_style_menu(menu)
         menu.addSeparator()
+        # Grouped with the zoom: both answer "how much of this am I looking at,
+        # and how large" - Entire File sizes the window, zoom sizes the pixels.
+        self._build_entire_file_action(menu)
         self._build_zoom_actions(menu)
         menu.addSeparator()
         self._build_theme_menu(menu)
+
+    def _build_entire_file_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
+        """View ▸ Entire File - drop the row window and show all of it at once.
+
+        A file is normally viewed through a fixed window of Rows tile-rows that
+        the offset pages through (``docs/design/overview.md`` §4). This takes the
+        height off that setting: whenever Rows would cut the file short the window
+        grows to every row the data fills, which leaves the offset nowhere to move
+        and puts the file on screen in one piece. A file already shorter than Rows
+        is unaffected - it was never being limited.
+
+        Rows is locked while this is on (:meth:`_sync_entire_file`) rather than
+        overwritten, so the number the user chose is still there, and still
+        theirs, when the toggle goes off.
+
+        No shortcut: it is a mode you settle into per file, not something worth a
+        key, and every bare letter near the view is already navigation.
+        """
+        self._entire_file = QAction("&Entire File", self, checkable=True)
+        self._entire_file.setToolTip(
+            "Show the whole file at once, ignoring Rows.\n"
+            "Every row is decoded on each redraw, so this\n"
+            "is slow on large files."
+        )
+        self._entire_file.setChecked(load_bool_setting(ENTIRE_FILE_KEY, False))
+        self._entire_file.toggled.connect(self._on_entire_file_change)
+        view_menu.addAction(self._entire_file)
+
+    def _on_entire_file_change(self) -> None:
+        """Persist the toggle, lock/release Rows, and re-render at the new height.
+
+        Leaving the mode takes the window back down to Rows, which would strand
+        it at the file's start - so it re-anchors on whatever tile the user
+        picked out of the full view (:meth:`_snap_offset_to_selection`).
+        """
+        save_bool_setting(ENTIRE_FILE_KEY, self._entire_file.isChecked())
+        self._sync_entire_file()
+        if not self._entire_file.isChecked():
+            self._snap_offset_to_selection()
+        self._on_view_change()
+
+    def _sync_entire_file(self) -> None:
+        """Lock the Rows control (and its caption) to match the toggle.
+
+        Also called once during construction, because the menus are built before
+        the toolbar: the action is restored from settings before the spin it
+        governs exists, so the lock can only be applied afterwards.
+
+        The caption goes with the spin - it is half the control's hover target
+        (:func:`~celpix.ui.widgets.add_labelled`), so a live-looking label over a
+        dead input is exactly where the "why can't I type here" lands.
+        """
+        entire = self._entire_file.isChecked()
+        self._rows.setEnabled(not entire)
+        self._rows_label.setEnabled(not entire)
+        tip = ROWS_LOCKED_TIP if entire else ROWS_TIP
+        self._rows.setToolTip(tip)
+        self._rows_label.setToolTip(tip)
 
     def _build_theme_menu(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Theme - the app's light/dark appearance.

@@ -88,8 +88,8 @@ class NavigationMixin:
                 ("Next til&e", "Right", lambda: self._nav_tiles(1)),
                 ("Row &up", "Up", lambda: self._nav_rows(-self._row_step())),
                 ("Row &down", "Down", lambda: self._nav_rows(self._row_step())),
-                ("Pa&ge up", "PgUp", lambda: self._nav_rows(-self._rows.value())),
-                ("Page do&wn", "PgDown", lambda: self._nav_rows(self._rows.value())),
+                ("Pa&ge up", "PgUp", lambda: self._nav_rows(-self._view_rows())),
+                ("Page do&wn", "PgDown", lambda: self._nav_rows(self._view_rows())),
             ),
             (
                 (
@@ -218,7 +218,7 @@ class NavigationMixin:
                 "Pg Dn",
                 None,
                 "Down one page (PgDown)",
-                lambda: self._nav_rows(self._rows.value()),
+                lambda: self._nav_rows(self._view_rows()),
             ),
             (
                 "",
@@ -236,7 +236,7 @@ class NavigationMixin:
                 "Pg Up",
                 None,
                 "Up one page (PgUp)",
-                lambda: self._nav_rows(-self._rows.value()),
+                lambda: self._nav_rows(-self._view_rows()),
             ),
             ("", sp.SP_ArrowLeft, "Back one tile (Left)", lambda: self._nav_tiles(-1)),
             (
@@ -368,8 +368,8 @@ class NavigationMixin:
             (Qt.Key.Key_Down, *no_mod): lambda: self._nav_rows(self._row_step()),
             (Qt.Key.Key_Left, *no_mod): lambda: self._nav_tiles(-1),
             (Qt.Key.Key_Right, *no_mod): lambda: self._nav_tiles(1),
-            (Qt.Key.Key_PageUp, *no_mod): lambda: self._nav_rows(-self._rows.value()),
-            (Qt.Key.Key_PageDown, *no_mod): lambda: self._nav_rows(self._rows.value()),
+            (Qt.Key.Key_PageUp, *no_mod): lambda: self._nav_rows(-self._view_rows()),
+            (Qt.Key.Key_PageDown, *no_mod): lambda: self._nav_rows(self._view_rows()),
             (Qt.Key.Key_Home, *no_mod): self._nav_home,
             (Qt.Key.Key_End, *no_mod): self._nav_end,
             # Byte nudge. Plus is registered under both shift states: on many
@@ -565,6 +565,11 @@ class NavigationMixin:
     def _adjust_spin(spin: QSpinBox, delta: int) -> None:
         # setValue clamps to the spinbox range and fires valueChanged, which
         # re-renders (and re-clamps the offset) through _on_view_change.
+        # A locked spin ignores the step: setValue works on a disabled widget, so
+        # without this the keys would keep editing a control the user can't - Rows
+        # under View > Entire File, or anything on a greyed-out toolbar.
+        if not spin.isEnabled():
+            return
         spin.setValue(spin.value() + delta)
 
     # -- navigation --------------------------------------------------------
@@ -616,8 +621,35 @@ class NavigationMixin:
         :meth:`_set_offset` clamps it back to the last page. Tile-level moves
         stay available on the keys/buttons, and the byte nudge is untouched.
         """
+        self._set_offset(self._snap_to_row(value))
+
+    def _snap_to_row(self, tile: int) -> int:
+        """``tile`` pulled onto the nearest whole (block-)row of the window.
+
+        The vertical unit of movement: landing between rows would shift the image
+        sideways by the sub-row remainder, and re-cut every block under a block
+        grouping (:meth:`_row_step`). Rounds to the *nearest* row, so a position
+        an eighth of a row past the boundary doesn't jump a whole row down.
+        """
         unit = max(1, self._columns.value()) * self._row_step()
-        self._set_offset((value + unit // 2) // unit * unit)
+        return (tile + unit // 2) // unit * unit
+
+    def _snap_offset_to_selection(self) -> None:
+        """Re-anchor the window on the selected tile, snapped to its row.
+
+        For leaving View ▸ Entire File: the window collapses back to Rows around
+        offset 0 - the file's start, which is rarely where the user was reading.
+        The selection is: it is the thing they picked out of the whole-file view.
+        Snapped by the position bar's own rule above, and with no selection the
+        offset is left where it is.
+
+        Assigns rather than going through :meth:`_set_offset`: following a view
+        change back to where the user was looking is not a navigation gesture to
+        undo, and the caller's own refresh clamps this to the last page.
+        """
+        if self._doc is None or self._selected_tile is None:
+            return
+        self._offset = self._snap_to_row(self._selected_tile)
 
     def _nav_end(self) -> None:
         if self._doc is not None:
@@ -635,7 +667,7 @@ class NavigationMixin:
         if nudge is None:
             nudge = self._nudge
         offset = self._doc.clamp_tile_offset(
-            offset, self._columns.value(), self._rows.value(), nudge
+            offset, self._columns.value(), self._view_rows(), nudge
         )
         if (offset, nudge) == (self._offset, self._nudge):
             # No move (e.g. a scrollbar drag past the end clamped to here) - still
@@ -675,7 +707,7 @@ class NavigationMixin:
         """
         assert self._doc is not None
         offset, nudge = self._doc.clamp_byte_position(
-            pos, self._columns.value(), self._rows.value()
+            pos, self._columns.value(), self._view_rows()
         )
         self._set_offset(offset, nudge=nudge)
 
@@ -807,7 +839,7 @@ class NavigationMixin:
             self._nudge_info.clear()
             return
 
-        cols, rows = self._columns.value(), self._rows.value()
+        cols, rows = self._columns.value(), self._view_rows()
         # Don't overwrite what the user is mid-way through typing; a commit re-renders
         # the box itself (CommittingLineEdit.commit), so this guard is safe.
         if not self._address_edit.hasFocus():
@@ -838,6 +870,6 @@ class NavigationMixin:
             return
         pos = file_offset - self._display_base()
         offset, nudge = self._doc.clamp_byte_position(
-            pos, self._columns.value(), self._rows.value()
+            pos, self._columns.value(), self._view_rows()
         )
         self._apply_offset(offset, nudge)

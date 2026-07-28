@@ -134,7 +134,7 @@ class CompressionMixin:
             return
         view = self._doc.view
         window = self._doc.window_bytes(
-            view.tile_offset, view.columns * view.rows, view.byte_nudge
+            view.tile_offset, view.columns * self._view_rows(), view.byte_nudge
         )
         if not window:
             self._overlay.hide_overlay()
@@ -249,7 +249,7 @@ class CompressionMixin:
         # structure bigger than the view can show is not worth confirming here.
         probe_bytes = max(
             1,
-            self._columns.value() * self._rows.value() * self._doc.bytes_per_tile,
+            self._columns.value() * self._view_rows() * self._doc.bytes_per_tile,
         )
         self._scanning = True
         self._scan_stop = False

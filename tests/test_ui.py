@@ -923,6 +923,68 @@ def test_the_address_format_dropdown_drives_the_offset_box(
     assert not window._bank_settings.isHidden()
 
 
+def test_entire_file_view_grows_the_window_and_locks_rows(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    from PySide6.QtCore import Qt
+
+    # View > Entire File takes the window height off the Rows setting: the window
+    # grows to every row the data fills, so the offset has nowhere left to go.
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
+    window._columns.setValue(8)
+    window._rows.setValue(2)  # a 16-tile window, four pages into the 64 tiles
+    window._set_offset(32)
+    assert window._offset == 32
+
+    window._entire_file.setChecked(True)
+    assert window._view_rows() == 8  # 64 tiles / 8 columns
+    assert window._offset == 0  # the whole file is on screen; nothing to page to
+    assert window._canvas._image.height() == 8 * window._doc.tile_height
+    # Rows is locked, not overwritten: the number stays the user's, and stays
+    # what the project stores.
+    assert not window._rows.isEnabled()
+    assert window._rows.value() == 2
+    assert window._doc.view.rows == 2
+    window._nav_keys[(Qt.Key.Key_Down, True, False)]()  # Shift+Down = more rows
+    assert window._rows.value() == 2
+
+    # A file that already fits inside Rows was never being limited, so the window
+    # stays as it is rather than shrinking onto the data.
+    window._columns.setValue(64)  # one row of tiles, in a two-row window
+    assert window._view_rows() == 2
+
+    window._entire_file.setChecked(False)
+    assert window._rows.isEnabled()
+    assert window._view_rows() == 2
+
+
+def test_leaving_entire_file_re_anchors_on_the_selection(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # The window collapsing back to Rows would strand it at the file's start, so
+    # it lands on the tile picked out of the full view instead - snapped to the
+    # nearest whole row, the position bar's own rule.
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
+    window._columns.setValue(8)
+    window._rows.setValue(2)
+    window._entire_file.setChecked(True)
+    window._select_tiles(35, 35)  # row 4 (tiles 32-39), three tiles in
+
+    window._entire_file.setChecked(False)
+    assert window._offset == 32
+
+    # A selection past the last page still leaves a reachable window, and with no
+    # selection at all there is nothing to re-anchor on: the offset stays put.
+    window._entire_file.setChecked(True)
+    window._select_tiles(63, 63)
+    window._entire_file.setChecked(False)
+    assert window._offset == 48  # the last page (64 tiles - a 16-tile window)
+    window._entire_file.setChecked(True)
+    window._clear_selection()
+    window._entire_file.setChecked(False)
+    assert window._offset == 0  # where the whole-file view left it
+
+
 def test_offset_scrollbar_jumps_and_stays_in_sync(qtbot, tmp_path, monkeypatch) -> None:
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
     window._columns.setValue(16)
