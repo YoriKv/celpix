@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.3 - unreleased
+## v0.3.3 - 2026-07-27
 
 - **Dark Mode**: added
 - **Palette**: pinned palette regions, select tiles to pin to the current palette
