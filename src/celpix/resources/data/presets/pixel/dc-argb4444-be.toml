@@ -1,0 +1,15 @@
+# Big-endian variant of ARGB4444 direct (8x8) — for big-endian ROM data.
+# See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
+id = "preset.pixel.dc-argb4444-be"
+name = "Direct ARGB4444 (8x8, big-endian)"
+engine_id = "codec.direct-color"
+
+[params]
+bytes_per_pixel = 2
+byte_order = "big"
+
+[params.masks]
+a = 0xF000
+r = 0x0F00
+g = 0x00F0
+b = 0x000F

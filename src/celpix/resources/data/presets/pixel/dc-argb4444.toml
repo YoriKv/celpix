@@ -1,0 +1,17 @@
+# Direct-color ARGB4444 direct (8x8).
+# The third of the 16-bit texel formats PowerVR hardware takes, alongside
+# ARGB1555 and RGB565 — the one that trades color depth for a real alpha ramp.
+# See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
+id = "preset.pixel.dc-argb4444"
+name = "Direct ARGB4444 (8x8)"
+engine_id = "codec.direct-color"
+
+[params]
+bytes_per_pixel = 2
+byte_order = "little"
+
+[params.masks]
+a = 0xF000
+r = 0x0F00
+g = 0x00F0
+b = 0x000F

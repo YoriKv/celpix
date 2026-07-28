@@ -60,6 +60,7 @@ tools for accuracy where available.
 - **[MushROMs](https://github.com/bonimy/MushROMs)**
 - **[CrystalTile2](https://www.romhacking.net/utilities/818/)**
 - **[Advynia](https://github.com/KarisaAdvynia/Advynia)**
+- **[DreamCompress](https://www.romhacking.net/utilities/1900/)**
 
 ## AI Use Disclaimer
 

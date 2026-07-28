@@ -17,11 +17,20 @@ from celpix.core.context import (
     KEY_DECOMPRESS_PARTIAL,
     PipelineContext,
 )
-from celpix.plugins.builtins import konami_rle, lz16, lz_command, packbits
+from celpix.plugins.builtins import (
+    konami_rle,
+    lz16,
+    lz_command,
+    lzss_ring,
+    packbits,
+    prs,
+)
 from celpix.plugins.builtins.konami_rle import KonamiNesRle
 from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS, Lz16Compression
 from celpix.plugins.builtins.lz_command import Lz1, Lz2
+from celpix.plugins.builtins.lzss_ring import LzssRingCompression
 from celpix.plugins.builtins.packbits import PackBitsCompression
+from celpix.plugins.builtins.prs import PrsCompression
 
 # -- LZ1/LZ2 command stream -------------------------------------------------
 
@@ -479,3 +488,150 @@ def test_packbits_output_cap_stops_an_unbounded_read() -> None:
 # adds nothing over test_konami_plugins_record_size_and_round_trip. The FDS-only
 # decode behaviour is guarded by test_konami_variant_flag_switches_control_
 # semantics and test_konami_fds_round_trip.
+
+
+# -- LZSS, 4 KiB ring, size-prefixed ----------------------------------------
+
+
+def test_lzss_decode_known_vector() -> None:
+    # Two literals then a distance-2 back-reference of 5, spelled from the spec:
+    # ring position (0xFEE + 0) & 0xFFF for output position 0, length 5 - 3 = 2.
+    stream = bytes([0x07, 0x00, 0x00, 0x00, 0x03, 0x41, 0x42, 0xEE, 0xF2])
+    out, consumed, complete = lzss_ring.decompress(stream)
+    assert out == b"ABABABA"  # "AB" + 5 bytes copied from position 0, overlapping
+    assert (consumed, complete) == (len(stream), True)
+
+
+def test_lzss_reference_before_the_output_reads_the_rings_zero_fill() -> None:
+    # The ring is zero-filled and its cursor starts at 0xFEE, so a reference to a
+    # position the output has not reached yet is legal and yields zeros. Getting
+    # the cursor origin wrong still decodes — it just silently reads the wrong
+    # slots — so this is the test that pins 0xFEE.
+    stream = bytes([0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+    out, _, complete = lzss_ring.decompress(stream)
+    assert out == b"\x00\x00\x00"
+    assert complete
+
+
+def test_lzss_size_prefix_bounds_the_decode() -> None:
+    # The body carries no terminator: the declared size is the only thing that
+    # ends it, and anything past the structure must be left for the next reader.
+    stream = bytes([0x02, 0x00, 0x00, 0x00, 0x03, 0x41, 0x42]) + b"junk"
+    out, consumed, complete = lzss_ring.decompress(stream)
+    assert out == b"AB"
+    assert (consumed, complete) == (7, True)
+
+
+def test_lzss_truncated_stream_needs_the_partial_flag() -> None:
+    full = lzss_ring.compress(b"the quick brown fox " * 40)
+    cut = full[: len(full) // 2]
+    with pytest.raises(ValueError):
+        lzss_ring.decompress(cut)
+    out, _, complete = lzss_ring.decompress(cut, partial=True)
+    assert complete is False
+    assert out and (b"the quick brown fox " * 40).startswith(out)
+
+
+def test_lzss_round_trip_across_shapes() -> None:
+    random.seed(1105)
+    for raw in (
+        b"A",
+        b"\x00" * 5000,  # long runs: the self-overlap path
+        bytes(range(256)) * 40,  # past the 4 KiB ring, so matches age out
+        bytes(random.randrange(256) for _ in range(3000)),  # incompressible
+        bytes(random.choice(b"\x00\x01\xff") for _ in range(9000)),
+    ):
+        packed = lzss_ring.compress(raw)
+        out, consumed, complete = lzss_ring.decompress(packed)
+        assert out == raw
+        assert (consumed, complete) == (len(packed), True)
+
+
+def test_lzss_plugin_records_size_and_completeness() -> None:
+    raw = bytes(range(64)) * 30
+    plugin = LzssRingCompression()
+    packed = plugin.compress(raw, PipelineContext())
+    ctx = PipelineContext()
+    assert plugin.decompress(packed + b"\xff" * 16, ctx) == raw
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+
+
+# -- PRS ---------------------------------------------------------------------
+
+# Literal 'A', literal 'B', short copy (distance 2, length 4), long copy
+# (distance 6, length 3), end marker. Assembled from the spec, so it guards the
+# reader independently of our own writer — including the interleave: the second
+# control byte (0x02) sits at index 6, *after* the long copy's operand bytes
+# D1 FF, because a control byte is fetched only when a bit from it is needed.
+# Our compressor spells these nine bytes more cheaply (one length-7 long copy),
+# which is why this is a decode vector rather than a round-trip one.
+_PRS_VECTOR = bytes([0x93, 0x41, 0x42, 0xFE, 0xD1, 0xFF, 0x02, 0x00, 0x00])
+
+
+def test_prs_decode_known_vector() -> None:
+    out, consumed, complete = prs.decompress(_PRS_VECTOR)
+    assert out == b"ABABABABA"
+    assert (consumed, complete) == (len(_PRS_VECTOR), True)
+
+
+def test_prs_control_bytes_interleave_lazily() -> None:
+    # The writer must place control bytes exactly where the reader fetches them:
+    # only when a bit is actually needed. Nine distinct bytes are nine literals,
+    # so the first control byte's eight bits run out mid-run and the second lands
+    # *between* the eighth and ninth literal rather than up front.
+    packed = prs.compress(bytes(range(9)))
+    assert packed == bytes([0xFF]) + bytes(range(8)) + bytes([0x05, 0x08, 0x00, 0x00])
+    assert prs.decompress(packed)[0] == bytes(range(9))
+
+
+def test_prs_end_marker_bounds_the_decode() -> None:
+    out, consumed, _ = prs.decompress(_PRS_VECTOR + b"trailing junk")
+    assert out == b"ABABABABA"
+    assert consumed == len(_PRS_VECTOR)
+
+
+def test_prs_truncated_stream_needs_the_partial_flag() -> None:
+    full = prs.compress(b"the quick brown fox " * 40)
+    cut = full[: len(full) // 2]
+    with pytest.raises(ValueError):
+        prs.decompress(cut)
+    out, consumed, complete = prs.decompress(cut, partial=True)
+    assert complete is False
+    assert consumed <= len(cut)
+    assert out and (b"the quick brown fox " * 40).startswith(out)
+
+
+def test_prs_copy_reaching_before_the_output_raises_even_when_partial() -> None:
+    # A structurally impossible stream is corruption, not truncation, so the
+    # partial flag must not paper over it.
+    bad = bytes([0x02, 0xF9, 0xFF, 0x02, 0x00, 0x00])  # long copy at distance 1
+    for partial in (False, True):
+        with pytest.raises(ValueError):
+            prs.decompress(bad, partial=partial)
+
+
+def test_prs_round_trip_across_shapes() -> None:
+    random.seed(1106)
+    for raw in (
+        b"",
+        b"A",
+        b"\x00" * 5000,  # 256-byte extended copies, overlapping
+        bytes(range(256)) * 40,  # past the 8 KiB reach
+        bytes(random.randrange(256) for _ in range(3000)),  # incompressible
+        bytes(random.choice(b"\x00\x01\xff") for _ in range(9000)),
+    ):
+        packed = prs.compress(raw)
+        out, consumed, complete = prs.decompress(packed)
+        assert out == raw
+        assert (consumed, complete) == (len(packed), True)
+
+
+def test_prs_plugin_records_size_and_completeness() -> None:
+    raw = bytes(range(64)) * 30
+    plugin = PrsCompression()
+    packed = plugin.compress(raw, PipelineContext())
+    ctx = PipelineContext()
+    assert plugin.decompress(packed + b"\xff" * 16, ctx) == raw
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True

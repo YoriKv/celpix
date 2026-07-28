@@ -40,6 +40,7 @@ from .konami_rle import KonamiFdsRle, KonamiNesRle
 from .linear_codec import LinearBespokeCodec
 from .lz16 import Lz16Compression
 from .lz_command import Lz1, Lz2
+from .lzss_ring import LzssRingCompression
 from .m7_vram import M7VramReshape
 from .n64_rom import N64RomContainer
 from .nibble_planar_codec import NibblePlanarCodec
@@ -47,6 +48,8 @@ from .packbits import PackBitsCompression
 from .packed_codec import PackedCodec
 from .passthrough import PassthroughCompression, PassthroughReshape
 from .planar_codec import PlanarCodec
+from .prs import PrsCompression
+from .pvr import PvrCompression
 from .raw_file import RawFileContainer
 from .split_planes import split_part_plugins
 
@@ -74,6 +77,9 @@ def register_builtins(reg: Registry) -> None:
         Lz1(),
         Lz2(),
         Lz16Compression(),
+        LzssRingCompression(),
+        PrsCompression(),
+        PvrCompression(),
         PackBitsCompression(),
         PlanarCodec(),
         PackedCodec(),
