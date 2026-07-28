@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.5 - unreleased
+## v0.3.5 - 2026-07-28
 
 - **Compression**: added LZSS (4 KiB ring, size-prefixed), PRS (Sega LZ + RLE), and
   PowerVR (Dreamcast) textures
