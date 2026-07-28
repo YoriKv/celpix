@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.4 - unreleased
+## v0.3.4 - 2026-07-27
 
 - Highlight for currently viewed file
 - Some project save cleanup
