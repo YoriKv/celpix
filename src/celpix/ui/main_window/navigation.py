@@ -46,7 +46,6 @@ from celpix.core.address import (
     format_hex,
     parse_hex,
 )
-from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.undo_commands import (
     OffsetMoveCommand,
@@ -400,6 +399,7 @@ class NavigationMixin:
             (Qt.Key.Key_E, *no_mod): self._toggle_edit_mode,
             (Qt.Key.Key_R, *no_mod): self._toggle_rearranging,
             (Qt.Key.Key_R, *shift): self._toggle_show_rearranged,
+            (Qt.Key.Key_P, *shift): self._toggle_show_palette_regions,
         }
 
     def eventFilter(self, obj, event) -> bool:
@@ -767,9 +767,7 @@ class NavigationMixin:
         past the iNES header and the PRG banks) and the host never asked for it.
         """
         assert self._doc is not None
-        if not self._doc.pixel_config.reads_raw_bytes:
-            return 0
-        return self._doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
+        return self._doc.display_base
 
     def _tile_byte_offset(self, tile: int) -> int:
         """The displayed byte offset of ``tile`` on the current (nudged) grid."""

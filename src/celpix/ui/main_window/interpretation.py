@@ -503,6 +503,14 @@ class InterpretationMixin:
     def _palette_preset_id(self) -> str:
         return self._palette_preset.currentData()
 
+    def _palette_import_preset_id(self) -> str:
+        """The format a palette *file* is read with (the dock's Import as…).
+
+        Separate from :meth:`_palette_preset_id`, which names the format of the
+        palette currently on screen whatever its source.
+        """
+        return self._palette_import_preset.currentData()
+
     def _compression_id(self) -> str:
         """The compression-preview combo's plugin id, pass-through by default.
 

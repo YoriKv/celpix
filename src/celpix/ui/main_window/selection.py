@@ -91,7 +91,8 @@ class SelectionMixin:
     """
 
     def _build_edit_menu(self) -> None:
-        """Edit ▸ Undo/Redo, the clipboard actions, and the mode switches.
+        """Edit ▸ Undo/Redo, the clipboard actions, Import from PNG, and the
+        mode switches.
 
         Undo/Redo are stack-provided (label and enabled state come from the
         unified session stack). The clipboard group operates on the selected
@@ -124,13 +125,16 @@ class SelectionMixin:
         for action in self._clipboard_actions():
             menu.addAction(action)
         menu.addSeparator()
+        menu.addAction(self._import_png_action)
+        menu.addSeparator()
         menu.addAction(self._select_all_action)
         menu.addSeparator()
         menu.addAction(self._toggle_selection_mode_action)
         menu.addAction(self._toggle_edit_mode_action)
-        # The transform bar's own two switches, shown here as well: it gives them
-        # a menu home, and the shortcut guide reads the menu bar - so R/Shift+R
-        # are documented by the same route every other key is.
+        # The rearrange pair: the tool, which is also a transform-bar button, and
+        # the view toggle, which lives here alone. Both are listed so the shortcut
+        # guide - which reads the menu bar - documents R/Shift+R by the same route
+        # every other key is.
         menu.addAction(self._rearrange_action)
         menu.addAction(self._show_rearranged_action)
         # Enabled state depends on the clipboard's contents, which any other
@@ -142,7 +146,7 @@ class SelectionMixin:
         menu.aboutToShow.connect(self._sync_edit_actions)
 
     def _build_clipboard_actions(self) -> None:
-        """Create the Cut/Copy/Paste/Clear/Select All actions.
+        """Create the Cut/Copy/Paste/Clear/Select All and Import from PNG actions.
 
         Built before the menus so both the Edit menu and the canvas's context
         menu can show the *same* QAction objects - one enabled state, one
@@ -187,6 +191,16 @@ class SelectionMixin:
             action.setEnabled(False)
             setattr(self, attr, action)
             self.addAction(action)
+        # Import from PNG travels with this group rather than with File ▸ Open:
+        # it stamps an image at the selection's anchor, which is the gesture
+        # Paste makes from a different source. Shared for the same reason the
+        # four above are - the Edit menu and the canvas menu show one action.
+        self._import_png_action = QAction("&Import from PNG…", self)
+        self._import_png_action.setToolTip(
+            "Fit an image into this format and stamp it\nat the selected tile"
+        )
+        self._import_png_action.triggered.connect(self._import_png_here)
+        self._import_png_action.setEnabled(False)
         self._build_mode_toggle_actions()
 
     def _build_mode_toggle_actions(self) -> None:
@@ -280,6 +294,8 @@ class SelectionMixin:
         for action in (self._cut_action, self._copy_action, self._clear_action):
             action.setEnabled(has_doc and target is not None)
         self._paste_action.setEnabled(has_doc and clipboard.has_content())
+        # An import needs no selection: with none, it lands at the view's start.
+        self._import_png_action.setEnabled(has_doc)
         self._select_all_action.setEnabled(has_doc)
 
     # -- tile selection ----------------------------------------------------
@@ -462,6 +478,7 @@ class SelectionMixin:
         # else would tell them a right-drag has just picked a different block.
         self._sync_rearrange_actions()
         self._palette_from_selection_action.setEnabled(has)
+        self._sync_pin_actions()
         # Only whole files spawn slices - slices never nest.
         current = self._workspace.current
         can_slice = current is not None and current.kind is EntryKind.FILE
@@ -659,14 +676,15 @@ class SelectionMixin:
         decoded = self._decode_run(first, count)
         if not decoded:
             return False
-        tiles = [decoded[t - first] for t in selected if t - first < len(decoded)]
+        kept = [t for t in selected if t - first < len(decoded)]
+        tiles = [decoded[t - first] for t in kept]
         if not tiles:
             return False
         target = self._import_target()
         cols = self._copy_columns(len(tiles))
         clipboard.put(
             clipboard.TilePayload.from_tiles(tiles, target.colors, columns=cols),
-            self._copy_image(tiles, cols),
+            self._copy_image(tiles, cols, self._tile_biases(kept)),
         )
         self._sync_edit_actions()
         self.statusBar().showMessage(f"Copied {self._tiles_label(len(tiles))}.")
@@ -683,7 +701,9 @@ class SelectionMixin:
         view_cols = self._columns.value()
         return view_cols if count > view_cols else max(1, count)
 
-    def _copy_image(self, tiles: list, columns: int) -> QImage:
+    def _copy_image(
+        self, tiles: list, columns: int, biases: list[int] | None = None
+    ) -> QImage:
         """Render a copied run the way the canvas shows it.
 
         A linear run is laid out through the view's own arrangement, so a blocked
@@ -692,8 +712,19 @@ class SelectionMixin:
         at its own width - re-applying the block layout would scramble it. Colors
         are the canvas's - no forced index-0 transparency, so a copy that goes out
         to an image editor and comes back matches its own palette exactly.
+
+        ``biases`` carries pinned palette regions, one per tile in ``tiles``, so a
+        copy of a pinned region leaves in the colours it was shown in. It applies
+        only to this rendered *image*: the lossless payload beside it on the
+        clipboard keeps the tiles' real indices, because that is what a paste back
+        into celPix has to reproduce.
         """
         assert self._doc is not None
+        if biases:
+            tiles = [
+                tile.shifted(bias) if bias and tile.bytes_per_pixel == 1 else tile
+                for tile, bias in zip(tiles, biases, strict=True)
+            ]
         layout = (
             BlockLayout(columns)
             if self._rect_size is not None
@@ -1104,23 +1135,25 @@ class SelectionMixin:
             return
         self._sync_edit_actions()
         menu = QMenu(self)
+        # Carving the file up comes first: all three ways to cut a slice, then a
+        # bookmark. A bookmark records the *view position* rather than the
+        # selection, but it belongs to the same "make something out of where I
+        # am" group - and the canvas is where the user is when they decide to
+        # mark the spot.
+        menu.addAction(self._new_slice_action)
+        menu.addAction(self._new_slice_from_view_action)
+        menu.addAction(self._new_slice_from_selection_action)
+        menu.addAction(self._new_bookmark_action)
+        menu.addSeparator()
         for action in self._clipboard_actions():
             menu.addAction(action)
         menu.addSeparator()
-        # Built here rather than shared: import has no shortcut and no other
-        # menu shows it, so there is nothing to keep in sync.
-        import_png = menu.addAction("&Import from PNG…")
-        import_png.setToolTip(
-            "Fit an image into this format and stamp it at the selected tile"
-        )
-        import_png.triggered.connect(self._import_png_here)
+        menu.addAction(self._import_png_action)
         menu.addSeparator()
         menu.addAction(self._palette_from_selection_action)
-        menu.addAction(self._new_slice_from_selection_action)
-        # A bookmark records the *view position* rather than the selection, but
-        # it belongs to the same "make something out of where I am" group - and
-        # the canvas is where the user is when they decide to mark the spot.
-        menu.addAction(self._new_bookmark_action)
+        menu.addAction(self._pin_palette_action)
+        menu.addAction(self._unpin_palette_action)
+        menu.addAction(self._unpin_all_action)
         menu.exec(self._canvas.mapToGlobal(pos))
 
     def _selection_byte_range(self) -> tuple[int, int] | None:

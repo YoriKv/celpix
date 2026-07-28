@@ -232,25 +232,37 @@ def test_the_toggle_takes_the_map_out_of_the_read_path(qtbot, tmp_path) -> None:
     assert window._decode_run(0, 2) == window._decode_actual_run(0, 2)
 
 
-def test_r_arms_the_tool_and_shift_r_swaps_the_view(qtbot, tmp_path) -> None:
-    """Both keys go through their actions, so they carry the actions' side
-    effects: arming forces the rearranged view back on, and turning that view off
-    disarms the tool."""
+def test_the_armed_tool_shows_rearranged_tiles_whatever_the_setting_says(
+    qtbot, tmp_path
+) -> None:
+    """Dragging tiles around a view showing the file's own order would be editing
+    a map nobody can see, so the tool forces the rearranged view - but as an
+    override, not by rewriting the setting: put the tool down and the view goes
+    back to what the user asked for."""
     window = _window(qtbot, tmp_path)
-    window._toggle_show_rearranged()
+    window._set_tile_map(TileMap().swap(1, 40))
+    window._toggle_show_rearranged()  # Shift+R
     assert not window._show_rearranged
+    assert window._active_tile_map().is_identity()
+
+    window._toggle_rearranging()  # R
+    assert window._rearranging
+    assert window._active_tile_map().actual(1) == 40  # forced on
+    assert not window._show_rearranged  # the setting is untouched
+
+    # Turning it off while armed is not a way to disarm: the override still holds.
+    window._toggle_show_rearranged()
+    window._toggle_show_rearranged()
+    assert window._rearranging and window._active_tile_map().actual(1) == 40
 
     window._toggle_rearranging()
-    assert window._rearranging
-    assert window._show_rearranged  # arming brought the view back with it
-
-    window._toggle_show_rearranged()
-    assert not window._show_rearranged and not window._rearranging
+    assert not window._rearranging
+    assert window._active_tile_map().is_identity()  # the setting is honoured again
 
 
 def test_both_switches_are_dead_with_nothing_open(qtbot, tmp_path, monkeypatch) -> None:
-    """They are shown in the Edit menu as well as on the transform bar, and a
-    menu row does not inherit that bar's disabled state — so the no-document
+    """Both are Edit menu rows (the tool is a transform-bar button as well), and
+    a menu row does not inherit that bar's disabled state — so the no-document
     state has to reach the actions themselves, on a fresh window and again when
     the last entry closes."""
     from PySide6.QtWidgets import QMessageBox
@@ -272,6 +284,17 @@ def test_both_switches_are_dead_with_nothing_open(qtbot, tmp_path, monkeypatch) 
     )
     window._remove_entry(window._workspace.current)
     assert switches(window) == [False, False]
+
+
+def test_the_toolbar_button_keeps_the_short_rearrange_label(qtbot, tmp_path) -> None:
+    """One action, two labels: the Edit menu (and the F1 guide) name it beside
+    the other mode toggles, the bar button stays narrow. The split rides on
+    QToolButton taking its text from iconText, which is easy to undo by accident.
+    """
+    window = _window(qtbot, tmp_path)
+    button = window._transform_toolbar.widgetForAction(window._rearrange_action)
+    assert button.text() == "Rearrange"
+    assert window._rearrange_action.text() == "Toggle Rearrange Mode"
 
 
 def test_a_pixel_edit_writes_back_to_the_tiles_real_home(qtbot, tmp_path) -> None:

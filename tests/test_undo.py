@@ -434,3 +434,83 @@ def test_ctrl_z_shortcut_reaches_undo(qtbot, tmp_path) -> None:
     # app-wide nav event filter doesn't swallow the shortcut.
     qtbot.keyClick(window, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert window._offset == 0
+
+
+def test_pinning_a_selection_is_one_undoable_step_that_leaves_bytes_clean(
+    qtbot, tmp_path
+) -> None:
+    """Pinning is on the stack, but it is not an edit.
+
+    Both halves matter. It has to be undoable, because a mis-pinned selection is
+    tedious to reverse by hand. And it must not dirty the entry: no byte changed,
+    so a Write prompt afterwards would be asking about nothing.
+    """
+    window, _ = _open(qtbot, tmp_path)
+    entry = window._workspace.current
+    stack = window._undo_stack
+    before = stack.count()
+
+    window._set_linear_selection(4, 7)
+    window._subpalette.setValue(3)
+    window._pin_selection()
+
+    assert stack.count() == before + 1
+    assert not window._palette_regions.is_empty()
+    assert not entry.pixel_dirty  # display state, not an edit
+    pinned = window._palette_regions
+
+    stack.undo()
+    assert window._palette_regions.is_empty()
+    assert not entry.pixel_dirty
+    stack.redo()
+    assert window._palette_regions == pinned
+
+    # Pinning the same tiles to the same row again is not a second history step.
+    window._pin_selection()
+    assert stack.count() == before + 1
+
+
+def test_unpin_all_drops_every_region_and_arms_with_the_pinning(
+    qtbot, tmp_path
+) -> None:
+    """Both unpins hang off whether anything is *pinned*, which only the pin
+    gesture changes - so landing a set of regions is what has to re-arm them, not
+    the next selection change. Unpin All needs no selection at all, and is one
+    undo step back to the whole set."""
+    window, _ = _open(qtbot, tmp_path)
+    stack = window._undo_stack
+    assert not window._unpin_all_action.isEnabled()
+
+    window._set_linear_selection(0, 3)
+    window._subpalette.setValue(2)
+    window._pin_selection()
+    pinned = window._palette_regions
+    # Nothing about the selection changed, so a stale sync would leave these grey.
+    assert window._unpin_palette_action.isEnabled()
+    assert window._unpin_all_action.isEnabled()
+
+    before = stack.count()
+    window._clear_selection()
+    window._unpin_all()
+    assert window._palette_regions.is_empty()
+    assert stack.count() == before + 1
+    assert not window._unpin_all_action.isEnabled()
+
+    stack.undo()
+    assert window._palette_regions == pinned
+    assert window._unpin_all_action.isEnabled()
+
+
+def test_unpinning_only_clears_the_selected_tiles(qtbot, tmp_path) -> None:
+    """The interval split has to survive the round trip through the gesture."""
+    window, _ = _open(qtbot, tmp_path)
+    window._set_linear_selection(0, 7)
+    window._subpalette.setValue(2)
+    window._pin_selection()
+
+    window._set_linear_selection(2, 3)
+    window._unpin_selection()
+
+    area = window._doc.tile_width * window._doc.tile_height
+    rows = [window._palette_regions.row_at(t * area, 0) for t in range(8)]
+    assert rows == [2, 2, 0, 0, 2, 2, 2, 2]

@@ -272,6 +272,21 @@ class TransformMixin:
             block_label,
             *self._block_group.actions,
         ]
+        # Subpalette: the pin gestures the Palette and canvas menus also hold,
+        # as buttons. Added after every mode group so it lands to the right of
+        # whichever one is showing (a hidden group takes no width), and left
+        # visible in all three: pinning reads a tile selection, which pixel mode
+        # and the rearrange tool both still have. One enabled state for all three
+        # homes - _sync_pin_actions.
+        bar.addSeparator()
+        self._group_caption(
+            bar,
+            " Subpalette: ",
+            "Pin the selected tiles to the Subpal row on screen",
+        )
+        bar.addAction(self._pin_palette_action)
+        bar.addAction(self._unpin_palette_action)
+
         self._pixel_mode_bar_actions = [pixel_label, *self._pixel_group.actions]
         self._rearrange_bar_actions = [
             rearrange_label,

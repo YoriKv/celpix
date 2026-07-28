@@ -48,6 +48,14 @@ from celpix.ui.widgets import (
 # name alone asks for, wide enough that the offset field stays usable there.
 _SOURCE_SLOT_MIN_WIDTH = 58
 
+# The dock's rows carry no vertical margin of their own: every gap between them,
+# and the one above the first and below the last, is the column's own spacing and
+# margin. One number for all of it, so a row added or moved can't land on a
+# different rhythm than its neighbours.
+_ROW_GAP = 4
+# Horizontal inset for each row, matching the swatch grid's own left edge.
+_ROW_MARGIN = 4
+
 
 class PaletteDockMixin:
     """The palette dock's header, format row and readout - and per-mode visibility.
@@ -176,7 +184,7 @@ class PaletteDockMixin:
         source_slot.setMinimumWidth(_SOURCE_SLOT_MIN_WIDTH)
 
         header = QHBoxLayout()
-        header.setContentsMargins(4, 4, 4, 2)
+        header.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
         header.addWidget(self._palette_mode_combo)
         header.addWidget(source_slot)
         header.addStretch(1)
@@ -192,7 +200,7 @@ class PaletteDockMixin:
         self._quantize_palette_action.hide()
 
         format_row = QHBoxLayout()
-        format_row.setContentsMargins(4, 0, 4, 2)
+        format_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
         format_row.addWidget(self._palette_format_label)
         format_row.addWidget(self._palette_preset)
         format_row.addStretch(1)
@@ -200,14 +208,14 @@ class PaletteDockMixin:
         # Its own row under Format: it acts *on* the picked format rather than
         # being part of choosing it, and only Custom shows it at all.
         quantize_row = QHBoxLayout()
-        quantize_row.setContentsMargins(4, 0, 4, 2)
+        quantize_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
         quantize_row.addWidget(self._quantize_palette_action)
         quantize_row.addStretch(1)
 
         # Details readout for the panel's selected color. Selectable text so
         # values can be copied out.
         self._color_details = QLabel("No color selected")
-        self._color_details.setContentsMargins(4, 0, 4, 4)
+        self._color_details.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
         self._color_details.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -229,23 +237,52 @@ class PaletteDockMixin:
         # _sync_palette_export_action.
         self._export_palette_action = QPushButton("Export to File…")
         self._export_palette_action.setToolTip(
-            "Write these colors to a .pal file,\nencoded in the Format selected above"
+            "Write these colors to a .pal file,\nencoded in the Format row's codec"
         )
         self._export_palette_action.clicked.connect(self._export_palette_file)
+
+        # How the *next* palette file to come in is read - nothing more. A .pal
+        # records nothing about its own encoding, so reading one is always a
+        # guess; this is where the user makes it in advance, and it seeds each
+        # newly registered palette entry's codec. It deliberately does not reach
+        # back to whatever is already open: that palette has the Format row
+        # above, which names its encoding and re-reads it. Always live, since it
+        # is a reading choice rather than a property of anything on screen.
+        self._palette_import_preset = self._preset_combo(
+            Stage.INTERPRET_PALETTE, "bgr555"
+        )
+        self._palette_import_preset.setToolTip(
+            "How the next palette file opened is read\n"
+            "The Format row re-reads the one on screen"
+        )
+        self._palette_import_label = QLabel("Import as:")
+        self._palette_import_label.setToolTip(self._palette_import_preset.toolTip())
+        self._palette_import_label.setBuddy(self._palette_import_preset)
+
+        # A row each: the two are opposite directions through the same file
+        # format, and sharing a line left neither enough width at the dock's
+        # natural size.
+        import_row = QHBoxLayout()
+        import_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
+        import_row.addWidget(self._palette_import_label)
+        import_row.addWidget(self._palette_import_preset)
+        import_row.addStretch(1)
+
         export_row = QHBoxLayout()
-        export_row.setContentsMargins(4, 0, 4, 4)
+        export_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
         export_row.addWidget(self._export_palette_action)
         export_row.addStretch(1)
 
         container = QWidget()
         column = QVBoxLayout(container)
-        column.setContentsMargins(0, 0, 0, 0)
-        column.setSpacing(2)
+        column.setContentsMargins(0, _ROW_GAP, 0, _ROW_GAP)
+        column.setSpacing(_ROW_GAP)
         column.addLayout(header)
         column.addLayout(format_row)
         column.addLayout(quantize_row)
         column.addWidget(holder, 1)
         column.addWidget(self._color_details)
+        column.addLayout(import_row)
         column.addLayout(export_row)
 
         self._palette_dock = QDockWidget("Palette", self)
@@ -300,6 +337,18 @@ class PaletteDockMixin:
             Qt.ShortcutContext.WidgetShortcut
         )
         menu.addAction(self._palette_from_selection_action)
+
+        # Pinning is the other thing a selection can become palette-wise, so it
+        # belongs here rather than on a menu of its own.
+        menu.addSeparator()
+        menu.addAction(self._pin_palette_action)
+        menu.addAction(self._unpin_palette_action)
+        menu.addAction(self._unpin_all_action)
+        # Whether the pins are being *shown*, under the three that make them:
+        # it is the same subject, and a toggle is not a gesture on a selection.
+        menu.addSeparator()
+        self._build_show_regions_action()
+        menu.addAction(self._show_palette_regions_action)
 
     def _set_palette_mode(self, mode: PaletteMode) -> None:
         """Converge mode member, dropdown, and the per-mode header widgets

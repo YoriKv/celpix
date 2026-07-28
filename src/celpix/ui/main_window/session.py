@@ -262,6 +262,14 @@ class SessionMixin:
         self._tile_map = view.tile_map.bounded(entry.doc.tile_count)
         self._show_rearranged = view.show_rearranged
         self._sync_rearrange_actions()
+        # Pinned palette regions belong to the entry for the same reason. Stored
+        # unbounded — _active_palette_regions clips at render time against the
+        # picture and the palette that are actually loaded, so a region survives a
+        # codec switch that temporarily puts it out of range.
+        self._palette_regions = view.palette_regions
+        self._show_palette_regions = view.show_palette_regions
+        with signals_blocked(self._show_palette_regions_action):
+            self._show_palette_regions_action.setChecked(view.show_palette_regions)
         self._selected_tile = session.selected_tile
         self._selected_last = (
             session.selected_last

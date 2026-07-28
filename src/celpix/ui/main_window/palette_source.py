@@ -26,12 +26,14 @@ from PySide6.QtWidgets import (
 from celpix.core import emustate
 from celpix.core.address import format_hex
 from celpix.core.context import (
+    KEY_PALETTE_ERROR,
     KEY_SOURCE_OFFSET,
     PipelineContext,
 )
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
-from celpix.core.palette import FULL_PALETTE_COUNT, Palette
+from celpix.core.notices import warn
+from celpix.core.palette import FULL_PALETTE_COUNT, MISSING_COLOR, Palette
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import NO_RESHAPE, FileRef
@@ -62,6 +64,11 @@ from celpix.ui.widgets import (
 # console format behind them. The session default follows the last format
 # actually selected from there (:meth:`PaletteSourceMixin._set_session_palette_format`).
 DEFAULT_SESSION_PALETTE_FORMAT = "preset.palette.rgb888"
+
+# How many sentinel swatches an unreadable palette file opens on: one row of the
+# grid - enough to read as "these are not your colors" without pretending to a
+# length the file never gave us.
+_ERROR_PALETTE_COUNT = 16
 
 
 class PaletteSourceMixin:
@@ -190,21 +197,68 @@ class PaletteSourceMixin:
     # writes an edit back through a document, so with none there is nowhere to
     # put one - and the load modes that need a document are disabled
     # (_sync_palette_mode_items).
+    @staticmethod
+    def _palette_error(doc: Document | None) -> str | None:
+        """Why ``doc`` holds a placeholder palette, or None if it decoded.
+
+        See :data:`~celpix.core.context.KEY_PALETTE_ERROR`: the presence of the
+        key is what marks the colors on screen as ours rather than the file's.
+        """
+        if doc is None:
+            return None
+        value = doc.palette_ctx.get(KEY_PALETTE_ERROR)
+        return value if isinstance(value, str) else None
+
+    def _error_palette(
+        self, cfg: PathwayConfig, exc: PipelineError
+    ) -> tuple[pipeline.PaletteData, PathwayConfig]:
+        """A stand-in for a palette file that won't decode under ``cfg``'s format.
+
+        A ``.pal`` records nothing about its own encoding, so the format is a
+        guess until the user says otherwise - and a wrong guess (512 bytes of
+        two-byte colors read as three-byte ones) must not be a dead end. Refusing
+        the load would leave nothing open, and so no palette on screen whose
+        format could be corrected; it opens on a row of the magenta
+        missing-colour sentinel instead, and the dock's Import as… dropdown
+        re-reads the file under whatever format is named there.
+
+        **Read-only.** These colors are ours, not the file's, and the bytes they
+        would be encoded back into were never read - writing them would overwrite
+        a palette we failed to understand. The reason rides on the context twice
+        over: as a notice, so the files list marks the entry and its tooltip says
+        why, and as :data:`~celpix.core.context.KEY_PALETTE_ERROR`, which the
+        re-decode reads to hand writability back once the format is right.
+        """
+        ctx = PipelineContext()
+        ctx.set(KEY_PALETTE_ERROR, str(exc))
+        warn(
+            ctx,
+            f"Not readable as {cfg.interpret_preset_id}",
+            f"{exc}\nPick the encoding in the palette dock's\nImport as… dropdown.",
+            source="host",
+        )
+        return (
+            pipeline.PaletteData(
+                Palette([MISSING_COLOR] * _ERROR_PALETTE_COUNT), ctx, b""
+            ),
+            replace(cfg, write_enabled=False),
+        )
+
     def _load_palette_entry(self, entry: Entry) -> bool:
         """Read a PALETTE entry's file into its own palette-only document.
 
         The same load :meth:`_link_file_palette` performs for a graphic, minus
-        the mirroring - but reporting rather than raising, since the callers here
-        are gestures that should leave the view alone on a bad file.
+        the mirroring. False only when the bytes can't be read at all, which no
+        format choice would fix; a decode failure opens on the error palette
+        (:meth:`_error_palette`) so the format remains correctable.
         """
         cfg = self._file_palette_config(
-            entry.path, 0, entry.palette_preset_id or self._palette_preset_id()
+            entry.path, 0, entry.palette_preset_id or self._palette_import_preset_id()
         )
         try:
             loaded = pipeline.load_palette(cfg, self._registry)
         except PipelineError as exc:
-            self._report(exc)
-            return False
+            loaded, cfg = self._error_palette(cfg, exc)
         except OSError as exc:
             self._alert(f"Cannot read {entry.path}: {exc}", title="celPix - palette")
             return False
@@ -235,10 +289,21 @@ class PaletteSourceMixin:
             return False
         self._preview_palette = entry
         self._set_palette_mode(PaletteMode.FILE)
+        # Format names the palette on screen, so it follows the file being looked
+        # at rather than staying wherever the last graphic left it - and moving it
+        # from here re-reads this file (select_combo_data is signal-safe, so
+        # landing on it does not).
+        select_combo_data(
+            self._palette_preset, entry.doc.palette_config.interpret_preset_id
+        )
         self._refresh_palette_dock()
+        self._files_panel.refresh_entry(entry)  # its row carries the load's notices
+        error = self._palette_error(entry.doc)
         self.statusBar().showMessage(
-            f"{entry.name}: {len(entry.doc.palette)} colors - open pixel data to "
-            "edit them."
+            f"{entry.name}: {error} - pick the encoding in Import as…"
+            if error is not None
+            else f"{entry.name}: {len(entry.doc.palette)} colors - open pixel data "
+            "to edit them."
         )
         return True
 
@@ -504,9 +569,9 @@ class PaletteSourceMixin:
         The shared entry point for File ▸ Open palette data, a dropped ``.pal``
         and the dock's palette export. Registration only - putting one on screen
         is :meth:`_open_palette_data`, applying it to a graphic is the list's
-        double-click. The entry starts on the palette format
-        the dropdown is on right now - or ``preset_id``, for a caller that knows
-        the file's encoding because it just wrote it - and tracks the dropdown
+        double-click. The entry starts on the format the dock's Import as…
+        dropdown is on - or ``preset_id``, for a caller that knows the file's
+        encoding because it just wrote it - and tracks the format dropdown
         from then on whenever this file is the palette on screen
         (:meth:`_sync_palette_entry_format`); identity is the path, so re-adding
         an already-registered file is a no-op rather than a duplicate. ``quiet``
@@ -528,7 +593,7 @@ class PaletteSourceMixin:
             name=Path(path).name,
             kind=EntryKind.PALETTE,
             path=path,
-            palette_preset_id=preset_id or self._palette_preset_id(),
+            palette_preset_id=preset_id or self._palette_import_preset_id(),
         )
         self._push_command(AddEntryCommand(self, entry, f"add palette {entry.name}"))
         if not quiet:
@@ -618,18 +683,26 @@ class PaletteSourceMixin:
             try:
                 loaded = pipeline.load_palette(cfg, self._registry)
             except PipelineError as exc:
-                self._report(exc)
-                return False
+                # Same rescue as the standalone load: the graphic renders the
+                # sentinel rather than the gesture being refused, and the Format
+                # row - live here, because there *is* a document - re-reads the
+                # file under the right encoding.
+                loaded, cfg = self._error_palette(cfg, exc)
             entry.doc = Document.palette_only(
                 loaded.palette, cfg, loaded.ctx, loaded.data
             )
             edits = frozenset()
+        error = self._palette_error(entry.doc)
         self._commit_palette(
             cfg,
             loaded,
             mode=PaletteMode.FILE,
             label=label,
-            status=status(len(loaded.palette)),
+            status=(
+                f"{entry.name}: {error} - pick the encoding in the Format row"
+                if error is not None
+                else status(len(loaded.palette))
+            ),
             edits=edits,
         )
         return True
@@ -1331,8 +1404,15 @@ class PaletteSourceMixin:
         colors verbatim and has no source to re-read, so the combo only *relabels*
         it - recording the target format without touching a color. The one-shot
         conversion is the separate Quantize button (:meth:`_quantize_custom_palette`).
+
+        With no graphic open the dock is showing a palette file on its own, which
+        has no document to re-decode through - that goes through
+        :meth:`_reload_previewed_palette`, which re-reads the file instead.
         """
-        if self._doc is None or self._applying_undo:
+        if self._applying_undo:
+            return
+        if self._doc is None:
+            self._reload_previewed_palette()
             return
         if self._palette_mode is PaletteMode.CUSTOM:
             self._relabel_custom_format()
@@ -1349,6 +1429,27 @@ class PaletteSourceMixin:
         self._commit_palette(
             cfg, loaded, mode=self._palette_mode, label="change palette format"
         )
+
+    def _reload_previewed_palette(self) -> None:
+        """Re-read the previewed palette file under the Format dropdown.
+
+        The document-less half of :meth:`_reload_palette`. A previewed ``.pal``
+        has no document behind it, so the ordinary re-decode - which works
+        through :meth:`_palette_doc` - has nothing to run on; the format still
+        has to be changeable, because a file that decoded wrong (the error
+        palette) is otherwise stuck with no graphic to be corrected through.
+
+        Re-read rather than re-decoded: a preview is read-only, so its document
+        holds nothing an edit could have put there and nothing is lost by going
+        back to the file. Display state, so no undo step - the same reason
+        previewing one isn't a history step either.
+        """
+        entry = self._preview_palette
+        if entry is None:
+            return
+        entry.palette_preset_id = self._palette_preset_id()
+        entry.doc = None
+        self._preview_palette_file(entry)
 
     def _relabel_custom_format(self) -> None:
         """Record a new target format on a Custom palette, colors untouched.
@@ -1483,7 +1584,11 @@ class PaletteSourceMixin:
         cfg = PathwayConfig(
             source=source,
             interpret_preset_id=self._palette_preset_id(),
-            write_enabled=old.write_enabled,
+            # An error palette is read-only because its colors aren't the file's
+            # (:meth:`_error_palette`); re-decoding it is precisely the fix, so
+            # writability comes back with the read rather than being inherited
+            # from the failure.
+            write_enabled=old.write_enabled or self._palette_error(pal_doc) is not None,
         )
         try:
             loaded = pipeline.load_palette(cfg, self._registry)

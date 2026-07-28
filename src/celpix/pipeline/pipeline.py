@@ -442,6 +442,7 @@ def decode_and_compose(
     layout: BlockLayout,
     two_dimensional: bool,
     max_rows: int | None,
+    biases: list[int] | None = None,
 ):
     """Decode a pixel-byte buffer and lay the tiles out through an arrangement.
 
@@ -450,9 +451,10 @@ def decode_and_compose(
     at whatever origin the caller wants (a window of the doc's bytes for the live
     view, the whole file for export, a decompressed scratch for the overlay).
     ``max_rows`` caps the composed height (the live view's fixed window); ``None``
-    sizes to the data (export and the overlay show every tile). Returns
-    ``(grid, filled)`` — an index or direct-color grid, and the count of real
-    tiles (excluding any 2D-reflow / partial-tile padding) so a caller can
+    sizes to the data (export and the overlay show every tile). ``biases`` shifts
+    each slot's indices for a pinned subpalette (see :func:`compose_tiles`).
+    Returns ``(grid, filled)`` — an index or direct-color grid, and the count of
+    real tiles (excluding any 2D-reflow / partial-tile padding) so a caller can
     background the rest.
     """
     cols = layout.columns
@@ -468,7 +470,7 @@ def decode_and_compose(
     if tile_bytes and len(buffer) % tile_bytes:
         buffer = buffer + bytes(-len(buffer) % tile_bytes)
     tiles = engine.decode(buffer, params, PipelineContext()) if buffer else []
-    return compose_tiles(tiles, layout, max_rows), filled
+    return compose_tiles(tiles, layout, max_rows, biases), filled
 
 
 def _rows_needed(count: int, layout: BlockLayout) -> int:
@@ -488,7 +490,12 @@ def _rows_needed(count: int, layout: BlockLayout) -> int:
     return 1 + max(layout.slot_to_cell(s)[1] for s in range(start, count))
 
 
-def compose_tiles(tiles: list, layout: BlockLayout, max_rows: int | None):
+def compose_tiles(
+    tiles: list,
+    layout: BlockLayout,
+    max_rows: int | None,
+    biases: list[int] | None = None,
+):
     """Lay an already-decoded tile list out through an arrangement.
 
     The compose half of :func:`decode_and_compose`, split out because a
@@ -496,7 +503,27 @@ def compose_tiles(tiles: list, layout: BlockLayout, max_rows: int | None):
     byte buffer: the tiles on screen are gathered from wherever the map sends
     them, and only the placement is shared. ``max_rows`` caps the composed height
     (the live view's fixed window); ``None`` sizes to the data.
+
+    ``biases`` is one index shift per slot, the last step of rendering a pinned
+    subpalette region (:mod:`celpix.core.paletteregions`): the composed image
+    carries a single colour table, so a tile that must render through another
+    palette row has the row folded into its indices instead. It applies here
+    because this is where both render routes meet and where slot *k* is still
+    identifiable as ``tiles[k]`` — after composition the tiles are one buffer and
+    the block layout has scattered them. Direct-colour grids are left alone: they
+    carry their own ARGB and index no palette. ``None`` (the default) composes
+    exactly as before, which is every path that has nothing pinned.
     """
+    if biases:
+        # Indexed by slot rather than zipped: a short bias list must leave the
+        # remaining tiles composed as they are, not truncate the window to it.
+        count = len(biases)
+        tiles = [
+            tile.shifted(biases[i])
+            if i < count and biases[i] and tile.bytes_per_pixel == 1
+            else tile
+            for i, tile in enumerate(tiles)
+        ]
     cols = layout.columns
     need_rows = _rows_needed(len(tiles), layout)
     canvas_rows = need_rows if max_rows is None else max(1, min(max_rows, need_rows))

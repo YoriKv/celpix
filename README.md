@@ -35,12 +35,12 @@ Grab the build for your platform from the [Releases page](https://github.com/Yor
 
 ### First steps
 
-1. **Open a file** - File -> Open, or drag a ROM/binary onto the window.
+1. **Open a file** - File -> Open pixel data, or drag a ROM/binary onto the window.
 2. **Find the graphics** - pick a pixel format preset, then scroll, page through,
    or type in an offset.
 3. **Pick the palette** - use the Palette panel to load a palette from an offset
-   using an address or Load from Selection (`P`), from a pal or CGRAM dump file,
-   or from emulation state.
+   using an address or Palette from Selection (`P`), from a pal or CGRAM dump
+   file, or from emulation state.
 4. **Edit** - draw in tile or pixel mode, paste from an external image editor, or
    import a PNG.
 5. **Write/Save** - write pixel and palette data back to the original file. Save

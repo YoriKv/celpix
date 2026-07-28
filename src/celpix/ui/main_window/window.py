@@ -80,6 +80,7 @@ from celpix.ui.main_window.entries import EntriesMixin
 from celpix.ui.main_window.interpretation import InterpretationMixin
 from celpix.ui.main_window.navigation import NavigationMixin
 from celpix.ui.main_window.palette_dock import PaletteDockMixin
+from celpix.ui.main_window.palette_regions import PaletteRegionsMixin
 from celpix.ui.main_window.palette_source import (
     DEFAULT_SESSION_PALETTE_FORMAT,
     PaletteSourceMixin,
@@ -132,6 +133,7 @@ class MainWindow(
     TransformMixin,
     PixelEditMixin,
     RearrangeMixin,
+    PaletteRegionsMixin,
     SessionMixin,
     RenderingMixin,
     EntriesMixin,
@@ -274,6 +276,9 @@ class MainWindow(
         # Likewise the rearrangement: _refresh_view renders through the map, so
         # it has to be there before anything can draw.
         self._init_rearrange()
+        # And the pinned palette regions, for the same reason: _refresh_view asks
+        # them for every slot's subpalette row before it can draw anything.
+        self._init_palette_regions()
 
         self._canvas = Canvas()
         self._overlay = DecompressOverlay(self)
@@ -340,21 +345,19 @@ class MainWindow(
         canvas_row = QHBoxLayout()
         canvas_row.setContentsMargins(0, 0, 0, 0)
         canvas_row.setSpacing(0)
+        # The offset bar belongs to this row, not to the whole column: sharing the
+        # canvas's row keeps it exactly as tall as the paint surface instead of
+        # running up past it alongside the interpretation/transform toolbars.
+        canvas_row.addWidget(self._tile_offset_bar)
         canvas_row.addWidget(scroll, 1)
         canvas_row.addWidget(self._build_tools_bar(), 0, Qt.AlignmentFlag.AlignTop)
         canvas_column.addLayout(canvas_row, 1)
-
-        view_row = QHBoxLayout()
-        view_row.setContentsMargins(0, 0, 0, 0)
-        view_row.setSpacing(0)
-        view_row.addWidget(self._tile_offset_bar)
-        view_row.addLayout(canvas_column, 1)
 
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addLayout(view_row, 1)
+        layout.addLayout(canvas_column, 1)
         layout.addWidget(self._build_navbar())
         self.setCentralWidget(central)
 
@@ -694,6 +697,12 @@ class MainWindow(
 
         file_menu.addSeparator()
 
+        new_project = QAction("New Pro&ject", self)
+        new_project.setToolTip("Close everything and start a fresh session")
+        new_project.setShortcut(QKeySequence.StandardKey.New)  # Ctrl+N
+        new_project.triggered.connect(self._new_project)
+        file_menu.addAction(new_project)
+
         open_project = QAction("&Open Project…", self)
         open_project.setToolTip("Open a .celpix project")
         open_project.setShortcut(QKeySequence.StandardKey.Open)  # Ctrl+O
@@ -771,7 +780,9 @@ class MainWindow(
         file_menu.addSeparator()
 
         self._write_action = QAction("&Write", self)
-        self._write_action.setToolTip("Write this file or slice back to disk")
+        self._write_action.setToolTip(
+            "Write this file or slice back to disk,\nwith the palette file it shows"
+        )
         self._write_action.setShortcut(QKeySequence("Ctrl+W"))
         self._write_action.triggered.connect(self._write_current)
         self._write_action.setEnabled(False)
@@ -1029,8 +1040,7 @@ class MainWindow(
         self._block_grid = QAction("&Block Grid", self, checkable=True)
         self._block_grid.setToolTip(
             "Put the blue lines on the arrangement's Block W×H\n"
-            "instead of the step the grid marks without it\n"
-            "(the 8-tile square, or the tile at Pixel scale)"
+            "instead of the default 8-tile square"
         )
         self._block_grid.setChecked(load_bool_setting(BLOCK_GRID_KEY, False))
         self._block_grid.toggled.connect(self._on_grid_change)

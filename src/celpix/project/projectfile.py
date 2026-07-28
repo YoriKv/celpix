@@ -35,6 +35,7 @@ from os.path import (
 
 from celpix.core.arrangement import BLOCK_ORDERS
 from celpix.core.document import ViewOptions
+from celpix.core.paletteregions import PaletteRegion, PaletteRegions
 from celpix.core.tilemap import TileMap
 from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE, RAW_CONTAINER
 from celpix.project.workspace import (
@@ -206,6 +207,16 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
                     list(o) for o in view.tile_map.orientations
                 ]
             data["view"]["show_rearranged"] = view.show_rearranged
+        # Same rule for pinned palette regions: written only when something is
+        # pinned, so a project that never used the feature is byte-identical.
+        # Spans are pixel runs in the document's own picture space (pixel 0 is its
+        # first pixel), which is what makes them meaningful under a planar codec
+        # where a byte is no run of pixels at all.
+        if not view.palette_regions.is_empty():
+            data["view"]["palette_regions"] = [
+                [r.start, r.length, r.row] for r in view.palette_regions.regions
+            ]
+            data["view"]["show_palette_regions"] = view.show_palette_regions
     palette = palette_source_for(entry)
     if palette is not None:
         data["palette"] = _palette_dict(palette, base_dir)
@@ -339,7 +350,35 @@ def _view_from(raw: object) -> ViewOptions | None:
         bitmap_width=_int(raw.get("bitmap_width"), defaults.bitmap_width),
         tile_map=_tile_map(raw),
         show_rearranged=bool(raw.get("show_rearranged", defaults.show_rearranged)),
+        palette_regions=_palette_regions(raw),
+        show_palette_regions=bool(
+            raw.get("show_palette_regions", defaults.show_palette_regions)
+        ),
     )
+
+
+def _palette_regions(raw: dict) -> PaletteRegions:
+    """Stored pinned regions, skipping any triple that isn't three ints.
+
+    Tolerant like everything else on this path: a malformed span is dropped and
+    the rest of the entry opens. ``from_regions`` normalizes whatever survives, so
+    a hand-edited file with overlapping or unsorted spans still loads to a
+    well-formed set rather than one the lookup can't trust.
+    """
+    items = raw.get("palette_regions")
+    if not isinstance(items, list):
+        return PaletteRegions()
+    parsed = []
+    for item in items:
+        if not isinstance(item, list | tuple) or len(item) != 3:
+            continue
+        try:
+            start, length, row = (int(v) for v in item)
+        except (TypeError, ValueError):
+            continue
+        if length > 0 and start >= 0 and row >= 0:
+            parsed.append(PaletteRegion(start, length, row))
+    return PaletteRegions.from_regions(parsed)
 
 
 def _tile_map(raw: dict) -> TileMap:

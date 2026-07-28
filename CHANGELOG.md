@@ -2,7 +2,11 @@
 
 ## v0.3.3 - unreleased
 
-- Added dark mode
+- **Dark Mode**: added
+- **Palette**: pinned palette regions, select tiles to pin to the current palette
+  row/subpalette and keep that value through global palette changes. Also cleaned
+  up palette imports and format selection
+- Right click menu and menu bar cleanup
 
 ## v0.3.2 - 2026-07-27
 

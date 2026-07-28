@@ -435,7 +435,15 @@ class PixelEditMixin:
             self._pen_argb = value
             self.statusBar().showMessage(f"Picked color #{value & 0xFFFFFFFF:08X}.")
         else:
-            base = self._palette_base()
+            # Against the row the pixel is *shown* through, which inside a pinned
+            # palette region is not the view's own (see _pinned_palette_base).
+            # Sampling has to name the colour under the cursor, or picking inside a
+            # pinned region would hand back a colour that is nowhere on screen.
+            base = self._pinned_palette_base(x, y)
+            # select_index moves the active subpalette to the entry it selects, so
+            # picking inside a pinned region also makes that row the drawing row —
+            # which keeps the pen's stored index (selected - base) equal to the
+            # value that was picked.
             self._palette_panel.select_index(base + value)
             self.statusBar().showMessage(f"Picked color index {value}.")
         # The direct-colour branch sets the pen behind the palette panel's back,

@@ -144,6 +144,17 @@ class RearrangeMixin:
         """
         return self._doc is not None and not self._two_d.isChecked()
 
+    def _showing_rearranged(self) -> bool:
+        """Whether the view is on the rearranged order rather than the file's.
+
+        The setting, **or** the tool being armed. Dragging tiles around a view
+        that is showing the file's own order would be editing a map nobody can
+        see, so the tool overrides the setting for as long as it is armed rather
+        than rewriting it — turn the tool off and the view goes back to whatever
+        the user asked for.
+        """
+        return self._show_rearranged or self._rearranging
+
     def _active_tile_map(self) -> TileMap:
         """The rearrangement in force for reading and writing tiles.
 
@@ -154,32 +165,39 @@ class RearrangeMixin:
         pattern always gets (see :meth:`_rearrange_available`) — the map is kept,
         not discarded, so leaving 2D brings the rearrangement back.
         """
-        if not self._rearrange_available() or not self._show_rearranged:
+        if not self._rearrange_available() or not self._showing_rearranged():
             return TileMap()
         return self._rearrange_preview or self._tile_map
 
     # -- toolbar -----------------------------------------------------------
     def _build_rearrange_actions(self, bar) -> None:  # noqa: ANN001 — a QToolBar
-        """The two rearrange actions, beside the edit-mode toggle at the bar's end.
+        """The two rearrange actions: the tool on ``bar``, the view toggle in the
+        Edit menu.
 
-        They belong together: one arms the tool that *makes* a rearrangement, the
-        other says whether the view is showing it. Both are whole-surface
-        switches like Pixel Mode, which is why they sit past the spacer rather
-        than among the transform groups.
+        Only the tool is a switch you reach for mid-gesture, so only it earns a
+        place beside Pixel Mode past the bar's spacer. Whether the view shows a
+        rearrangement is a setting you make once — and the tool overrides it
+        while armed anyway (:meth:`_showing_rearranged`) — so it lives on the
+        menu, which is also where the F1 guide reads it from.
 
         ``R``/``Shift+R`` are set as shortcuts for the label they put in the menu
         and the F1 guide, but with a widget context so they never fire: the bare
         letters are routed by the app-wide event filter (``_handle_nav_key``),
         which yields to focused text inputs — the same treatment View ▸ Grid gets.
         """
-        self._rearrange_action = QAction("Rearrange", self)
+        # Two labels for the one action: the Edit menu (and the F1 guide, which
+        # reads it) name it the way the mode toggles beside it are named, while
+        # the toolbar button — which QToolButton takes from iconText — keeps the
+        # short form so it doesn't stretch the bar.
+        self._rearrange_action = QAction("Toggle Rearrange Mode", self)
+        self._rearrange_action.setIconText("Rearrange")
         self._rearrange_action.setCheckable(True)
         self._rearrange_action.setShortcut(QKeySequence("R"))
         self._rearrange_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
         self._rearrange_action.setToolTip(REARRANGE_TIP)
         self._rearrange_action.toggled.connect(self._set_rearranging)
         bar.addAction(self._rearrange_action)
-        self._show_rearranged_action = QAction("Rearranged View", self)
+        self._show_rearranged_action = QAction("Show Rearranged Tiles", self)
         self._show_rearranged_action.setCheckable(True)
         self._show_rearranged_action.setChecked(True)
         self._show_rearranged_action.setShortcut(QKeySequence("Shift+R"))
@@ -187,10 +205,10 @@ class RearrangeMixin:
             Qt.ShortcutContext.WidgetShortcut
         )
         self._show_rearranged_action.setToolTip(
-            "Show the rearranged order, or the file's own (Shift+R)"
+            "Show the rearranged order, or the file's own (Shift+R)\n"
+            "Forced on while the Rearrange tool is armed"
         )
         self._show_rearranged_action.toggled.connect(self._set_show_rearranged)
-        bar.addAction(self._show_rearranged_action)
 
     def _toggle_rearranging(self) -> None:
         """The ``R`` key. Goes through the action so the key and the button can
@@ -212,11 +230,14 @@ class RearrangeMixin:
         tile are the same overlay, and a tile moved out from under pixels still in
         the air would leave them hovering over a tile they were never lifted from.
 
-        It forces the rearranged view on as well — the tool has nothing to say
-        about the file's own order, and silently editing a map nobody can see is
-        worse than switching the view for them — and Rectangle selection with it,
-        since a linear run is a run through storage and has no shape a drag could
-        carry (see ``SelectionMixin._sync_selection_shape``).
+        The view follows for as long as the tool is armed - the tool has nothing
+        to say about the file's own order, and silently editing a map nobody can
+        see is worse than showing it - but that is an override
+        (:meth:`_showing_rearranged`), not a write: Show Rearranged Tiles is left
+        exactly where the user set it, and disarming honours it again. Rectangle
+        selection does change, since a linear run is a run through storage and
+        has no shape a drag could carry
+        (see ``SelectionMixin._sync_selection_shape``).
         """
         if self._rearranging == on:
             return
@@ -224,8 +245,6 @@ class RearrangeMixin:
             # Reads _rearranging, still False here, so the disarm inside is a
             # no-op and the two mode switches can't bounce off each other.
             self._set_edit_mode(EditMode.TILE)
-            if not self._show_rearranged:
-                self._show_rearranged_action.setChecked(True)
         self._rearranging = on
         self._cancel_rearrange_drag()
         self._canvas.set_rearranging(on)
@@ -237,13 +256,15 @@ class RearrangeMixin:
         self._sync_rearrange_actions()
 
     def _set_show_rearranged(self, on: bool) -> None:
-        """Switch between the rearranged order and the file's own."""
+        """Switch between the rearranged order and the file's own.
+
+        Turning it off while the tool is armed doesn't disarm it: the tool
+        overrides the setting anyway, so the view stays rearranged and the choice
+        takes effect when the tool is put down.
+        """
         if self._show_rearranged == on:
             return
         self._show_rearranged = on
-        if not on:
-            # Nothing to drag when the positions on screen are the file's.
-            self._rearrange_action.setChecked(False)
         self._sync_rearrange_actions()
         if self._doc is not None:
             self._refresh_view()

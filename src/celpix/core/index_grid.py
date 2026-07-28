@@ -13,7 +13,20 @@ Qt-free.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from celpix.core.grid import PixelGrid
+
+
+@lru_cache(maxsize=256)
+def _shift(bias: int) -> bytes:
+    """The 256-byte translation map that adds ``bias`` to an index, saturating.
+
+    Cached because a window holds at most a handful of distinct biases (one per
+    pinned subpalette row on screen) and rebuilding the map per tile would cost
+    more than the translate it feeds.
+    """
+    return bytes(min(255, i + bias) for i in range(256))
 
 
 class IndexGrid(PixelGrid):
@@ -35,3 +48,23 @@ class IndexGrid(PixelGrid):
         # Indices are one byte; mask so a caller passing a wider int can't corrupt
         # neighbouring pixels via bytearray's range check.
         self._data[y * self._width + x] = value & 0xFF
+
+    def shifted(self, bias: int) -> IndexGrid:
+        """A new grid with every index moved up by ``bias``.
+
+        How a pinned subpalette reaches the screen: the render bridge builds one
+        colour table for the *whole* image, so a tile that must render through a
+        different palette row cannot be given its own table — the row moves into
+        the indices instead (``docs/design/palette-editing.md``). Purely a
+        rendering step; nothing that writes bytes ever sees a shifted grid.
+
+        Done with :meth:`bytes.translate` against a cached 256-byte map rather
+        than a per-pixel loop: a refresh shifts every visible tile, and at C speed
+        that is a memcpy-shaped cost instead of a Python one. Indices that would
+        run past 255 saturate — unreachable once the row is clamped to the palette
+        (``row * 2**bpp + index <= 255`` always holds then), so this only keeps a
+        hand-edited project file from raising instead of rendering.
+        """
+        if not bias:
+            return self
+        return IndexGrid(self._width, self._height, self._data.translate(_shift(bias)))

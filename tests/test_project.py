@@ -7,6 +7,7 @@ from os.path import normcase, samefile
 
 from celpix.core.document import Document, ViewOptions
 from celpix.core.palette import Palette
+from celpix.core.paletteregions import PaletteRegions
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import RAW_CONTAINER, FileRef
 from celpix.project.projectfile import (
@@ -425,6 +426,73 @@ def test_reshape_round_trips_and_the_default_is_omitted(tmp_path) -> None:
     loaded_file, loaded_slice = load_project(str(project)).entries
     assert loaded_file.reshape_id == "reshape.split-words-2"
     assert loaded_slice.reshape_id == "reshape.split-planes-2"
+
+
+def test_palette_regions_round_trip_and_an_unpinned_view_omits_them(tmp_path) -> None:
+    """Pinned regions persist; a project that pinned nothing carries no trace.
+
+    Stored as pixel runs in the document's own picture space, so a triple reads as
+    "these pixels, this row" and stays hand-editable.
+    """
+    rom = tmp_path / "gfx.bin"
+    rom.write_bytes(b"\x00" * 256)
+    ws = Workspace()
+    entry = ws.open_file(str(rom))
+    entry.session = _session()
+    entry.doc = _doc(FileRef(str(rom)), ViewOptions())
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert "palette_regions" not in raw["entries"][0]["view"]
+    assert "show_palette_regions" not in raw["entries"][0]["view"]
+
+    entry.doc.view.palette_regions = PaletteRegions().assigned([(64, 32), (160, 16)], 3)
+    entry.doc.view.show_palette_regions = False
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert raw["entries"][0]["view"]["palette_regions"] == [[64, 32, 3], [160, 16, 3]]
+    assert raw["entries"][0]["view"]["show_palette_regions"] is False
+
+    restored = load_project(str(project)).entries[0]
+    assert restored.pending_view.palette_regions == entry.doc.view.palette_regions
+    assert restored.pending_view.show_palette_regions is False
+
+
+def test_malformed_palette_regions_are_skipped_not_raised(tmp_path) -> None:
+    """A hand-edited file with a bad span opens without it, not with an error.
+
+    Overlapping and unsorted spans are normalized too, so what loads is always a
+    set the lookup can trust rather than one it has to defend against. Overlaps
+    resolve earlier-wins, which is what makes the result depend only on the spans
+    themselves and not on the order a hand-edited file happens to list them in.
+    """
+    rom = tmp_path / "gfx.bin"
+    rom.write_bytes(b"\x00" * 256)
+    ws = Workspace()
+    entry = ws.open_file(str(rom))
+    entry.session = _session()
+    entry.doc = _doc(FileRef(str(rom)), ViewOptions())
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    raw["entries"][0]["view"]["palette_regions"] = [
+        [64, 32],  # too short
+        ["x", 1, 2],  # not ints
+        [96, 0, 1],  # empty span
+        [160, 16, 2],
+        [150, 20, 5],  # unsorted, and overlaps the one above
+    ]
+    project.write_text(json.dumps(raw), encoding="utf-8")
+
+    view = load_project(str(project)).entries[0].pending_view
+    # The span starting at 150 is the earlier one, so it keeps its whole extent
+    # and the one at 160 is clipped to what is left of it.
+    assert [(r.start, r.length, r.row) for r in view.palette_regions.regions] == [
+        (150, 20, 5),
+        (170, 6, 2),
+    ]
 
 
 def test_a_regions_extra_files_survive_a_project_round_trip(tmp_path) -> None:

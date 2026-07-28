@@ -41,6 +41,7 @@ from PySide6.QtGui import QUndoCommand
 from celpix.core.context import PipelineContext
 from celpix.core.document import Document
 from celpix.core.palette import Palette
+from celpix.core.paletteregions import PaletteRegions
 from celpix.core.tilemap import TileMap
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
@@ -160,6 +161,47 @@ class TileMapCommand(QUndoCommand):
         with self._window._undo_apply():
             if self._window._ensure_current(self._entry):
                 self._window._set_tile_map(self._before)
+
+
+class PaletteRegionsCommand(QUndoCommand):
+    """One pin/unpin of palette regions, as before/after sets.
+
+    Sibling of :class:`TileMapCommand` in every respect that matters: a pinned
+    region changes no bytes, so this **stamps no revision** and undoing it leaves
+    the document exactly as dirty — or as clean — as it was. It is on the stack
+    all the same, because pinning is an interaction the user will expect Ctrl+Z to
+    take back, and a mis-pinned rectangle is tedious to undo by hand. It does make
+    the *project* unsaved, which needs nothing here: that is computed by
+    re-serializing and diffing.
+
+    The sets are whole values rather than a delta. They hold only the pinned spans
+    — a handful however large the file — so a snapshot is cheap, and restoring one
+    cannot drift the way replaying a sequence of pins and unpins could.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        text: str,
+        before: PaletteRegions,
+        after: PaletteRegions,
+    ) -> None:
+        super().__init__(text)
+        self._window = window
+        self._entry = entry
+        self._before = before
+        self._after = after
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            if self._window._ensure_current(self._entry):
+                self._window._set_palette_regions(self._after)
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            if self._window._ensure_current(self._entry):
+                self._window._set_palette_regions(self._before)
 
 
 class PixelConfigCommand(QUndoCommand):

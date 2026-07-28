@@ -10,6 +10,12 @@ palette window: the stored index byte maps straight to a color, so a palette or
 subpalette change is just a new color table, no re-rasterization. A direct-color
 grid (:class:`~celpix.core.argb_grid.ArgbGrid`) skips the palette entirely — its
 buffer is already ``Format_ARGB32``'s layout, so it is wrapped, not converted.
+
+One image carries one colour table, so a view with **pinned palette regions**
+(:mod:`celpix.core.paletteregions`) — where different tiles render through
+different subpalette rows — cannot express the row in the table. There the row
+travels in the indices instead and the table is the plain palette:
+:func:`render_pinned`.
 """
 
 from __future__ import annotations
@@ -33,6 +39,25 @@ def render(grid, palette: Palette, subpalette_base: int = 0) -> QImage:
     # through. A too-short palette yields the magenta sentinel per Palette.color.
     table = [palette.color(subpalette_base + i) for i in range(256)]
     return indexed_image(grid, table)
+
+
+def render_pinned(grid, palette: Palette) -> QImage:
+    """Rasterize ``grid`` when its indices already carry their subpalette row.
+
+    The counterpart of :func:`render` for a view with pinned palette regions
+    (:mod:`celpix.core.paletteregions`). There the row cannot live in the colour
+    table, because one image has one table and the whole point is that different
+    tiles render through different rows — so the row is folded into the *indices*
+    upstream (``IndexGrid.shifted``) and the table becomes the palette itself,
+    unoffset. An unpinned tile is shifted by the view's own row, so the two paths
+    agree pixel for pixel wherever nothing is pinned.
+
+    A direct-colour grid never carries indices, so it renders exactly as
+    :func:`render` would.
+    """
+    if grid.bytes_per_pixel == 4:
+        return _render_argb(grid)
+    return indexed_image(grid, [palette.color(i) for i in range(256)])
 
 
 def indexed_image(grid, color_table: list[int]) -> QImage:

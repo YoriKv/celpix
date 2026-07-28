@@ -4406,6 +4406,55 @@ def test_the_dock_previews_a_palette_file_read_only_with_nothing_open(
     assert window._palette_panel._colors == list(window._doc.palette.colors)
 
 
+def test_a_palette_file_that_wont_decode_opens_and_import_as_re_reads_it(
+    qtbot, tmp_path
+) -> None:
+    """A ``.pal`` records nothing about its own encoding, so the format is a
+    guess - and a wrong guess must not be a dead end. 512 bytes of two-byte
+    colors read as three-byte ones cannot decode at all; it opens on the sentinel
+    palette, read-only so the colors we invented can't be written over the file,
+    and the Format dropdown re-reads it - which with no graphic open means
+    re-reading the file, there being no document to re-decode through.
+    """
+    from celpix.core.palette import MISSING_COLOR
+    from celpix.project.workspace import EntryKind, entry_notices
+
+    pal = tmp_path / "glyphs.pal"
+    pal.write_bytes(bytes((i * 7) & 0xFF for i in range(512)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    def pick(combo, preset_id: str) -> None:
+        # Not select_combo_data: that is signal-safe by design, and this has to
+        # be the user's own pick, signal and all.
+        combo.setCurrentIndex(combo.findData(preset_id))
+
+    pick(window._palette_import_preset, "preset.palette.rgb888")
+    window._open_palette_data(str(pal))
+
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    assert window._preview_palette is entry
+    assert "not a multiple of entry size 3" in window._palette_error(entry.doc)
+    assert list(entry.doc.palette.colors) == [MISSING_COLOR] * 16
+    assert not entry.doc.palette_config.write_enabled
+    assert entry_notices(entry)  # the files row says why, not just the status line
+    # Format names the palette on screen, so it landed on what the file was read
+    # with rather than on the dock's default.
+    assert window._palette_preset.currentData() == "preset.palette.rgb888"
+
+    pick(window._palette_preset, "preset.palette.bgr555")
+
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    assert window._palette_error(entry.doc) is None
+    assert len(entry.doc.palette) == 256
+    assert window._palette_panel._colors == list(entry.doc.palette.colors)
+    # Writability comes back with the read: the file is a real palette again.
+    assert entry.doc.palette_config.write_enabled
+    assert entry.palette_preset_id == "preset.palette.bgr555"
+    # Import as… governs the next file read, and only that - it stayed put.
+    assert window._palette_import_preset.currentData() == "preset.palette.rgb888"
+
+
 def test_write_saves_the_graphic_and_the_file_palette_it_shows(qtbot, tmp_path) -> None:
     """Ctrl+W saves what is on screen - which includes the .pal being rendered.
 
@@ -4522,6 +4571,37 @@ def test_removing_a_used_file_palette_converts_graphics_to_custom(
     assert restored is not None and restored.kind is EntryKind.PALETTE
     assert graphic.session.palette_mode is PaletteMode.FILE
     assert list(graphic.doc.palette.colors) == colors_before
+
+
+def test_new_project_returns_the_window_to_the_launch_state(qtbot, tmp_path) -> None:
+    """New Project is the project-load path onto an empty workspace, so
+    everything tied to the old session goes with it - not just the list. A kept
+    undo stack would point at discarded entries, and a kept project path would
+    aim the next Save at the project that was just closed.
+    """
+    rom = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    window._workspace.add_slice(str(rom), "slice", 64, 64)
+    window._workspace.hidden_pixel_presets = {"snes-2bpp"}
+    # Saved first, so neither the unsaved-project nor the unsaved-bytes gate has
+    # anything to ask about (both are covered by the load path's own tests).
+    window._save_project_to(str(tmp_path / "hack.celpix"))
+    assert window._undo_stack.count()  # opening the file was a command
+
+    window._new_project()
+
+    assert window._workspace.entries == []
+    assert window._workspace.current is None
+    assert window._doc is None
+    assert window._undo_stack.count() == 0
+    assert window._project_path is None and window._saved_project is None
+    assert window._workspace.hidden_pixel_presets == set()
+    # A clean slate rather than a half-closed one: the next open behaves as it
+    # would on a fresh launch.
+    window._load_pixel(str(rom))
+    assert window._doc is not None
 
 
 def test_project_reload_relinks_a_file_palette_to_its_entry(qtbot, tmp_path) -> None:
@@ -5663,7 +5743,7 @@ def test_the_help_menu_builds_its_dialogs_and_documents_both_key_styles(
     assert dict(sections["View"])["Zoom In"].endswith("/ Ctrl + Scroll Up")
     # Keys are rendered as native text, so the spelling is platform-dependent
     # ("Shift+R" everywhere, "⇧R" on macOS).
-    assert dict(sections["Edit"])["Rearranged View"] == QKeySequence(
+    assert dict(sections["Edit"])["Show Rearranged Tiles"] == QKeySequence(
         "Shift+R"
     ).toString(QKeySequence.SequenceFormat.NativeText)
     assert dict(sections["Pixel Tools"]) == {s.label: s.key for s in TOOL_SPECS}
@@ -6020,3 +6100,88 @@ def test_file_labels_count_the_files_a_region_joins(qtbot, tmp_path) -> None:
     sliced = window._workspace.add_slice(str(chips[0]), "gfx", 64, 64)
     assert sliced.extra_paths == entry.extra_paths
     assert panel._items[sliced].text(0) == "gfx"
+
+
+# -- pinned palette regions (docs/design/palette-editing.md) ----------------
+def test_a_pinned_region_renders_through_its_own_row(qtbot, tmp_path) -> None:
+    """The point of the feature: two rows on screen at once.
+
+    Asserted on the canvas image rather than on the model, because the whole
+    difficulty is that one QImage carries one colour table — the row has to reach
+    the screen through the *indices*, and only the rendered pixels prove it did.
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))  # 8 SNES 4bpp tiles
+    window._columns.setValue(8)
+    window._rows.setValue(1)
+
+    unpinned = window._canvas._image.copy()
+
+    # Pin the second half of the sheet to row 2; the first half keeps row 0.
+    window._set_linear_selection(4, 7)
+    window._subpalette.setValue(2)
+    window._pin_selection()
+    window._subpalette.setValue(0)
+    pinned = window._canvas._image
+
+    # Tiles 0-3 are untouched, tiles 4-7 recolour.
+    assert pinned.pixelColor(4, 4) == unpinned.pixelColor(4, 4)
+    assert pinned.pixelColor(36, 4) != unpinned.pixelColor(36, 4)
+    # And the pinned half shows exactly what row 2 would show everywhere.
+    window._subpalette.setValue(2)
+    all_row_2 = window._canvas._image
+    assert pinned.pixelColor(36, 4) == all_row_2.pixelColor(36, 4)
+
+    # The toggle takes it back out without discarding it.
+    window._subpalette.setValue(0)
+    window._show_palette_regions_action.setChecked(False)
+    assert window._canvas._image.pixelColor(36, 4) == unpinned.pixelColor(36, 4)
+    assert not window._palette_regions.is_empty()
+
+
+def test_a_pinned_region_follows_the_picture_across_a_bit_depth_switch(
+    qtbot, tmp_path
+) -> None:
+    """The pixel anchor, end to end through the window.
+
+    Pin two tiles at 4bpp, reinterpret the same file at 2bpp. Both codecs cut 8x8
+    tiles, so the region still covers tiles 2-3 — the colouring stays where the
+    user put it on screen, even though those tiles now hold different bytes.
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._set_linear_selection(2, 3)
+    window._subpalette.setValue(1)
+    window._pin_selection()
+
+    window._apply_pixel_config("preset.pixel.nes-2bpp", 0)
+    assert window._doc.bytes_per_tile == 16  # the bytes were re-cut...
+    area = window._doc.tile_width * window._doc.tile_height
+    rows = [window._palette_regions.row_at(t * area, 0) for t in range(8)]
+    assert rows == [0, 0, 1, 1, 0, 0, 0, 0]  # ...the pinned tiles were not
+
+
+def test_export_honours_pinned_regions_and_widens_its_table(qtbot, tmp_path) -> None:
+    """A pinned export needs a table spanning every row it uses, not one row.
+
+    Sized to the highest row actually pinned rather than blindly to 256, so a
+    two-row sheet stays a small indexed PNG.
+    """
+    from celpix.ui import export
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._set_linear_selection(4, 7)
+    window._subpalette.setValue(2)
+    window._pin_selection()
+    window._subpalette.setValue(0)
+
+    image = export.document_image(window._doc, window._registry)
+    # Rows 0..2 are reachable, so three 16-entry blocks - not 16 and not 256.
+    assert len(image.colorTable()) == 48
+    # The pinned half of the sheet carries its row in the index itself.
+    assert image.pixelIndex(4, 4) < 16
+    assert 32 <= image.pixelIndex(36, 4) < 48

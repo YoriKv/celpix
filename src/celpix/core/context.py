@@ -46,6 +46,13 @@ KEY_DECOMPRESS_PARTIAL = "compression.allow-partial"
 # extent, not a truncation point. Distinguishes "the whole structure is in
 # view" from a best-effort partial decode.
 KEY_DECOMPRESS_COMPLETE = "compression.complete"
+# str: why this palette pathway is carrying a placeholder instead of the file's
+# colors - the decode error the read fell back from. A palette file records
+# nothing about its own encoding, so the format is always a guess; set when that
+# guess doesn't fit, so the palette still opens (as an obvious sentinel) and the
+# format can be corrected from the dock. Its presence is what marks those colors
+# as ours rather than the file's, and it is why the pathway is read-only.
+KEY_PALETTE_ERROR = "palette.error"
 # One more well-known key lives in :mod:`celpix.core.notices` rather than here:
 # what a stage wants to *tell the user* without failing. It keeps company with
 # the notice type and its helpers, since unlike the scalars above it is only ever

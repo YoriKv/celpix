@@ -26,7 +26,7 @@ from the tail of the same cycle rather than each watching for its own trigger.
 
 from __future__ import annotations
 
-from celpix.core.arrangement import BlockLayout
+from celpix.core.arrangement import BlockLayout, tile_first_pixel
 from celpix.core.document import ViewOptions
 from celpix.core.palette import Palette
 from celpix.pipeline import pipeline
@@ -56,6 +56,7 @@ class RenderingMixin:
         layout: BlockLayout,
         two_dimensional: bool,
         max_rows: int | None,
+        biases: list[int] | None = None,
     ):
         """Decode a pixel-byte buffer through the arrangement into a rendered image.
 
@@ -67,13 +68,79 @@ class RenderingMixin:
         ``None`` sizes to the data (the overlay shows the whole structure). Returns
         ``(QImage, real tile count)`` - the count excludes any 2D reflow padding, so
         the canvas can background the rest.
+
+        ``biases`` carries pinned palette regions (:meth:`_window_biases`) and is
+        supplied by the **caller** rather than computed here, because only the live
+        view's bytes are the ones the regions address: the overlay renders a
+        decompressed scratch buffer, whose positions are not offsets into the
+        entry at all. Passing it also selects the render path - with biases the
+        row is already in the indices, so the colour table must not offset again.
         """
         assert self._doc is not None
         grid, filled = pipeline.decode_and_compose(
-            pixel_bytes, engine, params, layout, two_dimensional, max_rows
+            pixel_bytes, engine, params, layout, two_dimensional, max_rows, biases
         )
+        if biases is not None:
+            return render_bridge.render_pinned(grid, self._doc.palette), filled
         base = self._doc.view.subpalette_row * self._index_space()
         return render_bridge.render(grid, self._doc.palette, base), filled
+
+    def _window_biases(self, cols: int, rows: int) -> list[int] | None:
+        """One index shift per visible slot, or None when nothing is pinned.
+
+        The whole of what pinned palette regions cost at render time. Each slot is
+        resolved to the pixel its tile starts at, that pixel is looked up in the
+        regions, and the row it lands in becomes ``row * index_space`` - the shift
+        :meth:`~celpix.core.index_grid.IndexGrid.shifted` folds into the indices.
+        Slots in no region get the view's own subpalette row, so the unpinned part
+        of the window renders exactly as it does without this.
+
+        Returning **None rather than a list of zeroes** for an unpinned document is
+        load-bearing: it is what keeps every existing view on the original single
+        table path, allocating nothing and shifting nothing.
+
+        Addressing follows the walk in force rather than assuming tiles are
+        contiguous, so this is correct under the 2D wide-bitmap reading too - there
+        the pixel space is the bitmap's own and
+        :func:`~celpix.core.arrangement.tile_first_pixel` returns the tile's
+        top-left. A rearrangement is resolved first, so a pinned tile keeps its row
+        when it is dragged somewhere else: the region names where the tile *lives*,
+        and a rearrangement moves display positions, not tiles.
+        """
+        assert self._doc is not None
+        regions = self._active_palette_regions()
+        if regions.is_empty():
+            return None
+        doc = self._doc
+        view = doc.view
+        space = self._index_space()
+        per_tile = doc.tile_width * doc.tile_height
+        tile_map = self._active_tile_map()
+        count = cols * rows
+        if tile_map.is_identity():
+            # The ordinary case: the window is one contiguous run of slots, so the
+            # walk's own addressing gives each one's first pixel directly.
+            origin = view.tile_offset * per_tile
+            offsets = [
+                origin
+                + tile_first_pixel(
+                    slot,
+                    doc.tile_width,
+                    doc.tile_height,
+                    cols,
+                    view.two_dimensional,
+                )
+                for slot in range(count)
+            ]
+        else:
+            # Rearranged (1D only - the tool is off under 2D), so each slot shows
+            # whichever tile the map sends it, not the one the slot sits on.
+            offsets = [
+                actual * per_tile
+                for actual in tile_map.actual_run(view.tile_offset, count)
+            ]
+        rows_for = regions.rows_for(offsets, view.subpalette_row)
+        return [row * space for row in rows_for]
 
     def _render_rearranged(self, layout: BlockLayout, rows: int):
         """Render the window when a tile map is in force.
@@ -92,8 +159,11 @@ class RenderingMixin:
         view = self._doc.view
         window_tiles = layout.columns * rows
         tiles = self._decode_run(view.tile_offset, window_tiles) or []
+        biases = self._window_biases(layout.columns, rows)
+        grid = pipeline.compose_tiles(tiles, layout, rows, biases)
+        if biases is not None:
+            return render_bridge.render_pinned(grid, self._doc.palette), len(tiles)
         base = view.subpalette_row * self._index_space()
-        grid = pipeline.compose_tiles(tiles, layout, rows)
         return render_bridge.render(grid, self._doc.palette, base), len(tiles)
 
     def _refresh_view(self) -> None:
@@ -129,6 +199,8 @@ class RenderingMixin:
             bitmap_width=self._bitmap_width.value(),
             tile_map=self._tile_map,
             show_rearranged=self._show_rearranged,
+            palette_regions=self._palette_regions,
+            show_palette_regions=self._show_palette_regions,
         )
         # Deferred decode: only the visible window's bytes are sliced, then decoded
         # and laid out by the shared arrangement path (2D reflow / block layout).
@@ -152,6 +224,7 @@ class RenderingMixin:
                 layout,
                 view.two_dimensional,
                 max_rows=rows,
+                biases=self._window_biases(cols, rows),
             )
         else:
             image, filled = self._render_rearranged(layout, rows)

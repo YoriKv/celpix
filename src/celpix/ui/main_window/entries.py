@@ -89,6 +89,38 @@ class EntriesMixin:
     # -- projects ------------------------------------------------------------
     _PROJECT_FILTER = "celPix project (*.celpix)"
 
+    def _new_project(self) -> None:
+        """File ▸ New Project: close everything and start over.
+
+        The same replace :meth:`_load_project` makes, onto an empty workspace
+        instead of a saved one - so it is gated by the same two questions (an
+        unsaved project, unsaved bytes) and drops the same session state: the
+        history, which references entries that are going away, and the project
+        file this session was tied to.
+
+        What it deliberately does *not* touch is the app's own settings - the
+        grid, the theme, the recent list, the window geometry. Those outlive a
+        relaunch too, so resetting them here would be less like a fresh start
+        than the fresh start is.
+        """
+        if not self._confirm_discard_project("Starting a new project"):
+            return
+        if not self._resolve_dirty_entries(
+            "Starting a new project closes every open file, and the unsaved "
+            "changes with it"
+        ):
+            return
+        self._workspace.hidden_pixel_presets = set()
+        # -> _on_current_entry_changed(None) -> _show_empty: the canvas, the
+        # palette dock and every document-bound action land on the idle state.
+        self._workspace.replace([], None)
+        self._fill_pixel_combo(self._pixel_preset_id())
+        self._undo_stack.clear()
+        self._project_path = None
+        self._saved_project = None
+        self._refresh_window_title()
+        self.statusBar().showMessage("New project - nothing open.")
+
     def _open_project(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Open project", "", self._PROJECT_FILTER

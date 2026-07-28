@@ -518,3 +518,66 @@ def scatter_2d(
             return
         take = min(row_bytes, len(out) - dst)
         out[dst : dst + take] = data[row * row_bytes : row * row_bytes + take]
+
+
+def tile_pixel_spans(
+    slot: int,
+    tile_width: int,
+    tile_height: int,
+    columns: int,
+    two_dimensional: bool,
+) -> list[tuple[int, int]]:
+    """The ``(start, length)`` **pixel** runs one display slot occupies.
+
+    The addressing pinned palette regions are built on
+    (:mod:`celpix.core.paletteregions`): which pixels of the picture is the tile at
+    this slot made of? Pixels rather than bytes because most retro codecs are
+    planar — a byte there is one bitplane row, so a byte range names no run of
+    pixels at all — while a pixel index is well defined whatever the codec.
+
+    The space is the picture as laid out. In the ordinary 1D reading that is
+    tile-major, so a tile is one contiguous ``tile_width * tile_height`` run. Under
+    the 2D walk the source *is* one wide bitmap ``columns`` tiles across, so the
+    space is that bitmap row-major and a tile is ``tile_height`` runs of
+    ``tile_width``, a whole bitmap-row apart — the picture-side mirror of the byte
+    strides :func:`reflow_2d` gathers along.
+
+    Positions are relative to the view origin (slot 0), so a caller adds its own
+    anchor once.
+    """
+    per_tile = tile_width * tile_height
+    if not two_dimensional:
+        return [(slot * per_tile, per_tile)]
+    cols = max(1, columns)
+    stripe_index, tile_x = divmod(slot, cols)
+    stripe_base = stripe_index * cols * per_tile
+    return [
+        (stripe_base + row * (cols * tile_width) + tile_x * tile_width, tile_width)
+        for row in range(tile_height)
+    ]
+
+
+def tile_first_pixel(
+    slot: int,
+    tile_width: int,
+    tile_height: int,
+    columns: int,
+    two_dimensional: bool,
+) -> int:
+    """Where the tile at ``slot`` starts — :func:`tile_pixel_spans`' first run alone.
+
+    What decides which pinned region a tile belongs to. Split out because the
+    render path asks it once per visible tile and has no use for the rest of the
+    runs: building the full list there would allocate ``tile_height`` tuples per
+    tile, every refresh, to read one number off the front.
+
+    Monotonic in ``slot`` under both walks — within a 2D stripe tiles advance by
+    ``tile_width``, and a stripe boundary jumps forward by more — so a window's
+    lookups walk the sorted regions forwards.
+    """
+    per_tile = tile_width * tile_height
+    if not two_dimensional:
+        return slot * per_tile
+    cols = max(1, columns)
+    stripe_index, tile_x = divmod(slot, cols)
+    return stripe_index * cols * per_tile + tile_x * tile_width

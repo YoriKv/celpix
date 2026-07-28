@@ -768,6 +768,18 @@ class FileListPanel(QWidget):
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._refresh_item(entry, item)
 
+    def _add_write_action(self, menu: QMenu, entry: Entry) -> None:
+        """Write, sitting under the entry's own settings (a file's container, a
+        slice's definition) rather than down by the import/export group: it is
+        what commits the edits those dialogs and the canvas make. One builder so
+        the two kinds that write bytes cannot disagree about when it is live.
+        """
+        write = menu.addAction("&Write")
+        write.triggered.connect(lambda: self.write_requested.emit(entry))
+        # Writing needs a loaded, write-capable document; a never-activated or
+        # view-only entry has nothing to write.
+        write.setEnabled(entry.doc is not None and entry.doc.pixel_config.write_enabled)
+
     def _show_menu(self, pos) -> None:
         item = self._tree.itemAt(pos)
         if item is None:
@@ -814,6 +826,7 @@ class FileListPanel(QWidget):
             container.triggered.connect(
                 lambda: self.change_container_requested.emit(entry)
             )
+            self._add_write_action(menu, entry)
             menu.addSeparator()
             # Files are the one kind in hand order (slices and bookmarks sort by
             # offset, palettes by registration), so only they can be reordered.
@@ -840,6 +853,7 @@ class FileListPanel(QWidget):
             rename.triggered.connect(lambda: self._begin_rename(entry))
             edit = menu.addAction("&Edit…")
             edit.triggered.connect(lambda: self.edit_slice_requested.emit(entry))
+            self._add_write_action(menu, entry)
             menu.addSeparator()
         elif entry.kind is EntryKind.PALETTE:
             # The double-click action, discoverable.
@@ -868,6 +882,12 @@ class FileListPanel(QWidget):
             rename.triggered.connect(lambda: self._begin_rename(entry))
             menu.addSeparator()
         if entry.kind in (EntryKind.FILE, EntryKind.SLICE):
+            # Import is the mirror of Export ▸ As PNG…, and lands the image at
+            # the start of the entry. Unlike export it needs the entry on screen
+            # (it is fitted to the view's palette and arrangement), so the window
+            # activates it first.
+            import_png = menu.addAction("&Import from PNG…")
+            import_png.triggered.connect(lambda: self.import_png_requested.emit(entry))
             # Export targets the entry the menu was opened on, not the current
             # view, so an entry can leave as an image without being activated
             # first — the window loads it on demand. Always offered: whether the
@@ -883,19 +903,6 @@ class FileListPanel(QWidget):
                 slices.triggered.connect(
                     lambda: self.export_slices_requested.emit(entry)
                 )
-            # Import is the mirror of Export ▸ As PNG…, and lands the image at
-            # the start of the entry. Unlike export it needs the entry on screen
-            # (it is fitted to the view's palette and arrangement), so the window
-            # activates it first.
-            import_png = menu.addAction("&Import from PNG…")
-            import_png.triggered.connect(lambda: self.import_png_requested.emit(entry))
-            write = menu.addAction("&Write")
-            write.triggered.connect(lambda: self.write_requested.emit(entry))
-            # Writing needs a loaded, write-capable document; a never-activated
-            # or view-only entry has nothing to write.
-            write.setEnabled(
-                entry.doc is not None and entry.doc.pixel_config.write_enabled
-            )
             menu.addSeparator()
         if entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
             # The two kinds that *are* a file on disk - a slice or bookmark only

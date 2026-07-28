@@ -22,11 +22,49 @@ from __future__ import annotations
 
 from PySide6.QtGui import QImage
 
-from celpix.core.arrangement import BlockLayout
+from celpix.core.arrangement import BlockLayout, tile_first_pixel
 from celpix.core.document import Document
 from celpix.pipeline import pipeline
 from celpix.plugins.registry import Registry
 from celpix.ui import render_bridge
+
+
+def _palette_biases(
+    doc: Document, registry: Registry, columns: int
+) -> list[int] | None:
+    """Pinned-region index shifts for **every** tile, or None if nothing is pinned.
+
+    The whole-file counterpart of the live view's ``_window_biases``. One thing
+    differs from the canvas, and it follows from what export is: the document is
+    rendered whole, from its first tile, with no rearrangement — so slot *n* is
+    tile *n* and the tile map is not consulted. An export is the file's own order.
+
+    Regions are bounded here as the view bounds them, so a row that outran a
+    shorter palette exports as the unpinned view shows it rather than as the
+    magenta missing-colour sentinel.
+    """
+    view = doc.view
+    if not view.show_palette_regions or view.palette_regions.is_empty():
+        return None
+    index_space = min(
+        256, 1 << pipeline.pixel_bpp(doc.pixel_config.interpret_preset_id, registry)
+    )
+    max_row = min(max(0, len(doc.palette) - 1) // index_space, 256 // index_space - 1)
+    per_tile = doc.tile_width * doc.tile_height
+    regions = view.palette_regions.bounded(doc.tile_count * per_tile, max_row)
+    if regions.is_empty():
+        return None
+    offsets = [
+        tile_first_pixel(
+            slot,
+            doc.tile_width,
+            doc.tile_height,
+            max(1, columns),
+            view.two_dimensional,
+        )
+        for slot in range(doc.tile_count)
+    ]
+    return [row * index_space for row in regions.rows_for(offsets, view.subpalette_row)]
 
 
 def document_image(doc: Document, registry: Registry) -> QImage:
@@ -43,6 +81,7 @@ def document_image(doc: Document, registry: Registry) -> QImage:
     cols = max(1, view.columns)
     engine, preset = registry.engine_for(doc.pixel_config.interpret_preset_id)
     layout = BlockLayout(cols, view.block_columns, view.block_rows, view.block_order)
+    biases = _palette_biases(doc, registry, cols)
     grid, _filled = pipeline.decode_and_compose(
         doc.pixel_data,
         engine,
@@ -53,6 +92,7 @@ def document_image(doc: Document, registry: Registry) -> QImage:
         layout,
         view.two_dimensional,
         None,
+        biases,
     )
     if grid.bytes_per_pixel == 4:
         # Direct-color: no palette; the ARGB carries its own alpha.
@@ -60,6 +100,15 @@ def document_image(doc: Document, registry: Registry) -> QImage:
     index_space = min(
         256, 1 << pipeline.pixel_bpp(doc.pixel_config.interpret_preset_id, registry)
     )
+    if biases is not None:
+        # Pinned regions: the row is already in the indices, so the table cannot
+        # offset again — and it has to span every row on screen rather than one
+        # subpalette. Sized to the highest row actually used, not blindly to 256,
+        # so a two-palette sheet exports a two-row table.
+        top = (max(biases) // index_space + 1) * index_space
+        return render_bridge.indexed_image(
+            grid, [doc.palette.color(i) for i in range(top)]
+        )
     base = view.subpalette_row * index_space
     # Exactly one entry per index the format can produce, in celPix order — no
     # minimizing (Aseprite would otherwise renumber unused leading colors). Every

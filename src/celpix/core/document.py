@@ -21,8 +21,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from celpix.core import ceil_div
-from celpix.core.context import PipelineContext
+from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.palette import Palette
+from celpix.core.paletteregions import PaletteRegions
 from celpix.core.tilemap import TileMap
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef
@@ -99,6 +100,14 @@ class ViewOptions:
     geometry — so it is resolved on the load path, and only for codecs whose
     tile size is a parameter at all.
 
+    ``palette_regions`` pins regions of the picture to their own subpalette row,
+    overriding ``subpalette_row`` for the tiles inside them — so a bank whose art
+    is drawn under several hardware palettes can be read at once instead of one
+    group at a time. It changes no bytes and no indices: the row reaches the
+    screen as a shift applied to the *rendered* indices only
+    (:mod:`celpix.core.paletteregions`). ``show_palette_regions`` is the toggle
+    between that and the plain single-row view, like ``show_rearranged``.
+
     ``tile_map`` rearranges *which* tile each position shows, so scattered tiles
     can be viewed and edited side by side; it moves no bytes, and an edit made at
     a rearranged position still writes back to the tile's real home
@@ -121,6 +130,10 @@ class ViewOptions:
     bitmap_width: int = 0  # pixels across the bitmap is (0 = the codec's own tiles)
     tile_map: TileMap = TileMap()  # display-only rearrangement of tile positions
     show_rearranged: bool = True  # apply tile_map, or show the file's true order
+    # Byte regions pinned to their own subpalette row, overriding subpalette_row
+    # for the tiles inside them (:mod:`celpix.core.paletteregions`).
+    palette_regions: PaletteRegions = PaletteRegions()
+    show_palette_regions: bool = True  # apply them, or render everything at the row
 
 
 @dataclass
@@ -221,6 +234,30 @@ class Document:
             self.pixel_data = (
                 self.pixel_data[:start] + data + self.pixel_data[start + len(data) :]
             )
+
+    @property
+    def display_base(self) -> int:
+        """The file byte this document's position 0 corresponds to.
+
+        Raw sources (no decompressor, no reshape) show source-file-absolute
+        addresses — past whatever a container skipped, or the slice offset for a
+        raw slice — so ROM bank addresses stay meaningful wherever the bytes came
+        from. A decompressed stream has no linear mapping back to file offsets,
+        and a reshaped one is a byte permutation of its region, so both show their
+        own 0-based positions instead of lying with file addresses.
+
+        The base comes from what Read *recorded* rather than from the config's
+        requested offset, because only the container knows where it actually
+        began: it works its start out from the format (past a copier header, past
+        the iNES header and the PRG banks) and the host never asked for it.
+
+        This lives on the document because it is what pinned palette regions are
+        anchored in (:mod:`celpix.core.paletteregions`), and export resolves them
+        with no window to ask.
+        """
+        if not self.pixel_config.reads_raw_bytes:
+            return 0
+        return self.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
 
     def clamp_tile_offset(
         self, offset: int, columns: int, rows: int, nudge: int = 0
