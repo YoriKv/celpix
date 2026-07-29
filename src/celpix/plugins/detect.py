@@ -52,7 +52,7 @@ def head_and_size(path: str, size: int = SIGNATURE_HEAD) -> tuple[bytes, int]:
         return b"", -1
 
 
-def frames(info: PluginInfo, kind: ContentKind) -> bool:
+def frames_kind(info: PluginInfo, kind: ContentKind) -> bool:
     """Whether ``info``'s container is one an entry holding ``kind`` can use.
 
     The one place the declaration is read, so listing containers and detecting
@@ -68,7 +68,7 @@ def containers_for(registry: Registry, kind: ContentKind) -> list[PluginInfo]:
     return [
         plugin.info
         for plugin in registry.plugins(Stage.CONTAINER)
-        if frames(plugin.info, kind)
+        if frames_kind(plugin.info, kind)
     ]
 
 
@@ -110,7 +110,7 @@ def detect_container(
     when nothing claims the file, the answer for every plain binary.
 
     ``kind`` restricts the field to containers that frame that kind of entry
-    (:func:`frames`), so a palette is never claimed by a format that unwraps
+    (:func:`frames_kind`), so a palette is never claimed by a format that unwraps
     graphics or the reverse. It defaults to pixels because that is what opening a
     file means unless something says otherwise — and because a tilemap container
     frames pixels too, the tilemap-ness of its payload being a separate question
@@ -122,7 +122,7 @@ def detect_container(
         size = read_size if size is None else size
     best_id, best_score = RAW_CONTAINER, 0
     for plugin in registry.plugins(Stage.CONTAINER):
-        if not frames(plugin.info, kind):
+        if not frames_kind(plugin.info, kind):
             continue
         score = _score(plugin.info, path, head, size)
         if score > best_score:

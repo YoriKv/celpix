@@ -45,6 +45,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._lz import MatchFinder
 
 RING_SIZE = 4096
 # Where the ring's write cursor sits before the first output byte. Equivalent to
@@ -55,9 +56,8 @@ RING_START = 0xFEE
 MIN_MATCH = 3
 MAX_MATCH = 18  # 4-bit length field, biased by MIN_MATCH
 
-# Compressor tuning: how many recent positions sharing a 3-byte prefix to test.
-# Highly repetitive data can pile up thousands, and past the newest few dozen the
-# extra candidates almost never yield a longer match.
+# Compressor tuning: how many recent positions sharing a 3-byte prefix to test
+# (see :class:`~celpix.plugins.builtins._lz.MatchFinder`).
 _MAX_CANDIDATES = 96
 
 
@@ -128,57 +128,21 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 # -- compression ------------------------------------------------------------
 
 
-def _match_length(data: bytes, at: int, candidate: int, limit: int) -> int:
-    """Length of the match at ``candidate``, counting legal self-overlap.
-
-    A match may run past ``at`` into bytes the decoder has not produced yet: it
-    copies one byte at a time, so the source repeats with period ``distance``.
-    """
-    distance = at - candidate
-    length = 0
-    while length < limit and data[at + length] == data[candidate + length % distance]:
-        length += 1
-    return length
-
-
 def compress(data: bytes) -> bytes:
     """Encode raw bytes into a size-prefixed LZSS stream."""
     if len(data) > 0xFFFFFFFF:
         raise ValueError("input is too large for the 32-bit LZSS size prefix")
 
     n = len(data)
-    # 3-byte prefix -> recent positions, newest last. The newest candidates are
-    # the nearest, and a nearer match is never worse: the cost is fixed at two
-    # bytes whatever the distance.
-    index: dict[bytes, list[int]] = {}
-
-    def add(pos: int) -> None:
-        if pos + MIN_MATCH > n:
-            return
-        bucket = index.setdefault(data[pos : pos + MIN_MATCH], [])
-        bucket.append(pos)
-        if len(bucket) > _MAX_CANDIDATES * 2:
-            del bucket[:-_MAX_CANDIDATES]
+    # The longest match wins outright here: a back-reference costs two bytes
+    # whatever its distance, so there is nothing to trade off against length.
+    finder = MatchFinder(
+        data, min_match=MIN_MATCH, window=RING_SIZE, max_candidates=_MAX_CANDIDATES
+    )
 
     def best_match(pos: int) -> tuple[int, int]:
         """The longest match reaching ``pos``, as ``(length, candidate)``."""
-        limit = min(MAX_MATCH, n - pos)
-        if limit < MIN_MATCH:
-            return 0, -1
-        bucket = index.get(data[pos : pos + MIN_MATCH])
-        if not bucket:
-            return 0, -1
-        best_len, best_at = 0, -1
-        cutoff = pos - RING_SIZE
-        for candidate in reversed(bucket[-_MAX_CANDIDATES:]):
-            if candidate < cutoff:
-                break  # the rest are older still - out of ring reach
-            length = _match_length(data, pos, candidate, limit)
-            if length > best_len:
-                best_len, best_at = length, candidate
-                if best_len == limit:
-                    break
-        return best_len, best_at
+        return finder.longest(pos, min(MAX_MATCH, n - pos))
 
     out = bytearray(n.to_bytes(4, "little"))
     pos = 0
@@ -191,7 +155,7 @@ def compress(data: bytes) -> bytes:
             if pos >= n:
                 break
             length, candidate = best_match(pos)
-            add(pos)  # index this position before any lookahead reads it
+            finder.add(pos)  # index it before any lookahead reads it
             if MIN_MATCH <= length < MAX_MATCH and pos + 1 < n:
                 # One-step lazy deferral: if the next position starts a strictly
                 # longer match, the literal here buys more than this match does.
@@ -203,8 +167,7 @@ def compress(data: bytes) -> bytes:
                 ring_pos = (RING_START + candidate) & 0xFFF
                 out.append(ring_pos & 0xFF)
                 out.append(((ring_pos >> 4) & 0xF0) | (length - MIN_MATCH))
-                for p in range(pos + 1, pos + length):
-                    add(p)
+                finder.add_run(pos + 1, pos + length)
                 pos += length
             else:
                 flags |= 1 << bit

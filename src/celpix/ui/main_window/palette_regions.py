@@ -47,6 +47,7 @@ from PySide6.QtGui import QAction, QKeySequence
 from celpix.core.arrangement import tile_first_pixel, tile_pixel_spans
 from celpix.core.paletteregions import PaletteRegions
 from celpix.ui.undo_commands import PaletteRegionsCommand
+from celpix.ui.widgets import counted
 
 
 class PaletteRegionsMixin:
@@ -97,7 +98,7 @@ class PaletteRegionsMixin:
         region unrenderable is the state *around* it: a shorter palette after a
         source switch, a re-read that truncated the data. The stored set is left
         alone so restoring the palette brings the regions back, exactly as the
-        tile map survives a pattern that makes it inert.
+        rearrangement survives a pattern that makes it inert.
         """
         if self._doc is None or not self._show_palette_regions:
             return PaletteRegions()
@@ -332,7 +333,7 @@ class PaletteRegionsMixin:
         )
         count = len(self._selection_tiles())
         self.statusBar().showMessage(
-            f"Pinned {self._tiles_label(count)} to subpalette {row}."
+            f"Pinned {counted(count, 'tile')} to subpalette {row}."
         )
 
     def _unpin_selection(self) -> None:
@@ -355,7 +356,7 @@ class PaletteRegionsMixin:
             )
         )
         count = len(self._selection_tiles())
-        self.statusBar().showMessage(f"Unpinned {self._tiles_label(count)}.")
+        self.statusBar().showMessage(f"Unpinned {counted(count, 'tile')}.")
 
     def _unpin_all(self) -> None:
         """Drop every pinned region at once.

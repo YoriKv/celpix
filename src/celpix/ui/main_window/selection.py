@@ -55,6 +55,7 @@ from celpix.ui.undo_commands import (
     PixelEditCommand,
 )
 from celpix.ui.widgets import (
+    counted,
     load_enum_setting,
     save_enum_setting,
     select_combo_data,
@@ -554,10 +555,6 @@ class SelectionMixin:
         first, last = min(tiles), max(tiles)
         return first, last - first + 1
 
-    @staticmethod
-    def _tiles_label(count: int) -> str:
-        return f"{count:,} tile" + ("" if count == 1 else "s")
-
     def _is_direct_color(self) -> bool:
         """Whether the current interpretation stores colors, not palette indices."""
         if self._doc is None:
@@ -701,7 +698,7 @@ class SelectionMixin:
             self._copy_image(tiles, cols, self._tile_biases(kept)),
         )
         self._sync_edit_actions()
-        self.statusBar().showMessage(f"Copied {self._tiles_label(len(tiles))}.")
+        self.statusBar().showMessage(f"Copied {counted(len(tiles), 'tile')}.")
         return True
 
     def _copy_columns(self, count: int) -> int:
@@ -788,7 +785,7 @@ class SelectionMixin:
             return
         written = self._blank_selection("cut tiles")
         if written:
-            self.statusBar().showMessage(f"Cut {self._tiles_label(written)}.")
+            self.statusBar().showMessage(f"Cut {counted(written, 'tile')}.")
 
     def _clear_selection_contents(self) -> None:
         if self._edit_mode is EditMode.PIXEL:
@@ -799,7 +796,7 @@ class SelectionMixin:
             return
         written = self._blank_selection("clear tiles")
         if written:
-            self.statusBar().showMessage(f"Cleared {self._tiles_label(written)}.")
+            self.statusBar().showMessage(f"Cleared {counted(written, 'tile')}.")
 
     def _paste(self) -> None:
         """Stamp the clipboard over the tiles from the selection anchor onward.
@@ -839,7 +836,7 @@ class SelectionMixin:
         if not written:
             self.statusBar().showMessage("Nothing pasted - no room at this offset.")
             return
-        message = f"Pasted {self._tiles_label(written)}"
+        message = f"Pasted {counted(written, 'tile')}"
         if len(incoming.tiles) > written:
             clipped = len(incoming.tiles) - written
             message += f" ({clipped} clipped at the end of the data)"
@@ -1110,6 +1107,12 @@ class SelectionMixin:
             return
         for start, data in splices:
             self._doc.replace_bytes(start, data)
+        # A tilemap draws every cell from a cached decode of these same bytes
+        # (:func:`~celpix.pipeline.pipeline.tile_bank`), so the edit is carried
+        # into it here rather than invalidating it: only the tiles just written
+        # are re-decoded, and the refresh below then shows the change in every
+        # cell that draws them at once. A no-op on a document with no bank.
+        pipeline.patch_tile_bank(self._doc, self._registry, splices)
         entry = self._workspace.current
         if entry is not None:
             self._workspace.set_pixel_revision(entry, revision)

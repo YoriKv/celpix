@@ -8,6 +8,8 @@ corrupted file rather than a missing feature.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from celpix.core.capabilities import CAPABILITIES, Capability, ContentKind, supports
@@ -337,12 +339,12 @@ def test_the_kinds_differ_where_the_design_says_they_do() -> None:
 
 def test_cells_expand_into_tiles_a_block_layout_can_place() -> None:
     """The whole of why a tilemap renders through the pixel view: cells become
-    an ordinary tile list plus per-tile palette shifts, and the cell becomes the
+    an ordinary tile list carrying their palette rows, and the cell becomes the
     arrangement's *block* — which is what places a metatile's four tiles as a
     square without a second composer."""
     from celpix.core.document import Document
     from celpix.core.index_grid import IndexGrid
-    from celpix.pipeline.pipeline import tilemap_tiles
+    from celpix.pipeline.pipeline import tile_bank, tilemap_tiles
 
     registry = default_registry()
     # Four distinct 8x8 tiles, so a flip or a wrong index is visible.
@@ -361,11 +363,13 @@ def test_cells_expand_into_tiles_a_block_layout_can_place() -> None:
         palette_config=None,
         cells=[Cell(index=1, palette_row=2), Cell(index=0, flip_h=True)],
     )
-    tiles, biases, layout = tilemap_tiles(doc, registry, columns=2)
+    tiles, layout = tilemap_tiles(doc, registry, columns=2)
     assert len(tiles) == 2 and all(isinstance(t, IndexGrid) for t in tiles)
-    # 4bpp: the row is folded into the indices as row * 16, the same shift a
-    # pinned palette region uses.
-    assert biases == [2 * 16, 0]
+    # 4bpp: the cell's palette row travels *in the indices*, shifted by row * 16
+    # — the same mechanism a pinned palette region uses, because the composed
+    # image carries a single colour table.
+    bank = tile_bank(doc, registry)
+    assert list(tiles[0].data) == [index + 2 * 16 for index in bank[1].data]
     assert (layout.columns, layout.block_columns, layout.block_rows) == (2, 1, 1)
 
 
@@ -388,7 +392,7 @@ def test_a_metatile_cell_becomes_a_block_of_four() -> None:
         cell_tiles=(2, 2),
         cell_row_stride=16,
     )
-    tiles, _biases, layout = tilemap_tiles(doc, registry, columns=2)
+    tiles, layout = tilemap_tiles(doc, registry, columns=2)
     assert len(tiles) == 8  # two cells of four tiles each
     # Columns are in *tiles*, so a 2-cell-wide map of 2-wide cells is 4 across,
     # and the block is the cell.
@@ -420,9 +424,85 @@ def test_a_cell_naming_a_tile_the_source_lacks_renders_blank() -> None:
         palette_config=None,
         cells=[Cell(index=999)],
     )
-    tiles, _biases, _layout = tilemap_tiles(doc, default_registry(), columns=1)
+    tiles, _layout = tilemap_tiles(doc, default_registry(), columns=1)
     assert len(tiles) == 1
     assert set(tiles[0].data) == {0}
+
+
+def _bank_doc(data: bytes, cells: list, preset: str = "preset.pixel.snes-4bpp"):
+    """A tilemap document over ``data`` as its bound tile source."""
+    from celpix.core.document import Document
+
+    return Document(
+        pixel_data=data,
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=PathwayConfig(source=FileRef("x"), interpret_preset_id=preset),
+        palette_config=None,
+        cells=cells,
+    )
+
+
+def test_the_tile_bank_is_kept_between_renders_but_not_across_a_recut() -> None:
+    """A map is drawn entire on every refresh, so re-decoding its whole source
+    each time is work proportional to the bank rather than to what changed. The
+    cache keys on the buffer's identity plus the geometry asked of the codec, so
+    anything that would decode differently misses instead of serving a stale
+    picture."""
+    from celpix.pipeline.pipeline import tile_bank
+
+    registry = default_registry()
+    doc = _bank_doc(bytes([1]) * 64, [Cell(index=0)])
+    first = tile_bank(doc, registry)
+    assert tile_bank(doc, registry) is first  # the same list, not a re-decode
+
+    # New bytes: an edit splices a fresh buffer, which must not hit the cache.
+    doc.pixel_data = bytes([2]) * 64
+    edited = tile_bank(doc, registry)
+    assert edited is not first
+    assert edited[0].data != first[0].data
+
+    # A format switch re-cuts the same bytes into different pixels, and the
+    # geometry is part of the key for exactly that reason.
+    doc.pixel_config = replace(
+        doc.pixel_config, interpret_preset_id="preset.pixel.snes-2bpp"
+    )
+    doc.bytes_per_tile = 16
+    recut = tile_bank(doc, registry)
+    assert recut is not edited
+    assert len(recut) == 4  # 64 bytes at 16 per tile, not 2
+
+
+def test_editing_a_tile_redraws_every_cell_that_draws_it() -> None:
+    """The channel that makes painting on a tile source live across a whole map:
+    an edit is carried *into* the cached bank rather than dropping it, so the
+    next refresh shows the new pixels everywhere the tile appears — and re-decodes
+    only the tile that was written, not the bank."""
+    from celpix.pipeline.pipeline import patch_tile_bank, tile_bank, tilemap_tiles
+
+    registry = default_registry()
+    # Two tiles; three cells, two of which draw tile 1.
+    doc = _bank_doc(bytes(32) + bytes([0x11]) * 32, [Cell(index=1), Cell(0), Cell(1)])
+    before, _layout = tilemap_tiles(doc, registry, columns=3)
+    bank = tile_bank(doc, registry)
+
+    edited = bytes([0x77]) * 32
+    doc.pixel_data = doc.pixel_data[:32] + edited
+    patch_tile_bank(doc, registry, [(32, edited)])
+
+    assert tile_bank(doc, registry) is bank  # patched in place, not re-decoded
+    after, _layout = tilemap_tiles(doc, registry, columns=3)
+    assert after[0].data != before[0].data
+    assert after[2].data == after[0].data  # both cells naming tile 1 moved
+    assert after[1].data == before[1].data  # the untouched tile did not
+
+    # A geometry that changed under the cache cannot be patched byte-wise, so
+    # the cache goes rather than being patched against the wrong tile size.
+    doc.bytes_per_tile = 16
+    patch_tile_bank(doc, registry, [(0, bytes(16))])
+    assert doc.tile_bank_cache is None
 
 
 def test_a_format_answers_for_itself_which_transforms_it_can_do() -> None:

@@ -26,6 +26,57 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from enum import Enum
 
+# The index step between one row of a multi-tile cell and the next. **Not** the
+# cell's own width: console VRAM behaves as a 16-tile-wide array, so a 16x16 BG
+# cell draws tiles N, N+1, N+0x10, N+0x11
+# (``docs/graphics-formats-reference/snes-hardware-notes.md`` §5). A sprite
+# object's multi-tile part steps through the same array the same way
+# (:data:`~celpix.core.sprite.Part.tile_indices`), which is why this is one
+# constant rather than a coincidence in two places.
+VRAM_ROW_STRIDE = 0x10
+
+
+def tile_run(
+    first: int,
+    across: int,
+    down: int,
+    stride: int,
+    *,
+    flip_h: bool = False,
+    flip_v: bool = False,
+) -> list[int]:
+    """The tiles a multi-tile thing draws, in the order they appear on screen.
+
+    One index for an ordinary hardware cell; four for a 16x16 metatile or a 16x16
+    sprite part, stepped by ``stride`` rather than by ``across``
+    (:data:`VRAM_ROW_STRIDE`).
+
+    **A flip reverses the order as well as mirroring each tile.** A mirrored
+    metatile shows its right-hand tile on the left, mirrored; toggling the bits
+    alone would mirror each tile in place and leave the layout unmirrored, and
+    reversing alone would move them without turning them. Both halves are needed
+    and neither is sufficient — the same rule :meth:`CellGrid.flipped_h` follows
+    over a block of cells. Only the ordering is here; mirroring the tile's pixels
+    is the renderer's half.
+
+    Shared by the two things that index a tile array this way, a tilemap cell
+    (:meth:`~celpix.core.document.Document.cell_tile_indices`) and a sprite part
+    (:meth:`~celpix.core.sprite.Part.tile_indices`), so the rule cannot come out
+    different depending on which document is on screen.
+    """
+    if across == 1 and down == 1:
+        # The ordinary hardware cell, and the one a whole map is made of: no
+        # stride to step and no order for a flip to reverse. Answered without
+        # the walk because a repaint asks this once per cell, thousands of times.
+        return [first]
+    return [
+        first
+        + (down - 1 - row if flip_v else row) * stride
+        + (across - 1 - col if flip_h else col)
+        for row in range(down)
+        for col in range(across)
+    ]
+
 
 class CellOp(str, Enum):
     """A transform a tool asks of one cell, for the *format* to answer.

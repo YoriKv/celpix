@@ -21,26 +21,21 @@ from html import escape
 from PySide6.QtGui import QFontDatabase, QPalette
 from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QWidget
 
-from celpix.ui.widgets import take_editing_shortcut
+from celpix.ui.widgets import ShortcutIsland
 
 BYTES_PER_ROW = 16
 
 
-class _HexView(QTextEdit):
-    """The dump's text area, a shortcut island while focused.
+class _HexView(ShortcutIsland, QTextEdit):
+    """The dump's text area.
 
-    The canvas editing shortcuts (Cut/Copy/Paste/Select All/Delete) yield here
-    rather than acting on the canvas selection behind the panel. Copy and Select
-    All then do their natural thing on the hex text (the view's own keys); the
-    rest are inert on this read-only dump - the point is only that they don't
-    reach the canvas. Its arrow keys stay with the text cursor too: the app-wide
-    navigation filter treats a focused ``QTextEdit`` as one of its yield cases.
+    Copy and Select All do their natural thing on the hex text (the view's own
+    keys); the rest of the claimed editing shortcuts are inert on this read-only
+    dump - the point is only that they don't reach the canvas behind it
+    (:class:`~celpix.ui.widgets.ShortcutIsland`). Its arrow keys stay with the
+    text cursor too: the app-wide navigation filter treats a focused
+    ``QTextEdit`` as one of its yield cases.
     """
-
-    def event(self, event) -> bool:  # noqa: ANN001 — Qt override
-        if take_editing_shortcut(event):
-            return True
-        return super().event(event)
 
 
 @dataclass(frozen=True)

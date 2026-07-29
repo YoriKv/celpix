@@ -9,15 +9,15 @@ what is drawn rather than a mirror that can drift from it.
 Decode is **deferred and windowed**: only the visible tiles' bytes are sliced out
 and decoded, so the cost of a repaint follows the window rather than the file
 (``docs/design/architecture.md`` §2). Two routes reach the canvas from there, and
-which one runs is the only thing the tile map changes:
+which one runs is the only thing a rearrangement changes:
 
 - **by bytes** — the ordinary path, and the one the decompression overlay shares
   (:meth:`~RenderingMixin._render_arrangement`): one contiguous window through 2D
   reflow, decode and block layout.
 - **by tiles** (:meth:`~RenderingMixin._render_rearranged`) — when a rearrangement
-  is in force the window's tiles come from wherever the map sends them, which is
-  not a contiguous slice, so they are gathered through the same ``_decode_run``
-  choke point every edit resolves the map with. That shared choke point is what
+  is in force the window's tiles come from wherever it sends them, which is not a
+  contiguous slice, so they are gathered through the same ``_decode_run`` choke
+  point every edit resolves the rearrangement with. That shared choke point is what
   keeps what is drawn and what is written in agreement.
 
 The dependent surfaces (palette dock, hex dump, navbar, overlay) are refreshed
@@ -158,7 +158,7 @@ class RenderingMixin:
             ]
         else:
             # Rearranged (1D only - the tool is off under 2D), so each slot shows
-            # whichever tile the map sends it, not the one the slot sits on.
+            # whichever tile the rearrangement sends it, not the one it sits on.
             offsets = [
                 actual * per_tile
                 for actual in tile_rearrangement.actual_run(view.tile_offset, count)
@@ -227,16 +227,16 @@ class RenderingMixin:
         return render_bridge.render_pinned(drawn.grid, self._doc.palette), drawn.drawn
 
     def _render_rearranged(self, layout: BlockLayout, rows: int):
-        """Render the window when a tile map is in force.
+        """Render the window when a rearrangement is in force.
 
         The byte path above cannot serve this: a rearranged window's tiles are
-        gathered from wherever the map sends them, not from one contiguous slice.
-        So the tiles come through ``_decode_run`` — the same choke point that
-        resolves the map for every edit, which is what keeps what is drawn and
+        gathered from wherever it sends them, not from one contiguous slice. So
+        the tiles come through ``_decode_run`` — the same choke point that
+        resolves it for every edit, which is what keeps what is drawn and
         what is written in agreement — and only the layout is shared.
 
         A window running past the end of the file is short by the same count it
-        always was: the map permutes existing tiles, so the positions with
+        always was: a rearrangement permutes existing tiles, so the positions with
         nothing behind them are exactly the ones past the last tile.
         """
         assert self._doc is not None

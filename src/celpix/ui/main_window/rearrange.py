@@ -10,7 +10,7 @@ the tile's real home.
 
 That last part costs nothing here. Every read of tiles already goes through
 :meth:`~celpix.ui.main_window.selection.SelectionMixin._decode_run` and every
-write through ``_apply_tile_edit``, and those two resolve the map — so painting,
+write through ``_apply_tile_edit``, and those two resolve it — so painting,
 the clipboard and the transforms all act on the tiles the user sees without
 knowing this module exists. What is left for the controller is the gesture, the
 preview, and one undo step per drop.
@@ -38,7 +38,8 @@ symmetric sprite, and art lifted from one context often sits at ninety degrees t
 the one it is being read in. Per tile (H/V/C/X, or the toolbar's group), or per
 **block** (Shift + the same letters), which transforms the block as one picture
 exactly as the destructive Block group does — orienting every tile *and* permuting
-their positions — except that both halves are stored in the map and no byte moves.
+their positions — except that both halves are stored in the rearrangement and no
+byte moves.
 Those keys are the transform bar's, not this module's: while the tool is armed its
 group *is* the group on the bar, so the letters mean here what they mean anywhere
 (:meth:`~celpix.ui.main_window.transform.TransformMixin._transform_key`).
@@ -141,8 +142,8 @@ class RearrangeMixin:
         That is fixable, but it buys a corner nobody asked for at the cost of
         making every write path reason about stripe overlap. The rearrangement is
         for reading scattered *tiles* as a picture; a 2D pattern is already one
-        picture, so it has far less to gain. So the tool switches off and the map
-        goes inert, rather than the writes growing a special case.
+        picture, so it has far less to gain. So the tool switches off and the
+        rearrangement goes inert, rather than the writes growing a special case.
         """
         return self._doc is not None and not self._two_d.isChecked()
 
@@ -150,8 +151,8 @@ class RearrangeMixin:
         """Whether the view is on the rearranged order rather than the file's.
 
         The setting, **or** the tool being armed. Dragging tiles around a view
-        that is showing the file's own order would be editing a map nobody can
-        see, so the tool overrides the setting for as long as it is armed rather
+        that is showing the file's own order would be editing a rearrangement
+        nobody can see, so the tool overrides the setting while it is armed rather
         than rewriting it — turn the tool off and the view goes back to whatever
         the user asked for.
         """
@@ -164,8 +165,8 @@ class RearrangeMixin:
         does not merely hide the rearrangement — it takes it out of the edit path
         too, and an edit made with it off lands where the file says. Identity is
         also the fast path through the decode/encode choke points, and what a 2D
-        pattern always gets (see :meth:`_rearrange_available`) — the map is kept,
-        not discarded, so leaving 2D brings the rearrangement back.
+        pattern always gets (see :meth:`_rearrange_available`) — it is kept, not
+        discarded, so leaving 2D brings the rearrangement back.
         """
         if not self._rearrange_available() or not self._showing_rearranged():
             return TileRearrangement()
@@ -247,8 +248,8 @@ class RearrangeMixin:
         the air would leave them hovering over a tile they were never lifted from.
 
         The view follows for as long as the tool is armed - the tool has nothing
-        to say about the file's own order, and silently editing a map nobody can
-        see is worse than showing it - but that is an override
+        to say about the file's own order, and silently editing a rearrangement
+        nobody can see is worse than showing it - but that is an override
         (:meth:`_showing_rearranged`), not a write: Show Rearranged Tiles is left
         exactly where the user set it, and disarming honours it again. Rectangle
         selection does change, since a linear run is a run through storage and
@@ -460,10 +461,20 @@ class RearrangeMixin:
         """
         return "rotate" if orient & TILE_TRANSPOSE else "flip"
 
+    @staticmethod
+    def _orient_object(count: int) -> str:
+        """What an undo label says the gesture acted on: "tile", "7 tiles".
+
+        Bare in the singular rather than "1 tile", because the label reads as a
+        sentence in the Edit menu — "Undo rotate tile". That is why it is not
+        :func:`~celpix.ui.widgets.counted`, which is for status-line counts and
+        always shows the number.
+        """
+        return "tile" if count == 1 else f"{count} tiles"
+
     @classmethod
     def _drop_label(cls, drag: RearrangeDrag, moves: list) -> str:
-        count = len(moves) or len(drag.cells)
-        what = "tile" if count == 1 else f"{count} tiles"
+        what = cls._orient_object(len(moves) or len(drag.cells))
         verb = cls._orient_verb(drag.orient)
         if not moves:
             return f"{verb} {what}"
@@ -495,7 +506,7 @@ class RearrangeMixin:
 
         The same thing the destructive Block group does — transform every tile
         *and* permute their positions within the block — except that neither half
-        touches a byte: the positions move in the tile map's permutation, the
+        touches a byte: the positions move in the rearrangement's permutation, the
         tiles' own transform in its orientation flags. So the picture reads the
         same on screen while the file keeps the tiles exactly where and how it had
         them.
@@ -571,8 +582,7 @@ class RearrangeMixin:
         )
         if new_map == self._tile_rearrangement:
             return
-        what = "tile" if len(tiles) == 1 else f"{len(tiles)} tiles"
-        label = f"{self._orient_verb(flags)} {what}"
+        label = f"{self._orient_verb(flags)} {self._orient_object(len(tiles))}"
         self._push_command(
             TileRearrangementCommand(
                 self, entry, label, self._tile_rearrangement, new_map
@@ -597,7 +607,8 @@ class RearrangeMixin:
     def _show_rearrange_drag(self, over: tuple[int, int]) -> None:
         """Preview the drop on cell ``over``: moved tiles, float, drop target.
 
-        The preview is the map the release would leave, rendered through the
+        The preview is the rearrangement the release would leave, rendered through
+        the
         ordinary view path — so what the user is looking at mid-drag *is* the
         result, not an impression of it. A refused drop previews nothing and
         marks the target red.

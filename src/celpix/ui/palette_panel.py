@@ -36,13 +36,13 @@ from PySide6.QtWidgets import QWidget
 
 from celpix.core import ceil_div
 from celpix.core.palette import FULL_PALETTE_COUNT
-from celpix.ui.widgets import paint_selection_outline, take_editing_shortcut
+from celpix.ui.widgets import ShortcutIsland, paint_selection_outline
 
 SWATCH_SIZE = 14  # logical px per swatch; Qt scales logical painting on HiDPI
 SWATCH_COLUMNS = 16
 
 
-class PalettePanel(QWidget):
+class PalettePanel(ShortcutIsland, QWidget):
     subpalette_row_selected = Signal(int)  # clicked entry index // subpalette size
     color_selected = Signal(int)  # entry index of the newly selected color
     edit_requested = Signal(int)  # double-clicked entry index — open the editor
@@ -228,16 +228,6 @@ class PalettePanel(QWidget):
                 return
         super().mouseDoubleClickEvent(event)
 
-    def event(self, event) -> bool:  # noqa: ANN001 — Qt override
-        # A shortcut island while focused: the canvas editing shortcuts
-        # (Cut/Copy/Paste/Select All/Delete) yield here rather than acting on the
-        # canvas selection behind the dock. Copy/Paste act on the selected color
-        # (see :meth:`keyPressEvent`); the rest have no meaning here and simply do
-        # nothing. Its other keys are the arrow-step selection below.
-        if take_editing_shortcut(event):
-            return True
-        return super().event(event)
-
     def keyPressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         """Copy/paste the selected color, and arrows move the color selection
         through the grid — Left/Right by one entry (crossing display rows),
@@ -245,7 +235,7 @@ class PalettePanel(QWidget):
         selection* (the same signal a swatch click emits), rather than the
         selection riding a subpalette step. All movement clamps to the loaded
         colors."""
-        # Copy/Paste reach here as key presses because ``event()`` claimed their
+        # Copy/Paste reach here as key presses because the island claimed their
         # shortcut override; the window does the actual clipboard + write-back.
         # Ctrl+Shift+C/V (whole subpalette) aren't standard sequences, so they're
         # matched by hand; check them first, as they subsume the plain ones.

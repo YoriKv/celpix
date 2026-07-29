@@ -47,6 +47,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._lz import MatchFinder
 
 SHORT_MAX_DISTANCE = 256
 SHORT_MAX_LENGTH = 5
@@ -63,8 +64,8 @@ _BITS_SHORT = 2 + 2 + 8
 _BITS_LONG = 2 + 16
 _BITS_LONG_EXTENDED = 2 + 16 + 8
 
-# Compressor tuning, as in the other LZ built-ins: past the newest few dozen
-# positions sharing a prefix, extra candidates almost never match longer.
+# Compressor tuning, as in the other LZ built-ins
+# (:class:`~celpix.plugins.builtins._lz.MatchFinder`).
 _MAX_CANDIDATES = 96
 
 
@@ -175,19 +176,6 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 # -- compression ------------------------------------------------------------
 
 
-def _match_length(data: bytes, at: int, candidate: int, limit: int) -> int:
-    """Length of the match at ``candidate``, counting legal self-overlap.
-
-    A copy may run past ``at`` into bytes not produced yet: the decoder copies one
-    byte at a time, so the source repeats with period ``distance``.
-    """
-    distance = at - candidate
-    length = 0
-    while length < limit and data[at + length] == data[candidate + length % distance]:
-        length += 1
-    return length
-
-
 def _op_bits(length: int, distance: int) -> int:
     """What encoding this match costs, in bits — the cheapest op that fits it."""
     if distance <= SHORT_MAX_DISTANCE and length <= SHORT_MAX_LENGTH:
@@ -199,15 +187,15 @@ def compress(data: bytes) -> bytes:
     """Encode raw bytes into a PRS stream."""
     n = len(data)
     writer = _BitWriter()
-    index: dict[bytes, list[int]] = {}
-
-    def add(pos: int) -> None:
-        if pos + MIN_MATCH > n:
-            return
-        bucket = index.setdefault(data[pos : pos + MIN_MATCH], [])
-        bucket.append(pos)
-        if len(bucket) > _MAX_CANDIDATES * 2:
-            del bucket[:-_MAX_CANDIDATES]
+    # Scored rather than longest-wins, so this walks the chain itself: PRS has two
+    # back-reference ops of different cost, and a nearer short match written as the
+    # cheap one can beat a distant long one.
+    finder = MatchFinder(
+        data,
+        min_match=MIN_MATCH,
+        window=LONG_MAX_DISTANCE,
+        max_candidates=_MAX_CANDIDATES,
+    )
 
     def best_match(pos: int) -> tuple[int, int, int]:
         """The most profitable match at ``pos``, as ``(benefit, length, distance)``.
@@ -219,16 +207,21 @@ def compress(data: bytes) -> bytes:
         limit = min(LONG_MAX_LENGTH, n - pos)
         if limit < MIN_MATCH:
             return 0, 0, 0
-        bucket = index.get(data[pos : pos + MIN_MATCH])
-        if not bucket:
-            return 0, 0, 0
         best = (0, 0, 0)
-        cutoff = pos - LONG_MAX_DISTANCE
-        for candidate in reversed(bucket[-_MAX_CANDIDATES:]):
-            if candidate < cutoff:
-                break  # the rest are older still - out of reach
+        for candidate in finder.candidates(pos):
+            # The shortest match that could possibly beat the best benefit so
+            # far. No op costs less than _BITS_SHORT, so a match of L bytes is
+            # worth at most L * _BITS_LITERAL - _BITS_SHORT however near it is —
+            # and a candidate that cannot reach that length need not be measured.
+            # Candidates arrive nearest-first and benefit falls with distance, so
+            # this only tightens as the walk goes on.
+            need = (best[0] + _BITS_SHORT) // _BITS_LITERAL + 1
+            if need > limit:
+                break  # nothing left in the chain can pay for itself
+            if not finder.can_reach(pos, candidate, max(need, MIN_MATCH)):
+                continue
             distance = pos - candidate
-            length = _match_length(data, pos, candidate, limit)
+            length = finder.match_length(pos, candidate, limit)
             if length < MIN_MATCH:
                 continue
             benefit = length * _BITS_LITERAL - _op_bits(length, distance)
@@ -239,7 +232,7 @@ def compress(data: bytes) -> bytes:
     pos = 0
     while pos < n:
         benefit, length, distance = best_match(pos)
-        add(pos)  # index this position before any lookahead reads it
+        finder.add(pos)  # index it before any lookahead reads it
         if benefit > 0 and pos + 1 < n:
             # One-step lazy deferral: a strictly better match one byte along is
             # worth more than this one plus the literal it displaces.
@@ -271,8 +264,7 @@ def compress(data: bytes) -> bytes:
                 writer.byte(word & 0xFF)
                 writer.byte(word >> 8)
                 writer.byte(length - 1)
-        for p in range(pos + 1, pos + length):
-            add(p)
+        finder.add_run(pos + 1, pos + length)
         pos += length
 
     writer.bit(0)  # end of stream: a long copy whose word is zero

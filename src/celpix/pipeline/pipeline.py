@@ -537,24 +537,119 @@ def compose_tiles(
     return compose_window(tiles, cols, 0, canvas_rows, layout)
 
 
+def tile_bank(doc: Document, reg: Registry) -> list:
+    """Every tile of the source ``doc`` draws from, decoded once and kept.
+
+    Decoded whole and indexed, not windowed: a map's cells reach anywhere in the
+    bank, so there is no contiguous window to slice. A tile bank is small (1024
+    tiles is the usual hardware ceiling) where the maps drawn from it are not.
+
+    **Held on the document between renders** (:attr:`Document.tile_bank_cache`),
+    because a tilemap is drawn entire on every refresh — a spin change, a
+    selection, an undo — and re-decoding the whole source each time is work
+    proportional to the bank rather than to what changed. The cache keys on the
+    bytes themselves *by identity* plus the geometry the codec was asked for, so
+    a pixel edit (which splices a new ``bytes``) and a format switch (which
+    re-cuts the geometry) both miss and re-decode. Holding the key's buffer here
+    is what makes the identity test sound: the object cannot be freed, so its
+    ``id`` cannot be reused underneath us.
+    """
+    key = (
+        doc.pixel_data,
+        doc.bytes_per_tile,
+        doc.tile_width,
+        doc.tile_height,
+        doc.pixel_config.interpret_preset_id,
+    )
+    cached = doc.tile_bank_cache
+    if cached is not None and cached[0][0] is key[0] and cached[0][1:] == key[1:]:
+        return cached[1]
+    tiles = decode_tiles(doc, reg, 0, doc.tile_count) or []
+    doc.tile_bank_cache = (key, tiles)
+    return tiles
+
+
+def patch_tile_bank(
+    doc: Document, reg: Registry, splices: list[tuple[int, bytes]]
+) -> None:
+    """Carry a byte edit into the cached bank instead of dropping it.
+
+    The channel that makes editing a tile **live across every cell that draws
+    it**. :func:`tile_bank` keys on the buffer's identity, so an edit — which
+    splices a fresh ``bytes`` — would otherwise miss and re-decode the whole
+    source on the next repaint, once per committed gesture. Here only the tiles
+    the splice actually reached are re-decoded (usually one), dropped into the
+    cached list in place, and the cache is re-keyed to the buffer as it now
+    stands. Because the map's tiles are all derived from that one list on the
+    following refresh, one edited tile updates everywhere it appears at once.
+
+    Call it **after** the splices have landed in ``doc.pixel_data``: the new key
+    is read off the document rather than passed in, which is what keeps the two
+    from drifting apart.
+
+    Anything that cannot be answered locally — no cache to patch, a geometry
+    that changed under it, a decode that fails — drops the cache rather than
+    guessing, so the next render rebuilds it and the fallback is a slow repaint
+    instead of a stale picture.
+    """
+    cached = doc.tile_bank_cache
+    if cached is None:
+        return
+    key, bank = cached
+    tile_bytes = doc.bytes_per_tile
+    shape = (
+        tile_bytes,
+        doc.tile_width,
+        doc.tile_height,
+        doc.pixel_config.interpret_preset_id,
+    )
+    if not tile_bytes or key[1:] != shape:
+        doc.tile_bank_cache = None
+        return
+    try:
+        for start, data in splices:
+            if start < 0 or not data:
+                continue
+            first = start // tile_bytes
+            fresh = decode_tiles(
+                doc, reg, first, ceil_div(start + len(data), tile_bytes) - first
+            )
+            for at, tile in enumerate(fresh):
+                if first + at < len(bank):
+                    bank[first + at] = tile
+    except PipelineError:
+        doc.tile_bank_cache = None
+        return
+    doc.tile_bank_cache = ((doc.pixel_data, *shape), bank)
+
+
 def tilemap_tiles(
     doc: Document, reg: Registry, columns: int
-) -> tuple[list, list[int], BlockLayout]:
-    """A tilemap's cells expanded into tiles, their palette shifts, and a layout.
+) -> tuple[list, BlockLayout]:
+    """A tilemap's cells expanded into ready-to-place tiles, and a layout.
 
     The whole of what makes a tilemap render through the *pixel* view rather
     than a parallel one. Each cell is turned into the source tiles it draws,
-    oriented as its flip bits say, and the three results line up so the existing
-    composer can finish the job:
+    oriented as its flip bits say and carrying its palette row, and the two
+    results line up so the existing composer can finish the job:
 
     - **tiles** — every cell's tiles, consecutively, so a metatile's four land
       next to each other.
-    - **biases** — one index shift per tile, exactly the mechanism pinned
-      palette regions already use (:func:`compose_tiles`): the composed image
-      carries one colour table, so a cell that renders through another palette
-      row has that row folded into its indices.
     - **layout** — a :class:`BlockLayout` whose *block* is one cell, which is
       what places a 2x2 metatile's four consecutive tiles as a square.
+
+    The palette row travels **in the indices**, the same mechanism pinned
+    palette regions use (:meth:`~celpix.core.index_grid.IndexGrid.shifted`): the
+    composed image carries one colour table, so a cell that renders through
+    another row has that row folded in. It is folded in here rather than handed
+    to :func:`compose_tiles` as a bias list so that the shift shares the memo
+    below — the same tile drawn twice through the same row is shifted once.
+
+    That memo is the reason this is cheap on a large map. A map is thousands of
+    cells over a bank of at most a few hundred distinct tiles, and what a cell
+    draws is decided entirely by ``(tile, flip_h, flip_v, row)`` — so the
+    flip-and-shift work is per distinct combination rather than per cell, and
+    the repeats are the same grid object appearing in the list again.
 
     A cell naming a tile the source does not have renders blank rather than
     failing: a tilemap is routinely authored against a bank that is loaded
@@ -564,24 +659,30 @@ def tilemap_tiles(
     across, down = max(1, doc.cell_tiles[0]), max(1, doc.cell_tiles[1])
     blank = IndexGrid(doc.tile_width, doc.tile_height)
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
-    # Decoded once and indexed, not windowed: cells reach anywhere in the bank,
-    # so there is no contiguous window to slice. A tile bank is small (1024
-    # tiles is the usual hardware ceiling) where the maps drawn from it are not.
-    source = decode_tiles(doc, reg, 0, doc.tile_count) or []
+    source = tile_bank(doc, reg)
+    count = len(source)
+    drawn: dict[tuple[int, bool, bool, int], object] = {}
     tiles: list = []
-    biases: list[int] = []
     for cell in cells:
         shift = cell.palette_row * space
+        flip_h, flip_v = cell.flip_h, cell.flip_v
         for index in doc.cell_tile_indices(cell):
-            tile = source[index] if 0 <= index < len(source) else blank
-            if cell.flip_h:
-                tile = transform.flip_horizontal(tile)
-            if cell.flip_v:
-                tile = transform.flip_vertical(tile)
+            key = (index, flip_h, flip_v, shift)
+            tile = drawn.get(key)
+            if tile is None:
+                tile = source[index] if 0 <= index < count else blank
+                if flip_h:
+                    tile = transform.flip_horizontal(tile)
+                if flip_v:
+                    tile = transform.flip_vertical(tile)
+                if shift and tile.bytes_per_pixel == 1:
+                    # Direct-colour grids carry their own ARGB and index no
+                    # palette, so there is no row to fold into them.
+                    tile = tile.shifted(shift)
+                drawn[key] = tile
             tiles.append(tile)
-            biases.append(shift)
     layout = BlockLayout(max(1, columns) * across, across, down, "row")
-    return tiles, biases, layout
+    return tiles, layout
 
 
 class TilemapImage(NamedTuple):
@@ -615,8 +716,9 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
         grid, drawn = sprite_image(doc, reg, columns)
     else:
         top = max((cell.palette_row for cell in doc.drawn_cells), default=0)
-        tiles, biases, layout = tilemap_tiles(doc, reg, columns)
-        grid, drawn = compose_tiles(tiles, layout, None, biases), len(tiles)
+        tiles, layout = tilemap_tiles(doc, reg, columns)
+        # No bias list: the rows are already in the indices (see tilemap_tiles).
+        grid, drawn = compose_tiles(tiles, layout, None), len(tiles)
     return TilemapImage(grid, drawn, min(max(1, 256 // max(1, space)), top + 1))
 
 
@@ -644,7 +746,7 @@ def sprite_image(doc: Document, reg: Registry, columns: int) -> tuple[IndexGrid,
     across = max(1, columns)
     rows = ceil_div(len(frames), across)
     image = IndexGrid(across * width, rows * height)
-    source = decode_tiles(doc, reg, 0, doc.tile_count) or []
+    source = tile_bank(doc, reg)
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
     drawn = 0
     for at, frame in enumerate(frames):

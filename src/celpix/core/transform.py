@@ -9,7 +9,7 @@ Everything works on ``grid.data`` in whole pixels of ``bytes_per_pixel``, so one
 implementation serves both grid types and the cost is a handful of buffer slices
 per row or column rather than a Python call per pixel. That matters because the
 callers are not only 8×8 tiles: a marquee transform covers the whole window, and
-rendering a rearranged tile map re-orients every visible tile on each repaint.
+rendering a rearranged view re-orients every visible tile on each repaint.
 Qt-free, like the rest of ``core``.
 """
 

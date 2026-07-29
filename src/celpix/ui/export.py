@@ -37,7 +37,8 @@ def _palette_biases(
     The whole-file counterpart of the live view's ``_window_biases``. One thing
     differs from the canvas, and it follows from what export is: the document is
     rendered whole, from its first tile, with no rearrangement — so slot *n* is
-    tile *n* and the tile map is not consulted. An export is the file's own order.
+    tile *n* and the rearrangement is not consulted. An export is the file's own
+    order.
 
     Regions are bounded here as the view bounds them, so a row that outran a
     shorter palette exports as the unpinned view shows it rather than as the

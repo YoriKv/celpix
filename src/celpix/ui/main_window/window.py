@@ -108,6 +108,7 @@ from celpix.ui.main_window.tilemap_bar import TilemapBarMixin
 from celpix.ui.main_window.tilemap_edit import TilemapEditMixin
 from celpix.ui.main_window.transfer import TransferMixin
 from celpix.ui.main_window.transform import TransformMixin
+from celpix.ui.main_window.writing import WritingMixin
 from celpix.ui.theme import THEME_KEY, Theme, apply_theme
 from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
@@ -157,6 +158,7 @@ class MainWindow(
     CapabilitySyncMixin,
     RenderingMixin,
     EntriesMixin,
+    WritingMixin,
     TransferMixin,
     CompressionMixin,
     QMainWindow,

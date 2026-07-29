@@ -22,9 +22,10 @@ Which groups are on the bar follows the current interaction
 (:meth:`_sync_transform_bar_mode`): Tile + Block while editing tiles, a dedicated
 **Pixel** group in pixel mode, and — while the rearrange tool is armed — a
 display-only Tile/Block pair in their place. Those last ones are *not* edits: they
-transform by storing an orientation in the tile map rather than by rewriting
+transform by storing an orientation in the rearrangement rather than by rewriting
 pixels, so both halves of a block transform (the tiles' orientation and their
-position permutation) live in the map and the file is untouched. They keep the
+position permutation) live in the rearrangement and the file is untouched. They
+keep the
 Tile/Block captions rather than announcing themselves, since the split means
 exactly what it does elsewhere; the tooltips carry the difference. One
 :class:`TransformOp` table drives both paths — ``tile_orient`` is each op expressed
@@ -70,6 +71,7 @@ from celpix.ui.main_window.selection import SELECTION_SHAPE_KEY, SelectionShape
 from celpix.ui.tools import TRANSFORM_SPECS, EditMode, TransformSpec
 from celpix.ui.widgets import (
     CompactComboBox,
+    counted,
     load_enum_setting,
     select_combo_data,
 )
@@ -248,7 +250,7 @@ class TransformMixin:
             "",
         )
         # Rearrange: shown only while that tool is armed, over *either* mode. Its
-        # transforms are display state stored in the tile map, not pixel edits —
+        # transforms are display state stored in the rearrangement, not edits —
         # the same glyphs and the same Tile/Block captions, deliberately, because
         # the gesture and the split read the same; the tooltips carry the
         # difference.
@@ -558,7 +560,7 @@ class TransformMixin:
             return
         moved = len(self._selection_tiles())
         if self._map_selected_tiles(op.pixel_fn, f"{op.verb} tiles"):
-            self.statusBar().showMessage(f"{op.past} {self._tiles_label(moved)}.")
+            self.statusBar().showMessage(f"{op.past} {counted(moved, 'tile')}.")
 
     def _transform_block(self, op: TransformOp) -> None:
         """Transform the block: permute the tiles *and* transform each.

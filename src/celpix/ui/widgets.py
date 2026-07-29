@@ -81,6 +81,9 @@ def take_editing_shortcut(event: QEvent) -> bool:
     (or ignores it, so the key simply does nothing there). Mirrors how the
     app-wide arrow-key filter yields to these same panels, and how text inputs
     already claim their editing keys natively.
+
+    Usually reached through :class:`ShortcutIsland` rather than called directly;
+    it stays public for a widget that has its own ``event()`` to weave it into.
     """
     if event.type() == QEvent.Type.ShortcutOverride and any(
         event.matches(key) for key in _EDITING_SHORTCUTS
@@ -88,6 +91,38 @@ def take_editing_shortcut(event: QEvent) -> bool:
         event.accept()
         return True
     return False
+
+
+class ShortcutIsland:
+    """Mix in front of a widget to make it own the editing keys while focused.
+
+    The Cut/Copy/Paste/Select All/Delete shortcuts are bound window-wide for the
+    canvas, so without this every side panel that wants its own Copy is shadowed
+    by the editing surface behind it. Each panel decides for itself what the keys
+    then *do* — the palette grid copies a colour, the hex dump copies text, the
+    files list deletes an entry — and some are deliberately inert; claiming the
+    key is the only part that is the same everywhere, so it is the only part here.
+
+    Mixed in **before** the Qt base (``class Panel(ShortcutIsland, QListWidget)``)
+    so this ``event`` is reached first and ``super()`` continues to the widget's
+    own.
+    """
+
+    def event(self, event: QEvent) -> bool:  # noqa: D102 — Qt override
+        if take_editing_shortcut(event):
+            return True
+        return super().event(event)
+
+
+def counted(count: int, noun: str) -> str:
+    """``count`` with ``noun`` pluralised — ``"1 tile"``, ``"1,024 tiles"``.
+
+    Every "Copied N tiles." / "Cleared N cells." the status bar says goes through
+    here, so a count is never grouped in one message and not the next. Naive
+    plurals (an ``s``), which is all these nouns need; a noun that pluralises any
+    other way would have to be spelled out at the call site.
+    """
+    return f"{count:,} {noun}" + ("" if count == 1 else "s")
 
 
 @contextmanager

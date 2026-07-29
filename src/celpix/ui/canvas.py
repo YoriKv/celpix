@@ -24,7 +24,8 @@ never together with pixel mode, but it is still a modal flag the mouse handlers
 check ahead of the mode split, joining the pan and the eyedropper. While armed a
 left drag reports slots through the ``rearrange_*`` signals, and the canvas paints
 the dragged tile floating under the cursor over an outlined drop target — whether
-that drop is *allowed* is the controller's call, since it depends on the tile map.
+that drop is *allowed* is the controller's call, since it depends on the
+rearrangement.
 The **right** drag takes over tile selection there: picking the block to carry is
 what the left button would otherwise be for, and the tool has no context menu to
 displace.
@@ -445,7 +446,7 @@ class Canvas(QWidget):
         """Outline where a rearrange drag would land; ``valid`` says it may.
 
         Driven entirely by the controller — whether a drop is legal depends on
-        the tile map, which the canvas has no business knowing.
+        the rearrangement, which the canvas has no business knowing.
         """
         self._drop_slots = frozenset(slots or ())
         self._drop_valid = valid

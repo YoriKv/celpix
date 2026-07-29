@@ -1,10 +1,15 @@
 """Per-pathway pipeline configuration.
 
 A :class:`PathwayConfig` names the plugin chosen for each stage of one pathway
-(pixel or palette) plus its source/destination. Two of these — one per pathway —
-plus the shared view options fully describe a load/save (see
-``docs/design/overview.md`` §7). It is plain data; the project file stores the
-workspace entries it is rebuilt from rather than the config itself
+plus its source/destination. It is the same shape for all three — pixel,
+palette, tilemap — because the stages ahead of Interpret do not care which one
+they are running for: :func:`~celpix.pipeline.pipeline._read_reshape_decompress`
+takes any of them, and the pathway is only the label a failure is reported
+under. A pixel + palette pair plus the shared view options fully describe a
+graphic's load/save; a tilemap entry carries a third alongside them, addressing
+its *own* file where the pixel one addresses the tiles it borrows
+(``docs/design/tilemap-entry.md`` §3). It is plain data; the project file stores
+the workspace entries it is rebuilt from rather than the config itself
 (:mod:`celpix.project.projectfile`).
 """
 

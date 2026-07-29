@@ -41,6 +41,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._lz import MatchFinder
 
 # One HiROM bank — the conventional cap on an uncompressed structure, and the
 # reach of the absolute 16-bit backreference offset.
@@ -174,33 +175,19 @@ def compress(data: bytes, *, big_endian_offsets: bool) -> bytes:
         )
     out = bytearray()
 
-    # 3-byte-prefix index for backreference search: prefix -> positions, most
-    # recent last. Bounding the scan to the newest _MAX_CHAIN keeps a worst-case
-    # input, a single repeated byte, from going quadratic.
-    prefixes: dict[bytes, list[int]] = {}
-
-    def insert(pos: int) -> None:
-        if pos + 3 <= n:
-            prefixes.setdefault(data[pos : pos + 3], []).append(pos)
+    # Back-reference search. No distance window: the offset is *absolute* within
+    # the structure, so every earlier position is addressable. Bounding the scan
+    # to the newest _MAX_CHAIN candidates keeps a worst-case input, a single
+    # repeated byte, from going quadratic.
+    finder = MatchFinder(
+        data, min_match=_MIN_MATCH, window=None, max_candidates=_MAX_CHAIN
+    )
 
     def find_backref(d: int) -> tuple[int, int] | None:
-        if d < 1 or d + 3 > n:
-            return None
-        positions = prefixes.get(data[d : d + 3])
-        if not positions:
-            return None
-        best_len = 0
-        best_off = 0
-        max_len = min(n - d, _MAX_LONG)
-        for p in reversed(positions[-_MAX_CHAIN:]):
-            period = d - p  # < period ⇒ overlap: the copy repeats with this period
-            length = 0
-            while length < max_len and data[d + length] == data[p + length % period]:
-                length += 1
-            if length > best_len:
-                best_len, best_off = length, p
-                if length >= max_len:
-                    break
+        """The longest match at ``d``, as ``(length, position)``, or None."""
+        if d < 1:
+            return None  # nothing produced yet to reach back into
+        best_len, best_off = finder.longest(d, min(n - d, _MAX_LONG))
         if best_len < _MIN_MATCH:
             return None
         return best_len, best_off
@@ -288,7 +275,7 @@ def compress(data: bytes, *, big_endian_offsets: bool) -> bytes:
             if nxt is not None and nxt[1] > cmd[1]:
                 if lit_start < 0:
                     lit_start = d
-                insert(d)
+                finder.add(d)
                 d += 1
                 continue
             flush_literals(d)
@@ -303,13 +290,12 @@ def compress(data: bytes, *, big_endian_offsets: bool) -> bytes:
                     out += bytes(((off >> 8) & 0xFF, off & 0xFF))
                 else:
                     out += bytes((off & 0xFF, (off >> 8) & 0xFF))
-            for k in range(length):
-                insert(d + k)
+            finder.add_run(d, d + length)
             d += length
         else:
             if lit_start < 0:
                 lit_start = d
-            insert(d)
+            finder.add(d)
             d += 1
     flush_literals(n)
     out.append(_TERMINATOR)

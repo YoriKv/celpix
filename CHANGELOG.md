@@ -17,6 +17,9 @@
   there, lands on the slice's first tile instead of off the end. A map that
   already fits its source is left alone, and a base you set yourself is never
   overwritten.
+- **Plugins**: tilemap formats can be added like any other — a `tilemap/` folder
+  taking `.toml` presets and `.py` code formats, with worked examples for each
+  of its engines seeded into your plugin folder.
 - **Palettes (COL)**: S-CG-CAD palette files are recognised as a container, so
   one opens with its 256 real colours instead of decoding its trailing metadata
   block as 128 more.
@@ -72,6 +75,13 @@
   unwrapped to their payload, headers preserved on write. Container detection
   also looks deeper into a file, so a format whose signature sits past its data
   can be identified at all.
+- **Internal cleanup**: the LZ compressors share one match finder, the undo
+  commands share one before/after shape, and write-back moved out of the entries
+  module into its own. No behaviour change.
+- **Faster**: tilemaps redraw about twice as quickly, block arrangements
+  (metatiles, Mega Drive sprites, 8x16 sheets) compose twice as quickly, and the
+  LZ compressors are 1.2-2.6x faster to write. Editing a tile in a map now
+  updates every cell that draws it as the edit lands.
 
 ## v0.3.5 - 2026-07-28
 

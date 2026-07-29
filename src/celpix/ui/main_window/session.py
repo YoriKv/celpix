@@ -38,7 +38,7 @@ from celpix.core.context import (
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
-from celpix.core.tilemap import Cell
+from celpix.core.tilemap import VRAM_ROW_STRIDE, Cell
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import NO_COMPRESSION, FileRef
@@ -60,13 +60,6 @@ from celpix.ui.widgets import select_combo_data, signals_blocked
 # for a tilemap that was carved out by hand rather than detected.
 _DEFAULT_TILEMAP_PRESET = "preset.tilemap.snes-bg"
 _DEFAULT_PIXEL_PRESET = "preset.pixel.snes-4bpp"
-
-# The index step between a metatile cell's tile rows. Not the cell's width: SNES
-# 16x16 BG tiles are N, N+1, N+0x10, N+0x11 because VRAM behaves as a 16-tile-wide
-# array (``docs/graphics-formats-reference/snes-hardware-notes.md`` §5). Applied
-# only to cells that cover more than one tile, where it is the only rule the
-# formats in hand use.
-_CELL_ROW_STRIDE = 16
 
 
 class _BoundTiles(NamedTuple):
@@ -304,7 +297,7 @@ class SessionMixin:
             tilemap_ctx=loaded.ctx,
             tilemap_data=loaded.data,
             cell_tiles=cell_tiles,
-            cell_row_stride=_CELL_ROW_STRIDE if cell_tiles != (1, 1) else 0,
+            cell_row_stride=VRAM_ROW_STRIDE if cell_tiles != (1, 1) else 0,
             tile_base_index=(
                 entry.tile_source.base_index if entry.tile_source is not None else 0
             ),
@@ -402,7 +395,7 @@ class SessionMixin:
         # A cell covering several tiles reaches past its own index, so the span
         # has to allow for what the widest of them draws.
         across, down = max(1, cell_tiles[0]), max(1, cell_tiles[1])
-        reach = high + (down - 1) * _CELL_ROW_STRIDE + (across - 1)
+        reach = high + (down - 1) * VRAM_ROW_STRIDE + (across - 1)
         if low and reach >= count and reach - low < count:
             entry.tile_source = replace(source, base_index=-low)
 

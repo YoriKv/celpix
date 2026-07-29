@@ -39,7 +39,7 @@ from celpix.project.workspace import (
 )
 from celpix.ui import clipboard, export
 from celpix.ui.main_window.palette_source import PALETTE_EXTENSIONS
-from celpix.ui.widgets import ask_save_path
+from celpix.ui.widgets import ask_save_path, counted
 
 
 class TransferMixin:
@@ -421,7 +421,7 @@ class TransferMixin:
         if not written:
             self.statusBar().showMessage("Nothing imported - no room at this offset.")
             return
-        message = f"Imported {self._tiles_label(written)} from {Path(path).name}"
+        message = f"Imported {counted(written, 'tile')} from {Path(path).name}"
         if len(incoming.tiles) > written:
             clipped = len(incoming.tiles) - written
             message += f" ({clipped} clipped at the end of the data)"

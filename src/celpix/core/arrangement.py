@@ -177,6 +177,22 @@ class BlockLayout:
         """How many linear slots one row of blocks holds — the mapping's period."""
         return self._blocks_per_row * self._bc * self._br
 
+    @cached_property
+    def block_row_cells(self) -> tuple[tuple[int, int], ...]:
+        """:meth:`slot_to_cell` for one block row — the whole mapping, tiled.
+
+        The placement repeats with period :attr:`slots_per_block_row`, shifted
+        down by ``block_rows`` each time: the cell *column* depends only on the
+        slot's position within its block row, and the row differs by a constant.
+        So a composer that would otherwise call :meth:`slot_to_cell` per slot can
+        resolve one period and index it, which is what makes laying out a large
+        block-arranged window (a metatile map is thousands of slots) cost the
+        period rather than the window.
+        """
+        return tuple(
+            self.slot_to_cell(slot) for slot in range(self.slots_per_block_row)
+        )
+
     def slot_to_cell(self, slot: int) -> tuple[int, int]:
         """The ``(tile_x, tile_y)`` canvas cell a linear slot lands in."""
         if self.is_plain:  # every term below collapses; skip the block arithmetic
@@ -245,37 +261,65 @@ def compose_window(
     tw, th = first.width, first.height
     bpx = first.bytes_per_pixel
     image = type(first)(cols * tw, rows * th)
-    dst = image.data
     row_bytes = tw * bpx
-    if layout.is_plain:
-        _compose_plain(dst, tiles, cols, rows, th, row_bytes, first_tile)
-        return image
-    dst_stride = cols * row_bytes
-    for slot in range(cols * rows):
-        idx = first_tile + slot
-        if idx < 0 or idx >= len(tiles):
-            continue
-        tile_x, tile_y = layout.slot_to_cell(slot)
-        if tile_x >= cols or tile_y >= rows:
-            continue
-        src = tiles[idx].data
-        d0 = tile_y * th * dst_stride + tile_x * row_bytes
-        s0 = 0
-        for _y in range(th):
-            dst[d0 : d0 + row_bytes] = src[s0 : s0 + row_bytes]
-            d0 += dst_stride
-            s0 += row_bytes
+    blank = bytes(th * row_bytes)  # a whole missing tile: past the end, or before it
+    datas = [tile.data for tile in tiles]
+    if not layout.is_plain:
+        # Resolve the block placement into a plain canvas-ordered list first, so
+        # the blit below stays the one-join-per-image-row loop the plain layout
+        # gets. A block layout only decides *which* tile lands in a cell, and
+        # answering that once per cell is far cheaper than the alternative — a
+        # slice assignment per tile per pixel row, which is what placing tiles
+        # one at a time costs.
+        datas = _in_cell_order(datas, layout, cols, rows, first_tile, blank)
+        first_tile = 0
+    _compose_plain(image.data, datas, cols, rows, th, row_bytes, first_tile, blank)
     return image
+
+
+def _in_cell_order(
+    datas: list,
+    layout: BlockLayout,
+    cols: int,
+    rows: int,
+    first_tile: int,
+    blank: bytes,
+) -> list:
+    """``datas`` reordered from linear slots into row-major canvas cells.
+
+    Undoes a :class:`BlockLayout`'s placement into the plain order
+    :func:`_compose_plain` blits, filling a cell no slot reaches with ``blank``:
+    a partial-width block column, or a window running past the last tile.
+
+    The mapping is read off :attr:`BlockLayout.block_row_cells` rather than
+    asked per slot, since it repeats every block row (see there).
+    """
+    count = len(datas)
+    period = layout.slots_per_block_row
+    pattern = layout.block_row_cells
+    height = max(1, layout.block_rows)  # the clamp slot_to_cell applies
+    out = [blank] * (cols * rows)
+    for slot in range(cols * rows):
+        index = first_tile + slot
+        if index < 0 or index >= count:
+            continue
+        block_row, rem = divmod(slot, period)
+        tile_x, tile_y = pattern[rem]
+        tile_y += block_row * height
+        if tile_x < cols and tile_y < rows:
+            out[tile_y * cols + tile_x] = datas[index]
+    return out
 
 
 def _compose_plain(
     dst: bytearray,
-    tiles: list,
+    datas: list,
     cols: int,
     rows: int,
     th: int,
     row_bytes: int,
     first_tile: int,
+    blank: bytes,
 ) -> None:
     """Blit a row-major window, one whole image row per write.
 
@@ -285,8 +329,6 @@ def _compose_plain(
     difference is the whole cost of composing when the tiles are small: a bitmap
     width can cut a window into tens of thousands of them.
     """
-    blank = bytes(th * row_bytes)  # a whole missing tile: past the end, or before it
-    datas = [tile.data for tile in tiles]
     count = len(datas)
     span = cols * row_bytes
     pos = 0
@@ -299,7 +341,9 @@ def _compose_plain(
         for y in range(th):
             start = y * row_bytes
             stop = start + row_bytes
-            dst[pos : pos + span] = b"".join(src[start:stop] for src in row_tiles)
+            # A list rather than a generator: join materializes one either way,
+            # and this is the loop that runs once per image row of every repaint.
+            dst[pos : pos + span] = b"".join([src[start:stop] for src in row_tiles])
             pos += span
 
 

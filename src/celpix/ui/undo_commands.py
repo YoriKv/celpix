@@ -28,6 +28,13 @@ called inside the window's re-entrancy guard so an apply can never push a
 second command. ``QUndoStack.push()`` invokes ``redo()`` immediately — push
 sites therefore capture state *before* mutating and let the first ``redo()``
 do the work.
+
+That shape is :class:`_StateCommand`, and most commands here are one line of it:
+a subclass says how far it has to reach (:class:`_CurrentEntryCommand`,
+:class:`_InPlaceCommand`, :class:`_EditModeCommand`) and what applying one half
+of its pair means. The exceptions are written out, and are the ones whose two
+directions are genuinely different operations rather than one over a pair —
+adding versus removing an entry, and the color edit, which merges.
 """
 
 from __future__ import annotations
@@ -81,7 +88,97 @@ class PaletteState:
     edits: frozenset[int] = frozenset()
 
 
-class OffsetMoveCommand(QUndoCommand):
+class _StateCommand(QUndoCommand):
+    """One entry's state moving between a captured ``before`` and ``after``.
+
+    The shape almost every command here has: hold the pair, and in each direction
+    hand the right half to one ``MainWindow`` ``_apply_*`` helper inside the
+    window's re-entrancy guard. Stating it once is what keeps the two invariants
+    from having to be re-remembered per command — the guard must wrap the apply
+    (or an apply could push a second command), and a document-scoped change must
+    reach the entry it happened in before it lands.
+
+    Subclasses supply :meth:`_apply`, and pick their reach by subclassing
+    :class:`_CurrentEntryCommand` or :class:`_InPlaceCommand` rather than by
+    overriding :meth:`_reach` directly. Commands whose two directions are not the
+    same operation over a pair — adding versus removing an entry — are not this
+    shape and stay written out.
+    """
+
+    def __init__(
+        self, window: MainWindow, entry: Entry, text: str, before, after
+    ) -> None:
+        super().__init__(text)
+        self._window = window
+        self._entry = entry
+        self._before = before
+        self._after = after
+
+    def redo(self) -> None:
+        self._run(self._after)
+
+    def undo(self) -> None:
+        self._run(self._before)
+
+    def _run(self, state) -> None:
+        with self._window._undo_apply():
+            if self._reach():
+                self._apply(state)
+
+    def _reach(self) -> bool:
+        """Put the window where this command's change belongs; False to skip."""
+        raise NotImplementedError
+
+    def _apply(self, state) -> None:
+        """Land ``state`` — one direction of this command, on the window."""
+        raise NotImplementedError
+
+
+class _CurrentEntryCommand(_StateCommand):
+    """A change to the *document on screen*: undo returns to it first.
+
+    The unified stack is chronological across entries, so a step made in another
+    entry has to switch the view back before it can be reverted where it happened
+    (``docs/design/undo-redo.md``).
+    """
+
+    def _reach(self) -> bool:
+        return self._window._ensure_current(self._entry)
+
+
+class _InPlaceCommand(_StateCommand):
+    """A change visible wherever you are, so the view never moves for it.
+
+    A rename, a reorder, a slice re-pointed: the files pane is where it shows, and
+    yanking the view to the affected entry would be a surprise rather than the
+    context the change needs.
+    """
+
+    def _reach(self) -> bool:
+        return True
+
+
+class _EditModeCommand(_StateCommand):
+    """A change made *in* an editing mode, reverted where it was made.
+
+    The same bytes are edited from tile mode and from pixel mode, so a step that
+    came back in the other one would land a marquee on a document not in pixel
+    mode, or a tile edit with the pixel tools armed. The mode therefore travels
+    with the command alongside the entry, and reaching the change means restoring
+    both.
+    """
+
+    def __init__(
+        self, window: MainWindow, entry: Entry, text: str, before, after
+    ) -> None:
+        super().__init__(window, entry, text, before, after)
+        self._mode = window._edit_mode
+
+    def _reach(self) -> bool:
+        return self._window._ensure_edit_context(self._entry, self._mode)
+
+
+class OffsetMoveCommand(_CurrentEntryCommand):
     """One view-position move; consecutive moves in the same entry merge."""
 
     def __init__(
@@ -89,14 +186,10 @@ class OffsetMoveCommand(QUndoCommand):
         window: MainWindow,
         entry: Entry,
         *,
-        before: tuple[int, int],
+        before: tuple[int, int],  # (offset, nudge)
         after: tuple[int, int],
     ) -> None:
-        super().__init__("move view")
-        self._window = window
-        self._entry = entry
-        self._before = before  # (offset, nudge)
-        self._after = after
+        super().__init__(window, entry, "move view", before, after)
 
     def id(self) -> int:
         return OFFSET_MOVE_ID
@@ -112,18 +205,11 @@ class OffsetMoveCommand(QUndoCommand):
             self.setObsolete(True)
         return True
 
-    def redo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
-                self._window._apply_offset(*self._after)
-
-    def undo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
-                self._window._apply_offset(*self._before)
+    def _apply(self, state: tuple[int, int]) -> None:
+        self._window._apply_offset(*state)
 
 
-class TileRearrangementCommand(QUndoCommand):
+class TileRearrangementCommand(_CurrentEntryCommand):
     """One rearrangement of tile *display* positions, as before/after maps.
 
     A rearrangement moves nothing in the file (see
@@ -138,32 +224,11 @@ class TileRearrangementCommand(QUndoCommand):
     cannot drift the way replaying a sequence of swaps could.
     """
 
-    def __init__(
-        self,
-        window: MainWindow,
-        entry: Entry,
-        text: str,
-        before: TileRearrangement,
-        after: TileRearrangement,
-    ) -> None:
-        super().__init__(text)
-        self._window = window
-        self._entry = entry
-        self._before = before
-        self._after = after
-
-    def redo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
-                self._window._set_tile_rearrangement(self._after)
-
-    def undo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
-                self._window._set_tile_rearrangement(self._before)
+    def _apply(self, state: TileRearrangement) -> None:
+        self._window._set_tile_rearrangement(state)
 
 
-class TilemapCellsCommand(QUndoCommand):
+class TilemapCellsCommand(_InPlaceCommand):
     """One edit to a tilemap's cells, as before/after lists.
 
     Unlike :class:`TileRearrangementCommand` this **is** an edit — the cells are
@@ -185,24 +250,22 @@ class TilemapCellsCommand(QUndoCommand):
         before: list,
         after: list,
     ) -> None:
-        super().__init__(text)
-        self._window = window
-        self._entry = entry
-        self._before = before
-        self._after = after
-        self._before_revision = entry.pixel_revision
-        self._after_revision = window._workspace.next_revision()
+        # The state is the cells *paired with* the data-pathway revision they leave
+        # the entry at, so an undo hands back the exact unsaved-state it had before.
+        super().__init__(
+            window,
+            entry,
+            text,
+            (before, entry.pixel_revision),
+            (after, window._workspace.next_revision()),
+        )
 
-    def redo(self) -> None:
-        with self._window._undo_apply():
-            self._window._set_cells(self._entry, self._after, self._after_revision)
-
-    def undo(self) -> None:
-        with self._window._undo_apply():
-            self._window._set_cells(self._entry, self._before, self._before_revision)
+    def _apply(self, state: tuple[list, int]) -> None:
+        cells, revision = state
+        self._window._set_cells(self._entry, cells, revision)
 
 
-class PaletteRegionsCommand(QUndoCommand):
+class PaletteRegionsCommand(_CurrentEntryCommand):
     """One pin/unpin of palette regions, as before/after sets.
 
     Sibling of :class:`TileRearrangementCommand` in every respect that matters: a pinned
@@ -218,32 +281,11 @@ class PaletteRegionsCommand(QUndoCommand):
     cannot drift the way replaying a sequence of pins and unpins could.
     """
 
-    def __init__(
-        self,
-        window: MainWindow,
-        entry: Entry,
-        text: str,
-        before: PaletteRegions,
-        after: PaletteRegions,
-    ) -> None:
-        super().__init__(text)
-        self._window = window
-        self._entry = entry
-        self._before = before
-        self._after = after
-
-    def redo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
-                self._window._set_palette_regions(self._after)
-
-    def undo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
-                self._window._set_palette_regions(self._before)
+    def _apply(self, state: PaletteRegions) -> None:
+        self._window._set_palette_regions(state)
 
 
-class PixelConfigCommand(QUndoCommand):
+class PixelConfigCommand(_CurrentEntryCommand):
     """A pixel interpretation change: preset switch or header-skip change.
 
     Captures config parameters, never pixel bytes (``pixel_data`` can be a
@@ -263,26 +305,22 @@ class PixelConfigCommand(QUndoCommand):
         after: tuple[str, int],
         preloaded: pipeline.PixelData | None = None,
     ) -> None:
-        super().__init__(text)
-        self._window = window
-        self._entry = entry
-        self._before = before  # (preset_id, byte_position)
-        self._after = after
+        super().__init__(window, entry, text, before, after)  # (preset_id, position)
         self._preloaded = preloaded
+        self._pending: pipeline.PixelData | None = None
 
     def redo(self) -> None:
-        preloaded, self._preloaded = self._preloaded, None
-        with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
-                self._window._apply_pixel_config(*self._after, preloaded=preloaded)
+        # Handed over here rather than read in _apply so it can only ever reach
+        # the *first* redo; a later one re-runs the pipeline as an undo does.
+        self._pending, self._preloaded = self._preloaded, None
+        super().redo()
 
-    def undo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
-                self._window._apply_pixel_config(*self._before)
+    def _apply(self, state: tuple[str, int]) -> None:
+        preloaded, self._pending = self._pending, None
+        self._window._apply_pixel_config(*state, preloaded=preloaded)
 
 
-class PaletteCommand(QUndoCommand):
+class PaletteCommand(_CurrentEntryCommand):
     """Any palette-source change, as a before/after :class:`PaletteState` pair.
 
     One class serves every push site (format switch, default/file/offset mode
@@ -299,21 +337,10 @@ class PaletteCommand(QUndoCommand):
         before: PaletteState,
         after: PaletteState,
     ) -> None:
-        super().__init__(text)
-        self._window = window
-        self._entry = entry
-        self._before = before
-        self._after = after
+        super().__init__(window, entry, text, before, after)
 
-    def redo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
-                self._window._apply_palette_state(self._after)
-
-    def undo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_current(self._entry):
-                self._window._apply_palette_state(self._before)
+    def _apply(self, state: PaletteState) -> None:
+        self._window._apply_palette_state(state)
 
 
 class ColorEditCommand(QUndoCommand):
@@ -422,7 +449,7 @@ class ColorEditCommand(QUndoCommand):
                 )
 
 
-class PixelEditCommand(QUndoCommand):
+class PixelEditCommand(_EditModeCommand):
     """One pixel edit, as the before/after bytes of the regions it rewrote.
 
     Every graphics edit (paste, cut, clear, the drawing tools) lands as byte
@@ -449,17 +476,11 @@ class PixelEditCommand(QUndoCommand):
         entry: Entry,
         text: str,
         *,
-        regions: list[tuple[int, bytes, bytes]],
+        regions: list[tuple[int, bytes, bytes]],  # (start, before, after), disjoint
     ) -> None:
-        super().__init__(text)
-        self._window = window
-        self._entry = entry
-        self._mode = window._edit_mode  # reverted where it was made (see below)
-        self._regions = regions  # (start, before, after), disjoint
         # The data pathway's revision on either side of this command, so an
         # undo hands the entry back the exact unsaved-state it had before.
-        self._before_revision = entry.pixel_revision
-        self._after_revision = window._workspace.next_revision()
+        #
         # A slice's bytes live inside its parent's region, so an edit to one is
         # an edit to that file: it is folded into the parent's buffer as it
         # lands (``_propagate_pixel_edit``) and the file carries the unsaved
@@ -468,32 +489,29 @@ class PixelEditCommand(QUndoCommand):
         # (:class:`ColorEditCommand`). The *after* token is shared - one edit,
         # one state - while the *before* pair differs, since the parent may have
         # been at an unsaved state of its own before this command.
-        self._owner = (
+        owner = (
             window._workspace.find_file(entry.path)
             if entry.kind is EntryKind.SLICE
             else None
         )
-        self._before_owner_revision = (
-            self._owner.pixel_revision if self._owner is not None else 0
+        after_revision = window._workspace.next_revision()
+        super().__init__(
+            window,
+            entry,
+            text,
+            (
+                [(start, before) for start, before, _after in regions],
+                entry.pixel_revision,
+                owner.pixel_revision if owner is not None else 0,
+            ),
+            (
+                [(start, after) for start, _before, after in regions],
+                after_revision,
+                after_revision,
+            ),
         )
 
-    def redo(self) -> None:
-        self._apply(
-            [(start, after) for start, _before, after in self._regions],
-            self._after_revision,
-            self._after_revision,
-        )
-
-    def undo(self) -> None:
-        self._apply(
-            [(start, before) for start, before, _after in self._regions],
-            self._before_revision,
-            self._before_owner_revision,
-        )
-
-    def _apply(
-        self, splices: list[tuple[int, bytes]], revision: int, owner_revision: int
-    ) -> None:
+    def _apply(self, state: tuple[list[tuple[int, bytes]], int, int]) -> None:
         """Land every splice, as one refresh.
 
         The regions are disjoint (the push site merges anything that touches),
@@ -501,9 +519,7 @@ class PixelEditCommand(QUndoCommand):
         rebuilt between them, or a multi-region edit would flicker through
         half-applied states.
         """
-        with self._window._undo_apply():
-            if self._window._ensure_edit_context(self._entry, self._mode):
-                self._window._apply_pixel_bytes(splices, revision, owner_revision)
+        self._window._apply_pixel_bytes(*state)
 
 
 @dataclass(frozen=True)
@@ -522,7 +538,7 @@ class FloatState:
     source: QRect | None = None
 
 
-class PixelSelectionCommand(QUndoCommand):
+class PixelSelectionCommand(_EditModeCommand):
     """One pixel-mode interaction that rewrote no bytes, as its before/after
     selection.
 
@@ -551,50 +567,35 @@ class PixelSelectionCommand(QUndoCommand):
         before_float: FloatState | None = None,
         after_float: FloatState | None = None,
     ) -> None:
-        super().__init__(text)
-        self._window = window
-        self._entry = entry
-        self._mode = window._edit_mode  # a pixel selection exists only in one
-        # Copied: the caller's rectangles are the live marquee, which moves on.
-        self._before = None if before is None else QRect(before)
-        self._after = None if after is None else QRect(after)
-        self._before_float = before_float
-        self._after_float = after_float
+        # The rectangles are copied: the caller's are the live marquee, which
+        # moves on. Each travels paired with the float that was in the air at
+        # that point, since a float is a selection state like any other.
+        super().__init__(
+            window,
+            entry,
+            text,
+            (None if before is None else QRect(before), before_float),
+            (None if after is None else QRect(after), after_float),
+        )
 
-    def redo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_edit_context(self._entry, self._mode):
-                self._window._apply_marquee(self._after, self._after_float)
-
-    def undo(self) -> None:
-        with self._window._undo_apply():
-            if self._window._ensure_edit_context(self._entry, self._mode):
-                self._window._apply_marquee(self._before, self._before_float)
+    def _apply(self, state: tuple[QRect | None, FloatState | None]) -> None:
+        self._window._apply_marquee(*state)
 
 
-class RenameEntryCommand(QUndoCommand):
-    """Rename of an entry — applied in place, without switching the view
-    (the change is visible in the files panel wherever you are)."""
+class RenameEntryCommand(_InPlaceCommand):
+    """Rename of an entry — the change is visible in the files panel wherever
+    you are, so the view does not move for it."""
 
     def __init__(
         self, window: MainWindow, entry: Entry, before: str, after: str
     ) -> None:
-        super().__init__(f'rename to "{after}"')
-        self._window = window
-        self._entry = entry
-        self._before = before
-        self._after = after
+        super().__init__(window, entry, f'rename to "{after}"', before, after)
 
-    def redo(self) -> None:
-        with self._window._undo_apply():
-            self._window._apply_entry_name(self._entry, self._after)
-
-    def undo(self) -> None:
-        with self._window._undo_apply():
-            self._window._apply_entry_name(self._entry, self._before)
+    def _apply(self, state: str) -> None:
+        self._window._apply_entry_name(self._entry, state)
 
 
-class SliceEditCommand(QUndoCommand):
+class SliceEditCommand(_InPlaceCommand):
     """Re-pointing a slice's coordinates (offset/length/codec/name).
 
     Undo restores the *coordinates* and re-reads the region — it cannot
@@ -611,22 +612,13 @@ class SliceEditCommand(QUndoCommand):
         before: SliceParams,
         after: SliceParams,
     ) -> None:
-        super().__init__(f'edit slice "{after.name}"')
-        self._window = window
-        self._entry = entry
-        self._before = before
-        self._after = after
+        super().__init__(window, entry, f'edit slice "{after.name}"', before, after)
 
-    def redo(self) -> None:
-        with self._window._undo_apply():
-            self._window._apply_slice_params(self._entry, self._after)
-
-    def undo(self) -> None:
-        with self._window._undo_apply():
-            self._window._apply_slice_params(self._entry, self._before)
+    def _apply(self, state: SliceParams) -> None:
+        self._window._apply_slice_params(self._entry, state)
 
 
-class ContainerEditCommand(QUndoCommand):
+class ContainerEditCommand(_InPlaceCommand):
     """Re-pointing a file's file list, container and reshape (Edit File
     Container…).
 
@@ -647,42 +639,30 @@ class ContainerEditCommand(QUndoCommand):
         before: ContainerEdit,
         after: ContainerEdit,
     ) -> None:
-        super().__init__(f'edit container "{entry.name}"')
-        self._window = window
-        self._entry = entry
-        self._before = before
-        self._after = after
+        super().__init__(window, entry, f'edit container "{entry.name}"', before, after)
 
-    def redo(self) -> None:
-        with self._window._undo_apply():
-            self._window._apply_container_edit(self._entry, self._after)
-
-    def undo(self) -> None:
-        with self._window._undo_apply():
-            self._window._apply_container_edit(self._entry, self._before)
+    def _apply(self, state: ContainerEdit) -> None:
+        self._window._apply_container_edit(self._entry, state)
 
 
-class MoveEntryCommand(QUndoCommand):
+class MoveEntryCommand(_InPlaceCommand):
     """Reordering a file in the files pane — one place up or down.
 
-    Applied in place, like a rename: the list is where the change shows, so it
-    doesn't switch the view. A single step is its own inverse, so undo is the
-    same move the other way.
+    A single step is its own inverse, so the two directions are the same move
+    with the sign flipped.
     """
 
     def __init__(self, window: MainWindow, entry: Entry, delta: int) -> None:
-        super().__init__(f'move "{entry.name}" {"up" if delta < 0 else "down"}')
-        self._window = window
-        self._entry = entry
-        self._delta = delta
+        super().__init__(
+            window,
+            entry,
+            f'move "{entry.name}" {"up" if delta < 0 else "down"}',
+            -delta,
+            delta,
+        )
 
-    def redo(self) -> None:
-        with self._window._undo_apply():
-            self._window._apply_move_entry(self._entry, self._delta)
-
-    def undo(self) -> None:
-        with self._window._undo_apply():
-            self._window._apply_move_entry(self._entry, -self._delta)
+    def _apply(self, state: int) -> None:
+        self._window._apply_move_entry(self._entry, state)
 
 
 class AddEntryCommand(QUndoCommand):

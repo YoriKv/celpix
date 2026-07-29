@@ -57,9 +57,9 @@ from celpix.project.workspace import (
     palette_missing,
 )
 from celpix.ui.widgets import (
+    ShortcutIsland,
     icon_cache_key,
     signals_blocked,
-    take_editing_shortcut,
     tinted_glyph,
 )
 
@@ -101,7 +101,7 @@ _STATUS_COL = 1
 _STATUS_W = _ICON_W + 8  # the glyph box plus breathing room from the name
 
 
-class _EntryTree(QTreeWidget):
+class _EntryTree(ShortcutIsland, QTreeWidget):
     """A tree that records when a selection change is driven by the keyboard,
     and owns the Delete key while it has focus.
 
@@ -113,14 +113,13 @@ class _EntryTree(QTreeWidget):
     ``currentItemChanged``), so the panel can tell an arrow-key move apart from a
     click and keep focus on the list for the former.
 
-    While the list has focus it is a **shortcut island**: the canvas editing
-    shortcuts (Cut/Copy/Paste/Select All/Delete) yield to it via
-    :func:`~celpix.ui.widgets.take_editing_shortcut`, so they don't act on the
-    canvas selection from here. That is also what disambiguates Delete, which the
-    list binds too: left to compete with the canvas's Clear, Qt sees two claims on
-    the key and fires neither, so it silently does nothing. The only editing key
-    the list acts on is Delete (remove entry); the arrow keys reach the tree's own
-    navigation through the app-wide filter that already yields to this widget.
+    While it has focus it is a :class:`~celpix.ui.widgets.ShortcutIsland`, so the
+    canvas editing shortcuts don't act on the canvas selection from here. That is
+    also what disambiguates Delete, which the list binds too: left to compete with
+    the canvas's Clear, Qt sees two claims on the key and fires neither, so it
+    silently does nothing. The only editing key the list acts on is Delete (remove
+    entry); the arrow keys reach the tree's own navigation through the app-wide
+    filter that already yields to this widget.
 
     Shift+arrows reach it the same way, and it claims the vertical pair to reorder
     the files (they resize the view window everywhere else). Selection is
@@ -134,11 +133,6 @@ class _EntryTree(QTreeWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.key_navigating = False
-
-    def event(self, event) -> bool:
-        if take_editing_shortcut(event):
-            return True
-        return super().event(event)
 
     def keyPressEvent(self, event) -> None:
         if event.matches(QKeySequence.StandardKey.Delete):

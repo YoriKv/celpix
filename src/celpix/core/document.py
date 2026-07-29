@@ -24,7 +24,7 @@ from celpix.core import ceil_div
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
-from celpix.core.tilemap import Cell
+from celpix.core.tilemap import Cell, tile_run
 from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef
@@ -198,6 +198,15 @@ class Document:
     # and a write puts back exactly what was read.
     sprite_frames: list[tuple] | None = None
     sprite_size_pair: tuple[int, int] = (8, 16)
+    # The decoded tile source a tilemap draws from, kept between renders
+    # (:func:`~celpix.pipeline.pipeline.tile_bank`). A map's cells reach anywhere
+    # in the bank, so there is no window to slice and the *whole* source has to
+    # be decoded — which would otherwise happen again on every repaint, for a
+    # bank that only changes when the bytes or the codec do. Excluded from
+    # equality and repr: it is a derived value, not part of what a document is.
+    tile_bank_cache: tuple[tuple, list] | None = field(
+        default=None, compare=False, repr=False
+    )
 
     @property
     def is_tilemap(self) -> bool:
@@ -253,24 +262,26 @@ class Document:
     def cell_tile_indices(self, cell: Cell) -> list[int]:
         """The source tile indices ``cell`` draws, in the order they appear.
 
-        One index for an ordinary hardware cell; four for a 16x16 metatile,
-        stepped by :attr:`cell_row_stride` rather than by the cell's width.
-
-        A flip reverses the *order* as well as mirroring each tile: a mirrored
-        metatile shows its right-hand tile on the left, mirrored. Both halves are
-        needed and neither is sufficient — the same compound rule
-        :meth:`~celpix.core.tilemap.CellGrid.flipped_h` follows over a block.
+        This document's geometry applied to :func:`~celpix.core.tilemap.tile_run`
+        — the cell's tile counts, its :attr:`cell_row_stride` (defaulting to the
+        cell's own width, i.e. consecutive tiles), and the base index the bound
+        source starts at.
         """
-        across, down = max(1, self.cell_tiles[0]), max(1, self.cell_tiles[1])
-        stride = self.cell_row_stride or across
-        first = self.tile_base_index + cell.index
-        return [
-            first
-            + (down - 1 - row if cell.flip_v else row) * stride
-            + (across - 1 - col if cell.flip_h else col)
-            for row in range(down)
-            for col in range(across)
-        ]
+        across, down = self.cell_tiles
+        if across <= 1 and down <= 1:
+            # The ordinary hardware cell — one tile, no run to walk and no order
+            # for a flip to reverse. Answered here rather than through the walk
+            # because a repaint asks this once per cell, thousands of times.
+            return [self.tile_base_index + cell.index]
+        across, down = max(1, across), max(1, down)
+        return tile_run(
+            self.tile_base_index + cell.index,
+            across,
+            down,
+            self.cell_row_stride or across,
+            flip_h=cell.flip_h,
+            flip_v=cell.flip_v,
+        )
 
     @classmethod
     def palette_only(

@@ -31,6 +31,7 @@ from collections.abc import Callable
 
 from celpix.core.tilemap import Cell, CellGrid
 from celpix.ui.undo_commands import TilemapCellsCommand
+from celpix.ui.widgets import counted
 
 
 class TilemapEditMixin:
@@ -136,7 +137,7 @@ class TilemapEditMixin:
         for index in indices:
             cells[index] = apply(cells[index])
         if self._apply_cells(cells, f"{op.verb} cells"):
-            self.statusBar().showMessage(f"{op.past} {_cells_label(len(indices))}.")
+            self.statusBar().showMessage(f"{op.past} {counted(len(indices), 'cell')}.")
 
     def _transform_cell_block(self, op) -> None:  # noqa: ANN001 — a TransformOp
         """Transform the selected block: reorder the cells **and** transform each.
@@ -206,7 +207,7 @@ class TilemapEditMixin:
             )
         self._cell_clipboard = block
         self._sync_edit_actions()
-        self.statusBar().showMessage(f"Copied {_cells_label(len(block))}.")
+        self.statusBar().showMessage(f"Copied {counted(len(block), 'cell')}.")
         return True
 
     def _cut_cells(self) -> None:
@@ -227,7 +228,7 @@ class TilemapEditMixin:
         for index in indices:
             cells[index] = Cell()
         if self._apply_cells(cells, text):
-            self.statusBar().showMessage(f"Cleared {_cells_label(len(indices))}.")
+            self.statusBar().showMessage(f"Cleared {counted(len(indices), 'cell')}.")
 
     def _paste_cells(self) -> None:
         """Stamp the buffer over the map from the selection's first cell.
@@ -259,7 +260,7 @@ class TilemapEditMixin:
         if self._apply_cells(cells, "paste cells"):
             clipped = len(block) - written
             note = f" ({clipped} clipped)" if clipped else ""
-            self.statusBar().showMessage(f"Pasted {_cells_label(written)}{note}.")
+            self.statusBar().showMessage(f"Pasted {counted(written, 'cell')}{note}.")
 
     def _has_cell_clipboard(self) -> bool:
         """Whether a cell paste would have anything to put down."""
@@ -321,7 +322,3 @@ class TilemapEditMixin:
         self._workspace.set_pixel_revision(entry, revision)
         if entry is self._workspace.current:
             self._refresh_view()
-
-
-def _cells_label(count: int) -> str:
-    return "1 cell" if count == 1 else f"{count} cells"

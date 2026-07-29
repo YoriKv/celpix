@@ -102,12 +102,12 @@ class TileRearrangement:
         # prevent: two virtual slots sharing one actual tile makes an edit to
         # either overwrite the other.
         if len(virtual_set) != len(virtuals) or len(actual_set) != len(actuals):
-            raise ValueError("a tile map must be a permutation (repeated index)")
+            raise ValueError("a rearrangement must be a permutation (repeated index)")
         # Same *set* on both sides, or the map would move tiles in from — or out
         # to — indices it doesn't account for, and would not be a permutation of
         # the whole index space.
         if virtual_set != actual_set:
-            raise ValueError("a tile map must be a permutation (unbalanced)")
+            raise ValueError("a rearrangement must be a permutation (unbalanced)")
         if any(v < 0 or a < 0 for v, a in self.pairs):
             raise ValueError("tile indices cannot be negative")
         indices = [tile for tile, _ in self.orientations]

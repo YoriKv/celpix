@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from celpix.core.tilemap import VRAM_ROW_STRIDE, tile_run
+
 # The console's sprite-size pairs: an object picks one pair globally and each
 # part picks *which of the two* with a single bit. Which pair is not recorded in
 # the file — it was a register the game set — so it is a parameter of reading
@@ -38,11 +40,6 @@ SIZE_PAIRS: tuple[tuple[int, int], ...] = (
     (16, 64),
     (32, 64),
 )
-
-# The tile array a part's extra tiles are stepped through: VRAM is 16 tiles wide,
-# so a 16x16 part is N, N+1, N+0x10, N+0x11 — the same arithmetic a 16x16 BG cell
-# uses (``docs/graphics-formats-reference/snes-hardware-notes.md`` §5).
-TILE_ROW_STRIDE = 0x10
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,19 +72,20 @@ class Part:
     def tile_indices(self, pair: tuple[int, int]) -> list[int]:
         """The source tiles this part draws, in the order they appear on screen.
 
-        Flips reverse the *order* as well as each tile: a mirrored 16x16 part
-        shows its right-hand tile on the left, mirrored. Both halves are needed
-        and neither is sufficient — the same compound rule a block flip follows
-        on the tilemap side (:meth:`~celpix.core.tilemap.CellGrid.flipped_h`).
+        A part is square, so its two axes are the same count; everything else —
+        the VRAM stride, and the way a flip reverses the order as well as each
+        tile — is the walk a tilemap cell makes
+        (:func:`~celpix.core.tilemap.tile_run`).
         """
-        across = max(1, self.size(pair) // 8)
-        return [
-            self.index
-            + (across - 1 - col if self.flip_h else col)
-            + (across - 1 - row if self.flip_v else row) * TILE_ROW_STRIDE
-            for row in range(across)
-            for col in range(across)
-        ]
+        side = max(1, self.size(pair) // 8)
+        return tile_run(
+            self.index,
+            side,
+            side,
+            VRAM_ROW_STRIDE,
+            flip_h=self.flip_h,
+            flip_v=self.flip_v,
+        )
 
 
 # One drawing of the object: parts in file order, which is front to back — part 0
