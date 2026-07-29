@@ -58,7 +58,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QLabel, QSizePolicy, QToolBar, QWidget
 
 from celpix.core import transform
-from celpix.core.tilemap import (
+from celpix.core.tilerearrangement import (
     TILE_FLIP_H,
     TILE_FLIP_V,
     TILE_ROTATE_CCW,
@@ -84,7 +84,8 @@ class TransformOp:
     feed the undo label and the status line.
 
     ``tile_orient`` is the same operation expressed as **display-orientation**
-    bits (:mod:`celpix.core.tilemap`), for the rearrange tool: it transforms a tile
+    bits (:mod:`celpix.core.tilerearrangement`), for the rearrange tool: it
+    transforms a tile
     by storing an orientation rather than by rewriting pixels, so the two paths
     share this one table instead of a parallel mapping that could drift from it.
     """

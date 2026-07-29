@@ -206,12 +206,12 @@ class PaletteRegionsMixin:
         doc = self._doc
         view_2d = self._two_d.isChecked()
         cols = self._columns.value()
-        tile_map = self._active_tile_map()
+        tile_rearrangement = self._active_tile_rearrangement()
         per_tile = doc.tile_width * doc.tile_height
         origin = self._offset * per_tile
         spans: list[tuple[int, int]] = []
         for tile in self._selection_tiles():
-            if tile_map.is_identity():
+            if tile_rearrangement.is_identity():
                 # Slot-relative, because that is what the 2D bitmap space is
                 # anchored on; in 1D the two agree and this is just tile * area.
                 for start, length in tile_pixel_spans(
@@ -223,7 +223,7 @@ class PaletteRegionsMixin:
                 ):
                     spans.append((origin + start, length))
                 continue
-            spans.append((tile_map.actual(tile) * per_tile, per_tile))
+            spans.append((tile_rearrangement.actual(tile) * per_tile, per_tile))
         return spans
 
     def _tile_biases(self, tiles: list[int]) -> list[int] | None:
@@ -241,12 +241,12 @@ class PaletteRegionsMixin:
         doc = self._doc
         cols = self._columns.value()
         view_2d = self._two_d.isChecked()
-        tile_map = self._active_tile_map()
+        tile_rearrangement = self._active_tile_rearrangement()
         per_tile = doc.tile_width * doc.tile_height
         origin = self._offset * per_tile
         offsets = []
         for tile in tiles:
-            if tile_map.is_identity():
+            if tile_rearrangement.is_identity():
                 offsets.append(
                     origin
                     + tile_first_pixel(
@@ -258,7 +258,7 @@ class PaletteRegionsMixin:
                     )
                 )
                 continue
-            offsets.append(tile_map.actual(tile) * per_tile)
+            offsets.append(tile_rearrangement.actual(tile) * per_tile)
         space = self._index_space()
         rows = regions.rows_for(offsets, self._subpalette.value())
         return [row * space for row in rows]

@@ -8,9 +8,9 @@ only be read a group at a time. A :class:`PaletteRegions` records "these pixels
 render through row *n*" so the whole sheet can be read at once.
 
 This changes no bytes and no indices. It is display state exactly like the tile
-map (:mod:`celpix.core.tilemap`) — an edit made inside a region still stores the
-index it always did, and the region only decides which colours that index is shown
-through.
+rearrangement (:mod:`celpix.core.tilerearrangement`) — an edit made inside a
+region still stores the index it always did, and the region only decides which
+colours that index is shown through.
 
 **Anchored in pixels, not bytes and not tile indices.** A byte is not a run of
 pixels in most retro codecs: SNES 4bpp is *planar*, so pixels 0-7 of a tile are
@@ -194,7 +194,8 @@ class PaletteRegions:
         render the magenta missing-colour sentinel, so both are dropped rather
         than left to surface as a puzzle.
 
-        Unlike :meth:`~celpix.core.tilemap.TileMap.bounded` this has no cycles to
+        Unlike :meth:`~celpix.core.tilerearrangement.TileRearrangement.bounded`
+        this has no cycles to
         keep whole — a region is its own business. Bit depth alone never
         invalidates a region: it re-cuts the bytes but not the tile grid, so the
         pinned area of picture is unchanged.

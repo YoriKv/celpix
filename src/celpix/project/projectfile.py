@@ -36,7 +36,7 @@ from os.path import (
 from celpix.core.arrangement import BLOCK_ORDERS
 from celpix.core.document import ViewOptions
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
-from celpix.core.tilemap import TileMap
+from celpix.core.tilerearrangement import TileRearrangement
 from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE, RAW_CONTAINER
 from celpix.project.workspace import (
     Entry,
@@ -199,12 +199,14 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
         # is written only if it holds something: a rearrangement that just turns
         # tiles has no positions to store, and one that just moves them no
         # orientations. The toggle rides along — on its own it says nothing.
-        if not view.tile_map.is_identity():
-            if view.tile_map.pairs:
-                data["view"]["tile_map"] = [list(p) for p in view.tile_map.pairs]
-            if view.tile_map.orientations:
+        if not view.tile_rearrangement.is_identity():
+            if view.tile_rearrangement.pairs:
+                data["view"]["tile_rearrangement"] = [
+                    list(p) for p in view.tile_rearrangement.pairs
+                ]
+            if view.tile_rearrangement.orientations:
                 data["view"]["tile_orientations"] = [
-                    list(o) for o in view.tile_map.orientations
+                    list(o) for o in view.tile_rearrangement.orientations
                 ]
             data["view"]["show_rearranged"] = view.show_rearranged
         # Same rule for pinned palette regions: written only when something is
@@ -348,7 +350,7 @@ def _view_from(raw: object) -> ViewOptions | None:
         block_order=_block_order(raw),
         two_dimensional=bool(raw.get("two_dimensional", defaults.two_dimensional)),
         bitmap_width=_int(raw.get("bitmap_width"), defaults.bitmap_width),
-        tile_map=_tile_map(raw),
+        tile_rearrangement=_tile_rearrangement(raw),
         show_rearranged=bool(raw.get("show_rearranged", defaults.show_rearranged)),
         palette_regions=_palette_regions(raw),
         show_palette_regions=bool(
@@ -381,20 +383,27 @@ def _palette_regions(raw: dict) -> PaletteRegions:
     return PaletteRegions.from_regions(parsed)
 
 
-def _tile_map(raw: dict) -> TileMap:
+def _tile_rearrangement(raw: dict) -> TileRearrangement:
     """A stored rearrangement, or the identity map for anything unusable.
 
     Hand-edited or truncated pairs can describe something that isn't a
-    permutation, which :class:`TileMap` refuses to build. A project that won't
-    open is worse than one that opens unrearranged, so a bad map is dropped
-    rather than raised — the tiles are all still there, just in file order.
+    permutation, which :class:`TileRearrangement` refuses to build. A project
+    that won't open is worse than one that opens unrearranged, so a bad map is
+    dropped rather than raised — the tiles are all still there, just in file
+    order.
+
+    ``tile_map`` is the key this was written under before the type was renamed.
+    It is still read, because a project file outlives the name we happened to
+    give the class, and a silently unrearranged reopen is exactly the kind of
+    data loss the tolerance above exists to avoid.
     """
+    pairs = raw.get("tile_rearrangement", raw.get("tile_map"))
     try:
-        return TileMap.from_pairs(
-            _int_pairs(raw.get("tile_map")), _int_pairs(raw.get("tile_orientations"))
+        return TileRearrangement.from_pairs(
+            _int_pairs(pairs), _int_pairs(raw.get("tile_orientations"))
         )
     except (ValueError, TypeError):
-        return TileMap()
+        return TileRearrangement()
 
 
 def _int_pairs(raw: object) -> list[tuple[int, int]]:

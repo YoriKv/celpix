@@ -2,7 +2,7 @@
 
 Tiles are rarely stored in the order they are drawn in — a face's eyes, mouth and
 hair can sit hundreds of tiles apart because the game streams them by animation
-frame, not by picture. A :class:`TileMap` lets the view show them side by side
+frame, not by picture. A :class:`TileRearrangement` lets the view show them side by side
 anyway: it maps the **virtual** index a tile is displayed at to the **actual**
 index it occupies in the file. Nothing is moved. Pixels edited at a virtual
 position still encode back to the tile's actual bytes, which is the whole point —
@@ -75,7 +75,7 @@ RUN_MERGE_GAP = 8
 
 
 @dataclass(frozen=True)
-class TileMap:
+class TileRearrangement:
     """Where each displayed tile really lives, and how it is shown.
 
     ``pairs`` holds ``(virtual, actual)`` for the moved tiles only, sorted by
@@ -121,7 +121,7 @@ class TileMap:
         cls,
         pairs: Iterable[tuple[int, int]],
         orientations: Iterable[tuple[int, int]] = (),
-    ) -> TileMap:
+    ) -> TileRearrangement:
         """A map from ``(virtual, actual)`` pairs, dropping the identity ones.
 
         The single normalizing constructor: identity entries — a position mapped
@@ -165,7 +165,7 @@ class TileMap:
         """The orientation tile ``actual`` is displayed in (0 = as stored)."""
         return self._orientations.get(actual, TILE_ORIENT_NONE)
 
-    def oriented(self, actuals: Iterable[int], flags: int) -> TileMap:
+    def oriented(self, actuals: Iterable[int], flags: int) -> TileRearrangement:
         """A new map with ``flags`` **composed onto** each of ``actuals``.
 
         Composed rather than assigned, because the buttons and keys driving this
@@ -207,7 +207,7 @@ class TileMap:
         forward = self._forward
         return [forward.get(i, i) for i in range(first, first + count)]
 
-    def swap(self, a: int, b: int) -> TileMap:
+    def swap(self, a: int, b: int) -> TileRearrangement:
         """A new map with the tiles shown at ``a`` and ``b`` exchanged.
 
         Composition with a transposition, so repeated swaps accumulate into one
@@ -215,7 +215,7 @@ class TileMap:
         """
         return self.swap_many(((a, b),))
 
-    def swap_many(self, moves: Iterable[tuple[int, int]]) -> TileMap:
+    def swap_many(self, moves: Iterable[tuple[int, int]]) -> TileRearrangement:
         """A new map with every ``(a, b)`` in ``moves`` exchanged at once.
 
         One multi-tile drag is one step, so the whole block has to move as a
@@ -235,7 +235,7 @@ class TileMap:
             sources[b] = a
         return self.rearranged(sources)
 
-    def rearranged(self, sources: dict[int, int]) -> TileMap:
+    def rearranged(self, sources: dict[int, int]) -> TileRearrangement:
         """A new map where each position ``dest`` shows what ``sources[dest]`` did.
 
         The general position move, of which :meth:`swap_many` is the two-cycle
@@ -260,9 +260,9 @@ class TileMap:
         # positions this very call has already moved.
         taken = {dest: forward.get(src, src) for dest, src in sources.items()}
         forward.update(taken)
-        return TileMap.from_pairs(forward.items(), self.orientations)
+        return TileRearrangement.from_pairs(forward.items(), self.orientations)
 
-    def bounded(self, count: int) -> TileMap:
+    def bounded(self, count: int) -> TileRearrangement:
         """This map restricted to the first ``count`` tiles.
 
         A map outlives the geometry it was made under — switching to a codec with
@@ -290,7 +290,7 @@ class TileMap:
                 node = forward.get(node, node)
             if all(i < count for i in cycle):
                 keep.update((i, forward[i]) for i in cycle)
-        return TileMap.from_pairs(
+        return TileRearrangement.from_pairs(
             keep.items(), ((t, f) for t, f in self.orientations if t < count)
         )
 

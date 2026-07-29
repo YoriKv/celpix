@@ -259,7 +259,7 @@ class SessionMixin:
         # and back must find the tiles where they were left. Any drag in flight
         # belonged to the entry being left, so it goes with it.
         self._cancel_rearrange_drag()
-        self._tile_map = view.tile_map.bounded(entry.doc.tile_count)
+        self._tile_rearrangement = view.tile_rearrangement.bounded(entry.doc.tile_count)
         self._show_rearranged = view.show_rearranged
         self._sync_rearrange_actions()
         # Pinned palette regions belong to the entry for the same reason. Stored

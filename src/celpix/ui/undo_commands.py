@@ -42,7 +42,7 @@ from celpix.core.context import PipelineContext
 from celpix.core.document import Document
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
-from celpix.core.tilemap import TileMap
+from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.project.workspace import Entry, EntryKind, PaletteMode, SliceParams
@@ -123,7 +123,7 @@ class OffsetMoveCommand(QUndoCommand):
                 self._window._apply_offset(*self._before)
 
 
-class TileMapCommand(QUndoCommand):
+class TileRearrangementCommand(QUndoCommand):
     """One rearrangement of tile *display* positions, as before/after maps.
 
     A rearrangement moves nothing in the file (see
@@ -143,8 +143,8 @@ class TileMapCommand(QUndoCommand):
         window: MainWindow,
         entry: Entry,
         text: str,
-        before: TileMap,
-        after: TileMap,
+        before: TileRearrangement,
+        after: TileRearrangement,
     ) -> None:
         super().__init__(text)
         self._window = window
@@ -155,18 +155,18 @@ class TileMapCommand(QUndoCommand):
     def redo(self) -> None:
         with self._window._undo_apply():
             if self._window._ensure_current(self._entry):
-                self._window._set_tile_map(self._after)
+                self._window._set_tile_rearrangement(self._after)
 
     def undo(self) -> None:
         with self._window._undo_apply():
             if self._window._ensure_current(self._entry):
-                self._window._set_tile_map(self._before)
+                self._window._set_tile_rearrangement(self._before)
 
 
 class PaletteRegionsCommand(QUndoCommand):
     """One pin/unpin of palette regions, as before/after sets.
 
-    Sibling of :class:`TileMapCommand` in every respect that matters: a pinned
+    Sibling of :class:`TileRearrangementCommand` in every respect that matters: a pinned
     region changes no bytes, so this **stamps no revision** and undoing it leaves
     the document exactly as dirty — or as clean — as it was. It is on the stack
     all the same, because pinning is an interaction the user will expect Ctrl+Z to
@@ -396,7 +396,8 @@ class PixelEditCommand(QUndoCommand):
     something merely equivalent. Regions are bounded by the edited runs, so the
     snapshots stay small even on a multi-megabyte ROM.
 
-    Several regions rather than one because a **rearranged** view (``tile_map``)
+    Several regions rather than one because a **rearranged** view
+    (``tile_rearrangement``)
     scatters one gesture's tiles across the file: a stroke over what looks like
     four neighbouring tiles can be four splices far apart. It is still one
     interaction and so must still be one Ctrl+Z, which is why the list lives

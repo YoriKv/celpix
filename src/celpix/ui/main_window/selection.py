@@ -39,7 +39,7 @@ from celpix.core.arrangement import (
 from celpix.core.errors import PipelineError
 from celpix.core.index_grid import IndexGrid
 from celpix.core.quantize import QuantizeReport
-from celpix.core.tilemap import (
+from celpix.core.tilerearrangement import (
     apply_orientation,
     coalesce_runs,
     unapply_orientation,
@@ -609,14 +609,16 @@ class SelectionMixin:
         """Decode ``count`` tiles from **virtual** index ``first``; None on refusal.
 
         The one place tiles are read, so it is also the one place the
-        rearrangement (:mod:`celpix.core.tilemap`) is resolved: ``first`` counts
+        rearrangement (:mod:`celpix.core.tilerearrangement`) is resolved:
+        ``first`` counts
         display positions, and each is served the tile that actually lives
         wherever the map sends it. Unrearranged — the ordinary case, and every
         case while the view shows the file's true order — this is the single
         contiguous decode it always was.
 
         A rearranged run is gathered from as few decodes as
-        :func:`~celpix.core.tilemap.coalesce_runs` can get away with. It ends at
+        :func:`~celpix.core.tilerearrangement.coalesce_runs` can get away with.
+        It ends at
         the first position with no tile behind it, exactly as a contiguous decode
         stops at the end of the data: the map only ever permutes tiles that
         exist, so the missing positions are the past-the-end tail and nothing
@@ -627,10 +629,10 @@ class SelectionMixin:
         screen. :meth:`_actual_runs` undoes it on the way back out.
         """
         assert self._doc is not None
-        tile_map = self._active_tile_map()
-        if tile_map.is_identity():
+        tile_rearrangement = self._active_tile_rearrangement()
+        if tile_rearrangement.is_identity():
             return self._decode_actual_run(first, count)
-        wanted = tile_map.actual_run(first, count)
+        wanted = tile_rearrangement.actual_run(first, count)
         decoded: dict[int, object] = {}
         for run_first, run_count in coalesce_runs(wanted):
             tiles = self._decode_actual_run(run_first, run_count)
@@ -642,7 +644,7 @@ class SelectionMixin:
             if index not in decoded:
                 break
             gathered.append(
-                apply_orientation(decoded[index], tile_map.orient_of(index))
+                apply_orientation(decoded[index], tile_rearrangement.orient_of(index))
             )
         return gathered
 
@@ -1055,13 +1057,13 @@ class SelectionMixin:
         transformed on screen, so the first thing the user would notice is the art
         coming apart.
         """
-        tile_map = self._active_tile_map()
-        if tile_map.is_identity():
+        tile_rearrangement = self._active_tile_rearrangement()
+        if tile_rearrangement.is_identity():
             return [(first, tiles)]
-        homes = tile_map.actual_run(first, len(tiles))
+        homes = tile_rearrangement.actual_run(first, len(tiles))
         runs: list[tuple[int, list]] = []
         for index, tile in zip(homes, tiles):
-            tile = unapply_orientation(tile, tile_map.orient_of(index))
+            tile = unapply_orientation(tile, tile_rearrangement.orient_of(index))
             if runs and index == runs[-1][0] + len(runs[-1][1]):
                 runs[-1][1].append(tile)
             else:

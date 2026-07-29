@@ -499,8 +499,8 @@ def compose_tiles(
     """Lay an already-decoded tile list out through an arrangement.
 
     The compose half of :func:`decode_and_compose`, split out because a
-    rearranged view (``core.tilemap``) cannot get its tiles from one contiguous
-    byte buffer: the tiles on screen are gathered from wherever the map sends
+    rearranged view (``core.tilerearrangement``) cannot get its tiles from one
+    contiguous byte buffer: the tiles on screen are gathered from wherever the map sends
     them, and only the placement is shared. ``max_rows`` caps the composed height
     (the live view's fixed window); ``None`` sizes to the data.
 

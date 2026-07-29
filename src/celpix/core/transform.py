@@ -63,7 +63,7 @@ def transpose(grid: Grid) -> Grid:
     No toolbar button performs this one. It is here because it is the *axis swap*
     the two rotations are built from — a quarter turn is a transpose plus a mirror
     — which is what lets the display orientations of
-    :mod:`celpix.core.tilemap` be eight combinations of three independent bits
+    :mod:`celpix.core.tilerearrangement` be eight combinations of three independent bits
     rather than a table.
     """
     w, h = grid.width, grid.height
@@ -81,8 +81,9 @@ def transpose(grid: Grid) -> Grid:
 
 def rotate_cw(grid: Grid) -> Grid:
     """Rotate 90° clockwise. The result is ``h×w`` (dimensions swap)."""
-    # Mirror-then-transpose, the same composition tilemap's TILE_ROTATE_CW flag
-    # combination stands for, so the two can never disagree about turn direction.
+    # Mirror-then-transpose, the same composition the tile rearrangement's
+    # TILE_ROTATE_CW flag combination stands for, so the two can never disagree
+    # about turn direction.
     return transpose(flip_vertical(grid))
 
 

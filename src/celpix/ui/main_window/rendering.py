@@ -141,9 +141,9 @@ class RenderingMixin:
         view = doc.view
         space = self._index_space()
         per_tile = doc.tile_width * doc.tile_height
-        tile_map = self._active_tile_map()
+        tile_rearrangement = self._active_tile_rearrangement()
         count = cols * rows
-        if tile_map.is_identity():
+        if tile_rearrangement.is_identity():
             # The ordinary case: the window is one contiguous run of slots, so the
             # walk's own addressing gives each one's first pixel directly.
             origin = view.tile_offset * per_tile
@@ -163,7 +163,7 @@ class RenderingMixin:
             # whichever tile the map sends it, not the one the slot sits on.
             offsets = [
                 actual * per_tile
-                for actual in tile_map.actual_run(view.tile_offset, count)
+                for actual in tile_rearrangement.actual_run(view.tile_offset, count)
             ]
         rows_for = regions.rows_for(offsets, view.subpalette_row)
         return [row * space for row in rows_for]
@@ -226,7 +226,7 @@ class RenderingMixin:
             block_order=self._block_order.currentData(),
             two_dimensional=self._two_d.isChecked(),
             bitmap_width=self._bitmap_width.value(),
-            tile_map=self._tile_map,
+            tile_rearrangement=self._tile_rearrangement,
             show_rearranged=self._show_rearranged,
             palette_regions=self._palette_regions,
             show_palette_regions=self._show_palette_regions,
@@ -239,7 +239,7 @@ class RenderingMixin:
         layout = BlockLayout(
             cols, view.block_columns, view.block_rows, view.block_order
         )
-        if self._active_tile_map().is_identity():
+        if self._active_tile_rearrangement().is_identity():
             engine, preset = self._registry.engine_for(
                 self._doc.pixel_config.interpret_preset_id
             )

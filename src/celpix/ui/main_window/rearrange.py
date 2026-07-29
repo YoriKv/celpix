@@ -4,8 +4,9 @@ Tiles are rarely stored in the order they are drawn in — a face's eyes, mouth 
 hair can sit hundreds of tiles apart because the game streams them by animation
 frame. This tool lets the user drag them together so the picture reads, while the
 file is left exactly as it was: the rearrangement is a permutation of *display*
-positions (:class:`~celpix.core.tilemap.TileMap`) held in ``ViewOptions``, and an
-edit made at a rearranged position still writes back to the tile's real home.
+positions (:class:`~celpix.core.tilerearrangement.TileRearrangement`) held in
+``ViewOptions``, and an edit made at a rearranged position still writes back to
+the tile's real home.
 
 That last part costs nothing here. Every read of tiles already goes through
 :meth:`~celpix.ui.main_window.selection.SelectionMixin._decode_run` and every
@@ -55,17 +56,17 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QImage, QKeySequence
 
 from celpix.core.draw import blit_region, extract_region
-from celpix.core.tilemap import (
+from celpix.core.tilerearrangement import (
     TILE_ORIENT_NONE,
     TILE_TRANSPOSE,
-    TileMap,
+    TileRearrangement,
     apply_orientation,
     compose_orientation,
 )
 from celpix.ui import render_bridge
 from celpix.ui.main_window.transform import TransformOp
 from celpix.ui.tools import EditMode
-from celpix.ui.undo_commands import TileMapCommand
+from celpix.ui.undo_commands import TileRearrangementCommand
 from celpix.ui.widgets import signals_blocked
 
 # The tool's own tooltip, re-set by :meth:`RearrangeMixin._sync_rearrange_actions`
@@ -105,7 +106,8 @@ class RearrangeDrag:
 class RearrangeMixin:
     """The rearrange tool, a slice of :class:`~celpix.ui.main_window.window.MainWindow`.
 
-    Owns the live :class:`~celpix.core.tilemap.TileMap`, the toolbar's two
+    Owns the live :class:`~celpix.core.tilerearrangement.TileRearrangement`, the
+    toolbar's two
     checkable actions (arm the tool; show the rearranged order or the file's), and
     the drag. See the module docstring for the semantics.
     """
@@ -113,7 +115,7 @@ class RearrangeMixin:
     # -- state -------------------------------------------------------------
     def _init_rearrange(self) -> None:
         """Seed the rearrange state. Called from the window's constructor."""
-        self._tile_map = TileMap()
+        self._tile_rearrangement = TileRearrangement()
         self._show_rearranged = True
         self._rearranging = False
         self._rearrange_drag: RearrangeDrag | None = None
@@ -123,7 +125,7 @@ class RearrangeMixin:
         # The map the *preview* renders through while a drag hovers a legal
         # drop: the committed map with the pending swap already in it, so what
         # is on screen during the drag is exactly what releasing would leave.
-        self._rearrange_preview: TileMap | None = None
+        self._rearrange_preview: TileRearrangement | None = None
 
     def _rearrange_available(self) -> bool:
         """Whether tiles can be rearranged at all under the current pattern.
@@ -155,7 +157,7 @@ class RearrangeMixin:
         """
         return self._show_rearranged or self._rearranging
 
-    def _active_tile_map(self) -> TileMap:
+    def _active_tile_rearrangement(self) -> TileRearrangement:
         """The rearrangement in force for reading and writing tiles.
 
         Identity while the view is showing the file's true order, so the toggle
@@ -166,8 +168,8 @@ class RearrangeMixin:
         not discarded, so leaving 2D brings the rearrangement back.
         """
         if not self._rearrange_available() or not self._showing_rearranged():
-            return TileMap()
-        return self._rearrange_preview or self._tile_map
+            return TileRearrangement()
+        return self._rearrange_preview or self._tile_rearrangement
 
     # -- toolbar -----------------------------------------------------------
     def _build_rearrange_actions(self, bar) -> None:  # noqa: ANN001 — a QToolBar
@@ -326,10 +328,10 @@ class RearrangeMixin:
             self._rearrange_block_group, geom is not None, square_block and square_tiles
         )
 
-    def _set_tile_map(self, tile_map: TileMap) -> None:
-        """Land a rearrangement — :class:`TileMapCommand`'s apply, and the
+    def _set_tile_rearrangement(self, tile_rearrangement: TileRearrangement) -> None:
+        """Land a rearrangement — :class:`TileRearrangementCommand`'s apply, and the
         restore path. Rebuilds the view, since it changes what every slot shows."""
-        self._tile_map = tile_map
+        self._tile_rearrangement = tile_rearrangement
         if self._doc is not None:
             self._refresh_view()
 
@@ -380,10 +382,14 @@ class RearrangeMixin:
         if new_map is None:
             return
         new_map = new_map.bounded(self._doc.tile_count)
-        if new_map == self._tile_map:
+        if new_map == self._tile_rearrangement:
             return
         label = self._drop_label(drag, moves)
-        self._push_command(TileMapCommand(self, entry, label, self._tile_map, new_map))
+        self._push_command(
+            TileRearrangementCommand(
+                self, entry, label, self._tile_rearrangement, new_map
+            )
+        )
         if moves:
             self._select_dropped(drag, over)
 
@@ -413,7 +419,9 @@ class RearrangeMixin:
         if tiles:
             self._set_rect_selection((cols, rows), tiles)
 
-    def _dragged_map(self, drag: RearrangeDrag, moves: list) -> TileMap | None:
+    def _dragged_map(
+        self, drag: RearrangeDrag, moves: list
+    ) -> TileRearrangement | None:
         """The map a drop would leave — ``None`` when the gesture resolves to nothing.
 
         Shared by the drop and the live preview, so what is rendered mid-drag is
@@ -424,17 +432,21 @@ class RearrangeMixin:
         """
         if not moves and not drag.orient:
             return None
-        tile_map = self._tile_map.swap_many(moves) if moves else self._tile_map
+        tile_rearrangement = (
+            self._tile_rearrangement.swap_many(moves)
+            if moves
+            else self._tile_rearrangement
+        )
         if drag.orient:
             carried = self._carried_tiles(drag)
-            tile_map = tile_map.oriented(carried, drag.orient)
-        return tile_map
+            tile_rearrangement = tile_rearrangement.oriented(carried, drag.orient)
+        return tile_rearrangement
 
     def _carried_tiles(self, drag: RearrangeDrag) -> list[int]:
         """The **actual** tile indices under the carried cells, for orienting."""
         layout = self._view_layout()
         shown = (self._cell_tile(layout, *cell) for cell in drag.cells)
-        return [self._tile_map.actual(v) for v in shown if v is not None]
+        return [self._tile_rearrangement.actual(v) for v in shown if v is not None]
 
     @staticmethod
     def _orient_verb(orient: int) -> str:
@@ -515,16 +527,18 @@ class RearrangeMixin:
                 sources[dest] = src
         if not sources:
             return
-        turned = [self._tile_map.actual(v) for v in sources]
+        turned = [self._tile_rearrangement.actual(v) for v in sources]
         new_map = (
-            self._tile_map.rearranged(sources)
+            self._tile_rearrangement.rearranged(sources)
             .oriented(turned, op.tile_orient)
             .bounded(self._doc.tile_count)
         )
-        if new_map == self._tile_map:
+        if new_map == self._tile_rearrangement:
             return
         self._push_command(
-            TileMapCommand(self, entry, f"{op.verb} block", self._tile_map, new_map)
+            TileRearrangementCommand(
+                self, entry, f"{op.verb} block", self._tile_rearrangement, new_map
+            )
         )
 
     def _orient_rearranged_tiles(self, op: TransformOp) -> None:
@@ -549,15 +563,21 @@ class RearrangeMixin:
             self._show_rearrange_drag(self._rearrange_hover)
             return
         entry = self._workspace.current
-        tiles = [self._tile_map.actual(t) for t in self._selection_tiles()]
+        tiles = [self._tile_rearrangement.actual(t) for t in self._selection_tiles()]
         if entry is None or not tiles:
             return
-        new_map = self._tile_map.oriented(tiles, flags).bounded(self._doc.tile_count)
-        if new_map == self._tile_map:
+        new_map = self._tile_rearrangement.oriented(tiles, flags).bounded(
+            self._doc.tile_count
+        )
+        if new_map == self._tile_rearrangement:
             return
         what = "tile" if len(tiles) == 1 else f"{len(tiles)} tiles"
         label = f"{self._orient_verb(flags)} {what}"
-        self._push_command(TileMapCommand(self, entry, label, self._tile_map, new_map))
+        self._push_command(
+            TileRearrangementCommand(
+                self, entry, label, self._tile_rearrangement, new_map
+            )
+        )
 
     def _cancel_rearrange_drag(self) -> None:
         """Drop the gesture and put the view back the way it was.

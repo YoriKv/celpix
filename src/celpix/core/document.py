@@ -24,7 +24,7 @@ from celpix.core import ceil_div
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
-from celpix.core.tilemap import TileMap
+from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef
 
@@ -108,10 +108,11 @@ class ViewOptions:
     (:mod:`celpix.core.paletteregions`). ``show_palette_regions`` is the toggle
     between that and the plain single-row view, like ``show_rearranged``.
 
-    ``tile_map`` rearranges *which* tile each position shows, so scattered tiles
-    can be viewed and edited side by side; it moves no bytes, and an edit made at
-    a rearranged position still writes back to the tile's real home
-    (:mod:`celpix.core.tilemap`). ``show_rearranged`` is the toggle between that
+    ``tile_rearrangement`` rearranges *which* tile each position shows, so
+    scattered tiles can be viewed and edited side by side; it moves no bytes, and
+    an edit made at a rearranged position still writes back to the tile's real
+    home (:mod:`celpix.core.tilerearrangement`). ``show_rearranged`` is the
+    toggle between that
     view and the file's true order — off makes the map inert without discarding
     it. The map composes *before* the block placement: it decides which tile
     fills a slot, the arrangement decides where that slot lands.
@@ -128,8 +129,12 @@ class ViewOptions:
     block_order: str = "row"  # fill within a block: row | column | row-interleave
     two_dimensional: bool = False  # read the source as a wide bitmap, not tiles
     bitmap_width: int = 0  # pixels across the bitmap is (0 = the codec's own tiles)
-    tile_map: TileMap = TileMap()  # display-only rearrangement of tile positions
-    show_rearranged: bool = True  # apply tile_map, or show the file's true order
+    tile_rearrangement: TileRearrangement = (
+        TileRearrangement()
+    )  # display-only rearrangement of tile positions
+    show_rearranged: bool = (
+        True  # apply tile_rearrangement, or show the file's true order
+    )
     # Byte regions pinned to their own subpalette row, overriding subpalette_row
     # for the tiles inside them (:mod:`celpix.core.paletteregions`).
     palette_regions: PaletteRegions = PaletteRegions()

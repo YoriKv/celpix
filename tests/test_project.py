@@ -347,6 +347,29 @@ def test_tolerant_load_defaults_unknowns_and_garbage(tmp_path) -> None:
     assert entry.pending_view is None
 
 
+def test_a_rearrangement_stored_under_the_old_key_still_loads(tmp_path) -> None:
+    """``tile_map`` was the key before the type was renamed to
+    ``TileRearrangement``. Nothing else would notice the fallback going away —
+    the project would just reopen unrearranged, silently."""
+    (tmp_path / "x.bin").write_bytes(b"\x00" * 0x400)
+    document = {
+        "version": PROJECT_VERSION,
+        "current": 0,
+        "entries": [
+            {
+                "path": "x.bin",
+                "view": {"tile_map": [[0, 3], [3, 0]], "show_rearranged": True},
+            }
+        ],
+    }
+    project = tmp_path / "p.celpix"
+    project.write_text(json.dumps(document), encoding="utf-8")
+
+    view = load_project(str(project)).entries[0].pending_view
+    assert view is not None
+    assert view.tile_rearrangement.actual(0) == 3
+
+
 def test_unreadable_or_non_project_file_raises(tmp_path) -> None:
     bad = tmp_path / "bad.celpix"
     bad.write_text("not json", encoding="utf-8")
