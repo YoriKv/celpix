@@ -1046,9 +1046,39 @@ class EntriesMixin:
         current = self._workspace.current
         if current in entries:
             self._on_current_entry_changed(current)  # re-read the new bytes now
+        for entry in entries:
+            # A palette is never the current entry, so nothing above reloads it —
+            # but the graphics showing its colors are still holding the ones the
+            # old framing produced, and those are exactly what just changed.
+            if entry.kind is EntryKind.PALETTE:
+                self._reload_palette_consumers(entry)
+
+    def _reload_palette_consumers(self, entry: Entry) -> None:
+        """Re-read a PALETTE entry and push its colors back onto every graphic.
+
+        A graphic renders a file palette by reference (:meth:`_mirror_palette`),
+        so re-reading the file is only half the job — without the mirror the view
+        keeps showing colors decoded from bytes the entry no longer offers.
+        A load failure leaves the old colors up rather than blanking the view;
+        the entry's own error palette reports it when it is next opened.
+
+        The session is snapshotted first for the reason :meth:`_remove_entry`
+        does it: the current graphic's palette mode only reaches its session on a
+        switch, so a palette in use *right now* would otherwise look unused and
+        keep the colors it is being changed out of.
+        """
+        self._capture_session()
+        if not self._workspace.palette_consumers(entry):
+            return
+        if self._load_palette_entry(entry):
+            self._mirror_palette(entry)
+            self._refresh_palette_dock()
+            self._refresh_view()
 
     # -- containers ----------------------------------------------------------
     def _change_container_current(self) -> None:
+        # A palette is never *current* — the File menu's action follows the
+        # graphic on screen, and a palette entry is reached from the Files dock.
         entry = self._workspace.current
         if entry is not None and entry.kind is EntryKind.FILE:
             self._change_container_for(entry)
@@ -1065,8 +1095,13 @@ class EntriesMixin:
         at all. Slices are excluded for the reason on
         :attr:`Entry.container_id` — theirs are their parent's coordinates, and
         its file list; a *slice's* reshape is edited in the slice dialog.
+
+        A **palette** entry is included, and gets a different list: its file can
+        be framed too (colours that stop before the bytes do), and the dialog is
+        filtered to the containers that frame a palette so the two sets of
+        formats never appear in each other's menu.
         """
-        if entry.kind is not EntryKind.FILE:
+        if entry.kind not in (EntryKind.FILE, EntryKind.PALETTE):
             return
         edit = ContainerDialog.edit_container(
             self,
@@ -1074,6 +1109,7 @@ class EntriesMixin:
             paths=entry.paths,
             container_id=entry.container_id,
             reshape_id=entry.reshape_id,
+            kind=entry.content_kind,
         )
         if edit is None:
             return
@@ -1144,9 +1180,10 @@ class EntriesMixin:
 
         The per-entry sibling of :meth:`_resolve_dirty_entries`: only these
         entries are about to be re-read, so offering Write All would touch files
-        the user never asked about.
+        the user never asked about. A palette entry's unsaved work is colors
+        rather than pixels, and the re-read discards those just the same.
         """
-        dirty = [e for e in entries if e.pixel_dirty]
+        dirty = [e for e in entries if e.pixel_dirty or e.palette_dirty]
         if not dirty:
             return True
         names = ", ".join(e.name for e in dirty)

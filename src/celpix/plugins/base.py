@@ -16,10 +16,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from celpix.core.capabilities import ContentKind
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
+from celpix.core.tilemap import Cell, CellOp
 
 # The three pass-through ids the *host* knows by name: each names a condition
 # several behaviours key off, not merely one more plugin.
@@ -255,6 +257,13 @@ class PluginInfo:
     file whatever it is called. With no ``magic`` it falls back to ``extensions``
     alone, the best some wrappers offer (Sega ``.smd`` carries no marker).
 
+    ``exact_size`` narrows to one file length, for the fixed-size authoring
+    formats where several members of a family share a signature *at the same
+    offset* and differ only in how long they are — nothing else tells a panel
+    from a stamp layout. Zero (the default) means the container does not care.
+    Like the two below it this only ever *rejects*: a length alone would claim
+    every binary that happened to be that long.
+
     ``size_modulo`` (``(modulus, remainder)``) and ``min_size`` **narrow** a match
     rather than making one: they apply only once an extension or magic has already
     matched, since a size rule alone would seize any binary of the right length.
@@ -269,6 +278,15 @@ class PluginInfo:
     *inline with other text* — the Files list tags each file with its container,
     where "Game Boy ROM (checksum repair on write)" would bury the filename.
     Empty means ``name`` is already short enough.
+
+    ``content_kinds`` is **Container-only**: what kind of entry this frames. A
+    palette file and a graphics file are unwrapped by disjoint sets of formats,
+    and offering either list to the other is how a user is invited to read a
+    palette as an iNES ROM. The default is the graphics pair, which is what every
+    container was before any of them framed a palette, so a plugin that says
+    nothing keeps the behaviour it had. The plain-bytes container declares all
+    three: it is where detection lands for anything unclaimed, whatever the entry
+    holds.
 
     ``preserves_offsets`` is **Container-only**: does a byte's position survive
     the read? A container that only *skips* — a header, a copier block — leaves
@@ -290,7 +308,9 @@ class PluginInfo:
     magic: tuple[tuple[int, bytes], ...] = ()
     size_modulo: tuple[int, int] | None = None
     min_size: int = 0
+    exact_size: int = 0
     short_name: str = ""
+    content_kinds: tuple[ContentKind, ...] = (ContentKind.PIXELS, ContentKind.TILEMAP)
     preserves_offsets: bool = True
 
 
@@ -307,6 +327,7 @@ STAGE_METHODS: dict[Stage, tuple[str, ...]] = {
     Stage.COMPRESSION: ("decompress",),
     Stage.INTERPRET_PIXEL: ("decode", "encode", "bytes_per_tile", "tile_size"),
     Stage.INTERPRET_PALETTE: ("decode", "encode", "bytes_per_entry"),
+    Stage.INTERPRET_TILEMAP: ("decode", "encode", "bytes_per_cell", "cell_tiles"),
 }
 
 
@@ -472,17 +493,93 @@ class ColorCodecPlugin(Plugin, Protocol):
         ...
 
 
+class TilemapCodecPlugin(Plugin, Protocol):
+    """The tilemap-side view interpretation: bytes ⇄ a :class:`CellGrid`.
+
+    The third interpret engine, shaped like the pixel one and for the same
+    reason. A tilemap file is a long run of fixed-width cells, so the engine is
+    **buffer-relative and stateless** — hand it a window covering the visible
+    rows and it decodes exactly that window, which is what allows a large map to
+    be read a screen at a time rather than whole.
+
+    ``decode`` takes bytes to a flat list of cells in the file's own order;
+    laying that list out as a grid is the host's, since a file rarely states its
+    own width (``docs/graphics-formats-reference/scgcad-formats.md`` §4) and the
+    view has to be able to try one.
+
+    :meth:`bytes_per_cell` sizes the byte window, mirroring
+    :meth:`PixelCodecPlugin.bytes_per_tile`. :meth:`cell_tiles` is how many
+    *tiles* one cell covers — 1x1 for a hardware BG map, 2x2 for a panel whose
+    cells are 16x16 metatiles — which the renderer needs and cannot infer from
+    the byte size.
+
+    Unlike the other two interpret stages, ``encode`` is not the whole of the
+    save side: the attributes a cell carries may not all fit the format it is
+    being written back to. A codec that cannot represent a field must say so by
+    dropping it in ``encode`` rather than raising — the alternative is a file
+    that cannot be saved at all because one cell has a priority bit.
+    """
+
+    def decode(
+        self, data: bytes, params: dict[str, Any], ctx: PipelineContext
+    ) -> list[Cell]: ...
+
+    def encode(
+        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
+    ) -> bytes: ...
+
+    def bytes_per_cell(self, params: dict[str, Any]) -> int:
+        """Byte size of one cell under ``params`` (for byte-window slicing)."""
+        ...
+
+    def cell_tiles(self, params: dict[str, Any]) -> tuple[int, int]:
+        """How many tiles ``(across, down)`` one cell covers under ``params``."""
+        ...
+
+    def transform_cell(
+        self, cell: Cell, op: CellOp, params: dict[str, Any]
+    ) -> Cell | None:
+        """``cell`` as ``op`` leaves it, or **None** when the format cannot say it.
+
+        Optional, and the way a format declares what its cells can *do*. Which
+        transforms a tilemap supports is not a property of tilemaps: a console BG
+        entry has both mirror bits, a Game Boy map entry is a bare index with
+        neither, and a stamp layout's word is a coordinate with no room for any.
+        Only the codec knows which bits — if any — say a flip, so the tool names
+        the operation and hands it here rather than toggling a field itself
+        (``docs/design/tilemap-entry.md`` §4).
+
+        **None is the whole refusal protocol.** The host probes with a blank cell
+        before touching a selection, so a format that cannot do something is told
+        to the user once, in the status bar, and nothing is written — rather than
+        a bit being set in the model that :meth:`encode` then silently drops on
+        save, which is what an unconditional flip does to an index-only format.
+
+        A plugin that omits this method refuses every transform. That is the safe
+        direction for the one it would get wrong: a codec written before the
+        method existed cannot have been asked which of its fields a flip means.
+
+        Supporting a *rotation* takes one more step than a flip, and it is not
+        this method's: :class:`~celpix.core.tilemap.Cell` has no rotation field,
+        because no format in hand has a rotation bit to put in one. A format that
+        does would add the field, a preset entry to place it, and the tile-side
+        turn in :func:`~celpix.pipeline.pipeline.tilemap_tiles`; this method is
+        then the same shape it already is.
+        """
+        ...
+
+
 @dataclass(frozen=True)
 class Preset:
     """A named, data-only interpretation: which engine to use and its parameters.
 
     The data-first tier for the View stage. A preset targets an ``engine_id`` (a
-    registered pixel or color codec) and supplies the ``params`` that engine
-    interprets; ``stage`` says which of the two pathways it belongs to.
+    registered pixel, color or tilemap codec) and supplies the ``params`` that
+    engine interprets; ``stage`` says which pathway it belongs to.
     """
 
     id: str
     name: str
-    stage: Stage  # INTERPRET_PIXEL or INTERPRET_PALETTE
+    stage: Stage  # INTERPRET_PIXEL, INTERPRET_PALETTE or INTERPRET_TILEMAP
     engine_id: str
     params: dict[str, Any] = field(default_factory=dict)

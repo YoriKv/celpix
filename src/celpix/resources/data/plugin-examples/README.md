@@ -9,6 +9,7 @@ them up — no reinstall, no editing the app.
 |---|---|
 | `pixel/` | how bytes become tiles (a tile/character format) |
 | `palette/` | how bytes become colours |
+| `tilemap/` | how bytes become *references* to tiles — a map, a screen, a sprite's frames |
 | `reshape/` | a byte reordering applied to a whole region |
 | `compression/` | a packing scheme, unpacked before the pixel format reads it |
 | `containers/` | an on-disk wrapper — a header to skip, an interleave to undo |
@@ -28,8 +29,8 @@ parameters, so a new tile or palette format is usually a handful of numbers and 
 code at all. Nothing executes, and celPix loads them without asking. Start here —
 most formats need nothing more.
 
-`pixel/` and `palette/` have one example preset per engine; pick the one whose
-layout matches your format:
+`pixel/`, `palette/` and `tilemap/` have one example preset per engine; pick the
+one whose layout matches your format:
 
 - `_planar.toml` — bit *k* of a pixel comes from plane *k* (most console formats)
 - `_packed.toml` — a pixel is a field stored whole: sub-byte (Genesis, GBA, …)
@@ -39,6 +40,10 @@ layout matches your format:
 - `_direct-color.toml` — the pixel carries its own colour, no palette
 - `_color-mask.toml` — a palette entry's channels as bit masks (RGB555, …)
 - `_color-indexed.toml` — palette bytes index a table baked into the hardware
+- `_packed.toml` (in `tilemap/`) — a cell is one packed integer: tile number in
+  the low bits, attributes above it (nearly every hardware map)
+- `_object.toml` — parts carrying signed pixel offsets, drawn as frames rather
+  than laid out in rows
 
 Each names what its engine does, which shipped presets are built on it, and every
 parameter it takes with the values that parameter accepts.
@@ -61,9 +66,13 @@ Each `_example.py` documents its stage in full. In short:
   it out and celPix opens that data read-only. Nothing else declares this.
 - The two halves must be exact inverses. celPix trusts them, so a mismatch
   corrupts saves — test the round trip.
-- Pixel and palette code must be **buffer-relative**: decode whatever bytes you
-  are handed, with no assumption about where they sit in the file. That is what
-  lets celPix decode only the visible part of a large ROM.
+- Interpret code (pixel, palette, tilemap) must be **buffer-relative**: decode
+  whatever bytes you are handed, with no assumption about where they sit in the
+  file. That is what lets celPix decode only the visible part of a large ROM.
+- A **container** says what kind of entry it frames (`content_kinds`). It
+  defaults to pixels and tilemaps, which is what almost every wrapper is; set it
+  to `PALETTE` for one that frames a palette file, so the two are never offered
+  each other's formats.
 
 If a plugin fails to load, celPix reports it and carries on — check the plugin
 issues it lists rather than looking for a crash.

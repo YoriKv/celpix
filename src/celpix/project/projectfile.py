@@ -34,6 +34,7 @@ from os.path import (
 )
 
 from celpix.core.arrangement import BLOCK_ORDERS
+from celpix.core.capabilities import ContentKind
 from celpix.core.document import ViewOptions
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
 from celpix.core.tilerearrangement import TileRearrangement
@@ -44,6 +45,8 @@ from celpix.project.workspace import (
     EntrySession,
     PaletteMode,
     PaletteSource,
+    TileMode,
+    TileSource,
     Workspace,
     palette_source_for,
 )
@@ -150,13 +153,15 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
     # reshape is a property of the region, whichever kind holds it.
     if entry.reshape_id != NO_RESHAPE:
         data["reshape_id"] = entry.reshape_id
-    if entry.kind is EntryKind.FILE:
-        # Only when it isn't the plain-bytes default, so detection's usual answer
-        # adds nothing to the file — and so a project written before containers
-        # existed round-trips unchanged.
+    # Only when it isn't the plain-bytes default, so detection's usual answer
+    # adds nothing to the file — and so a project written before containers
+    # existed round-trips unchanged. A palette carries one for the same reason a
+    # file does: its colours may stop before its bytes do, and which format says
+    # where is the user's to correct.
+    if entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
         if entry.container_id != RAW_CONTAINER:
             data["container_id"] = entry.container_id
-    elif entry.kind is EntryKind.SLICE:
+    if entry.kind is EntryKind.SLICE:
         data["slice_offset"] = entry.slice_offset
         data["slice_length"] = entry.slice_length
         data["compression_id"] = entry.compression_id
@@ -166,6 +171,18 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
         # The codec the palette file was last read with — applying the entry
         # later must decode the same way, whatever the dropdown says then.
         data["palette_preset_id"] = entry.palette_preset_id
+    # What the bytes are, as opposed to how the entry is bounded above. Omitted
+    # at the default so a pixel entry — every entry any older project holds — is
+    # written exactly as it was before tilemaps existed, and omitted for a
+    # palette entry, whose ``kind`` already implies it (Entry.__post_init__).
+    if entry.content_kind not in (ContentKind.PIXELS, ContentKind.PALETTE):
+        data["content_kind"] = entry.content_kind.value
+    if entry.content_kind is ContentKind.TILEMAP:
+        if entry.tilemap_preset_id:
+            data["tilemap_preset_id"] = entry.tilemap_preset_id
+        source = entry.tile_source
+        if source is not None and source.is_bound:
+            data["tile_source"] = _tile_source_dict(source)
     session = entry.session
     if session is not None:
         # The tile selection is deliberately absent: it is a transient pointer
@@ -287,12 +304,14 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
     # as a plain file rather than failing the entry.
     kind = _KINDS_BY_NAME.get(raw.get("kind"), EntryKind.FILE)
     if kind is EntryKind.PALETTE:
-        # A palette entry is just a reference plus its import codec — no
-        # session/view/palette state of its own.
+        # A palette entry is just a reference plus how to read it — the container
+        # that says which of its bytes are colour, and the codec that decodes
+        # them. No session/view/palette state of its own.
         return Entry(
             name=name if isinstance(name, str) and name else basename(path),
             kind=kind,
             path=path,
+            container_id=_str(raw.get("container_id"), RAW_CONTAINER),
             palette_preset_id=_str(
                 raw.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET
             ),
@@ -314,6 +333,12 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         # Absent for every file nothing claimed — plain bytes, which is also what
         # an entry naming a container the registry no longer has falls back to.
         container_id=_str(raw.get("container_id"), RAW_CONTAINER),
+        # Absent on every project written before tilemaps existed, and on every
+        # ordinary pixel entry since — ContentKind.parse falls back to PIXELS,
+        # which is what those entries are.
+        content_kind=ContentKind.parse(raw.get("content_kind")),
+        tile_source=_tile_source(raw),
+        tilemap_preset_id=(_str(raw.get("tilemap_preset_id"), "") or None),
         session=_session_from(raw.get("session")),
         pending_view=_view_from(raw.get("view")),
         pending_palette=_palette_from(raw.get("palette"), base_dir),
@@ -356,6 +381,44 @@ def _view_from(raw: object) -> ViewOptions | None:
         show_palette_regions=bool(
             raw.get("show_palette_regions", defaults.show_palette_regions)
         ),
+    )
+
+
+def _tile_source_dict(source: TileSource) -> dict[str, object]:
+    """A bound tile source as JSON. ``base_index`` rides along when it is set.
+
+    No path: the tiles are always another entry in this same project, and that
+    entry stores its own path once, where relocating it fixes both.
+    """
+    data: dict[str, object] = {
+        "mode": source.mode.value,
+        "entry_index": source.entry_index,
+    }
+    if source.base_index:
+        data["base_index"] = source.base_index
+    return data
+
+
+def _tile_source(raw: dict) -> TileSource | None:
+    """A stored tile source, or ``None`` for anything unusable.
+
+    Tolerant like the rest of this path: an unreadable binding leaves the tilemap
+    unbound — it opens showing placeholder cells and can be re-pointed — rather
+    than failing the entry and losing the map as well as its tiles.
+    """
+    data = raw.get("tile_source")
+    if not isinstance(data, dict):
+        return None
+    try:
+        mode = TileMode(data.get("mode"))
+    except ValueError:
+        return None
+    if mode is TileMode.NONE:
+        return None
+    return TileSource(
+        mode=mode,
+        entry_index=_int(data.get("entry_index"), None),
+        base_index=_int(data.get("base_index"), 0) or 0,
     )
 
 

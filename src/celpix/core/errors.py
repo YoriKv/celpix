@@ -31,13 +31,23 @@ class Stage(str, Enum):
     COMPRESSION = "compression"
     INTERPRET_PIXEL = "interpret-pixel"
     INTERPRET_PALETTE = "interpret-palette"
+    INTERPRET_TILEMAP = "interpret-tilemap"
 
 
 class Pathway(str, Enum):
-    """The two parallel pathways data flows along (overview.md §2)."""
+    """The parallel pathways data flows along (overview.md §2).
+
+    Pixel and palette run for one document and converge at the interactive
+    stage. Tilemap is a third interpretation of a byte buffer rather than a
+    third half of the same document: it belongs to an entry of its own, which
+    *names* the pixel entry supplying its tiles (``docs/design/tilemap-entry.md``).
+    It is a pathway here for the reason the other two are — it is the label a
+    failure is reported under.
+    """
 
     PIXEL = "pixel"
     PALETTE = "palette"
+    TILEMAP = "tilemap"
 
 
 class PipelineError(Exception):

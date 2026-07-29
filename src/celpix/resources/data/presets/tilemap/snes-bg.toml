@@ -1,0 +1,15 @@
+# SNES BG map entry — 16-bit little-endian `vhopppcc tttttttt`, the console's
+# own order. Used by raw tilemaps ripped from a ROM and by SCR screen files.
+# See docs/graphics-formats-reference/snes-hardware-notes.md §5.
+id = "preset.tilemap.snes-bg"
+name = "SNES BG map (16-bit)"
+engine_id = "codec.tilemap-packed"
+
+[params]
+bytes = 2
+endian = "little"
+index = { shift = 0, bits = 10 }
+palette = { shift = 10, bits = 3 }
+priority = { shift = 13, bits = 1 }
+flip_h = { shift = 14, bits = 1 }
+flip_v = { shift = 15, bits = 1 }

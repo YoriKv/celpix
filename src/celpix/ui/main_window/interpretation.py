@@ -56,6 +56,33 @@ from celpix.ui.widgets import (
 # it (see MainWindow._sync_entire_file).
 ROWS_TIP = "Tile rows shown"
 ROWS_LOCKED_TIP = "Tile rows shown\nLocked by View > Entire File"
+# A tilemap is always shown entire, so unlike the line above this is not a
+# setting being held — there is no window to set the height of.
+ROWS_WHOLE_TIP = "Tile rows shown\nA tilemap is always shown whole"
+
+
+def _group(caption: str, *widgets: QWidget, tooltip: str = "") -> QWidget:
+    """A captioned run of toolbar controls as one widget, so it hides as one.
+
+    A toolbar hides what it is *told about* — the action ``addWidget`` returns —
+    so a control that has to disappear has to be one widget with one action. That
+    is the whole reason these are grouped rather than added loose: a tilemap
+    entry swaps a whole run of the codecs bar, and hiding four widgets while
+    their action still holds the space would leave a gap where the run was.
+
+    Spacing matches the toolbar's own so a grouped run reads no differently from
+    the loose ones beside it; ``tooltip`` (when given) applies to the caption and
+    the first widget, which is :func:`add_labelled`'s rule.
+    """
+    box = QWidget()
+    row = QHBoxLayout(box)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(10)
+    first, rest = widgets[0], widgets[1:]
+    add_labelled(row, caption, first, tooltip or first.toolTip())
+    for widget in rest:
+        row.addWidget(widget)
+    return box
 
 
 def _same_bytes(a: PathwayConfig, b: PathwayConfig) -> bool:
@@ -123,10 +150,6 @@ class InterpretationMixin:
         # then re-anchors on the live position rather than the stale target.
         self._pixel_preset.focus_lost.connect(self._end_pixel_switch_run)
         self._pixel_preset.setToolTip("Tile graphics format")
-        pixel_label = QLabel("Pixel:")
-        pixel_label.setToolTip(self._pixel_preset.toolTip())
-        pixel_label.setBuddy(self._pixel_preset)
-        codecs.addWidget(pixel_label)
         # The combo and its filter button read as one control: grouped in a tight
         # container (no toolbar gap between them), same height, the button a plain
         # funnel icon that picks up the theme's button-text color.
@@ -141,42 +164,53 @@ class InterpretationMixin:
         )
         self._pixel_filter.setToolTip("Which formats appear in the dropdown")
         self._pixel_filter.setFixedHeight(self._pixel_preset.sizeHint().height())
-        pixel_group = QWidget()
-        group = QHBoxLayout(pixel_group)
-        group.setContentsMargins(0, 0, 0, 0)
-        group.setSpacing(2)
-        group.addWidget(self._pixel_preset)
-        group.addWidget(self._pixel_filter)
-        codecs.addWidget(pixel_group)
+        # Whole groups rather than loose widgets, because a tilemap entry swaps
+        # this end of the bar wholesale: what a *cell* is replaces what a tile
+        # is, and neither the pixel format nor the compression preview says
+        # anything about a map (see _sync_capabilities and the note below).
+        pixel_pair = QWidget()
+        pair = QHBoxLayout(pixel_pair)
+        pair.setContentsMargins(0, 0, 0, 0)
+        pair.setSpacing(2)  # no toolbar gap: the pair is one control
+        pair.addWidget(self._pixel_preset)
+        pair.addWidget(self._pixel_filter)
+        self._pixel_codec_action = codecs.addWidget(
+            _group("Pixel:", pixel_pair, tooltip=self._pixel_preset.toolTip())
+        )
         # The palette format combo lives in the palette dock's header, next to
         # the mode it qualifies (_build_palette_dock).
+
+        # A tilemap's own format picker, in the pixel one's place: the entry's
+        # bytes are cells, and how they are read - field layout and byte order -
+        # is the same kind of choice one row up from tiles. Its pathway has no
+        # compression stage of its own either, so both go and this arrives.
+        self._tilemap_preset = CompactComboBox(0.60)
+        self._tilemap_preset.setToolTip(
+            "How a cell's bytes are read: field layout and byte order.\n"
+            "Formats from one tool can disagree about the order."
+        )
+        self._tilemap_preset.activated.connect(self._on_tilemap_preset_change)
+        self._tilemap_codec_action = codecs.addWidget(
+            _group("Tilemap:", self._tilemap_preset)
+        )
 
         # Compression preview: the main view stays raw; the chosen Decompress
         # plugin runs over the current window and shows in the floating overlay.
         self._compression = CompactComboBox(0.60)
         self._populate_compression()
         self._compression.currentIndexChanged.connect(self._on_view_change)
-        add_labelled(
-            codecs,
-            "Compression:",
-            self._compression,
-            "Preview the window decompressed with this codec",
-        )
-
         # Structure navigation for contiguously packed compressed data: hop
         # past the structure in view, or walk forward looking for the next one.
         self._jump_next = QPushButton("Jump to Next")
         self._jump_next.setToolTip("Jump past the structure in view")
         self._jump_next.setEnabled(False)
         self._jump_next.clicked.connect(self._on_jump_next)
-        codecs.addWidget(self._jump_next)
         self._scan_button = QPushButton("Scan")
         self._scan_button.setToolTip(
             "Scan for the next compressed structure; click again to stop"
         )
         self._scan_button.setEnabled(False)
         self._scan_button.clicked.connect(self._on_scan)
-        codecs.addWidget(self._scan_button)
         # One click promotes the complete structure in view into a decompressed
         # slice entry in the files list - the overlay preview made editable.
         self._promote_button = QPushButton("To Slice")
@@ -185,7 +219,18 @@ class InterpretationMixin:
         )
         self._promote_button.setEnabled(False)
         self._promote_button.clicked.connect(self._on_promote_structure)
-        codecs.addWidget(self._promote_button)
+        # The picker and the three buttons it drives travel together: they are
+        # one feature, and the buttons with no codec to run would be furniture.
+        self._compression_action = codecs.addWidget(
+            _group(
+                "Compression:",
+                self._compression,
+                self._jump_next,
+                self._scan_button,
+                self._promote_button,
+                tooltip="Preview the window decompressed with this codec",
+            )
+        )
 
         # Sits immediately left of Cols because the two are read together: a
         # bitmap width re-cuts the codec's tiles and Cols is then derived from

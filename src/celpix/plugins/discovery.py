@@ -76,18 +76,19 @@ ENV_PLUGIN_PATH = "CELPIX_PLUGIN_PATH"
 FOLDER_STAGE: dict[str, Stage] = {
     "pixel": Stage.INTERPRET_PIXEL,
     "palette": Stage.INTERPRET_PALETTE,
+    "tilemap": Stage.INTERPRET_TILEMAP,
     "reshape": Stage.RESHAPE,
     "compression": Stage.COMPRESSION,
     "containers": Stage.CONTAINER,
 }
 
-# The two interpret folders, whose *.toml files are pixel/palette presets and
-# whose *.py files are code formats. Derived from FOLDER_STAGE so a folder's
-# stage is stated once, and shared with the built-in loader since the shipped
-# preset tree uses the same names. (reshape/ takes presets of a different shape —
-# see :func:`_load_reshape_preset`.)
+# The interpret folders, whose *.toml files are presets and whose *.py files are
+# code formats. Derived from FOLDER_STAGE so a folder's stage is stated once, and
+# shared with the built-in loader since the shipped preset tree uses the same
+# names. (reshape/ takes presets of a different shape — see
+# :func:`_load_reshape_preset`.)
 INTERPRET_FOLDER_STAGE: dict[str, Stage] = {
-    folder: FOLDER_STAGE[folder] for folder in ("pixel", "palette")
+    folder: FOLDER_STAGE[folder] for folder in ("pixel", "palette", "tilemap")
 }
 
 
@@ -192,7 +193,7 @@ class ScopedRegistry:
             self._issues.append(
                 PluginLoadIssue(
                     str(self._path),
-                    "register_format is only valid in pixel/ or palette/; "
+                    "register_format is only valid in pixel/, palette/ or tilemap/; "
                     "registration skipped",
                 )
             )
@@ -286,14 +287,19 @@ def seed_examples(directory: str) -> None:
     root = Path(directory)
     _seed_file(resources.resource("data", "plugin-examples", PLUGIN_README), root)
     for folder in FOLDER_STAGE:
-        dest_dir = root / folder
-        if not dest_dir.is_dir():
-            continue
         try:
             entries = list(
                 resources.resource("data", "plugin-examples", folder).iterdir()
             )
         except (FileNotFoundError, OSError):
+            continue
+        # Made here rather than assumed: a stage added after a user's plugin
+        # folder was created has no folder of its own yet, and seeding into one
+        # that does not exist would silently skip the whole new category.
+        dest_dir = root / folder
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
             continue
         for entry in entries:
             _seed_file(entry, dest_dir)
@@ -340,7 +346,8 @@ def load_directory(
                 PluginLoadIssue(
                     str(entry),
                     "plugins live in typed subfolders - move this file into "
-                    "pixel/, palette/, reshape/, compression/ or containers/",
+                    "pixel/, palette/, tilemap/, reshape/, compression/ "
+                    "or containers/",
                 )
             )
     return issues
@@ -372,7 +379,7 @@ def _load_typed_dir(
                 issues.append(
                     PluginLoadIssue(
                         str(entry),
-                        f"presets are pixel/palette/reshape only; '{folder}/' "
+                        f"presets are pixel/palette/tilemap/reshape only; '{folder}/' "
                         "takes .py code plugins",
                     )
                 )

@@ -1,0 +1,51 @@
+# Example tilemap preset — a packed cell word.
+#
+# Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
+#
+# A tilemap is a file of *references*: each cell names a tile that lives
+# somewhere else (a tile bank you bind the map to) plus how to draw it. Nearly
+# every hardware map stores one cell as a single little- or big-endian integer
+# with the tile number in the low bits and a few attribute bits above it, so this
+# one engine covers the lot — a new map format is normally this file with the
+# shifts changed and no code at all.
+#
+# Built on `codec.tilemap-packed`, as are the shipped snes-bg, snes-bg-swapped,
+# gb-bg, scgcad-panel and scgcad-map presets.
+
+id = "preset.tilemap.example-packed"
+name = "Example packed cell (16-bit)"
+engine_id = "codec.tilemap-packed"
+
+[params]
+# Cell width in bytes. 2 is the common case; a Game Boy map is 1.
+bytes = 2
+
+# "little" or "big" — the order the cell word is stored in, per *format* rather
+# than per family. Two formats from the same tool can disagree.
+endian = "little"
+
+# Where each field sits in the word, as { shift, bits }. A field you leave out
+# does not exist in your format: it decodes as zero and is dropped on write,
+# which is how a plain index-only map is described (see gb-bg).
+#
+# The layout below is the SNES BG entry, `vhopppcc tttttttt`:
+index = { shift = 0, bits = 10 }     # which tile — the only required field
+palette = { shift = 10, bits = 3 }   # which palette row the cell draws through
+priority = { shift = 13, bits = 1 }  # carried, never rendered: celPix has no layers
+flip_h = { shift = 14, bits = 1 }
+flip_v = { shift = 15, bits = 1 }
+
+# Bits your format has that celPix has no meaning for. Carried through untouched
+# so a write stays byte-exact — name them here rather than letting them fall off.
+# flags = { shift = 14, bits = 2 }
+
+# How many tiles one cell draws, [across, down]. Default [1, 1]. Use [2, 2] for a
+# format whose cell *is* a 16x16 metatile — but check first: a map that stores
+# all four tiles as four adjacent cells is 1x1, and reading it as 2x2 draws every
+# metatile four times over.
+# cell_tiles = [1, 1]
+
+# Set when a cell names a position in *another map* rather than a tile, so the
+# host knows to resolve it through that map instead of a tile bank. Rare; the
+# shipped scgcad-map preset is the only one that needs it.
+# indirect = true

@@ -1,0 +1,15 @@
+# The same SNES BG fields stored MSB-first. Authoring tools that byte-swap on
+# save produce this; the panel (PNL) tile table is the case it was added for.
+# See docs/graphics-formats-reference/scgcad-formats.md §5.2.
+id = "preset.tilemap.snes-bg-swapped"
+name = "SNES BG map (16-bit, byte-swapped)"
+engine_id = "codec.tilemap-packed"
+
+[params]
+bytes = 2
+endian = "big"
+index = { shift = 0, bits = 10 }
+palette = { shift = 10, bits = 3 }
+priority = { shift = 13, bits = 1 }
+flip_h = { shift = 14, bits = 1 }
+flip_v = { shift = 15, bits = 1 }

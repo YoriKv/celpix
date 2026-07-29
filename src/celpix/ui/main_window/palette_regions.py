@@ -66,6 +66,10 @@ class PaletteRegionsMixin:
         """
         self._palette_regions = PaletteRegions()
         self._show_palette_regions = True
+        # Whether each pinned tile is *labelled* with its row number, as
+        # opposed to drawn through it. A local preference, not project
+        # state: it says how you want to read the pins, not what they are.
+        self._show_palette_rows = False
         self._build_pin_actions()
 
     def _max_subpalette_row(self) -> int:
@@ -120,7 +124,7 @@ class PaletteRegionsMixin:
         """
         # Mnemonic "h": "S" is Pin Selection's and "P" Palette from Selection's,
         # both of which share this menu.
-        self._show_palette_regions_action = QAction("S&how Pinned Palettes", self)
+        self._show_palette_regions_action = QAction("S&how Pinned Palette Colors", self)
         self._show_palette_regions_action.setCheckable(True)
         self._show_palette_regions_action.setChecked(True)
         self._show_palette_regions_action.setShortcut(QKeySequence("Shift+P"))
@@ -134,6 +138,19 @@ class PaletteRegionsMixin:
         self._show_palette_regions_action.toggled.connect(
             self._set_show_palette_regions
         )
+        # The rows, as a separate switch from the colors. Seeing a tile drawn
+        # through row 5 does not tell you it *is* row 5 — several rows often
+        # share their first colors, and a bank seeded from a file's own table
+        # (`session._seed_tile_palette_rows`) can carry dozens of them. So the
+        # number can be shown without the recolor, and either without the other.
+        self._show_palette_rows_action = QAction("Show Pinned Palette &Rows", self)
+        self._show_palette_rows_action.setCheckable(True)
+        self._show_palette_rows_action.setChecked(False)
+        self._show_palette_rows_action.setToolTip(
+            "Number each pinned tile with the subpalette row it uses\n"
+            "Drawn in the grid's own color, in the tile's top-left corner"
+        )
+        self._show_palette_rows_action.toggled.connect(self._set_show_palette_rows)
 
     def _build_pin_actions(self) -> None:
         """The pin gestures, shared by the transform bar and two menus.
@@ -174,6 +191,11 @@ class PaletteRegionsMixin:
         """``Shift+P`` — via the action, so key and button can't diverge."""
         if self._show_palette_regions_action.isEnabled():
             self._show_palette_regions_action.toggle()
+
+    def _set_show_palette_rows(self, on: bool) -> None:
+        self._show_palette_rows = on
+        if self._doc is not None:
+            self._refresh_view()
 
     def _set_show_palette_regions(self, on: bool) -> None:
         self._show_palette_regions = on

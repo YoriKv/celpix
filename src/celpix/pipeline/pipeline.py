@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, NamedTuple, TypeVar
 
-from celpix.core import ceil_div
+from celpix.core import ceil_div, transform
 from celpix.core.arrangement import (
     BlockLayout,
     bitmap_tile_size,
@@ -29,6 +29,8 @@ from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.notices import warn
 from celpix.core.palette import Palette
+from celpix.core.sprite import Frame, drawn_frames, frame_bounds
+from celpix.core.tilemap import Cell
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import (
     NO_RESHAPE,
@@ -535,6 +537,169 @@ def compose_tiles(
     return compose_window(tiles, cols, 0, canvas_rows, layout)
 
 
+def tilemap_tiles(
+    doc: Document, reg: Registry, columns: int
+) -> tuple[list, list[int], BlockLayout]:
+    """A tilemap's cells expanded into tiles, their palette shifts, and a layout.
+
+    The whole of what makes a tilemap render through the *pixel* view rather
+    than a parallel one. Each cell is turned into the source tiles it draws,
+    oriented as its flip bits say, and the three results line up so the existing
+    composer can finish the job:
+
+    - **tiles** — every cell's tiles, consecutively, so a metatile's four land
+      next to each other.
+    - **biases** — one index shift per tile, exactly the mechanism pinned
+      palette regions already use (:func:`compose_tiles`): the composed image
+      carries one colour table, so a cell that renders through another palette
+      row has that row folded into its indices.
+    - **layout** — a :class:`BlockLayout` whose *block* is one cell, which is
+      what places a 2x2 metatile's four consecutive tiles as a square.
+
+    A cell naming a tile the source does not have renders blank rather than
+    failing: a tilemap is routinely authored against a bank that is loaded
+    elsewhere, and half a picture is more useful than an error.
+    """
+    cells = doc.drawn_cells
+    across, down = max(1, doc.cell_tiles[0]), max(1, doc.cell_tiles[1])
+    blank = IndexGrid(doc.tile_width, doc.tile_height)
+    space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
+    # Decoded once and indexed, not windowed: cells reach anywhere in the bank,
+    # so there is no contiguous window to slice. A tile bank is small (1024
+    # tiles is the usual hardware ceiling) where the maps drawn from it are not.
+    source = decode_tiles(doc, reg, 0, doc.tile_count) or []
+    tiles: list = []
+    biases: list[int] = []
+    for cell in cells:
+        shift = cell.palette_row * space
+        for index in doc.cell_tile_indices(cell):
+            tile = source[index] if 0 <= index < len(source) else blank
+            if cell.flip_h:
+                tile = transform.flip_horizontal(tile)
+            if cell.flip_v:
+                tile = transform.flip_vertical(tile)
+            tiles.append(tile)
+            biases.append(shift)
+    layout = BlockLayout(max(1, columns) * across, across, down, "row")
+    return tiles, biases, layout
+
+
+class TilemapImage(NamedTuple):
+    """A whole tilemap drawn, and the two numbers a caller needs after.
+
+    ``drawn`` is how many tiles (or sprite parts) went in, which the canvas uses
+    to background the rest of a partial row. ``palette_rows`` is how many rows
+    were folded into the indices, which is what an export has to size its colour
+    table to: one image carries one table, so a map drawing through four palette
+    rows needs four rows of it (:func:`~celpix.ui.export.document_image`).
+    """
+
+    grid: IndexGrid
+    drawn: int
+    palette_rows: int
+
+
+def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
+    """A tilemap document rendered whole, by whichever of its two shapes it is.
+
+    The single place both the canvas and PNG export go through, so an exported
+    map is the picture on screen rather than a second rendering that could drift
+    from it. Always the whole document — a tilemap has no view window
+    (``docs/design/tilemap-entry.md`` §8) — and ``columns`` means cells across
+    for a grid and *frames* across for a sprite object.
+    """
+    space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
+    if doc.is_sprite:
+        frames = drawn_frames(doc.sprite_frames or [])
+        top = max((p.palette_row for frame in frames for p in frame), default=0)
+        grid, drawn = sprite_image(doc, reg, columns)
+    else:
+        top = max((cell.palette_row for cell in doc.drawn_cells), default=0)
+        tiles, biases, layout = tilemap_tiles(doc, reg, columns)
+        grid, drawn = compose_tiles(tiles, layout, None, biases), len(tiles)
+    return TilemapImage(grid, drawn, min(max(1, 256 // max(1, space)), top + 1))
+
+
+def sprite_image(doc: Document, reg: Registry, columns: int) -> tuple[IndexGrid, int]:
+    """A sprite object's frames drawn side by side — one image, and a part count.
+
+    The one render path that cannot go through :func:`compose_tiles`, because a
+    sprite part sits at a signed *pixel* offset and a composer places tiles in a
+    grid. So the tiles are fetched the same way a tilemap's are, and then blitted
+    rather than composed (:mod:`celpix.core.sprite`).
+
+    Three rules the frames need and a tilemap does not:
+
+    - **Index 0 is transparent.** A sprite's parts overlap, and a part drawn as a
+      solid square would erase whatever it was meant to sit in front of.
+    - **Parts are drawn back to front.** The file lists them front-first — part 0
+      is the topmost — so the run is walked in reverse.
+    - **One box for the whole object.** Every frame is drawn in the same
+      bounding box (:func:`~celpix.core.sprite.frame_bounds`), so a strip shows
+      the object's motion instead of re-centring it away frame by frame.
+    """
+    frames = drawn_frames(doc.sprite_frames or [])
+    pair = doc.sprite_size_pair
+    left, top, width, height = frame_bounds(frames, pair)
+    across = max(1, columns)
+    rows = ceil_div(len(frames), across)
+    image = IndexGrid(across * width, rows * height)
+    source = decode_tiles(doc, reg, 0, doc.tile_count) or []
+    space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
+    drawn = 0
+    for at, frame in enumerate(frames):
+        ox = (at % across) * width - left
+        oy = (at // across) * height - top
+        for part in reversed(frame):
+            drawn += 1
+            side = max(1, part.size(pair) // 8)
+            for slot, index in enumerate(part.tile_indices(pair)):
+                index += doc.tile_base_index
+                if not 0 <= index < len(source):
+                    continue
+                tile = source[index]
+                if part.flip_h:
+                    tile = transform.flip_horizontal(tile)
+                if part.flip_v:
+                    tile = transform.flip_vertical(tile)
+                _blit(
+                    image,
+                    tile,
+                    ox + part.x + (slot % side) * 8,
+                    oy + part.y + (slot // side) * 8,
+                    part.palette_row * space,
+                )
+    return image, drawn
+
+
+def _blit(target: IndexGrid, tile: IndexGrid, x: int, y: int, bias: int) -> None:
+    """Draw ``tile`` at ``(x, y)``, leaving index 0 and anything off-canvas alone.
+
+    Per pixel, because index 0 has to be skipped and the offset need not be
+    tile-aligned — neither a row copy nor a translate can express that. The cost
+    is bounded by what a sprite object *is*: a few dozen parts a frame, and the
+    corpus's largest object is a few hundred tiles all told.
+
+    ``bias`` is the part's palette row folded into the indices, the shift a
+    pinned palette region uses — but applied **here**, per pixel, rather than to
+    the tile up front. :meth:`~celpix.core.index_grid.IndexGrid.shifted` moves
+    index 0 along with the rest, which on a background is right and on a sprite
+    turns every transparent pixel into an opaque colour of that row.
+    """
+    width, height = target.width, target.height
+    for row in range(tile.height):
+        ty = y + row
+        if not 0 <= ty < height:
+            continue
+        start = row * tile.width
+        line = tile.data[start : start + tile.width]
+        base = ty * width
+        for col, value in enumerate(line):
+            tx = x + col
+            if value and 0 <= tx < width:
+                target.data[base + tx] = min(255, value + bias)
+
+
 class PaletteData(NamedTuple):
     """A loaded palette plus the bytes it came from.
 
@@ -559,6 +724,99 @@ def load_palette(cfg: PathwayConfig, reg: Registry) -> PaletteData:
         lambda: engine.decode(data, preset.params, ctx),
     )
     return PaletteData(colors, ctx, data)
+
+
+class TilemapData(NamedTuple):
+    """The tilemap pathway loaded up to (but not through) grid layout.
+
+    ``cells`` are in the file's own order; ``data`` is kept for the same reason
+    the palette keeps its bytes — an edit is spliced into the buffer that was
+    read rather than re-encoded from a partial grid. ``cell_tiles`` is how many
+    tiles one cell covers, which only the codec knows.
+
+    ``frames`` is set only by a codec whose cells are **sprite parts**, whose
+    pixel offsets no grid can express (:mod:`celpix.core.sprite`). None for every
+    ordinary tilemap, which is drawn as the grid its cells already are.
+    """
+
+    cells: list[Cell]
+    cell_bytes: int
+    cell_tiles: tuple[int, int]
+    ctx: PipelineContext
+    data: bytes
+    frames: list[Frame] | None = None
+    size_pair: tuple[int, int] = (8, 16)
+
+
+def load_tilemap_data(cfg: PathwayConfig, reg: Registry) -> TilemapData:
+    """Run the tilemap pathway forward: Read -> Decompress -> decode to cells.
+
+    Stops at a flat list rather than a grid. A tilemap file rarely states its own
+    width — a screen is four fixed 32x32 blocks, a stamp layout's 128 columns had
+    to be recovered from the data — so the layout is the view's to choose and
+    change without re-reading anything
+    (``docs/graphics-formats-reference/scgcad-formats.md`` §4).
+    """
+    ctx = PipelineContext()
+    data = _read_reshape_decompress(cfg, ctx, reg, Pathway.TILEMAP)
+    engine, preset = reg.engine_for(cfg.interpret_preset_id)
+    cells = _run(
+        Stage.INTERPRET_TILEMAP,
+        Pathway.TILEMAP,
+        lambda: engine.decode(data, preset.params, ctx),
+    )
+    cell_bytes = _run(
+        Stage.INTERPRET_TILEMAP,
+        Pathway.TILEMAP,
+        lambda: engine.bytes_per_cell(preset.params),
+    )
+    if cell_bytes <= 0:
+        raise PipelineError(
+            Stage.INTERPRET_TILEMAP,
+            Pathway.TILEMAP,
+            f"bytes per cell ({cell_bytes}) is not positive",
+        )
+    tiles = _run(
+        Stage.INTERPRET_TILEMAP,
+        Pathway.TILEMAP,
+        lambda: engine.cell_tiles(preset.params),
+    )
+    # The optional half of the protocol, and the only one an engine may lack: a
+    # format whose cells are sprite parts groups them into frames itself, because
+    # what the parts *mean* — which frame, at what offset, how big — is the same
+    # knowledge that decoded them (:mod:`celpix.plugins.builtins.object_codec`).
+    frames = None
+    size_pair = (8, 16)
+    if hasattr(engine, "frames"):
+        frames = _run(
+            Stage.INTERPRET_TILEMAP,
+            Pathway.TILEMAP,
+            lambda: engine.frames(cells, preset.params),
+        )
+        size_pair = _run(
+            Stage.INTERPRET_TILEMAP,
+            Pathway.TILEMAP,
+            lambda: engine.size_pair(preset.params),
+        )
+    return TilemapData(cells, cell_bytes, tiles, ctx, data, frames, size_pair)
+
+
+def encode_cells(cells: list[Cell], preset_id: str, reg: Registry) -> bytes:
+    """``cells`` back to bytes under ``preset_id`` — the save-side half.
+
+    Separate from a whole-document save because a tilemap edit is local: the
+    caller encodes the cells that changed and splices them into the buffer
+    :func:`load_tilemap_data` returned, rather than re-encoding a grid whose
+    trailing partial row was never part of the file.
+    """
+    engine, preset = reg.engine_for(preset_id)
+    ctx = PipelineContext()
+    return _run(
+        Stage.INTERPRET_TILEMAP,
+        Pathway.TILEMAP,
+        lambda: engine.encode(cells, preset.params, ctx),
+        "encode",
+    )
 
 
 def read_region(cfg: PathwayConfig, reg: Registry) -> tuple[bytes, PipelineContext]:
@@ -710,7 +968,13 @@ def save(
     would scatter them. Routing it is the host's job (it is the one that knows
     the parent) — see :func:`encoded_pixel_bytes`.
     """
-    if pixel and doc.pixel_config.write_enabled:
+    if pixel and doc.is_tilemap:
+        # ``pixel`` means "the entry's own data", and a tilemap entry's own data
+        # is its cells. Its pixel pathway points at whatever tile source it is
+        # bound to — a *different* entry's file — which must never be written as
+        # a side effect of saving the map (``docs/design/tilemap-entry.md`` §3).
+        _save_tilemap(doc, reg)
+    elif pixel and doc.pixel_config.write_enabled:
         if doc.pixel_config.writes_through_parent:
             raise PipelineError(
                 Stage.CONTAINER,
@@ -903,6 +1167,33 @@ def _save_pixel(doc: Document, reg: Registry) -> None:
     _compress_unshape_write(
         doc.pixel_config, doc.pixel_data, doc.pixel_ctx, reg, Pathway.PIXEL
     )
+
+
+def _save_tilemap(doc: Document, reg: Registry) -> None:
+    """Encode a tilemap's cells and write them back through its own container.
+
+    Re-encoded from the cells rather than written from the buffer they were read
+    into, unlike :func:`_save_pixel`. A tilemap edit changes a *cell*, which is a
+    model object and not a byte range, so the cells are the source of truth here
+    and the buffer is only what they came from. The round trip is exact — every
+    field a format has survives it (:mod:`celpix.plugins.builtins.tilemap_codec`)
+    — so an unedited map still writes back the bytes it was read from.
+
+    The container's write half is what preserves everything around the payload:
+    a screen's trailing metadata block, a panel's flag table. Nothing here has to
+    know those exist.
+    """
+    cfg = doc.tilemap_config
+    if cfg is None or not cfg.write_enabled:
+        return
+    engine, preset = reg.engine_for(cfg.interpret_preset_id)
+    data = _run(
+        Stage.INTERPRET_TILEMAP,
+        Pathway.TILEMAP,
+        lambda: engine.encode(doc.cells or [], preset.params, doc.tilemap_ctx),
+        "encode",
+    )
+    _compress_unshape_write(cfg, data, doc.tilemap_ctx, reg, Pathway.TILEMAP)
 
 
 def encoded_pixel_bytes(doc: Document, reg: Registry) -> bytes:

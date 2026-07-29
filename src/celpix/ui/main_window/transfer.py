@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import (
     QAction,
     QDragEnterEvent,
@@ -37,6 +38,7 @@ from celpix.project.workspace import (
     exportable_entries,
 )
 from celpix.ui import clipboard, export
+from celpix.ui.main_window.palette_source import PALETTE_EXTENSIONS
 from celpix.ui.widgets import ask_save_path
 
 
@@ -164,10 +166,21 @@ class TransferMixin:
                     f"{len(paths) - 1} dropped file(s) were ignored."
                 )
             return
+        # Holding Ctrl says "ask me": detection is a guess from a signature and
+        # a suffix, and this is how the user overrules it without going and
+        # finding the matching menu entry for a file already in hand.
+        #
+        # Ctrl is also the platform's own drag-copy modifier, so it is already
+        # held down for reasons of its own on some drags. That costs a prompt
+        # that can be cancelled, which is the cheap direction to be wrong in.
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            for path in paths:
+                self._open_as_chosen(path)
+            return
         for path in paths:  # every file becomes an entry; the last one is shown
-            # A .pal is palette data, not pixels - it lands in the Palettes
-            # section (open it via the dialog to force the pixel reading).
-            if path.lower().endswith(".pal"):
+            # A palette suffix is palette data, not pixels - it lands in the
+            # Palettes section (hold Ctrl, or use the dialog, to say otherwise).
+            if path.lower().endswith(PALETTE_EXTENSIONS):
                 self._open_palette_data(path)
             else:
                 self._load_pixel(path)
@@ -240,7 +253,8 @@ class TransferMixin:
             self._alert(f"Could not write {path}: {exc}", title="celPix - export")
             return
         self.statusBar().showMessage(
-            f"Exported {len(entry.doc.pixel_data)} bytes of {entry.name} to {path}."
+            f"Exported {len(export.raw_bytes(entry.doc))} bytes"
+            f" of {entry.name} to {path}."
         )
 
     def _export_file_slices(self, entry: Entry | None) -> None:

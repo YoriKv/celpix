@@ -1,0 +1,30 @@
+# Stamp layout (MAP) entry — 16-bit big-endian, and NOT a tile reference: each
+# entry names a cell in a panel, which supplies the tile and its attributes.
+#
+#   bit 15     meaning unknown; set on 4% of real entries
+#   bit 14     attribute-source flag
+#   bits 13-5  panel Y (0-511)
+#   bits 4-0   panel X (0-31)
+#
+# The two coordinates are adjacent and the panel is 32 wide, so the low 14 bits
+# read as one number ARE `panelY * 32 + panelX` — the panel cell index. That is
+# why `index` spans them both rather than the codec needing to compose two
+# fields. `flags` carries bits 14-15 uninterpreted so a write stays byte-exact.
+#
+# Resolving an index into a tile needs the panel it was authored against; a MAP
+# on its own draws nothing. See docs/graphics-formats-reference/scgcad-formats.md §4.
+id = "preset.tilemap.scgcad-map"
+name = "Stamp layout entry (panel coordinate)"
+engine_id = "codec.tilemap-packed"
+
+[params]
+# The cells are coordinates into a panel, not tile references: the host reads
+# this to know the entry binds to another tilemap and resolves through it.
+indirect = true
+bytes = 2
+endian = "big"
+# One entry names one panel *cell*, and a panel cell is one 8x8 tile — the Y
+# field spans 0-511, the panel's full cell height, not a count of 16x16 units.
+# A resolved layout takes its cell size from the panel it draws through anyway.
+index = { shift = 0, bits = 14 }
+flags = { shift = 14, bits = 2 }

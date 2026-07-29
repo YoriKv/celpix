@@ -24,6 +24,7 @@ from celpix.core import ceil_div
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
+from celpix.core.tilemap import Cell
 from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef
@@ -163,6 +164,113 @@ class Document:
     # did not touch (docs/design/palette-editing.md §2).
     palette_base_bytes: bytes = b""
     palette_edits: set[int] = field(default_factory=set)
+
+    # -- the tilemap half (``docs/design/tilemap-entry.md``) -----------------
+    # Set only on a tilemap document, and what :attr:`is_tilemap` tests. The
+    # cells are the *entry's own* file; ``pixel_data`` above holds the bytes of
+    # whatever tile source it is bound to, decoded by the ordinary pixel
+    # machinery. That split is the whole trick: every tile path — decode, the
+    # window slicing, ``replace_bytes`` — keeps working unchanged over the
+    # bound tiles, which is what a later pixel edit on the tilemap view will
+    # write through to reach the real art.
+    cells: list[Cell] | None = None
+    # What the cells *resolve to*, when they are not tile references themselves.
+    # A stamp layout's entry names a cell in a panel, and the panel supplies the
+    # tile and its attributes — so the map is drawn from these while ``cells``
+    # stays the file's own words (``docs/design/tilemap-entry.md`` §6). None for
+    # an ordinary tilemap, whose cells already name tiles.
+    resolved_cells: list[Cell] | None = None
+    tilemap_config: PathwayConfig | None = None
+    tilemap_ctx: PipelineContext = field(default_factory=PipelineContext)
+    tilemap_data: bytes = b""  # the cells' own bytes, for a splice-style save
+    # How many tiles one cell covers, and the index step between a cell's tile
+    # rows. The step is not always the width: SNES 16x16 BG tiles are N, N+1,
+    # N+0x10, N+0x11 because VRAM behaves as a 16-tile-wide array
+    # (``docs/graphics-formats-reference/snes-hardware-notes.md`` §5).
+    cell_tiles: tuple[int, int] = (1, 1)
+    cell_row_stride: int = 0  # 0 = the cell's own width, i.e. consecutive tiles
+    # The source tile that cell index 0 draws (a format's base-character field).
+    tile_base_index: int = 0
+    # Set instead of a grid layout when the cells are **sprite parts**: their
+    # pixel offsets are not tile-aligned, so no cell grid can hold them and the
+    # view draws frames of freely placed parts (:mod:`celpix.core.sprite`).
+    # ``cells`` still holds the file's own records, so the save path is unchanged
+    # and a write puts back exactly what was read.
+    sprite_frames: list[tuple] | None = None
+    sprite_size_pair: tuple[int, int] = (8, 16)
+
+    @property
+    def is_tilemap(self) -> bool:
+        """Whether this document's own content is a tilemap rather than pixels."""
+        return self.cells is not None
+
+    @property
+    def is_indirect(self) -> bool:
+        """Whether these cells point at another map's cells rather than at tiles.
+
+        True only for a stamp layout. It is what makes such a document
+        **view-only for now**: an edit here would have to decide whether the user
+        meant to restamp (change which panel cell is named) or to change the
+        stamp itself (edit the panel), and the format's own answer to that — an
+        attribute-source flag whose two behaviours we cannot yet tell apart —
+        is the part still unconfirmed (``scgcad-formats.md`` §4).
+        """
+        return self.resolved_cells is not None
+
+    @property
+    def is_sprite(self) -> bool:
+        """Whether these cells are sprite parts rather than grid positions."""
+        return self.sprite_frames is not None
+
+    @property
+    def cells_editable(self) -> bool:
+        """Whether a cell edit here has a well-defined thing to change.
+
+        False for the two documents whose cells are not what is on screen: a
+        stamp layout, where an edit would have to choose between restamping and
+        editing the stamp (:attr:`is_indirect`), and a sprite object, where a
+        canvas position resolves to a *part* through an overlap order rather than
+        to a cell through a grid. Both are view-only until that is designed
+        (``docs/design/tilemap-entry.md`` §9); neither is read-only on disk, so
+        the distinction is about the gesture, not the file.
+        """
+        return self.is_tilemap and not self.is_indirect and not self.is_sprite
+
+    @property
+    def drawn_cells(self) -> list[Cell]:
+        """The cells the view should draw — resolved ones where they exist."""
+        return (
+            self.resolved_cells
+            if self.resolved_cells is not None
+            else (self.cells or [])
+        )
+
+    @property
+    def tiles_per_cell(self) -> int:
+        across, down = self.cell_tiles
+        return max(1, across) * max(1, down)
+
+    def cell_tile_indices(self, cell: Cell) -> list[int]:
+        """The source tile indices ``cell`` draws, in the order they appear.
+
+        One index for an ordinary hardware cell; four for a 16x16 metatile,
+        stepped by :attr:`cell_row_stride` rather than by the cell's width.
+
+        A flip reverses the *order* as well as mirroring each tile: a mirrored
+        metatile shows its right-hand tile on the left, mirrored. Both halves are
+        needed and neither is sufficient — the same compound rule
+        :meth:`~celpix.core.tilemap.CellGrid.flipped_h` follows over a block.
+        """
+        across, down = max(1, self.cell_tiles[0]), max(1, self.cell_tiles[1])
+        stride = self.cell_row_stride or across
+        first = self.tile_base_index + cell.index
+        return [
+            first
+            + (down - 1 - row if cell.flip_v else row) * stride
+            + (across - 1 - col if cell.flip_h else col)
+            for row in range(down)
+            for col in range(across)
+        ]
 
     @classmethod
     def palette_only(

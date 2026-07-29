@@ -54,6 +54,11 @@ class ExampleContainer:
         magic=((0, _MAGIC),),
         # The tag the Files list shows beside a filename: "art.bin (Example)".
         short_name="Example",
+        # What kind of entry this frames. The default is graphics — pixels and
+        # tilemaps — which is what nearly every wrapper is, so it is left off
+        # here. Set `content_kinds=(ContentKind.PALETTE,)` for a container that
+        # frames a palette file, so a palette is never offered a ROM wrapper or
+        # the reverse. Detection and the container picker both read it.
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from os.path import normcase, samefile
 
+from celpix.core.capabilities import ContentKind
 from celpix.core.document import Document, ViewOptions
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
@@ -14,6 +15,7 @@ from celpix.project.projectfile import (
     PROJECT_VERSION,
     ProjectError,
     load_project,
+    project_dict,
     save_project,
 )
 from celpix.project.workspace import (
@@ -21,7 +23,10 @@ from celpix.project.workspace import (
     EntryKind,
     EntrySession,
     PaletteSource,
+    TileMode,
+    TileSource,
     Workspace,
+    slice_of,
 )
 
 
@@ -181,6 +186,7 @@ def test_palette_entry_round_trips_with_its_import_codec(tmp_path) -> None:
         name="colors.pal",
         kind=EntryKind.PALETTE,
         path=str(pal),
+        container_id="container.scgcad-col",
         palette_preset_id="preset.palette.rgb888",
     )
     ws.insert(palette, len(ws.entries))
@@ -196,6 +202,9 @@ def test_palette_entry_round_trips_with_its_import_codec(tmp_path) -> None:
     stored = raw["entries"][1]
     assert stored["kind"] == "palette"
     assert stored["palette_preset_id"] == "preset.palette.rgb888"
+    # A palette's container rides along like a file's: its colors may stop before
+    # its bytes do, and reopening at plain bytes would silently add junk rows.
+    assert stored["container_id"] == "container.scgcad-col"
     assert "session" not in stored and "view" not in stored
     assert "slice_offset" not in stored
 
@@ -203,6 +212,7 @@ def test_palette_entry_round_trips_with_its_import_codec(tmp_path) -> None:
     _, restored = loaded.entries
     assert restored.kind is EntryKind.PALETTE
     assert restored.palette_preset_id == "preset.palette.rgb888"
+    assert restored.container_id == "container.scgcad-col"
     assert normcase(restored.path) == normcase(str(pal))
 
     # A hand-edited current index naming a palette can't be shown, so it loads
@@ -345,6 +355,100 @@ def test_tolerant_load_defaults_unknowns_and_garbage(tmp_path) -> None:
     assert entry.session.pixel_preset_id == "preset.pixel.snes-4bpp"
     assert not hasattr(entry.session, "headered")  # retired field, silently dropped
     assert entry.pending_view is None
+
+
+def test_a_tilemap_entry_round_trips_with_its_binding(tmp_path) -> None:
+    (tmp_path / "tiles.bin").write_bytes(b"\x00" * 0x100)
+    (tmp_path / "m.scr").write_bytes(b"\x00" * 0x100)
+    ws = Workspace()
+    ws.entries.append(
+        Entry(name="tiles.bin", kind=EntryKind.FILE, path=str(tmp_path / "tiles.bin"))
+    )
+    ws.entries.append(
+        Entry(
+            name="m.scr",
+            kind=EntryKind.FILE,
+            path=str(tmp_path / "m.scr"),
+            content_kind=ContentKind.TILEMAP,
+            tilemap_preset_id="preset.tilemap.snes-bg",
+            tile_source=TileSource(mode=TileMode.ENTRY, entry_index=0, base_index=16),
+        )
+    )
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+
+    entry = load_project(str(project)).entries[1]
+    assert entry.content_kind is ContentKind.TILEMAP
+    assert entry.tilemap_preset_id == "preset.tilemap.snes-bg"
+    source = entry.tile_source
+    assert source is not None and source.mode is TileMode.ENTRY
+    assert (source.entry_index, source.base_index) == (0, 16)
+
+
+def test_a_pixel_entry_writes_no_tilemap_keys(tmp_path) -> None:
+    """The default has to cost nothing on disk, or every project that predates
+    tilemaps changes shape the first time it is saved."""
+    (tmp_path / "x.bin").write_bytes(b"\x00" * 0x40)
+    ws = Workspace()
+    ws.entries.append(
+        Entry(name="x.bin", kind=EntryKind.FILE, path=str(tmp_path / "x.bin"))
+    )
+    written = project_dict(ws, str(tmp_path / "p.celpix"))["entries"][0]
+    assert "content_kind" not in written
+    assert "tile_source" not in written
+    assert "tilemap_preset_id" not in written
+
+
+def test_an_entry_bound_tile_source_stores_only_the_entry_index(tmp_path) -> None:
+    """Writing the whole dataclass would put a path on an entry binding, and a
+    reader has no way to tell a meaningless field from a meant one."""
+    (tmp_path / "m.scr").write_bytes(b"\x00" * 0x100)
+    ws = Workspace()
+    ws.entries.append(
+        Entry(
+            name="m.scr",
+            kind=EntryKind.FILE,
+            path=str(tmp_path / "m.scr"),
+            content_kind=ContentKind.TILEMAP,
+            tile_source=TileSource(mode=TileMode.ENTRY, entry_index=2),
+        )
+    )
+    stored = project_dict(ws, str(tmp_path / "p.celpix"))["entries"][0]["tile_source"]
+    assert stored == {"mode": "entry", "entry_index": 2}
+
+
+def test_a_broken_tile_binding_leaves_the_tilemap_unbound(tmp_path) -> None:
+    """An unusable binding must not cost the map as well as its tiles: the entry
+    opens showing placeholders and can be re-pointed."""
+    (tmp_path / "m.scr").write_bytes(b"\x00" * 0x100)
+    document = {
+        "version": PROJECT_VERSION,
+        "entries": [
+            {
+                "path": "m.scr",
+                "content_kind": "tilemap",
+                "tile_source": {"mode": "nonsense", "entry_index": 1},
+            }
+        ],
+    }
+    project = tmp_path / "p.celpix"
+    project.write_text(json.dumps(document), encoding="utf-8")
+
+    entry = load_project(str(project)).entries[0]
+    assert entry.content_kind is ContentKind.TILEMAP
+    assert entry.tile_source is None
+
+
+def test_a_slice_of_a_tilemap_is_a_tilemap() -> None:
+    """A window into a tilemap file is a tilemap — only the entry knows what its
+    file holds, so the content kind travels down with the slice."""
+    parent = Entry(
+        name="rom.smc",
+        kind=EntryKind.FILE,
+        path="/x/rom.smc",
+        content_kind=ContentKind.TILEMAP,
+    )
+    assert slice_of(parent, "map", 0x100).content_kind is ContentKind.TILEMAP
 
 
 def test_a_rearrangement_stored_under_the_old_key_still_loads(tmp_path) -> None:

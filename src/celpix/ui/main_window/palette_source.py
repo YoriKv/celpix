@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from celpix.core import emustate
 from celpix.core.address import format_hex
+from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_PALETTE_ERROR,
     KEY_SOURCE_OFFSET,
@@ -36,7 +37,8 @@ from celpix.core.notices import warn
 from celpix.core.palette import FULL_PALETTE_COUNT, MISSING_COLOR, Palette
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_RESHAPE, FileRef
+from celpix.plugins.base import NO_RESHAPE, RAW_CONTAINER, FileRef
+from celpix.plugins.detect import detect_container
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -63,6 +65,13 @@ from celpix.ui.widgets import (
 # a Custom palette forked off the generated default - free ARGB colors with no
 # console format behind them. The session default follows the last format
 # actually selected from there (:meth:`PaletteSourceMixin._set_session_palette_format`).
+# Suffixes that mean "this file is colors, not graphics" — what a dropped file
+# is routed by. Deliberately short: a palette is just bytes read through a color
+# format, so almost any file *can* hold one, and a long list would start claiming
+# files the user meant as pixels. ".col" is the S-CG-CAD palette that ships
+# beside the screen and panel files (``scgcad-formats.md``).
+PALETTE_EXTENSIONS = (".pal", ".col")
+
 DEFAULT_SESSION_PALETTE_FORMAT = "preset.palette.rgb888"
 
 # How many sentinel swatches an unreadable palette file opens on: one row of the
@@ -175,10 +184,12 @@ class PaletteSourceMixin:
         assert graphics.doc is not None
         entry = self._workspace.find_palette(path)
         if entry is None:
-            entry = self._workspace.add_palette(path, preset_id)
+            entry = self._workspace.add_palette(
+                path, preset_id, self._detect_palette_container(path)
+            )
         if entry.doc is None:
             cfg = self._file_palette_config(
-                path, offset, entry.palette_preset_id or preset_id
+                path, offset, entry.palette_preset_id or preset_id, entry.container_id
             )
             loaded = pipeline.load_palette(cfg, self._registry)
             entry.doc = Document.palette_only(
@@ -253,7 +264,10 @@ class PaletteSourceMixin:
         (:meth:`_error_palette`) so the format remains correctable.
         """
         cfg = self._file_palette_config(
-            entry.path, 0, entry.palette_preset_id or self._palette_import_preset_id()
+            entry.path,
+            0,
+            entry.palette_preset_id or self._palette_import_preset_id(),
+            entry.container_id,
         )
         try:
             loaded = pipeline.load_palette(cfg, self._registry)
@@ -321,17 +335,40 @@ class PaletteSourceMixin:
             self._set_palette_mode(PaletteMode.DEFAULT)
             self._refresh_palette_dock()
 
+    def _detect_palette_container(self, path: str) -> str:
+        """The container a palette file at ``path`` should be read through.
+
+        The same signature match a graphics file gets when it is opened, over the
+        containers that frame a palette rather than the ones that frame graphics
+        (:func:`~celpix.plugins.detect.frames`) — so a ``.pal`` still lands on
+        plain bytes and an authoring tool's palette lands on the format that
+        knows where its colors stop. Correctable afterwards, like any detection.
+        """
+        return detect_container(self._registry, path, kind=ContentKind.PALETTE)
+
     @staticmethod
-    def _file_palette_config(path: str, offset: int, preset_id: str) -> PathwayConfig:
+    def _file_palette_config(
+        path: str,
+        offset: int,
+        preset_id: str,
+        container_id: str = RAW_CONTAINER,
+    ) -> PathwayConfig:
         """The writable pathway a PALETTE entry reads and writes its ``.pal`` with.
 
         Source and dest are the same file, so a color edit re-encodes into exactly
         the bytes it was read from (the whole file for a plain ``.pal``).
+
+        ``container_id`` is what cuts the colors out of a file that holds more
+        than colors — an authoring tool's palette with its metadata block after
+        them. It rides on both ends for the same reason a graphic's does: the
+        container that unwrapped the file is the one that has to re-wrap it, so
+        an edit writes back the colors and leaves that block alone.
         """
         return PathwayConfig(
             source=FileRef(path, offset=offset),
             dest=FileRef(path, offset=offset),
             interpret_preset_id=preset_id,
+            container_id=container_id,
         )
 
     def _file_palette_colors(self, palette: Entry) -> list[int]:
@@ -346,7 +383,10 @@ class PaletteSourceMixin:
         preset = palette.palette_preset_id or self._palette_preset_id()
         try:
             loaded = pipeline.load_palette(
-                self._file_palette_config(palette.path, 0, preset), self._registry
+                self._file_palette_config(
+                    palette.path, 0, preset, palette.container_id
+                ),
+                self._registry,
             )
         except (PipelineError, OSError):
             return []
@@ -459,7 +499,7 @@ class PaletteSourceMixin:
 
     # Shared by the two dialogs that name a .pal - the export that writes one and
     # the open that registers one - so both offer the same filter.
-    _PALETTE_FILTER = "Palette files (*.pal);;All files (*)"
+    _PALETTE_FILTER = "Palette files (*.pal *.col);;All files (*)"
 
     def _prompt_add_palette_file(self) -> None:
         # No .pal filter: palette data is just bytes reinterpreted through the
@@ -593,6 +633,7 @@ class PaletteSourceMixin:
             name=Path(path).name,
             kind=EntryKind.PALETTE,
             path=path,
+            container_id=self._detect_palette_container(path),
             palette_preset_id=preset_id or self._palette_import_preset_id(),
         )
         self._push_command(AddEntryCommand(self, entry, f"add palette {entry.name}"))
@@ -679,7 +720,7 @@ class PaletteSourceMixin:
             cfg = doc.palette_config
             edits = frozenset(doc.palette_edits)
         else:
-            cfg = self._file_palette_config(path, 0, preset_id)
+            cfg = self._file_palette_config(path, 0, preset_id, entry.container_id)
             try:
                 loaded = pipeline.load_palette(cfg, self._registry)
             except PipelineError as exc:
@@ -828,7 +869,9 @@ class PaletteSourceMixin:
         path = state.config.source.path
         entry = self._workspace.find_palette(path) if path else None
         if entry is None and path:
-            entry = self._workspace.add_palette(path, state.preset_id)
+            entry = self._workspace.add_palette(
+                path, state.preset_id, self._detect_palette_container(path)
+            )
         if entry is None:
             return
         if entry.doc is None:

@@ -1,0 +1,27 @@
+# Sprite object (OBJ/OBX) part record — 6 bytes, and not a grid cell at all:
+# every record carries a signed pixel offset from the object's origin, and those
+# offsets are mostly not multiples of 8, so the parts of a frame cannot be laid
+# out on a tile grid. The engine hands the view frames of parts instead, and the
+# cells stay the file's own records so a write puts back what was read.
+#
+#   byte 0    bit 7 drawn, bit 0 which of the two sprite sizes
+#   byte 1    the tool's group byte - carried, not interpreted
+#   byte 2/3  Y then X, both signed
+#   byte 4-5  the console's sprite attribute word
+#
+# `size_pair` indexes the console's six sprite-size pairs: the file does not
+# record which the game set, so 0 - the 8x8/16x16 pair - is the assumption, and
+# it is what the one independent viewer of these files opens on.
+#
+# `endian` is only the fallback: 26 of the 1,341 objects in the corpus come from
+# a later build of the tool that stores the attribute word the other way round,
+# and the container reads that out of the file's own build marker.
+# See docs/graphics-formats-reference/scgcad-formats.md §8.
+id = "preset.tilemap.scgcad-object"
+name = "Sprite object part (OBJ/OBX)"
+engine_id = "codec.scgcad-object"
+
+[params]
+endian = "big"
+parts_per_frame = 64
+size_pair = 0

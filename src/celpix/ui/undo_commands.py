@@ -163,6 +163,45 @@ class TileRearrangementCommand(QUndoCommand):
                 self._window._set_tile_rearrangement(self._before)
 
 
+class TilemapCellsCommand(QUndoCommand):
+    """One edit to a tilemap's cells, as before/after lists.
+
+    Unlike :class:`TileRearrangementCommand` this **is** an edit — the cells are
+    the entry's own data and a save writes them — so it stamps a revision on the
+    data pathway in each direction, and an undo back to what was written reads
+    clean again.
+
+    Whole lists rather than a delta, for the reason the rearrangement gives: a
+    map is a few thousand frozen cells, so a snapshot costs less than the
+    bookkeeping a delta would need, and restoring one cannot drift the way
+    replaying a sequence of per-cell writes could.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        text: str,
+        before: list,
+        after: list,
+    ) -> None:
+        super().__init__(text)
+        self._window = window
+        self._entry = entry
+        self._before = before
+        self._after = after
+        self._before_revision = entry.pixel_revision
+        self._after_revision = window._workspace.next_revision()
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            self._window._set_cells(self._entry, self._after, self._after_revision)
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            self._window._set_cells(self._entry, self._before, self._before_revision)
+
+
 class PaletteRegionsCommand(QUndoCommand):
     """One pin/unpin of palette regions, as before/after sets.
 

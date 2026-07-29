@@ -346,7 +346,7 @@ def test_preset_in_code_only_folder_is_reported(tmp_path) -> None:
 
     issues = discovery.load_directory(reg, str(tmp_path))
     assert len(issues) == 1
-    assert "pixel/palette/reshape only" in issues[0].message
+    assert "pixel/palette/tilemap/reshape only" in issues[0].message
 
 
 def test_conflicting_legacy_stage_field_is_reported(tmp_path) -> None:
@@ -406,8 +406,9 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     # Seeding lays down the `_`-prefixed reference files, and each must actually
     # work once renamed — examples drifting from the real schema or format
     # contract is exactly the regression this guards.
-    for sub in discovery.FOLDER_STAGE:
-        (tmp_path / sub).mkdir()
+    # No folders pre-made: seeding creates what it has content for, which is
+    # what keeps a stage added after a user's plugin folder was from being
+    # skipped for want of a directory.
     discovery.seed_examples(str(tmp_path))
 
     assert (tmp_path / discovery.PLUGIN_README).is_file()
@@ -429,6 +430,9 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         "reshape/_bitswap.toml",
         "reshape/_data-lut.toml",
         "reshape/_example.py",
+        "tilemap/_example.py",
+        "tilemap/_object.toml",
+        "tilemap/_packed.toml",
     ]
 
     # A stale reference file is replaced rather than left behind, so the examples
@@ -528,6 +532,25 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert palette_round_trips(
         "format.palette.example-gray4", {}, bytes([0x00, 0x40, 0xF0])
     )
+
+    tilemap_examples = toml_examples("tilemap", Stage.INTERPRET_TILEMAP)
+    assert {p.engine_id for p in tilemap_examples} == {
+        plugin.info.id for plugin in builtin.plugins(Stage.INTERPRET_TILEMAP)
+    }
+    for preset in tilemap_examples:
+        engine = reg.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
+        data = bytes(
+            (i * 61 + 7) & 0xFF for i in range(engine.bytes_per_cell(preset.params) * 4)
+        )
+        assert (
+            engine.encode(engine.decode(data, preset.params, ctx), preset.params, ctx)
+            == data
+        )
+    # The code format too: a cell whose fields straddle bytes is exactly what the
+    # engines cannot express, so its round trip is the one most worth checking.
+    split = reg.plugin(Stage.INTERPRET_TILEMAP, "format.tilemap.example-split")
+    raw = bytes([0x34, 0x1D, 0x02, 0xFF, 0x00, 0x03])
+    assert split.encode(split.decode(raw, {}, ctx), {}, ctx) == raw
     # NES-custom code format (no companion .pal, so its baked master palette is
     # used): index bytes whose colors are unique in that table, so nearest-color
     # encode maps each straight back to the index it came from.

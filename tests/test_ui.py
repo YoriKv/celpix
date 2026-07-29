@@ -62,6 +62,58 @@ def _drag_payload(*paths):
     return mime
 
 
+def _section_names(panel) -> list[str]:
+    """The section headings on screen, top to bottom."""
+    tree = panel._tree
+    return [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
+
+
+# QDropEvent stores only a *pointer* to its mime data — the real drag source owns
+# it through the drop — so a temporary would dangle and the read segfaults. Held
+# here for the process's lifetime, which is what a test's drops cost.
+_DROP_MIME_KEEPALIVE: list = []
+
+
+def _drop_event(*paths, ctrl: bool = False):
+    """A drop carrying ``paths``, optionally with Ctrl held.
+
+    The modifiers come from the *event* rather than the application's current
+    state: Qt reports the latter as of the last input event, which after an
+    unrelated modifier+key elsewhere in a suite is not what this drop meant.
+    """
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QDropEvent
+
+    mime = _drag_payload(*paths)
+    _DROP_MIME_KEEPALIVE.append(mime)
+    mods = (
+        Qt.KeyboardModifier.ControlModifier if ctrl else Qt.KeyboardModifier.NoModifier
+    )
+    return QDropEvent(
+        QPointF(10, 10),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        mods,
+    )
+
+
+def _entry_rows(panel):
+    """Every entry row, in on-screen order, across the list's sections.
+
+    Top-level rows are the Pixels/Tilemaps/Palettes headings, not entries
+    (``file_list_panel.SECTIONS``), so a test after "the first file" has to look
+    one level down. Flattened rather than per-section because that is the order
+    the user reads.
+    """
+    tree = panel._tree
+    rows = []
+    for i in range(tree.topLevelItemCount()):
+        section = tree.topLevelItem(i)
+        rows.extend(section.child(j) for j in range(section.childCount()))
+    return rows
+
+
 def test_drop_opens_pixel_file(qtbot, tmp_path) -> None:
     from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QDropEvent
@@ -278,8 +330,7 @@ def test_shift_arrows_reorder_the_files_and_undo_puts_them_back(
     panel = window._files_panel
 
     def file_rows() -> list[str]:
-        tree = panel._tree
-        return [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
+        return [row.text(0) for row in _entry_rows(panel)]
 
     window.show()
     QApplication.setActiveWindow(window)
@@ -2981,7 +3032,7 @@ def test_container_notices_land_in_the_row_tooltip(qtbot, tmp_path) -> None:
     qtbot.addWidget(window)
     window._load_pixel(str(chr_ram))
 
-    row = window._files_panel._tree.topLevelItem(0)
+    row = _entry_rows(window._files_panel)[0]
     assert row.background(0).style() != Qt.BrushStyle.NoBrush  # amber
     tip = row.toolTip(0)
     assert "CHR-RAM cart: no tile data in this file" in tip  # the summary...
@@ -2990,14 +3041,14 @@ def test_container_notices_land_in_the_row_tooltip(qtbot, tmp_path) -> None:
 
     # An entry with nothing to report carries no wash and no extra tooltip lines.
     window._load_pixel(str(clean))
-    plain = window._files_panel._tree.topLevelItem(1)
+    plain = _entry_rows(window._files_panel)[1]
     # Not the amber: what this row carries is the open-entry tint, since loading
     # it made it the one on screen.
     assert plain.background(0).color() != row.background(0).color()
     assert plain.toolTip(0) == str(clean)
     # Switching back restores it, since it is derived rather than one-shot.
     window._activate_entry(window._workspace.entries[0])
-    assert "CHR-RAM" in window._files_panel._tree.topLevelItem(0).toolTip(0)
+    assert "CHR-RAM" in _entry_rows(window._files_panel)[0].toolTip(0)
 
 
 def test_switching_entries_does_not_dirty_the_project(qtbot, tmp_path) -> None:
@@ -3040,8 +3091,7 @@ def test_the_shown_entry_stays_marked_after_the_selection_moves_off_it(
     window._load_pixel(str(first))
     window._load_pixel(str(second))
 
-    tree = window._files_panel._tree
-    rows = [tree.topLevelItem(i) for i in range(2)]
+    rows = _entry_rows(window._files_panel)[:2]
     assert rows[1].background(0).style() != Qt.BrushStyle.NoBrush
     assert rows[0].background(0).style() == Qt.BrushStyle.NoBrush
 
@@ -4269,7 +4319,7 @@ def test_missing_palette_file_degrades_quietly_and_keeps_reference(
     # The row names *which* reference is gone. Its ROM is on disk, so wording that
     # only said "referenced file is missing" would send the user hunting for a
     # graphic that never moved.
-    tip = window._files_panel._tree.topLevelItem(0).toolTip(0)
+    tip = _entry_rows(window._files_panel)[0].toolTip(0)
     assert "Palette file is missing" in tip
     assert str(pal) in tip  # the path, which is nowhere else in the tooltip
     assert "File is missing" not in tip  # the entry's own file is fine
@@ -6300,3 +6350,1322 @@ def test_export_honours_pinned_regions_and_widens_its_table(qtbot, tmp_path) -> 
     # The pinned half of the sheet carries its row in the index itself.
     assert image.pixelIndex(4, 4) < 16
     assert 32 <= image.pixelIndex(36, 4) < 48
+
+
+def test_the_files_list_groups_entries_into_sections(qtbot, tmp_path) -> None:
+    """Sections say what an entry holds; the tree's nesting keeps saying "a
+    window into that file's bytes" (docs/design/tilemap-entry.md §2)."""
+    from celpix.core.capabilities import ContentKind
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    # Only the kinds actually open get a heading, so a plain session shows one.
+    assert _section_names(window._files_panel) == ["Pixels"]
+
+    entry = window._workspace.current
+    entry.content_kind = ContentKind.TILEMAP
+    window._files_panel.remove_entry(entry)
+    window._files_panel.add_entry(entry)
+    assert _section_names(window._files_panel) == ["Tilemaps"]
+
+
+def test_a_sections_heading_goes_away_with_its_last_entry(qtbot, tmp_path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    panel = window._files_panel
+    assert _section_names(panel) == ["Pixels"]
+    panel.remove_entry(window._workspace.entries[0])
+    assert _section_names(panel) == []
+
+
+def test_sections_keep_their_order_whatever_opens_first(qtbot, tmp_path) -> None:
+    """The order is the list's, not the session's: a tilemap opened before any
+    pixel file must not push Pixels below it."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import Entry, EntryKind
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    panel = window._files_panel
+    panel.add_entry(
+        Entry(
+            name="m.scr",
+            kind=EntryKind.FILE,
+            path=str(tmp_path / "m.scr"),
+            content_kind=ContentKind.TILEMAP,
+        )
+    )
+    panel.add_entry(
+        Entry(name="p.pal", kind=EntryKind.PALETTE, path=str(tmp_path / "p.pal"))
+    )
+    panel.add_entry(
+        Entry(name="t.bin", kind=EntryKind.FILE, path=str(tmp_path / "t.bin"))
+    )
+    assert _section_names(panel) == ["Pixels", "Tilemaps", "Palettes"]
+
+
+def _scr_file(tmp_path, cells, name="screen.SCR"):
+    """A real-shaped screen file whose first cells are ``cells``."""
+    from celpix.core.context import PipelineContext
+    from celpix.plugins.builtins.scgcad import SCR_SIZE, SIGNATURE
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+    from celpix.plugins.registry import default_registry
+
+    params = default_registry().preset("preset.tilemap.snes-bg").params
+    body = TilemapCodec().encode(cells, params, PipelineContext())
+    out = bytearray(SCR_SIZE)
+    out[: len(body)] = body
+    out[0x2000 : 0x2000 + len(SIGNATURE)] = SIGNATURE
+    out[0x2100:] = b"\xff" * 0x200
+    path = tmp_path / name
+    path.write_bytes(bytes(out))
+    return path
+
+
+def _obj_file(tmp_path, parts, name="sprite.OBJ"):
+    """A real-shaped sprite object whose first frame holds ``parts``.
+
+    Each part is ``(x, y, tile)``; the record is built the way the file stores
+    one, so this exercises the container and the codec rather than standing in
+    for them.
+    """
+    from celpix.plugins.builtins.scgcad import OBJ_PAYLOADS, OBJ_SIZE, SIGNATURE
+
+    out = bytearray(OBJ_SIZE)
+    for at, (x, y, tile) in enumerate(parts):
+        head = bytes((0x80, 0, y & 0xFF, x & 0xFF))
+        out[at * 6 : at * 6 + 6] = head + (tile & 0x1FF).to_bytes(2, "big")
+    header = OBJ_PAYLOADS[0]
+    out[header : header + len(SIGNATURE)] = SIGNATURE
+    path = tmp_path / name
+    path.write_bytes(bytes(out))
+    return path
+
+
+def test_exporting_a_tilemap_writes_the_map_and_not_the_tiles_it_borrows(
+    qtbot, tmp_path
+) -> None:
+    """A tilemap entry's ``pixel_data`` is the *bound* entry's bytes — it sits
+    there so every tile path keeps working — so an export that rendered it would
+    quietly write the tile bank out under the screen's name."""
+    from PySide6.QtGui import QImage
+
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+    from celpix.ui import export
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))  # 8 SNES 4bpp tiles
+    scr = _scr_file(tmp_path, [Cell(index=1), Cell(index=2, palette_row=3)])
+    window._load_pixel(str(scr))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.doc = None
+    window._activate_entry(window._workspace.entries[0])
+    window._activate_entry(entry)
+
+    window._columns.setValue(32)
+    window._refresh_view()
+    image = export.document_image(window._doc, window._registry)
+    assert image.format() == QImage.Format.Format_Indexed8
+    # The whole map at its own width — 4096 cells, 32 across — not the 8 tiles
+    # of the bank behind it.
+    assert (image.width(), image.height()) == (32 * 8, 128 * 8)
+    # The table spans every palette row the cells name, because the row is
+    # folded into the indices and one image carries one table.
+    assert len(image.colorTable()) == 4 * 16
+
+    # Raw export is the same question about the same entry: its own bytes are
+    # its cells, and the bank's belong to the bank.
+    assert export.raw_bytes(window._doc) == window._doc.tilemap_data
+
+
+def test_a_sprite_object_opens_and_draws_its_frames_one_after_another(
+    qtbot, tmp_path
+) -> None:
+    """An OBJ is a tilemap entry like a screen — same binding, same palette, same
+    save path — but its cells are parts at pixel offsets, so the view lays the
+    frames out in a strip instead of composing a grid
+    (``docs/design/tilemap-entry.md`` §6)."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    obj = _obj_file(tmp_path, [(0, 0, 1), (24, 5, 2)])
+    window._load_pixel(str(obj))
+
+    entry = window._workspace.current
+    assert entry.content_kind is ContentKind.TILEMAP
+    assert window._doc.is_sprite
+    # Cols means frames per row on an object, which is the only reading of "how
+    # many across" a sheet of separate pictures has.
+    assert window._columns.value() == 8
+
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.doc = None  # re-read through the new binding
+    window._activate_entry(window._workspace.entries[0])
+    window._activate_entry(entry)
+    assert window._doc.pixel_data  # the bound entry's tiles, not the object's
+    # The strip is as wide as its bounding box needs and no wider: one 8x8 part
+    # at the origin and one at x=24 make a 32-pixel box, eight frames across.
+    assert window._canvas._image.width() == 8 * 32
+
+    # View-only, and it says so rather than silently doing nothing.
+    window._selected_tile = 0
+    window._clear_cells()
+    assert "view-only" in window.statusBar().currentMessage()
+    assert not window._copy_cells()
+
+
+def test_a_screen_file_opens_as_a_tilemap_entry(qtbot, tmp_path) -> None:
+    """The container was chosen from the file's own signature, so what it holds
+    follows from that rather than from a question put to the user."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+
+    entry = window._workspace.entries[0]
+    assert entry.container_id == "container.scgcad-scr"
+    assert entry.content_kind is ContentKind.TILEMAP
+    assert entry.tilemap_preset_id == "preset.tilemap.snes-bg"
+    assert _section_names(window._files_panel) == ["Tilemaps"]
+
+
+def test_an_unbound_tilemap_still_opens_and_draws(qtbot, tmp_path) -> None:
+    """The binding is project state no file states, so a map with nowhere to get
+    tiles from is the ordinary first moment of one, not a failure."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=3)])))
+
+    doc = window._doc
+    assert doc is not None and doc.is_tilemap
+    assert doc.cells and doc.pixel_data == b""  # cells read, no tiles behind them
+    assert not window._canvas._image.isNull()  # ...and it still renders
+
+
+def test_a_tilemap_bound_to_an_entry_draws_that_entrys_tiles(qtbot, tmp_path) -> None:
+    """The whole point of the ENTRY binding: the map draws the *live* document
+    of the entry it names, so the art and the map are never out of step."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    tiles = _make_snes_file(tmp_path)  # 8 distinct 8x8 tiles
+    window._load_pixel(str(tiles))
+    # Cell 1 then cell 0, so a wrong index or a flat read is visible.
+    scr = _scr_file(tmp_path, [Cell(index=1), Cell(index=0)])
+    window._load_pixel(str(scr))
+
+    entry = window._workspace.find_file(str(scr))
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.doc = None  # re-read through the new binding
+    window._activate_entry(window._workspace.entries[0])
+    window._activate_entry(entry)
+
+    doc = window._doc
+    assert doc is not None and doc.is_tilemap
+    assert doc.pixel_data  # the bound entry's bytes, not the map's
+    assert doc.tile_width == 8 and doc.bytes_per_tile == 32
+    image = window._canvas._image
+    assert not image.isNull()
+    # Always entire: 4096 cells at 2 columns is 2048 rows of 8px, not a window.
+    window._columns.setValue(2)
+    window._refresh_view()
+    assert window._canvas._image.height() == 2048 * 8
+
+
+def test_binding_from_a_file_opens_it_as_an_entry_first(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Picking a file registers it in the list rather than hiding a path inside
+    the binding — the move a palette file already makes. It then carries its own
+    format and its own Write, and the map reads it through both."""
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    tiles = _make_snes_file(tmp_path)
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    entry = window._workspace.current
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(tiles), ""))
+    )
+
+    window._bind_tiles_from_file(entry)
+
+    bound = window._workspace.find_file(str(tiles))
+    assert bound is not None and bound.content_kind is ContentKind.PIXELS
+    assert entry.tile_source.mode is TileMode.ENTRY
+    assert entry.tile_source.entry_index == window._workspace.entries.index(bound)
+    # The view comes back to the map: tiles were asked for *for* it.
+    assert window._workspace.current is entry
+    assert window._doc.is_tilemap and window._doc.pixel_data
+
+
+def test_binding_from_a_file_that_is_itself_a_tilemap_is_refused(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A tilemap cannot supply tiles. The file still opens — it was asked for —
+    but the binding is left alone rather than pointed somewhere useless."""
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    other = _scr_file(tmp_path, [Cell(index=2)], name="other.SCR")
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    entry = window._workspace.current
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(other), ""))
+    )
+
+    window._bind_tiles_from_file(entry)
+
+    assert window._workspace.find_file(str(other)) is not None  # it opened
+    assert entry.tile_source is None  # ...but nothing was bound
+    assert window._workspace.current is entry
+
+
+def test_the_bottom_bar_swaps_to_the_binding_controls_for_a_tilemap(
+    qtbot, tmp_path
+) -> None:
+    """A tilemap has no view window to move, so the offset controls are replaced
+    rather than left on screen dead."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    assert window._nav_stack.currentWidget() is window._navbar
+
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    assert window._nav_stack.currentWidget() is window._tilemap_bar
+
+    # ...and back, so the swap is driven by the entry rather than one-way.
+    window._activate_entry(window._workspace.entries[0])
+    assert window._nav_stack.currentWidget() is window._navbar
+
+
+def test_closing_a_tilemap_takes_its_binding_bar_with_it(qtbot, tmp_path) -> None:
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    assert window._nav_stack.currentWidget() is window._tilemap_bar
+    window._workspace.close(window._workspace.entries[0])
+    assert window._nav_stack.currentWidget() is window._navbar
+
+
+def test_the_binding_combo_offers_pixel_entries_but_not_the_map(
+    qtbot, tmp_path
+) -> None:
+    """A tilemap cannot supply its own tiles, and offering it would bind an
+    entry to its own bytes."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+
+    combo = window._tile_binding
+    labels = [combo.itemText(i) for i in range(combo.count())]
+    assert labels == ["(none)", "s.4bpp.sfc", "From file..."]
+    assert combo.currentIndex() == 0  # unbound to start
+
+
+def test_choosing_an_entry_in_the_bar_binds_and_redraws(qtbot, tmp_path) -> None:
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1), Cell(index=0)])))
+    entry = window._workspace.current
+    assert window._doc.pixel_data == b""  # nothing bound yet
+
+    combo = window._tile_binding
+    combo.setCurrentIndex(combo.findText("s.4bpp.sfc"))
+    window._on_tile_binding_change(combo.currentIndex())
+
+    assert entry.tile_source.mode is TileMode.ENTRY
+    assert entry.tile_source.entry_index == 0
+    assert window._doc.pixel_data  # re-read through the binding
+    assert not window._canvas._image.isNull()
+
+
+def test_the_base_tile_shifts_which_tiles_the_cells_draw(qtbot, tmp_path) -> None:
+    """A map indexing from partway into a bank resolves without its cells being
+    rewritten - the formats carry this as a header field."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=0)])))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(entry)
+
+    window._tile_base.setValue(3)
+    window._on_tile_base_change(3)
+    assert entry.tile_source.base_index == 3
+    assert window._doc.tile_base_index == 3
+    assert window._doc.cell_tile_indices(Cell(index=0)) == [3]
+
+
+def test_changing_the_cell_codec_rereads_the_map(qtbot, tmp_path) -> None:
+    """The two byte orders disagree, so this is a real re-read and not a redraw."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=0x034, palette_row=7)])))
+    entry = window._workspace.current
+    assert window._doc.cells[0].index == 0x034
+
+    combo = window._tilemap_preset
+    combo.setCurrentIndex(combo.findData("preset.tilemap.snes-bg-swapped"))
+    window._on_tilemap_preset_change(combo.currentIndex())
+
+    assert entry.tilemap_preset_id == "preset.tilemap.snes-bg-swapped"
+    # The same bytes read the other way: 0x1C34 becomes 0x341C.
+    assert window._doc.cells[0].index == 0x01C
+    assert window._doc.cells[0].palette_row == 5
+
+
+def test_the_codecs_bar_swaps_its_format_pickers_by_content_kind(
+    qtbot, tmp_path
+) -> None:
+    """A tilemap's bytes are cells, so the pixel format and the compression
+    preview say nothing about it — the cell format takes their place rather than
+    joining them (``docs/design/tilemap-entry.md`` §4)."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    assert window._pixel_codec_action.isVisible()
+    assert window._compression_action.isVisible()
+    assert not window._tilemap_codec_action.isVisible()
+
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    assert not window._pixel_codec_action.isVisible()
+    assert not window._compression_action.isVisible()
+    assert window._tilemap_codec_action.isVisible()
+
+    # Back again, and enabled with it: a hidden group that came back grey would
+    # be worse than one that never left.
+    window._activate_entry(window._workspace.entries[0])
+    assert window._pixel_codec_action.isVisible()
+    assert window._pixel_codec_action.isEnabled()
+
+
+def test_the_bar_says_where_the_tiles_come_from(qtbot, tmp_path) -> None:
+    """The pixel format is the bound entry's own, so the bar reports it rather
+    than offering a control that would fight that entry's own picker."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=0)])))
+    entry = window._workspace.current
+    assert "No tiles bound" in window._tile_binding_note.text()
+
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(entry)
+    note = window._tile_binding_note.text()
+    assert "s.4bpp.sfc" in note and "SNES 4bpp" in note
+
+
+def test_a_tilemap_switches_off_the_controls_it_has_no_capability_for(
+    qtbot, tmp_path
+) -> None:
+    """One declared table in place of a dozen "...and not on a tilemap" clauses
+    (docs/design/tilemap-entry.md §4)."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    # The pixel entry keeps everything: its capability set is the full one, so
+    # the sync is a no-op there and nothing it enabled has been taken away.
+    # (The panel's *enabled* state is edit mode's business, not this gate's.)
+    assert not window._tools_panel.isHidden()
+    assert window._edit_mode_action.isEnabled()
+
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    # Meaningless here, so hidden rather than greyed: a panel of brushes over a
+    # tilemap is furniture for a different room.
+    assert window._tools_panel.isHidden()
+    assert not window._edit_mode_action.isEnabled()
+    assert not window._rearrange_action.isEnabled()
+    assert not window._pin_palette_action.isEnabled()
+    assert not window._import_png_action.isEnabled()
+
+
+def test_leaving_a_tilemap_gives_the_pixel_controls_back(qtbot, tmp_path) -> None:
+    """The veto has to lift, or one tilemap would disable the tools for the
+    rest of the session."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    assert window._tools_panel.isHidden()
+
+    window._activate_entry(window._workspace.entries[0])
+    assert not window._tools_panel.isHidden()
+    assert window._edit_mode_action.isEnabled()
+
+
+def test_a_tilemap_can_be_flipped_but_not_turned(qtbot, tmp_path) -> None:
+    """Squareness is about the tile; the capability is about the document. A
+    hardware cell carries mirror bits and no transpose bit, so both conditions
+    are needed and neither implies the other."""
+    from celpix.core.capabilities import Capability, ContentKind, supports
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    assert supports(ContentKind.TILEMAP, Capability.CELL_FLIP)
+    assert window._can(Capability.CELL_FLIP)
+    # Rotate is designed *out*: a hardware cell has no transpose bit.
+    assert not supports(ContentKind.TILEMAP, Capability.CELL_ROTATE)
+    assert not window._can(Capability.CELL_ROTATE)
+
+    window._set_linear_selection(0, 0)
+    for action in window._tile_group.rotates:
+        assert not action.isEnabled()
+
+
+def test_the_capability_gate_only_ever_takes_away(qtbot, tmp_path) -> None:
+    """It runs last, so it must not switch anything *on* that an earlier pass
+    disabled for its own good reasons - here, paste with an empty clipboard."""
+    from PySide6.QtWidgets import QApplication
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    QApplication.clipboard().clear()
+    window._sync_selection_actions()
+    was = window._paste_action.isEnabled()
+    window._sync_capabilities()
+    assert window._paste_action.isEnabled() == was
+
+
+from celpix.ui.main_window.transform import OP_FLIP_H  # noqa: E402
+from celpix.ui.widgets import select_combo_data  # noqa: E402
+
+
+def _bound_tilemap(qtbot, tmp_path, cells):
+    """A tilemap entry bound to a real tile bank, ready to edit."""
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_scr_file(tmp_path, cells)))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(entry)
+    return window, entry
+
+
+def test_flipping_a_cell_toggles_its_bit_and_moves_no_pixels(qtbot, tmp_path) -> None:
+    """The whole reason hardware has the bit: a mirrored tile costs one bit and
+    no pixels, so nothing in the tile source is touched."""
+    from celpix.core.tilemap import Cell
+
+    window, entry = _bound_tilemap(qtbot, tmp_path, [Cell(index=1), Cell(index=2)])
+    before_tiles = bytes(window._doc.pixel_data)
+
+    window._set_linear_selection(0, 0)
+    window._transform_tiles(OP_FLIP_H)
+
+    assert window._doc.cells[0] == Cell(index=1, flip_h=True)
+    assert window._doc.cells[1] == Cell(index=2)  # untouched
+    assert window._doc.pixel_data == before_tiles  # no pixels rewritten
+    assert entry.pixel_dirty  # ...but the map is unsaved
+
+
+def test_a_format_with_no_flip_bit_says_so_and_changes_nothing(qtbot, tmp_path) -> None:
+    """The tool names the operation and the *format* answers it, so a map read
+    through a codec with nowhere to put a flip refuses rather than setting a bit
+    the next save would drop (``docs/design/tilemap-entry.md`` §4)."""
+    from celpix.core.tilemap import Cell
+
+    window, entry = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)])
+    entry.tilemap_preset_id = "preset.tilemap.gb-bg"  # one byte, index only
+    window._reload_tilemap(entry)
+    before = list(window._doc.cells)
+    steps = window._undo_stack.count()
+
+    window._set_linear_selection(0, 0)
+    window._transform_tiles(OP_FLIP_H)
+
+    assert window._doc.cells == before
+    assert "no horizontal flip" in window.statusBar().currentMessage()
+    assert window._undo_stack.count() == steps  # nothing to take back
+
+
+def test_flipping_a_cell_twice_comes_back(qtbot, tmp_path) -> None:
+    from celpix.core.tilemap import Cell
+
+    window, _ = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)])
+    window._set_linear_selection(0, 0)
+    window._transform_tiles(OP_FLIP_H)
+    window._transform_tiles(OP_FLIP_H)
+    assert window._doc.cells[0] == Cell(index=1)
+
+
+def test_a_cell_flip_undoes(qtbot, tmp_path) -> None:
+    from celpix.core.tilemap import Cell
+
+    window, entry = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)])
+    window._set_linear_selection(0, 0)
+    window._transform_tiles(OP_FLIP_H)
+    assert entry.pixel_dirty
+
+    window._undo_stack.undo()
+    assert window._doc.cells[0] == Cell(index=1)
+    # The revision goes back with it, so an undo to the saved state reads clean.
+    assert not entry.pixel_dirty
+
+
+def test_a_block_flip_reorders_the_cells_and_flips_each(qtbot, tmp_path) -> None:
+    """Both halves: reversing alone mirrors the layout with every tile still
+    facing its original way, toggling alone mirrors each in place."""
+    from celpix.core.tilemap import Cell
+    from celpix.ui.main_window.selection import SelectionShape
+
+    window, _ = _bound_tilemap(
+        qtbot, tmp_path, [Cell(index=1), Cell(index=2), Cell(index=3), Cell(index=4)]
+    )
+    window._columns.setValue(2)
+    window._refresh_view()
+    select_combo_data(window._selection_shape, SelectionShape.RECT)
+    window._on_slots_selected(0, 3)  # cells (0,0)..(1,1) at 2 columns
+    window._transform_block(OP_FLIP_H)
+
+    cells = window._doc.cells[:4]
+    assert [c.index for c in cells] == [2, 1, 4, 3]  # columns reversed
+    assert all(c.flip_h for c in cells)  # ...and each mirrored
+
+
+def test_copying_cells_stays_inside_the_app(qtbot, tmp_path) -> None:
+    """Cells are indices into a tile source another program knows nothing about,
+    so they never reach the system clipboard."""
+    from PySide6.QtWidgets import QApplication
+
+    from celpix.core.tilemap import Cell
+    from celpix.ui import clipboard
+
+    window, _ = _bound_tilemap(qtbot, tmp_path, [Cell(index=7), Cell(index=8)])
+    QApplication.clipboard().clear()
+    window._set_linear_selection(0, 0)
+    assert window._copy_selection()
+
+    assert window._has_cell_clipboard()
+    assert not clipboard.has_content()  # nothing went out to the system
+    window._sync_edit_actions()
+    assert window._paste_action.isEnabled()  # from the in-app buffer, not the OS
+
+
+def test_pasting_cells_overwrites_from_the_selection(qtbot, tmp_path) -> None:
+    from celpix.core.tilemap import Cell
+
+    window, _ = _bound_tilemap(
+        qtbot, tmp_path, [Cell(index=7), Cell(index=8), Cell(index=9)]
+    )
+    window._set_linear_selection(0, 0)
+    window._copy_selection()
+    window._set_linear_selection(2, 2)
+    window._paste()
+
+    assert window._doc.cells[2] == Cell(index=7)
+    assert window._doc.cells[0] == Cell(index=7)  # the source is untouched
+    window._undo_stack.undo()
+    assert window._doc.cells[2] == Cell(index=9)
+
+
+def test_cutting_cells_copies_then_blanks_them(qtbot, tmp_path) -> None:
+    from celpix.core.tilemap import Cell
+
+    window, _ = _bound_tilemap(qtbot, tmp_path, [Cell(index=7), Cell(index=8)])
+    window._set_linear_selection(0, 0)
+    window._cut_selection()
+
+    assert window._doc.cells[0] == Cell()  # blanked, not removed
+    assert window._doc.cells[1] == Cell(index=8)
+    assert len(window._doc.cells) == 4096  # the extent is the file's
+    window._set_linear_selection(1, 1)
+    window._paste()
+    assert window._doc.cells[1] == Cell(index=7)
+
+
+def test_an_edit_that_changes_nothing_adds_no_undo_step(qtbot, tmp_path) -> None:
+    """Or a flip of an empty selection would leave a step that appears to do
+    nothing when it comes back."""
+    from celpix.core.tilemap import Cell
+
+    window, _ = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)])
+    depth = window._undo_stack.count()
+    window._clear_selection()
+    window._transform_tiles(OP_FLIP_H)
+    assert window._undo_stack.count() == depth
+
+
+def _map_file(tmp_path, entries, name="layout.MAP"):
+    """A real-shaped stamp layout whose first entries are ``entries``."""
+    from celpix.core.context import PipelineContext
+    from celpix.plugins.builtins.scgcad import HEADER, MAP_SIZE, SIGNATURE
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+    from celpix.plugins.registry import default_registry
+
+    params = default_registry().preset("preset.tilemap.scgcad-map").params
+    body = TilemapCodec().encode(entries, params, PipelineContext())
+    out = bytearray(MAP_SIZE)
+    out[: len(SIGNATURE)] = SIGNATURE
+    out[HEADER : HEADER + len(body)] = body
+    path = tmp_path / name
+    path.write_bytes(bytes(out))
+    return path
+
+
+def _pnl_file(tmp_path, cells, name="panel.PNL"):
+    """A real-shaped panel whose first cells are ``cells``."""
+    from celpix.core.context import PipelineContext
+    from celpix.plugins.builtins.scgcad import HEADER, PNL_SIZE, SIGNATURE
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+    from celpix.plugins.registry import default_registry
+
+    params = default_registry().preset("preset.tilemap.scgcad-panel").params
+    body = TilemapCodec().encode(cells, params, PipelineContext())
+    out = bytearray(PNL_SIZE)
+    out[: len(SIGNATURE)] = SIGNATURE
+    # The metatile exponents a real panel carries at 0x69/0x6A are left set,
+    # because a panel's cell size must not follow them: they read 1 on the very
+    # files whose words are single 8x8 tiles (`scgcad-formats.md` §3.1).
+    out[0x69] = out[0x6A] = 1
+    out[HEADER : HEADER + len(body)] = body
+    path = tmp_path / name
+    path.write_bytes(bytes(out))
+    return path
+
+
+def test_a_stamp_layout_opens_with_its_own_coordinate_codec(qtbot, tmp_path) -> None:
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=3)])))
+
+    entry = window._workspace.entries[0]
+    assert entry.container_id == "container.scgcad-map"
+    assert entry.content_kind is ContentKind.TILEMAP
+    assert entry.tilemap_preset_id == "preset.tilemap.scgcad-map"
+    assert window._tilemap_is_indirect(entry)
+
+
+def test_a_stamp_layout_offers_panels_not_tile_banks(qtbot, tmp_path) -> None:
+    """Its cells are coordinates into a panel, so a tile bank is not a thing it
+    can draw from - and the combo has to say so before anything is bound."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))  # a tile bank
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1)])))
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=0)])))
+
+    labels = [
+        window._tile_binding.itemText(i) for i in range(window._tile_binding.count())
+    ]
+    assert labels == ["(none)", "panel.PNL", "From file..."]
+
+
+def test_a_stamp_layout_draws_through_the_panel_and_stays_view_only(
+    qtbot, tmp_path
+) -> None:
+    """Two hops: layout entry -> panel cell -> the panel's own tile source. The
+    panel's attributes travel with the stamp."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(
+        str(_pnl_file(tmp_path, [Cell(index=0), Cell(index=1, flip_h=True)]))
+    )
+    panel = window._workspace.entries[1]
+    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(panel)
+
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=1), Cell(index=0)])))
+    layout = window._workspace.current
+    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    window._reload_tilemap(layout)
+
+    doc = window._doc
+    assert doc.is_indirect
+    assert doc.cells[0].index == 1  # the file's own word: a panel coordinate
+    assert doc.drawn_cells[0] == Cell(index=1, flip_h=True)  # ...the panel's cell
+    assert doc.cell_tiles == (1, 1)  # the panel's geometry, not the layout's
+    assert doc.pixel_data  # the panel's tile source reached through
+    assert not window._canvas._image.isNull()
+    # View-only: neither pathway may deposit.
+    assert not doc.tilemap_config.write_enabled
+    assert not doc.pixel_config.write_enabled
+
+
+def test_editing_a_stamp_layout_is_refused(qtbot, tmp_path) -> None:
+    """An edit here would have to decide between restamping and editing the
+    stamp, and the format's own answer to that is still unconfirmed."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1)])))
+    panel = window._workspace.entries[1]
+    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(panel)
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=0)])))
+    layout = window._workspace.current
+    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    window._reload_tilemap(layout)
+
+    before = list(window._doc.cells)
+    depth = window._undo_stack.count()
+    window._set_linear_selection(0, 0)
+    window._transform_tiles(OP_FLIP_H)
+
+    assert window._doc.cells == before
+    assert window._undo_stack.count() == depth
+
+
+def test_an_unbound_stamp_layout_still_opens(qtbot, tmp_path) -> None:
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=5)])))
+
+    doc = window._doc
+    assert doc is not None and doc.is_tilemap
+    assert not doc.is_indirect  # nothing to resolve through yet
+    assert "No panel bound" in window._tile_binding_note.text()
+
+
+def test_a_panel_opens_at_the_width_its_format_states(qtbot, tmp_path) -> None:
+    """The file knows it is 32 cells across, so the user should not have to
+    guess - a wrong width shears the picture instead of failing."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._columns.setValue(7)  # some unrelated width from a previous entry
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1)])))
+
+    assert window._columns.value() == 32
+    assert window._doc.cell_tiles == (1, 1)  # from the header's tile-size byte
+    # ...and it is a starting point, not a lock.
+    window._columns.setValue(16)
+    window._refresh_view()
+    assert window._tilemap_columns() == 16
+
+
+def _cgx_file(tmp_path, size=0x8500, rows=b"", name="bank.CGX"):
+    from celpix.plugins.builtins.scgcad import CGX_BANKS, HEADER, SIGNATURE
+
+    payload = CGX_BANKS[size][0]
+    out = bytearray(size)
+    # Distinct tiles so a wrong depth or a stray trailing tile is visible.
+    for i in range(payload):
+        out[i] = (i * 7 + 1) & 0xFF
+    out[payload : payload + len(SIGNATURE)] = SIGNATURE
+    if rows:
+        out[payload + HEADER : payload + HEADER + len(rows)] = rows
+    path = tmp_path / name
+    path.write_bytes(bytes(out))
+    return path
+
+
+def test_a_tile_bank_opens_at_its_own_depth_with_no_trailing_junk(
+    qtbot, tmp_path
+) -> None:
+    """2bpp, 4bpp and 8bpp all decode into something that looks like graphics, so
+    a wrong pick is plausible garbage rather than an obvious error."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_cgx_file(tmp_path, 0x4500, name="two.CGX")))
+    entry = window._workspace.current
+    assert entry.container_id == "container.scgcad-cgx"
+    assert entry.session.pixel_preset_id == "preset.pixel.snes-2bpp"
+    # The payload alone: the header and row table are not tiles.
+    assert len(window._doc.pixel_data) == 0x4000
+
+    window._load_pixel(str(_cgx_file(tmp_path, 0x10100, name="eight.CGX")))
+    assert window._workspace.current.session.pixel_preset_id == "preset.pixel.snes-8bpp"
+    assert len(window._doc.pixel_data) == 0x10000
+
+
+def test_a_tile_banks_rows_seed_pinned_palette_regions(qtbot, tmp_path) -> None:
+    """The file says which row each tile is meant to be read under, which is what
+    pinned regions otherwise have to be told by hand."""
+    rows = bytes([0, 0, 3, 3, 3, 5]) + bytes(0x3FA)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_cgx_file(tmp_path, 0x8500, rows)))
+
+    doc = window._doc
+    per_tile = doc.tile_width * doc.tile_height
+    pinned = [
+        (r.start // per_tile, r.length // per_tile, r.row)
+        for r in doc.view.palette_regions.regions
+    ]
+    # Runs collapse, and row 0 is the view's own - pinning it would say nothing.
+    assert pinned[:2] == [(2, 3, 3), (5, 1, 5)]
+
+
+def test_a_project_with_its_own_regions_is_not_overwritten_by_the_file(
+    qtbot, tmp_path
+) -> None:
+    """The file's rows are a starting point; regions the user pinned are theirs."""
+    from celpix.core.paletteregions import PaletteRegion, PaletteRegions
+
+    rows = bytes([4]) * 0x400
+    path = _cgx_file(tmp_path, 0x8500, rows)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(path))
+    entry = window._workspace.current
+    mine = PaletteRegions.from_regions([PaletteRegion(0, 64, 7)])
+    entry.doc.view.palette_regions = mine
+    entry.pending_view = entry.doc.view
+    entry.doc = None
+
+    window._workspace.set_current(None)
+    window._activate_entry(entry)
+    assert window._doc.view.palette_regions == mine
+
+
+def test_the_pinned_palette_toggles_are_two_separate_switches(qtbot, tmp_path) -> None:
+    """Seeing a tile drawn through row 5 does not tell you it *is* row 5, so the
+    number can be shown without the recolour and either without the other."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._show_palette_regions_action.text() == "S&how Pinned Palette Colors"
+    assert window._show_palette_rows_action.text() == "Show Pinned Palette &Rows"
+    assert window._show_palette_regions_action.isChecked()
+    assert not window._show_palette_rows_action.isChecked()
+
+    window._load_pixel(str(_cgx_file(tmp_path, 0x8500, bytes([3]) * 0x400)))
+    assert window._canvas._palette_rows is None  # labels off by default
+
+    window._show_palette_rows_action.setChecked(True)
+    assert window._canvas._palette_rows
+    assert set(window._canvas._palette_rows) == {3}
+
+    # Turning the colours off leaves the labels: they are separate questions.
+    window._show_palette_regions_action.setChecked(False)
+    assert window._canvas._palette_rows is None  # nothing pinned is *applied*...
+    window._show_palette_regions_action.setChecked(True)
+    assert window._canvas._palette_rows
+
+
+def test_a_tilemap_disables_the_row_count_and_the_position_bar(qtbot, tmp_path) -> None:
+    """Both address a view window, and a tilemap is always shown entire - so
+    there is no window to set the height of or scroll through."""
+    from celpix.core.tilemap import Cell
+
+    # Big enough to have somewhere to scroll: the bar is also disabled when a
+    # file fits in one page, which would make the assertion below prove nothing.
+    big = tmp_path / "big.4bpp.sfc"
+    big.write_bytes(bytes((i * 13 + 1) & 0xFF for i in range(32 * 4096)))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(big))
+    assert window._rows.isEnabled()
+    assert window._tile_offset_bar.isEnabled()
+
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    assert not window._rows.isEnabled()
+    assert not window._rows_label.isEnabled()
+    assert not window._tile_offset_bar.isEnabled()
+    # ...and it says why, rather than borrowing Entire File's reason.
+    assert "always shown whole" in window._rows.toolTip()
+
+    # Back to pixels: the veto lifts, and Rows says what it normally says.
+    window._activate_entry(window._workspace.entries[0])
+    assert window._rows.isEnabled()
+    assert window._tile_offset_bar.isEnabled()
+    assert "always shown whole" not in window._rows.toolTip()
+
+
+def test_entire_file_still_locks_rows_on_a_pixel_entry(qtbot, tmp_path) -> None:
+    """The temporary reason and the permanent one stay distinguishable."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._entire_file.setChecked(True)
+    try:
+        assert not window._rows.isEnabled()
+        assert "Entire File" in window._rows.toolTip()
+    finally:
+        # The toggle persists to QSettings, which every later window in the
+        # session reads: leaving it on would silently change what they show.
+        window._entire_file.setChecked(False)
+
+
+def test_open_tilemap_data_forces_the_tilemap_reading(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Detection can only recognise a format it knows, so a raw region of a ROM
+    has no way to announce itself as a map. Asking is how that is said."""
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.core.capabilities import ContentKind
+
+    plain = tmp_path / "region.bin"
+    plain.write_bytes(bytes(range(256)) * 8)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(plain), ""))
+    )
+    window._open_tilemap()
+
+    entry = window._workspace.current
+    assert entry.content_kind is ContentKind.TILEMAP
+    assert window._doc.is_tilemap
+    assert _section_names(window._files_panel) == ["Tilemaps"]
+
+
+def test_open_pixel_data_forces_the_pixel_reading(qtbot, tmp_path, monkeypatch) -> None:
+    """The mirror: a screen file opened through the pixel entry reads as tiles."""
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.tilemap import Cell
+
+    scr = _scr_file(tmp_path, [Cell(index=1)])
+    window = MainWindow()
+    qtbot.addWidget(window)
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(scr), ""))
+    )
+    window._open_pixel()
+
+    entry = window._workspace.current
+    assert entry.content_kind is ContentKind.PIXELS
+    assert not window._doc.is_tilemap
+    # Still read through its own container, so the payload alone.
+    assert entry.container_id == "container.scgcad-scr"
+
+
+def test_a_dropped_col_lands_in_the_palettes_section(qtbot, tmp_path) -> None:
+    """The palette that ships beside the screen and panel files."""
+    col = tmp_path / "colors.col"
+    col.write_bytes(bytes(0x400))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.dropEvent(_drop_event(col))
+
+    assert window._workspace.find_palette(str(col)) is not None
+    assert _section_names(window._files_panel) == ["Palettes"]
+
+
+def test_ctrl_dropping_asks_how_to_read_the_file(
+    qtbot, tmp_path, open_as_answer
+) -> None:
+    """Detection is a guess and silent about being one; Ctrl is how the user
+    overrules it without going to find the matching menu entry."""
+    from celpix.core.capabilities import ContentKind
+
+    plain = tmp_path / "region.bin"
+    plain.write_bytes(bytes(range(256)) * 8)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    open_as_answer.kind = ContentKind.TILEMAP
+    window.dropEvent(_drop_event(plain, ctrl=True))
+    assert window._workspace.current.content_kind is ContentKind.TILEMAP
+
+    # Without the modifier the same file takes the ordinary route.
+    other = tmp_path / "other.bin"
+    other.write_bytes(bytes(range(256)) * 8)
+    window.dropEvent(_drop_event(other))
+    assert window._workspace.current.content_kind is ContentKind.PIXELS
+
+
+def test_cancelling_the_open_as_prompt_opens_nothing(
+    qtbot, tmp_path, open_as_answer
+) -> None:
+    plain = tmp_path / "region.bin"
+    plain.write_bytes(bytes(range(256)) * 8)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    open_as_answer.kind = None  # Cancel
+    window.dropEvent(_drop_event(plain, ctrl=True))
+    assert window._workspace.entries == []
+
+
+def _col_file(tmp_path, name="score.COL"):
+    """A real-shaped S-CG-CAD palette: 0x200 of color, then its metadata block."""
+    from celpix.plugins.builtins.scgcad import COL_HEADER_AT, COL_SIZE, SIGNATURE
+
+    out = bytearray(COL_SIZE)
+    # Distinguishable colors in the payload; the block after them is text and
+    # would decode as 128 more "colors" if the framing were ignored.
+    for i in range(256):
+        out[i * 2 : i * 2 + 2] = ((i * 129) & 0x7FFF).to_bytes(2, "little")
+    out[COL_HEADER_AT : COL_HEADER_AT + len(SIGNATURE)] = SIGNATURE
+    path = tmp_path / name
+    path.write_bytes(bytes(out))
+    return path
+
+
+def test_a_registered_col_reads_only_its_colors(qtbot, tmp_path) -> None:
+    """Detection picks the palette container, so the entry stops at 0x200 instead
+    of decoding the tool's metadata block as 128 more colors."""
+    from celpix.project.workspace import EntryKind
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._add_palette_file(str(_col_file(tmp_path)))
+
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    assert entry.container_id == "container.scgcad-col"
+    assert window._load_palette_entry(entry)
+    assert len(entry.doc.palette.colors) == 256
+
+
+def test_a_palette_entrys_container_can_be_corrected(qtbot, tmp_path, monkeypatch):
+    """The override a file has always had, now on a palette — and applying it
+    re-reads the file and pushes the new colors onto the graphic showing them,
+    which is the half a plain re-read would miss."""
+    from celpix.plugins.base import RAW_CONTAINER
+    from celpix.project.workspace import EntryKind
+    from celpix.ui.container_dialog import ContainerEdit
+
+    px = _make_snes_file(tmp_path)
+    col = _col_file(tmp_path)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._add_palette_file(str(col))
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    window._use_palette_entry(entry)
+    assert len(entry.doc.palette.colors) == 256
+
+    # Repick it as plain bytes, as a user correcting a wrong guess would.
+    monkeypatch.setattr(
+        "celpix.ui.main_window.entries.ContainerDialog.edit_container",
+        lambda *a, **k: ContainerEdit(RAW_CONTAINER, entry.paths, entry.reshape_id),
+    )
+    window._change_container_for(entry)
+
+    assert entry.container_id == RAW_CONTAINER
+    assert len(entry.doc.palette.colors) == 512  # the block, read as color
+    # The graphic renders the palette by reference, so it has to have followed.
+    assert window._doc.palette.colors == entry.doc.palette.colors
+
+
+def test_a_palette_is_never_offered_a_graphics_container(qtbot, tmp_path) -> None:
+    """The list a palette entry is given and the list a file is given are
+    disjoint, so neither can be pointed at the other's formats."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.ui.container_dialog import ContainerDialog
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    col = str(_col_file(tmp_path))
+
+    for_palette = ContainerDialog(
+        window._registry, paths=(col,), kind=ContentKind.PALETTE
+    )
+    qtbot.addWidget(for_palette)
+    offered = {
+        for_palette._container.itemData(i)
+        for i in range(for_palette._container.count())
+    }
+    assert "container.scgcad-col" in offered
+    assert "container.ines" not in offered
+
+    for_file = ContainerDialog(window._registry, paths=(col,), kind=ContentKind.PIXELS)
+    qtbot.addWidget(for_file)
+    graphics = {
+        for_file._container.itemData(i) for i in range(for_file._container.count())
+    }
+    assert "container.ines" in graphics
+    assert "container.scgcad-col" not in graphics
+
+
+def _tilemap_file(tmp_path, cells, name="screen.bin"):
+    """A raw SNES BG map of ``cells`` — no container, so it opens as a tilemap
+    only when asked (File ▸ Open tilemap data)."""
+    from celpix.core.context import PipelineContext
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+    from celpix.plugins.registry import default_registry
+
+    params = default_registry().preset("preset.tilemap.snes-bg").params
+    path = tmp_path / name
+    path.write_bytes(TilemapCodec().encode(cells, params, PipelineContext()))
+    return path
+
+
+def _bound_to_slice(qtbot, tmp_path, monkeypatch, cells, *, tile_offset=0x400):
+    """A window holding a ROM, a slice of its tiles, and a map bound to that
+    slice. Returns (window, tilemap entry, slice entry)."""
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.project.workspace import TileMode, TileSource, new_slice
+
+    rom = tmp_path / "art.bin"
+    # Junk, then 64 tiles of 4bpp art — the shape a ripped bank actually has.
+    rom.write_bytes(
+        bytes(tile_offset) + bytes((i * 7 + 3) & 0xFF for i in range(64 * 32))
+    )
+    mapfile = _tilemap_file(tmp_path, cells)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+
+    sliced = new_slice(parent.path, "art", offset=tile_offset, length=64 * 32)
+    window._workspace.insert(sliced, len(window._workspace.entries))
+
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(mapfile), ""))
+    )
+    window._open_tilemap()
+    tilemap = window._workspace.current
+    tilemap.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry_index=window._workspace.entries.index(sliced)
+    )
+    window._reload_tilemap(tilemap)
+    return window, tilemap, sliced
+
+
+def test_a_tilemap_can_draw_from_a_slice(qtbot, tmp_path, monkeypatch) -> None:
+    """The art a map draws from is routinely a region *inside* a bigger file, so
+    a slice has to be bindable like any other pixel entry — and it must supply
+    the sliced bytes, not its parent's whole file."""
+    from celpix.core.tilemap import Cell
+
+    window, tilemap, sliced = _bound_to_slice(
+        qtbot, tmp_path, monkeypatch, [Cell(index=i) for i in range(16)]
+    )
+    doc = tilemap.doc
+    assert len(doc.pixel_data) == 64 * 32  # the slice's extent, not the parent's
+    assert not window._canvas._image.isNull()
+
+    # And the binding picker offers it, or the user could never have got here.
+    window._sync_tilemap_bar()
+    offered = {
+        window._tile_binding.itemText(i) for i in range(window._tile_binding.count())
+    }
+    assert {"art.bin", "art"} <= offered
+
+
+def test_the_base_tile_control_takes_a_negative_value(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """The direction a slice needs, set by hand where the scan does not fire: a
+    spin that stopped at zero could not express it at all, and the shift has to
+    reach the document rather than only the entry."""
+    from celpix.core.tilemap import Cell
+
+    # A map that fits its 64-tile slice as it stands, so nothing is shifted for
+    # it automatically — the control is the only thing moving the base here.
+    window, tilemap, _ = _bound_to_slice(
+        qtbot, tmp_path, monkeypatch, [Cell(index=8 + i) for i in range(4)]
+    )
+    assert tilemap.tile_source.base_index == 0
+
+    window._tile_base.setValue(-8)
+    assert tilemap.tile_source.base_index == -8
+    assert tilemap.doc.cell_tile_indices(Cell(index=8)) == [0]
+    assert tilemap.doc.cell_tile_indices(Cell(index=11)) == [3]
+    assert not window._canvas._image.isNull()
+
+
+def test_a_map_that_overflows_its_slice_is_shifted_onto_it(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """The scan the base index is for: a map numbering from $100 bound to a
+    64-tile slice cannot be indexing it absolutely, and its own lowest index is
+    the amount by which it overshoots — so binding lands it without the user
+    working the offset out."""
+    from celpix.core.tilemap import Cell
+
+    window, tilemap, _ = _bound_to_slice(
+        qtbot, tmp_path, monkeypatch, [Cell(index=0x100 + i) for i in range(16)]
+    )
+    assert tilemap.tile_source.base_index == -0x100
+    assert tilemap.doc.cell_tile_indices(Cell(index=0x100)) == [0]
+    assert window._tile_base.value() == -0x100
+
+
+def test_an_absolutely_indexed_map_is_left_alone(qtbot, tmp_path, monkeypatch) -> None:
+    """The guess has a wrong answer too. A map that already fits its source is
+    indexing it absolutely, and shifting it would move every cell off the tile
+    it names — so the scan only fires where the map does *not* fit as it is."""
+    from celpix.core.tilemap import Cell
+
+    # Lowest index 8, highest 23 — inside the 64-tile slice, so no shift.
+    window, tilemap, _ = _bound_to_slice(
+        qtbot, tmp_path, monkeypatch, [Cell(index=8 + i) for i in range(16)]
+    )
+    assert tilemap.tile_source.base_index == 0
+    assert tilemap.doc.cell_tile_indices(Cell(index=8)) == [8]
+
+
+def test_the_scan_never_overrides_a_base_the_user_set(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A typed base is the user's answer, and a re-read must not walk over it —
+    the rule the container's own hint already follows."""
+    from celpix.core.tilemap import Cell
+
+    window, tilemap, _ = _bound_to_slice(
+        qtbot, tmp_path, monkeypatch, [Cell(index=0x100 + i) for i in range(16)]
+    )
+    window._tile_base.setValue(-0x80)
+    tilemap.doc = None
+    window._activate_entry(window._workspace.entries[0])
+    window._activate_entry(tilemap)
+    assert tilemap.tile_source.base_index == -0x80

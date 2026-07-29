@@ -44,6 +44,7 @@ from os.path import abspath, basename, exists, normcase, splitext
 from typing import Callable
 
 from celpix.core.address import format_hex
+from celpix.core.capabilities import Capability, ContentKind, supports
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
@@ -182,6 +183,65 @@ class PaletteSource:
     offset: int = 0
 
 
+class TileMode(str, Enum):
+    """Whether a tilemap entry's *tiles* are bound, and to what.
+
+    ``value`` is the string persisted in the project file, like
+    :class:`PaletteMode`'s.
+
+    There is one bound shape, not two: the tiles are **always another open
+    entry**. That entry may be a whole file, or a slice carving the tile bank
+    out of a ROM, so every way of bounding bytes the editor already has is
+    reused rather than given a second spelling here — and the tiles are read
+    from that entry's *live document*, so an edit to the art shows through in
+    the map immediately. Picking a file that is not open yet opens it as an
+    entry first, the way a palette file is registered before it is applied.
+    """
+
+    NONE = "none"
+    ENTRY = "entry"
+
+
+@dataclass(frozen=True)
+class TileSource:
+    """Where a tilemap's tiles come from, as restorable plain data.
+
+    ``entry_index`` is positional within the project's own entry list, the same
+    shape the project's ``current`` pointer already uses. It is stable inside one
+    file and meaningless outside it, which is correct — "the third entry" only
+    names something in a project that has a third entry.
+
+    ``base_index`` shifts every cell: cell index N draws source tile
+    ``base_index + N``. It is what lets a map and its art be bound together when
+    the two number their tiles from different places, without rewriting either.
+
+    It is **not** a format field. The header word that looks like one in a screen
+    and a panel is not a base index — celPix reads it from no format, and neither
+    does the one independent implementation
+    (``docs/graphics-formats-reference/scgcad-formats.md`` §2, "Unresolved").
+    What makes it earn its place is the binding: the art a map draws from is
+    routinely a *slice* of something bigger, and a slice's tiles start at 0
+    however the map numbers them.
+
+    Both directions are used, which is why it is signed. **Positive** when the
+    bank sits partway into the bound entry — a map numbering from 0 against a
+    whole ROM whose characters begin at tile 0x2000. **Negative** when the map
+    numbers from partway into a bank the slice starts at — a screen using
+    characters 0x100-0x1EE bound to a slice holding exactly those, where cell
+    0x100 must draw the slice's tile 0. A cell that lands outside the source
+    renders blank, so a wrong base is visible rather than corrupting anything.
+    """
+
+    mode: TileMode = TileMode.NONE
+    entry_index: int | None = None
+    base_index: int = 0
+
+    @property
+    def is_bound(self) -> bool:
+        """Whether this names a source at all — False renders as placeholders."""
+        return self.mode is not TileMode.NONE
+
+
 @dataclass(frozen=True)
 class SliceParams:
     """The entry fields a slice's coordinates comprise.
@@ -293,12 +353,17 @@ class Entry:
     # the region its reshape applies to, so no coordinates are invalidated.
     reshape_id: str = NO_RESHAPE
     # The container this file is read and written through, picked by signature
-    # when the file is opened and changeable afterwards. FILE-only: a slice is a
-    # byte range of its *parent* and carries no container of its own — it reads
-    # through the parent's coordinates, which is what the parent's container
-    # defines. Past a header skip those coordinates are still file offsets and
-    # the slice reads the file; where the parent *permutes* them they are not, and
-    # the slice reads its buffer instead (:func:`_parent_view_bytes`).
+    # when the file is opened and changeable afterwards. FILE and PALETTE: a
+    # palette file can be framed too — an authoring tool's palette routinely puts
+    # its own metadata after the colours, and read whole that block decodes as
+    # more colours. Which containers either may use is the container's own
+    # declaration (``PluginInfo.content_kinds``), so the two lists stay disjoint.
+    # Not a slice, though: a slice is a byte range of its *parent* and carries no
+    # container of its own — it reads through the parent's coordinates, which is
+    # what the parent's container defines. Past a header skip those coordinates
+    # are still file offsets and the slice reads the file; where the parent
+    # *permutes* them they are not, and the slice reads its buffer instead
+    # (:func:`_parent_view_bytes`).
     container_id: str = RAW_CONTAINER
     doc: Document | None = None  # lazy: loaded on first activation
     session: EntrySession | None = None
@@ -334,6 +399,30 @@ class Entry:
     # PALETTE entries only: the palette codec the file was imported with.
     palette_preset_id: str | None = None
 
+    # What the entry's bytes *are*, independent of how the entry is bounded
+    # (`docs/design/tilemap-entry.md` §2). ``kind`` above answers a different
+    # question — whole file, slice, bookmark — and conflating the two left
+    # nowhere to put an ordinary thing like a tilemap that happens to be a slice
+    # of a ROM. Defaults to PIXELS, and is omitted from a written project when
+    # it still is, so every project predating tilemaps loads unchanged.
+    #
+    # A slice or bookmark **inherits its parent's**: a window into a tilemap file
+    # is a tilemap (:func:`slice_of`).
+    content_kind: ContentKind = ContentKind.PIXELS
+    # TILEMAP entries only: where the tiles this map indexes into come from, and
+    # which codec reads its cells. Both None/empty until bound — a tilemap opens
+    # and renders as placeholders rather than refusing, since the binding is
+    # project state that no file states (`docs/design/tilemap-entry.md` §3).
+    tile_source: TileSource | None = None
+    tilemap_preset_id: str | None = None
+
+    def __post_init__(self) -> None:
+        # A palette entry's content kind is not a separate choice — its ``kind``
+        # already says what it holds. Derived here so no construction site can
+        # forget it and the project file need not carry it.
+        if self.kind is EntryKind.PALETTE:
+            self.content_kind = ContentKind.PALETTE
+
     @property
     def paths(self) -> tuple[str, ...]:
         """Every file this entry's bytes come from, in the order they join."""
@@ -348,6 +437,14 @@ class Entry:
     def palette_dirty(self) -> bool:
         """Unsaved changes on the entry's palette pathway."""
         return self.palette_revision != self.palette_saved_revision
+
+    def can(self, capability: Capability) -> bool:
+        """Whether this entry supports ``capability`` — the gate on its controls.
+
+        A thin pass to :func:`~celpix.core.capabilities.supports` so a caller
+        asks the entry rather than reaching through it for its content kind.
+        """
+        return supports(self.content_kind, capability)
 
 
 def new_slice(
@@ -404,8 +501,12 @@ def slice_of(
     one that cannot get the file list wrong: it takes the parent's paths whole
     rather than leaving the caller to remember that a region may be several
     files. :func:`new_slice` stays for callers holding only a path.
+
+    It also carries the parent's :class:`ContentKind` down, which
+    :func:`new_slice` cannot: a window into a tilemap file is a tilemap, and only
+    the entry knows what its file holds.
     """
-    return new_slice(
+    entry = new_slice(
         parent.path,
         name,
         offset,
@@ -414,6 +515,8 @@ def slice_of(
         parent.extra_paths,
         reshape_id,
     )
+    entry.content_kind = parent.content_kind
+    return entry
 
 
 class Workspace:
@@ -473,13 +576,19 @@ class Workspace:
                 out.append(entry)
         return out
 
-    def add_palette(self, path: str, preset_id: str | None) -> Entry:
+    def add_palette(
+        self, path: str, preset_id: str | None, container_id: str = RAW_CONTAINER
+    ) -> Entry:
         """Append a PALETTE entry for ``path`` (or return the one already there).
 
         The **non-undoable** registration, like :meth:`open_file` — used by the
         restore/self-heal path when a graphic references a ``.pal`` the project
         never registered. Interactive registration goes through an
         ``AddEntryCommand`` so it can be undone.
+
+        ``container_id`` is detected by the caller, which holds the registry;
+        plain bytes is the answer for the ``.pal`` this path usually gets and the
+        one that leaves the entry reading its whole file.
         """
         existing = self.find_palette(path)
         if existing is not None:
@@ -488,6 +597,7 @@ class Workspace:
             name=basename(path),
             kind=EntryKind.PALETTE,
             path=path,
+            container_id=container_id,
             palette_preset_id=preset_id,
         )
         self.entries.append(entry)

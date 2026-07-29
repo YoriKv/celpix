@@ -67,6 +67,32 @@ def _palette_biases(
     return [row * index_space for row in regions.rows_for(offsets, view.subpalette_row)]
 
 
+def _tilemap_image(doc: Document, registry: Registry, columns: int) -> QImage:
+    """Export a tilemap entry as the **map**, not as the tiles behind it.
+
+    What such an entry *is* on screen is its cells drawn through the tile source
+    it is bound to, and that is what the file it exports has to hold. Rendering
+    its ``pixel_data`` instead — which is the bound entry's bytes, sitting there
+    so every tile path keeps working (``docs/design/tilemap-entry.md`` §8.1) —
+    would quietly export the tile bank under a screen's name, or nothing at all
+    for a map with no binding yet.
+
+    Straight through :func:`~celpix.pipeline.pipeline.tilemap_image`, the same
+    call the canvas makes, so the two cannot disagree. The colour table has to
+    span every palette row the map uses rather than one subpalette: a cell names
+    its own row, the row is folded into the indices upstream, and one image
+    carries one table.
+    """
+    drawn = pipeline.tilemap_image(doc, registry, columns)
+    index_space = min(
+        256, 1 << pipeline.pixel_bpp(doc.pixel_config.interpret_preset_id, registry)
+    )
+    top = min(256, drawn.palette_rows * index_space)
+    return render_bridge.indexed_image(
+        drawn.grid, [doc.palette.color(i) for i in range(top)]
+    )
+
+
 def document_image(doc: Document, registry: Registry) -> QImage:
     """Render every tile of ``doc`` to one QImage, laid out per its view options.
 
@@ -76,9 +102,14 @@ def document_image(doc: Document, registry: Registry) -> QImage:
     indexed codec yields a ``Format_Indexed8`` image whose color table is exactly
     the active subpalette window (index 0 transparent), so Qt writes a compact
     indexed PNG; a direct-color codec yields ``Format_ARGB32``.
+
+    A tilemap entry takes a route of its own (:func:`_tilemap_image`): what it
+    shows is the map, and its pixel bytes are a different entry's tiles.
     """
     view = doc.view
     cols = max(1, view.columns)
+    if doc.is_tilemap:
+        return _tilemap_image(doc, registry, cols)
     engine, preset = registry.engine_for(doc.pixel_config.interpret_preset_id)
     layout = BlockLayout(cols, view.block_columns, view.block_rows, view.block_order)
     biases = _palette_biases(doc, registry, cols)
@@ -123,13 +154,20 @@ def save_png(image: QImage, path: str) -> bool:
     return image.save(path, "PNG")
 
 
-def save_raw(doc: Document, path: str) -> None:
-    """Write ``doc``'s decoded pixel bytes to ``path`` as a raw binary.
+def raw_bytes(doc: Document) -> bytes:
+    """The bytes ``doc`` is, for a raw dump — its **own** data, not what it draws.
 
-    These are the *decompressed*, decoded bytes the document holds — for a
-    compressed slice, its unpacked contents, which is what a raw dump is wanted
-    for (the actual graphics data, not the packed stream). Raises ``OSError`` on a
-    write failure, for the caller to report.
+    The *decompressed*, decoded bytes the document holds: for a compressed slice,
+    its unpacked contents, which is what a raw dump is wanted for (the actual
+    graphics data, not the packed stream). For a tilemap entry that is its
+    **cells**, since its pixel bytes belong to the entry it borrows tiles from —
+    dumping those would write another file's contents under this one's name.
     """
+    return doc.tilemap_data if doc.is_tilemap else doc.pixel_data
+
+
+def save_raw(doc: Document, path: str) -> None:
+    """Write :func:`raw_bytes` to ``path``. Raises ``OSError`` on a write
+    failure, for the caller to report."""
     with open(path, "wb") as handle:
-        handle.write(doc.pixel_data)
+        handle.write(raw_bytes(doc))

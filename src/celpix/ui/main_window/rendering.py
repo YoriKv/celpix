@@ -111,15 +111,14 @@ class RenderingMixin:
         base = self._doc.view.subpalette_row * self._index_space()
         return render_bridge.render(grid, self._doc.palette, base), filled
 
-    def _window_biases(self, cols: int, rows: int) -> list[int] | None:
-        """One index shift per visible slot, or None when nothing is pinned.
+    def _window_palette_rows(self, cols: int, rows: int) -> list[int] | None:
+        """One subpalette row per visible slot, or None when nothing is pinned.
 
         The whole of what pinned palette regions cost at render time. Each slot is
         resolved to the pixel its tile starts at, that pixel is looked up in the
-        regions, and the row it lands in becomes ``row * index_space`` - the shift
-        :meth:`~celpix.core.index_grid.IndexGrid.shifted` folds into the indices.
-        Slots in no region get the view's own subpalette row, so the unpinned part
-        of the window renders exactly as it does without this.
+        regions, and the row it lands in is what comes back. Slots in no region
+        get the view's own subpalette row, so the unpinned part of the window
+        renders exactly as it does without this.
 
         Returning **None rather than a list of zeroes** for an unpinned document is
         load-bearing: it is what keeps every existing view on the original single
@@ -139,7 +138,6 @@ class RenderingMixin:
             return None
         doc = self._doc
         view = doc.view
-        space = self._index_space()
         per_tile = doc.tile_width * doc.tile_height
         tile_rearrangement = self._active_tile_rearrangement()
         count = cols * rows
@@ -165,8 +163,68 @@ class RenderingMixin:
                 actual * per_tile
                 for actual in tile_rearrangement.actual_run(view.tile_offset, count)
             ]
-        rows_for = regions.rows_for(offsets, view.subpalette_row)
-        return [row * space for row in rows_for]
+        return regions.rows_for(offsets, view.subpalette_row)
+
+    def _window_biases(self, cols: int, rows: int) -> list[int] | None:
+        """The rows above as index shifts — what the composer actually applies.
+
+        Split from :meth:`_window_palette_rows` so the number drawn on a tile and
+        the palette it is drawn through come from one computation: a label that
+        could disagree with the recolour would be worse than no label.
+        """
+        per_row = self._window_palette_rows(cols, rows)
+        if per_row is None:
+            return None
+        space = self._index_space()
+        return [row * space for row in per_row]
+
+    def _tilemap_columns(self) -> int:
+        """How many cells across the map is drawn — the Cols setting, clamped.
+
+        The setting, not the format's own width: the width is put *into* Cols
+        when the entry loads (:meth:`_apply_tilemap_columns`), so what is on
+        screen is what the spin says and changing it works. Only bounded below,
+        at 1, and above by the cell count — a width past the map is the same
+        picture with empty space beside it, worth avoiding but not refusing.
+        """
+        assert self._doc is not None and self._doc.cells is not None
+        count = len(self._doc.drawn_cells)
+        return max(1, min(self._columns.value(), count or 1))
+
+    def _apply_tilemap_columns(self, entry) -> None:  # noqa: ANN001 — an Entry
+        """Set Cols to the width ``entry``'s format states, if it states one.
+
+        A screen and a panel are 32 cells across and a stamp layout 128; the file
+        knows, and a wrong guess **shears** the picture into diagonal stripes
+        rather than failing, which is the worst way to be wrong. Applied on load
+        only, and skipped when a project restored a width of its own, so it is a
+        starting point rather than something that fights the spin.
+        """
+        width = self._tilemap_columns_hint(entry)
+        if width and entry.pending_view is None:
+            with signals_blocked(self._columns):
+                self._columns.setValue(width)
+            if entry.doc is not None:
+                entry.doc.view.columns = width
+
+    def _render_tilemap(self):
+        """Render a tilemap document — a grid of cells, or a sprite object's
+        frames laid out one after another.
+
+        Both shapes live in :func:`~celpix.pipeline.pipeline.tilemap_image`, and
+        this is only the Qt end of it: the same function is what PNG export
+        renders through, so an exported map is the picture on screen rather than
+        a second rendering that could drift from it.
+
+        A tilemap is **always drawn entire**. Its extent is the file's, not a
+        window into a large bank, and paging a screen would hide the thing being
+        read (``docs/design/tilemap-entry.md`` §8).
+        """
+        assert self._doc is not None
+        drawn = pipeline.tilemap_image(
+            self._doc, self._registry, self._tilemap_columns()
+        )
+        return render_bridge.render_pinned(drawn.grid, self._doc.palette), drawn.drawn
 
     def _render_rearranged(self, layout: BlockLayout, rows: int):
         """Render the window when a tile map is in force.
@@ -239,7 +297,12 @@ class RenderingMixin:
         layout = BlockLayout(
             cols, view.block_columns, view.block_rows, view.block_order
         )
-        if self._active_tile_rearrangement().is_identity():
+        if self._doc.is_tilemap:
+            # A third route beside the two byte/tile ones: the cells are the
+            # document, and the tiles come from wherever it is bound. Placement
+            # is still the shared composer — see _render_tilemap.
+            image, filled = self._render_tilemap()
+        elif self._active_tile_rearrangement().is_identity():
             engine, preset = self._registry.engine_for(
                 self._doc.pixel_config.interpret_preset_id
             )
@@ -263,10 +326,21 @@ class RenderingMixin:
         # Off the workspace, not the view: the grid is one project-wide setting
         # (see MainWindow._on_grid_change), so it survives switching entries.
         self._canvas.set_grid(*self._grid_settings())
-        self._canvas.set_arrangement(
-            view.block_columns, view.block_rows, view.block_order
+        # On a tilemap the block *is* the cell, so the grid's coarse level lands
+        # on cell boundaries — which is the structure being read there, where the
+        # arrangement axes belong to the pixel view and stay at 1x1.
+        block = (
+            (*self._doc.cell_tiles, "row")
+            if self._doc.is_tilemap
+            else (view.block_columns, view.block_rows, view.block_order)
         )
+        self._canvas.set_arrangement(*block)
         self._canvas.set_filled_tiles(filled)
+        # The labels are their own switch: a row can be shown without the
+        # recolour and either without the other (`palette_regions.py`).
+        self._canvas.set_palette_rows(
+            self._window_palette_rows(cols, rows) if self._show_palette_rows else None
+        )
         self._canvas.set_image(image)
         # A lifted float's source is shown blank, never written, so a fresh base
         # image has to have that hole punched back into it.
@@ -277,11 +351,21 @@ class RenderingMixin:
         self._sync_rearrange_actions()
         self._refresh_palette_dock()
         self._sync_nav()
+        # After _sync_nav: the two bars are pages of one stack, and this is what
+        # decides which of them the entry has controls for at all.
+        self._sync_tilemap_bar()
         # The pen's colour can move under the preview without the pen itself
         # changing (a palette edit, another subpalette row, a new format).
         self._sync_paint_preview()
         self._refresh_overlay()
         self._refresh_hex()
+        # Rows owns its own enabled state (two different reasons to have no row
+        # count to set), so it is refreshed here rather than gated below.
+        self._sync_entire_file()
+        # Last, so its veto is the final word: every pass above enables controls
+        # on grounds that are true in general and beside the point for a document
+        # of the wrong kind (``docs/design/tilemap-entry.md`` §4).
+        self._sync_capabilities()
         # Everything above landed in doc.view, which a project save writes out.
         self._refresh_project_modified()
 

@@ -1,0 +1,88 @@
+"""Example tilemap code format. Files starting with "_" are ignored — copy this
+file, drop the underscore from the name, edit it, and press F5 in celPix to load
+it (code plugins ask for confirmation the first time, since they run with the
+app's privileges).
+
+A tilemap is a file of *references*: each cell names a tile that lives in some
+other entry you bind the map to, plus how to draw it. A code format implements
+one directly, for cell layouts the packed engine's parameters cannot express, and
+appears in the tilemap format picker like any preset. Try a preset first: see
+_packed.toml, which covers any format whose cell is one packed integer.
+
+Reach for code when the cell is *not* one integer — fields split across
+non-adjacent bytes, a value that has to be computed rather than masked out, or a
+run-length scheme where one stored cell yields several.
+
+decode and encode must be buffer-relative and stateless — they walk whatever
+bytes they are given, with no notion of where the buffer sits in the file.
+Laying the flat list out as a grid is celPix's job: a tilemap file rarely records
+its own width, so the view has to be able to try one.
+"""
+
+from celpix.core.tilemap import Cell
+from celpix.plugins import FormatInfo
+
+
+class SplitCell:
+    """A 3-byte cell whose tile number straddles two non-adjacent bytes.
+
+    byte 0  tile number, low 8 bits
+    byte 1  attributes: bit 0 h-flip, bit 1 v-flip, bits 2-4 palette row
+    byte 2  tile number, high 2 bits (the rest of the byte unused)
+    """
+
+    # The id doubles as the picker entry's stable identity; the name is shown.
+    info = FormatInfo(id="format.tilemap.example-split", name="Example split cell")
+
+    def decode(self, data, ctx):
+        """bytes -> cells (whole cells only; a trailing partial cell is dropped)."""
+        size = self.bytes_per_cell()
+        cells = []
+        for at in range(0, len(data) - size + 1, size):
+            low, attr, high = data[at], data[at + 1], data[at + 2]
+            cells.append(
+                Cell(
+                    index=low | ((high & 0x03) << 8),
+                    palette_row=(attr >> 2) & 0x07,
+                    flip_h=bool(attr & 0x01),
+                    flip_v=bool(attr & 0x02),
+                    # Bits the format has and celPix has no meaning for: carry
+                    # them, or a save would quietly zero them.
+                    flags=high >> 2,
+                )
+            )
+        return cells
+
+    def encode(self, cells, ctx):
+        """cells -> bytes; the exact inverse of decode.
+
+        A value too wide for its field is masked rather than raising: a cell can
+        arrive from a format with a wider index, and refusing the write would
+        make the whole map unsaveable over one cell.
+        """
+        out = bytearray()
+        for cell in cells:
+            index = cell.index & 0x3FF
+            attr = (
+                (cell.palette_row & 0x07) << 2
+                | (0x02 if cell.flip_v else 0)
+                | (0x01 if cell.flip_h else 0)
+            )
+            out += bytes((index & 0xFF, attr, (index >> 8) | (cell.flags << 2) & 0xFC))
+        return bytes(out)
+
+    def bytes_per_cell(self):
+        # How many bytes one cell occupies — celPix uses this to slice the byte
+        # window and to place an edited cell back in the buffer.
+        return 3
+
+    def cell_tiles(self):
+        # How many tiles one cell draws, (across, down). (1, 1) unless a cell is
+        # a metatile — and check before saying otherwise: a format that stores a
+        # 16x16 block as four adjacent cells is (1, 1), and claiming (2, 2) draws
+        # every block four times over.
+        return (1, 1)
+
+
+def register(registry):
+    registry.register_format(SplitCell())

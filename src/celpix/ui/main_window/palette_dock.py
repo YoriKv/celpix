@@ -349,6 +349,7 @@ class PaletteDockMixin:
         menu.addSeparator()
         self._build_show_regions_action()
         menu.addAction(self._show_palette_regions_action)
+        menu.addAction(self._show_palette_rows_action)
 
     def _set_palette_mode(self, mode: PaletteMode) -> None:
         """Converge mode member, dropdown, and the per-mode header widgets

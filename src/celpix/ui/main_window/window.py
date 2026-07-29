@@ -50,14 +50,20 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QScrollBar,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.document import Document, GridMode
 from celpix.core.errors import PipelineError
 from celpix.core.palette import Palette
-from celpix.plugins.detect import detect_container
+from celpix.plugins.detect import (
+    content_kind_for,
+    detect_container,
+    tilemap_preset_for,
+)
 from celpix.plugins.discovery import PluginLoadIssue
 from celpix.plugins.registry import Registry, default_registry
 from celpix.project import projectfile
@@ -74,12 +80,14 @@ from celpix.ui.decompress_overlay import DecompressOverlay
 from celpix.ui.file_list_panel import FileListPanel
 from celpix.ui.help_dialogs import AboutDialog, ShortcutGuide, shortcut_sections
 from celpix.ui.hex_view_panel import HexViewPanel
+from celpix.ui.main_window.capability_sync import CapabilitySyncMixin
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
 from celpix.ui.main_window.entries import EntriesMixin
 from celpix.ui.main_window.interpretation import (
     ROWS_LOCKED_TIP,
     ROWS_TIP,
+    ROWS_WHOLE_TIP,
     InterpretationMixin,
 )
 from celpix.ui.main_window.navigation import NavigationMixin
@@ -96,6 +104,8 @@ from celpix.ui.main_window.selection import (
     SelectionMixin,
 )
 from celpix.ui.main_window.session import SessionMixin
+from celpix.ui.main_window.tilemap_bar import TilemapBarMixin
+from celpix.ui.main_window.tilemap_edit import TilemapEditMixin
 from celpix.ui.main_window.transfer import TransferMixin
 from celpix.ui.main_window.transform import TransformMixin
 from celpix.ui.theme import THEME_KEY, Theme, apply_theme
@@ -142,6 +152,9 @@ class MainWindow(
     RearrangeMixin,
     PaletteRegionsMixin,
     SessionMixin,
+    TilemapBarMixin,
+    TilemapEditMixin,
+    CapabilitySyncMixin,
     RenderingMixin,
     EntriesMixin,
     TransferMixin,
@@ -365,7 +378,16 @@ class MainWindow(
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addLayout(canvas_column, 1)
-        layout.addWidget(self._build_navbar())
+        # One strip under the canvas, two pages: the file-position controls, and
+        # a tilemap's binding controls. Swapped rather than shown together —
+        # a tilemap has no view window to move, so the offset widgets would be a
+        # row of dead controls (``docs/design/tilemap-entry.md`` §8).
+        self._nav_stack = QStackedWidget()
+        self._navbar = self._build_navbar()
+        self._tilemap_bar = self._build_tilemap_bar()
+        self._nav_stack.addWidget(self._navbar)
+        self._nav_stack.addWidget(self._tilemap_bar)
+        layout.addWidget(self._nav_stack)
         self.setCentralWidget(central)
 
         self._build_files_dock()  # before _build_menus: the toggles go in menus
@@ -724,6 +746,15 @@ class MainWindow(
         open_palette_data.triggered.connect(self._prompt_add_palette_file)
         file_menu.addAction(open_palette_data)
 
+        # Mnemonic "t": "d" is the palette row's and "p" the pixel row's.
+        open_tilemap = QAction("Open &tilemap data…", self)
+        open_tilemap.setToolTip(
+            "Read a file as a map of tile indices\n"
+            "Bind it to the tiles it draws from in the bar under the canvas"
+        )
+        open_tilemap.triggered.connect(self._open_tilemap)
+        file_menu.addAction(open_tilemap)
+
         file_menu.addSeparator()
 
         new_project = QAction("New Pro&ject", self)
@@ -950,10 +981,17 @@ class MainWindow(
         (:func:`~celpix.ui.widgets.add_labelled`), so a live-looking label over a
         dead input is exactly where the "why can't I type here" lands.
         """
+        # Two ways to have no row count to set. View > Entire File is the
+        # temporary one; a tilemap is the permanent one — it is always shown
+        # entire, so a window height is not a setting it has. Asking the
+        # capability table keeps that second rule stated once
+        # (``docs/design/tilemap-entry.md`` §4) instead of here.
+        windowed = self._can(Capability.NAVIGATION)
         entire = self._entire_file.isChecked()
-        self._rows.setEnabled(not entire)
-        self._rows_label.setEnabled(not entire)
-        tip = ROWS_LOCKED_TIP if entire else ROWS_TIP
+        usable = windowed and not entire
+        self._rows.setEnabled(usable)
+        self._rows_label.setEnabled(usable)
+        tip = ROWS_TIP if usable else (ROWS_LOCKED_TIP if windowed else ROWS_WHOLE_TIP)
         self._rows.setToolTip(tip)
         self._rows_label.setToolTip(tip)
 
@@ -1193,9 +1231,59 @@ class MainWindow(
     def _open_pixel(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Open pixel data")
         if path:
-            self._load_pixel(path)
+            self._load_pixel(path, content_kind=ContentKind.PIXELS)
 
-    def _load_pixel(self, path: str) -> None:
+    def _open_tilemap(self) -> None:
+        """File ▸ Open tilemap data — read any file as a map of tile indices.
+
+        The tilemap twin of Open pixel data, and forcing in the same way: a file
+        whose signature says nothing (a region of a ROM, a raw dump) has no way
+        to be recognised as a map, so asking for one is how it is said. A file
+        that *is* a known tilemap format opens the same either way.
+        """
+        path, _ = QFileDialog.getOpenFileName(self, "Open tilemap data")
+        if path:
+            self._load_pixel(path, content_kind=ContentKind.TILEMAP)
+
+    def _open_as_chosen(self, path: str) -> None:
+        """Ask what ``path`` holds, then open it that way — the Ctrl-drop gesture.
+
+        Detection is a guess from a signature and a suffix, and it is silent
+        about being one. Holding Ctrl is how the user says they know better,
+        without having to find the matching menu entry for a file they are
+        already dropping.
+        """
+        kind = self._ask_content_kind(path)
+        if kind is None:
+            return
+        if kind is ContentKind.PALETTE:
+            self._open_palette_data(path)
+        else:
+            self._load_pixel(path, content_kind=kind)
+
+    def _ask_content_kind(self, path: str) -> ContentKind | None:
+        """Which of the three readings to open ``path`` as, or None if cancelled."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("celPix - open as")
+        box.setText(f"Open {Path(path).name} as:")
+        box.setInformativeText(
+            "Pixels are tile graphics, a palette is colors, and a tilemap is\n"
+            "indices into tiles that live somewhere else."
+        )
+        role = QMessageBox.ButtonRole.ActionRole
+        buttons = {
+            box.addButton("&Pixels", role): ContentKind.PIXELS,
+            box.addButton("Pa&lette", role): ContentKind.PALETTE,
+            box.addButton("&Tilemap", role): ContentKind.TILEMAP,
+        }
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        return buttons.get(box.clickedButton())
+
+    def _load_pixel(
+        self, path: str, *, content_kind: ContentKind | None = None
+    ) -> None:
         """Open ``path`` as a workspace entry and switch the view to it.
 
         The shared entry point for both File ▸ Open and drag-and-drop, so a
@@ -1207,16 +1295,29 @@ class MainWindow(
         bytes: it is a property of the file, so detecting it at open time means
         every later load reads through the same one, and the answer is on the
         entry where the user can see and change it.
+
+        ``content_kind`` overrides what the container implies, for the gestures
+        that *say* what a file is — File ▸ Open pixel/tilemap data, and the
+        open-as prompt. Detection can only recognise a format it knows, so a raw
+        region of a ROM has no way to announce itself as a map; asking is how
+        that is said. ``None`` keeps the container's own answer.
         """
         existing = self._workspace.find_file(path)
         if existing is not None:
             self._activate_entry(existing)
             return
+        container_id = detect_container(self._registry, path)
+        # Follows from the container, which was itself chosen from the file's
+        # signature — so a screen or panel file opens into the Tilemaps section
+        # without being asked about — unless the caller said otherwise.
+        detected = content_kind_for(self._registry, container_id)
         entry = Entry(
             name=Path(path).name,
             kind=EntryKind.FILE,
             path=path,
-            container_id=detect_container(self._registry, path),
+            container_id=container_id,
+            content_kind=content_kind or detected,
+            tilemap_preset_id=tilemap_preset_for(self._registry, container_id) or None,
         )
         self._push_command(AddEntryCommand(self, entry, f"open {entry.name}"))
 

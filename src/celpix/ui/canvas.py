@@ -87,6 +87,9 @@ GRID_COARSE_ALPHA = 255
 # the art rather than a lattice. This is what retires a level, in place of a hard
 # zoom cutoff: a level *fades* out as its cells shrink and simply stops.
 GRID_MIN_ALPHA = 8
+# Below this many device pixels a cell has no room for a digit, and a number
+# spilling across its neighbours would say less than nothing.
+_ROW_LABEL_MIN = 12
 # Auto-opacity. A level whose cells are smaller than this many device pixels is
 # drawn proportionally fainter, so a dense lattice tints the art instead of
 # burying it and thins away smoothly as the view zooms out — no popping.
@@ -226,6 +229,11 @@ class Canvas(QWidget):
         self._grid_mode = GridMode.TILE
         self._block_grid = False
         self._grid_style = GridStyle.LINE
+        # One subpalette row per visible slot, or None when the labels are
+        # off. Set by the render cycle from the same rows the pinned-colour
+        # biases are built from, so the number and the recolour can never
+        # disagree about which row a tile is on.
+        self._palette_rows: list[int] | None = None
         self._tile_w = 8
         self._tile_h = 8
         # Arrangement placement (block grouping / order). 1×1 is plain row-major,
@@ -327,6 +335,16 @@ class Canvas(QWidget):
         self._show_grid = show
         self._grid_mode = mode
         self._block_grid = block_grid
+        self.update()
+
+    def set_palette_rows(self, rows: list[int] | None) -> None:
+        """Label each visible slot with its subpalette row, or stop labelling.
+
+        Indexed by slot, like the selection: slot 0 is the window's first tile.
+        A row of 0 is not drawn — that is the view's own row, so a number there
+        would label every unpinned tile in the window rather than the pinned few.
+        """
+        self._palette_rows = rows
         self.update()
 
     def set_grid_style(self, style: GridStyle) -> None:
@@ -909,6 +927,7 @@ class Canvas(QWidget):
         # once a tile is at least 2px so it never swamps the pixels themselves.
         if self._show_grid and self._grid_style is not GridStyle.NONE and z >= 2:
             self._draw_grid(painter, z, exposed)
+        self._paint_palette_rows(painter, exposed)
         self._paint_selection(painter, exposed)
         self._paint_overlays(painter, exposed)
         painter.end()
@@ -1224,6 +1243,44 @@ class Canvas(QWidget):
                     painter.drawLine(0, gy, width, gy)
         painter.end()
         return pixmap
+
+    def _paint_palette_rows(self, painter: QPainter, exposed: QRect) -> None:
+        """Number each pinned tile with its subpalette row, top-left corner.
+
+        In the grid's own colour, because it is the same kind of thing: an
+        annotation laid over the art rather than part of it, and one the eye
+        should be able to ignore. Skipped entirely below a zoom where a digit
+        would not fit inside a tile — a number spilling across its neighbours
+        would say less than nothing.
+        """
+        rows = self._palette_rows
+        if not rows:
+            return
+        z = self._zoom
+        cell_w, cell_h = self._tile_w * z, self._tile_h * z
+        if cell_w < _ROW_LABEL_MIN or cell_h < _ROW_LABEL_MIN:
+            return
+        layout = self._layout()
+        cols, canvas_rows = self._columns(), self._rows()
+        font = painter.font()
+        font.setPixelSize(max(_ROW_LABEL_MIN - 2, min(cell_h // 3, 14)))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(_tinted(GRID_FINE_COLOR, GRID_COARSE_ALPHA))
+        for slot, row in enumerate(rows):
+            if not row:
+                continue  # the view's own row: labelling it labels everything
+            tile_x, tile_y = layout.slot_to_cell(slot)
+            if not (0 <= tile_x < cols and 0 <= tile_y < canvas_rows):
+                continue
+            rect = self._cell_rect(tile_x, tile_y)
+            if not exposed.intersects(rect):
+                continue
+            painter.drawText(
+                rect.adjusted(1, 0, 0, 0),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                str(row),
+            )
 
     def _paint_selection(self, painter: QPainter, exposed: QRect) -> None:
         if not self._selected_slots:

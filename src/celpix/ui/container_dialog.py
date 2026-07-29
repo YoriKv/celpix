@@ -50,9 +50,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from celpix.core.capabilities import ContentKind
 from celpix.core.errors import Stage
 from celpix.plugins.base import NO_RESHAPE, RAW_CONTAINER, writes_back
-from celpix.plugins.detect import container_write_enabled, detect_container
+from celpix.plugins.detect import (
+    container_write_enabled,
+    containers_for,
+    detect_container,
+)
 from celpix.plugins.registry import Registry
 from celpix.ui.widgets import fill_stage_combo, select_combo_data
 
@@ -123,10 +128,12 @@ class ContainerDialog(QDialog):
         paths: tuple[str, ...] | list[str],
         container_id: str = RAW_CONTAINER,
         reshape_id: str = NO_RESHAPE,
+        kind: ContentKind = ContentKind.PIXELS,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._registry = registry
+        self._kind = kind
         # The list is the dialog's model and the rows are rebuilt from it after
         # every edit, rather than widgets being shuffled between positions: the
         # order on screen is then the order that will be applied, by construction,
@@ -139,10 +146,10 @@ class ContainerDialog(QDialog):
         self._container.setToolTip(_TIP)
         # Kept unadorned so the "(detected)" marker can be re-applied to a
         # different entry when the first file changes.
-        self._names = {
-            plugin.info.id: plugin.info.name
-            for plugin in registry.plugins(Stage.CONTAINER)
-        }
+        # Only the containers that frame this kind of entry: offering a palette
+        # the wrappers that unwrap ROMs would be inviting a choice that cannot
+        # come out well, and the two sets do not overlap.
+        self._names = {info.id: info.name for info in containers_for(registry, kind)}
         for plugin_id, name in self._names.items():
             self._container.addItem(name, plugin_id)
         self._detected = ""
@@ -330,7 +337,7 @@ class ContainerDialog(QDialog):
         something to remember — and it tracks the row it describes, since pointing
         the first row at another file moves what detection would have said.
         """
-        detected = detect_container(self._registry, self._paths[0])
+        detected = detect_container(self._registry, self._paths[0], kind=self._kind)
         if detected == self._detected:
             return
         self._detected = detected
@@ -384,6 +391,7 @@ class ContainerDialog(QDialog):
         paths: tuple[str, ...] | list[str],
         container_id: str = RAW_CONTAINER,
         reshape_id: str = NO_RESHAPE,
+        kind: ContentKind = ContentKind.PIXELS,
     ) -> ContainerEdit | None:
         """Run the dialog modally; the choices made, or None on cancel."""
         dialog = ContainerDialog(
@@ -391,6 +399,7 @@ class ContainerDialog(QDialog):
             paths=paths,
             container_id=container_id,
             reshape_id=reshape_id,
+            kind=kind,
             parent=parent,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:

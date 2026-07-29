@@ -38,6 +38,33 @@ def captured_alerts(monkeypatch):
     return alerts
 
 
+@pytest.fixture(autouse=True)
+def open_as_answer(monkeypatch):
+    """Answer the Ctrl-drop open-as prompt instead of showing it, for every test.
+
+    Another ``exec()`` modal, and the same rule as ``captured_alerts``: offscreen
+    it never returns, so a test that reaches it wedges the whole run with nothing
+    to blame. Defaults to Cancel - the reading a test did not ask for should not
+    silently become one it gets - and a test wanting the prompt answered assigns
+    to ``.kind``.
+    """
+    module = sys.modules.get("celpix.ui.main_window")
+    if module is None:
+        return None
+
+    class Answer:
+        kind = None
+
+    answer = Answer()
+    monkeypatch.setattr(
+        module.MainWindow,
+        "_ask_content_kind",
+        lambda self, path: answer.kind,
+        raising=False,
+    )
+    return answer
+
+
 _settings_isolated = False
 
 

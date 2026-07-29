@@ -1,5 +1,5 @@
 """The open-files dock panel: every open file, with its slices and bookmarks
-nested under it, plus a Palettes section for registered palette files.
+nested under it, grouped into sections by what the files hold.
 
 A thin Qt view over the workspace model — the main window forwards workspace
 callbacks into the ``add_entry``/``remove_entry``/``set_current``/``refresh_entry``
@@ -9,10 +9,16 @@ swatches or the canvas, a document list has no custom pixel presentation — it
 wants exactly the selection, nesting, keyboard and context-menu behaviour the
 framework already provides.
 
-Palette entries live under a non-selectable "Palettes" header item pinned to
-the bottom of the list. The header exists only while palette entries do; it
+Entries live under non-selectable section headers — Pixels, Tilemaps, Palettes
+— in that fixed order. A header exists only while its section has entries and
 carries no entry of its own, so every handler that reads an item's entry data
 must tolerate ``None``.
+
+Sections group by :class:`~celpix.core.capabilities.ContentKind`, which is what
+an entry *holds*; the tree's nesting stays the other question, "a window into
+that file's bytes" (``docs/design/tilemap-entry.md`` §2). The two are allowed to
+disagree — a tilemap slice of a ROM appears under Tilemaps, nested beneath a
+pixel file that sits under Pixels.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ from PySide6.QtWidgets import (
 
 from celpix import resources
 from celpix.core.address import format_hex
+from celpix.core.capabilities import ContentKind
 from celpix.core.notices import Notice
 from celpix.plugins.detect import container_label
 from celpix.plugins.registry import Registry
@@ -71,6 +78,15 @@ _OPEN_ENTRY_ALPHA = 45
 # Fixed rather than a palette role, because a warning that took the theme's text
 # color would stop reading as a warning.
 _WARNING_INK = QColor(200, 137, 10)
+
+# The section headings, in the order they appear. Dict order *is* the on-screen
+# order, so a header inserts at its own place however the sections were opened:
+# what you hold most of the time first, what is applied onto it last.
+SECTIONS: dict[ContentKind, str] = {
+    ContentKind.PIXELS: "Pixels",
+    ContentKind.TILEMAP: "Tilemaps",
+    ContentKind.PALETTE: "Palettes",
+}
 
 # The slice/bookmark icon box. Narrower than the default 16px decoration so a
 # centred glyph sits close to the entry name rather than across a wide gap; the
@@ -156,7 +172,7 @@ class FileListPanel(QWidget):
     new_slice_from_view_requested = Signal(object)  # Entry — slice the viewport
     new_slice_from_selection_requested = Signal(object)  # Entry — slice the tiles
     new_bookmark_requested = Signal(object)  # Entry (a FILE) — bookmark the view
-    change_container_requested = Signal(object)  # Entry (a FILE) — repick its container
+    change_container_requested = Signal(object)  # Entry (FILE/PALETTE) — its container
     use_palette_requested = Signal(object)  # Entry (a PALETTE) — apply to the view
     edit_slice_requested = Signal(object)  # Entry (a SLICE) — edit its coordinates
     jump_to_source_requested = Signal(object)  # Entry (a SLICE) — show it in its parent
@@ -202,9 +218,10 @@ class FileListPanel(QWidget):
         # pixel ratio they were rasterized for (see _drop_stale_icons).
         self._icons: dict[str, QIcon] = {}
         self._icon_key: tuple[int, float] | None = None
-        # The "Palettes" section header — created with the first palette entry,
-        # removed with the last, so an all-pixel-files list stays flat.
-        self._palettes_item: QTreeWidgetItem | None = None
+        # One section header per content kind, created with that kind's first
+        # entry and removed with its last, so a list holding only one kind shows
+        # only its own heading. Ordered by SECTIONS below.
+        self._sections: dict[ContentKind, QTreeWidgetItem] = {}
         self._items: dict[Entry, QTreeWidgetItem] = {}
         self._current: Entry | None = None  # mirrors the workspace's pointer
         self._has_selection = False  # mirrors the canvas's tile selection
@@ -229,45 +246,55 @@ class FileListPanel(QWidget):
     def add_entry(self, entry: Entry, parent: Entry | None = None) -> None:
         """Add ``entry``; a slice or bookmark nests under ``parent``'s item,
         inserted so children stay ordered by offset (files keep open order).
-        A palette entry goes under the Palettes section header instead."""
+
+        A top-level entry goes under the section header for what it *holds* —
+        Pixels, Tilemaps or Palettes (``docs/design/tilemap-entry.md`` §2) — so
+        the tree's nesting keeps meaning "a window into that file's bytes" and
+        the sections carry the other question.
+        """
         item = QTreeWidgetItem()
         item.setData(0, Qt.ItemDataRole.UserRole, entry)
         parent_item = self._items.get(parent) if parent is not None else None
-        if entry.kind is EntryKind.PALETTE:
-            root = self._palettes_root()
-            root.addChild(item)
-            root.setExpanded(True)
-        elif parent_item is not None:
+        if parent_item is not None:
             parent_item.insertChild(
                 self._sorted_index(parent_item, entry.slice_offset), item
             )
             parent_item.setExpanded(True)
         else:
-            # Keep the Palettes section pinned last: new files slot in above it.
-            index = (
-                self._tree.indexOfTopLevelItem(self._palettes_item)
-                if self._palettes_item is not None
-                else self._tree.topLevelItemCount()
-            )
-            self._tree.insertTopLevelItem(index, item)
+            root = self._section_root(entry.content_kind)
+            root.addChild(item)
+            root.setExpanded(True)
         self._items[entry] = item
         self._refresh_item(entry, item)
 
-    def _palettes_root(self) -> QTreeWidgetItem:
-        """The "Palettes" section header, created on first use.
+    def _section_root(self, kind: ContentKind) -> QTreeWidgetItem:
+        """The section header for ``kind``, created on first use.
 
         A header, not an entry: it carries no UserRole data and is not
-        selectable, so clicking it can never read as an activation.
+        selectable, so clicking it can never read as an activation. Inserted at
+        the position :data:`SECTIONS` gives it rather than appended, so the
+        order on screen is fixed regardless of which kind is opened first.
         """
-        if self._palettes_item is None:
-            item = QTreeWidgetItem(["Palettes"])
-            item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            font = item.font(0)
-            font.setBold(True)
-            item.setFont(0, font)
-            self._tree.addTopLevelItem(item)
-            self._palettes_item = item
-        return self._palettes_item
+        existing = self._sections.get(kind)
+        if existing is not None:
+            return existing
+        item = QTreeWidgetItem([SECTIONS[kind]])
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        font = item.font(0)
+        font.setBold(True)
+        item.setFont(0, font)
+        order = list(SECTIONS)
+        # The first section already present that sorts after this one; appended
+        # when there is none.
+        at = self._tree.topLevelItemCount()
+        for later in order[order.index(kind) + 1 :]:
+            sibling = self._sections.get(later)
+            if sibling is not None:
+                at = self._tree.indexOfTopLevelItem(sibling)
+                break
+        self._tree.insertTopLevelItem(at, item)
+        self._sections[kind] = item
+        return item
 
     def _sorted_index(self, parent_item: QTreeWidgetItem, offset: int) -> int:
         """The child index at which an entry of ``offset`` belongs — the first
@@ -304,10 +331,15 @@ class FileListPanel(QWidget):
             parent = item.parent()
             if parent is not None:
                 parent.removeChild(item)
-                # The last palette entry takes the section header with it.
-                if parent is self._palettes_item and parent.childCount() == 0:
-                    self._tree.takeTopLevelItem(self._tree.indexOfTopLevelItem(parent))
-                    self._palettes_item = None
+                # A section's last entry takes its header with it, so a list
+                # that no longer holds a kind stops advertising it.
+                if parent.childCount() == 0:
+                    for kind, header in list(self._sections.items()):
+                        if header is parent:
+                            self._tree.takeTopLevelItem(
+                                self._tree.indexOfTopLevelItem(parent)
+                            )
+                            del self._sections[kind]
             else:
                 self._tree.takeTopLevelItem(self._tree.indexOfTopLevelItem(item))
 
@@ -324,10 +356,11 @@ class FileListPanel(QWidget):
         and it must come back current.
         """
         item = self._items.get(entry)
-        if item is None:
+        section = item.parent() if item is not None else None
+        if item is None or section is None:
             return
-        index = self._tree.indexOfTopLevelItem(item)
-        target = self._file_neighbour(index, delta)
+        index = section.indexOfChild(item)
+        target = self._file_neighbour(section, index, delta)
         if target is None:
             return
         # The neighbour's *pre-removal* index is the destination either way:
@@ -335,25 +368,29 @@ class FileListPanel(QWidget):
         was_current = self._tree.currentItem()
         was_expanded = item.isExpanded()
         with signals_blocked(self._tree):  # a take/re-insert must not re-activate
-            self._tree.takeTopLevelItem(index)
-            self._tree.insertTopLevelItem(target, item)
+            section.takeChild(index)
+            section.insertChild(target, item)
             item.setExpanded(was_expanded)
             if was_current is not None:
                 self._tree.setCurrentItem(was_current)
 
-    def _file_neighbour(self, index: int, delta: int) -> int | None:
-        """The top-level index of the nearest file row ``delta``'s way from
-        ``index``, or None at the end of the list.
+    def _file_neighbour(
+        self, section: QTreeWidgetItem, index: int, delta: int
+    ) -> int | None:
+        """The index of the nearest file row ``delta``'s way from ``index``
+        within ``section``, or None at that section's end.
 
-        Scans rather than steps by one: the Palettes header is a top-level row
-        too, and a slice whose parent file isn't open sits at the top level as
-        well. Neither is a file, so a reorder passes over them — which keeps this
-        in step with the model, where the move counts files alone.
+        Scans rather than steps by one: a slice whose parent file isn't open
+        sits beside the files rather than under one. It is not a file, so a
+        reorder passes over it — which keeps this in step with the model, where
+        the move counts files alone. Confined to the section because that is
+        what is on screen as a list: a file cannot be reordered past a heading
+        into a group it does not belong to.
         """
         step = 1 if delta > 0 else -1
         position = index + step
-        while 0 <= position < self._tree.topLevelItemCount():
-            entry = self._tree.topLevelItem(position).data(0, Qt.ItemDataRole.UserRole)
+        while 0 <= position < section.childCount():
+            entry = section.child(position).data(0, Qt.ItemDataRole.UserRole)
             if entry is not None and entry.kind is EntryKind.FILE:
                 return position
             position += step
@@ -389,8 +426,8 @@ class FileListPanel(QWidget):
         immediate neighbour can be out of order — check those and skip the
         take/re-insert (which would disturb selection) when already in place."""
         parent_item = item.parent()
-        if parent_item is None:
-            return  # a file: top-level items keep open order
+        if parent_item is None or entry.kind is EntryKind.FILE:
+            return  # a file keeps open order; only slices sort by offset
         index = parent_item.indexOfChild(item)
         offset = entry.slice_offset
         last = parent_item.childCount() - 1
@@ -411,12 +448,17 @@ class FileListPanel(QWidget):
     def _container_hint(self, entry: Entry) -> str:
         """`` (TIFF)`` for a file read through a container; ``""`` otherwise.
 
-        Only for whole files (nothing else has a container), and only when one is
-        actually in use: tagging the great majority of files "(Raw binary file)"
-        would cost every row width to say nothing. So the hint's presence is
-        itself the signal that this file is not being read literally.
+        Files and palettes (a slice and a bookmark have no container of their
+        own), and only when one is actually in use: tagging the great majority of
+        rows "(Raw binary file)" would cost every row width to say nothing. So the
+        hint's presence is itself the signal that this file is not being read
+        literally — which on a palette is exactly the thing worth seeing, since
+        the framing decides how many of its colors are real.
         """
-        if self._registry is None or entry.kind is not EntryKind.FILE:
+        if self._registry is None or entry.kind not in (
+            EntryKind.FILE,
+            EntryKind.PALETTE,
+        ):
             return ""
         label = container_label(self._registry, entry.container_id)
         return f" ({label})" if label else ""
@@ -745,9 +787,16 @@ class FileListPanel(QWidget):
             self.move_requested.emit(entry, delta)
 
     def _can_move(self, item: QTreeWidgetItem, delta: int) -> bool:
-        """Whether ``item``'s file row has a file to trade places with."""
-        index = self._tree.indexOfTopLevelItem(item)
-        return index >= 0 and self._file_neighbour(index, delta) is not None
+        """Whether ``item``'s file row has a file to trade places with.
+
+        Within its own section: a file row is a child of its content kind's
+        heading, and there is no order to swap across a heading.
+        """
+        section = item.parent()
+        if section is None:
+            return False
+        index = section.indexOfChild(item)
+        return index >= 0 and self._file_neighbour(section, index, delta) is not None
 
     def _on_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         # A bookmark's or palette's double-click is its primary action — jump
@@ -899,6 +948,13 @@ class FileListPanel(QWidget):
             # The double-click action, discoverable.
             use = menu.addAction("&Use as Current Palette")
             use.triggered.connect(lambda: self.use_palette_requested.emit(entry))
+            # Same override a file gets, over the containers that frame a palette:
+            # a palette whose colors stop before its bytes do needs one, and
+            # detection can be as wrong here as anywhere.
+            container = menu.addAction("&Edit File Container…")
+            container.triggered.connect(
+                lambda: self.change_container_requested.emit(entry)
+            )
             # A file palette owns its colors and is edited in place, so it Writes
             # back to its own .pal from here — offered only with unsaved edits (the
             # graphic that renders it is never dirtied by a color change).

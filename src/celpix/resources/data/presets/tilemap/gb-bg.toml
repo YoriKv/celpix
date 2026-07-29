@@ -1,0 +1,11 @@
+# Game Boy BG map — one byte per cell, tile number only. The attribute byte a
+# Game Boy Color adds lives in a second VRAM bank, so it is a separate region
+# rather than a wider cell; this preset reads the plain map either way.
+id = "preset.tilemap.gb-bg"
+name = "Game Boy BG map (8-bit, index only)"
+engine_id = "codec.tilemap-packed"
+
+[params]
+bytes = 1
+endian = "little"
+index = { shift = 0, bits = 8 }

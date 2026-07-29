@@ -294,7 +294,13 @@ class SelectionMixin:
         )
         for action in (self._cut_action, self._copy_action, self._clear_action):
             action.setEnabled(has_doc and target is not None)
-        self._paste_action.setEnabled(has_doc and clipboard.has_content())
+        # A tilemap pastes from its own in-app buffer, so the system clipboard's
+        # contents say nothing about whether a paste here would do anything.
+        tilemap = has_doc and self._doc.is_tilemap
+        self._paste_action.setEnabled(
+            has_doc
+            and (self._has_cell_clipboard() if tilemap else clipboard.has_content())
+        )
         # An import needs no selection: with none, it lands at the view's start.
         self._import_png_action.setEnabled(has_doc)
         self._select_all_action.setEnabled(has_doc)
@@ -671,6 +677,11 @@ class SelectionMixin:
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_copy()
             return True
+        if self._doc is not None and self._doc.is_tilemap:
+            # Cells are indices into a tile source another program knows nothing
+            # about, so they stay in celPix rather than going out as numbers
+            # (:mod:`celpix.ui.main_window.tilemap_edit`).
+            return self._copy_cells()
         selected = self._selection_tiles()
         run = self._selection_bounding_run()
         if self._doc is None or run is None:
@@ -770,6 +781,9 @@ class SelectionMixin:
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_cut()
             return
+        if self._doc is not None and self._doc.is_tilemap:
+            self._cut_cells()
+            return
         if not self._copy_selection():
             return
         written = self._blank_selection("cut tiles")
@@ -779,6 +793,9 @@ class SelectionMixin:
     def _clear_selection_contents(self) -> None:
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_clear()
+            return
+        if self._doc is not None and self._doc.is_tilemap:
+            self._clear_cells()
             return
         written = self._blank_selection("clear tiles")
         if written:
@@ -805,6 +822,9 @@ class SelectionMixin:
             return
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_paste()
+            return
+        if self._doc.is_tilemap:
+            self._paste_cells()
             return
         first = self._stamp_anchor()
         incoming, picture = self._clipboard_tiles()

@@ -12,6 +12,7 @@ repair — is a separate plugin per format.
 
 from __future__ import annotations
 
+from celpix.core.capabilities import ContentKind
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins.base import (
@@ -26,8 +27,15 @@ from celpix.plugins.base import (
 
 class RawFileContainer:
     # No signature: this is where detection lands when nothing claims a file, so
-    # claiming anything itself would only get in the way.
-    info = PluginInfo(id=RAW_CONTAINER, name="Raw binary file", stage=Stage.CONTAINER)
+    # claiming anything itself would only get in the way. Every content kind, for
+    # the same reason — "no framing at all" is an answer a palette needs as much
+    # as a graphic, and it is the fallback all of them share.
+    info = PluginInfo(
+        id=RAW_CONTAINER,
+        name="Raw binary file",
+        stage=Stage.CONTAINER,
+        content_kinds=tuple(ContentKind),
+    )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         return plain_read(source, ctx)

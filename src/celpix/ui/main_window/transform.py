@@ -58,6 +58,8 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QLabel, QSizePolicy, QToolBar, QWidget
 
 from celpix.core import transform
+from celpix.core.capabilities import Capability
+from celpix.core.tilemap import CellOp
 from celpix.core.tilerearrangement import (
     TILE_FLIP_H,
     TILE_FLIP_V,
@@ -88,6 +90,11 @@ class TransformOp:
     transforms a tile
     by storing an orientation rather than by rewriting pixels, so the two paths
     share this one table instead of a parallel mapping that could drift from it.
+
+    ``cell_op`` is the third expression of it, for a tilemap: the *name* of the
+    operation, handed to the format's codec to answer in whatever bits it has —
+    or to refuse, since which transforms a cell supports is a property of the
+    format (:class:`~celpix.core.tilemap.CellOp`).
     """
 
     verb: str
@@ -95,6 +102,7 @@ class TransformOp:
     pixel_fn: Callable[[object], object]
     cell_src: Callable[[int, int, int, int], tuple[int, int]]
     tile_orient: int
+    cell_op: CellOp
 
 
 # The four directions. The cell maps invert the pixel transform at tile
@@ -106,6 +114,7 @@ OP_FLIP_H = TransformOp(
     transform.flip_horizontal,
     lambda dx, dy, cols, rows: (cols - 1 - dx, dy),
     TILE_FLIP_H,
+    CellOp.FLIP_H,
 )
 OP_FLIP_V = TransformOp(
     "flip",
@@ -113,6 +122,7 @@ OP_FLIP_V = TransformOp(
     transform.flip_vertical,
     lambda dx, dy, cols, rows: (dx, rows - 1 - dy),
     TILE_FLIP_V,
+    CellOp.FLIP_V,
 )
 OP_ROTATE_CCW = TransformOp(
     "rotate",
@@ -120,6 +130,7 @@ OP_ROTATE_CCW = TransformOp(
     transform.rotate_ccw,
     lambda dx, dy, cols, rows: (cols - 1 - dy, dx),
     TILE_ROTATE_CCW,
+    CellOp.ROTATE_CCW,
 )
 OP_ROTATE_CW = TransformOp(
     "rotate",
@@ -127,6 +138,7 @@ OP_ROTATE_CW = TransformOp(
     transform.rotate_cw,
     lambda dx, dy, cols, rows: (dy, rows - 1 - dx),
     TILE_ROTATE_CW,
+    CellOp.ROTATE_CW,
 )
 
 # Which op each button in :data:`~celpix.ui.tools.TRANSFORM_SPECS` performs. The
@@ -467,7 +479,13 @@ class TransformMixin:
             self._sync_pixel_transform_actions()
             return
         has = self._doc is not None and self._selected_tile is not None
-        square_tiles = has and self._square_tiles()
+        # Squareness is about the *tile*; the capability is about the document.
+        # A tilemap's tiles may be perfectly square and its cells still cannot be
+        # turned — a hardware cell carries mirror bits and no transpose bit — so
+        # the two conditions are both needed and neither implies the other.
+        square_tiles = (
+            has and self._square_tiles() and self._can(Capability.CELL_ROTATE)
+        )
         self._arm_transform_group(self._tile_group, has, square_tiles)
         geom = self._block_geometry()
         square_block = geom is not None and geom[0] == geom[1]
@@ -533,6 +551,11 @@ class TransformMixin:
         """
         if self._doc is None or self._selected_tile is None:
             return
+        if self._doc.is_tilemap:
+            # Same button, different document: a cell's mirror is an attribute
+            # bit, not a rewrite of anyone's pixels.
+            self._transform_cells(op)
+            return
         moved = len(self._selection_tiles())
         if self._map_selected_tiles(op.pixel_fn, f"{op.verb} tiles"):
             self.statusBar().showMessage(f"{op.past} {self._tiles_label(moved)}.")
@@ -549,6 +572,9 @@ class TransformMixin:
         cell set onto itself, so every tile stays within the run.
         """
         if self._doc is None:
+            return
+        if self._doc.is_tilemap:
+            self._transform_cell_block(op)
             return
         geom = self._block_geometry()
         if geom is None:

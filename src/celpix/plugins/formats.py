@@ -1,6 +1,6 @@
 """Self-contained code formats — a preset's behaviour written directly.
 
-A *format* is what a preset describes (one selectable pixel or palette
+A *format* is what a preset describes (one selectable pixel, palette or tilemap
 interpretation) implemented in code rather than as engine parameters, for
 interpretations no engine's parameters can express. One class and one
 ``registry.register_format(...)`` call put it in the format picker like any
@@ -22,6 +22,7 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
+from celpix.core.tilemap import Cell
 from celpix.plugins.base import PluginInfo, Preset
 
 
@@ -64,6 +65,31 @@ class PaletteFormat(Protocol):
     def encode(self, palette: Palette, ctx: PipelineContext) -> bytes: ...
 
     def bytes_per_entry(self) -> int: ...
+
+
+@runtime_checkable
+class TilemapFormat(Protocol):
+    """A cell interpretation implemented directly: bytes ⇄ a list of cells.
+
+    Buffer-relative and stateless like the other two, and for the same reason: a
+    map is a long run of fixed-width cells, so a window of it decodes on its own.
+    Laying the flat list out as a grid is the host's job — a tilemap file rarely
+    states its own width.
+
+    ``transform_cell`` is deliberately absent. It is optional on the full plugin
+    surface too (the host reaches it with ``getattr``), and a format that omits it
+    simply leaves flips to the generic path.
+    """
+
+    info: FormatInfo
+
+    def decode(self, data: bytes, ctx: PipelineContext) -> list[Cell]: ...
+
+    def encode(self, cells: list[Cell], ctx: PipelineContext) -> bytes: ...
+
+    def bytes_per_cell(self) -> int: ...
+
+    def cell_tiles(self) -> tuple[int, int]: ...
 
 
 class _PixelFormatEngine:
@@ -111,9 +137,34 @@ class _PaletteFormatEngine:
         return self._fmt.bytes_per_entry()
 
 
+class _TilemapFormatEngine:
+    """Presents a :class:`TilemapFormat` on the ``TilemapCodecPlugin`` surface."""
+
+    def __init__(self, fmt: TilemapFormat) -> None:
+        self._fmt = fmt
+        self.info = PluginInfo(fmt.info.id, fmt.info.name, Stage.INTERPRET_TILEMAP)
+
+    def decode(
+        self, data: bytes, params: dict[str, Any], ctx: PipelineContext
+    ) -> list[Cell]:
+        return self._fmt.decode(data, ctx)
+
+    def encode(
+        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
+    ) -> bytes:
+        return self._fmt.encode(cells, ctx)
+
+    def bytes_per_cell(self, params: dict[str, Any]) -> int:
+        return self._fmt.bytes_per_cell()
+
+    def cell_tiles(self, params: dict[str, Any]) -> tuple[int, int]:
+        return self._fmt.cell_tiles()
+
+
 _ENGINES = {
     Stage.INTERPRET_PIXEL: _PixelFormatEngine,
     Stage.INTERPRET_PALETTE: _PaletteFormatEngine,
+    Stage.INTERPRET_TILEMAP: _TilemapFormatEngine,
 }
 
 
