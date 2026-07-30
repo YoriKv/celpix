@@ -3,8 +3,9 @@
 :class:`~celpix.ui.main_window.window.MainWindow` is one class assembled from
 mixins, one per surface it drives - navigation, interpretation, palette (source,
 dock, color editing and pinned regions), selection, transforms, pixel editing,
-rearrange, session, tilemap (the binding bar and cell editing), capability sync,
-rendering, entries, writing, transfer, compression. They are mixins rather than
+rearrange, session, tilemap (the binding bar, cell editing, the tile source dock
+and the stamp tool), capability sync, rendering, entries, writing, transfer,
+compression. They are mixins rather than
 collaborator objects because they all manipulate the *same* live widgets and the
 single ``_doc`` on screen; splitting that state across objects would buy
 indirection rather than isolation. What the split does buy is a named home for

@@ -765,6 +765,29 @@ def test_undrawn_slots_are_dropped_and_trailing_empty_frames_with_them() -> None
     assert len(drawn_frames(frames)) == 1
 
 
+def test_all_frames_shows_the_slots_the_trim_drops_and_never_shows_none() -> None:
+    """The trim is a *reading*, so the other one has to be reachable: the records
+    for the empty slots are decoded either way and only the sheet's length moves.
+    Both paths keep the never-empty guarantee the bounding box needs."""
+    from dataclasses import replace as _replace
+
+    from celpix.core.document import ViewOptions
+    from celpix.core.sprite import Subsprite
+
+    frames = [(Subsprite(index=1),), (), ()]
+    doc = _sprite_doc([], frames)
+    assert len(doc.shown_frames) == 1
+    doc.view = _replace(doc.view, show_all_frames=True)
+    assert len(doc.shown_frames) == 3
+
+    # An object with nothing drawn anywhere still needs one frame to draw nothing
+    # in - the box is measured over whatever comes back.
+    blank = _sprite_doc([], [(), ()])
+    assert blank.shown_frames == [()]
+    blank.view = ViewOptions(show_all_frames=True)
+    assert len(blank.shown_frames) == 2
+
+
 def test_a_flipped_subsprite_reverses_its_tile_order_as_well_as_each_tile() -> None:
     """A mirrored 16x16 subsprite shows its right-hand tile on the left, mirrored.
     Both halves are needed and neither is sufficient."""
@@ -1481,4 +1504,87 @@ def test_a_plain_pal_is_still_read_whole(tmp_path) -> None:
     assert (
         detect_container(default_registry(), str(path), kind=ContentKind.PALETTE)
         == "container.raw-file"
+    )
+
+
+# -- the tile source sheet -------------------------------------------------
+
+
+def test_the_tile_source_run_is_the_ids_that_land_in_the_bank() -> None:
+    """What the tile source panel lays out: the *IDs a cell can usefully hold*,
+    which is a run of the file's own numbers rather than a slice of the bank.
+
+    The base tile is signed and both directions occur, so the run does not start
+    at 0 in general — a map numbering its tiles from $100 against a slice of
+    exactly those has base -$100 and holds $100-$1FF. Reading the run off the
+    bank instead would offer $000-$0FF, which is a set of numbers that file never
+    contains.
+    """
+    from celpix.pipeline.pipeline import tile_source_ids
+
+    # 4 tiles at 32 bytes each, indexed absolutely.
+    doc = _bank_doc(bytes(32 * 4), [Cell(index=0)])
+    assert tile_source_ids(doc) == range(0, 4)
+
+    # Positive base: the bank sits partway into the bound entry, so the top of
+    # the ID space is what runs off the end first.
+    doc.tile_base_index = 1
+    assert tile_source_ids(doc) == range(0, 3)
+
+    # Negative base: the map numbers from partway in, and the run moves with it.
+    doc.tile_base_index = -2
+    assert tile_source_ids(doc) == range(2, 6)
+
+    # The format's index field caps it — a 2-bit field cannot name tile 4.
+    doc.tile_base_index = 0
+    assert tile_source_ids(doc, limit=2) == range(0, 3)
+    # ...and a field wider than the bank does not invent tiles to fill it.
+    assert tile_source_ids(doc, limit=999) == range(0, 4)
+
+
+def test_a_sheet_tile_is_the_same_pixels_the_map_draws_for_that_cell() -> None:
+    """The point of the panel: what is on offer has to be what will land.
+
+    Checked on a **metatile** geometry, where a slot is not an ID — each ID
+    covers four tiles — so a sheet built by walking the bank rather than the ID
+    space would line up on an ordinary map and shear here.
+    """
+    from celpix.core.document import Document
+    from celpix.pipeline.pipeline import (
+        compose_tiles,
+        tile_source_image,
+        tilemap_tiles,
+    )
+
+    registry = default_registry()
+    # 32 distinct tiles, so a misplaced one is visible in the bytes.
+    source = b"".join(bytes([value]) * 32 for value in range(1, 33))
+    doc = Document(
+        pixel_data=source,
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=PathwayConfig(
+            source=FileRef("x"), interpret_preset_id="preset.pixel.snes-4bpp"
+        ),
+        palette_config=None,
+        cells=[Cell(index=3)],
+        cell_tiles=(2, 2),
+        cell_row_stride=16,
+    )
+    sheet = tile_source_image(doc, registry, columns=4)
+    assert sheet.ids == range(0, 32)
+    assert (sheet.grid.width, sheet.grid.height) == (4 * 16, 8 * 16)
+
+    # The map's own render of the single cell it holds, composed at one cell
+    # across, has to be the sheet's ID 3 pixel for pixel — the fourth cell of the
+    # sheet's top row, at x = 3 * 16.
+    tiles, layout = tilemap_tiles(doc, registry, columns=1)
+    drawn = compose_tiles(tiles, layout, None)
+    assert (drawn.width, drawn.height) == (16, 16)
+    assert all(
+        sheet.grid.get(3 * 16 + x, y) == drawn.get(x, y)
+        for y in range(16)
+        for x in range(16)
     )

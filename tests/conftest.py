@@ -151,6 +151,24 @@ def _container_dialog_never_blocks(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _container_info_never_blocks(monkeypatch):
+    """Make the container-info popup's ``exec()`` return instead of blocking.
+
+    Reachable by triggering File ▸ Container Info…, and the same rule as
+    :func:`_container_dialog_never_blocks`: offscreen, ``exec()`` never returns.
+    It is a read-only report, so there is no answer to fake — construction still
+    happens, and a test can assert on what the dialog was built from. Guarded
+    like :func:`captured_alerts` so headless suites stay Qt-free.
+    """
+    module = sys.modules.get("celpix.ui.container_info_dialog")
+    if module is None:
+        return
+    monkeypatch.setattr(
+        module.ContainerInfoDialog, "exec", lambda self: 0, raising=False
+    )
+
+
+@pytest.fixture(autouse=True)
 def opened_menus(monkeypatch):
     """Record context menus instead of popping them up, for every test.
 

@@ -29,7 +29,7 @@ from celpix.core.context import (
 )
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
-from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES
+from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, drawn_frames
 from celpix.core.tilemap import (
     Cell,
     page_order,
@@ -170,6 +170,14 @@ class ViewOptions:
     # it stays 0. Display-only like the block axes above — the cells keep the
     # file's own order and only where each is drawn moves.
     pages_across: int = 0
+    # A **sprite map**'s counterpart of the two toggles above: show every frame
+    # slot the file has room for, or stop after the last one holding a drawn
+    # subsprite (:func:`~celpix.core.sprite.drawn_frames`). Off by default,
+    # because most of a file's slots are empty and a mostly blank sheet buries
+    # the sprite at the top of it; on, for reading what the file holds past that
+    # point. Display-only in the same sense as the rest of these — the records
+    # are untouched either way, and neither reading moves a byte.
+    show_all_frames: bool = False
 
 
 @dataclass(frozen=True)
@@ -355,6 +363,27 @@ class Document:
     def is_sprite(self) -> bool:
         """Whether these cells are subsprites rather than grid positions."""
         return self.sprite_frames is not None
+
+    @property
+    def shown_frames(self) -> list:
+        """The frames the view draws — every slot, or up to the last drawn one.
+
+        The single answer to "which frames is this document showing", because
+        three separate things have to agree about it: the image, the sheet
+        geometry the canvas selects in, and the palette-row span an export sizes
+        its colour table to. Read here rather than each of them applying
+        :attr:`ViewOptions.show_all_frames` for itself, since a sheet laid out
+        over one count and drawn over another is a selection that names the
+        wrong part of the picture.
+
+        Never empty, on both paths: an object with nothing drawn anywhere still
+        needs one frame to draw nothing in
+        (:func:`~celpix.core.sprite.drawn_frames`).
+        """
+        frames = self.sprite_frames or []
+        if self.view.show_all_frames:
+            return list(frames) or [()]
+        return drawn_frames(frames)
 
     @property
     def cells_editable(self) -> bool:

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.2 - unreleased
+
+- **File Container**: new info popup showing information about the file container
+- **Tilemaps**: Tile source panel and edit tiles mode
+- Tooltip cleanup pass
+
 ## v0.4.1 - 2026-07-30
 
 - Add 0.5 zoom level and some more fixes

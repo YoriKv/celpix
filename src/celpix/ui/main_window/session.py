@@ -797,6 +797,11 @@ class SessionMixin:
         self._tile_rearrangement = view.tile_rearrangement.bounded(entry.doc.tile_count)
         self._show_rearranged = view.show_rearranged
         self._sync_rearrange_actions()
+        # A sprite map's frame count is the entry's too, and for the reason the
+        # rearrangement is: switching away and back must show the same sheet. The
+        # box itself is filled from the binding bar's own refresh, which runs at
+        # the tail of the render this leads into.
+        self._show_all_frames = view.show_all_frames
         # Pinned palette regions belong to the entry for the same reason. Stored
         # unbounded — _active_palette_regions clips at render time against the
         # picture and the palette that are actually loaded, so a region survives a
@@ -840,6 +845,7 @@ class SessionMixin:
             self._new_slice_from_view_action,
             self._new_bookmark_action,
             self._change_container_action,
+            self._container_info_action,
         ):
             action.setEnabled(enabled)
 
@@ -916,8 +922,22 @@ class SessionMixin:
         self._set_document_ui_enabled(True)  # idle, but live for the next open
         self._set_palette_mode(PaletteMode.DEFAULT)
         self._refresh_palette_dock()
+        # Unlike the palette, which has a read-only default to fall back on, a
+        # tile sheet with no document is nothing - so this empties it and says so.
+        self._refresh_tile_source()
         self._refresh_window_title()
         self._sync_nav()
+        # The empty state is a *kind* like any other, and the gating pass is what
+        # says so: nothing open reads as pixels
+        # (:meth:`~...capability_sync.CapabilitySyncMixin._content_kind`), so the
+        # bars that configure the next open stay and the tilemap ones go. Without
+        # this the pass only ever ran from the render, which needs a document -
+        # so the cell format picker sat on the bar before anything was open, and
+        # stayed there after the last entry was closed.
+        #
+        # Last here for the reason it is last in the refresh: every pass above
+        # arms controls on grounds that hold in general, and this is the veto.
+        self._sync_capabilities()
         self._announce_ready()
 
     def _show_unavailable(self, entry: Entry) -> None:
@@ -930,6 +950,7 @@ class SessionMixin:
         """
         self._clear_document_view()
         self._set_document_ui_enabled(False)
+        self._refresh_tile_source()
         self._refresh_window_title()
         self._sync_nav()
         self.statusBar().showMessage(

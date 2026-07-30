@@ -26,9 +26,11 @@ from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.notices import warn
 from celpix.plugins.base import (
+    ContainerField,
     PluginInfo,
     ReadSource,
     WriteTarget,
+    format_size,
     plain_read,
     splice,
 )
@@ -110,6 +112,71 @@ class INesContainer:
             return splice(raw, ines_chr_span(raw)[0], data)
         return splice(raw, dest.offset, data)
 
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        raw = source.data
+        if raw[:4] != _INES_MAGIC or len(raw) < 16:
+            return (
+                ContainerField(
+                    "Header",
+                    "not an iNES image",
+                    "The first four bytes are not NES\\x1a, so there is no\n"
+                    "header to read and no CHR ROM to find. The file is\n"
+                    "handed on whole, exactly as a plain binary would be.",
+                ),
+            )
+        trainer = bool(raw[6] & 0x04)
+        prg, chr_banks = raw[4], raw[5]
+        start, length = ines_chr_span(raw)
+        fields = [
+            ContainerField(
+                "Header",
+                "iNES, 16 bytes",
+                "Bytes 0-15, holding the bank counts and flags below.\n"
+                "Skipped on read and preserved on write, so a save\n"
+                "leaves the cartridge's own metadata alone.",
+            ),
+            ContainerField(
+                "Trainer",
+                "present, 512 bytes (flag 6 bit 2)"
+                if trainer
+                else "none (flag 6 bit 2 clear)",
+                "A 512-byte block some dumps carry between the header\n"
+                "and the program. Counted into where the PRG banks\n"
+                "start, so a trainer that went unnoticed would put the\n"
+                "tiles 512 bytes off.",
+            ),
+            ContainerField(
+                "PRG banks",
+                f"{prg} ({format_size(prg * 16384)})",
+                "Program ROM, 16 KiB each. Not graphics, but their\n"
+                "total is what the CHR ROM starts after - this is the\n"
+                "arithmetic that finds the tiles.",
+            ),
+            ContainerField(
+                "CHR banks",
+                f"{chr_banks} ({format_size(chr_banks * 8192)})"
+                if chr_banks
+                else "0 - CHR-RAM cartridge",
+                "Tile ROM, 8 KiB each: the payload this container is\n"
+                "after. Zero means the cartridge generates its tiles at\n"
+                "runtime and holds none, so what is shown instead is the\n"
+                "program code after the header.",
+            ),
+        ]
+        end = "end of file" if length is None else f"{start + length:#08x}"
+        fields.append(
+            ContainerField(
+                "Payload span",
+                f"{start:#08x} to {end}",
+                "The bytes handed on to be decoded. A save splices back\n"
+                "over exactly this range, the header and program banks\n"
+                "coming through untouched.",
+            )
+        )
+        return tuple(fields)
+
 
 class SmdContainer:
     """A Sega ``.smd`` (Genesis) file, deinterleaved to contiguous ROM bytes.
@@ -183,6 +250,36 @@ class SmdContainer:
             body[at + half : at + block] = data[at : at + block : 2]  # even → second
         return splice(dest.existing, self._HEADER, bytes(body))
 
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        body = len(source.data) - self._HEADER
+        blocks = max(0, body) // self._BLOCK
+        tail = max(0, body) - blocks * self._BLOCK
+        return (
+            ContainerField(
+                "Copier header",
+                f"{self._HEADER} bytes, skipped",
+                "The .smd wrapper's own metadata, which this container\n"
+                "never decodes. Preserved as it stands on write rather\n"
+                "than regenerated.",
+            ),
+            ContainerField(
+                "Deinterleaved blocks",
+                f"{blocks} x 16 KiB ({format_size(blocks * self._BLOCK)})",
+                "Each block stores all its odd bytes and then all its\n"
+                "even ones; the two halves are woven back together one\n"
+                "block at a time, which is why the count matters.",
+            ),
+            ContainerField(
+                "Trailing bytes",
+                f"{tail} (dropped)" if tail else "none",
+                "A partial block at the end cannot be reassembled - the\n"
+                "odd/even split is defined per whole block - so it is not\n"
+                "shown here, and a save leaves those bytes as they are.",
+            ),
+        )
+
 
 # The copier header 1980s-90s cartridge duplicators prepended, and the only rule
 # that spots one: carts are a whole number of KiB, so a ROM exactly 512 bytes over
@@ -254,6 +351,35 @@ class CopierHeaderContainer:
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         return splice(dest.existing, COPIER_HEADER, data)
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        size = len(source.data)
+        headered = bool(snes_copier_header_len(size))
+        return (
+            ContainerField(
+                "File length",
+                f"{size} ({format_size(size)})",
+                "The whole of what identifies a copier header: a cart is\n"
+                "a whole number of KiB, so a file exactly 512 bytes over\n"
+                "one has 512 bytes in front of the image.",
+            ),
+            ContainerField(
+                "Size rule",
+                "matches - headered" if headered else "does not match",
+                "512 bytes are skipped either way, this container having\n"
+                "been chosen by hand. Where the rule does not match, that\n"
+                "removes 512 real bytes from the front of the image.",
+            ),
+            ContainerField(
+                "Copier header",
+                f"{COPIER_HEADER} bytes, skipped",
+                "Duplicator metadata this container never decodes, so a\n"
+                "save preserves it and the file stays the dump it was.\n"
+                "Skipping it lines every published ROM offset up.",
+            ),
+        )
 
 
 class SnesInterleavedContainer:
@@ -331,3 +457,34 @@ class SnesInterleavedContainer:
             body[lowers + i * half : lowers + (i + 1) * half] = data[src : src + half]
         header = snes_copier_header_len(len(dest.existing))
         return splice(dest.existing, header, bytes(body))
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        header = snes_copier_header_len(len(source.data))
+        body = len(source.data) - header
+        bank = 2 * self._HALF
+        banks = body // bank
+        return (
+            ContainerField(
+                "Copier header",
+                f"{header} bytes, skipped" if header else "none",
+                "Spotted by the same size rule the copier-header\n"
+                "container uses, and skipped before deinterleaving so\n"
+                "the bank halves line up on the image itself.",
+            ),
+            ContainerField(
+                "Deinterleaved banks",
+                f"{banks} x 64 KiB ({format_size(banks * bank)})",
+                "Every bank's upper 32 KiB half sits in the first region\n"
+                "of the file and every lower half in the second, so the\n"
+                "split is global rather than per block.",
+            ),
+            ContainerField(
+                "Trailing bytes",
+                f"{body - banks * bank} (dropped)" if body - banks * bank else "none",
+                "The upper/lower split is defined across whole banks, so\n"
+                "a partial one at the end cannot be placed. Not shown\n"
+                "here, and left exactly as they are on save.",
+            ),
+        )

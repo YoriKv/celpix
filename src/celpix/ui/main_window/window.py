@@ -1,8 +1,8 @@
 """The application main window: open pixel/palette data, view it, save it back.
 
 Menus (File, Edit, View, Navigate, Palette, Panels, Help) over a two-column body. The
-left column is the Files and Palette docks, splitting the window's full height
-between them; the right is the editing surface: four bars stacked over a
+left column is the Files dock over the Palette and Tile Source docks, which share
+a tab bar between them; the right is the editing surface: four bars stacked over a
 scrollable :class:`~celpix.ui.canvas.Canvas` - codecs (pixel format,
 compression), arrangement (Pattern presets, block grouping, fill order, 2D),
 view (columns, rows, zoom, subpalette row - the palette format lives in the
@@ -105,6 +105,8 @@ from celpix.ui.main_window.selection import (
     SelectionMixin,
 )
 from celpix.ui.main_window.session import SessionMixin
+from celpix.ui.main_window.stamp_tool import StampToolMixin
+from celpix.ui.main_window.tile_source_dock import TileSourceDockMixin
 from celpix.ui.main_window.tilemap_bar import TilemapBarMixin
 from celpix.ui.main_window.tilemap_edit import TilemapEditMixin
 from celpix.ui.main_window.transfer import TransferMixin
@@ -160,6 +162,8 @@ class MainWindow(
     SessionMixin,
     TilemapBarMixin,
     TilemapEditMixin,
+    TileSourceDockMixin,
+    StampToolMixin,
     CapabilitySyncMixin,
     RenderingMixin,
     EntriesMixin,
@@ -303,9 +307,16 @@ class MainWindow(
         # Likewise the rearrangement: _refresh_view renders through the map, so
         # it has to be there before anything can draw.
         self._init_rearrange()
+        # And the stamp tool, whose button the same toolbar builds and whose
+        # armed flag _set_edit_mode reads on its way past.
+        self._init_stamp()
         # And the pinned palette regions, for the same reason: _refresh_view asks
         # them for every slot's subpalette row before it can draw anything.
         self._init_palette_regions()
+        # Whether a sprite map shows its empty frame slots. Here rather than with
+        # the binding bar that owns the box, because _refresh_view's view capture
+        # reads it and the bar is built after this point.
+        self._show_all_frames = False
         # The visit trail, before the first entry can become current (the empty
         # state at the tail of this method already is a current-entry change).
         self._init_history()
@@ -319,6 +330,7 @@ class MainWindow(
         self._canvas.rearrange_moved.connect(self._on_rearrange_moved)
         self._canvas.rearrange_dropped.connect(self._on_rearrange_dropped)
         self._canvas.rearrange_cancelled.connect(self._on_rearrange_cancelled)
+        self._connect_stamp_canvas()
         # Right-click the canvas for the clipboard actions (the canvas selects
         # the tile under the cursor first, unless it is already in the run).
         self._canvas.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -404,6 +416,7 @@ class MainWindow(
 
         self._build_files_dock()  # before _build_menus: the toggles go in menus
         self._build_palette_dock()
+        self._build_tile_source_dock()  # after palette dock: tabs onto it
         self._connect_pixel_palette()  # after palette dock: needs its swatch grid
         self._build_hex_dock()
         self._build_clipboard_actions()  # before _build_menus: shared with it
@@ -453,6 +466,7 @@ class MainWindow(
         )
         self._files_panel.new_bookmark_requested.connect(self._new_bookmark_for)
         self._files_panel.change_container_requested.connect(self._change_container_for)
+        self._files_panel.container_info_requested.connect(self._show_container_info)
         self._files_panel.use_palette_requested.connect(self._use_palette_entry)
         self._files_panel.edit_slice_requested.connect(self._edit_slice)
         self._files_panel.jump_to_source_requested.connect(self._jump_to_slice_source)
@@ -764,7 +778,7 @@ class MainWindow(
         open_tilemap = QAction("Open &tilemap data…", self)
         open_tilemap.setToolTip(
             "Read a file as a map of tile indices\n"
-            "Bind it to the tiles it draws from in the bar under the canvas"
+            "Bind it to its tiles in the bar under the canvas"
         )
         open_tilemap.triggered.connect(self._open_tilemap)
         file_menu.addAction(open_tilemap)
@@ -850,6 +864,18 @@ class MainWindow(
         self._change_container_action.triggered.connect(self._change_container_current)
         self._change_container_action.setEnabled(False)
         file_menu.addAction(self._change_container_action)
+
+        # Mnemonic "i": beside the container it reports on, since the two answer
+        # the same question from opposite ends — what is this file being read as,
+        # and what did that reading make of it.
+        self._container_info_action = QAction("Container &Info…", self)
+        self._container_info_action.setToolTip(
+            "What this file's container read out of it:\n"
+            "the header fields it used, and what it passed on"
+        )
+        self._container_info_action.triggered.connect(self._container_info_current)
+        self._container_info_action.setEnabled(False)
+        file_menu.addAction(self._container_info_action)
 
         file_menu.addSeparator()
 
@@ -969,7 +995,6 @@ class MainWindow(
         self._show_tile_ids_action = QAction("Show Tile I&Ds", self, checkable=True)
         self._show_tile_ids_action.setToolTip(
             "Number each cell with the tile it names, in hex\n"
-            "Drawn in the grid's own color, in the cell's top-left\n"
             "The file's own number, before Base tile is applied"
         )
         self._show_tile_ids = load_bool_setting(TILE_IDS_KEY, False)
@@ -1002,9 +1027,8 @@ class MainWindow(
         """
         self._entire_file = QAction("&Entire File", self, checkable=True)
         self._entire_file.setToolTip(
-            "Show the whole file at once, ignoring Rows.\n"
-            "Every row is decoded on each redraw, so this\n"
-            "is slow on large files."
+            "Show the whole file at once, ignoring Rows\n"
+            "Every row redecodes on each redraw - slow on big files"
         )
         self._entire_file.setChecked(load_bool_setting(ENTIRE_FILE_KEY, False))
         self._entire_file.toggled.connect(self._on_entire_file_change)
@@ -1275,7 +1299,8 @@ class MainWindow(
         self._on_grid_style_change(following)
 
     def _build_panels_menu(self) -> None:
-        """Panels ▸ show/hide the dockable panels (Files, Palette, Hex)."""
+        """Panels ▸ show/hide the dockable panels (Files, Palette, Tile Source,
+        Hex)."""
         menu = self.menuBar().addMenu("Pane&ls")
         files_toggle = self._files_dock.toggleViewAction()
         files_toggle.setText("&Files Panel")
@@ -1283,6 +1308,11 @@ class MainWindow(
         palette_toggle = self._palette_dock.toggleViewAction()
         palette_toggle.setText("&Palette Panel")
         menu.addAction(palette_toggle)
+        # Listed beside Palette, which it shares a tab bar with: closing one
+        # leaves the other holding the space, and the way back to either is here.
+        tile_source_toggle = self._tile_source_dock.toggleViewAction()
+        tile_source_toggle.setText("&Tile Source Panel")
+        menu.addAction(tile_source_toggle)
         # The tools rail is not listed: it is a plain widget rather than a dock,
         # always on screen beside the canvas, and greys itself out whenever pixel
         # editing is off - so there is nothing for a show/hide entry to do.

@@ -90,10 +90,11 @@ class PaletteDockMixin:
         frame = 2 * holder.frameWidth()
         holder.setMinimumSize(full.width() + frame, full.height() + frame)
 
-        # Same compact treatment as the pixel dropdown, at half its natural
-        # width - the four mode labels don't need the full width the longest
-        # ("Emulator State") reserves.
-        self._palette_mode_combo = CompactComboBox(0.7)
+        # Same compact treatment as the pixel dropdown, and narrower than it: this
+        # is a fixed list of five short mode labels rather than a registry of
+        # format names, so it needs about the width of "Emulator State" and no
+        # room for a plugin to widen it later.
+        self._palette_mode_combo = CompactComboBox(120)
         self._palette_mode_combo.setToolTip("Where the palette comes from")
         for label, mode in (
             ("Default", PaletteMode.DEFAULT),

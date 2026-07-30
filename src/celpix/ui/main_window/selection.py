@@ -140,6 +140,11 @@ class SelectionMixin:
         # - documents R/Shift+R by the same route every other key is.
         menu.addAction(self._toggle_rearrange_action)
         menu.addAction(self._show_rearranged_action)
+        # The stamp tool's row, on the same terms: the transform bar holds its
+        # checkable button, and this is what documents T for the F1 guide, which
+        # reads the menu bar. Hidden off a tilemap rather than greyed - a mode
+        # for placing cells is not a feature switched off on a pixel document.
+        menu.addAction(self._toggle_stamp_action)
         # Enabled state depends on the clipboard's contents, which any other
         # program can change while we sit idle - so track the signal rather than
         # only recomputing when the menu opens.
@@ -660,6 +665,10 @@ class SelectionMixin:
         # would sit greyed over a live selection showing the cell before last
         # (:meth:`~...tilemap_bar.TilemapBarMixin._sync_cell_index`).
         self._sync_cell_index()
+        # The tile source panel's ring is in the same position for the same
+        # reason: it marks the tile the selected cell names, and a selection
+        # moves without anything being re-rendered.
+        self._sync_tile_source_marker()
         self._palette_from_selection_action.setEnabled(has)
         self._sync_pin_actions()
         # Only whole files spawn slices - slices never nest. Nor does a tilemap:

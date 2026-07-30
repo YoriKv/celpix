@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from celpix.core.address import format_hex
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.notices import (
@@ -436,3 +437,118 @@ def test_a_plugin_may_record_notices_and_then_fail() -> None:
     with pytest.raises(ValueError):
         _Doomed().read(ReadSource(b""), ctx)
     assert [n.summary for n in notices(ctx)] == ["header looked odd"]
+
+
+def _report_for(path, container_id: str):
+    """The container-info report for ``path`` read through ``container_id``."""
+    return pipeline.inspect_container(
+        PathwayConfig(
+            source=FileRef((str(path),)),
+            interpret_preset_id="",
+            container_id=container_id,
+        ),
+        default_registry(),
+    )
+
+
+def test_container_report_separates_parsed_fields_from_published_hints(
+    tmp_path,
+) -> None:
+    """A report attributes every row to the container, and only to it.
+
+    The three groups have to stay apart: what the plugin says it read, what its
+    read published forward, and the host's own provenance — which must *not*
+    appear as a hint, having been put on the context before the container ran.
+    """
+    # 2 PRG banks then 1 CHR bank, so the payload starts somewhere non-obvious.
+    rom = bytes([*b"NES\x1a", 2, 1, 0, 0]) + bytes(8) + bytes(2 * 16384) + bytes(8192)
+    cart = tmp_path / "cart.nes"
+    cart.write_bytes(rom)
+
+    report = _report_for(cart, "container.ines")
+    assert not report.error
+    assert report.source_size == len(rom) and report.payload_size == 8192
+    assert report.payload_offset == 16 + 2 * 16384
+
+    fields = {f.name: f.value for f in report.fields}
+    assert fields["PRG banks"].startswith("2 ") and fields["CHR banks"].startswith("1 ")
+    assert all(f.detail for f in report.fields)  # every row explains its value
+
+    # The one hint an iNES read publishes, in the app's own hex, and labelled
+    # rather than left as the raw key.
+    assert [(f.name, f.value) for f in report.hints] == [
+        ("Payload offset", format_hex(16 + 2 * 16384))
+    ]
+    assert report.notices == ()
+
+
+def test_container_report_survives_a_read_that_fails(tmp_path) -> None:
+    """A failed read still reports — including what the plugin managed to say.
+
+    The popup exists to explain a file that did not open as expected, so the
+    failure is a row in the report rather than an exception out of it. Notices
+    recorded on the way to the failure are kept: they are usually the reason.
+    """
+    doomed = tmp_path / "cart.nes"
+    doomed.write_bytes(b"not-an-ines-file")
+
+    class _Doomed:
+        info = PluginInfo(id="container.doomed", name="Doomed", stage=Stage.CONTAINER)
+
+        def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
+            warn(ctx, "header looked odd", source=self.info.id)
+            raise ValueError("and then it fell over")
+
+        def describe(self, source: ReadSource, ctx: PipelineContext):
+            raise RuntimeError("a display-only method must not take the popup down")
+
+    reg = default_registry()
+    reg.register(_Doomed())
+    report = pipeline.inspect_container(
+        PathwayConfig(
+            source=FileRef((str(doomed),)),
+            interpret_preset_id="",
+            container_id="container.doomed",
+        ),
+        reg,
+    )
+    assert "fell over" in report.error
+    assert report.fields == ()  # the describe that raised loses its rows only
+    assert [n.summary for n in report.notices] == ["header looked odd"]
+
+    # A container this build hasn't got names itself rather than reporting on
+    # the plain-bytes fallback the entry would degrade to.
+    gone = _report_for(doomed, "container.not-installed")
+    assert "container.not-installed" in gone.error
+
+
+def test_container_report_labels_a_plugins_own_hint_key(tmp_path) -> None:
+    """A key nobody has written a label for is still shown, under its own name.
+
+    The context is an open bag, so the popup cannot work from a fixed list: a
+    third-party container's hint has to reach the user, since something
+    downstream may be reading it.
+    """
+    source = tmp_path / "thing.bin"
+    source.write_bytes(bytes(64))
+
+    class _Chatty:
+        info = PluginInfo(id="container.chatty", name="Chatty", stage=Stage.CONTAINER)
+
+        def read(self, src: ReadSource, ctx: PipelineContext) -> bytes:
+            ctx.set("chatty.private-hint", 7)
+            return src.window()
+
+    reg = default_registry()
+    reg.register(_Chatty())
+    report = pipeline.inspect_container(
+        PathwayConfig(
+            source=FileRef((str(source),)),
+            interpret_preset_id="",
+            container_id="container.chatty",
+        ),
+        reg,
+    )
+    named = {f.name: f for f in report.hints}
+    assert named["chatty.private-hint"].value == "7"
+    assert "chatty.private-hint" in named["chatty.private-hint"].detail

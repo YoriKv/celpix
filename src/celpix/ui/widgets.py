@@ -323,15 +323,33 @@ def paint_selection_outline(painter: QPainter, rect: QRect, alpha: int = 255) ->
     painter.drawRect(rect.adjusted(1, 1, -2, -2))
 
 
-class CompactComboBox(QComboBox):
-    """A combo box whose closed button is a fraction of its natural width.
+# The width every **format picker** takes: pixel, palette, tilemap, compression
+# and arrangement. One number rather than five, because they are one kind of
+# control and a toolbar of them reads as a row — which is exactly what deriving
+# the width from the content could not give, since the registry decides how long
+# the longest preset name is and a plugin can make it longer at any time.
+PRESET_COMBO_WIDTH = 180
 
-    A stock combo reserves the full width of its longest item, which long entry
-    names turn into a lot of dead toolbar space. Scaling the size *hints*
-    (rather than fixing a pixel width) keeps the width proportional to the
-    contents, including after a repopulation — ``AdjustToContents`` makes Qt
-    re-query the hint whenever the model changes. The popup list is given back
-    the full content width, so entries stay readable while choosing.
+
+class CompactComboBox(QComboBox):
+    """A combo box whose closed button is a stated width in pixels.
+
+    A stock combo reserves the full width of its longest item, which long preset
+    and entry names turn into a lot of dead toolbar space. Asking for the width
+    outright is what keeps a row of them **predictable**: measured against the
+    live registry, deriving it from the content instead gave five sibling format
+    pickers five different widths — 166 to 220 px — decided by whichever preset
+    happened to have the longest name, and a picker that is filled per entry
+    changed width as the user moved between files.
+
+    Only the *hints* are set, so a layout may still stretch one past its number;
+    the popup list is given back the full content width, so entries stay readable
+    while choosing. The height stays Qt's own.
+
+    The width is in device-independent pixels and does **not** follow the font:
+    a system font much larger than the one these numbers were measured against
+    will elide the longest item down to the arrow. That is the trade for
+    predictability, and it is what the popup re-widening is there to soften.
     """
 
     # Emitted when the box loses focus for real — i.e. the user moved on to
@@ -340,25 +358,26 @@ class CompactComboBox(QComboBox):
     # across consecutive selections and drop it the moment focus leaves.
     focus_lost = Signal()
 
-    def __init__(self, scale: float, parent: QWidget | None = None) -> None:
+    def __init__(self, width: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._scale = scale
-        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._width = width
+        # No AdjustToContents: it exists to re-query the hint when the model
+        # changes, and the hint no longer depends on the model.
 
     def focusOutEvent(self, event) -> None:  # Qt override
         super().focusOutEvent(event)
         if event.reason() != Qt.FocusReason.PopupFocusReason:
             self.focus_lost.emit()
 
-    def _scaled(self, hint: QSize) -> QSize:
-        hint.setWidth(round(hint.width() * self._scale))
+    def _fixed(self, hint: QSize) -> QSize:
+        hint.setWidth(self._width)
         return hint
 
     def sizeHint(self) -> QSize:  # Qt override
-        return self._scaled(super().sizeHint())
+        return self._fixed(super().sizeHint())
 
     def minimumSizeHint(self) -> QSize:  # Qt override
-        return self._scaled(super().minimumSizeHint())
+        return self._fixed(super().minimumSizeHint())
 
     def showPopup(self) -> None:  # Qt override
         # The popup would inherit the narrowed button width; re-widen it to the

@@ -31,7 +31,13 @@ from __future__ import annotations
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.notices import warn
-from celpix.plugins.base import PluginInfo, ReadSource, WriteTarget, splice
+from celpix.plugins.base import (
+    ContainerField,
+    PluginInfo,
+    ReadSource,
+    WriteTarget,
+    splice,
+)
 
 # int: group width whose reversal converts this file between its on-disk order
 # and native order (2 = .v64, 4 = .n64); 0 = already native. Set by Read so Write
@@ -122,3 +128,37 @@ class N64RomContainer:
         # rest of the app has been addressing.
         native = splice(swap_groups(dest.existing, width), dest.offset, data)
         return swap_groups(native, width)
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        head = bytes(source.data[:4])
+        width = swap_width(head)
+        order = {
+            0: ".z64 big-endian (native)",
+            2: ".v64 byteswapped",
+            4: ".n64 little-endian",
+        }
+        return (
+            ContainerField(
+                "Header bytes",
+                " ".join(f"{byte:02X}" for byte in head),
+                "The same four header bytes in whichever order this dump\n"
+                "was made in - the only thing that says which of the\n"
+                "three it is, the suffix being no guarantee.",
+            ),
+            ContainerField(
+                "Byte order",
+                order.get(width, "unrecognised - assumed native"),
+                "Read normalises the file to native order, which is what\n"
+                "every published N64 offset is quoted in and what the\n"
+                "tiles have to be in to decode.",
+            ),
+            ContainerField(
+                "Swap width",
+                f"{width}-byte groups reversed" if width else "none - read as it lies",
+                "Carried forward so the save can restore the order the\n"
+                "file arrived in: by then the bytes in hand are\n"
+                "normalised and no longer say which order that was.",
+            ),
+        )

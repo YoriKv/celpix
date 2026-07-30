@@ -43,6 +43,7 @@ from dataclasses import replace
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -91,12 +92,14 @@ class TilemapBarMixin:
         rows.addLayout(offset_row)
 
         row.addWidget(QLabel("Tiles "))
-        self._tile_binding = CompactComboBox(0.6)
+        # Wider than the mode pickers because it holds *file names*, which have no
+        # bound at all — and a stated width is what stops it resizing the bar
+        # every time the user opens an entry with a longer name than the last.
+        self._tile_binding = CompactComboBox(160)
         self._tile_binding.setToolTip(
-            "Where this map draws from: an open entry, whose\n"
-            "live edits it follows. Another tilemap works too -\n"
-            "each cell then stamps one of its cells, attributes\n"
-            "and all, and that map must reach a graphics file."
+            "Which open entry supplies this map's tiles\n"
+            "Its edits follow through live\n"
+            "A tilemap works too: each cell stamps one of its cells"
         )
         self._tile_binding.activated.connect(self._on_tile_binding_change)
         row.addWidget(self._tile_binding)
@@ -128,10 +131,8 @@ class TilemapBarMixin:
         self._tile_base = self._tilemap_hex_spin(
             -0xFFFF,
             0xFFFF,
-            "Shifts every cell: cell N draws source tile base + N.\n"
-            "Use it when the map and its tiles number from\n"
-            "different places — negative when the map starts\n"
-            "partway into a bank the source slice begins at.",
+            "Shifts every cell: cell N draws source tile base + N\n"
+            "Negative when the map starts partway into its source",
         )
         self._tile_base.valueChanged.connect(self._on_tile_base_change)
         row.addWidget(self._tile_base)
@@ -145,12 +146,9 @@ class TilemapBarMixin:
         row.addWidget(self._row_base_label)
         self._row_base = self._spin(-255, 255, 0, self._on_row_base_change)
         self._row_base.setToolTip(
-            "Which palette row a cell's row 0 draws through.\n"
-            "Starts at what the format says - a sprite's rows\n"
-            "count from CGRAM row 8 - and is yours to change\n"
-            "when the palette you loaded is not the whole of\n"
-            "CGRAM: 0 for the object half on its own, negative\n"
-            "for a palette holding only the upper rows."
+            "Which palette row a cell's row 0 draws through\n"
+            "Starts where the format says (8 for a sprite)\n"
+            "Lower it when your palette holds only part of CGRAM"
         )
         row.addWidget(self._row_base)
 
@@ -169,12 +167,9 @@ class TilemapBarMixin:
         self._size_pair_label = QLabel("Subsprite ")
         row.addWidget(self._size_pair_label)
         tip = (
-            "The two sizes this object's subsprites choose\n"
-            "between, each a square that many tiles on a side -\n"
-            "one stores a bit, not a size. No sprite file records\n"
-            "the pair: it was a register the game set per scene,\n"
-            "so the format names the commonest and the rest is\n"
-            "yours."
+            "The two sizes a subsprite's size bit picks between,\n"
+            "each a square that many tiles on a side\n"
+            "No file records the pair - it was a hardware register"
         )
         self._size_small_label = QLabel("Sm ")
         self._size_small_label.setToolTip(tip)
@@ -188,6 +183,25 @@ class TilemapBarMixin:
         self._size_large = self._spin(1, 8, 2, self._on_size_pair_change)
         self._size_large.setToolTip(tip)
         row.addWidget(self._size_large)
+
+        # Beside the pair because it is the other half of "what is on this
+        # sheet", and sprite-only for the same reason: only a sprite map has
+        # frame *slots* it may not have filled. A file has room for a fixed 32 or
+        # 128 of them and most are empty, so the strip stops after the last one
+        # holding a drawn subsprite; this shows the rest.
+        #
+        # Not undoable, unlike everything else on this bar. Those set project
+        # state the file does not record - a binding, a size pair - and this only
+        # says how much of the file to look at, which is the reading Show
+        # Rearranged Tiles and Show Palette Regions already get.
+        self._all_frames = QCheckBox("All Frames")
+        self._all_frames.setToolTip(
+            "Show every frame slot the file has room for\n"
+            "Off stops after the last frame that draws something -\n"
+            "a file holds 32 or 128 and most are empty"
+        )
+        self._all_frames.toggled.connect(self._on_all_frames_change)
+        row.addWidget(self._all_frames)
 
         # In the **same slot** as the subsprite pair, and the two never share it:
         # one is a sprite map's answer to "how big are these records", the other a
@@ -203,7 +217,9 @@ class TilemapBarMixin:
         self._assembly_label = QLabel("Assembly ")
         self._assembly_label.setToolTip(ASSEMBLY_TIP)
         row.addWidget(self._assembly_label)
-        self._assembly = CompactComboBox(0.45)
+        # The narrowest combo in the app, and it can be: every label it will ever
+        # hold is three characters ("2×2"), so this is arrow plus room for them.
+        self._assembly = CompactComboBox(70)
         self._assembly.setToolTip(ASSEMBLY_TIP)
         self._assembly.activated.connect(self._on_assembly_change)
         row.addWidget(self._assembly)
@@ -220,10 +236,8 @@ class TilemapBarMixin:
             0,
             0xFFFF,
             "The tile the selected cells name - set it to point\n"
-            "them somewhere else. On a map that draws through\n"
-            "another tilemap this is which of *its* cells to\n"
-            "stamp, so the tile and its attributes both follow.\n"
-            "Its range is whatever the cell format can hold.",
+            "them somewhere else\n"
+            "On a chained map it is which source cell to stamp",
         )
         self._cell_index.valueChanged.connect(self._on_cell_index_change)
         row.addWidget(self._cell_index)
@@ -310,6 +324,7 @@ class TilemapBarMixin:
         self._sync_binding_jump(source)
         self._sync_row_base()
         self._sync_size_pair()
+        self._sync_all_frames()
         self._sync_cell_index()
         self._tile_binding_note.setText(self._binding_note(entry, source))
 
@@ -337,10 +352,10 @@ class TilemapBarMixin:
         bound = self._binding_target(source)
         self._tile_binding_jump.setEnabled(bound is not None)
         self._tile_binding_jump.setToolTip(
-            f"Show {bound.name} - the entry these tiles come from\n"
-            "Back (Alt+Left, or the mouse's back button) returns here"
+            f"Show {bound.name} - where these tiles come from\n"
+            "Back (Alt+Left) returns here"
             if bound is not None
-            else "Show the entry the tiles come from\nNothing is bound yet"
+            else "Show where the tiles come from\nNothing is bound yet"
         )
 
     def _sync_row_base(self) -> None:
@@ -436,6 +451,47 @@ class TilemapBarMixin:
             replace(before, size_pair=pair),
             f"set subsprite size to {pair[0]} or {pair[1]} tiles",
         )
+
+    def _sync_all_frames(self) -> None:
+        """Show the All Frames box on a sprite map, holding the entry's choice.
+
+        Gated on the **format** exactly as the size pair beside it is, and for
+        the same reason it is not in the capability table: having frame slots is
+        a property of the cell format, not of the content kind, so a grid tilemap
+        is not a document with this switched off — it has no frames to count
+        (``docs/design/tilemap-entry.md`` §4). Hidden rather than disabled on that
+        rule, which is the one the whole bar is built on.
+
+        Signal-blocked, because this is a restore: the entry switch that brought
+        us here has already put the value on the window, and letting the box
+        re-emit would push the outgoing entry's answer onto the incoming one.
+        """
+        entry = self._workspace.current
+        sprite = entry is not None and self._tilemap_is_sprite(entry)
+        self._all_frames.setVisible(sprite)
+        if not sprite:
+            return
+        with signals_blocked(self._all_frames):
+            self._all_frames.setChecked(self._show_all_frames)
+
+    def _on_all_frames_change(self, on: bool) -> None:
+        """Redraw with the empty frame slots shown, or without them.
+
+        A **view** toggle, so no re-read and no undo step: the frames are all
+        decoded either way (``Document.sprite_frames`` holds every slot), and
+        this only says how many of them the sheet lays out. That also makes it
+        cheap enough to be a checkbox rather than a reload the way the size pair
+        beside it is.
+
+        The refresh is what lands it: the capture at the top of that cycle puts
+        the window's answer into ``doc.view``, which is where the sheet geometry,
+        the image and an export all read it (``Document.shown_frames``).
+        """
+        if self._show_all_frames == on:
+            return
+        self._show_all_frames = on
+        if self._doc is not None:
+            self._refresh_view()
 
     def _sync_cell_index(self) -> None:
         """Show the selected cell's reference, ranged to what the format allows.

@@ -105,6 +105,76 @@ KEY_TILE_PALETTE_ROWS = "pixel.tile-palette-rows"
 # read or written through them.
 
 
+# What each well-known key is called when it is *shown to the user*, and what
+# acting on it does — the container-info popup lists the hints a container
+# published and has to say more than the raw key. Beside the keys rather than in
+# the UI so the two cannot drift, and only the ones a **container** can publish:
+# the rest are stage-to-stage plumbing with nothing for a reader to act on.
+#
+# The second string is a tooltip, so it follows the tooltip rule: hard-wrapped at
+# ~60 characters, one clause per line (Qt never wraps a plain-text tooltip).
+HINT_INFO: dict[str, tuple[str, str]] = {
+    KEY_SOURCE_OFFSET: (
+        "Payload offset",
+        "Where in the file the bytes this entry shows begin.\n"
+        "Every address in the view and every slice carved from\n"
+        "it is anchored here.",
+    ),
+    KEY_TILEMAP_COLUMNS: (
+        "Map width",
+        "How many cells across the map is laid out at.\n"
+        "Fixed by the format; without it the width is a guess,\n"
+        "and a wrong one shears the picture into diagonal stripes.",
+    ),
+    KEY_TILEMAP_CELL_TILES: (
+        "Cell size",
+        "How many tiles one cell covers, when the header says.\n"
+        "Read small, a metatile map draws one quarter of every\n"
+        "cell and drops the rest.",
+    ),
+    KEY_TILEMAP_PAGE_ROWS: (
+        "Page height",
+        "The file is several independent maps end to end, this\n"
+        "many cell rows each. How they assemble into one larger\n"
+        "picture is yours to choose - the file does not say.",
+    ),
+    KEY_TILEMAP_ENDIAN: (
+        "Cell byte order",
+        "The byte order this file's cells are in, where the file\n"
+        "itself states it. Overrides the format preset, the file\n"
+        "being the better authority about its own bytes.",
+    ),
+    KEY_PIXEL_PRESET: (
+        "Pixel format",
+        "The graphics format the container believes its payload\n"
+        "is in, from the file's own header. It seeds the format\n"
+        "picker; you own the choice after that.",
+    ),
+    KEY_TILE_PALETTE_ROWS: (
+        "Per-tile palette rows",
+        "A side table naming the palette row each tile is meant\n"
+        "to be read under, which is what pinned palette regions\n"
+        "otherwise have to be told by hand.",
+    ),
+    KEY_PALETTE_ERROR: (
+        "Palette read error",
+        "The colors shown are a placeholder, not the file's:\n"
+        "decoding them the chosen way failed. Correct the format\n"
+        "in the palette dock to read the real ones.",
+    ),
+}
+
+
+def hint_info(key: str) -> tuple[str, str]:
+    """``(label, what it means)`` for a context key; the bare key when unknown.
+
+    A plugin may define keys of its own, so the fallback shows the key itself
+    rather than hiding a hint nobody has written a label for — an unexplained row
+    is still evidence that something was published.
+    """
+    return HINT_INFO.get(key, (key, ""))
+
+
 class PipelineContext:
     """An open key/value bag of advisory recommendations, per pathway."""
 
@@ -118,6 +188,17 @@ class PipelineContext:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._entries.get(key, default)
+
+    def items(self) -> dict[str, Any]:
+        """Everything recorded here, for a caller that has to enumerate the bag.
+
+        A copy, so a reader cannot write through it: the bag is open and stages
+        add to it in order, which is a contract the enumerating side has no part
+        in. What needs it is the container-info popup — "what did this container
+        publish" has no answer that consults keys one at a time, since a plugin
+        may have defined its own.
+        """
+        return dict(self._entries)
 
     def __repr__(self) -> str:
         return f"PipelineContext({sorted(self._entries)})"

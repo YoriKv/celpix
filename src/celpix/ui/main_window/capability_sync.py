@@ -94,12 +94,23 @@ _GATES: dict[Capability, tuple[str, ...]] = {
         "_show_palette_regions_action",
         "_show_palette_rows_action",
     ),
+    # The three switches are gated from here, but the tool's *state* is not
+    # something this pass can reach: an armed tool has to be put down, not greyed
+    # over. ``RearrangeMixin._rearrange_available`` asks :meth:`_can` for that,
+    # the way the Cell spin does under STAMP (see _GATED_IN_PLACE's note) — and it
+    # is also what re-decides these three, so none of them is _GATE_OWNS'.
     Capability.TILE_REARRANGE: (
         "_rearrange_action",
         "_toggle_rearrange_action",
         "_show_rearranged_action",
     ),
     Capability.CELL_LABELS: ("_show_tile_ids_action",),
+    # The Edit Tiles mode. Hidden rather than greyed off a tilemap: a tool for
+    # placing cells is not a feature switched off on a pixel document, it is
+    # furniture for a different room — the reading the pixel tools rail gets.
+    # The Cell spin rides on this capability too and gates itself, because it
+    # needs the format's word as well (see _GATED_IN_PLACE's note).
+    Capability.STAMP: ("_stamp_action", "_toggle_stamp_action"),
     Capability.NAVIGATION: ("_tile_offset_bar",),
     Capability.IMPORT_IMAGE: ("_import_png_action",),
     Capability.CLIPBOARD: ("_copy_action", "_cut_action", "_paste_action"),
@@ -120,10 +131,16 @@ _GATES: dict[Capability, tuple[str, ...]] = {
 # on a non-square *tile*, so the kind's answer joins a condition the transform bar
 # was weighing anyway rather than arriving as a separate veto
 # (:meth:`~...transform.TransformMixin._sync_transform_actions`).
+# ``STAMP`` is deliberately **not** here, though its Cell spin still asks
+# :meth:`_can` itself. The capability's gate is the table's — it hides the Edit
+# Tiles mode, which needs only the kind's answer — and the spin's extra
+# conditions (cells this file can edit, a format with an index field) are a
+# finer question underneath it rather than a second place the capability is
+# gated. A capability sits in exactly one bucket; a control may still weigh more
+# than that bucket says.
 _GATED_IN_PLACE = frozenset(
     {
         Capability.TILE_BINDING,  # tilemap_bar._sync_tilemap_bar — the stack swap
-        Capability.STAMP,  # tilemap_bar._sync_cell_index — plus the format's word
         Capability.CELL_ROTATE,  # transform._sync_transform_actions
     }
 )
@@ -163,6 +180,8 @@ _UNGATED = frozenset(
 _HIDDEN = frozenset(
     {
         "_tools_panel",
+        "_stamp_action",
+        "_toggle_stamp_action",
         "_tile_offset_bar",
         "_pixel_codec_action",
         "_tilemap_codec_action",
@@ -185,7 +204,6 @@ _GATE_OWNS = frozenset(
         "_edit_mode_action",
         "_show_palette_regions_action",
         "_show_palette_rows_action",
-        "_show_rearranged_action",
         "_show_tile_ids_action",
         # Hidden groups have to be in here too, or the veto below would leave a
         # group disabled behind its own hiding and it would come back grey.
@@ -258,7 +276,9 @@ class CapabilitySyncMixin:
 
         Nothing open leaves the pixel controls as they were, which is what every
         other empty-state path already assumes: they are disabled for want of a
-        document, not for want of a capability.
+        document, not for want of a capability. It is also the honest answer for
+        a bar that configures the *next* open — an empty window is waiting for a
+        pixel file until told otherwise, and the tilemap controls go.
         """
         entry = self._workspace.current
         return entry.content_kind if entry is not None else ContentKind.PIXELS
@@ -309,6 +329,13 @@ class CapabilitySyncMixin:
         Runs last in the refresh cycle so its veto is the final word — an
         earlier pass may have enabled a control on grounds that are true in
         general and beside the point for this kind of document.
+
+        And last in the **empty** state (``SessionMixin._show_empty``), which is
+        not the same path: a render needs a document, so a pass that only ran
+        from one would leave the bar showing whatever the last entry needed —
+        or, before anything had been opened, whatever the toolbar was built
+        with. Nothing open answers ``PIXELS`` here, so the empty window is
+        gated as the kind it is about to read rather than as a special case.
         """
         for capability, names in _GATES.items():
             allowed = self._can(capability)

@@ -65,24 +65,20 @@ __all__ = ["ContainerDialog", "ContainerEdit"]
 
 _TIP = (
     "How this file's bytes are unwrapped before decoding:\n"
-    "a header to skip, an interleave to undo, a wrapper to strip.\n"
-    "Raw binary file passes every byte through untouched."
+    "a header to skip, an interleave to undo, a wrapper to strip\n"
+    "Raw binary file passes every byte through untouched"
 )
 
 _RESHAPE_TIP = (
-    "A region-scoped byte reordering undone after the container:\n"
-    "a plane-per-chip split joined back together, a ROM-pair\n"
-    "word interleave woven into one stream. Applies to the whole\n"
-    "region; while one is active, addresses and slice carving\n"
-    "are off, since view positions no longer name file offsets."
+    "A byte reordering undone after the container:\n"
+    "a plane-per-chip split, a ROM-pair word interleave\n"
+    "Turns addresses and slice carving off while active"
 )
 
 _FILES_TIP = (
-    "Every file this entry's bytes come from, joined end to end\n"
-    "in this order. Most entries are a list of one; an arcade\n"
-    "board's graphics are often several ROM chips that only mean\n"
-    "something together. Nothing in the files says which chip\n"
-    "comes first, so the order here is the one that is used."
+    "Every file this entry's bytes come from, in this order\n"
+    "Usually one; an arcade board's graphics are often several\n"
+    "ROM chips, and nothing in them says which comes first"
 )
 
 # Past this many rows the list scrolls instead of the dialog growing: a board

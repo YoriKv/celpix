@@ -28,6 +28,7 @@ from __future__ import annotations
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins.base import (
+    ContainerField,
     PluginInfo,
     ReadSource,
     WriteTarget,
@@ -86,3 +87,79 @@ class GbRomContainer:
         # A whole-file write into nothing leaves the spliced buffer *as* the ROM.
         # Either way the checksums are computed over the final bytes.
         return repair_checksums(splice(dest.existing, dest.offset, data))
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        # Every field here is one the *write* half acts on: the read strips
+        # nothing, so what is worth reporting is what a save would change.
+        raw = source.data
+        logo = raw[_LOGO_AT : _LOGO_AT + len(_LOGO_HEAD)] == _LOGO_HEAD
+        fields = [
+            ContainerField(
+                "Boot logo",
+                "matches" if logo else "does not match",
+                "The bitmap at 0x104 the boot ROM compares against. It\n"
+                "identifies the file as a real cartridge dump, which the\n"
+                "suffix alone does not; nothing is read past it.",
+            ),
+            ContainerField(
+                "Payload",
+                "the whole file, unchanged",
+                "A Game Boy ROM needs no unwrapping - its bytes decode\n"
+                "where they lie. This container exists for its write\n"
+                "half, which repairs the two checksums below.",
+            ),
+        ]
+        if len(raw) < _HEADER_END:
+            fields.append(
+                ContainerField(
+                    "Checksums",
+                    "no header to repair",
+                    f"A file under {_HEADER_END:#x} bytes holds no cartridge\n"
+                    "header, so a save writes it through untouched rather\n"
+                    "than inventing one.",
+                )
+            )
+            return tuple(fields)
+        repaired = repair_checksums(bytes(raw))
+        stored_header = raw[_HEADER_SUM_AT]
+        stored_global = int.from_bytes(raw[_GLOBAL_SUM_AT : _GLOBAL_SUM_AT + 2], "big")
+        fields.append(
+            ContainerField(
+                "Header checksum",
+                _sum_value(stored_header, repaired[_HEADER_SUM_AT], "02X"),
+                "The byte at 0x14D, summed over the title and cartridge\n"
+                "fields. The boot ROM refuses to run a cartridge whose\n"
+                "copy disagrees, so a save always recomputes it.",
+            )
+        )
+        fields.append(
+            ContainerField(
+                "Global checksum",
+                _sum_value(
+                    stored_global,
+                    int.from_bytes(
+                        repaired[_GLOBAL_SUM_AT : _GLOBAL_SUM_AT + 2], "big"
+                    ),
+                    "04X",
+                ),
+                "The word at 0x14E, the sum of every other byte in the\n"
+                "ROM. Graphics live inside it, so every tile edit makes\n"
+                "it stale; no boot ROM checks it, but cartridge tooling\n"
+                "and ROM databases do.",
+            )
+        )
+        return tuple(fields)
+
+
+def _sum_value(stored: int, computed: int, spec: str) -> str:
+    """``0xNN`` when the file's copy is right, both values when it is not.
+
+    Which it is, is the only question worth answering here: a dump whose
+    checksums already disagree was edited by something that did not repair them,
+    and a save through celPix will quietly correct it.
+    """
+    if stored == computed:
+        return f"0x{stored:{spec}} (correct)"
+    return f"0x{stored:{spec}} in file, 0x{computed:{spec}} correct"

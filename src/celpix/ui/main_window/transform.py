@@ -359,6 +359,11 @@ class TransformMixin:
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
         self._build_rearrange_actions(bar)
+        # Beside the rearrange pair rather than beyond the separator: it is the
+        # fourth of the exclusive modes over this canvas, and the one a tilemap
+        # actually has — where those two are hidden or greyed, this is the tool
+        # in that place (``stamp_tool.py``).
+        self._build_stamp_actions(bar)
         bar.addSeparator()
         self._edit_mode_action = QAction("Pixel Mode", self)
         self._edit_mode_action.setCheckable(True)
@@ -380,7 +385,7 @@ class TransformMixin:
         beside them. Connected after the initial select so seeding the saved value
         doesn't fire the change handler.
         """
-        self._selection_shape = CompactComboBox(1.00)
+        self._selection_shape = CompactComboBox(100)
         for shape, label in (
             (SelectionShape.LINEAR, "Linear"),
             (SelectionShape.RECT, "Rectangle"),

@@ -29,6 +29,14 @@ rearrangement.
 The **right** drag takes over tile selection there: picking the block to carry is
 what the left button would otherwise be for, and the tool has no context menu to
 displace.
+
+The **stamp tool** (:meth:`Canvas.set_stamping`) sits beside it, the same modal
+flag checked ahead of the same split, and is a tilemap's tool as the rearrange
+one is a pixel document's. It claims **both** buttons through the ``stamp_*``
+signals — left lays a tile into the cell under the cursor and keeps laying it
+through a drag, right picks the one already there — so unlike the rearrange tool
+it leaves no button for selection. It paints no overlay of its own: what a stamp
+changes is the picture itself, and the controller re-renders it.
 """
 
 from __future__ import annotations
@@ -223,6 +231,17 @@ class Canvas(QWidget):
     rearrange_moved = Signal(int)  # slot dragged over
     rearrange_dropped = Signal(int)  # slot released on
     rearrange_cancelled = Signal()
+    # Stamp-tool gestures, in window slots. Emitted only while the tool is armed
+    # (:meth:`set_stamping`) — laying a tile into a cell is neither a selection
+    # nor a paint stroke, so like the rearrange tool it gets its own gesture
+    # rather than overloading one of theirs. ``stamp_pressed`` carries the button,
+    # because the two do opposite things: left lays the held tile down, right
+    # picks the one already there. A left drag keeps emitting ``stamp_moved`` so
+    # the tool paints like a pencil, and ``stamp_finished`` closes the stroke —
+    # the whole drag is one undoable step, not one per cell crossed.
+    stamp_pressed = Signal(int, object)  # slot, Qt.MouseButton
+    stamp_moved = Signal(int)  # slot dragged over, left button held
+    stamp_finished = Signal()  # the left drag ended
     # A space-drag pan step, in device pixels: how far to shift the view. The
     # window feeds it to the scroll bars, which clamp it so the image can't be
     # dragged off screen. Emitted in either edit mode.
@@ -291,6 +310,13 @@ class Canvas(QWidget):
         self._rearranging = False
         self._rearrange_drag = False
         self._rearrange_slot: int | None = None
+        # Stamp tool: the same shape as the rearrange flags above — a modal flag
+        # checked before the mode split, a drag in progress, and the last slot
+        # reported so crossing within one cell emits nothing. Armed over tile
+        # mode and never together with either of the other two.
+        self._stamping = False
+        self._stamp_drag = False
+        self._stamp_slot: int | None = None
         # Where a rearrange drag would land, and whether it may: the controller
         # decides (a drop that would overlap its own source is refused), the
         # canvas only draws it.
@@ -476,6 +502,30 @@ class Canvas(QWidget):
         self._apply_cursor()
         self.update()
 
+    def set_stamping(self, on: bool) -> None:
+        """Arm/disarm the stamp tool.
+
+        Modal over the mouse while armed, like the rearrange tool: a left press
+        lays a tile into the cell under it and a right press picks the one
+        already there, so neither button is left to select tiles with. Toggling
+        ends any stroke in progress — the controller is told, so a half-made
+        drag is committed rather than stranded — and drops the selection drag
+        with it, both buttons having changed meaning.
+        """
+        if self._stamping == on:
+            return
+        self._stamping = on
+        if not on and self._stamp_drag:
+            self._end_stamp_drag()
+            self.stamp_finished.emit()
+        self._drag_anchor = self._drag_slot = None
+        self._apply_cursor()
+        self.update()
+
+    def _end_stamp_drag(self) -> None:
+        self._stamp_drag = False
+        self._stamp_slot = None
+
     def set_drop_target(
         self, slots: Iterable[int] | None, *, valid: bool = True
     ) -> None:
@@ -517,6 +567,10 @@ class Canvas(QWidget):
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         elif self._rearranging:
             self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif self._stamping:
+            # The cross the paint surface uses: a stamp is a pencil over cells,
+            # and what it needs marked is which cell the pointer is on.
+            self.setCursor(Qt.CursorShape.CrossCursor)
         elif self._edit_mode is EditMode.PIXEL or self._eyedropper:
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
@@ -647,6 +701,12 @@ class Canvas(QWidget):
             self._rearrange_press(event)
             super().mousePressEvent(event)
             return
+        # The stamp tool owns the mouse the same way, and sits beside it: both
+        # are armed over tile mode and neither can be armed with the other.
+        if self._stamping and not self._image.isNull():
+            self._stamp_press(event)
+            super().mousePressEvent(event)
+            return
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_press(event)
             super().mousePressEvent(event)
@@ -706,6 +766,10 @@ class Canvas(QWidget):
             self._rearrange_move(event)
             super().mouseMoveEvent(event)
             return
+        if self._stamping:
+            self._stamp_move(event)
+            super().mouseMoveEvent(event)
+            return
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_move(event)
             super().mouseMoveEvent(event)
@@ -728,6 +792,10 @@ class Canvas(QWidget):
             return
         if self._rearranging:
             self._rearrange_release(event)
+            super().mouseReleaseEvent(event)
+            return
+        if self._stamping:
+            self._stamp_release(event)
             super().mouseReleaseEvent(event)
             return
         if self._edit_mode is EditMode.PIXEL:
@@ -824,6 +892,41 @@ class Canvas(QWidget):
         else:
             self.rearrange_dropped.emit(slot)
         self.update()
+
+    def _stamp_press(self, event) -> None:  # noqa: ANN001 — Qt event
+        """Lay a tile down (left), or pick the one under the cursor (right).
+
+        Both are reported as one signal carrying the button, because they are
+        one gesture on one target and splitting them would let the two disagree
+        about which cell that is. Only the left one opens a drag: picking is a
+        discrete act, and sweeping it would spray the panel with every tile
+        crossed — the reading the palette grid's eyedropper already takes.
+        """
+        slot = self._slot_at(event.position())
+        if slot is None:
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._stamp_drag = True
+            self._stamp_slot = slot
+        elif event.button() != Qt.MouseButton.RightButton:
+            return
+        self.stamp_pressed.emit(slot, event.button())
+
+    def _stamp_move(self, event) -> None:  # noqa: ANN001 — Qt event
+        if not (self._stamp_drag and event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        # Clamped, like every other drag here: sliding off the edge keeps aiming
+        # at the boundary cell rather than dropping the stroke.
+        slot = self._slot_at(event.position(), clamp=True)
+        if slot is not None and slot != self._stamp_slot:
+            self._stamp_slot = slot
+            self.stamp_moved.emit(slot)
+
+    def _stamp_release(self, event) -> None:  # noqa: ANN001 — Qt event
+        if event.button() != Qt.MouseButton.LeftButton or not self._stamp_drag:
+            return
+        self._end_stamp_drag()
+        self.stamp_finished.emit()
 
     def _pixel_press(self, event) -> None:  # noqa: ANN001 — Qt event
         """Begin a pixel gesture: report the pressed pixel and its button.

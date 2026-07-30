@@ -43,6 +43,7 @@ from celpix.ui.undo_commands import (
     PixelConfigCommand,
 )
 from celpix.ui.widgets import (
+    PRESET_COMBO_WIDTH,
     ChecklistPopupButton,
     CompactComboBox,
     ZoomSpinBox,
@@ -93,10 +94,9 @@ COLS_ASSEMBLED_TIP = "Cells per row\nSet by Assembly, on the bar under the canva
 # choice exists because nothing records which arrangement was meant, and a user
 # who thinks celPix read this out of the header would trust the wrong picture.
 ASSEMBLY_TIP = (
-    "How this file's separate maps are laid out:\n"
-    "2x2 is two of them across and two down.\n"
-    "The file does not record which was intended,\n"
-    "so this is a reading, not the file's own word."
+    "How this file's separate maps lay out:\n"
+    "2x2 is two across and two down\n"
+    "The file does not record which was intended"
 )
 
 
@@ -218,10 +218,10 @@ class InterpretationMixin:
         # bytes are cells, and how they are read - field layout and byte order -
         # is the same kind of choice one row up from tiles. Its pathway has no
         # compression stage of its own either, so both go and this arrives.
-        self._tilemap_preset = CompactComboBox(0.60)
+        self._tilemap_preset = CompactComboBox(PRESET_COMBO_WIDTH)
         self._tilemap_preset.setToolTip(
-            "How a cell's bytes are read: field layout and byte order.\n"
-            "Formats from one tool can disagree about the order."
+            "How a cell's bytes are read: field layout and byte order\n"
+            "Formats from one tool can disagree about the order"
         )
         self._tilemap_preset.activated.connect(self._on_tilemap_preset_change)
         self._tilemap_codec_action = codecs.addWidget(
@@ -230,7 +230,7 @@ class InterpretationMixin:
 
         # Compression preview: the main view stays raw; the chosen Decompress
         # plugin runs over the current window and shows in the floating overlay.
-        self._compression = CompactComboBox(0.60)
+        self._compression = CompactComboBox(PRESET_COMBO_WIDTH)
         self._populate_compression()
         self._compression.currentIndexChanged.connect(self._on_view_change)
         # Structure navigation for contiguously packed compressed data: hop
@@ -350,7 +350,7 @@ class InterpretationMixin:
         # Pattern names documented block/order/2D combinations and, like the Offset
         # format picker, fills + locks the individual controls when a preset is
         # chosen; "Custom" unlocks them so they can be hand-edited.
-        self._pattern = CompactComboBox(0.60)
+        self._pattern = CompactComboBox(PRESET_COMBO_WIDTH)
         for preset in ARRANGEMENT_PRESETS:
             self._pattern.addItem(preset.name, preset)
         self._pattern.addItem("Custom", "custom")
@@ -504,10 +504,10 @@ class InterpretationMixin:
         self._apply_pattern_lock()
 
     def _preset_combo(self, stage: Stage, default_suffix: str) -> QComboBox:
-        # Compact: preset names are long and the combo shares a row with other
-        # controls, so the closed button takes 60% of its natural width; the
-        # popup stays full.
-        combo = CompactComboBox(0.60)
+        # Compact: preset names run past 50 characters and the combo shares a row
+        # with other controls, so the closed button takes the format pickers'
+        # shared width; the popup stays full.
+        combo = CompactComboBox(PRESET_COMBO_WIDTH)
         for preset in sorted(self._registry.presets(stage), key=lambda p: p.name):
             combo.addItem(preset.name, preset.id)
             if preset.id.endswith(default_suffix):

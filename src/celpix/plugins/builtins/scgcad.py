@@ -56,9 +56,11 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.plugins.base import (
+    ContainerField,
     PluginInfo,
     ReadSource,
     WriteTarget,
+    format_size,
     plain_read,
     splice,
 )
@@ -151,6 +153,41 @@ def _cell_tiles(data: bytes, at: int) -> tuple[int, int]:
     return (2, 2) if at < len(data) and data[at] == 1 else (1, 1)
 
 
+def _text(raw: bytes) -> str:
+    """ASCII out of a fixed-width header field: cut at the first NUL, stripped."""
+    return raw.split(b"\x00")[0].decode("ascii", "replace").strip()
+
+
+def _metadata_fields(data: bytes, at: int) -> list[ContainerField]:
+    """The two rows every member's 0x100 metadata block is worth reporting.
+
+    The signature is what detection matched on and the 16 bytes after it are the
+    tool version and build date — identical across the surveyed corpus, and the
+    one thing in the block that says which build of the authoring tool wrote this
+    file. Neither is interpreted further; the whole block rides through a save
+    untouched.
+    """
+    block = data[at : at + HEADER]
+    return [
+        ContainerField(
+            "Signature",
+            f"{SIGNATURE.decode()} at {at:#06x}"
+            if block[: len(SIGNATURE)] == SIGNATURE
+            else "absent",
+            "The 16 bytes that identify this file's family, and what\n"
+            "detection matched to pick this container. Where they sit\n"
+            "is itself part of the format.",
+        ),
+        ContainerField(
+            "Tool version",
+            _text(block[0x10:0x20]) or "blank",
+            "The version and build date of the authoring tool that\n"
+            "wrote the file. Recorded here only - celPix is not that\n"
+            "tool, so a save leaves the whole block as it found it.",
+        ),
+    ]
+
+
 def _payload(source: ReadSource, ctx: PipelineContext, start: int, size: int) -> bytes:
     """``size`` bytes of ``source`` from ``start``, with the offset published.
 
@@ -218,6 +255,51 @@ class ScrContainer:
         existing = dest.existing or _blank_scr()
         return splice(existing, 0, data[:SCR_PAYLOAD])
 
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        data = source.data
+        header = data[SCR_HEADER_AT : SCR_HEADER_AT + HEADER]
+        size = _cell_tiles(header, SCR_TILE_SIZE)
+        raw_byte = header[SCR_TILE_SIZE] if SCR_TILE_SIZE < len(header) else 0
+        base_word = (
+            int.from_bytes(header[0x47:0x49], "little") if len(header) > 0x48 else 0
+        )
+        return (
+            *_metadata_fields(data, SCR_HEADER_AT),
+            ContainerField(
+                "Payload",
+                f"{format_size(SCR_PAYLOAD)} at 0x000000 - four 32x32 screens",
+                "The screens come out as one buffer with the page height\n"
+                "published, so the view knows there are four of them and\n"
+                "can offer an assembly.",
+            ),
+            ContainerField(
+                "Cell size byte",
+                f"0x{raw_byte:02X} at {SCR_HEADER_AT + SCR_TILE_SIZE:#06x}"
+                f" - {size[0]}x{size[1]} tiles per cell",
+                "8 * (value + 1) pixels. Read small, a 16x16 screen draws\n"
+                "one quarter of every cell and drops the rest, so this is\n"
+                "published as the view's cell size.",
+            ),
+            ContainerField(
+                "Base character word",
+                f"0x{base_word:04X} at {SCR_HEADER_AT + 0x47:#06x} - not applied",
+                "It reads like a base tile index and is not one: added to\n"
+                "every cell it sends the screen off the end of the bank,\n"
+                "and neither candidate meaning survives the corpus. The\n"
+                "tile base is yours to set.",
+            ),
+            ContainerField(
+                "Clear codes",
+                f"{format_size(max(0, len(data) - SCR_HEADER_AT - HEADER))}"
+                f" at {SCR_HEADER_AT + HEADER:#06x}, preserved",
+                "A per-cell draw/don't-draw the artist set. celPix has no\n"
+                "per-cell visibility to map it onto, so it rides through a\n"
+                "save untouched rather than being regenerated.",
+            ),
+        )
+
 
 def _blank_scr() -> bytes:
     out = bytearray(SCR_SIZE)
@@ -260,6 +342,39 @@ class PnlContainer:
         existing = dest.existing or _blank(PNL_SIZE)
         return splice(existing, HEADER, data[:PNL_TABLE])
 
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        data = source.data
+        candidates = " ".join(
+            f"{at:#04x}=0x{data[at]:02X}" for at in (0x62, 0x69, 0x6A) if at < len(data)
+        )
+        return (
+            *_metadata_fields(data, 0),
+            ContainerField(
+                "Tile table",
+                f"{format_size(PNL_TABLE)} at {HEADER:#06x} - the payload",
+                f"0x{PNL_TABLE // 2:X} cells, laid out {PANEL_COLUMNS} wide.\n"
+                "Each word is one 8x8 tile; a 16x16 unit is stored as\n"
+                "four adjacent words rather than as one bigger cell.",
+            ),
+            ContainerField(
+                "Clear-code table",
+                f"{format_size(PNL_TABLE)} at {HEADER + PNL_TABLE:#06x}, preserved",
+                "The same size again, following the tiles. Only bit 15 is\n"
+                "live and its polarity is unsettled, so anything written\n"
+                "there would be a guess - it rides through untouched.",
+            ),
+            ContainerField(
+                "Metatile bytes",
+                f"{candidates} - not read",
+                "Three header bytes shaped like a cell size, and none of\n"
+                "them is one: reading any as a cell size draws the panel\n"
+                "at four times its content. Measured against the corpus,\n"
+                "a panel word is always a single 8x8 tile.",
+            ),
+        )
+
 
 class MapContainer:
     """Stamp layout: 0x100 header, then 0x1000 entries naming panel cells.
@@ -291,6 +406,27 @@ class MapContainer:
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         existing = dest.existing or _blank(MAP_SIZE)
         return splice(existing, HEADER, data[:MAP_PAYLOAD])
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        return (
+            *_metadata_fields(source.data, 0),
+            ContainerField(
+                "Entry table",
+                f"{format_size(MAP_PAYLOAD)} at {HEADER:#06x} - the payload",
+                f"0x{MAP_PAYLOAD // 2:X} entries, laid out {MAP_COLUMNS} wide.\n"
+                "The width is fixed by the format, so it is published\n"
+                "rather than left as a guess.",
+            ),
+            ContainerField(
+                "Entry meaning",
+                "a panel coordinate, not a tile",
+                "A stamp layout holds no tiles and no attributes of its\n"
+                "own: resolving an entry needs the panel it was authored\n"
+                "against, which is what the tile binding supplies.",
+            ),
+        )
 
 
 class ObjContainer:
@@ -337,6 +473,43 @@ class ObjContainer:
         existing = dest.existing or _blank_obj()
         return splice(existing, 0, data[: _obj_payload(existing)])
 
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        data = source.data
+        payload = _obj_payload(data)
+        marker = _text(data[payload + 0x10 : payload + 0x20])
+        swapped = marker.rstrip().endswith("F")
+        extended = payload == OBJ_PAYLOADS[1]
+        return (
+            *_metadata_fields(data, payload),
+            ContainerField(
+                "Form",
+                f"{'extended' if extended else 'ordinary'} - "
+                f"{payload // 0x180} frames of 64 subsprites",
+                "Which of the two sizes this is shows in *where* the\n"
+                "signature sits, so the records stop there. Found by\n"
+                "signature rather than by file length, so a file with an\n"
+                "unexpected tail still reads.",
+            ),
+            ContainerField(
+                "Build marker",
+                f"{marker or 'blank'} - attribute word "
+                f"{'byte-swapped' if swapped else 'as stored'}",
+                "A later build of the tool writes the attribute word the\n"
+                "other way round and says so here. Published as the cell\n"
+                "byte order, overriding the codec's own assumption.",
+            ),
+            ContainerField(
+                "Animation table",
+                f"{format_size(max(0, len(data) - payload - HEADER))}"
+                f" at {payload + HEADER:#06x}, preserved",
+                "Runs of (duration, frame) naming frames in the payload.\n"
+                "celPix draws the frames themselves in file order and\n"
+                "does not read this; playing them is a separate feature.",
+            ),
+        )
+
 
 class ObzContainer:
     """Transfer object: 0x6000 of subsprite records, then a 0xA00 tail.
@@ -369,6 +542,35 @@ class ObzContainer:
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         existing = dest.existing or bytes(OBZ_SIZE)
         return splice(existing, 0, data[:OBZ_PAYLOAD])
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        return (
+            ContainerField(
+                "Signature",
+                "none - identified by length and suffix",
+                "The one member of this family that carries no signature\n"
+                "anywhere: it was written to be consumed by the devkit\n"
+                "rather than reopened, so its length is all there is to\n"
+                "go on.",
+            ),
+            ContainerField(
+                "Payload",
+                f"{format_size(OBZ_PAYLOAD)} at 0x000000 - "
+                f"{OBZ_PAYLOAD // 0x180} frames of 64 subsprites",
+                "The same shape as a sprite object with the header taken\n"
+                "away. The records inside are not an object's records,\n"
+                "which is why this reads through its own cell codec.",
+            ),
+            ContainerField(
+                "Animation table",
+                f"{format_size(OBZ_SIZE - OBZ_PAYLOAD)}"
+                f" at {OBZ_PAYLOAD:#06x}, preserved",
+                "The tail this container does not read, kept exactly as\n"
+                "it stands so a save leaves the frame timings alone.",
+            ),
+        )
 
 
 class StdContainer:
@@ -405,6 +607,34 @@ class StdContainer:
         # alone rather than truncating the file to it.
         existing = dest.existing or bytes(STD_SIZE)
         return splice(existing, 0, data[:STD_SIZE])
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        return (
+            ContainerField(
+                "Signature",
+                "none - identified by length and suffix",
+                "Headerless and fixed-size. Not something the authoring\n"
+                "tool writes: a converter made it out of a screen, and\n"
+                "wrote nothing to say so.",
+            ),
+            ContainerField(
+                "Payload",
+                f"{format_size(STD_SIZE)} - the whole file, {STD_COLUMNS} wide",
+                "Bare character numbers, the screen's four blocks laid\n"
+                "out 2x2. The width is fixed by the format and published\n"
+                "as such - 4 KiB of bytes would not suggest it.",
+            ),
+            ContainerField(
+                "Cell contents",
+                "low byte only - attributes dropped",
+                "The converter kept the low byte of each screen cell and\n"
+                "discarded the high one, so there are no palette rows or\n"
+                "flip bits left to read. That is why this holds a\n"
+                "screen's shape but reads through an index-only cell.",
+            ),
+        )
 
 
 def _obj_payload(data: bytes) -> int:
@@ -458,6 +688,30 @@ class ColContainer:
         # it names the version that wrote the file, and celPix is not it.
         existing = dest.existing or _blank_col()
         return splice(existing, 0, data[:COL_PAYLOAD])
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        return (
+            *_metadata_fields(source.data, COL_HEADER_AT),
+            ContainerField(
+                "Colors",
+                f"{format_size(COL_PAYLOAD)} at 0x000000 - {COL_PAYLOAD // 2} entries",
+                "Where the colours stop, which is the whole reason this\n"
+                "file needs a container: read to the end of the file, the\n"
+                "metadata block decodes as 128 more entries of junk that\n"
+                "look like colours because any two bytes do.",
+            ),
+            ContainerField(
+                "Metadata block",
+                f"{format_size(COL_SIZE - COL_PAYLOAD)}"
+                f" at {COL_HEADER_AT:#06x}, preserved",
+                "Spliced around on write, so editing a colour leaves the\n"
+                "tool's own metadata as it found it. Not a second bank of\n"
+                "colours - a screen picks which 128-colour half to draw\n"
+                "through with a field of its own.",
+            ),
+        )
 
 
 def _blank_col() -> bytes:
@@ -531,3 +785,51 @@ class CgxContainer:
         bank = CGX_BANKS.get(len(dest.existing))
         payload = bank[0] if bank else len(data)
         return splice(dest.existing, 0, data[:payload])
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        data = source.data
+        bank = CGX_BANKS.get(len(data))
+        if bank is None:
+            return (
+                ContainerField(
+                    "Bank size",
+                    f"{len(data)} bytes - not a size this family has",
+                    "The three tile banks are told apart by their length,\n"
+                    "and this is none of them. The bytes are handed on\n"
+                    "whole rather than cut at a guess: better a few\n"
+                    "trailing junk tiles than a silently truncated bank.",
+                ),
+            )
+        payload, preset_id, has_rows = bank
+        return (
+            *_metadata_fields(data, payload),
+            ContainerField(
+                "Payload",
+                f"{format_size(payload)} at 0x000000 - 1024 tiles",
+                "Payload first, header after, which is what makes reading\n"
+                "this file raw *almost* work: the trailing block decodes\n"
+                "as a few dozen tiles of convincing noise.",
+            ),
+            ContainerField(
+                "Bit depth",
+                f"{preset_id.rsplit('.', 1)[-1]} (by bank size)",
+                "In the file, so it need not be guessed - the three depths\n"
+                "look alike enough that a wrong pick reads as plausible\n"
+                "garbage. Published as the pixel format the view starts\n"
+                "at; the size and the header's own depth byte agree\n"
+                "across the whole surveyed corpus.",
+            ),
+            ContainerField(
+                "Palette row table",
+                f"{format_size(CGX_ROW_TABLE)} at {payload + HEADER:#06x}"
+                if has_rows
+                else "none - 8bpp banks carry no table",
+                "One byte per tile naming the palette row it is meant to\n"
+                "be read under. Published so it can seed pinned palette\n"
+                "regions, and preserved on write: the rows are the file's\n"
+                "own statement, not something to re-derive from a pixel\n"
+                "edit.",
+            ),
+        )

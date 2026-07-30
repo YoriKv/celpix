@@ -172,9 +172,11 @@ class NavigationMixin:
         # re-set alongside the box's in _refresh_offset_display.
         self._offset_label = QLabel("Offset ")
         row.addWidget(self._offset_label)
-        # Half-width closed button (the format names are long), full-width popup -
-        # the same compact treatment the pixel/palette pickers get.
-        self._addr_format = CompactComboBox(0.5)
+        # Narrow closed button (the bank-layout names run to 36 characters),
+        # full-width popup - the same compact treatment the format pickers get.
+        # Below theirs because this one is a short list of fixed names rather
+        # than a registry that grows.
+        self._addr_format = CompactComboBox(140)
         self._addr_format.addItem("Hex", "hex")
         for preset in BANK_PRESETS:
             self._addr_format.addItem(preset.name, preset)
@@ -405,6 +407,7 @@ class NavigationMixin:
             (Qt.Key.Key_E, *no_mod): self._toggle_edit_mode,
             (Qt.Key.Key_R, *no_mod): self._toggle_rearranging,
             (Qt.Key.Key_R, *shift): self._toggle_show_rearranged,
+            (Qt.Key.Key_T, *no_mod): self._toggle_stamping,
             (Qt.Key.Key_P, *shift): self._toggle_show_palette_regions,
         }
 

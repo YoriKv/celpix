@@ -167,6 +167,7 @@ class FileListPanel(QWidget):
     new_slice_from_selection_requested = Signal(object)  # Entry — slice the tiles
     new_bookmark_requested = Signal(object)  # Entry (a FILE) — bookmark the view
     change_container_requested = Signal(object)  # Entry (FILE/PALETTE) — its container
+    container_info_requested = Signal(object)  # Entry (FILE/PALETTE) — what it read
     use_palette_requested = Signal(object)  # Entry (a PALETTE) — apply to the view
     edit_slice_requested = Signal(object)  # Entry (a SLICE) — edit its coordinates
     jump_to_source_requested = Signal(object)  # Entry (a SLICE) — show it in its parent
@@ -852,6 +853,19 @@ class FileListPanel(QWidget):
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._refresh_item(entry, item)
 
+    def _add_container_info_action(self, menu: QMenu, entry: Entry) -> None:
+        """What the container read, under the action that chooses which one.
+
+        On both kinds that have a container of their own, from one builder so the
+        two cannot drift apart. Needs no document and no successful load — a file
+        that came out looking wrong is exactly when the report is worth reading,
+        which is why it is always offered.
+        """
+        # "C" rather than the File menu's "I", which "Import from PNG…" holds
+        # here — a mnemonic only has to be unique within the menu it appears in.
+        info = menu.addAction("&Container Info…")
+        info.triggered.connect(lambda: self.container_info_requested.emit(entry))
+
     def _add_write_action(self, menu: QMenu, entry: Entry) -> None:
         """Write, sitting under the entry's own settings (a file's container, a
         slice's definition) rather than down by the import/export group: it is
@@ -910,6 +924,7 @@ class FileListPanel(QWidget):
             container.triggered.connect(
                 lambda: self.change_container_requested.emit(entry)
             )
+            self._add_container_info_action(menu, entry)
             self._add_write_action(menu, entry)
             menu.addSeparator()
             # Files are the one kind in hand order (slices and bookmarks sort by
@@ -953,6 +968,7 @@ class FileListPanel(QWidget):
             container.triggered.connect(
                 lambda: self.change_container_requested.emit(entry)
             )
+            self._add_container_info_action(menu, entry)
             # A file palette owns its colors and is edited in place, so it Writes
             # back to its own .pal from here — offered only with unsaved edits (the
             # graphic that renders it is never dirtied by a color change).

@@ -227,6 +227,11 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
         # existed, is byte-identical either way.
         if view.pages_across:
             data["view"]["pages_across"] = view.pages_across
+        # Same rule, and the same reason it is safe to write unconditionally on
+        # nothing: only a sprite map can turn it on, and it defaults off — so an
+        # entry that never saw the box leaves the key out entirely.
+        if view.show_all_frames:
+            data["view"]["show_all_frames"] = True
         # Only a document that was actually rearranged carries the map, so an
         # ordinary project's file is unchanged by the feature existing. Each half
         # is written only if it holds something: a rearrangement that just turns
@@ -416,6 +421,7 @@ def _view_from(raw: object) -> ViewOptions | None:
         # resolves the assembly, which is where the page count is known
         # (:attr:`~celpix.core.document.Document.pages_across`).
         pages_across=_int(raw.get("pages_across"), defaults.pages_across),
+        show_all_frames=bool(raw.get("show_all_frames", defaults.show_all_frames)),
         tile_rearrangement=_tile_rearrangement(raw),
         show_rearranged=bool(raw.get("show_rearranged", defaults.show_rearranged)),
         palette_regions=_palette_regions(raw),

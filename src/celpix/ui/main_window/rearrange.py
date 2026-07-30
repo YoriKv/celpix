@@ -56,6 +56,7 @@ from dataclasses import dataclass, replace
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QImage, QKeySequence
 
+from celpix.core.capabilities import Capability
 from celpix.core.draw import blit_region, extract_region
 from celpix.core.tilerearrangement import (
     TILE_ORIENT_NONE,
@@ -71,12 +72,17 @@ from celpix.ui.undo_commands import TileRearrangementCommand
 from celpix.ui.widgets import signals_blocked
 
 # The tool's own tooltip, re-set by :meth:`RearrangeMixin._sync_rearrange_actions`
-# when a 2D pattern locks the tool out, so both readings live side by side.
+# when something locks the tool out, so all three readings live side by side. The
+# two lockouts say different things because the user can act on one of them: a 2D
+# pattern is a setting to leave, a tilemap is the document they opened.
 REARRANGE_TIP = (
     "Drag tiles to new display positions (R)\nRight-drag selects; no bytes move"
 )
 REARRANGE_BLOCKED_TIP = (
     "Not available for a 2D pattern (R)\nA tile's bytes interleave with its neighbours'"
+)
+REARRANGE_TILEMAP_TIP = (
+    "Not available for a tilemap (R)\nMoving a cell is an edit, not a display order"
 )
 
 
@@ -129,7 +135,15 @@ class RearrangeMixin:
         self._rearrange_preview: TileRearrangement | None = None
 
     def _rearrange_available(self) -> bool:
-        """Whether tiles can be rearranged at all under the current pattern.
+        """Whether tiles can be rearranged at all on the entry as it is being read.
+
+        **Not on a tilemap.** A rearrangement is display state precisely because
+        it moves no bytes — but a tilemap's bytes *are* the arrangement, so moving
+        a cell is the edit itself and the tool would be a second, invisible order
+        laid over the one the file already states
+        (:data:`~celpix.core.capabilities.CAPABILITIES`). The table gates the three
+        controls; this is the same answer read from the other end, so the state
+        goes with them rather than the buttons greying over a live tool.
 
         **Not under the 2D wide-bitmap walk.** There the file is read as one
         bitmap ``columns`` tiles across, so a tile's pixel-rows are strided a
@@ -144,8 +158,15 @@ class RearrangeMixin:
         for reading scattered *tiles* as a picture; a 2D pattern is already one
         picture, so it has far less to gain. So the tool switches off and the
         rearrangement goes inert, rather than the writes growing a special case.
+
+        Either way the entry's stored rearrangement is **kept, not discarded**, so
+        leaving 2D — or coming back to a pixel entry — brings it back.
         """
-        return self._doc is not None and not self._two_d.isChecked()
+        return (
+            self._doc is not None
+            and self._can(Capability.TILE_REARRANGE)
+            and not self._two_d.isChecked()
+        )
 
     def _showing_rearranged(self) -> bool:
         """Whether the view is on the rearranged order rather than the file's.
@@ -262,6 +283,7 @@ class RearrangeMixin:
             # Reads _rearranging, still False here, so the disarm inside is a
             # no-op and the two mode switches can't bounce off each other.
             self._set_edit_mode(EditMode.TILE)
+            self._set_stamping(False)
         self._rearranging = on
         self._cancel_rearrange_drag()
         self._canvas.set_rearranging(on)
@@ -289,10 +311,11 @@ class RearrangeMixin:
     def _sync_rearrange_actions(self) -> None:
         """Converge the three actions with the state they drive.
 
-        Also the one place the 2D lockout lands: switching a view to a 2D pattern
-        disarms the tool and greys every one of them, saying why. Called from
-        ``_refresh_view``, so it follows the pattern picker without the
-        arrangement toolbar needing to know this module exists.
+        Also the one place the lockout lands: a 2D pattern or a tilemap entry
+        disarms the tool and greys every one of them, saying which it is. Called
+        from ``_refresh_view`` and from entry activation, so it follows both the
+        pattern picker and the file list without either needing to know this
+        module exists.
         """
         available = self._rearrange_available()
         if self._rearranging and not available:
@@ -309,8 +332,15 @@ class RearrangeMixin:
         # The tool's menu row holds no state of its own - it only ever needs to
         # be as reachable, and say as much, as the button it stands in for.
         self._toggle_rearrange_action.setEnabled(available)
-        blocked = self._doc is not None and not available
-        tip = REARRANGE_BLOCKED_TIP if blocked else REARRANGE_TIP
+        tip = REARRANGE_TIP
+        if self._doc is not None and not available:
+            # Which lockout it is, since they are answered in different places:
+            # the pattern picker, or by opening a different entry.
+            tip = (
+                REARRANGE_BLOCKED_TIP
+                if self._can(Capability.TILE_REARRANGE)
+                else REARRANGE_TILEMAP_TIP
+            )
         self._rearrange_action.setToolTip(tip)
         self._toggle_rearrange_action.setToolTip(tip)
         # The transform buttons need something to act on: the carried tiles

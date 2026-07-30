@@ -195,6 +195,19 @@ class WriteTarget:
         return self.offset == 0 and self.length is None
 
 
+def format_size(count: int) -> str:
+    """``count`` bytes as one short phrase, for a :class:`ContainerField` value.
+
+    Whole binary multiples get the unit they are quoted in — a cart is "512 KiB",
+    never "524288 bytes" — and anything else stays exact, since a length that is
+    *not* round is usually the interesting thing about it.
+    """
+    for unit, size in (("MiB", 1 << 20), ("KiB", 1 << 10)):
+        if count >= size and count % size == 0:
+            return f"{count // size} {unit}"
+    return f"{count} bytes"
+
+
 def plain_read(source: ReadSource, ctx: PipelineContext) -> bytes:
     """The read of a container that strips no framing: publish, then window.
 
@@ -222,6 +235,27 @@ def splice(existing: bytes, at: int, data: bytes) -> bytes:
         out.extend(b"\x00" * (end - len(out)))
     out[at:end] = data
     return bytes(out)
+
+
+@dataclass(frozen=True)
+class ContainerField:
+    """One value a container read out of a file, for the container-info popup.
+
+    ``name`` is the field as the *format* calls it and ``value`` what this file
+    holds, formatted the way the format is normally quoted — hex for an offset, a
+    count with the size it works out to beside it. ``detail`` is the part a hex
+    editor cannot give: what the container **used** the value for, or why it
+    deliberately ignored it.
+
+    ``detail`` is shown as the row's tooltip, so it follows the tooltip rule —
+    hard-wrapped with explicit newlines at ~60 characters, one clause per line,
+    since Qt never wraps a plain-text tooltip
+    (``docs/py-qt-reference/pyside6-pitfalls.md``).
+    """
+
+    name: str
+    value: str
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -396,6 +430,29 @@ class ContainerPlugin(Plugin, Protocol):
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes: ...
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes: ...
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        """What this container read out of ``source``, as name/value rows.
+
+        Optional, and for the user rather than the pipeline: the container-info
+        popup shows these beside the hints the read published, so a file that
+        opened as something unexpected can be understood without a hex editor —
+        *this* is the depth byte the tiles were decoded at, *that* is why the
+        payload stops where it does. Say what each value was used for in
+        :attr:`ContainerField.detail`, including where it was deliberately
+        **not** used: a header field this container reads past on purpose is
+        worth a row saying so, since the next person to open the file in a hex
+        editor will find it and wonder.
+
+        The host calls it right after :meth:`read`, on that read's own context
+        and the same :class:`ReadSource`, so anything already worked out can be
+        taken off ``ctx`` instead of parsed twice. Nothing downstream sees the
+        result and nothing may be published from here — a container that strips
+        no framing has nothing to report and simply omits the method.
+        """
+        ...
 
 
 class ReshapePlugin(Plugin, Protocol):

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, NamedTuple, TypeVar
 
 from celpix.core import ceil_div, transform
+from celpix.core.address import format_hex
 from celpix.core.arrangement import (
     BlockLayout,
     bitmap_tile_size,
@@ -23,24 +24,30 @@ from celpix.core.arrangement import (
     reflow_2d,
     scatter_2d,
 )
-from celpix.core.context import KEY_SOURCE_FILES, KEY_SOURCE_PATH, PipelineContext
+from celpix.core.context import (
+    KEY_SOURCE_FILES,
+    KEY_SOURCE_OFFSET,
+    KEY_SOURCE_PATH,
+    PipelineContext,
+    hint_info,
+)
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
-from celpix.core.notices import warn
+from celpix.core.notices import KEY_NOTICES, Notice, notices, warn
 from celpix.core.palette import Palette
 from celpix.core.sprite import (
     DEFAULT_SUBSPRITE_TILES,
     Frame,
-    drawn_frames,
     frame_bounds,
 )
-from celpix.core.tilemap import Cell
+from celpix.core.tilemap import Cell, resolve_cell
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import (
     NO_RESHAPE,
     RAW_CONTAINER,
     CompressionPlugin,
+    ContainerField,
     FileRef,
     ReadSource,
     SourceFile,
@@ -647,14 +654,41 @@ def tilemap_tiles(
     """A tilemap's cells expanded into ready-to-place tiles, and a layout.
 
     The whole of what makes a tilemap render through the *pixel* view rather
-    than a parallel one. Each cell is turned into the source tiles it draws,
-    oriented as its flip bits say and carrying its palette row, and the two
-    results line up so the existing composer can finish the job:
+    than a parallel one — :func:`expand_cells` over the cells the view **lays
+    out**, which is the file's own order unless the map is several pages
+    assembled side by side
+    (:attr:`~celpix.core.document.Document.laid_out_cells`). That is the one place
+    an assembly reaches the picture; nothing downstream of here knows about it.
+
+    An assembled document's ``columns`` is **its own**, not the caller's: the width
+    and the placement are one answer, and a picture laid out at any other width
+    interleaves the pages instead of putting them side by side
+    (:attr:`~celpix.core.document.Document.assembled_columns`). So the two cannot
+    be passed in separately and disagree — which is what a render reached without
+    going through the view would otherwise do.
+    """
+    return expand_cells(doc, reg, doc.laid_out_cells, doc.assembled_columns or columns)
+
+
+def expand_cells(
+    doc: Document, reg: Registry, cells: list[Cell], columns: int
+) -> tuple[list, BlockLayout]:
+    """``cells`` turned into ready-to-place tiles, and the layout to place them.
+
+    Each cell becomes the source tiles it draws, oriented as its flip bits say
+    and carrying its palette row, and the two results line up so the existing
+    composer can finish the job:
 
     - **tiles** — every cell's tiles, consecutively, so a metatile's four land
       next to each other.
     - **layout** — a :class:`BlockLayout` whose *block* is one cell, which is
       what places a 2x2 metatile's four consecutive tiles as a square.
+
+    Taking the cells as an argument rather than reading them off the document is
+    what lets the **tile source sheet** be the same picture as the map: it is
+    this function over one synthetic cell per tile ID
+    (:func:`tile_source_image`), so a tile in the panel and the same tile in a
+    map are composed by one code path and cannot come out different.
 
     The palette row travels **in the indices**, the same mechanism pinned
     palette regions use (:meth:`~celpix.core.index_grid.IndexGrid.shifted`): the
@@ -672,21 +706,7 @@ def tilemap_tiles(
     A cell naming a tile the source does not have renders blank rather than
     failing: a tilemap is routinely authored against a bank that is loaded
     elsewhere, and half a picture is more useful than an error.
-
-    The cells are walked in the order the view **lays them out**, which is the
-    file's own unless the map is several pages assembled side by side
-    (:attr:`~celpix.core.document.Document.laid_out_cells`). That is the one place
-    an assembly reaches the picture; nothing downstream of here knows about it.
-
-    An assembled document's ``columns`` is **its own**, not the caller's: the width
-    and the placement are one answer, and a picture laid out at any other width
-    interleaves the pages instead of putting them side by side
-    (:attr:`~celpix.core.document.Document.assembled_columns`). So the two cannot
-    be passed in separately and disagree — which is what a render reached without
-    going through the view would otherwise do.
     """
-    cells = doc.laid_out_cells
-    columns = doc.assembled_columns or columns
     across, down = max(1, doc.cell_tiles[0]), max(1, doc.cell_tiles[1])
     blank = IndexGrid(doc.tile_width, doc.tile_height)
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
@@ -748,7 +768,7 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
     base = doc.palette_row_base
     if doc.is_sprite:
-        frames = drawn_frames(doc.sprite_frames or [])
+        frames = doc.shown_frames
         top = max(
             (drawn_palette_row(s.palette_row, base) for frame in frames for s in frame),
             default=0,
@@ -764,6 +784,98 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
         # No bias list: the rows are already in the indices (see tilemap_tiles).
         grid, drawn = compose_tiles(tiles, layout, None), len(tiles)
     return TilemapImage(grid, drawn, min(max(1, 256 // max(1, space)), top + 1))
+
+
+def tile_source_ids(doc: Document, limit: int | None = None) -> range:
+    """Which tile IDs a tilemap's cells can usefully name — the panel's extent.
+
+    An **ID** is what a cell holds and what a hex editor shows at its bytes: the
+    file's own number, before the binding's base tile
+    (:attr:`~celpix.core.document.Document.tile_base_index`). The run that comes
+    back is the contiguous span of those numbers that resolves to something to
+    look at, which is what the tile source panel lays out
+    (``docs/design/tilemap-entry.md`` §8).
+
+    Only the resolving run, rather than the format's whole index space: a 10-bit
+    console cell can name 1024 tiles and is routinely bound to a 256-tile bank,
+    so three quarters of that space would be blank grid to scroll past. Where the
+    two disagree the *bank* is the honest answer — a cell pointed past it draws
+    nothing.
+
+    Three readings, and they are three different questions:
+
+    - A **chained** map's cells are coordinates into another map's cells
+      (§3.1), so the IDs are positions in that list and the bank behind it is
+      one hop further away.
+    - An ordinary map's IDs are the ones landing inside the bank once the base
+      is added: ``base + id`` in ``[0, tile_count)``. The base is signed, so a
+      map numbering from ``$100`` against a slice of exactly those tiles has a
+      base of ``-0x100`` and a run **starting at** ``$100`` — the numbers the
+      file actually holds.
+    - A **sprite object** has no cell grid at all: its records sit at signed
+      pixel offsets, so there is no ID space and the run is empty.
+
+    ``limit`` is the codec's index-field width
+    (:meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`), passed in
+    because looking it up needs the registry's preset params. ``None`` means the
+    format did not answer, and an unanswered field is left alone rather than
+    clamped to a guess — the same protocol the flips follow.
+    """
+    if not doc.is_tilemap or doc.is_sprite:
+        return range(0)
+    if doc.chain is not None:
+        start, stop = 0, len(doc.chain.source)
+    else:
+        base = doc.tile_base_index
+        start, stop = max(0, -base), doc.tile_count - base
+    if limit is not None:
+        stop = min(stop, limit + 1)
+    return range(start, max(start, stop))
+
+
+class TileSheet(NamedTuple):
+    """A tilemap's tile source drawn as a sheet, and which IDs are in it.
+
+    The two travel together because they have to agree: the panel resolves a
+    click to a slot and the slot means nothing without the ID the sheet started
+    at. Computing them apart is how a sheet ends up labelled with the previous
+    document's numbers.
+    """
+
+    grid: IndexGrid
+    ids: range
+
+
+def tile_source_image(
+    doc: Document, reg: Registry, columns: int, limit: int | None = None
+) -> TileSheet:
+    """The tiles ``doc`` can draw from, laid out as a sheet — the panel's picture.
+
+    The tile-source twin of :func:`tilemap_image`, and deliberately the same
+    machinery: one synthetic cell per ID through :func:`expand_cells`, so a tile
+    in the panel is composed by the code path that composes it in the map and
+    the two cannot come out looking different. That is the whole point of the
+    panel — what is on offer has to be what will land.
+
+    A **chained** map's ID is a position in the map it stamps from, so the cell
+    is that source cell **resolved** (:func:`~celpix.core.tilemap.resolve_cell`)
+    rather than a bare index: a stamp is its tile *plus* its attributes, and
+    previewing it without them would show a picture the stamp does not make.
+
+    ``columns`` is in cells, as everywhere else here — a panel cell is a 2x2
+    metatile, and the layout blocks accordingly.
+    """
+    ids = tile_source_ids(doc, limit)
+    chain = doc.chain
+    if chain is None:
+        cells = [Cell(index=at) for at in ids]
+    else:
+        cells = [
+            resolve_cell(Cell(index=at), chain.source, carry_rows=chain.carry_rows)
+            for at in ids
+        ]
+    tiles, layout = expand_cells(doc, reg, cells, columns)
+    return TileSheet(compose_tiles(tiles, layout, None), ids)
 
 
 class SpriteSheet(NamedTuple):
@@ -816,7 +928,7 @@ def sprite_sheet(doc: Document, columns: int) -> SpriteSheet:
     ``columns`` is in *frames*, which is what the view's Cols means on a sprite
     object; everything the sheet reports back is in tiles.
     """
-    frames = drawn_frames(doc.sprite_frames or [])
+    frames = doc.shown_frames
     box = frame_bounds(frames, doc.sprite_size_pair, doc.tile_width, doc.tile_height)
     across = max(1, columns)
     return SpriteSheet(
@@ -853,7 +965,7 @@ def sprite_image(
       bounding box (:func:`~celpix.core.sprite.frame_bounds`), so a strip shows
       the object's motion instead of re-centring it away frame by frame.
     """
-    frames = drawn_frames(doc.sprite_frames or [])
+    frames = doc.shown_frames
     pair = doc.sprite_size_pair
     sheet = sprite_sheet(doc, columns)
     left, top, width, height = sheet.box
@@ -1101,6 +1213,163 @@ def read_region(cfg: PathwayConfig, reg: Registry) -> tuple[bytes, PipelineConte
     """
     ctx = PipelineContext()
     return _read_reshape_decompress(cfg, ctx, reg, Pathway.PIXEL), ctx
+
+
+@dataclass(frozen=True)
+class ContainerReport:
+    """What one container made of one file — the model behind Container Info.
+
+    Three groups, in the order a reader needs them. ``fields`` is what the
+    container itself says it read
+    (:meth:`~celpix.plugins.base.ContainerPlugin.describe`),
+    ``hints`` is what its read published for the stages after it, and ``notices``
+    is anything it had to drop, assume or substitute on the way. Both hint and
+    notice rows are the read's *own*, not the entry's: they come from a context
+    nothing else has touched, so every row here is attributable to this container.
+
+    ``error`` is set when the read raised. The rest of the report still stands —
+    a plugin may record notices and *then* fail, and what it managed to publish
+    before giving up is usually what explains why.
+    """
+
+    container_id: str
+    container_name: str
+    paths: tuple[str, ...]
+    source_size: int
+    payload_offset: int
+    payload_size: int
+    fields: tuple[ContainerField, ...] = ()
+    hints: tuple[ContainerField, ...] = ()
+    notices: tuple[Notice, ...] = ()
+    error: str = ""
+
+
+def inspect_container(cfg: PathwayConfig, reg: Registry) -> ContainerReport:
+    """Run ``cfg``'s container read alone and report what it did with the file.
+
+    The **container stage on its own**, on a context of its own: reshape,
+    decompress and the codec are not run, and nothing here reaches the entry's
+    document. That isolation is the point — the live context an entry carries has
+    every later stage's contributions mixed into it, and this has to be able to
+    say "the *container* published this".
+
+    A re-read rather than a look at the loaded document, so a file that has never
+    been opened (or never opened successfully) can still be inspected: reaching
+    for this is most useful precisely when the entry did not come out as expected.
+
+    Failures are reported, not raised. A missing file, an unregistered container
+    and a read that threw all land in :attr:`ContainerReport.error`, because a
+    popup that explains what went wrong is more use here than one that refuses to
+    open.
+    """
+    try:
+        plugin = reg.plugin(Stage.CONTAINER, cfg.container_id)
+    except KeyError as exc:
+        # ``args[0]`` rather than ``str``: a KeyError renders its message with the
+        # quotes it was raised with, and this one is a sentence.
+        return ContainerReport(
+            cfg.container_id, cfg.container_id, (), 0, 0, 0, error=str(exc.args[0])
+        )
+    name = plugin.info.name
+    paths = tuple(cfg.source.paths)
+    try:
+        source, files = _acquire(cfg.source)
+    except OSError as exc:
+        return ContainerReport(cfg.container_id, name, paths, 0, 0, 0, error=str(exc))
+    ctx = PipelineContext()
+    # Set as the real load sets them, before the read: a container may consult
+    # either while assembling its payload. Both are the *host's* provenance, so
+    # they are filtered back out of the hints below — this report is about what
+    # the container contributed.
+    ctx.set(KEY_SOURCE_PATH, source.path)
+    ctx.set(KEY_SOURCE_FILES, files)
+    error = ""
+    payload = b""
+    try:
+        payload = plugin.read(source, ctx)
+    except Exception as exc:  # noqa: BLE001 - a plugin may raise anything at all
+        error = f"{type(exc).__name__}: {exc}"
+    return ContainerReport(
+        container_id=cfg.container_id,
+        container_name=name,
+        paths=paths,
+        source_size=len(source.data),
+        payload_offset=int(ctx.get(KEY_SOURCE_OFFSET, 0) or 0),
+        payload_size=len(payload),
+        fields=_described_fields(plugin, source, ctx),
+        hints=_hint_fields(ctx),
+        notices=notices(ctx),
+        error=error,
+    )
+
+
+def _described_fields(
+    plugin: object, source: ReadSource, ctx: PipelineContext
+) -> tuple[ContainerField, ...]:
+    """``plugin.describe(...)``, or ``()`` — the method is optional and untrusted.
+
+    Reached by ``getattr`` for the reason every optional plugin method is: a
+    container written before it existed, or one with nothing to report, is not
+    missing anything. A plugin that raises here (or hands back something that
+    isn't a field) loses its rows rather than the popup: the read has already
+    succeeded by this point, and a display-only method must not be able to
+    retract that.
+    """
+    describe = getattr(plugin, "describe", None)
+    if not callable(describe):
+        return ()
+    try:
+        return tuple(f for f in describe(source, ctx) if isinstance(f, ContainerField))
+    except Exception:  # noqa: BLE001 - see the docstring
+        return ()
+
+
+# What the host put on the context itself, which is not this container's doing —
+# and the notices, which the report carries whole rather than as name/value rows.
+_HOST_KEYS = frozenset({KEY_SOURCE_PATH, KEY_SOURCE_FILES, KEY_NOTICES})
+
+
+def _hint_fields(ctx: PipelineContext) -> tuple[ContainerField, ...]:
+    """Everything the container published, as labelled rows.
+
+    Enumerated off the context rather than asked for, so a **plugin's own** key
+    shows up too — labelled with the bare key, which is still evidence that
+    something was published and something downstream may be reading it.
+    """
+    rows = []
+    for key, value in sorted(ctx.items().items()):
+        if key in _HOST_KEYS:
+            continue
+        label, detail = hint_info(key)
+        # The key itself in the tooltip: it is what a plugin author reads the
+        # value with, and the only identifier a hint nobody has labelled has.
+        detail = f"{detail}\n\nContext key: {key}" if detail else f"Context key: {key}"
+        rows.append(ContainerField(label, _hint_value(key, value), detail))
+    return tuple(rows)
+
+
+def _hint_value(key: str, value: object) -> str:
+    """A context value as one short line.
+
+    An offset is quoted in hex, as every address in the app is — the one place a
+    key's *meaning* changes how its value reads. Three shapes then read badly
+    under ``str``: a side table is interesting for its size rather than its
+    contents, a pair of ints is always a width and a height, and a bool is a
+    yes/no answer rather than Python.
+    """
+    if key == KEY_SOURCE_OFFSET and isinstance(value, int):
+        return format_hex(value)
+    if isinstance(value, (bytes, bytearray)):
+        return f"{len(value)} bytes"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and all(isinstance(part, int) for part in value)
+    ):
+        return f"{value[0]} x {value[1]}"
+    return str(value)
 
 
 def palette_entry_size(preset_id: str, reg: Registry) -> int:

@@ -161,6 +161,7 @@ class PixelEditMixin:
             return
         if mode is EditMode.PIXEL:
             self._set_rearranging(False)
+            self._set_stamping(False)
         self._commit_float()
         self._edit_mode = mode
         pixel = mode is EditMode.PIXEL

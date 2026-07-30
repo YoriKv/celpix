@@ -32,7 +32,9 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core.document import Document, ViewOptions
-from celpix.plugins.base import NO_COMPRESSION
+from celpix.pipeline.pathway import PathwayConfig
+from celpix.pipeline.pipeline import inspect_container
+from celpix.plugins.base import NO_COMPRESSION, FileRef
 from celpix.project import projectfile
 from celpix.project.workspace import (
     Entry,
@@ -48,6 +50,7 @@ from celpix.project.workspace import (
     slice_of,
 )
 from celpix.ui.container_dialog import ContainerDialog, ContainerEdit
+from celpix.ui.container_info_dialog import ContainerInfoDialog
 from celpix.ui.slice_dialog import SliceDialog
 from celpix.ui.undo_commands import (
     AddEntryCommand,
@@ -726,6 +729,37 @@ class EntriesMixin:
             self._refresh_view()
 
     # -- containers ----------------------------------------------------------
+    def _container_info_current(self) -> None:
+        # Follows the graphic on screen, like Edit File Container… beside it; a
+        # palette is never *current* and is inspected from the Files dock.
+        entry = self._workspace.current
+        if entry is not None and entry.kind is EntryKind.FILE:
+            self._show_container_info(entry)
+
+    def _show_container_info(self, entry: Entry) -> None:
+        """Files dock / File ▸ Container Info…: what ``entry``'s container read.
+
+        The kinds that have a container of their own, which is the same pair
+        :meth:`_change_container_for` acts on — a slice reads through its parent's
+        coordinates, so the report a user wants for one is the parent's.
+
+        The config is built here rather than taken from
+        :func:`~celpix.project.workspace.pixel_config_for`: the container stage
+        needs only the files and the container id, and asking for a whole pathway
+        would mean naming a codec preset that nothing in this report interprets.
+        The **stored** container id is passed, not the resolved one, so an entry
+        whose plugin this build hasn't got says which one is missing instead of
+        reporting on the plain-bytes fallback it degraded to.
+        """
+        if entry.kind not in (EntryKind.FILE, EntryKind.PALETTE):
+            return
+        cfg = PathwayConfig(
+            source=FileRef(entry.paths),
+            interpret_preset_id="",
+            container_id=entry.container_id,
+        )
+        ContainerInfoDialog.show_report(self, inspect_container(cfg, self._registry))
+
     def _change_container_current(self) -> None:
         # A palette is never *current* — the File menu's action follows the
         # graphic on screen, and a palette entry is reached from the Files dock.

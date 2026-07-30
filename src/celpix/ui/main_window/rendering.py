@@ -550,6 +550,10 @@ class RenderingMixin:
             # not a value one refresh behind it. 0 on everything unpaged, which is
             # what keeps the field out of an ordinary project file.
             pages_across=self._pages_across(),
+            # Meaningless on everything but a sprite map, and stored anyway: the
+            # window keeps one answer per entry and the box that sets it is
+            # hidden where it does not apply, so there is nothing here to gate.
+            show_all_frames=self._show_all_frames,
         )
         # Deferred decode: only the visible window's bytes are sliced, then decoded
         # and laid out by the shared arrangement path (2D reflow / block layout).
@@ -620,7 +624,15 @@ class RenderingMixin:
         # Follows the Pattern picker: a 2D pattern locks the rearrange tool out
         # (see rearrange.py), and nothing else tells it the pattern changed.
         self._sync_rearrange_actions()
+        # And the stamp tool follows the *format*: a cell codec with no index
+        # field has nothing for a stamp to set, and swapping to one reloads
+        # through here.
+        self._sync_stamp_actions()
         self._refresh_palette_dock()
+        # Beside it, and for the same reason: the sheet is drawn in the
+        # document's own colours, so anything that recolours the map recolours
+        # what it draws from.
+        self._refresh_tile_source()
         self._sync_nav()
         # After _sync_nav: the two bars are pages of one stack, and this is what
         # decides which of them the entry has controls for at all.
