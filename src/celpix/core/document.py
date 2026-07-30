@@ -141,7 +141,10 @@ class ViewOptions:
 
     columns: int = 16
     rows: int = 16
-    zoom: int = 4
+    # Screen pixels per image pixel. A float for the sake of the one reducing
+    # level the view offers (a half-size read of a file too big for the window);
+    # every other level is a whole number.
+    zoom: float = 4.0
     subpalette_row: int = 0
     tile_offset: int = 0  # top-left tile index into the pixel bytes
     byte_nudge: int = 0  # sub-tile byte shift of the whole grid

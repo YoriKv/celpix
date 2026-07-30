@@ -64,6 +64,28 @@ def test_checklist_popup_springs_back_when_owner_clamps(qtbot) -> None:
     assert button._boxes["a"].isChecked()
 
 
+def test_zoom_steps_through_its_levels_and_reads_them_back(qtbot) -> None:
+    """Zoom is a list, not a count: the gap below 1 is one step like any other,
+    and the box must not spell a whole level "4.0"."""
+    from celpix.ui.widgets import ZoomSpinBox, zoom_level_after
+
+    assert zoom_level_after(1, -1) == 0.5
+    assert zoom_level_after(0.5, 1) == 1
+    assert zoom_level_after(0.5, -1) == 0.5  # clamps at the bottom
+    assert zoom_level_after(2, 3) == 5
+    assert zoom_level_after(1.4, 0) == 1  # off-list value snaps to the nearest
+    assert zoom_level_after(0.6, 0) == 0.5
+
+    spin = ZoomSpinBox()
+    qtbot.addWidget(spin)
+    assert spin.textFromValue(4.0) == "4"
+    assert spin.textFromValue(0.5) == "0.5"
+    spin.setValue(1)
+    spin.stepBy(-1)
+    assert spin.value() == 0.5
+    assert spin.valueFromText("1.7") == 2  # typed in-between snaps to a level
+
+
 def test_marquee_glyph_is_centred_like_the_other_tool_shapes() -> None:
     """The marquee's dashed outline must sit on the same footprint as the shapes
     it shares the rail with, and be a mirror of itself both ways.

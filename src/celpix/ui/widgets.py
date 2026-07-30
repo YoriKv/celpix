@@ -39,6 +39,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -452,6 +453,61 @@ def funnel_icon(color: QColor, size: int = 16, ratio: float = 1.0) -> QIcon:
     painter.end()
     pixmap.setDevicePixelRatio(ratio)
     return QIcon(pixmap)
+
+
+# The zoom multipliers the view offers, in order. Whole numbers magnify, and
+# **0.5 is the one reduction**: it is what a file too tall for the window is read
+# at (a screen's worth of a tilemap, a sprite sheet end to end), where every
+# larger step would only show less of it. Nothing between 0.5 and 1 - halving is
+# the only reduction nearest-neighbour can do without inventing pixels, and the
+# art these are for is pixel art.
+ZOOM_LEVELS: tuple[float, ...] = (0.5, *range(1, 25))
+
+
+def zoom_level_after(zoom: float, steps: int) -> float:
+    """The level ``steps`` along from ``zoom``, clamped to the ends of the list.
+
+    Stepping walks the list rather than adding to the value, so the gap under 1
+    is one step like every other and Zoom Out from 1 lands on 0.5 instead of on
+    nothing. An off-list value (a project written by hand) starts from the
+    nearest level - the lower one when it falls exactly between two - so a step
+    still lands somewhere the picker can show.
+    """
+    at = min(range(len(ZOOM_LEVELS)), key=lambda i: abs(ZOOM_LEVELS[i] - zoom))
+    return ZOOM_LEVELS[max(0, min(len(ZOOM_LEVELS) - 1, at + steps))]
+
+
+class ZoomSpinBox(QDoubleSpinBox):
+    """The Zoom control: a multiplier, stepped through :data:`ZOOM_LEVELS`.
+
+    A double spin because one level is fractional, but it never *reads* like one:
+    :meth:`textFromValue` writes whole numbers bare, so the box shows "4" and not
+    "4.0". Its arrows and Up/Down keys move one level, and a typed value snaps to
+    the nearest one - the list is the whole of what the view supports, so an
+    in-between number would be a setting that silently did something else.
+    """
+
+    def __init__(self, value: float = 4.0) -> None:
+        super().__init__()
+        self.setRange(ZOOM_LEVELS[0], ZOOM_LEVELS[-1])
+        self.setDecimals(1)  # enough for the one fractional level
+        # Commit on Enter / focus-out / stepping, not per keystroke, like every
+        # other view spin: typing "12" must not re-render at "1".
+        self.setKeyboardTracking(False)
+        self.setValue(value)
+
+    def textFromValue(self, value: float) -> str:
+        return f"{value:g}"
+
+    def valueFromText(self, text: str) -> float:
+        """Snap typed text onto the nearest level; keep the current one if unread."""
+        try:
+            return zoom_level_after(float(text.replace(",", ".")), 0)
+        except ValueError:
+            return self.value()
+
+    def stepBy(self, steps: int) -> None:
+        self.setValue(zoom_level_after(self.value(), steps))
 
 
 def source_icon(color: QColor, size: int = 16, ratio: float = 1.0) -> QIcon:

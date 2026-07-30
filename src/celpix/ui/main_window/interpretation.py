@@ -45,6 +45,7 @@ from celpix.ui.undo_commands import (
 from celpix.ui.widgets import (
     ChecklistPopupButton,
     CompactComboBox,
+    ZoomSpinBox,
     add_labelled,
     funnel_icon,
     select_combo_data,
@@ -311,12 +312,15 @@ class InterpretationMixin:
         self._columns.setFixedWidth(rows_width)
         self._rows.setFixedWidth(rows_width)
 
-        self._zoom = self._spin(1, 24, 4, self._on_view_change)
+        # The one view spin that isn't ``_spin``: its levels include a fractional
+        # one, so it steps through a list rather than counting (ZoomSpinBox).
+        self._zoom = ZoomSpinBox()
+        self._zoom.valueChanged.connect(self._on_view_change)
         add_labelled(
             view,
             "Zoom:",
             self._zoom,
-            "Screen pixels per image pixel",
+            "Screen pixels per image pixel\n0.5 halves it, to read a whole map at once",
         )
 
         # Range 255: enough rows for a 512-entry palette under a 2-color (1bpp)

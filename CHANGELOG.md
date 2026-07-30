@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.1 - unreleased
+
+- Add 0.5 zoom level and some more fixes
+
 ## v0.4.0 - 2026-07-30
 
 - **Back / Forward navigation**, like a browser's
@@ -8,6 +12,9 @@
 - The tilemap bar's Tiles picker has a **jump button** beside it that shows the
   entry the map draws from, so you can go and look at a tile - or edit it where it
   lives - and come straight back with Back.
+- **Zoom 0.5**: a half-size zoom level for reading a file too big for the window,
+  a screen or a whole sprite sheet at once. Remembered with the project like any
+  other zoom.
 - Holding Ctrl while drag and dropping a file now prompts the user for what type
   of file (pixel/palette/tilemap) to import it as.
 - **Tilemaps**: added extensive tile map support with custom containers, tilemap
@@ -18,8 +25,6 @@
   hex, so you can see which tile a cell is drawing and not just what it looks like.
 - Added .col palette file support
 - Palette entries can now be renamed from the files list, like every other entry
-- Which controls apply to a kind of document, and what a shared one *does* on each,
-  are now declared in one place each rather than decided per control
 - Performance and cleanup pass
 
 ## v0.3.5 - 2026-07-28

@@ -43,7 +43,7 @@ from PySide6.QtWidgets import QWidget
 from celpix.core.arrangement import BlockLayout
 from celpix.core.document import GridMode
 from celpix.ui.tools import EditMode
-from celpix.ui.widgets import paint_selection_outline
+from celpix.ui.widgets import ZOOM_LEVELS, paint_selection_outline
 
 # The neutral surround/backing behind the rendered pixels: a fixed mid-gray (not a
 # theme color) so it never biases how the art's colors read. The scroll viewport
@@ -235,7 +235,11 @@ class Canvas(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._image = QImage()
-        self._zoom = 4
+        # Device pixels per image pixel. A float only because of the one
+        # reducing level (:data:`~celpix.ui.widgets.ZOOM_LEVELS`); every geometry
+        # built from it is rounded to whole device pixels at the point of use, so
+        # nothing downstream carries a fraction.
+        self._zoom: float = 4.0
         self._show_grid = False
         self._grid_mode = GridMode.TILE
         self._block_grid = False
@@ -331,8 +335,8 @@ class Canvas(QWidget):
         self._filled_tiles = count
         self.update()
 
-    def set_zoom(self, zoom: int) -> None:
-        self._zoom = max(1, zoom)
+    def set_zoom(self, zoom: float) -> None:
+        self._zoom = max(ZOOM_LEVELS[0], float(zoom))
         self._update_size()
 
     def set_grid(
@@ -571,8 +575,11 @@ class Canvas(QWidget):
         """
         if self._image.isNull():
             return None
-        px = int(pos.x()) // self._zoom
-        py = int(pos.y()) // self._zoom
+        # Floor division, not int(): a position just outside the top-left has to
+        # come out negative so the caller can reject it (or clamp it), where
+        # truncation would report pixel 0 and paint on the edge column.
+        px = int(pos.x() // self._zoom)
+        py = int(pos.y() // self._zoom)
         if clamp:
             px = max(0, min(px, self._image.width() - 1))
             py = max(0, min(py, self._image.height() - 1))
@@ -867,7 +874,8 @@ class Canvas(QWidget):
 
     def _update_size(self) -> None:
         self.setFixedSize(
-            self._image.width() * self._zoom, self._image.height() * self._zoom
+            round(self._image.width() * self._zoom),
+            round(self._image.height() * self._zoom),
         )
         self.update()
 
@@ -875,10 +883,10 @@ class Canvas(QWidget):
         """The device-coord rect of one canvas cell."""
         z = self._zoom
         return QRect(
-            tile_x * self._tile_w * z,
-            tile_y * self._tile_h * z,
-            self._tile_w * z,
-            self._tile_h * z,
+            round(tile_x * self._tile_w * z),
+            round(tile_y * self._tile_h * z),
+            round(self._tile_w * z),
+            round(self._tile_h * z),
         )
 
     def _background_region(self) -> QRegion | None:
@@ -902,10 +910,10 @@ class Canvas(QWidget):
             z = self._zoom
             return QRegion(
                 QRect(
-                    remainder * self._tile_w * z,
-                    row * self._tile_h * z,
-                    (cols - remainder) * self._tile_w * z,
-                    self._tile_h * z,
+                    round(remainder * self._tile_w * z),
+                    round(row * self._tile_h * z),
+                    round((cols - remainder) * self._tile_w * z),
+                    round(self._tile_h * z),
                 )
             )
         # Backing cells are unioned a horizontal *run* at a time rather than one
@@ -959,7 +967,11 @@ class Canvas(QWidget):
         # (after resetTransform) so its lines stay 1px crisp at any zoom, and only
         # once a tile is at least 2px so it never swamps the pixels themselves.
         if self._show_grid and self._grid_style is not GridStyle.NONE and z >= 2:
-            self._draw_grid(painter, z, exposed)
+            # int(): every level from 2 up is a whole number, so the lattice keeps
+            # its exact integer arithmetic (step sizes, the cached pattern cell)
+            # and the fractional level is excluded by the gate above - a grid over
+            # half-size pixels would be denser than the art.
+            self._draw_grid(painter, int(z), exposed)
         self._paint_palette_rows(painter, exposed)
         self._paint_tile_ids(painter, exposed)
         self._paint_selection(painter, exposed)
@@ -989,10 +1001,10 @@ class Canvas(QWidget):
         if self._float_image is not None:
             fx, fy = self._float_pos
             rect = QRect(
-                fx * z,
-                fy * z,
-                self._float_image.width() * z,
-                self._float_image.height() * z,
+                round(fx * z),
+                round(fy * z),
+                round(self._float_image.width() * z),
+                round(self._float_image.height() * z),
             )
             painter.drawImage(rect, self._float_image)
             paint_selection_outline(painter, rect)
@@ -1000,7 +1012,12 @@ class Canvas(QWidget):
             return
         if self._marquee is not None and not self._marquee.isNull():
             m = self._marquee
-            rect = QRect(m.x() * z, m.y() * z, m.width() * z, m.height() * z)
+            rect = QRect(
+                round(m.x() * z),
+                round(m.y() * z),
+                round(m.width() * z),
+                round(m.height() * z),
+            )
             paint_selection_outline(painter, rect)
         self._paint_pen_preview(painter)
 
@@ -1045,7 +1062,10 @@ class Canvas(QWidget):
             return
         z = self._zoom
         x, y = self._hover_pixel
-        rect = QRect(x * z, y * z, z, z)
+        # At the reducing level a pixel is half a device pixel; the preview still
+        # has to mark *something*, so it never shrinks below one.
+        side = max(1, round(z))
+        rect = QRect(round(x * z), round(y * z), side, side)
         painter.fillRect(rect, self._preview_color)
         pen = QPen(PREVIEW_OUTLINE_COLOR)
         pen.setWidth(1)
@@ -1297,7 +1317,7 @@ class Canvas(QWidget):
         layout = self._layout()
         cols, canvas_rows = self._columns(), self._rows()
         font = painter.font()
-        font.setPixelSize(max(_ROW_LABEL_MIN - 2, min(cell_h // 3, 14)))
+        font.setPixelSize(max(_ROW_LABEL_MIN - 2, min(int(cell_h // 3), 14)))
         font.setBold(True)
         painter.setFont(font)
         painter.setPen(_tinted(GRID_FINE_COLOR, GRID_COARSE_ALPHA))
@@ -1344,7 +1364,7 @@ class Canvas(QWidget):
         if cell_h < _ROW_LABEL_MIN:
             return
         font = painter.font()
-        font.setPixelSize(max(_ROW_LABEL_MIN - 2, min(cell_h // 3, 14)))
+        font.setPixelSize(max(_ROW_LABEL_MIN - 2, min(int(cell_h // 3), 14)))
         font.setBold(True)
         painter.setFont(font)
         widest = max((value for value in ids if value is not None), default=0)
@@ -1361,8 +1381,8 @@ class Canvas(QWidget):
             if not (0 <= tile_x < cols and 0 <= tile_y < canvas_rows):
                 continue
             rect = self._cell_rect(tile_x, tile_y)
-            rect.setWidth(cell_w)
-            rect.setHeight(cell_h)
+            rect.setWidth(round(cell_w))
+            rect.setHeight(round(cell_h))
             if not exposed.intersects(rect):
                 continue
             painter.drawText(
@@ -1391,10 +1411,10 @@ class Canvas(QWidget):
         if block is not None:
             x0, y0, width, height = block
             rect = QRect(
-                x0 * self._tile_w * z,
-                y0 * self._tile_h * z,
-                width * self._tile_w * z,
-                height * self._tile_h * z,
+                round(x0 * self._tile_w * z),
+                round(y0 * self._tile_h * z),
+                round(width * self._tile_w * z),
+                round(height * self._tile_h * z),
             )
             if rect.intersects(exposed):
                 paint_selection_outline(painter, rect)
@@ -1407,10 +1427,10 @@ class Canvas(QWidget):
                     prev = x
                     continue
                 rect = QRect(
-                    run_start * self._tile_w * z,
-                    tile_y * self._tile_h * z,
-                    (prev - run_start + 1) * self._tile_w * z,
-                    self._tile_h * z,
+                    round(run_start * self._tile_w * z),
+                    round(tile_y * self._tile_h * z),
+                    round((prev - run_start + 1) * self._tile_w * z),
+                    round(self._tile_h * z),
                 )
                 if rect.intersects(exposed):
                     paint_selection_outline(painter, rect)

@@ -55,6 +55,7 @@ from celpix.ui.widgets import (
     CompactComboBox,
     add_labelled,
     signals_blocked,
+    zoom_level_after,
 )
 
 
@@ -494,7 +495,9 @@ class NavigationMixin:
         cursor in the canvas's device coordinates.
         """
         old = self._zoom.value()
-        new = max(self._zoom.minimum(), min(self._zoom.maximum(), old + steps))
+        # One wheel notch is one *level*, not one multiplier: the levels are not
+        # evenly spaced (0.5 sits under 1), so the list is what a step walks.
+        new = zoom_level_after(old, steps)
         if new == old:
             return
         hbar = self._scroll.horizontalScrollBar()
@@ -535,7 +538,7 @@ class NavigationMixin:
         the viewport it sits centred inside it and the bars are empty, so the
         visible extent is the smaller of the two. What a paste centres on.
         """
-        zoom = max(1, self._zoom.value())
+        zoom = self._zoom.value()
         viewport = self._scroll.viewport()
         hbar = self._scroll.horizontalScrollBar()
         vbar = self._scroll.verticalScrollBar()

@@ -3934,6 +3934,32 @@ def test_past_end_region_maps_linear_padding_to_last_row_block(qtbot) -> None:
     assert c._background_region() is None
 
 
+def test_half_zoom_halves_the_canvas_and_still_hits_the_right_pixel(qtbot) -> None:
+    """The one zoom level under 1 reduces, so every device-pixel geometry the
+    canvas derives has to survive a fraction — the size it asks for, the cell
+    rects it paints, and the hit-test that turns a click back into a pixel."""
+    from PySide6.QtCore import QPointF, QRect
+    from PySide6.QtGui import QImage
+
+    c = _canvas_with_3x2_red(qtbot)  # 24x16 image of 8px tiles
+    c.set_zoom(0.5)
+    assert (c.width(), c.height()) == (12, 8)
+    assert c._cell_rect(1, 1) == QRect(4, 4, 4, 4)
+    # Two image pixels to the device pixel, and a position left of the canvas
+    # still reads as outside rather than snapping onto the edge column.
+    assert c._pixel_at(QPointF(3, 1)) == (6, 2)
+    assert c._pixel_at(QPointF(-1, 1)) is None
+    # A whole paint at the fractional level: the grid is gated off below zoom 2
+    # (so the lattice keeps its integer arithmetic), and the two label overlays
+    # bail on their fit test - but every one of them measures in device pixels
+    # off the zoom first, which is where a stray fraction would land.
+    c.set_grid(True)
+    c.set_palette_rows([0, 1, None, 2, None, 3])
+    c.set_tile_ids([0, 1, 2, 3, 4, 5])
+    c.set_filled_tiles(5)  # and the past-end fill, which is a scaled region
+    c.render(QImage(c.size(), QImage.Format.Format_RGB32))
+
+
 def test_grid_levels_follow_the_mode_the_block_and_the_zoom(qtbot) -> None:
     # The steps the whole grid is drawn from: everything below _grid_levels works
     # from this list alone, so this is where the mode's meaning lives.
