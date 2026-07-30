@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.0 - unreleased
+## v0.4.0 - 2026-07-30
 
 - **Back / Forward navigation**, like a browser's
   history: `Alt+Left` / `Alt+Right`, the mouse's back/forward buttons, or the two
