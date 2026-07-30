@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.1 - unreleased
+## v0.4.1 - 2026-07-30
 
 - Add 0.5 zoom level and some more fixes
 
