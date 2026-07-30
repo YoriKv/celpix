@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.2 - unreleased
+## v0.4.2 - 2026-07-30
 
 - **File Container**: new info popup showing information about the file container
 - **Tilemaps**: Tile source panel and edit tiles mode, lots of codec fixes, added
