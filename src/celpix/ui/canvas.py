@@ -116,6 +116,16 @@ DROP_REFUSED_COLOR = QColor(0xFF, 0x50, 0x50)
 DROP_TARGET_WIDTH = 2
 
 
+def _tile_id_text(value: int) -> str:
+    """A cell's tile number as the tilemap controls spell one: ``$1c4``.
+
+    One definition because the overlay measures the widest label before drawing
+    any, and a fit tested against a different spelling than the one drawn would
+    either clip or hide labels that fit.
+    """
+    return f"${value:x}"
+
+
 def _tinted(color: QColor, alpha: int) -> QColor:
     """``color`` at ``alpha``, clamped to a drawable opacity."""
     tinted = QColor(color)
@@ -234,7 +244,11 @@ class Canvas(QWidget):
         # off. Set by the render cycle from the same rows the pinned-colour
         # biases are built from, so the number and the recolour can never
         # disagree about which row a tile is on.
-        self._palette_rows: list[int] | None = None
+        self._palette_rows: list[int | None] | None = None
+        # The tile each tilemap cell names, by slot, or None when the labels are
+        # off (:meth:`set_tile_ids`). Only a cell's first slot carries a number,
+        # so a metatile is labelled once.
+        self._tile_ids: list[int | None] | None = None
         self._tile_w = 8
         self._tile_h = 8
         # Arrangement placement (block grouping / order). 1×1 is plain row-major,
@@ -338,14 +352,32 @@ class Canvas(QWidget):
         self._block_grid = block_grid
         self.update()
 
-    def set_palette_rows(self, rows: list[int] | None) -> None:
-        """Label each visible slot with its subpalette row, or stop labelling.
+    def set_palette_rows(self, rows: list[int | None] | None) -> None:
+        """Label each **pinned** slot with its subpalette row, or stop labelling.
 
-        Indexed by slot, like the selection: slot 0 is the window's first tile.
-        A row of 0 is not drawn — that is the view's own row, so a number there
-        would label every unpinned tile in the window rather than the pinned few.
+        Indexed by slot, like the selection: slot 0 is the window's first tile. A
+        slot with nothing pinned is ``None`` and carries no number — the overlay
+        exists to pick the pinned few out of a window, so numbering the rest says
+        nothing. That has to be stated by the caller and cannot be inferred here:
+        a row is a row, and "pinned to the row the view is already on" is a pin
+        like any other (``docs/design/palette-editing.md``).
         """
         self._palette_rows = rows
+        self.update()
+
+    def set_tile_ids(self, ids: list[int | None] | None) -> None:
+        """Label each cell with the tile it names, or stop labelling.
+
+        Indexed by **slot** like :meth:`set_palette_rows`, so the two overlays
+        address the same space — but a tilemap cell can cover several tiles, and
+        one number per cell is the point. The entries for a cell's other slots
+        are ``None``, and only its first carries the id.
+
+        ``None`` for the whole list turns the overlay off, and is what every
+        document that has no named tiles passes: a pixel tile *is* its position,
+        which the position bar already says.
+        """
+        self._tile_ids = ids
         self.update()
 
     def set_grid_style(self, style: GridStyle) -> None:
@@ -929,6 +961,7 @@ class Canvas(QWidget):
         if self._show_grid and self._grid_style is not GridStyle.NONE and z >= 2:
             self._draw_grid(painter, z, exposed)
         self._paint_palette_rows(painter, exposed)
+        self._paint_tile_ids(painter, exposed)
         self._paint_selection(painter, exposed)
         self._paint_overlays(painter, exposed)
         painter.end()
@@ -1269,8 +1302,8 @@ class Canvas(QWidget):
         painter.setFont(font)
         painter.setPen(_tinted(GRID_FINE_COLOR, GRID_COARSE_ALPHA))
         for slot, row in enumerate(rows):
-            if not row:
-                continue  # the view's own row: labelling it labels everything
+            if row is None:
+                continue  # nothing pinned here; row 0 pinned is still a pin
             tile_x, tile_y = layout.slot_to_cell(slot)
             if not (0 <= tile_x < cols and 0 <= tile_y < canvas_rows):
                 continue
@@ -1281,6 +1314,61 @@ class Canvas(QWidget):
                 rect.adjusted(1, 0, 0, 0),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                 str(row),
+            )
+
+    def _paint_tile_ids(self, painter: QPainter, exposed: QRect) -> None:
+        """Number each tilemap cell with the tile it names, top-left corner.
+
+        The palette-row overlay's twin, in the same colour and the same corner,
+        and they never appear together: a pixel document has no named tiles and a
+        tilemap has no pinned rows (``core/capabilities.py``).
+
+        Two differences the number itself forces. It is drawn into the whole
+        **cell** rather than one tile, because a metatile's label would not fit
+        inside its top-left eighth; and the fit is tested against the widest label
+        actually present rather than a fixed minimum, since ``$3FF`` needs four
+        times the room a palette row's single digit does. Testing the widest once
+        keeps that off the per-cell path — a screen is thousands of cells, and a
+        text measurement each would show.
+
+        Hex with the ``$`` the Base tile spin uses: a bare ``10`` over a tile
+        cannot say whether it means sixteen, and this is the number you carry to
+        that spin, a hex editor or a bank listing.
+        """
+        ids = self._tile_ids
+        if not ids:
+            return
+        z = self._zoom
+        cell_w = self._tile_w * z * max(1, self._block_cols)
+        cell_h = self._tile_h * z * max(1, self._block_rows)
+        if cell_h < _ROW_LABEL_MIN:
+            return
+        font = painter.font()
+        font.setPixelSize(max(_ROW_LABEL_MIN - 2, min(cell_h // 3, 14)))
+        font.setBold(True)
+        painter.setFont(font)
+        widest = max((value for value in ids if value is not None), default=0)
+        metrics = painter.fontMetrics()
+        if metrics.horizontalAdvance(_tile_id_text(widest)) + 2 > cell_w:
+            return
+        layout = self._layout()
+        cols, canvas_rows = self._columns(), self._rows()
+        painter.setPen(_tinted(GRID_FINE_COLOR, GRID_COARSE_ALPHA))
+        for slot, value in enumerate(ids):
+            if value is None:
+                continue
+            tile_x, tile_y = layout.slot_to_cell(slot)
+            if not (0 <= tile_x < cols and 0 <= tile_y < canvas_rows):
+                continue
+            rect = self._cell_rect(tile_x, tile_y)
+            rect.setWidth(cell_w)
+            rect.setHeight(cell_h)
+            if not exposed.intersects(rect):
+                continue
+            painter.drawText(
+                rect.adjusted(1, 0, 0, 0),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                _tile_id_text(value),
             )
 
     def _paint_selection(self, painter: QPainter, exposed: QRect) -> None:

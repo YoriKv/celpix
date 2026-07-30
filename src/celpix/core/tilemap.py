@@ -25,13 +25,16 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from enum import Enum
+from functools import lru_cache
+
+from celpix.core.arrangement import BlockLayout
 
 # The index step between one row of a multi-tile cell and the next. **Not** the
 # cell's own width: console VRAM behaves as a 16-tile-wide array, so a 16x16 BG
 # cell draws tiles N, N+1, N+0x10, N+0x11
 # (``docs/graphics-formats-reference/snes-hardware-notes.md`` §5). A sprite
-# object's multi-tile part steps through the same array the same way
-# (:data:`~celpix.core.sprite.Part.tile_indices`), which is why this is one
+# object's multi-tile subsprite steps through the same array the same way
+# (:data:`~celpix.core.sprite.Subsprite.tile_indices`), which is why this is one
 # constant rather than a coincidence in two places.
 VRAM_ROW_STRIDE = 0x10
 
@@ -48,7 +51,7 @@ def tile_run(
     """The tiles a multi-tile thing draws, in the order they appear on screen.
 
     One index for an ordinary hardware cell; four for a 16x16 metatile or a 16x16
-    sprite part, stepped by ``stride`` rather than by ``across``
+    subsprite, stepped by ``stride`` rather than by ``across``
     (:data:`VRAM_ROW_STRIDE`).
 
     **A flip reverses the order as well as mirroring each tile.** A mirrored
@@ -60,8 +63,8 @@ def tile_run(
     is the renderer's half.
 
     Shared by the two things that index a tile array this way, a tilemap cell
-    (:meth:`~celpix.core.document.Document.cell_tile_indices`) and a sprite part
-    (:meth:`~celpix.core.sprite.Part.tile_indices`), so the rule cannot come out
+    (:meth:`~celpix.core.document.Document.cell_tile_indices`) and a subsprite
+    (:meth:`~celpix.core.sprite.Subsprite.tile_indices`), so the rule cannot come out
     different depending on which document is on screen.
     """
     if across == 1 and down == 1:
@@ -157,6 +160,57 @@ class Cell:
 
 
 BLANK = Cell()
+
+
+def resolve_cell(cell: Cell, source: list[Cell], *, carry_rows: bool) -> Cell:
+    """The cell ``cell`` names in the tilemap it draws through, or a blank.
+
+    Where an ordinary cell's ``index`` is a tile number, a chained one is a
+    position in another tilemap's cells (``docs/design/tilemap-entry.md`` §3.1).
+    What comes back is that cell whole — its tile, its palette row, its flips —
+    with the referring cell's own attributes composed on top.
+
+    Composed rather than dropped because the referring format may carry
+    attributes of its own, and discarding them would draw a picture neither file
+    describes. Both rules reduce to *the source cell untouched* for a format with
+    no such field, which is exactly what a stamp layout's coordinate word is:
+
+    - **Flips toggle** rather than overwrite, the same rule :meth:`CellGrid.
+      flipped_h` follows — a mirrored reference to an already-mirrored stamp
+      faces its original way. A format with no flip bits decodes ``False`` and
+      changes nothing.
+    - **The palette row is the referrer's only where its format has one to
+      state** (``carry_rows``, from
+      :meth:`~celpix.plugins.base.TilemapCodecPlugin.has_palette_rows`). A
+      decoded 0 from a format without the field means "no row here", not "row
+      0", and letting it through would silently black out the source's rows.
+
+    Priority and ``flags`` come from the source cell. Neither is rendered, and a
+    referring cell's flags are its own uninterpreted bits — a stamp layout's
+    attribute-source bit among them, whose *cleared* meaning is a per-bank
+    default living in the authoring tool rather than in the file
+    (``docs/graphics-formats-reference/scgcad-formats.md`` §4). Inventing that
+    default would draw a picture the file does not describe, so the source's own
+    attributes come through: the documented behaviour of the set bit, and the one
+    checkable against the source on screen.
+    """
+    if not 0 <= cell.index < len(source):
+        # A reference the source does not have draws blank rather than failing: a
+        # layout outliving the panel it was authored against is ordinary, and so
+        # is a restamp typed past the end of the panel.
+        return BLANK
+    found = source[cell.index]
+    if not carry_rows and not (cell.flip_h or cell.flip_v):
+        # A coordinate-only format has nothing to compose, so the source cell
+        # comes back as itself — the same object, which is what keeps a 4096-cell
+        # layout from rebuilding every cell it resolves.
+        return found
+    return replace(
+        found,
+        palette_row=cell.palette_row if carry_rows else found.palette_row,
+        flip_h=found.flip_h != cell.flip_h,
+        flip_v=found.flip_v != cell.flip_v,
+    )
 
 
 class CellGrid:
@@ -305,3 +359,108 @@ class CellGrid:
                 for cell in self._cells[src * self._width : (src + 1) * self._width]
             ]
         return out
+
+
+# -- page assembly ---------------------------------------------------------
+#
+# Some formats hold several independent maps end to end in one file — a screen
+# file is four 32x32 screens — and nothing in the file records how they make up
+# a larger picture (``docs/graphics-formats-reference/scgcad-formats.md`` §2).
+# Read back to back the four stack in a column, which is a reading no console
+# ever used; laid two across they are the 64x64 screen the hardware assembles.
+# So the assembly is a **view choice** over pages the container declares, and
+# these three functions are the whole of it: which choices exist, which one to
+# start on, and the placement itself (``docs/design/tilemap-entry.md`` §6).
+#
+# Placement is display-only, exactly like the block arrangement it reuses: the
+# cells stay in the file's own order and only *where each one is drawn* moves.
+
+
+def page_assemblies(pages: int) -> tuple[int, ...]:
+    """The pages-across values that lay ``pages`` pages out as a whole rectangle.
+
+    The divisors of ``pages``, so every choice fills its last row of pages: a
+    partial one would leave holes in the middle of the picture at some other
+    width, and there is no reading of a screen file in which a quarter of it is
+    absent. Four screens therefore assemble 1x4, 2x2 or 4x1 — the arrangements
+    that show all of them.
+    """
+    if pages <= 0:
+        return ()
+    return tuple(across for across in range(1, pages + 1) if pages % across == 0)
+
+
+def default_pages_across(page_columns: int, page_rows: int, pages: int) -> int:
+    """The assembly to open a paged file on: the one closest to square in cells.
+
+    A guess either way — the file does not say — so the one to make is the least
+    misleading. For the four 32x32 screens this exists for, square is 2x2, which
+    is also the console's own multi-screen order and what the one independent
+    viewer of the format draws (``scgcad-formats.md`` §2 "Screen assembly"), so
+    the general rule and the specific evidence agree rather than having to be
+    reconciled.
+
+    Ties go to the **wider** layout: two pages read side by side before they read
+    stacked, and the console's own two-screen mode is the horizontal one.
+    """
+    options = page_assemblies(pages)
+    if not options:
+        return 1
+    width, height = max(1, page_columns), max(1, page_rows)
+
+    def squareness(across: int) -> tuple[float, int]:
+        w, h = across * width, (pages // across) * height
+        # Aspect as a ratio ≥ 1 either way, so tall and wide are compared by how
+        # far from square they are rather than by which axis is longer.
+        return max(w, h) / min(w, h), -across
+
+    return min(options, key=squareness)
+
+
+def resolve_pages_across(
+    wanted: int, page_columns: int, page_rows: int, pages: int
+) -> int:
+    """``wanted`` if it is an assembly this file has, else the default one.
+
+    One place decides, so a project that stored an assembly for a file whose
+    format has since been read differently — a different cell size, so a
+    different page count — opens on something sensible instead of a layout that
+    would shear the picture. 0 means "nothing chosen", which is what a project
+    written before assemblies existed says, and lands on the default too.
+    """
+    if wanted in page_assemblies(pages):
+        return wanted
+    return default_pages_across(page_columns, page_rows, pages)
+
+
+@lru_cache(maxsize=16)
+def page_order(
+    page_columns: int, page_rows: int, pages: int, pages_across: int
+) -> tuple[int, ...]:
+    """Which cell each drawn position shows, for a ``pages_across`` assembly.
+
+    A **page is a block** and the assembly is a row of blocks, which is exactly
+    what :class:`~celpix.core.arrangement.BlockLayout` already maps — so the
+    placement is that class's, asked at cell scale instead of tile scale, and the
+    one thing this adds is inverting it: the composer wants "position *p* draws
+    cell *n*" where the layout answers "cell *n* is drawn at (x, y)".
+
+    Cached because a repaint asks for it and it depends on four numbers that
+    change only when the file or the assembly does. The result is a tuple for the
+    same reason: a shared cached list a caller could mutate is a bug waiting for
+    the second caller.
+    """
+    width = max(1, pages_across) * max(1, page_columns)
+    count = max(0, pages) * max(1, page_columns) * max(1, page_rows)
+    if pages <= 0 or pages_across <= 0 or pages % pages_across:
+        # Not a whole rectangle of pages: some drawn position would have no cell
+        # and the inversion below would leave it pointing at cell 0. The file's
+        # own order is the honest fallback (:func:`resolve_pages_across` keeps
+        # callers off this path).
+        return tuple(range(count))
+    layout = BlockLayout(width, page_columns, page_rows)
+    order = [0] * count
+    for position in range(count):
+        x, y = layout.slot_to_cell(position)
+        order[y * width + x] = position
+    return tuple(order)

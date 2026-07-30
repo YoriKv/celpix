@@ -84,6 +84,7 @@ from celpix.ui.main_window.capability_sync import CapabilitySyncMixin
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
 from celpix.ui.main_window.entries import EntriesMixin
+from celpix.ui.main_window.history import HistoryMixin
 from celpix.ui.main_window.interpretation import (
     ROWS_LOCKED_TIP,
     ROWS_TIP,
@@ -139,10 +140,14 @@ BLOCK_GRID_KEY = "view/block_grid"
 # View ▸ Entire File, a local preference for the same reason: how much of a file
 # you want in front of you belongs to the person looking, not to the project.
 ENTIRE_FILE_KEY = "view/entire_file"
+# View ▸ Show Tile IDs, likewise: an annotation you turn on to read a map and off
+# again to look at it, which is about the reader and not about the map.
+TILE_IDS_KEY = "view/tile_ids"
 
 
 class MainWindow(
     NavigationMixin,
+    HistoryMixin,
     InterpretationMixin,
     PaletteSourceMixin,
     PaletteDockMixin,
@@ -301,6 +306,9 @@ class MainWindow(
         # And the pinned palette regions, for the same reason: _refresh_view asks
         # them for every slot's subpalette row before it can draw anything.
         self._init_palette_regions()
+        # The visit trail, before the first entry can become current (the empty
+        # state at the tail of this method already is a current-entry change).
+        self._init_history()
 
         self._canvas = Canvas()
         self._overlay = DecompressOverlay(self)
@@ -345,6 +353,8 @@ class MainWindow(
         # step (with signals blocked).
         # It sits to the LEFT of the canvas and is styled as an accent-colored rail
         # so it reads as a file navigator, not one of the canvas's own scrollbars.
+        # That styling is why the capability gate *hides* it on an entry with no
+        # view window rather than disabling it (``capability_sync.py``).
         self._tile_offset_bar = QScrollBar(Qt.Orientation.Vertical)
         self._tile_offset_bar.setToolTip("Tile position in the file\nDrag to jump")
         self._tile_offset_bar.setStyleSheet(self._tile_offset_bar_style())
@@ -465,6 +475,8 @@ class MainWindow(
         # Removing (or restoring, via undo) an entry can change whether any
         # references are missing - keep the Locate menu's enabled state honest.
         ws.on_removed.append(lambda _entry: self._sync_locate_action())
+        # A closed entry can't be gone back to, so it leaves the visit trail.
+        ws.on_removed.append(self._forget_visits)
 
     def _on_entry_added(self, entry: Entry) -> None:
         # The panel nests a slice under its parent file's item when it's open.
@@ -924,6 +936,9 @@ class MainWindow(
         menu = self.menuBar().addMenu("&View")
         self._build_grid_action(menu)
         self._build_grid_style_menu(menu)
+        # With the grid because it is the same kind of thing: an annotation laid
+        # over the art in the grid's own colour, not part of the picture.
+        self._build_tile_ids_action(menu)
         menu.addSeparator()
         # Grouped with the zoom: both answer "how much of this am I looking at,
         # and how large" - Entire File sizes the window, zoom sizes the pixels.
@@ -931,6 +946,42 @@ class MainWindow(
         self._build_zoom_actions(menu)
         menu.addSeparator()
         self._build_theme_menu(menu)
+
+    def _build_tile_ids_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
+        """View ▸ Show Tile IDs — number each tilemap cell with the tile it names.
+
+        The question a tilemap view cannot otherwise answer. A cell's picture is
+        the tile's, so nothing on screen says *which* tile it is, and that number
+        is what you carry to the Base tile spin, to a hex editor, or to a bank
+        listing. Drawn in hex with the ``$`` the tilemap controls use.
+
+        A toggle rather than always-on: a number over every cell of a 32x32 screen
+        is a lot of ink for something wanted in bursts. Gated to tilemaps by
+        ``CELL_LABELS`` — a pixel tile has no name to show, only a position, which
+        the position bar already gives (``docs/design/tilemap-entry.md`` §8).
+
+        No shortcut, for the reason Entire File has none: every bare letter near
+        the view is already navigation.
+
+        Mnemonic "D": "T" belongs to Theme and "G"/"B"/"S" to the three grid
+        entries this sits with.
+        """
+        self._show_tile_ids_action = QAction("Show Tile I&Ds", self, checkable=True)
+        self._show_tile_ids_action.setToolTip(
+            "Number each cell with the tile it names, in hex\n"
+            "Drawn in the grid's own color, in the cell's top-left\n"
+            "The file's own number, before Base tile is applied"
+        )
+        self._show_tile_ids = load_bool_setting(TILE_IDS_KEY, False)
+        self._show_tile_ids_action.setChecked(self._show_tile_ids)
+        self._show_tile_ids_action.toggled.connect(self._on_show_tile_ids_change)
+        view_menu.addAction(self._show_tile_ids_action)
+
+    def _on_show_tile_ids_change(self, on: bool) -> None:
+        save_bool_setting(TILE_IDS_KEY, on)
+        self._show_tile_ids = on
+        if self._doc is not None:
+            self._refresh_view()
 
     def _build_entire_file_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Entire File - drop the row window and show all of it at once.
@@ -1032,10 +1083,26 @@ class MainWindow(
         save_enum_setting(THEME_KEY, theme)
         apply_theme(theme)
         # Qt re-polishes every widget against the new palette, which covers the
-        # whole window bar one thing: the file-position rail is a *stylesheet*,
-        # and its accent was written into that string as a literal when the bar
-        # was built. Only regenerating it re-reads the palette.
+        # whole window bar two kinds of thing. The file-position rail is a
+        # *stylesheet*, and its accent was written into that string as a literal
+        # when the bar was built; only regenerating it re-reads the palette.
         self._tile_offset_bar.setStyleSheet(self._tile_offset_bar_style())
+        # And the painted icons are pixmaps baked in the old text color - a
+        # re-polish repaints the button around them, not the art inside.
+        self._rebake_icons()
+
+    def _rebake_icons(self) -> None:
+        """Re-paint the window's own painted icons against the live palette.
+
+        The two buttons whose art is a pixmap this window painted rather than a
+        glyph the style draws: the codec filter's funnel and the tilemap bar's
+        jump. Called on a theme switch rather than from a ``changeEvent`` like the
+        panels that own their own icons - Qt sends a burst of PaletteChange during
+        construction, before these widgets exist, and a window-level handler would
+        have to guard against its own half-built state.
+        """
+        self._bake_pixel_filter_icon()
+        self._bake_binding_jump_icon()
 
     def _build_grid_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Grid - the on/off switch, over everything Grid Style configures.

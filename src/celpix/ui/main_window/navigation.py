@@ -73,8 +73,13 @@ class NavigationMixin:
         Some of these also have navbar buttons; the rest (first/last page, page
         steps, window resizing) live only here and on the keyboard, so the menu
         doubles as the discoverable list of navigation shortcuts.
+
+        Back/Forward lead: they move between *entries* rather than within one, so
+        they belong at the head of the menu and are the only actions in it with
+        real shortcuts (see :meth:`_add_history_actions`).
         """
         menu = self.menuBar().addMenu("&Navigate")
+        self._add_history_actions(menu)
         groups: tuple[tuple[tuple[str, str, Callable[[], None]], ...], ...] = (
             (
                 ("&First page", "Home", self._nav_home),
@@ -420,6 +425,21 @@ class NavigationMixin:
             and self._scroll.viewport().childAt(event.position().toPoint()) is None
         ):
             self._clear_selection_on_background()
+        # The back/forward mouse buttons walk the visit trail from anywhere in the
+        # window, for the same reason the nav keys are filtered rather than bound:
+        # they are a gesture on the window, not on whatever happens to be under
+        # the pointer (and no widget here wants those buttons for itself).
+        if (
+            et
+            in (
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.MouseButtonDblClick,
+                QEvent.Type.MouseButtonRelease,
+            )
+            and self.isActiveWindow()
+            and self._handle_history_mouse(event)
+        ):
+            return True
         if (
             et in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
             and self.isActiveWindow()

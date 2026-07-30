@@ -21,10 +21,22 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from celpix.core import ceil_div
-from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
+from celpix.core.context import (
+    KEY_SOURCE_OFFSET,
+    KEY_TILEMAP_COLUMNS,
+    KEY_TILEMAP_PAGE_ROWS,
+    PipelineContext,
+)
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
-from celpix.core.tilemap import Cell, tile_run
+from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES
+from celpix.core.tilemap import (
+    Cell,
+    page_order,
+    resolve_cell,
+    resolve_pages_across,
+    tile_run,
+)
 from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef
@@ -117,6 +129,14 @@ class ViewOptions:
     view and the file's true order — off makes the map inert without discarding
     it. The map composes *before* the block placement: it decides which tile
     fills a slot, the arrangement decides where that slot lands.
+
+    ``pages_across`` is the block arrangement's tilemap counterpart, one level up:
+    a file holding several independent maps (:attr:`Document.pages`) states
+    neither how they assemble nor that they were meant to, so this says how many
+    to lay side by side and the rest follow in bands below
+    (:func:`~celpix.core.tilemap.page_order`). Display-only in the same sense —
+    the cells keep the file's order, only where each is drawn moves — and it owns
+    ``columns`` while it applies, since an assembly *is* a width.
     """
 
     columns: int = 16
@@ -140,6 +160,40 @@ class ViewOptions:
     # for the tiles inside them (:mod:`celpix.core.paletteregions`).
     palette_regions: PaletteRegions = PaletteRegions()
     show_palette_regions: bool = True  # apply them, or render everything at the row
+    # How many **pages** a paged tilemap lays across (:attr:`Document.pages`), and
+    # so how its independent maps assemble into one picture: a screen file's four
+    # 32x32 screens read 1x4, 2x2 or 4x1. 0 means nothing has chosen, which lands
+    # on the format's default. Meaningless on every other kind of document, where
+    # it stays 0. Display-only like the block axes above — the cells keep the
+    # file's own order and only where each is drawn moves.
+    pages_across: int = 0
+
+
+@dataclass(frozen=True)
+class CellChain:
+    """The tilemap a chained map's cells are coordinates into, and how to read it.
+
+    Held on the document rather than looked up per edit, which is what makes
+    resolution a **model** operation: a restamp rebuilds
+    :attr:`Document.resolved_cells` from what is already here
+    (:meth:`Document.resolve`), with no workspace and no reload, so the new stamp
+    is on screen as soon as the cell changes.
+
+    ``source`` is the other map's cell list as it stood when this one was bound.
+    Editing *that* map replaces its list rather than mutating it, so the host
+    re-points the chain of anything drawing through it
+    (``docs/design/tilemap-entry.md`` §3.1) — a snapshot that silently aged would
+    be worse than one that is refreshed on the one event that invalidates it.
+
+    ``carry_rows`` is the *referring* format's answer to
+    :meth:`~celpix.plugins.base.TilemapCodecPlugin.has_palette_rows`, which is not
+    the same question as :attr:`Document.cells_carry_palette_rows` — that one is
+    true if either side of the chain states rows, because it gates the view's
+    subpalette. This one says whose row wins per cell.
+    """
+
+    source: list[Cell]
+    carry_rows: bool = True
 
 
 @dataclass
@@ -174,15 +228,28 @@ class Document:
     # bound tiles, which is what a later pixel edit on the tilemap view will
     # write through to reach the real art.
     cells: list[Cell] | None = None
-    # What the cells *resolve to*, when they are not tile references themselves.
-    # A stamp layout's entry names a cell in a panel, and the panel supplies the
-    # tile and its attributes — so the map is drawn from these while ``cells``
-    # stays the file's own words (``docs/design/tilemap-entry.md`` §6). None for
-    # an ordinary tilemap, whose cells already name tiles.
+    # Set when these cells are coordinates into *another tilemap's* cells rather
+    # than tile numbers — what makes this a chained map
+    # (``docs/design/tilemap-entry.md`` §3.1). Holding the chain rather than only
+    # its result is what lets an edit re-resolve in place (:meth:`resolve`).
+    chain: CellChain | None = None
+    # What the cells resolve to through :attr:`chain`, kept beside them because
+    # every draw wants them and only an edit changes them. Derived, never set by
+    # hand: ``__post_init__`` and :meth:`resolve` are the only writers, so it
+    # cannot drift from the cells it came from. None for an ordinary tilemap,
+    # whose cells already name tiles.
     resolved_cells: list[Cell] | None = None
     tilemap_config: PathwayConfig | None = None
     tilemap_ctx: PipelineContext = field(default_factory=PipelineContext)
-    tilemap_data: bytes = b""  # the cells' own bytes, for a splice-style save
+    # The cells' own bytes, kept in step with :attr:`cells` by whoever edits them
+    # (the entry's file as it now stands, not as it was read). What Export Raw
+    # writes and what the hex dump shows under a tilemap — the save path itself
+    # re-encodes from the cells rather than reading this.
+    tilemap_data: bytes = b""
+    # Byte size of one cell under the tilemap codec, which is what turns a cell
+    # index into a position in the bytes above (the hex highlight). The codec's
+    # answer, recorded at load beside the two geometry fields below it.
+    cell_bytes: int = 0
     # How many tiles one cell covers, and the index step between a cell's tile
     # rows. The step is not always the width: SNES 16x16 BG tiles are N, N+1,
     # N+0x10, N+0x11 because VRAM behaves as a 16-tile-wide array
@@ -191,13 +258,49 @@ class Document:
     cell_row_stride: int = 0  # 0 = the cell's own width, i.e. consecutive tiles
     # The source tile that cell index 0 draws (a format's base-character field).
     tile_base_index: int = 0
-    # Set instead of a grid layout when the cells are **sprite parts**: their
+    # The palette row a cell's row **0** means — the tile base's colour twin. A
+    # cell carries a small row number relative to wherever its layer's colours
+    # were loaded, and only the format knows where that is: a console BG entry's
+    # 3-bit row counts from CGRAM row 0, while a sprite's identical 3-bit field
+    # counts from row 8, because sprite palettes live in the upper half
+    # (``docs/graphics-formats-reference/snes-hardware-notes.md`` §6). Without it a
+    # sprite draws through the background's colours — which is not a wrong shade,
+    # it is the wrong sixteen colours.
+    #
+    # The base **in force**, which is the format's answer until the user says
+    # otherwise on the tilemap bar: the palette actually loaded need not be the
+    # whole of CGRAM, and a sprite read against a palette file holding only the
+    # object half counts from row 0 again. Signed for that reason
+    # (:attr:`~celpix.project.workspace.Entry.palette_row_base`); the render
+    # clamps a row it pushes below 0
+    # (:func:`~celpix.pipeline.pipeline.drawn_palette_row`).
+    palette_row_base: int = 0
+    # How wide the format's tile-index *field* is, as a mask (0 = unbounded).
+    # A multi-tile cell's neighbours are found by adding to that field, so the
+    # addition wraps inside it: an SNES BG index is 10 bits, so the 16x16 cell at
+    # 0x3FF draws 0x3FF, 0x000, 0x00F, 0x010 rather than running off the end
+    # (``docs/graphics-formats-reference/snes-hardware-notes.md`` §5). Per format
+    # rather than global, because the field is the format's: a bare Game Boy index
+    # has no neighbours to find, and a stamp layout's word is a coordinate.
+    index_mask: int = 0
+    # Whether the cell *format* gives a cell a palette row to name, as the codec
+    # declares it (:meth:`~celpix.plugins.base.TilemapCodecPlugin.has_palette_rows`).
+    # A property of the format and not of this file: a screen whose cells all sit
+    # on row 0 is still True, because the zeros are its cells' own answer. False
+    # only where there is no field at all — a bare tile number — and that is what
+    # hands the choice of colours back to the view's subpalette row
+    # (``docs/design/tilemap-entry.md`` §8).
+    cells_carry_palette_rows: bool = True
+    # Set instead of a grid layout when the cells are **subsprites**: their
     # pixel offsets are not tile-aligned, so no cell grid can hold them and the
-    # view draws frames of freely placed parts (:mod:`celpix.core.sprite`).
+    # view draws frames of freely placed subsprites (:mod:`celpix.core.sprite`).
     # ``cells`` still holds the file's own records, so the save path is unchanged
     # and a write puts back exactly what was read.
     sprite_frames: list[tuple] | None = None
-    sprite_size_pair: tuple[int, int] = (8, 16)
+    # A sprite map's two subsprite sizes, **in tiles** (see
+    # :data:`~celpix.core.sprite.DEFAULT_SUBSPRITE_TILES`): each size bit picks
+    # one of the two, and no sprite file records the pair.
+    sprite_size_pair: tuple[int, int] = DEFAULT_SUBSPRITE_TILES
     # The decoded tile source a tilemap draws from, kept between renders
     # (:func:`~celpix.pipeline.pipeline.tile_bank`). A map's cells reach anywhere
     # in the bank, so there is no window to slice and the *whole* source has to
@@ -208,6 +311,26 @@ class Document:
         default=None, compare=False, repr=False
     )
 
+    def __post_init__(self) -> None:
+        self.resolve()
+
+    def resolve(self) -> None:
+        """Rebuild :attr:`resolved_cells` from :attr:`cells` through :attr:`chain`.
+
+        The one writer of the derived list, called at construction and again after
+        every cell edit, so a restamp shows the stamp it now names without the
+        entry being re-read. A no-op on an unchained document, which has nothing
+        to resolve through.
+        """
+        chain = self.chain
+        if chain is None or self.cells is None:
+            self.resolved_cells = None
+            return
+        self.resolved_cells = [
+            resolve_cell(cell, chain.source, carry_rows=chain.carry_rows)
+            for cell in self.cells
+        ]
+
     @property
     def is_tilemap(self) -> bool:
         """Whether this document's own content is a tilemap rather than pixels."""
@@ -215,35 +338,41 @@ class Document:
 
     @property
     def is_indirect(self) -> bool:
-        """Whether these cells point at another map's cells rather than at tiles.
+        """Whether these cells name another map's cells rather than tiles.
 
-        True only for a stamp layout. It is what makes such a document
-        **view-only for now**: an edit here would have to decide whether the user
-        meant to restamp (change which panel cell is named) or to change the
-        stamp itself (edit the panel), and the format's own answer to that — an
-        attribute-source flag whose two behaviours we cannot yet tell apart —
-        is the part still unconfirmed (``scgcad-formats.md`` §4).
+        Tests the :attr:`chain` and not its result, so it says what the document
+        *is* rather than whether a derived list happens to be populated. What it
+        changes is what an edit **means** — a cell edit here restamps, choosing a
+        different source cell for that position — not whether one is allowed
+        (:attr:`cells_editable`).
         """
-        return self.resolved_cells is not None
+        return self.chain is not None
 
     @property
     def is_sprite(self) -> bool:
-        """Whether these cells are sprite parts rather than grid positions."""
+        """Whether these cells are subsprites rather than grid positions."""
         return self.sprite_frames is not None
 
     @property
     def cells_editable(self) -> bool:
         """Whether a cell edit here has a well-defined thing to change.
 
-        False for the two documents whose cells are not what is on screen: a
-        stamp layout, where an edit would have to choose between restamping and
-        editing the stamp (:attr:`is_indirect`), and a sprite object, where a
-        canvas position resolves to a *part* through an overlap order rather than
-        to a cell through a grid. Both are view-only until that is designed
-        (``docs/design/tilemap-entry.md`` §9); neither is read-only on disk, so
-        the distinction is about the gesture, not the file.
+        A **chained** map qualifies: its cells are coordinates, so changing one
+        restamps that position — which source cell it names — and the stamp itself
+        stays editable on the map it came from. Two well-defined gestures on two
+        documents, which is what the question needed all along; what a format can
+        actually express is then the codec's answer, not this one
+        (:meth:`~celpix.plugins.base.TilemapCodecPlugin.transform_cell`,
+        :meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`).
+
+        False only for a **sprite object**, where a canvas position resolves to a
+        *subsprite* through an overlap order rather than to a cell through a grid,
+        so
+        there is no cell under the cursor to change
+        (``docs/design/tilemap-entry.md`` §9). It is not read-only on disk, so the
+        distinction is about the gesture, not the file.
         """
-        return self.is_tilemap and not self.is_indirect and not self.is_sprite
+        return self.is_tilemap and not self.is_sprite
 
     @property
     def drawn_cells(self) -> list[Cell]:
@@ -259,6 +388,126 @@ class Document:
         across, down = self.cell_tiles
         return max(1, across) * max(1, down)
 
+    # -- pages and their assembly (``docs/design/tilemap-entry.md`` §6) ------
+    @property
+    def page_size(self) -> tuple[int, int]:
+        """One page's size in cells, or ``(0, 0)`` for a file that is one map.
+
+        Read off the tilemap context, where the container published it: only the
+        container knows its file holds four screens rather than one long one, and
+        it has already said so
+        (:data:`~celpix.core.context.KEY_TILEMAP_PAGE_ROWS`). Taken from there
+        rather than copied into a field of its own so the two cannot disagree —
+        a page's width *is* the width the format states, and a format that
+        states no width has no page shape to speak of.
+        """
+        rows = int(self.tilemap_ctx.get(KEY_TILEMAP_PAGE_ROWS, 0) or 0)
+        columns = int(self.tilemap_ctx.get(KEY_TILEMAP_COLUMNS, 0) or 0)
+        return (columns, rows) if columns > 0 and rows > 0 else (0, 0)
+
+    @property
+    def pages(self) -> int:
+        """How many independent maps this file holds — 0 unless it holds several.
+
+        Whole pages only. A cell count that is not a whole number of them is a
+        file being read under a cell size it was not written in (a screen read as
+        one-byte cells is twice as many cells as it has), and assembling *that*
+        would lay a shear on top of a misreading. Answering 0 leaves it drawn
+        back to back, where the mistake is at least visible as one.
+
+        A **sprite object** is never paged: its records are subsprites at pixel
+        offsets
+        rather than a grid, so there is no page for a page to be a piece of.
+        """
+        columns, rows = self.page_size
+        if not columns or self.is_sprite or self.cells is None:
+            return 0
+        per_page = columns * rows
+        count = len(self.cells)
+        pages = count // per_page
+        return pages if pages > 1 and count % per_page == 0 else 0
+
+    @property
+    def pages_across(self) -> int:
+        """How many pages the view lays side by side — 1 when nothing is assembled.
+
+        The view's choice, checked against the pages this file actually has
+        (:func:`~celpix.core.tilemap.resolve_pages_across`), so an unpaged
+        document and a stored assembly that no longer fits both answer 1 and the
+        file draws in its own order.
+        """
+        pages = self.pages
+        if not pages:
+            return 1
+        columns, rows = self.page_size
+        return resolve_pages_across(self.view.pages_across, columns, rows, pages)
+
+    @property
+    def assembled_columns(self) -> int:
+        """How many cells across the assembly fixes this document at, or 0 for none.
+
+        The width and the placement are two halves of one answer, so they are read
+        off one property: a page is cut at a fixed size, so a picture laid out at
+        any other width puts a page's rows where the next page's belong and the
+        pages interleave — the same shear a wrong column count makes on an
+        unassembled map, arrived at from the other direction.
+
+        This is why it lives here rather than being enforced where the two happen
+        to meet. The view's Cols is a *setting* that a refresh keeps in step with
+        the assembly, but a render can be asked for by something that never went
+        through a refresh at all — a bulk PNG export of entries that were loaded
+        and never shown — so the layout takes the width from the document and the
+        spin is what mirrors it (``docs/design/tilemap-entry.md`` §6).
+
+        0 on everything unpaged, which leaves the caller's own column count the
+        answer: that is the ordinary tilemap, whose width really is a preference.
+        """
+        columns, _rows = self.page_size
+        return self.pages_across * columns if self.pages else 0
+
+    @property
+    def cell_order(self) -> tuple[int, ...] | None:
+        """Which cell each drawn position holds — None when the two are the same.
+
+        None rather than ``range(len(cells))`` for every unassembled document,
+        which is most of them: it is what lets the render path and the selection
+        skip the indirection entirely instead of paying for a permutation that
+        permutes nothing.
+        """
+        across = self.pages_across
+        if across <= 1:
+            return None
+        columns, rows = self.page_size
+        return page_order(columns, rows, self.pages, across)
+
+    @property
+    def laid_out_cells(self) -> list[Cell]:
+        """:attr:`drawn_cells` in the order the view lays them out.
+
+        What the renderer walks, and the only place the assembly reaches the
+        picture. Everything else about a cell — its position in
+        :attr:`cells`, what a save writes, what a chained map's coordinate names,
+        which record the hex dump highlights — stays in the **file's** order, so an
+        assembly can be changed (or undone, or restored differently) without any
+        of that meaning something else afterwards.
+        """
+        cells = self.drawn_cells
+        order = self.cell_order
+        return cells if order is None else [cells[at] for at in order]
+
+    def cell_at(self, position: int) -> int:
+        """Which cell the drawn position ``position`` holds.
+
+        The inward half of :attr:`laid_out_cells`: the canvas resolves a click to
+        a position in the picture, and an edit needs the cell that position draws.
+        Identity on an unassembled document, and out-of-range positions come back
+        unchanged so a caller's own bounds check stays the one that decides.
+        """
+        order = self.cell_order
+        if order is None or not 0 <= position < len(order):
+            return position
+        return order[position]
+
     def cell_tile_indices(self, cell: Cell) -> list[int]:
         """The source tile indices ``cell`` draws, in the order they appear.
 
@@ -266,22 +515,32 @@ class Document:
         — the cell's tile counts, its :attr:`cell_row_stride` (defaulting to the
         cell's own width, i.e. consecutive tiles), and the base index the bound
         source starts at.
+
+        The walk runs in the *format's* index space and :attr:`tile_base_index` is
+        added after it, so :attr:`index_mask` wraps the neighbours inside the
+        field the way the hardware's adder does. The two orders agree whenever
+        there is no mask, addition being addition; they differ exactly where the
+        run would otherwise leave the field.
         """
         across, down = self.cell_tiles
         if across <= 1 and down <= 1:
             # The ordinary hardware cell — one tile, no run to walk and no order
             # for a flip to reverse. Answered here rather than through the walk
-            # because a repaint asks this once per cell, thousands of times.
+            # because a repaint asks this once per cell, thousands of times. No
+            # mask either: a lone index came out of the field already inside it.
             return [self.tile_base_index + cell.index]
         across, down = max(1, across), max(1, down)
-        return tile_run(
-            self.tile_base_index + cell.index,
+        run = tile_run(
+            cell.index,
             across,
             down,
             self.cell_row_stride or across,
             flip_h=cell.flip_h,
             flip_v=cell.flip_v,
         )
+        if self.index_mask:
+            return [self.tile_base_index + (index & self.index_mask) for index in run]
+        return [self.tile_base_index + index for index in run]
 
     @classmethod
     def palette_only(
@@ -382,6 +641,22 @@ class Document:
         if not self.pixel_config.reads_raw_bytes:
             return 0
         return self.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
+
+    @property
+    def tilemap_display_base(self) -> int:
+        """:attr:`display_base` for the other half of a tilemap document.
+
+        A tilemap entry holds two files at once — its cells, and the tiles it is
+        bound to — and they start in different places. The addresses beside its
+        **cells** (the hex dump) are the entry's own file, past whatever its
+        container skipped: a screen's payload begins at 0, a stamp layout's past
+        its header. Same rule as above, asked of the tilemap pathway; 0 for a
+        document that has no cells to address.
+        """
+        cfg = self.tilemap_config
+        if cfg is None or not cfg.reads_raw_bytes:
+            return 0
+        return self.tilemap_ctx.get(KEY_SOURCE_OFFSET, 0)
 
     def clamp_tile_offset(
         self, offset: int, columns: int, rows: int, nudge: int = 0

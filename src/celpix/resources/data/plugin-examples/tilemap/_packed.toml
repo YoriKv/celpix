@@ -45,7 +45,11 @@ flip_v = { shift = 15, bits = 1 }
 # metatile four times over.
 # cell_tiles = [1, 1]
 
-# Set when a cell names a position in *another map* rather than a tile, so the
-# host knows to resolve it through that map instead of a tile bank. Rare; the
-# shipped scgcad-map preset is the only one that needs it.
+# Set when a cell names a position in *another map* rather than a tile. Binding a
+# tilemap to a tilemap works whatever this says — it is a hint, telling the host to
+# offer maps ahead of tile banks and to drop the Base tile a coordinate cannot use,
+# before anything is bound. Rare; the shipped scgcad-map preset is the only one
+# that needs it. Editing such a map *restamps*: setting a cell's index picks a
+# different cell from the map it draws through, and the `index` field above is what
+# bounds how high that can go.
 # indirect = true

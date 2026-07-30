@@ -811,15 +811,16 @@ class FileListPanel(QWidget):
     def _begin_rename(self, entry: Entry) -> None:
         """Open the inline editor on ``entry``'s item.
 
-        Files, slices and bookmarks: a file opens under its basename, but a ROM
-        is rarely named after what a person is editing in it, and a region joined
-        from several chips is named after only the first of them — so the row is
-        free text like the others, and the path it was named from stays in the
-        tooltip. Not palettes: theirs is the ``.pal`` on disk, and the entry
-        exists to point at that file.
+        Every kind of entry: a row opens under the basename of the file it points
+        at, and that name rarely says what the user is editing. A ROM is not named
+        after the sprite sheet inside it, a region joined from several chips is
+        named after only the first of them, and a project holding dozens of
+        palette files sorts them out by which scene they colour rather than by
+        which numbered ``.pal`` they are. So the row is free text, and the path it
+        was named from stays in the tooltip.
         """
         item = self._items.get(entry)
-        if item is None or entry.kind is EntryKind.PALETTE:
+        if item is None:
             return
         self._editing = entry
         with signals_blocked(self._tree):  # marker strip must not read as an edit
@@ -942,6 +943,9 @@ class FileListPanel(QWidget):
             # The double-click action, discoverable.
             use = menu.addAction("&Use as Current Palette")
             use.triggered.connect(lambda: self.use_palette_requested.emit(entry))
+            menu.addSeparator()
+            rename = menu.addAction("Re&name…")
+            rename.triggered.connect(lambda: self._begin_rename(entry))
             # Same override a file gets, over the containers that frame a palette:
             # a palette whose colors stop before its bytes do needs one, and
             # detection can be as wrong here as anywhere.

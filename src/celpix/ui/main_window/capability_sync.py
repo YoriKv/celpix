@@ -1,16 +1,21 @@
-"""Turning the capability table into what is on screen.
+"""Turning the capability table into what is on screen, and into which code runs.
 
-:data:`~celpix.core.capabilities.CAPABILITIES` says which controls a kind of
-document supports; this applies it. One pass over one declared table, run from
-the tail of the refresh cycle, in place of each control carrying its own
-"...and not on a tilemap" clause inside whichever ``_sync_*`` method owns it
-(``docs/design/tilemap-entry.md`` §4).
+Both halves of ``docs/design/tilemap-entry.md`` §4, in one module because they
+have to agree about one thing — what the entry on screen holds
+(:meth:`~CapabilitySyncMixin._content_kind`). Split across two, a control could
+be gated as a tilemap's and dispatched as a pixel document's.
 
-**Gating is a veto and never a grant** — for every control that has an owner.
-One whose capability is present is left exactly as its own sync left it: paste
-still depends on there being something in the clipboard, the transforms still on
-a selection. That is what lets this run last without having to know why any
-other pass disabled something.
+**Gating.** :data:`~celpix.core.capabilities.CAPABILITIES` says which controls a
+kind of document supports; :meth:`~CapabilitySyncMixin._sync_capabilities`
+applies it. One pass over one declared table, run from the tail of the refresh
+cycle, in place of each control carrying its own "...and not on a tilemap" clause
+inside whichever ``_sync_*`` method owns it.
+
+Gating is a **veto and never a grant** — for every control that has an owner. One
+whose capability is present is left exactly as its own sync left it: paste still
+depends on there being something in the clipboard, the transforms still on a
+selection. That is what lets this run last without having to know why any other
+pass disabled something.
 
 The exception is :data:`_GATE_OWNS`: a handful of controls nothing else ever
 enables, because until capabilities existed they applied everywhere. Vetoing one
@@ -21,11 +26,56 @@ A control that would be **meaningless** on this kind is hidden; one that is
 merely unavailable is disabled. The pixel tools are the clear case of the first:
 a panel of brushes over a tilemap is not a disabled feature, it is furniture for
 a different room.
+
+Two capabilities gate **in place** rather than through this pass, listed in
+:data:`_GATED_IN_PLACE`, and the reason is worth stating because it decides where
+any future gate goes. This pass can only show, hide and disable a *named*
+control, all or nothing. That is the wrong instrument when the control is
+*replaced* rather than switched off — the binding bar and the navigation bar are
+two pages of one stack, so what a tilemap needs is the other page, not a greyed
+one — or when a finer condition sits underneath the kind's answer: the Cell spin
+also needs cells this file can edit and a format with an index field, and a
+blanket ``setVisible(True)`` from here would run *after* the pass that hid it and
+put it back on a sprite object. Both ask :meth:`~CapabilitySyncMixin._can`
+themselves instead, which is the same table read from the other end.
+
+**Dispatch.** :data:`_BEHAVIOURS` names which method implements each
+:class:`Gesture` on each content kind, and
+:meth:`~CapabilitySyncMixin._kind_handler` resolves it. Gating says *whether* a
+control applies; this says *what it does*, which is the more interesting half —
+several controls exist on both kinds and mean different things on each, and a
+flip is the sharpest: pixels here, an attribute bit there.
 """
 
 from __future__ import annotations
 
+from enum import Enum, auto
+
 from celpix.core.capabilities import Capability, ContentKind, supports
+
+
+class Gesture(Enum):
+    """One shared control whose *implementation* differs by content kind.
+
+    The rows of ``docs/design/tilemap-entry.md`` §4's second table: something the
+    user does the same way on every document, which means something different
+    depending on what that document holds. Copy lifts tile bytes or cells; a flip
+    rewrites pixels or toggles a mirror bit.
+
+    Separate from :class:`~celpix.core.capabilities.Capability` because the two
+    do not correspond. One capability covers several gestures — all four
+    clipboard ones ride on ``CLIPBOARD`` — so the capability cannot key the
+    dispatch, and a gesture is not a thing to gate: what a user switches off is
+    Paste, not "paste, in its cell sense".
+    """
+
+    COPY = auto()
+    CUT = auto()
+    CLEAR = auto()
+    PASTE = auto()
+    TRANSFORM_TILES = auto()
+    TRANSFORM_BLOCK = auto()
+
 
 # Which controls each capability gates, by attribute name. Names rather than
 # widgets because they are created by a dozen different mixins in an order this
@@ -49,6 +99,7 @@ _GATES: dict[Capability, tuple[str, ...]] = {
         "_toggle_rearrange_action",
         "_show_rearranged_action",
     ),
+    Capability.CELL_LABELS: ("_show_tile_ids_action",),
     Capability.NAVIGATION: ("_tile_offset_bar",),
     Capability.IMPORT_IMAGE: ("_import_png_action",),
     Capability.CLIPBOARD: ("_copy_action", "_cut_action", "_paste_action"),
@@ -61,10 +112,58 @@ _GATES: dict[Capability, tuple[str, ...]] = {
     Capability.COMPRESSION_SCAN: ("_compression_action",),
 }
 
+# Capabilities gated by their own ``_sync_*`` asking :meth:`_can`, because this
+# pass cannot express what they need — see the module docstring on why a replaced
+# control and a two-level condition both have to gate themselves.
+#
+# ``CELL_ROTATE`` is the third and the mildest: a quarter turn is already refused
+# on a non-square *tile*, so the kind's answer joins a condition the transform bar
+# was weighing anyway rather than arriving as a separate veto
+# (:meth:`~...transform.TransformMixin._sync_transform_actions`).
+_GATED_IN_PLACE = frozenset(
+    {
+        Capability.TILE_BINDING,  # tilemap_bar._sync_tilemap_bar — the stack swap
+        Capability.STAMP,  # tilemap_bar._sync_cell_index — plus the format's word
+        Capability.CELL_ROTATE,  # transform._sync_transform_actions
+    }
+)
+
+# Capabilities that gate nothing anywhere, and are **right** not to: both kinds a
+# user can activate declare them, so a gate would be a condition that is always
+# true. Written down rather than left as an absence, so the question "does this
+# one gate anything?" has an answer here instead of in a grep.
+#
+# They are not dead. Each is a real claim about a kind — that a tilemap has its
+# own palette to edit and its own colour format to read it in, that its cells are
+# selectable, that it exports as a picture — and the claim is what a *third* kind
+# would be measured against. ``PALETTE`` already declines four of them; it has no
+# view of its own to gate, being applied rather than activated, which is why they
+# stay inert for now.
+_UNGATED = frozenset(
+    {
+        Capability.PALETTE_EDIT,
+        Capability.PALETTE_CODEC,
+        Capability.TILE_SELECT,
+        Capability.CELL_FLIP,
+        Capability.EXPORT_IMAGE,
+        Capability.GRID,
+        Capability.HEX_VIEW,
+    }
+)
+
 # The few whose absence means "not a thing here" rather than "not right now".
+#
+# The position bar is one, and has to be: it is an accent-coloured rail with a
+# custom handle, so a disabled one still paints in full colour — and its handle
+# is still sized and placed from the *bound tile bank*, which is the only thing
+# with a tile count here. That reads as a live, partly-scrolled navigator over a
+# document that is always shown entire. It goes for the reason the navigation bar
+# under the canvas goes rather than greying (``tilemap_bar.py``): the vertical
+# half of one control cannot stay behind when the horizontal half is replaced.
 _HIDDEN = frozenset(
     {
         "_tools_panel",
+        "_tile_offset_bar",
         "_pixel_codec_action",
         "_tilemap_codec_action",
         "_compression_action",
@@ -87,6 +186,7 @@ _GATE_OWNS = frozenset(
         "_show_palette_regions_action",
         "_show_palette_rows_action",
         "_show_rearranged_action",
+        "_show_tile_ids_action",
         # Hidden groups have to be in here too, or the veto below would leave a
         # group disabled behind its own hiding and it would come back grey.
         "_pixel_codec_action",
@@ -105,9 +205,49 @@ _GATE_OWNS = frozenset(
 # because an empty map is a clearer statement of that than no map at all.
 _NOT_BUILT_YET: dict[ContentKind, frozenset[Capability]] = {}
 
+# Which method implements each gesture on each content kind, by name — resolved
+# through ``getattr`` for the reason :data:`_GATES` is: the implementations live
+# on a dozen mixins this module must not import.
+#
+# An entry here is an **override, not the whole dispatch**. The shared method's
+# own body is the ``PIXELS`` implementation: that is where each of these gestures
+# has always been implemented, and lifting six pixel bodies out into named
+# methods purely to fill a second column would buy nothing but a second name for
+# each. So a kind absent from this table runs the shared body, and what the table
+# reads as is the list of gestures that mean something else somewhere.
+_BEHAVIOURS: dict[ContentKind, dict[Gesture, str]] = {
+    ContentKind.TILEMAP: {
+        Gesture.COPY: "_copy_cells",
+        Gesture.CUT: "_cut_cells",
+        Gesture.CLEAR: "_clear_cells",
+        Gesture.PASTE: "_paste_cells",
+        Gesture.TRANSFORM_TILES: "_transform_cells",
+        Gesture.TRANSFORM_BLOCK: "_transform_cell_block",
+    },
+}
+
+# Which capability each gesture rides on. Not consulted at dispatch time — it
+# states the one invariant that ties the two halves of this module together, and
+# a test asserts it: a kind with an implementation of a gesture must declare the
+# capability that gates it. Break that and the control is switched off over an
+# implementation that was there all along, which is exactly the drift the table
+# exists to prevent, and is not visible from either side alone.
+_GESTURE_CAPABILITY: dict[Gesture, Capability] = {
+    Gesture.COPY: Capability.CLIPBOARD,
+    Gesture.CUT: Capability.CLIPBOARD,
+    Gesture.CLEAR: Capability.CLIPBOARD,
+    Gesture.PASTE: Capability.CLIPBOARD,
+    # The transform gestures carry the operation, so they are offered wherever
+    # *any* of the four is: a tilemap flips and cannot be turned, and which of
+    # the two a given button asks for is settled a level up, on the bar
+    # (``CELL_ROTATE`` in :data:`_GATED_IN_PLACE`).
+    Gesture.TRANSFORM_TILES: Capability.CELL_FLIP,
+    Gesture.TRANSFORM_BLOCK: Capability.CELL_FLIP,
+}
+
 
 class CapabilitySyncMixin:
-    """Applies the capability table to the window's controls.
+    """Applies the capability table to the window's controls, and to its dispatch.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a
     standalone object.
@@ -134,6 +274,34 @@ class CapabilitySyncMixin:
         if capability in _NOT_BUILT_YET.get(kind, frozenset()):
             return False
         return supports(kind, capability)
+
+    def _kind_handler(self, gesture: Gesture):  # noqa: ANN201 - a bound method
+        """The current kind's own implementation of ``gesture``, or None.
+
+        None means **the caller's own body is the implementation**, which is the
+        pixel one for every gesture in :data:`_BEHAVIOURS` today. Call sites read
+
+        .. code-block:: python
+
+            if (paste := self._kind_handler(Gesture.PASTE)) is not None:
+                paste()
+                return
+
+        so the branch says which decision it is making, rather than testing a
+        flag on the document and naming the other kind's method in the same
+        breath. What that buys is not the line saved: it is that adding a kind
+        means adding a column to one table, instead of finding the branches.
+
+        No document, no gesture. Every one of these acts on what is on screen,
+        and the shared body's own empty-state guard is the right answer there —
+        a missing-file entry keeps ``current`` on its (possibly tilemap) entry
+        with nothing loaded (:meth:`~...session.SessionMixin._show_unavailable`),
+        so the kind alone would dispatch a cell edit against no cells.
+        """
+        if self._doc is None:
+            return None
+        name = _BEHAVIOURS.get(self._content_kind(), {}).get(gesture)
+        return None if name is None else getattr(self, name, None)
 
     def _sync_capabilities(self) -> None:
         """Switch off whatever the current entry has no capability for.

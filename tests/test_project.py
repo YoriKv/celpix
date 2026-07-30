@@ -372,6 +372,10 @@ def test_a_tilemap_entry_round_trips_with_its_binding(tmp_path) -> None:
             content_kind=ContentKind.TILEMAP,
             tilemap_preset_id="preset.tilemap.snes-bg",
             tile_source=TileSource(mode=TileMode.ENTRY, entry_index=0, base_index=16),
+            # 0 is the value that has to survive as a *choice*: the user setting it
+            # against a format that says 8 is exactly the override this field is
+            # for, so a falsy value must not be dropped as "nothing was set".
+            palette_row_base=0,
         )
     )
     project = tmp_path / "p.celpix"
@@ -380,6 +384,7 @@ def test_a_tilemap_entry_round_trips_with_its_binding(tmp_path) -> None:
     entry = load_project(str(project)).entries[1]
     assert entry.content_kind is ContentKind.TILEMAP
     assert entry.tilemap_preset_id == "preset.tilemap.snes-bg"
+    assert entry.palette_row_base == 0
     source = entry.tile_source
     assert source is not None and source.mode is TileMode.ENTRY
     assert (source.entry_index, source.base_index) == (0, 16)
@@ -413,8 +418,11 @@ def test_an_entry_bound_tile_source_stores_only_the_entry_index(tmp_path) -> Non
             tile_source=TileSource(mode=TileMode.ENTRY, entry_index=2),
         )
     )
-    stored = project_dict(ws, str(tmp_path / "p.celpix"))["entries"][0]["tile_source"]
-    assert stored == {"mode": "entry", "entry_index": 2}
+    stored = project_dict(ws, str(tmp_path / "p.celpix"))["entries"][0]
+    assert stored["tile_source"] == {"mode": "entry", "entry_index": 2}
+    # And a map reading in the rows its format states carries no row base at all,
+    # so nothing written before that control existed changes shape.
+    assert "palette_row_base" not in stored
 
 
 def test_a_broken_tile_binding_leaves_the_tilemap_unbound(tmp_path) -> None:
@@ -584,6 +592,31 @@ def test_palette_regions_round_trip_and_an_unpinned_view_omits_them(tmp_path) ->
     restored = load_project(str(project)).entries[0]
     assert restored.pending_view.palette_regions == entry.doc.view.palette_regions
     assert restored.pending_view.show_palette_regions is False
+
+
+def test_a_page_assembly_round_trips_and_an_unpaged_entry_omits_it(tmp_path) -> None:
+    """Which arrangement a paged tilemap is being read in is the user's answer to
+    a question the file does not raise, so it has to be remembered — and it is the
+    only kind of entry that has one, so nothing else grows a key."""
+    rom = tmp_path / "screen.scr"
+    rom.write_bytes(b"\x00" * 256)
+    ws = Workspace()
+    entry = ws.open_file(str(rom))
+    entry.session = _session()
+    entry.doc = _doc(FileRef(str(rom)), ViewOptions())
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    assert (
+        "pages_across"
+        not in json.loads(project.read_text(encoding="utf-8"))["entries"][0]["view"]
+    )
+
+    entry.doc.view.pages_across = 4
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert raw["entries"][0]["view"]["pages_across"] == 4
+    assert load_project(str(project)).entries[0].pending_view.pages_across == 4
 
 
 def test_malformed_palette_regions_are_skipped_not_raised(tmp_path) -> None:

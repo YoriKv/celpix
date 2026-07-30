@@ -29,7 +29,12 @@ from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.notices import warn
 from celpix.core.palette import Palette
-from celpix.core.sprite import Frame, drawn_frames, frame_bounds
+from celpix.core.sprite import (
+    DEFAULT_SUBSPRITE_TILES,
+    Frame,
+    drawn_frames,
+    frame_bounds,
+)
 from celpix.core.tilemap import Cell
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import (
@@ -623,6 +628,19 @@ def patch_tile_bank(
     doc.tile_bank_cache = ((doc.pixel_data, *shape), bank)
 
 
+def drawn_palette_row(row: int, base: int) -> int:
+    """The palette row a cell's ``row`` draws through, under a row base.
+
+    Clamped at 0 because a row before the palette's first is not a row. The base
+    is signed — a file whose cells name absolute rows, read against a palette
+    holding only those, counts *down*
+    (:attr:`~celpix.core.document.Document.palette_row_base`) — so without the
+    clamp a cell below the base would ask for a negative index shift, which no
+    colour table has.
+    """
+    return max(0, row + base)
+
+
 def tilemap_tiles(
     doc: Document, reg: Registry, columns: int
 ) -> tuple[list, BlockLayout]:
@@ -654,8 +672,21 @@ def tilemap_tiles(
     A cell naming a tile the source does not have renders blank rather than
     failing: a tilemap is routinely authored against a bank that is loaded
     elsewhere, and half a picture is more useful than an error.
+
+    The cells are walked in the order the view **lays them out**, which is the
+    file's own unless the map is several pages assembled side by side
+    (:attr:`~celpix.core.document.Document.laid_out_cells`). That is the one place
+    an assembly reaches the picture; nothing downstream of here knows about it.
+
+    An assembled document's ``columns`` is **its own**, not the caller's: the width
+    and the placement are one answer, and a picture laid out at any other width
+    interleaves the pages instead of putting them side by side
+    (:attr:`~celpix.core.document.Document.assembled_columns`). So the two cannot
+    be passed in separately and disagree — which is what a render reached without
+    going through the view would otherwise do.
     """
-    cells = doc.drawn_cells
+    cells = doc.laid_out_cells
+    columns = doc.assembled_columns or columns
     across, down = max(1, doc.cell_tiles[0]), max(1, doc.cell_tiles[1])
     blank = IndexGrid(doc.tile_width, doc.tile_height)
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
@@ -664,7 +695,7 @@ def tilemap_tiles(
     drawn: dict[tuple[int, bool, bool, int], object] = {}
     tiles: list = []
     for cell in cells:
-        shift = cell.palette_row * space
+        shift = drawn_palette_row(cell.palette_row, doc.palette_row_base) * space
         flip_h, flip_v = cell.flip_h, cell.flip_v
         for index in doc.cell_tile_indices(cell):
             key = (index, flip_h, flip_v, shift)
@@ -688,11 +719,16 @@ def tilemap_tiles(
 class TilemapImage(NamedTuple):
     """A whole tilemap drawn, and the two numbers a caller needs after.
 
-    ``drawn`` is how many tiles (or sprite parts) went in, which the canvas uses
-    to background the rest of a partial row. ``palette_rows`` is how many rows
-    were folded into the indices, which is what an export has to size its colour
-    table to: one image carries one table, so a map drawing through four palette
-    rows needs four rows of it (:func:`~celpix.ui.export.document_image`).
+    ``drawn`` is how many leading canvas **slots** hold data, which is what the
+    canvas backgrounds the rest of the picture from. Tiles for a grid; for a
+    sprite object it is the frames' slots and *not* the subsprites blitted into
+    them (:attr:`SpriteSheet.slots`) — their count is not a position on the canvas,
+    and reading it as one paints a stray band across the sheet.
+
+    ``palette_rows`` is how many rows were folded into the indices, which is what
+    an export has to size its colour table to: one image carries one table, so a
+    map drawing through four palette rows needs four rows of it
+    (:func:`~celpix.ui.export.document_image`).
     """
 
     grid: IndexGrid
@@ -710,68 +746,149 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
     for a grid and *frames* across for a sprite object.
     """
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
+    base = doc.palette_row_base
     if doc.is_sprite:
         frames = drawn_frames(doc.sprite_frames or [])
-        top = max((p.palette_row for frame in frames for p in frame), default=0)
-        grid, drawn = sprite_image(doc, reg, columns)
+        top = max(
+            (drawn_palette_row(s.palette_row, base) for frame in frames for s in frame),
+            default=0,
+        )
+        grid, sheet = sprite_image(doc, reg, columns)
+        drawn = sheet.slots
     else:
-        top = max((cell.palette_row for cell in doc.drawn_cells), default=0)
+        top = max(
+            (drawn_palette_row(cell.palette_row, base) for cell in doc.drawn_cells),
+            default=0,
+        )
         tiles, layout = tilemap_tiles(doc, reg, columns)
         # No bias list: the rows are already in the indices (see tilemap_tiles).
         grid, drawn = compose_tiles(tiles, layout, None), len(tiles)
     return TilemapImage(grid, drawn, min(max(1, 256 // max(1, space)), top + 1))
 
 
-def sprite_image(doc: Document, reg: Registry, columns: int) -> tuple[IndexGrid, int]:
-    """A sprite object's frames drawn side by side — one image, and a part count.
+class SpriteSheet(NamedTuple):
+    """How a sprite object's frames are laid out — the geometry the render and
+    the canvas have to agree about.
+
+    A sprite object has no cells on screen: its subsprites sit at signed pixel
+    offsets
+    and every frame is drawn in one shared bounding box, so what the canvas places
+    and selects in is the plain **tile** — the frame being the block those tiles
+    group into. That grid is this, and it is computed once here rather than
+    re-derived by each side, because a selection read off a different grid than the
+    picture was placed on names a different part of the sheet.
+
+    ``frame`` and the tile counts are in tiles; ``box`` is the pixel bounding box
+    (:func:`~celpix.core.sprite.frame_bounds`), which only the blit needs.
+    """
+
+    frames: int
+    across: int  # frames laid side by side
+    down: int  # rows of frames
+    frame: tuple[int, int]  # one frame's size, in tiles
+    box: tuple[int, int, int, int]  # left, top, width, height, in pixels
+
+    @property
+    def columns(self) -> int:
+        """The whole sheet's width in tiles — the canvas's column count."""
+        return self.across * self.frame[0]
+
+    @property
+    def rows(self) -> int:
+        """The whole sheet's height in tiles."""
+        return self.down * self.frame[1]
+
+    @property
+    def slots(self) -> int:
+        """Canvas slots that hold a frame.
+
+        A leading run, because the frame is the canvas's block: frame *n*'s tiles
+        are slots ``n * w * h`` onward, so the slots past the last frame — a partial
+        bottom row of frames, or the space beside a sheet drawn wider than it has
+        frames — are the tail this bounds.
+        """
+        return self.frames * self.frame[0] * self.frame[1]
+
+
+def sprite_sheet(doc: Document, columns: int) -> SpriteSheet:
+    """``doc``'s frames laid ``columns`` across — see :class:`SpriteSheet`.
+
+    ``columns`` is in *frames*, which is what the view's Cols means on a sprite
+    object; everything the sheet reports back is in tiles.
+    """
+    frames = drawn_frames(doc.sprite_frames or [])
+    box = frame_bounds(frames, doc.sprite_size_pair, doc.tile_width, doc.tile_height)
+    across = max(1, columns)
+    return SpriteSheet(
+        frames=len(frames),
+        across=across,
+        down=ceil_div(len(frames), across),
+        # Floor division deliberately: it is how the canvas recovers a count from
+        # the image it was handed, and the two have to arrive at the same grid.
+        frame=(
+            max(1, box[2] // max(1, doc.tile_width)),
+            max(1, box[3] // max(1, doc.tile_height)),
+        ),
+        box=box,
+    )
+
+
+def sprite_image(
+    doc: Document, reg: Registry, columns: int
+) -> tuple[IndexGrid, SpriteSheet]:
+    """A sprite object's frames drawn side by side — one image, and its layout.
 
     The one render path that cannot go through :func:`compose_tiles`, because a
-    sprite part sits at a signed *pixel* offset and a composer places tiles in a
+    subsprite sits at a signed *pixel* offset and a composer places tiles in a
     grid. So the tiles are fetched the same way a tilemap's are, and then blitted
     rather than composed (:mod:`celpix.core.sprite`).
 
     Three rules the frames need and a tilemap does not:
 
-    - **Index 0 is transparent.** A sprite's parts overlap, and a part drawn as a
-      solid square would erase whatever it was meant to sit in front of.
-    - **Parts are drawn back to front.** The file lists them front-first — part 0
-      is the topmost — so the run is walked in reverse.
+    - **Index 0 is transparent.** Subsprites overlap, and one drawn as a solid
+      square would erase whatever it was meant to sit in front of.
+    - **They are drawn back to front.** The file lists them front-first —
+      subsprite 0 is the topmost — so the run is walked in reverse.
     - **One box for the whole object.** Every frame is drawn in the same
       bounding box (:func:`~celpix.core.sprite.frame_bounds`), so a strip shows
       the object's motion instead of re-centring it away frame by frame.
     """
     frames = drawn_frames(doc.sprite_frames or [])
     pair = doc.sprite_size_pair
-    left, top, width, height = frame_bounds(frames, pair)
-    across = max(1, columns)
-    rows = ceil_div(len(frames), across)
-    image = IndexGrid(across * width, rows * height)
+    sheet = sprite_sheet(doc, columns)
+    left, top, width, height = sheet.box
+    across = sheet.across
+    image = IndexGrid(across * width, sheet.down * height)
     source = tile_bank(doc, reg)
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
-    drawn = 0
+    # A subsprite's own tiles step by the *tile* size, the codec's and not an
+    # assumed 8: the size pair is stated in tiles for exactly this reason, and a
+    # literal here would put the second half of every large one 8px from the first
+    # whatever the tiles behind it measure
+    # (:data:`~celpix.core.sprite.DEFAULT_SUBSPRITE_TILES`).
+    step_x, step_y = max(1, doc.tile_width), max(1, doc.tile_height)
     for at, frame in enumerate(frames):
         ox = (at % across) * width - left
         oy = (at // across) * height - top
-        for part in reversed(frame):
-            drawn += 1
-            side = max(1, part.size(pair) // 8)
-            for slot, index in enumerate(part.tile_indices(pair)):
+        for sub in reversed(frame):
+            side = sub.tiles(pair)
+            for slot, index in enumerate(sub.tile_indices(pair)):
                 index += doc.tile_base_index
                 if not 0 <= index < len(source):
                     continue
                 tile = source[index]
-                if part.flip_h:
+                if sub.flip_h:
                     tile = transform.flip_horizontal(tile)
-                if part.flip_v:
+                if sub.flip_v:
                     tile = transform.flip_vertical(tile)
                 _blit(
                     image,
                     tile,
-                    ox + part.x + (slot % side) * 8,
-                    oy + part.y + (slot // side) * 8,
-                    part.palette_row * space,
+                    ox + sub.x + (slot % side) * step_x,
+                    oy + sub.y + (slot // side) * step_y,
+                    drawn_palette_row(sub.palette_row, doc.palette_row_base) * space,
                 )
-    return image, drawn
+    return image, sheet
 
 
 def _blit(target: IndexGrid, tile: IndexGrid, x: int, y: int, bias: int) -> None:
@@ -779,10 +896,10 @@ def _blit(target: IndexGrid, tile: IndexGrid, x: int, y: int, bias: int) -> None
 
     Per pixel, because index 0 has to be skipped and the offset need not be
     tile-aligned — neither a row copy nor a translate can express that. The cost
-    is bounded by what a sprite object *is*: a few dozen parts a frame, and the
+    is bounded by what a sprite object *is*: a few dozen subsprites a frame, and the
     corpus's largest object is a few hundred tiles all told.
 
-    ``bias`` is the part's palette row folded into the indices, the shift a
+    ``bias`` is the subsprite's palette row folded into the indices, the shift a
     pinned palette region uses — but applied **here**, per pixel, rather than to
     the tile up front. :meth:`~celpix.core.index_grid.IndexGrid.shifted` moves
     index 0 along with the rest, which on a background is right and on a sprite
@@ -836,9 +953,24 @@ class TilemapData(NamedTuple):
     read rather than re-encoded from a partial grid. ``cell_tiles`` is how many
     tiles one cell covers, which only the codec knows.
 
-    ``frames`` is set only by a codec whose cells are **sprite parts**, whose
+    ``frames`` is set only by a codec whose cells are **subsprites**, whose
     pixel offsets no grid can express (:mod:`celpix.core.sprite`). None for every
     ordinary tilemap, which is drawn as the grid its cells already are.
+
+    ``index_mask`` is the ``index`` field's own width, so a multi-tile cell's
+    neighbours wrap inside the field rather than running past the end
+    (:attr:`~celpix.core.document.Document.index_mask`) — the codec's
+    :meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`, since the mask
+    *is* the highest value the field holds. 0 for a format that does not say.
+
+    ``palette_row_base`` is the palette row a cell's row 0 means — 8 for a sprite,
+    whose 3-bit field counts from the upper half of CGRAM
+    (:attr:`~celpix.core.document.Document.palette_row_base`).
+
+    ``palette_rows`` is whether the *format* gives a cell a palette row to name —
+    the format's word, not this file's, so a screen whose cells all happen to sit
+    on row 0 still reports True. What it gates is whether the view's subpalette
+    applies at all (``docs/design/tilemap-entry.md`` §8).
     """
 
     cells: list[Cell]
@@ -847,7 +979,10 @@ class TilemapData(NamedTuple):
     ctx: PipelineContext
     data: bytes
     frames: list[Frame] | None = None
-    size_pair: tuple[int, int] = (8, 16)
+    size_pair: tuple[int, int] = DEFAULT_SUBSPRITE_TILES
+    palette_rows: bool = True
+    index_mask: int = 0
+    palette_row_base: int = 0
 
 
 def load_tilemap_data(cfg: PathwayConfig, reg: Registry) -> TilemapData:
@@ -884,11 +1019,11 @@ def load_tilemap_data(cfg: PathwayConfig, reg: Registry) -> TilemapData:
         lambda: engine.cell_tiles(preset.params),
     )
     # The optional half of the protocol, and the only one an engine may lack: a
-    # format whose cells are sprite parts groups them into frames itself, because
-    # what the parts *mean* — which frame, at what offset, how big — is the same
+    # format whose cells are subsprites groups them into frames itself, because
+    # what they *mean* — which frame, at what offset, how big — is the same
     # knowledge that decoded them (:mod:`celpix.plugins.builtins.object_codec`).
     frames = None
-    size_pair = (8, 16)
+    size_pair = DEFAULT_SUBSPRITE_TILES
     if hasattr(engine, "frames"):
         frames = _run(
             Stage.INTERPRET_TILEMAP,
@@ -900,7 +1035,39 @@ def load_tilemap_data(cfg: PathwayConfig, reg: Registry) -> TilemapData:
             Pathway.TILEMAP,
             lambda: engine.size_pair(preset.params),
         )
-    return TilemapData(cells, cell_bytes, tiles, ctx, data, frames, size_pair)
+    # The other optional half: whether the format has a palette row for a cell to
+    # name. **True when the engine does not answer**, which is the safe
+    # direction — a format that does carry rows and stayed quiet must not have a
+    # view-wide row added on top of the ones its cells already state.
+    rows = True
+    if hasattr(engine, "has_palette_rows"):
+        rows = bool(
+            _run(
+                Stage.INTERPRET_TILEMAP,
+                Pathway.TILEMAP,
+                lambda: engine.has_palette_rows(preset.params),
+            )
+        )
+    # The index field's own width, straight off the codec
+    # (:meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`) rather than a
+    # second parameter that could disagree with the field table -- the mask *is*
+    # the highest value the field holds. Probed like the other optional methods:
+    # a format that cannot say leaves its references unbounded.
+    mask = 0
+    ask = getattr(engine, "index_limit", None)
+    if ask is not None:
+        try:
+            top = ask(preset.params)
+        except Exception:  # noqa: BLE001 — a probe must not fail the load
+            top = None
+        mask = top if top and top > 0 else 0
+    # Where the format's rows count from. A plain parameter, unlike the index
+    # mask: no field table implies it — it is a fact about the console's palette
+    # layout for this kind of cell, not about how the cell is packed.
+    row_base = int(preset.params.get("palette_row_base", 0) or 0)
+    return TilemapData(
+        cells, cell_bytes, tiles, ctx, data, frames, size_pair, rows, mask, row_base
+    )
 
 
 def encode_cells(cells: list[Cell], preset_id: str, reg: Registry) -> bytes:

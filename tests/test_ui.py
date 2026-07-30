@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from pathlib import Path
 
@@ -187,6 +188,67 @@ def test_multi_drop_adds_entries_and_switching_restores_state(qtbot, tmp_path) -
     assert window._pixel_preset.currentData() == "preset.pixel.nes-2bpp"
 
 
+def test_entry_history_walks_the_visit_trail(qtbot, tmp_path) -> None:
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    a = _make_snes_file(tmp_path)  # 8 tiles of 32 bytes
+    b = tmp_path / "b.4bpp.sfc"
+    b.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(32 * 8)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window._load_pixel(str(a))
+    window._load_pixel(str(b))
+    entry_a, entry_b = window._workspace.entries
+    slice_a = window._workspace.add_slice(str(a), "gfx", 32, 32)
+    window._activate_entry(slice_a)
+    assert window._history == [entry_a, entry_b, slice_a]
+
+    # Walking the trail moves the view without rewriting it.
+    window._history_step(-1)
+    window._history_step(-1)
+    assert window._workspace.current is entry_a
+    assert window._history == [entry_a, entry_b, slice_a]
+    assert not window._back_action.isEnabled()  # at the oldest visit
+    window._history_step(1)
+    assert window._workspace.current is entry_b
+
+    # The back/forward mouse buttons drive the same steps and are consumed whole,
+    # press through release; a left click is none of this module's business.
+    def click(button, kind=QEvent.Type.MouseButtonPress):
+        return QMouseEvent(
+            kind,
+            QPointF(0, 0),
+            QPointF(0, 0),
+            button,
+            button,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+    assert window._handle_history_mouse(click(Qt.MouseButton.ForwardButton))
+    assert window._workspace.current is slice_a
+    assert window._handle_history_mouse(click(Qt.MouseButton.BackButton))
+    assert window._workspace.current is entry_b
+    assert window._handle_history_mouse(
+        click(Qt.MouseButton.BackButton, QEvent.Type.MouseButtonRelease)
+    )
+    assert window._workspace.current is entry_b  # the release only gets swallowed
+    assert not window._handle_history_mouse(click(Qt.MouseButton.LeftButton))
+
+    # Visiting somewhere new from the middle drops what lay ahead.
+    window._activate_entry(entry_a)
+    assert window._history == [entry_a, entry_b, entry_a]
+    assert not window._forward_action.isEnabled()
+
+    # Closing an entry takes its visits with it, and the two visits to a that
+    # this leaves either side of the gap collapse into one.
+    window._workspace.close(entry_b)
+    assert window._history == [entry_a]
+    assert not window._back_action.isEnabled()
+    assert not window._forward_action.isEnabled()
+
+
 def test_slice_entry_views_bounded_region_with_absolute_addresses(
     qtbot, tmp_path
 ) -> None:
@@ -265,10 +327,17 @@ def test_entry_rename_inline_editor_commits_and_cancels(qtbot, tmp_path) -> None
     qtbot.waitUntil(lambda: file_entry.name == "tileset ROM")
     assert panel._items[file_entry].text(0) == "tileset ROM"
 
-    # A palette entry is not renameable — it exists to point at its .pal.
+    # A palette renames too — a numbered .pal says nothing about which scene it
+    # colours — and the file it points at stays in the tooltip, which is what
+    # keeps a renamed palette traceable to its bytes.
     palette = window._workspace.add_palette(str(tmp_path / "colors.pal"), None)
     panel._begin_rename(palette)
-    assert panel._editing is None
+    editor = panel._tree.findChildren(QLineEdit)[-1]
+    editor.setText("cave BG")
+    qtbot.keyClick(editor, Qt.Key.Key_Return)
+    qtbot.waitUntil(lambda: palette.name == "cave BG")
+    assert panel._items[palette].text(0) == "cave BG"
+    assert str(tmp_path / "colors.pal") in panel._items[palette].toolTip(0)
 
 
 def test_file_list_children_stay_sorted_by_offset(qtbot, tmp_path, monkeypatch) -> None:
@@ -6467,13 +6536,12 @@ def test_exporting_a_tilemap_writes_the_map_and_not_the_tiles_it_borrows(
     window._activate_entry(window._workspace.entries[0])
     window._activate_entry(entry)
 
-    window._columns.setValue(32)
     window._refresh_view()
     image = export.document_image(window._doc, window._registry)
     assert image.format() == QImage.Format.Format_Indexed8
-    # The whole map at its own width — 4096 cells, 32 across — not the 8 tiles
-    # of the bank behind it.
-    assert (image.width(), image.height()) == (32 * 8, 128 * 8)
+    # The whole map as it is assembled — a screen file's four 32x32 screens laid
+    # 2x2, so 64 cells across — and not the 8 tiles of the bank behind it.
+    assert (image.width(), image.height()) == (64 * 8, 64 * 8)
     # The table spans every palette row the cells name, because the row is
     # folded into the indices and one image carries one table.
     assert len(image.colorTable()) == 4 * 16
@@ -6515,11 +6583,135 @@ def test_a_sprite_object_opens_and_draws_its_frames_one_after_another(
     # at the origin and one at x=24 make a 32-pixel box, eight frames across.
     assert window._canvas._image.width() == 8 * 32
 
-    # View-only, and it says so rather than silently doing nothing.
+    # View-only, and it says so rather than silently doing nothing. Copy is the
+    # exception and takes the pixels instead - see the sheet-copy test below.
     window._selected_tile = 0
     window._clear_cells()
     assert "view-only" in window.statusBar().currentMessage()
-    assert not window._copy_cells()
+    window._cut_cells()
+    assert "view-only" in window.statusBar().currentMessage()
+
+
+def test_a_sprite_sheet_selects_its_drawn_tiles_and_backs_its_empty_frames(
+    qtbot, tmp_path
+) -> None:
+    """A sprite object has no cells on the canvas, so both selection shapes fall
+    back to the 8x8 tiles of the sheet — read off the same grid the frames were
+    placed on, or a drag names a different part of the picture than it covers. The
+    backing follows from the same grid: the slots past the last frame are the empty
+    frames beside it, which is not where a count of *parts* puts them."""
+    from PySide6.QtCore import QPointF, QRect
+
+    from celpix.project.workspace import TileMode, TileSource
+    from celpix.ui.main_window.selection import SelectionShape
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    obj = _obj_file(tmp_path, [(0, 0, 1), (24, 5, 2)])
+    window._load_pixel(str(obj))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.doc = None  # re-read through the new binding
+    window._activate_entry(window._workspace.entries[0])
+    window._activate_entry(entry)
+
+    # One drawn frame. Its two 8x8 parts sit at x=0 and x=24, y=0 and y=5, so the
+    # box they share is 32x16 pixels — 4x2 tiles — and Cols=8 lays the sheet out
+    # eight frames, 32 tiles, across.
+    sheet = window._sprite_sheet()
+    assert (sheet.frames, sheet.frame, sheet.columns, sheet.rows) == (1, (4, 2), 32, 2)
+    # The frame is the canvas's block, which is what makes the drawn frame's tiles
+    # the *leading* 8 slots: the backing is then the seven empty frames beside it,
+    # and not the tail of a row cutting through the one frame there is.
+    canvas = window._canvas
+    zoom = canvas._zoom
+    assert (canvas._block_cols, canvas._block_rows) == (4, 2)
+    assert canvas._filled_tiles == sheet.slots == 8
+    # The symptom, stated directly: nothing inside the drawn frame is painted as
+    # backing. A part count read as a slot count put a band of it through the art.
+    assert not canvas._background_region().intersects(QRect(0, 0, 32 * zoom, 16 * zoom))
+
+    # A drag over the sheet's top-left 2x2 tiles selects those four and no others.
+    select_combo_data(window._selection_shape, SelectionShape.RECT)
+    window._on_slots_selected(
+        canvas._slot_at(QPointF(1.0 * zoom, 1.0 * zoom)),
+        canvas._slot_at(QPointF(9.0 * zoom, 9.0 * zoom)),
+    )
+    layout = window._view_layout()
+    assert {layout.slot_to_cell(slot) for slot in canvas._selected_slots} == {
+        (0, 0),
+        (1, 0),
+        (0, 1),
+        (1, 1),
+    }
+
+    # And a linear drag over the same two tiles is the run between them, in the
+    # order the frame's tiles are laid out.
+    select_combo_data(window._selection_shape, SelectionShape.LINEAR)
+    window._on_slots_selected(
+        canvas._slot_at(QPointF(1.0 * zoom, 1.0 * zoom)),
+        canvas._slot_at(QPointF(9.0 * zoom, 1.0 * zoom)),
+    )
+    assert sorted(canvas._selected_slots) == [0, 1]
+
+
+def test_copying_a_rectangle_of_a_sprite_sheet_lifts_the_pixels_it_draws(
+    qtbot, tmp_path
+) -> None:
+    """A sprite object has no cells to lift, but the picture under the selection is
+    well defined - so Copy takes the *composed sheet*, not the bank tiles behind
+    it. The difference is the whole point: a part sits at a signed pixel offset, so
+    an 8x8 of the sheet is generally pieces of two source tiles and neither whole."""
+    from PySide6.QtCore import QPointF
+
+    from celpix.pipeline import pipeline
+    from celpix.project.workspace import TileMode, TileSource
+    from celpix.ui import clipboard
+    from celpix.ui.main_window.selection import SelectionShape
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    # The second part is at y=5, so it lands across two tile rows of the sheet.
+    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1), (24, 5, 2)])))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.doc = None  # re-read through the new binding
+    window._activate_entry(window._workspace.entries[0])
+    window._activate_entry(entry)
+
+    # The 1x2 rectangle of sheet tiles the offset part is spread over: tile column
+    # 3 (pixels 24-32) of both tile rows.
+    canvas = window._canvas
+    zoom = canvas._zoom
+    select_combo_data(window._selection_shape, SelectionShape.RECT)
+    window._on_slots_selected(
+        canvas._slot_at(QPointF(25.0 * zoom, 1.0 * zoom)),
+        canvas._slot_at(QPointF(25.0 * zoom, 9.0 * zoom)),
+    )
+    assert window._copy_action.isEnabled()
+    assert window._copy_selection()
+
+    payload = clipboard.take_payload()
+    assert payload is not None
+    assert (payload.count, payload.columns) == (2, 1)
+    top, bottom = payload.tiles()
+    # What was lifted is what is drawn there, pixel for pixel.
+    grid = pipeline.tilemap_image(
+        window._doc, window._registry, window._tilemap_columns()
+    ).grid
+    for y in range(8):
+        for x in range(8):
+            assert top.get(x, y) == grid.get(24 + x, y)
+            assert bottom.get(x, y) == grid.get(24 + x, 8 + y)
+    # ...which is a part that starts five rows down, and so is neither of the bank
+    # tiles it draws from: the top tile's first five rows are untouched sheet.
+    assert not any(top.get(x, y) for y in range(5) for x in range(8))
+    assert any(top.get(x, y) for y in (5, 6, 7) for x in range(8))
+    # The colours travel with the indices, which carry their part's palette row
+    # folded in - so a paste elsewhere has a table long enough to re-match against.
+    assert payload.max_index < len(payload.colors)
 
 
 def test_a_screen_file_opens_as_a_tilemap_entry(qtbot, tmp_path) -> None:
@@ -6580,10 +6772,397 @@ def test_a_tilemap_bound_to_an_entry_draws_that_entrys_tiles(qtbot, tmp_path) ->
     assert doc.tile_width == 8 and doc.bytes_per_tile == 32
     image = window._canvas._image
     assert not image.isNull()
-    # Always entire: 4096 cells at 2 columns is 2048 rows of 8px, not a window.
-    window._columns.setValue(2)
+    # Always entire: every one of the 4096 cells is on screen at whatever width the
+    # assembly gives, never a window. Stacked in a column that is 128 rows of 8px.
+    select_combo_data(window._assembly, 1)
+    window._on_assembly_change(0)
+    assert (window._canvas._image.width(), window._canvas._image.height()) == (
+        32 * 8,
+        128 * 8,
+    )
+
+
+def _bound_screen(qtbot, tmp_path, cells):
+    """A window with a 4bpp bank at entry 0 and a screen of ``cells`` bound to it.
+
+    Bound through the binding bar's own path, so the seeding and the reload are
+    the ones the user's gesture takes.
+    """
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    tiles = _make_snes_file(tmp_path)
+    window._load_pixel(str(tiles))
+    bank = window._workspace.entries[0]
+    scr = _scr_file(tmp_path, cells)
+    window._load_pixel(str(scr))
+    entry = window._workspace.find_file(str(scr))
+    window._activate_entry(entry)
+    window._rebind_tiles(entry, TileSource(mode=TileMode.ENTRY, entry_index=0))
+    return window, bank, entry
+
+
+def test_a_screen_assembles_its_four_pages_and_edits_land_on_the_right_cell(
+    qtbot, tmp_path
+) -> None:
+    """A screen file is four independent maps and nothing records how they go
+    together, so the view assembles them and the user can say how
+    (``docs/design/tilemap-entry.md`` §6).
+
+    The load-bearing half is the way back in: the assembly moves where a cell is
+    *drawn* while its position in the file stays put, so a gesture on the
+    right-hand page has to reach the cell that page draws. Get that wrong and the
+    edit lands somewhere else in the file, which is the one failure here that
+    would be written to disk.
+    """
+    from celpix.core.tilemap import Cell
+
+    # A cell at the start of page 0 and another at the start of page 1.
+    cells = [Cell(index=1)] + [Cell()] * 1023 + [Cell(index=2)]
+    window, _bank, entry = _bound_screen(qtbot, tmp_path, cells)
+    doc = window._doc
+
+    # Every arrangement that shows all four, 2x2 to begin with — and Cols is the
+    # assembly's, not a free choice, since any other width cuts the pages wrong.
+    assert doc.pages == 4
+    assert [window._assembly.itemData(i) for i in range(window._assembly.count())] == [
+        1,
+        2,
+        4,
+    ]
+    assert window._assembly.currentData() == 2
+    assert window._columns.value() == 64 and not window._columns.isEnabled()
+    assert window._canvas._image.width() == 64 * 8
+
+    # Column 32 of the top row is page 1's first cell, which lives at 1024.
+    assert doc.cell_at(32) == 1024
+    window._on_slots_selected(32, 32)
+    assert window._selection_byte_range() == (1024 * 2, 2)  # the record, in the dump
+    window._set_cell_index(9)
+    assert doc.cells[1024].index == 9
+    assert doc.cells[32].index == 0  # the cell it is drawn *beside* is untouched
+
+    # A different assembly is a repaint and nothing more: the same cells, drawn
+    # in a column, and every position now naming what the file holds there.
+    select_combo_data(window._assembly, 1)
+    window._on_assembly_change(0)
+    assert window._columns.value() == 32
+    assert doc.cell_at(32) == 32
+    assert [c.index for c in (doc.cells[0], doc.cells[1024])] == [1, 9]
+    assert entry.pixel_dirty  # the one edit, still the only change
+
+    # A format with no pages raises no question, so the picker is not there to be
+    # switched off — the rule the binding bar itself follows.
+    panel, _ = _bound_tilemap(qtbot, tmp_path, [Cell(index=3)], maker=_pnl_file)
+    assert panel._doc.pages == 0
+    assert panel._assembly.isHidden() and panel._assembly_label.isHidden()
+    assert panel._columns.isEnabled()
+
+
+def test_binding_seeds_the_maps_palette_from_the_entry_it_binds_to(
+    qtbot, tmp_path
+) -> None:
+    """A map's tiles were authored against the bank's colours, so a fresh binding
+    brings them across rather than leaving the map on the built-in default —
+    seeded like a slice's, and its own from then on
+    (``docs/design/tilemap-entry.md`` §3)."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import PaletteMode, TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.entries[0]
+
+    scr = _scr_file(tmp_path, [Cell(index=1), Cell(index=0)])
+    window._load_pixel(str(scr))
+    entry = window._workspace.find_file(str(scr))
+    assert entry.session.palette_mode is PaletteMode.DEFAULT
+    # After the switch away, so the capture it performs cannot overwrite this.
+    reds = [0xFF000000 | (i << 16) for i in range(256)]
+    bank.doc.palette = Palette(reds)
+    bank.session.palette_mode = PaletteMode.CUSTOM
+    window._activate_entry(entry)
+    window._rebind_tiles(entry, TileSource(mode=TileMode.ENTRY, entry_index=0))
+
+    assert entry.session.palette_mode is PaletteMode.CUSTOM
+    assert entry.doc.palette.colors == reds
+    # The live mode moves with it: a reload restores no session, so leaving this
+    # behind would let the next entry switch capture Default back over the seed.
+    assert window._palette_mode is PaletteMode.CUSTOM
+
+    # The seed is part of the step the bind pushed, so it comes back off with it -
+    # an undo that put the binding back and left these colours would be half a
+    # revert, and the map would render through a palette nothing points at.
+    window._undo_stack.undo()
+    assert entry.tile_source is None
+    assert entry.session.palette_mode is PaletteMode.DEFAULT
+    assert entry.doc.palette.colors != reds
+    window._undo_stack.redo()
+    assert entry.session.palette_mode is PaletteMode.CUSTOM
+    assert entry.doc.palette.colors == reds
+
+    # Re-pointing does not re-seed: the palette is the map's own state by now,
+    # and a second bank's colours must not silently replace it.
+    other = tmp_path / "other.bin"
+    other.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(32 * 8)))
+    window._load_pixel(str(other))
+    second = window._workspace.find_file(str(other))
+    second.doc.palette = Palette([0xFF00FF00] * 256)
+    second.session.palette_mode = PaletteMode.CUSTOM
+    window._activate_entry(entry)
+    window._rebind_tiles(
+        entry,
+        TileSource(
+            mode=TileMode.ENTRY, entry_index=window._workspace.entries.index(second)
+        ),
+    )
+    assert entry.doc.palette.colors == reds
+
+
+def test_an_index_only_tilemap_is_read_through_subpal(qtbot, tmp_path) -> None:
+    """A format with no palette field says nothing about which colours its tiles
+    index — a Game Boy map entry is a bare tile number — so the palette panel's
+    own row is the only answer there is, and Subpal works exactly as it does on a
+    pixel document."""
+    from celpix.core.tilemap import Cell
+
+    window, _bank, _entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=1), Cell(index=0)]
+    )
+    combo = window._tilemap_preset
+    combo.setCurrentIndex(combo.findData("preset.tilemap.gb-bg"))
+    window._on_tilemap_preset_change(combo.currentIndex())
+    assert not window._doc.cells_carry_palette_rows
+    assert window._subpalette.isEnabled()
+    before = window._canvas._image.copy()
+    window._subpalette.setValue(1)
     window._refresh_view()
-    assert window._canvas._image.height() == 2048 * 8
+    assert window._canvas._image != before
+
+
+def test_a_format_with_palette_rows_ignores_subpal_even_at_row_zero(
+    qtbot, tmp_path
+) -> None:
+    """The other half, and the case that makes it a *format* question: a console
+    BG cell has a palette field, so the file has answered even where every cell
+    answers 0. A view-wide row on top would shift a map that is in the colours it
+    was authored in — the way to change one is to edit the cells."""
+    from celpix.core.tilemap import Cell
+
+    window, _bank, _entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=1), Cell(index=0)]
+    )
+    assert window._doc.cells_carry_palette_rows
+    assert not window._subpalette.isEnabled()
+    before = window._canvas._image.copy()
+    window._subpalette.setValue(1)
+    window._refresh_view()
+    assert window._canvas._image == before
+
+
+def test_show_tile_ids_labels_each_cell_with_the_tile_it_names(qtbot, tmp_path) -> None:
+    """One label per *cell* at the cell's first tile slot, carrying the file's own
+    index — not the resolved one, so the numbers hold still when Base tile moves.
+    Off for a pixel entry, which has no named tiles to show."""
+    from celpix.core.tilemap import Cell
+
+    window, bank, entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=0x1C4), Cell(index=2)]
+    )
+    assert window._canvas._tile_ids is None  # off by default
+    window._show_tile_ids_action.setChecked(True)
+    labels = window._canvas._tile_ids
+    assert labels[:2] == [0x1C4, 2]
+    # A base tile shifts which tile is drawn, never what the cell says it is.
+    window._tile_base.setValue(0x10)
+    assert window._canvas._tile_ids[:2] == [0x1C4, 2]
+
+    # The pixel entry the map borrows its tiles from gets no labels, and the
+    # toggle goes grey there rather than claiming it would do something.
+    window._activate_entry(bank)
+    assert window._canvas._tile_ids is None
+    assert not window._show_tile_ids_action.isEnabled()
+
+
+def test_tile_id_labels_are_one_per_cell_on_a_metatile_map(qtbot, tmp_path) -> None:
+    """A 2x2 cell covers four tile slots and the canvas places in slots, so the
+    label rides its *first* one and the other three stay blank — one number per
+    cell, not four."""
+    from celpix.core.tilemap import Cell
+
+    window, _bank, entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=1), Cell(index=2)]
+    )
+    entry.doc.cell_tiles = (2, 2)
+    window._show_tile_ids_action.setChecked(True)
+    window._refresh_view()
+    assert window._canvas._tile_ids[:8] == [1, None, None, None, 2, None, None, None]
+
+
+def test_a_map_selects_every_cell_it_has_not_every_tile_the_bank_has(
+    qtbot, tmp_path
+) -> None:
+    """A tilemap's canvas slots are its *cells*, and the bank it borrows tiles
+    from bounds neither how many there are nor which can be pointed at. Bounding
+    the selection by ``tile_count`` — the bank's — puts most of an ordinary map
+    (4096 cells over a few hundred tiles) out of reach of every gesture that
+    starts with selecting something."""
+    from celpix.core.tilemap import Cell
+
+    window, _bank, _entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=i % 8) for i in range(100)]
+    )
+    cells = len(window._doc.cells)  # a screen's own extent - 4096 of them
+    assert window._doc.tile_count == 8  # the bank, far short of the map
+
+    window._on_slots_selected(cells - 1, cells - 1)
+    assert window._selected_cells() == [cells - 1]
+    window._select_all()
+    assert len(window._selected_cells()) == cells
+
+
+def test_a_metatile_map_selects_whole_cells_in_either_shape(qtbot, tmp_path) -> None:
+    """Half a 16x16 cell is not something the file has: every gesture downstream
+    of a selection works a whole cell at a time, so pointing at one quadrant
+    takes the cell. Both shapes snap outward, and the block that comes back
+    divides cleanly into cell coordinates — which is what lets one click flip a
+    whole cell rather than nothing."""
+    from celpix.core.tilemap import Cell
+    from celpix.ui.main_window.selection import SelectionShape
+    from celpix.ui.widgets import select_combo_data
+
+    window, _bank, entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=i) for i in range(64)]
+    )
+    entry.doc.cell_tiles = (2, 2)
+    window._refresh_view()
+
+    for shape in (SelectionShape.LINEAR, SelectionShape.RECT):
+        select_combo_data(window._selection_shape, shape)
+        # Slot 3 is the bottom-right quadrant of cell 0; slot 65 the second
+        # quadrant of the cell one map-row down.
+        for slot, cell in ((3, 0), (65, 16)):
+            window._on_slots_selected(slot, slot)
+            assert window._selected_cells() == [cell], (shape, slot)
+            assert window._cell_rect() == (1, 1, cell % 32, cell // 32)
+
+    # A drag over three quadrants of one cell row still ends on whole cells.
+    select_combo_data(window._selection_shape, SelectionShape.RECT)
+    window._on_slots_selected(1, 6)
+    assert window._selected_cells() == [0, 1]
+    assert window._cell_rect() == (2, 1, 0, 0)
+
+
+def test_the_size_readout_names_the_cell_on_a_tilemap(qtbot, tmp_path) -> None:
+    """What the user points at on a map is a cell, so a 2x2-tile one reads 16x16
+    and the caption says which unit that is. The bank behind it still reads 8x8 —
+    the tile is the pixel view's unit, and that view is the bank's own entry."""
+    from celpix.core.tilemap import Cell
+
+    window, bank, entry = _bound_screen(qtbot, tmp_path, [Cell(index=1)])
+    assert (window._tile_size_label.text(), window._tile_size.text()) == (
+        "Cell:",
+        "8×8",
+    )
+    entry.doc.cell_tiles = (2, 2)
+    window._refresh_view()
+    assert window._tile_size.text() == "16×16"
+
+    window._activate_entry(bank)
+    assert (window._tile_size_label.text(), window._tile_size.text()) == (
+        "Tile:",
+        "8×8",
+    )
+
+
+def test_the_hex_dump_under_a_tilemap_shows_its_cells_not_its_tiles(
+    qtbot, tmp_path
+) -> None:
+    """A tilemap document holds two files: its own cells, and the bank it borrows
+    tiles from riding in ``pixel_data``. The entry is the first, so that is what
+    the dump shows — and because a selection names positions in it, the highlight
+    lands on the record behind the cell that was clicked."""
+    from celpix.core.tilemap import Cell
+
+    window, _bank, _entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=0x1C4), Cell(index=2)]
+    )
+    window.show()
+    window._hex_dock.setVisible(True)
+
+    # The cells, little-endian, from the screen's payload at file offset 0 - not
+    # the 4bpp tile bytes the bank behind the map begins with.
+    first = window._hex_panel._view.toPlainText().splitlines()[0].split()
+    assert first[:5] == ["0x000000", "c4", "01", "02", "00"]
+
+    assert window._selection_byte_range() is None
+    window._on_slots_selected(1, 1)
+    assert window._selected_cells() == [1]
+    assert window._selection_byte_range() == (2, 2)  # cell 1, one 2-byte word
+    assert "<span" in window._hex_panel._view.toHtml()
+
+
+def test_a_cell_edit_reaches_the_bytes_the_dump_and_export_raw_read(
+    qtbot, tmp_path
+) -> None:
+    """The cells are the source of truth and the buffer is what they were read
+    from, so an edit has to carry into it or everything reading the *bytes* shows
+    the file as it was opened: the dump, and Export Raw. Undo puts them back."""
+    from celpix.core.tilemap import Cell
+    from celpix.ui import export
+
+    window, _bank, _entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=1), Cell(index=2)]
+    )
+    window.show()
+    window._hex_dock.setVisible(True)
+    window._on_slots_selected(0, 0)
+    window._set_cell_index(5)
+
+    assert window._doc.tilemap_data[:4] == b"\x05\x00\x02\x00"
+    assert export.raw_bytes(window._doc)[:2] == b"\x05\x00"
+    assert window._hex_panel._view.toPlainText().splitlines()[0].split()[1] == "05"
+    # The trailing bytes the decode never claimed are left exactly as they were:
+    # a screen's payload is a whole number of cells, so this is the whole file.
+    assert len(window._doc.tilemap_data) == len(window._doc.cells) * 2
+
+    window._undo_stack.undo()
+    assert window._doc.tilemap_data[:2] == b"\x01\x00"
+
+
+def test_a_tilemaps_subpalette_is_sized_by_the_bound_entrys_format(
+    qtbot, tmp_path
+) -> None:
+    """A tilemap has no pixel format of its own and the picker is hidden on it, so
+    the combo holds whatever the toolbar showed when the map was opened. The row
+    size has to come from the format the *tiles* are read under, or Subpal steps
+    in blocks of a bit depth nothing on screen is using."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+    from celpix.ui.widgets import select_combo_data
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))  # the bank, left at 4bpp
+
+    # A second entry the user switches to 2bpp — what the map's session is seeded
+    # from, and what its (hidden) picker goes on holding.
+    other = tmp_path / "other.bin"
+    other.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(32 * 8)))
+    window._load_pixel(str(other))
+    select_combo_data(window._pixel_preset, "preset.pixel.snes-2bpp")
+
+    scr = _scr_file(tmp_path, [Cell(index=1), Cell(index=0)])
+    window._load_pixel(str(scr))
+    entry = window._workspace.find_file(str(scr))
+    window._activate_entry(entry)
+    window._rebind_tiles(entry, TileSource(mode=TileMode.ENTRY, entry_index=0))
+
+    assert entry.session.pixel_preset_id == "preset.pixel.snes-2bpp"
+    assert window._doc.pixel_config.interpret_preset_id == "preset.pixel.snes-4bpp"
+    assert window._index_space() == 16
 
 
 def test_binding_from_a_file_opens_it_as_an_entry_first(
@@ -6603,6 +7182,11 @@ def test_binding_from_a_file_opens_it_as_an_entry_first(
     tiles = _make_snes_file(tmp_path)
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
     entry = window._workspace.current
+    # A row base of its own first, which is what makes the bind below a real test
+    # of the re-read: this path points the entry at its source before the step
+    # applies, so an apply that asked the *entry* what had moved would see only a
+    # row base, land in place, and leave the tiles it just opened unread.
+    window._row_base.setValue(1)
     monkeypatch.setattr(
         QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(tiles), ""))
     )
@@ -6618,29 +7202,41 @@ def test_binding_from_a_file_opens_it_as_an_entry_first(
     assert window._doc.is_tilemap and window._doc.pixel_data
 
 
-def test_binding_from_a_file_that_is_itself_a_tilemap_is_refused(
+def test_binding_from_a_file_whose_own_source_is_a_tilemap_is_refused(
     qtbot, tmp_path, monkeypatch
 ) -> None:
-    """A tilemap cannot supply tiles. The file still opens — it was asked for —
+    """One hop: a map already drawing through a tilemap has no tiles of its own
+    to lend, so it cannot be a source. The file still opens — it was asked for —
     but the binding is left alone rather than pointed somewhere useless."""
     from PySide6.QtWidgets import QFileDialog
 
     from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
 
     window = MainWindow()
     qtbot.addWidget(window)
+    # A chain that is already one deep: other.SCR draws through screen.SCR.
     other = _scr_file(tmp_path, [Cell(index=2)], name="other.SCR")
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
-    entry = window._workspace.current
+    window._load_pixel(str(other))
+    window._workspace.current.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry_index=0
+    )
+    entry = window._workspace.entries[0]
+    window._activate_entry(entry)
     monkeypatch.setattr(
         QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(other), ""))
     )
 
     window._bind_tiles_from_file(entry)
 
-    assert window._workspace.find_file(str(other)) is not None  # it opened
-    assert entry.tile_source is None  # ...but nothing was bound
+    assert entry.tile_source is None  # nothing was bound
     assert window._workspace.current is entry
+    # ...and it is not offered either, so the two cannot disagree.
+    labels = [
+        window._tile_binding.itemText(i) for i in range(window._tile_binding.count())
+    ]
+    assert "other.SCR" not in labels
 
 
 def test_the_bottom_bar_swaps_to_the_binding_controls_for_a_tilemap(
@@ -6734,6 +7330,44 @@ def test_the_base_tile_shifts_which_tiles_the_cells_draw(qtbot, tmp_path) -> Non
     assert window._doc.cell_tile_indices(Cell(index=0)) == [3]
 
 
+def test_the_base_row_moves_a_map_onto_the_palette_that_was_loaded(
+    qtbot, tmp_path
+) -> None:
+    """The colour twin of Base tile: a sprite's cells count their rows from CGRAM
+    row 8 and the format says so, but which palette got loaded is the user's
+    answer - the object half on its own puts those same rows at 0. So the spin
+    opens on the format's word and overrides it, and the entry keeps the override
+    so a re-read does not undo it."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
+    obj = window._workspace.current
+    # The format's answer, in force and on screen without anyone setting it.
+    assert window._doc.palette_row_base == 8
+    assert window._row_base.value() == 8
+    assert not window._row_base.isHidden()
+
+    window._row_base.setValue(0)
+    assert obj.palette_row_base == 0  # the entry's, for the project to keep
+    assert window._doc.palette_row_base == 0
+    window._reload_tilemap(obj)
+    assert window._doc.palette_row_base == 0  # and it outlives the re-read
+
+    # A format with no palette row field has no row for a base to shift: the
+    # colours are the view's Subpal there, and the two are never both live.
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    combo = window._tilemap_preset
+    combo.setCurrentIndex(combo.findData("preset.tilemap.scgcad-std"))
+    window._on_tilemap_preset_change(combo.currentIndex())
+    assert not window._doc.cells_carry_palette_rows
+    assert window._row_base.isHidden()
+    assert window._row_base_label.isHidden()
+    assert window._subpalette.isEnabled()
+
+
 def test_changing_the_cell_codec_rereads_the_map(qtbot, tmp_path) -> None:
     """The two byte orders disagree, so this is a real re-read and not a redraw."""
     from celpix.core.tilemap import Cell
@@ -6752,6 +7386,13 @@ def test_changing_the_cell_codec_rereads_the_map(qtbot, tmp_path) -> None:
     # The same bytes read the other way: 0x1C34 becomes 0x341C.
     assert window._doc.cells[0].index == 0x01C
     assert window._doc.cells[0].palette_row == 5
+
+    # And it takes a step, like the pixel format switch it is the twin of: the
+    # re-read is what makes a wrong pick worth taking back in one gesture.
+    window._undo_stack.undo()
+    assert entry.tilemap_preset_id == "preset.tilemap.snes-bg"
+    assert window._doc.cells[0].index == 0x034
+    assert window._tilemap_preset.currentData() == "preset.tilemap.snes-bg"
 
 
 def test_the_codecs_bar_swaps_its_format_pickers_by_content_kind(
@@ -6798,6 +7439,30 @@ def test_the_bar_says_where_the_tiles_come_from(qtbot, tmp_path) -> None:
     window._reload_tilemap(entry)
     note = window._tile_binding_note.text()
     assert "s.4bpp.sfc" in note and "SNES 4bpp" in note
+
+
+def test_the_bar_jumps_to_the_entry_the_tiles_come_from(qtbot, tmp_path) -> None:
+    """The binding is the one control whose value is another entry, so the button
+    beside it goes and shows that entry - and the window's Back comes back."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=0)])))
+    tiles, tilemap = window._workspace.entries
+    assert not window._tile_binding_jump.isEnabled()  # unbound: nowhere to go
+
+    tilemap.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(tilemap)
+    assert window._tile_binding_jump.isEnabled()
+    assert tiles.name in window._tile_binding_jump.toolTip()
+
+    window._tile_binding_jump.click()
+    assert window._workspace.current is tiles
+    window._history_step(-1)
+    assert window._workspace.current is tilemap
 
 
 def test_a_tilemap_switches_off_the_controls_it_has_no_capability_for(
@@ -6878,22 +7543,100 @@ def test_the_capability_gate_only_ever_takes_away(qtbot, tmp_path) -> None:
     assert window._paste_action.isEnabled() == was
 
 
+def test_every_capability_says_where_it_is_gated() -> None:
+    """The drift guard: TILE_BINDING and STAMP were declared, granted to
+    tilemaps, and gated nothing at all for a whole feature's worth of work,
+    because nothing forced the question to be answered. A capability is now in
+    exactly one of the three buckets, so adding one means saying which."""
+    from celpix.core.capabilities import Capability
+    from celpix.ui.main_window import capability_sync as sync
+
+    buckets = (
+        frozenset(sync._GATES),
+        sync._GATED_IN_PLACE,
+        sync._UNGATED,
+    )
+    covered = set().union(*buckets)
+    assert covered == set(Capability), (
+        "unclassified: add it to _GATES, _GATED_IN_PLACE or _UNGATED - "
+        f"{sorted(c.name for c in set(Capability) - covered)}"
+    )
+    for one, other in itertools.combinations(buckets, 2):
+        assert not one & other, sorted(c.name for c in one & other)
+
+
+def test_every_kind_can_do_the_gestures_it_implements() -> None:
+    """The invariant tying gating to dispatch, which neither half shows on its
+    own: a kind with an implementation of a gesture has to declare the capability
+    that gates it, or the control is switched off over working code.
+
+    The method names go the same way. They are resolved by ``getattr``, so a
+    rename that missed the table would not fail here at all - a paste on a
+    tilemap would quietly fall through to the pixel one and write pixels."""
+    from celpix.core.capabilities import supports
+    from celpix.ui.main_window import capability_sync as sync
+
+    for kind, gestures in sync._BEHAVIOURS.items():
+        for gesture, name in gestures.items():
+            capability = sync._GESTURE_CAPABILITY[gesture]
+            assert supports(kind, capability), f"{kind.name} lacks {capability.name}"
+            assert hasattr(MainWindow, name), f"{kind.name}: no {name}()"
+    assert set(sync._GESTURE_CAPABILITY) == set(sync.Gesture)
+
+
 from celpix.ui.main_window.transform import OP_FLIP_H  # noqa: E402
 from celpix.ui.widgets import select_combo_data  # noqa: E402
 
 
-def _bound_tilemap(qtbot, tmp_path, cells):
-    """A tilemap entry bound to a real tile bank, ready to edit."""
+def _bound_tilemap(qtbot, tmp_path, cells, maker=None):
+    """A tilemap entry bound to a real tile bank, ready to edit.
+
+    A screen file by default. ``maker`` takes a different one for a test that
+    needs a free column count: a screen is four pages and its assembly owns Cols,
+    so a panel is the fixture for anything that wants to lay cells out its own way.
+    """
     from celpix.project.workspace import TileMode, TileSource
 
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(_make_snes_file(tmp_path)))
-    window._load_pixel(str(_scr_file(tmp_path, cells)))
+    window._load_pixel(str((maker or _scr_file)(tmp_path, cells)))
     entry = window._workspace.current
     entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
     window._reload_tilemap(entry)
     return window, entry
+
+
+def test_the_cell_spin_follows_the_selection(qtbot, tmp_path) -> None:
+    """It reads the selected cell, so a click on a different one has to move it —
+    and it greys with nothing selected, because then it is the selection that is
+    missing rather than the control that means nothing here.
+
+    The selection changes without the view being re-rendered, so nothing else in
+    the refresh cycle would bring the spin along.
+    """
+    from celpix.core.tilemap import Cell
+
+    window, _ = _bound_tilemap(
+        qtbot,
+        tmp_path,
+        [Cell(index=1), Cell(index=2), Cell(index=3)],
+        maker=_pnl_file,
+    )
+    assert not window._cell_index.isHidden()  # the window itself is never shown
+
+    window._select_tiles(0, 0)
+    assert window._cell_index.isEnabled()
+    assert window._cell_index.value() == 1
+    window._select_tiles(2, 2)
+    assert window._cell_index.value() == 3
+    # A run reads its first cell, which is the one an edit through the spin anchors
+    # on, and the one a paste would start at.
+    window._select_tiles(1, 2)
+    assert window._cell_index.value() == 2
+
+    window._clear_selection()
+    assert not window._cell_index.isEnabled()
 
 
 def test_flipping_a_cell_toggles_its_bit_and_moves_no_pixels(qtbot, tmp_path) -> None:
@@ -6963,8 +7706,13 @@ def test_a_block_flip_reorders_the_cells_and_flips_each(qtbot, tmp_path) -> None
     from celpix.core.tilemap import Cell
     from celpix.ui.main_window.selection import SelectionShape
 
+    # A panel, so the block can be a 2x2 at two columns: a screen file's four
+    # pages own the column count (:meth:`_settle_tilemap_assembly`).
     window, _ = _bound_tilemap(
-        qtbot, tmp_path, [Cell(index=1), Cell(index=2), Cell(index=3), Cell(index=4)]
+        qtbot,
+        tmp_path,
+        [Cell(index=1), Cell(index=2), Cell(index=3), Cell(index=4)],
+        maker=_pnl_file,
     )
     window._columns.setValue(2)
     window._refresh_view()
@@ -7093,28 +7841,30 @@ def test_a_stamp_layout_opens_with_its_own_coordinate_codec(qtbot, tmp_path) -> 
     assert window._tilemap_is_indirect(entry)
 
 
-def test_a_stamp_layout_offers_panels_not_tile_banks(qtbot, tmp_path) -> None:
-    """Its cells are coordinates into a panel, so a tile bank is not a thing it
-    can draw from - and the combo has to say so before anything is bound."""
+def test_a_stamp_layout_is_offered_panels_first_but_not_only(qtbot, tmp_path) -> None:
+    """Chaining is gated on depth, not on format, so a tile bank stays reachable.
+    What the format contributes is the *order* - its coordinates cannot read a
+    bank sensibly, so the tilemaps come first."""
     from celpix.core.tilemap import Cell
 
     window = MainWindow()
     qtbot.addWidget(window)
-    window._load_pixel(str(_make_snes_file(tmp_path)))  # a tile bank
+    window._load_pixel(str(_make_snes_file(tmp_path)))  # a tile bank, opened first
     window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1)])))
     window._load_pixel(str(_map_file(tmp_path, [Cell(index=0)])))
 
     labels = [
         window._tile_binding.itemText(i) for i in range(window._tile_binding.count())
     ]
-    assert labels == ["(none)", "panel.PNL", "From file..."]
+    assert labels == ["(none)", "panel.PNL", "s.4bpp.sfc", "From file..."]
 
 
-def test_a_stamp_layout_draws_through_the_panel_and_stays_view_only(
+def test_a_stamp_layout_draws_through_the_panel_and_can_be_restamped(
     qtbot, tmp_path
 ) -> None:
     """Two hops: layout entry -> panel cell -> the panel's own tile source. The
-    panel's attributes travel with the stamp."""
+    panel's attributes travel with the stamp, and the layout's own entry table
+    stays writable - a cell edit here restamps."""
     from celpix.core.tilemap import Cell
     from celpix.project.workspace import TileMode, TileSource
 
@@ -7140,9 +7890,122 @@ def test_a_stamp_layout_draws_through_the_panel_and_stays_view_only(
     assert doc.cell_tiles == (1, 1)  # the panel's geometry, not the layout's
     assert doc.pixel_data  # the panel's tile source reached through
     assert not window._canvas._image.isNull()
-    # View-only: neither pathway may deposit.
-    assert not doc.tilemap_config.write_enabled
+    # Its own entry table is writable - that is what a restamp saves. The panel's
+    # art is not: the tiles belong to the map at the end of the chain.
+    assert doc.tilemap_config.write_enabled
     assert not doc.pixel_config.write_enabled
+
+    # Restamping: point cell 0 at a different panel cell and the drawn cell
+    # follows, while the file's own word is the coordinate that was set.
+    window._set_linear_selection(0, 0)
+    window._set_cell_index(0)
+    assert doc.cells[0].index == 0
+    assert doc.drawn_cells[0] == Cell(index=0)  # panel cell 0, not the flipped 1
+    # A stamp layout's word has no flip bits, so the format refuses one rather
+    # than setting something `encode` would drop.
+    assert not window._tile_group.flip_h.isEnabled()
+
+
+def test_an_ordinary_tilemap_can_draw_through_another_tilemap(qtbot, tmp_path) -> None:
+    """Chaining is not the stamp layout's own feature: a screen bound to a panel
+    stamps its cells the same way, and because a screen's format *does* carry
+    attributes, its own compose over the panel's."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))  # 0: the art
+    window._load_pixel(
+        str(_pnl_file(tmp_path, [Cell(index=0), Cell(index=7, palette_row=2)]))
+    )
+    panel = window._workspace.entries[1]
+    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(panel)
+
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1, palette_row=1)])))
+    screen = window._workspace.current
+    screen.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    window._reload_tilemap(screen)
+
+    doc = window._doc
+    assert doc.is_indirect
+    assert doc.cells[0].index == 1  # the screen's own word, untouched
+    # The panel's tile, the screen's palette row: a screen has the field to state
+    # one, so it wins over the row the panel put on that cell.
+    assert doc.drawn_cells[0] == Cell(index=7, palette_row=1)
+    assert doc.pixel_data  # the panel's own binding reached through
+    # Editable, and a flip is a real one here: a screen's word has the bits a
+    # stamp layout's coordinate does not, so it composes over the panel's.
+    assert doc.cells_editable
+    assert doc.tilemap_config.write_enabled
+    window._set_linear_selection(0, 0)
+    window._tile_group.flip_h.trigger()
+    assert doc.cells[0].flip_h  # set on the screen's own cell...
+    assert doc.drawn_cells[0].flip_h  # ...and composed onto the panel's
+    assert window._tile_base.isHidden()  # no tile numbering for a base to shift
+    assert "Stamped from panel.PNL" in window._tile_binding_note.text()
+
+
+def test_editing_the_panel_restamps_the_layout_drawing_through_it(
+    qtbot, tmp_path
+) -> None:
+    """A cell edit replaces the panel's cell list rather than mutating it, so a
+    layout holding the old one would keep drawing the stamps as they were. Both
+    ends of the chain settle on the one edit - including on undo, which can land
+    on a map the view has since moved off."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    layout = _bound_stamp_layout(window, tmp_path)
+    assert layout.doc.drawn_cells[0] == Cell(index=1)  # panel cell 1
+
+    # Edit the *panel*, which is the stamp itself...
+    panel = window._workspace.entries[1]
+    window._activate_entry(panel)
+    window._set_linear_selection(1, 1)
+    window._set_cell_index(6)
+    assert panel.doc.cells[1] == Cell(index=6)
+    # ...and the layout, still open, is drawing the stamp as it now is.
+    assert layout.doc.drawn_cells[0] == Cell(index=6)
+
+    # Undo from the layout's own view: the command lands on the panel, and the
+    # layout has to be re-resolved and repainted even though it is not the entry
+    # the edit belongs to.
+    window._activate_entry(layout)
+    window._undo_stack.undo()
+    assert layout.doc.drawn_cells[0] == Cell(index=1)
+
+
+def test_a_chain_two_tilemaps_deep_is_refused_and_says_so(qtbot, tmp_path) -> None:
+    """A coordinate into a coordinate has no defined meaning, so the second hop
+    is not taken. Judged from the binding rather than a loaded document, which is
+    what keeps two maps pointed at each other from recursing."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))  # 0: the art
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=3)])))  # 1
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=0)])))  # 2
+
+    # 1 -> 0 is fine, so 2 -> 1 resolves...
+    panel = window._workspace.entries[1]
+    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    layout = window._workspace.entries[2]
+    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    window._reload_tilemap(layout)
+    assert window._doc.is_indirect
+
+    # ...but pointing the panel at a tilemap too makes the chain one hop deeper,
+    # and the layout stops resolving rather than reaching past it.
+    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=2)
+    window._reload_tilemap(layout)
+
+    assert not window._doc.is_indirect
+    assert "draws through a tilemap itself" in window._tile_binding_note.text()
 
 
 def test_editing_a_stamp_layout_is_refused(qtbot, tmp_path) -> None:
@@ -7172,6 +8035,264 @@ def test_editing_a_stamp_layout_is_refused(qtbot, tmp_path) -> None:
     assert window._undo_stack.count() == depth
 
 
+def _bound_stamp_layout(window, tmp_path):
+    """A stamp layout drawing through a panel, which draws through a tile bank."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=0), Cell(index=1)])))
+    panel = window._workspace.entries[1]
+    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(panel)
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=1), Cell(index=0)])))
+    layout = window._workspace.current
+    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    window._reload_tilemap(layout)
+    return layout
+
+
+def test_a_dropped_png_is_refused_on_a_tilemap(qtbot, tmp_path) -> None:
+    """The Import action is capability-gated, but a drop is a gesture with no
+    control to disable - and a tilemap's ``pixel_data`` is the *bound* entry's
+    art, so an unguarded import painted over another file and marked the wrong
+    entry dirty for a change its Write could never emit."""
+    from PySide6.QtGui import QImage
+
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(entry)
+    png = tmp_path / "picture.png"
+    image = QImage(16, 16, QImage.Format.Format_ARGB32)
+    image.fill(0xFF00FF00)
+    image.save(str(png))
+
+    before, depth = window._doc.pixel_data, window._undo_stack.count()
+    window._import_dropped_png(str(png))
+
+    assert window._doc.pixel_data == before  # the bank it borrows is untouched
+    assert window._undo_stack.count() == depth
+    assert not entry.pixel_dirty
+    assert "import into the entry" in window.statusBar().currentMessage()
+
+
+def test_a_format_with_no_flip_bit_disables_the_flip_buttons(qtbot, tmp_path) -> None:
+    """Which transforms a cell can express is the format's answer, and it is
+    given on the toolbar like every other unavailable control rather than as a
+    message after the click. A bare-index map has no bit for either flip."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(entry)
+    window._set_linear_selection(0, 0)
+    assert window._tile_group.flip_h.isEnabled()  # the console map mirrors
+
+    # Swapping the cell format reloads through the render cycle, which is the
+    # only thing that re-decides this: the selection has not moved.
+    entry.tilemap_preset_id = "preset.tilemap.gb-bg"
+    window._reload_tilemap(entry)
+
+    assert not window._tile_group.flip_h.isEnabled()
+    assert not window._tile_group.flip_v.isEnabled()
+    assert not window._tile_group.rotate_cw.isEnabled()  # no format rotates
+
+
+def test_a_view_only_map_disables_the_cell_clipboard(qtbot, tmp_path) -> None:
+    """A sprite object's cells are parts at pixel offsets, so there is no cell
+    under the cursor to *write* - cut, clear and paste all go, even with cells in
+    the buffer from an editable map. Copy stays, because it is a read and the
+    picture under the selection is well defined even where the cells are not."""
+    from celpix.core.tilemap import Cell, CellGrid
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
+    assert window._doc.is_sprite
+    window._cell_clipboard = CellGrid.from_cells(1, 1, [Cell(index=7)])
+    window._set_linear_selection(0, 0)
+
+    assert not window._cut_action.isEnabled()
+    assert not window._clear_action.isEnabled()
+    assert not window._paste_action.isEnabled()
+    assert window._copy_action.isEnabled()
+    assert not window._tile_group.flip_h.isEnabled()
+    # ...and the reference spin has nothing to point at either.
+    assert window._cell_index.isHidden()
+
+
+def test_a_stamp_layout_has_no_base_tile_control(qtbot, tmp_path) -> None:
+    """It draws through a panel and takes the panel's base with it, so a base of
+    its own would be a live control that changes nothing."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _bound_stamp_layout(window, tmp_path)
+    assert window._tile_base.isHidden()
+    assert window._tile_base_label.isHidden()
+
+    # ...and it comes back for an ordinary map, which numbers into a tile bank.
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)], name="screen2.SCR")))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(entry)
+
+    assert not window._tile_base.isHidden()
+
+
+def test_a_sprite_map_offers_a_size_pair_and_nothing_else_does(qtbot, tmp_path) -> None:
+    """The pair a part's size bit chooses between was a PPU register the scene set,
+    so no sprite file records it and the format can only name the commonest. That
+    makes it the user's, per entry — and meaningless on a grid tilemap, which has
+    no parts and no size bit, so the control goes rather than greys."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
+
+    assert not window._size_small.isHidden()
+    assert not window._size_large.isHidden()
+    # Opens on the pair in force, which is the format's until the user speaks.
+    assert (
+        window._size_small.value(),
+        window._size_large.value(),
+    ) == window._doc.sprite_size_pair
+
+    # The two are multiples of the tile size, so a part's side in tiles is the
+    # number itself - the change is remembered on the entry and reaches the
+    # document, because it decides how the records decode, not how they are drawn.
+    entry = window._workspace.current
+    window._size_large.setValue(4)
+    assert entry.sprite_size_pair == (1, 4)
+    assert window._doc.sprite_size_pair == (1, 4)
+
+    # A grid tilemap has no parts to size, so the controls are not there at all.
+    from celpix.core.tilemap import Cell
+
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    assert window._size_small.isHidden()
+    assert window._size_large.isHidden()
+    assert window._size_pair_label.isHidden()
+
+
+def test_every_binding_control_is_one_undoable_step(qtbot, tmp_path) -> None:
+    """The bar sets project state no file records, and a mis-set base or a wrong
+    source is exactly what Ctrl+Z is for. One snapshot type carries all four, so
+    what matters per control is only whether its undo re-reads the entry or
+    patches the document - and that the two routes agree about the result."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
+    obj = window._workspace.current
+    declared_pair = window._doc.sprite_size_pair
+
+    combo = window._tile_binding
+    combo.setCurrentIndex(combo.findData(0))
+    window._on_tile_binding_change(combo.currentIndex())
+    assert obj.tile_source.entry_index == 0
+    window._undo_stack.undo()
+    assert obj.tile_source is None  # unbound is *no* source, not a blank one
+    window._undo_stack.redo()
+    assert obj.tile_source.entry_index == 0
+
+    window._tile_base.setValue(0x40)
+    assert obj.tile_source.base_index == 0x40
+    window._undo_stack.undo()
+    assert obj.tile_source.base_index == 0
+    assert obj.tile_source.entry_index == 0  # the binding around it is untouched
+
+    # The row base is the one control applied *without* a re-read, so its undo is
+    # the one that could quietly take a different route back.
+    assert window._doc.palette_row_base == 8  # the format's, unstated by the entry
+    window._row_base.setValue(0)
+    assert window._doc.palette_row_base == 0
+    window._undo_stack.undo()
+    # Back to what the format says rather than to an 8 pinned on the entry: the
+    # entry stated nothing before, and undo has to hand that back too - or the
+    # project would remember a number the user never chose.
+    assert obj.palette_row_base is None
+    assert window._doc.palette_row_base == 8
+
+    window._size_large.setValue(4)
+    assert obj.sprite_size_pair == (1, 4)
+    window._undo_stack.undo()
+    assert obj.sprite_size_pair is None
+    assert window._doc.sprite_size_pair == declared_pair
+
+
+def test_a_binding_that_cannot_be_read_leaves_nothing_changed(
+    qtbot, tmp_path, captured_alerts
+) -> None:
+    """The re-read *is* how a binding takes effect, so one that fails has not
+    happened. The document it dropped goes back, the fields it set come off, and
+    the step never reaches the stack — a half-applied binding would leave the bar
+    describing a read that did not happen over a canvas still drawn the old way,
+    and the entry holding no document while the window still showed one."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    scr = _scr_file(tmp_path, [Cell(index=1)])
+    window._load_pixel(str(scr))
+    entry = window._workspace.current
+    doc, steps = window._doc, window._undo_stack.count()
+
+    scr.unlink()  # the re-read now has nowhere to go
+    window._tile_base.setValue(5)
+
+    assert captured_alerts  # the user was told why
+    # The entry still holds the document the window is showing. Dropping it and
+    # never replacing it is the failure this guards: from there the entry and the
+    # window answer differently about the same map, and a save would write
+    # through a document the entry has disowned.
+    assert entry.doc is doc
+    assert window._doc is doc
+    assert entry.tile_source is None  # the field came back off with it
+    assert window._tile_base.value() == 0  # ...and so did the spin
+    assert window._undo_stack.count() == steps  # nothing to undo, so no step
+
+
+def test_a_sprite_maps_size_pair_survives_the_project(qtbot, tmp_path) -> None:
+    """Per-entry project state, like the two bases: the pair is not in the file, so
+    losing it on reload would lose the only record of it."""
+    from celpix.project.projectfile import load_project, save_project
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
+    window._size_large.setValue(3)
+
+    path = tmp_path / "p.celpix"
+    save_project(window._workspace, str(path))
+    assert load_project(str(path)).entries[0].sprite_size_pair == (1, 3)
+
+    # And a format that never had one writes nothing, so an ordinary project is
+    # unchanged by the control existing.
+    from celpix.core.tilemap import Cell
+
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    save_project(window._workspace, str(path))
+    import json
+
+    written = json.loads(path.read_text())
+    assert "sprite_size_pair" not in written["entries"][-1]
+
+
 def test_an_unbound_stamp_layout_still_opens(qtbot, tmp_path) -> None:
     from celpix.core.tilemap import Cell
 
@@ -7182,7 +8303,7 @@ def test_an_unbound_stamp_layout_still_opens(qtbot, tmp_path) -> None:
     doc = window._doc
     assert doc is not None and doc.is_tilemap
     assert not doc.is_indirect  # nothing to resolve through yet
-    assert "No panel bound" in window._tile_binding_note.text()
+    assert "No source bound" in window._tile_binding_note.text()
 
 
 def test_a_panel_opens_at_the_width_its_format_states(qtbot, tmp_path) -> None:
@@ -7302,9 +8423,46 @@ def test_the_pinned_palette_toggles_are_two_separate_switches(qtbot, tmp_path) -
     assert window._canvas._palette_rows
 
 
-def test_a_tilemap_disables_the_row_count_and_the_position_bar(qtbot, tmp_path) -> None:
+def test_the_row_labels_mark_the_pinned_tiles_and_not_the_view(qtbot, tmp_path) -> None:
+    """ "Show Pinned Palette Rows" is about what is *pinned*, so an unpinned tile
+    carries no number whatever Subpal happens to be — including when it is not 0,
+    where the view's own row is otherwise indistinguishable from a pin to it."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))  # 8 SNES 4bpp tiles
+    window._columns.setValue(8)
+    window._rows.setValue(1)
+    window._show_palette_rows_action.setChecked(True)
+
+    # Pin the second half to row 2, then read the sheet through row 3 - a view row
+    # that is neither 0 nor the pinned one.
+    window._set_linear_selection(4, 7)
+    window._subpalette.setValue(2)
+    window._pin_selection()
+    window._subpalette.setValue(3)
+
+    assert window._canvas._palette_rows[:8] == [None] * 4 + [2] * 4
+    # The recolour is unaffected: an unpinned tile still draws through the view's
+    # row, which is what the label's absence is saying about it.
+    assert window._window_biases(8, 1)[:8] == [3 * 16] * 4 + [2 * 16] * 4
+
+    # A pin *to* the view's own row is still a pin, and still labelled: it reads
+    # the same on screen, and the label is the only thing that says it is pinned.
+    window._set_linear_selection(0, 1)
+    window._pin_selection()
+    assert window._canvas._palette_rows[:4] == [3, 3, None, None]
+
+
+def test_a_tilemap_hides_the_position_bar_and_disables_the_row_count(
+    qtbot, tmp_path
+) -> None:
     """Both address a view window, and a tilemap is always shown entire - so
-    there is no window to set the height of or scroll through."""
+    there is no window to set the height of or scroll through.
+
+    The bar is *hidden* rather than greyed: its handle is styled and would still
+    be sized from the bound bank's tile count, so a disabled one reads as a live
+    navigator part-way through a file.
+    """
     from celpix.core.tilemap import Cell
 
     # Big enough to have somewhere to scroll: the bar is also disabled when a
@@ -7317,17 +8475,19 @@ def test_a_tilemap_disables_the_row_count_and_the_position_bar(qtbot, tmp_path) 
     window._load_pixel(str(big))
     assert window._rows.isEnabled()
     assert window._tile_offset_bar.isEnabled()
+    assert not window._tile_offset_bar.isHidden()  # the window is never shown
 
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
     assert not window._rows.isEnabled()
     assert not window._rows_label.isEnabled()
-    assert not window._tile_offset_bar.isEnabled()
-    # ...and it says why, rather than borrowing Entire File's reason.
+    assert window._tile_offset_bar.isHidden()
+    # ...and Rows says why, rather than borrowing Entire File's reason.
     assert "always shown whole" in window._rows.toolTip()
 
     # Back to pixels: the veto lifts, and Rows says what it normally says.
     window._activate_entry(window._workspace.entries[0])
     assert window._rows.isEnabled()
+    assert not window._tile_offset_bar.isHidden()
     assert window._tile_offset_bar.isEnabled()
     assert "always shown whole" not in window._rows.toolTip()
 

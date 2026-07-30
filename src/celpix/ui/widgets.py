@@ -454,6 +454,38 @@ def funnel_icon(color: QColor, size: int = 16, ratio: float = 1.0) -> QIcon:
     return QIcon(pixmap)
 
 
+def source_icon(color: QColor, size: int = 16, ratio: float = 1.0) -> QIcon:
+    """A ring with a dot at its centre — the app's "go to what this names" mark.
+
+    Painted rather than bundled for the same reasons as :func:`funnel_icon`: it
+    inherits the theme's text color and stays crisp at any device-pixel ratio,
+    and Qt derives the greyed form itself. Reads as a target rather than as a
+    direction: the button it marks does not step somewhere relative to here, it
+    opens the one thing a control already names.
+    """
+    px = max(1, round(size * ratio))
+    pixmap = QPixmap(px, px)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    centre = QPointF(px / 2, px / 2)
+    # The ring is stroked, so its radius is to the *centre* of the line: half a
+    # pen width short of the box, or antialiasing clips the outer edge flat.
+    pen = QPen(color)
+    pen.setWidthF(max(1.0, px * 0.1))
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    ring = px * 0.34
+    painter.drawEllipse(centre, ring, ring)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    dot = px * 0.13
+    painter.drawEllipse(centre, dot, dot)
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    return QIcon(pixmap)
+
+
 class ChecklistPopupButton(QToolButton):
     """A toolbar button that drops down a checkable list, with Select All / None.
 

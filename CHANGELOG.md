@@ -1,87 +1,26 @@
 # Changelog
 
-## v0.3.6 - unreleased
+## v0.4.0 - unreleased
 
-- **Tilemaps**: screen, panel and stamp-layout files open as tilemap entries and
-  render their cells through a bound tile source, always showing the whole map.
-  The row count and the file-position bar are disabled there, since a tilemap has
-  no view window to move.
-  The bar under the canvas carries the binding — which open entry supplies the
-  tiles, where tile 0 sits in it, and the cell format — in place of the file
-  offset controls, which a tilemap has no use for. Picking a file that isn't open
-  yet opens it as an entry first. Saving writes the cells back through the file's
-  own container, headers intact, and controls that don't apply to a tilemap
-  (pixel tools, rearrange, pinned palettes, rotate) switch themselves off.
-- **Base tile** accepts negative values, and binding a map to tiles it overflows
-  now works it out: a screen numbering from $100, bound to a slice that starts
-  there, lands on the slice's first tile instead of off the end. A map that
-  already fits its source is left alone, and a base you set yourself is never
-  overwritten.
-- **Plugins**: tilemap formats can be added like any other — a `tilemap/` folder
-  taking `.toml` presets and `.py` code formats, with worked examples for each
-  of its engines seeded into your plugin folder.
-- **Palettes (COL)**: S-CG-CAD palette files are recognised as a container, so
-  one opens with its 256 real colours instead of decoding its trailing metadata
-  block as 128 more.
-- **Palette entries** carry a container of their own and offer "Edit File
-  Container…", so a palette whose colours stop before its bytes do can be framed
-  and corrected like any other file. Containers now declare which kind of entry
-  they frame, and the picker lists only those — a palette is never offered a ROM
-  wrapper, or the reverse.
-- **Screens (SCR)**: a screen with 16x16 cells now opens as one, instead of
-  drawing a quarter of every cell and dropping the rest.
-- **Panels (PNL)**: a panel now opens at its true size. A panel word is one 8x8
-  tile in every file of the survey, whichever of its three cell-size-shaped header
-  bytes is set, and reading any of them was drawing the panel at four times its
-  content.
-- **Sprite objects (OBJ/OBX)**: open as tilemap entries and draw their frames one
-  after another, each frame's parts assembled at the pixel offsets the file gives
-  them. View-only for now, and the tiles come from whichever entry the object is
-  bound to, like any other tilemap.
-- **Tilemap entries** now take a tilemap format dropdown on the codecs toolbar, in
-  place of the pixel format and compression pickers - neither of which says
-  anything about a file of cells.
-- **Exporting a tilemap** now writes the map as it is drawn on screen, rather
-  than the tile bank it borrows its tiles from. Export Raw writes its cells for
-  the same reason.
-- **Cell transforms ask the format.** Flipping a cell goes through the tilemap
-  format's own codec, which knows which bits - if any - say a flip. A format with
-  nowhere to put one, like an index-only Game Boy map, now says so in the status
-  bar and changes nothing, instead of showing a flip that the next save drops.
-- **Tile banks (CGX)**: recognised as a container, so a bank opens at the bit
-  depth the file records - 2, 4 or 8bpp - with its trailing header and table cut
-  off instead of decoding as junk tiles. The per-tile palette-row table a 2bpp or
-  4bpp bank carries seeds pinned palette regions.
-- **Pinned palettes**: "Show Pinned Palettes" is now "Show Pinned Palette
-  Colors", and a separate "Show Pinned Palette Rows" numbers each pinned tile
-  with its subpalette row in the grid's colour.
-- **Panels (PNL)**: read their own header - cell size and width - so a panel
-  opens at the right geometry instead of needing it guessed, including the
-  minority that use 8x8 cells rather than 16x16. Screens and stamp layouts
-  publish their widths too.
-- **Stamp layouts (MAP)**: read through the panel they were authored against -
-  pick the panel in the binding bar and the layout draws with that panel's tiles
-  and attributes. View-only: what an edit to a stamp should mean isn't settled.
-- **Tilemap editing**: flip a cell or a block of cells - the block reorders them
-  and flips each - and copy/cut/paste/clear cells within the app. Cell edits
-  undo as one step and mark the map unsaved. The system clipboard is untouched:
-  a cell is an index into a tile source, which means nothing outside celPix.
-- **Opening files**: File ▸ Open tilemap data reads any file as a map of tile
-  indices, and holding Ctrl while dropping a file asks whether to read it as
-  pixels, a palette or a tilemap. `.col` files now land in the Palettes list.
-- **Files list**: entries are grouped into Pixels, Tilemaps and Palettes
-  sections, each shown only while it holds something.
-- **Containers**: SCR, PNL and MAP authoring assets are now recognised and
-  unwrapped to their payload, headers preserved on write. Container detection
-  also looks deeper into a file, so a format whose signature sits past its data
-  can be identified at all.
-- **Internal cleanup**: the LZ compressors share one match finder, the undo
-  commands share one before/after shape, and write-back moved out of the entries
-  module into its own. No behaviour change.
-- **Faster**: tilemaps redraw about twice as quickly, block arrangements
-  (metatiles, Mega Drive sprites, 8x16 sheets) compose twice as quickly, and the
-  LZ compressors are 1.2-2.6x faster to write. Editing a tile in a map now
-  updates every cell that draws it as the edit lands.
+- **Back / Forward navigation**, like a browser's
+  history: `Alt+Left` / `Alt+Right`, the mouse's back/forward buttons, or the two
+  new entries at the top of the Navigate menu.
+- The tilemap bar's Tiles picker has a **jump button** beside it that shows the
+  entry the map draws from, so you can go and look at a tile - or edit it where it
+  lives - and come straight back with Back.
+- Holding Ctrl while drag and dropping a file now prompts the user for what type
+  of file (pixel/palette/tilemap) to import it as.
+- **Tilemaps**: added extensive tile map support with custom containers, tilemap
+  tools, and a complete set of SNES tilemap file formats (CGX/SCR/OBJ/PNL/MAP/etc).
+  Sprite maps (OBJ) as a sub-type of tilemapsAll plugin based and similarly extensible.
+  **Still Experimental**
+- **View > Show Tile IDs**: numbers each tilemap cell with the tile it names, in
+  hex, so you can see which tile a cell is drawing and not just what it looks like.
+- Added .col palette file support
+- Palette entries can now be renamed from the files list, like every other entry
+- Which controls apply to a kind of document, and what a shared one *does* on each,
+  are now declared in one place each rather than decided per control
+- Performance and cleanup pass
 
 ## v0.3.5 - 2026-07-28
 

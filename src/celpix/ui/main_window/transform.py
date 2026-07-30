@@ -67,6 +67,7 @@ from celpix.core.tilerearrangement import (
     TILE_ROTATE_CCW,
     TILE_ROTATE_CW,
 )
+from celpix.ui.main_window.capability_sync import Gesture
 from celpix.ui.main_window.selection import SELECTION_SHAPE_KEY, SelectionShape
 from celpix.ui.tools import TRANSFORM_SPECS, EditMode, TransformSpec
 from celpix.ui.widgets import (
@@ -195,6 +196,17 @@ class _TransformGroup:
     @property
     def actions(self) -> tuple[QAction, QAction, QAction, QAction]:
         return (self.flip_h, self.flip_v, self.rotate_cw, self.rotate_ccw)
+
+    @property
+    def by_field(self) -> dict[str, QAction]:
+        """The four actions under the field names :data:`OP_BY_FIELD` uses, so a
+        per-operation rule can reach the button that performs it."""
+        return {
+            "flip_h": self.flip_h,
+            "flip_v": self.flip_v,
+            "rotate_cw": self.rotate_cw,
+            "rotate_ccw": self.rotate_ccw,
+        }
 
 
 class TransformMixin:
@@ -474,8 +486,9 @@ class TransformMixin:
         transforms need a 2D block, which :meth:`_block_geometry` resolves (a
         rectangle selection, or a single tile's arrangement block in any shape;
         rotation additionally needs that block square). Called from the selection
-        convergence, so the bar tracks every selection change without a separate
-        signal.
+        convergence *and* from the render cycle, since on a tilemap the answer
+        also depends on the document and its format, which a codec change moves
+        without touching the selection.
         """
         if self._edit_mode is EditMode.PIXEL:
             self._sync_pixel_transform_actions()
@@ -488,25 +501,55 @@ class TransformMixin:
         square_tiles = (
             has and self._square_tiles() and self._can(Capability.CELL_ROTATE)
         )
-        self._arm_transform_group(self._tile_group, has, square_tiles)
+        allows = self._transform_allowed
+        self._arm_transform_group(self._tile_group, has, square_tiles, allows)
         geom = self._block_geometry()
         square_block = geom is not None and geom[0] == geom[1]
         self._arm_transform_group(
-            self._block_group, geom is not None, square_block and square_tiles
+            self._block_group, geom is not None, square_block and square_tiles, allows
         )
 
+    def _transform_allowed(self, op: TransformOp) -> bool:
+        """Whether this document can perform ``op`` at all, format included.
+
+        The third gate, and the one only a tilemap needs. ``ContentKind`` says a
+        tilemap flips; the **format** says whether its cells have a bit that
+        means it, and that varies inside the kind — a console BG map mirrors, a
+        Game Boy map's cell is a bare index (``docs/design/tilemap-entry.md`` §4).
+        Asking the codec here rather than only on the click is what puts that
+        answer where every other unavailable control's already is: a disabled
+        button, not a message after the fact. The probe is a blank cell through
+        :meth:`~...tilemap_edit.TilemapEditMixin._cell_transform`, so it costs
+        nothing and touches no data.
+
+        A view-only map answers False to everything for the separate reason that
+        its cells are not what is on screen
+        (:attr:`~celpix.core.document.Document.cells_editable`) — the same rule
+        the clipboard actions follow.
+        """
+        doc = self._doc
+        if doc is None or not doc.is_tilemap:
+            return True
+        return doc.cells_editable and self._cell_transform(op) is not None
+
     @staticmethod
-    def _arm_transform_group(group, has: bool, square: bool) -> None:
+    def _arm_transform_group(group, has: bool, square: bool, allows=None) -> None:  # noqa: ANN001
         """Enable one transform group: flips need a target, rotates a square one.
 
         A quarter turn swaps width and height, so it is only offered where the
         result still fits its footprint. Shared by every group — destructive,
         block and rearrange — so the three cannot disagree about that rule.
+
+        ``allows`` adds a per-operation veto on top, for the groups whose
+        document answers one direction differently from another
+        (:meth:`_transform_allowed`). Omitted where the four buttons stand or
+        fall together, which is every pixel-side group.
         """
-        for action in group.flips:
-            action.setEnabled(has)
-        for action in group.rotates:
-            action.setEnabled(has and square)
+        for field, action in group.by_field.items():
+            enabled = has and (square or field.startswith("flip"))
+            if enabled and allows is not None:
+                enabled = allows(OP_BY_FIELD[field])
+            action.setEnabled(enabled)
 
     def _square_tiles(self) -> bool:
         """Whether this codec's tile can be turned at all.
@@ -522,20 +565,30 @@ class TransformMixin:
     def _block_geometry(self) -> tuple[int, int, int, int] | None:
         """The block a block-transform acts on: ``(cols, rows, x0, y0)`` in cells.
 
-        A **single** selected tile expands to the arrangement block (Block W×H) it
-        sits in, snapped to the ``bc×br`` cell grid the arrangement lays down (see
+        A selection of a **single unit** expands to the block it sits in, snapped
+        to the ``bc×br`` cell grid the layout lays down (see
         :class:`~celpix.core.arrangement.BlockLayout`) — so one click turns a whole
-        metatile, in **any** selection shape. A multi-tile Rectangle selection *is*
+        metatile, in **any** selection shape. A larger Rectangle selection *is*
         the block (its own cell dimensions, anchored at its top-left cell). A linear
-        multi-tile run has no 2D block, so it returns ``None``.
+        multi-unit run has no 2D block, so it returns ``None``.
+
+        The block comes off :meth:`~...selection.SelectionMixin._view_layout`
+        rather than off the Block W×H spins, because on a tilemap the block is the
+        map's own cell and the spins belong to the pixel view — one click on a
+        16x16 cell has to turn that cell, not the 8x8 quadrant under the cursor.
+        The unit is the same one the selection snaps to
+        (:meth:`~...selection.SelectionMixin._cell_unit`), which is the tile on a
+        pixel document.
         """
         if self._doc is None or self._selected_tile is None:
             return None
-        cx, cy = self._view_layout().slot_to_cell(self._selected_tile - self._offset)
-        if len(self._selection_tiles()) == 1:
+        layout = self._view_layout()
+        cx, cy = layout.slot_to_cell(self._selected_tile - self._offset)
+        across, down = self._cell_unit()
+        if len(self._selection_tiles()) <= across * down:
             # Match BlockLayout's block sizing (columns clamps block width).
-            bc = max(1, min(self._block_cols.value(), self._columns.value()))
-            br = max(1, self._block_rows.value())
+            bc = max(1, min(layout.block_columns, layout.columns))
+            br = max(1, layout.block_rows)
             return bc, br, (cx // bc) * bc, (cy // br) * br
         if self._rect_size is not None:
             cols, rows = self._rect_size
@@ -553,10 +606,10 @@ class TransformMixin:
         """
         if self._doc is None or self._selected_tile is None:
             return
-        if self._doc.is_tilemap:
+        if (transform_cells := self._kind_handler(Gesture.TRANSFORM_TILES)) is not None:
             # Same button, different document: a cell's mirror is an attribute
             # bit, not a rewrite of anyone's pixels.
-            self._transform_cells(op)
+            transform_cells(op)
             return
         moved = len(self._selection_tiles())
         if self._map_selected_tiles(op.pixel_fn, f"{op.verb} tiles"):
@@ -575,8 +628,8 @@ class TransformMixin:
         """
         if self._doc is None:
             return
-        if self._doc.is_tilemap:
-            self._transform_cell_block(op)
+        if (transform_block := self._kind_handler(Gesture.TRANSFORM_BLOCK)) is not None:
+            transform_block(op)
             return
         geom = self._block_geometry()
         if geom is None:

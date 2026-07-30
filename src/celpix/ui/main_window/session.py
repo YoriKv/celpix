@@ -35,7 +35,7 @@ from celpix.core.context import (
     KEY_TILEMAP_COLUMNS,
     PipelineContext,
 )
-from celpix.core.document import Document
+from celpix.core.document import CellChain, Document
 from celpix.core.errors import PipelineError
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
 from celpix.core.tilemap import VRAM_ROW_STRIDE, Cell
@@ -72,25 +72,6 @@ class _BoundTiles(NamedTuple):
     tile_height: int
     ctx: PipelineContext
     config: PathwayConfig
-
-
-def _resolve_stamp(cell: Cell, panel: list[Cell]) -> Cell:
-    """The panel cell a stamp-layout entry names, or a blank when it names none.
-
-    The entry's ``index`` is already the panel cell index — a panel is 32 wide
-    and the two coordinate fields are adjacent, so the low bits read as one
-    number *are* ``panelY * 32 + panelX``
-    (``docs/graphics-formats-reference/scgcad-formats.md`` §4). What comes back
-    is the panel's own cell whole: its tile, its palette row, its flips.
-
-    The entry's ``flags`` — the attribute-source bit among them — are not applied.
-    Whether a cleared bit means "use a per-bank default attribute instead of the
-    panel's" is the part of the format still unconfirmed, and inventing a default
-    would draw a picture the file does not describe. Passing the panel's own
-    attributes through is the documented behaviour of the *set* bit, and the one
-    that can be checked against the panel on screen.
-    """
-    return panel[cell.index] if 0 <= cell.index < len(panel) else Cell()
 
 
 class SessionMixin:
@@ -139,6 +120,9 @@ class SessionMixin:
 
     def _on_current_entry_changed(self, entry: Entry | None) -> None:
         self._files_panel.set_current(entry)
+        # Every way the view can move ends here, which is why the Back/Forward
+        # trail is recorded here rather than at the activation call sites.
+        self._record_visit(entry)
         if entry is None:
             self._show_empty()
             return
@@ -231,6 +215,11 @@ class SessionMixin:
         """
         session = entry.session
         assert session is not None
+        # Noted before the restore below consumes it: the width hint applies only
+        # to an entry the project had no width for, and by the time it is applied
+        # the pending view it would be read off has already been taken
+        # (:meth:`~...rendering.RenderingMixin._apply_tilemap_columns`).
+        restored = entry.pending_view is not None
         preset_id = entry.tilemap_preset_id or _DEFAULT_TILEMAP_PRESET
         cfg = self._tilemap_config(entry, preset_id)
         try:
@@ -239,38 +228,59 @@ class SessionMixin:
             if not quiet:
                 self._report(exc)
             return False
-        panel = self._bound_panel(entry)
-        if panel is not None:
-            # A stamp layout indexes a *panel*, not a tile bank: its cells are
-            # resolved through the panel's, and the tiles come from whatever the
-            # panel is itself bound to. Two hops, and the second one is an
-            # ordinary tilemap's own binding.
-            panel_cells = panel.cells or []
-            resolved = [_resolve_stamp(c, panel_cells) for c in loaded.cells]
+        through = self._bound_tilemap(entry)
+        if through is not None:
+            # Bound to another tilemap rather than to art: these cells index that
+            # map's *cells*, and the tiles come from whatever it is itself bound
+            # to. Two hops, and the second is an ordinary binding — which is as
+            # far as it goes (:meth:`_bound_tilemap`).
             entry.doc = Document(
-                pixel_data=panel.pixel_data,
-                bytes_per_tile=panel.bytes_per_tile,
-                tile_width=panel.tile_width,
-                tile_height=panel.tile_height,
+                pixel_data=through.pixel_data,
+                bytes_per_tile=through.bytes_per_tile,
+                tile_width=through.tile_width,
+                tile_height=through.tile_height,
                 palette=self._fallback_palette(),
-                pixel_config=replace(panel.pixel_config, write_enabled=False),
+                pixel_config=replace(through.pixel_config, write_enabled=False),
                 palette_config=self._placeholder_palette_config(
                     session.palette_preset_id
                 ),
-                pixel_ctx=panel.pixel_ctx,
+                pixel_ctx=through.pixel_ctx,
                 cells=loaded.cells,
-                resolved_cells=resolved,
-                # View-only until restamping is designed: writing one would have
-                # to decide what an edit meant (`Document.is_indirect`).
-                tilemap_config=replace(cfg, write_enabled=False),
+                # `resolved_cells` follows from this and is not passed: the
+                # document derives it, so an edit can re-derive it the same way.
+                chain=CellChain(through.cells or [], loaded.palette_rows),
+                # Writable, like any other tilemap: a cell edit here restamps, and
+                # what it writes back is this file's own entry table. The *pixel*
+                # config stays read-only above - the art belongs to the map at the
+                # end of the chain, and a restamp must never reach it.
+                tilemap_config=cfg,
                 tilemap_ctx=loaded.ctx,
                 tilemap_data=loaded.data,
-                cell_tiles=panel.cell_tiles,
-                cell_row_stride=panel.cell_row_stride,
-                tile_base_index=panel.tile_base_index,
+                # This entry's own record size, unlike the drawing geometry below
+                # it: what the hex dump shows here is this file's cells.
+                cell_bytes=loaded.cell_bytes,
+                # The geometry is the source map's, because what is drawn is its
+                # cells: how many tiles one covers, and where its own base puts
+                # them, are answers this entry has no version of.
+                cell_tiles=through.cell_tiles,
+                cell_row_stride=through.cell_row_stride,
+                tile_base_index=through.tile_base_index,
+                # The source map's too: what is expanded into tiles is its cells,
+                # so the field they wrap inside is its format's.
+                index_mask=through.index_mask,
+                # The source map's rows are what get drawn, so its base applies -
+                # unless this entry states one of its own.
+                palette_row_base=self._row_base_for(entry, through.palette_row_base),
+                # Rows are stated if *either* side states them — the referrer's
+                # win where its format has the field, the source's come through
+                # where it does not (:func:`_resolve_through`). Either way the
+                # view must not add a subpalette row over the top.
+                cells_carry_palette_rows=(
+                    through.cells_carry_palette_rows or loaded.palette_rows
+                ),
             )
             self._apply_restored_state(entry)
-            self._apply_tilemap_columns(entry)
+            self._apply_tilemap_columns(entry, restored=restored)
             return True
         tiles = self._load_bound_tiles(entry, quiet=quiet)
         # The cell size is the header's answer over the preset's assumption: the
@@ -288,7 +298,7 @@ class SessionMixin:
             palette_config=self._placeholder_palette_config(session.palette_preset_id),
             pixel_ctx=tiles.ctx,
             cells=loaded.cells,
-            # View-only where the cells are sprite parts, for the same reason a
+            # View-only where the cells are subsprites, for the same reason a
             # stamp layout is: what a canvas gesture would edit is not settled
             # (``Document.cells_editable``).
             tilemap_config=(
@@ -296,16 +306,20 @@ class SessionMixin:
             ),
             tilemap_ctx=loaded.ctx,
             tilemap_data=loaded.data,
+            cell_bytes=loaded.cell_bytes,
             cell_tiles=cell_tiles,
             cell_row_stride=VRAM_ROW_STRIDE if cell_tiles != (1, 1) else 0,
+            index_mask=loaded.index_mask,
+            palette_row_base=self._row_base_for(entry, loaded.palette_row_base),
             tile_base_index=(
                 entry.tile_source.base_index if entry.tile_source is not None else 0
             ),
             sprite_frames=loaded.frames,
-            sprite_size_pair=loaded.size_pair,
+            sprite_size_pair=self._size_pair_for(entry, loaded.size_pair),
+            cells_carry_palette_rows=loaded.palette_rows,
         )
         self._apply_restored_state(entry)
-        self._apply_tilemap_columns(entry)
+        self._apply_tilemap_columns(entry, restored=restored)
         return True
 
     def _apply_pixel_preset_hint(self, entry: Entry, px, cfg):  # noqa: ANN001
@@ -399,6 +413,53 @@ class SessionMixin:
         if low and reach >= count and reach - low < count:
             entry.tile_source = replace(source, base_index=-low)
 
+    def _row_base_for(self, entry: Entry, declared: int) -> int:
+        """The palette row ``entry``'s cells count their row 0 from.
+
+        ``declared`` is what the format says — 8 for a sprite, whose 3-bit field
+        counts from the upper half of CGRAM — and the entry's own value overrules
+        it, because what the format cannot know is which palette got loaded
+        (:attr:`~celpix.project.workspace.Entry.palette_row_base`). Resolved on the
+        load path so the document carries the base **in force** and every render
+        reads one number rather than choosing between two.
+        """
+        chosen = entry.palette_row_base
+        return declared if chosen is None else chosen
+
+    def _size_pair_for(
+        self, entry: Entry, declared: tuple[int, int]
+    ) -> tuple[int, int]:
+        """The sprite-size pair in force: the entry's choice, else the format's.
+
+        Both are (small, large) **in tiles**. ``declared`` is the preset's, which can
+        only be the commonest setting — the pair was a PPU register the scene set and
+        no sprite file records it
+        (``docs/graphics-formats-reference/scgcad-formats.md`` §8.2). So the entry
+        overrules it, and the document carries the pair **in force** the way it does
+        the two bases, leaving one answer for the render to read.
+        """
+        chosen = entry.sprite_size_pair
+        if chosen is None or chosen[0] < 1 or chosen[1] < 1:
+            return declared
+        return chosen
+
+    def _tilemap_is_sprite(self, entry: Entry) -> bool:
+        """Whether ``entry``'s **format** says its cells are subsprites.
+
+        A *sprite map* is the tilemap variant whose cells are freely-placed
+        subsprites
+        grouped into frames rather than positions in a grid
+        (``docs/design/tilemap-entry.md`` §6). Declared by the preset, so — like
+        :meth:`_tilemap_is_indirect` — it answers before anything is loaded or
+        bound: an object with no tile source is still an object, and its size pair
+        is still the control it needs.
+        """
+        preset_id = entry.tilemap_preset_id or _DEFAULT_TILEMAP_PRESET
+        try:
+            return self._registry.preset(preset_id).params.get("layout") == "sprite"
+        except KeyError:
+            return False
+
     def _tilemap_columns_hint(self, entry: Entry) -> int:
         """The width the entry's format states, or 0 when it states none.
 
@@ -411,12 +472,15 @@ class SessionMixin:
         return int(doc.tilemap_ctx.get(KEY_TILEMAP_COLUMNS, 0) or 0)
 
     def _tilemap_is_indirect(self, entry: Entry) -> bool:
-        """Whether ``entry``'s cells are coordinates into another map.
+        """Whether ``entry``'s **format** says its cells are coordinates.
 
-        A property of the **format**, declared by its preset, not of whether a
-        binding happens to be resolved yet: a stamp layout with nothing bound is
-        still a stamp layout, and the controls have to offer it panels rather
-        than tile banks before it can draw anything at all.
+        Declared by the preset, so it is an answer before any binding exists —
+        which is the only thing it is for. Chaining itself is generic and gated on
+        depth (:meth:`_bound_tilemap`), so this never decides what a map may draw
+        through; it decides how the bar reads while nothing is bound yet. A stamp
+        layout with no source is still a stamp layout, and should be offered
+        panels first and no Base tile rather than being described as a map that
+        merely has not picked its art.
         """
         preset_id = entry.tilemap_preset_id or _DEFAULT_TILEMAP_PRESET
         try:
@@ -424,34 +488,113 @@ class SessionMixin:
         except KeyError:
             return False
 
-    def _bound_panel(self, entry: Entry) -> Document | None:
-        """The tilemap ``entry`` is bound to, loaded — or None if it isn't.
+    def _draws_through_tilemap(self, entry: Entry) -> bool:
+        """Whether ``entry``'s binding names another tilemap rather than art.
 
-        Only a stamp layout binds to another tilemap. Loading the panel is the
-        ordinary entry load, so the panel resolves its *own* binding first and
-        this stays two hops rather than a recursion: a panel bound to a panel is
-        refused below, and nothing else in the family chains further.
+        Read off the **binding**, not off a loaded document, which is what makes
+        it safe to ask while loading: the answer needs no pipeline run, so the
+        depth gate in :meth:`_bound_tilemap` can settle a chain before anything
+        is read and a pair of maps pointed at each other cannot recurse.
+        """
+        if entry.content_kind is not ContentKind.TILEMAP:
+            return False
+        source = entry.tile_source
+        if source is None or source.mode is not TileMode.ENTRY:
+            return False
+        entries = self._workspace.entries
+        index = source.entry_index
+        if index is None or not 0 <= index < len(entries):
+            return False
+        bound = entries[index]
+        return bound is not entry and bound.content_kind is ContentKind.TILEMAP
+
+    def _can_supply_tiles(self, entry: Entry, candidate: Entry) -> bool:
+        """Whether ``candidate`` is a source ``entry`` could draw through.
+
+        The one rule behind both the binding combo and the "From file..." check,
+        so what is offered and what is accepted cannot disagree: art always, and
+        a tilemap only while it reaches art itself.
+
+        Never the entry itself, which would bind it to its own bytes, and never a
+        bookmark, which marks a position rather than holding content.
+        """
+        if candidate is entry or candidate.kind is EntryKind.BOOKMARK:
+            return False
+        if candidate.content_kind is ContentKind.PIXELS:
+            return True
+        if candidate.content_kind is not ContentKind.TILEMAP:
+            return False
+        return not self._draws_through_tilemap(candidate)
+
+    def _bound_tilemap(self, entry: Entry) -> Document | None:
+        """The tilemap ``entry`` draws through, loaded — or None if it draws art.
+
+        Any tilemap may take its cells from another tilemap's; what stops the
+        chain is **depth, not format** (``docs/design/tilemap-entry.md`` §3.1).
+        One hop is resolved, and the map at the end of it must reach a graphics
+        file itself, because a coordinate into a coordinate has no defined
+        meaning — an index would be resolved against cells that are not tiles.
+
+        The gate is :meth:`_draws_through_tilemap`, checked on the binding before
+        the source is loaded. That ordering is what keeps this from recursing: two
+        maps bound to each other both fail the gate rather than each loading the
+        other, and the ``is_indirect`` check the loaded document would offer is
+        then redundant — a source that passed the gate cannot come back resolved.
+
+        Loading the source is the ordinary entry load, so it settles its *own*
+        binding first and the second hop is an ordinary one.
         """
         source = entry.tile_source
         entries = self._workspace.entries
-        if not self._tilemap_is_indirect(entry):
-            return None
         if source is None or source.mode is not TileMode.ENTRY:
             return None
         index = source.entry_index
         if index is None or not 0 <= index < len(entries):
             return None
-        panel = entries[index]
-        if panel is entry or panel.content_kind is not ContentKind.TILEMAP:
+        candidate = entries[index]
+        if not self._can_supply_tiles(entry, candidate):
             return None
-        if panel.doc is None and not self._load_entry(panel, quiet=True):
+        if candidate.content_kind is not ContentKind.TILEMAP:
             return None
-        doc = panel.doc
-        # A panel that is itself indirect would mean a layout of layouts, which
-        # nothing in the family produces and which has no defined resolution.
-        if doc is None or not doc.is_tilemap or doc.is_indirect:
+        if candidate.doc is None and not self._load_entry(candidate, quiet=True):
+            return None
+        doc = candidate.doc
+        # A sprite object holds records at signed pixel offsets, not a grid to
+        # index into, so there is no cell at position N to stamp.
+        if doc is None or not doc.is_tilemap or doc.is_sprite:
             return None
         return doc
+
+    def _rechain_dependents(self, entry: Entry) -> bool:
+        """Re-point every open map drawing through ``entry`` at its new cells.
+
+        True when one of them is the entry on screen, so the caller knows a
+        repaint is owed — which happens when an undo lands on a map the view has
+        since moved off, onto one that draws through it.
+
+        A cell edit replaces the entry's cell list rather than mutating it, so a
+        chained map still holding the old one would keep drawing the stamps as
+        they were (:class:`~celpix.core.document.CellChain`). Called from the one
+        place a cell list changes, which is what keeps two views of the same stamps
+        in step without either being reloaded.
+        """
+        cells = entry.doc.cells if entry.doc is not None else None
+        entries = self._workspace.entries
+        if cells is None or entry not in entries:
+            return False
+        at = entries.index(entry)
+        current = False
+        for other in entries:
+            doc = other.doc
+            source = other.tile_source
+            if other is entry or doc is None or doc.chain is None:
+                continue
+            if source is None or source.entry_index != at:
+                continue
+            doc.chain = replace(doc.chain, source=cells)
+            doc.resolve()
+            current = current or other is self._workspace.current
+        return current
 
     def _load_bound_tiles(self, entry: Entry, *, quiet: bool = False) -> _BoundTiles:
         """The tiles a tilemap entry draws from, or an empty stand-in.

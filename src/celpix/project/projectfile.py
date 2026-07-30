@@ -183,6 +183,14 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
         source = entry.tile_source
         if source is not None and source.is_bound:
             data["tile_source"] = _tile_source_dict(source)
+        # Only once the user has overruled the format, so a map reading in the
+        # rows its preset states carries nothing — and a project written before
+        # this control existed round-trips unchanged. Written even at 0, which is
+        # a deliberate answer against a format that says 8 and not an absent one.
+        if entry.palette_row_base is not None:
+            data["palette_row_base"] = entry.palette_row_base
+        if entry.sprite_size_pair is not None:
+            data["sprite_size_pair"] = list(entry.sprite_size_pair)
     session = entry.session
     if session is not None:
         # The tile selection is deliberately absent: it is a transient pointer
@@ -211,6 +219,11 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
             "two_dimensional": view.two_dimensional,
             "bitmap_width": view.bitmap_width,
         }
+        # Only a paged tilemap has an assembly, and only once something has chosen
+        # one - so every other entry, and every project written before assemblies
+        # existed, is byte-identical either way.
+        if view.pages_across:
+            data["view"]["pages_across"] = view.pages_across
         # Only a document that was actually rearranged carries the map, so an
         # ordinary project's file is unchanged by the feature existing. Each half
         # is written only if it holds something: a rearrangement that just turns
@@ -339,10 +352,30 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         content_kind=ContentKind.parse(raw.get("content_kind")),
         tile_source=_tile_source(raw),
         tilemap_preset_id=(_str(raw.get("tilemap_preset_id"), "") or None),
+        # Absent means "whatever the format says", which is every entry that never
+        # overrode it — so the default has to stay None and not 0.
+        palette_row_base=_int(raw.get("palette_row_base"), None),
+        sprite_size_pair=_size_pair(raw.get("sprite_size_pair")),
         session=_session_from(raw.get("session")),
         pending_view=_view_from(raw.get("view")),
         pending_palette=_palette_from(raw.get("palette"), base_dir),
     )
+
+
+def _size_pair(raw: object) -> tuple[int, int] | None:
+    """A stored ``[small, large]`` of tile multiples, or None for the format's own.
+
+    Anything malformed reads as None rather than failing the entry, on the same
+    tolerance the rest of the schema follows: the format's answer is a working
+    fallback, and a positive pair is the only thing that means anything.
+    """
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        return None
+    try:
+        small, large = int(raw[0]), int(raw[1])
+    except (TypeError, ValueError):
+        return None
+    return (small, large) if small > 0 and large > 0 else None
 
 
 def _session_from(raw: object) -> EntrySession:
@@ -375,6 +408,11 @@ def _view_from(raw: object) -> ViewOptions | None:
         block_order=_block_order(raw),
         two_dimensional=bool(raw.get("two_dimensional", defaults.two_dimensional)),
         bitmap_width=_int(raw.get("bitmap_width"), defaults.bitmap_width),
+        # Absent on every entry that is not a paged tilemap. A value the file no
+        # longer has pages for is not checked here — the document does that when it
+        # resolves the assembly, which is where the page count is known
+        # (:attr:`~celpix.core.document.Document.pages_across`).
+        pages_across=_int(raw.get("pages_across"), defaults.pages_across),
         tile_rearrangement=_tile_rearrangement(raw),
         show_rearranged=bool(raw.get("show_rearranged", defaults.show_rearranged)),
         palette_regions=_palette_regions(raw),

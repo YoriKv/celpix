@@ -1,34 +1,39 @@
-# Example tilemap preset — sprite object parts, a map with no grid.
+# Example tilemap preset — sprite object subsprites, a map with no grid.
 #
 # Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
 #
 # The other tilemap engine, and the odd one out: its cells are not laid out in
 # rows. Each record carries a *signed pixel offset* from an object's origin, so
-# what the view draws is frames of freely placed parts rather than a grid — a
-# sprite sheet, one frame after another.
+# what the view draws is frames of freely placed subsprites rather than a grid —
+# a sprite sheet, one frame after another.
 #
-# Reach for this only if your format is shaped the same way: fixed-size part
+# Reach for this only if your format is shaped the same way: fixed-size subsprite
 # records, a fixed number of them per frame, each with its own x/y. Anything laid
 # out in rows wants _packed.toml instead.
 #
 # Built on `codec.scgcad-object`, as is the shipped scgcad-object preset.
 
 id = "preset.tilemap.example-object"
-name = "Example sprite object part"
+name = "Example sprite object subsprite"
 engine_id = "codec.scgcad-object"
 
 [params]
+# A **sprite map**: the tilemap variant whose cells are freely-placed subsprites
+# grouped into frames rather than positions in a grid (tilemap-entry.md sec 6).
+# Declared rather than inferred so the bar can describe an object before anything
+# is bound to it, exactly as `indirect` does for a stamp layout.
+layout = "sprite"
 # Byte order of the record's attribute word. A container that knows better can
 # override this per *file* — the shipped sprite format has two builds that
 # disagree, and each says which it is in its own header.
 endian = "big"
 
-# How many part records make one frame. The whole payload is cut into frames of
-# this size, so it decides how the sheet is divided as much as how it is drawn.
-parts_per_frame = 64
+# How many subsprite records make one frame. The whole payload is cut into frames
+# of this size, so it decides how the sheet is divided as much as how it is drawn.
+subsprites_per_frame = 64
 
-# Which of the console's six sprite-size pairs the parts are drawn at. The file
-# does not record it — the game set it in a register — so this is a stated
-# assumption you can change, not something read from the bytes. 0 is the
-# 8x8/16x16 pair.
-size_pair = 0
+# The two sizes a subsprite's own size bit chooses between, each a square that
+# many tiles on a side. The file does not record the pair — the game set it in a
+# register — so this is a stated assumption you can change, not something read
+# from the bytes. `[1, 2]` is one tile, or two by two.
+subsprite_tiles = [1, 2]

@@ -9,34 +9,61 @@ entry has a position to jump to. The two bars are pages of one stack, swapped by
 :meth:`~TilemapBarMixin._sync_tilemap_bar` from the render cycle.
 
 What replaces them is the binding: which **open entry** supplies the tiles the
-cells index into, where in it tile 0 sits, and which codec reads the cells. None
-of that is recoverable from the file — a screen names a *bank slot* in a tool
-that had four loaded at once — so it is project state the user sets here and the
-project remembers (§3, §7).
+cells index into, where in it tile 0 sits, which palette row their row 0 draws
+through, and which codec reads the cells. None of that is recoverable from the
+file — a screen names a *bank slot* in a tool that had four loaded at once — so
+it is project state the user sets here and the project remembers (§3, §7).
 
 Binding names an entry and never a path. An entry already carries a container, a
 reshape, a pixel format and a Write of its own, and the map reads the tiles
 through all of it; a path in the binding would have had to restate every one and
 would still have gone stale independently. Picking a file that is not open yet
 opens it as an entry first — the move registering a palette file already makes.
+
+The bound entry may be **another tilemap**, in which case each cell stamps one of
+that map's cells rather than naming a tile, and the tiles come from whatever it is
+itself bound to. One hop, gated on depth rather than on format
+(``docs/design/tilemap-entry.md`` §3.1) — so what the bar offers is filtered by
+:meth:`~...session.SessionMixin._can_supply_tiles` and nothing here decides it
+twice.
+
+Every control on the bar is **one undoable step**. They all set the same kind of
+thing — project state the file does not record — so they share one snapshot type
+and one apply, and a gesture, an undo and a redo settle a binding by the same
+route (:class:`~celpix.ui.undo_commands.TilemapBindingState`,
+:meth:`~TilemapBarMixin._apply_tilemap_binding`). Which of the four moved decides
+only whether the entry has to be read again: a palette row base lands on the
+document in place, and everything else drops it and reloads.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from celpix.core.capabilities import ContentKind
+from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.errors import Stage
-from celpix.project.workspace import Entry, EntryKind, TileMode, TileSource
-from celpix.ui.widgets import CompactComboBox, signals_blocked
+from celpix.project.workspace import (
+    Entry,
+    PaletteMode,
+    TileMode,
+    TileSource,
+    palette_source_for,
+)
+from celpix.ui.main_window.interpretation import ASSEMBLY_TIP
+from celpix.ui.undo_commands import TilemapBindingCommand, TilemapBindingState
+from celpix.ui.widgets import CompactComboBox, signals_blocked, source_icon
 
 # What the "Tiles" combo holds besides the open entries. Distinct objects rather
 # than strings so an entry named "From file..." cannot collide with the action.
@@ -67,11 +94,30 @@ class TilemapBarMixin:
         self._tile_binding = CompactComboBox(0.6)
         self._tile_binding.setToolTip(
             "Where this map draws from: an open entry, whose\n"
-            "live edits it follows. A stamp layout names a panel\n"
-            "instead, and takes that panel's tiles and attributes."
+            "live edits it follows. Another tilemap works too -\n"
+            "each cell then stamps one of its cells, attributes\n"
+            "and all, and that map must reach a graphics file."
         )
         self._tile_binding.activated.connect(self._on_tile_binding_change)
         row.addWidget(self._tile_binding)
+
+        # Go and look at what the combo names. The binding is the one control on
+        # this bar whose value is *another entry*, and "Tiles from x" is not the
+        # same as being able to see x - to check a tile, or edit it where it
+        # lives, the user had to find that row in the Files dock. Right beside the
+        # combo because it opens that combo's own answer, and Back returns
+        # (:mod:`celpix.ui.main_window.history`). No keyboard shortcut: it is the
+        # one gesture here that is about a different entry, not this map's state.
+        #
+        # Marked with a ring-and-dot rather than an arrow: an arrow would read as
+        # one of the navigation bar's steps - somewhere relative to here - and
+        # this opens the one entry the combo beside it already names.
+        self._tile_binding_jump = QPushButton()
+        self._bake_binding_jump_icon()
+        self._tile_binding_jump.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._tile_binding_jump.setFixedWidth(30)
+        self._tile_binding_jump.clicked.connect(self._jump_to_bound_tiles)
+        row.addWidget(self._tile_binding_jump)
 
         row.addSpacing(12)
         self._tile_base_label = QLabel("Base tile ")
@@ -89,6 +135,98 @@ class TilemapBarMixin:
         )
         self._tile_base.valueChanged.connect(self._on_tile_base_change)
         row.addWidget(self._tile_base)
+
+        row.addSpacing(12)
+        # The colour twin of Base tile, and next to it for that reason: one says
+        # where the cells' tile numbers count from, the other where their palette
+        # rows do. Decimal rather than hex, because a palette row is counted the
+        # way the dock counts them and not addressed.
+        self._row_base_label = QLabel("Base row ")
+        row.addWidget(self._row_base_label)
+        self._row_base = self._spin(-255, 255, 0, self._on_row_base_change)
+        self._row_base.setToolTip(
+            "Which palette row a cell's row 0 draws through.\n"
+            "Starts at what the format says - a sprite's rows\n"
+            "count from CGRAM row 8 - and is yours to change\n"
+            "when the palette you loaded is not the whole of\n"
+            "CGRAM: 0 for the object half on its own, negative\n"
+            "for a palette holding only the upper rows."
+        )
+        row.addWidget(self._row_base)
+
+        row.addSpacing(12)
+        # A **sprite map**'s one piece of geometry that no file records: the pair a
+        # subsprite's size bit chooses between was a PPU register the scene set
+        # (scgcad-formats.md sec 8.2). Two multiples of the tile size rather than a
+        # pick from the console's six pairs - what a subsprite is built from is a
+        # square of *tiles*, so the numbers stay meaningful at any tile size. Hidden
+        # outright on every other tilemap, where there is no size bit to resolve.
+        #
+        # Each spin is captioned rather than the pair being written "1 x 2": these
+        # are the *small* and *large* alternatives one bit picks between, not a
+        # width and a height. A subsprite is always square, so an "x" would name a
+        # shape none of them has.
+        self._size_pair_label = QLabel("Subsprite ")
+        row.addWidget(self._size_pair_label)
+        tip = (
+            "The two sizes this object's subsprites choose\n"
+            "between, each a square that many tiles on a side -\n"
+            "one stores a bit, not a size. No sprite file records\n"
+            "the pair: it was a register the game set per scene,\n"
+            "so the format names the commonest and the rest is\n"
+            "yours."
+        )
+        self._size_small_label = QLabel("Sm ")
+        self._size_small_label.setToolTip(tip)
+        row.addWidget(self._size_small_label)
+        self._size_small = self._spin(1, 8, 1, self._on_size_pair_change)
+        self._size_small.setToolTip(tip)
+        row.addWidget(self._size_small)
+        self._size_large_label = QLabel(" Lg ")
+        self._size_large_label.setToolTip(tip)
+        row.addWidget(self._size_large_label)
+        self._size_large = self._spin(1, 8, 2, self._on_size_pair_change)
+        self._size_large.setToolTip(tip)
+        row.addWidget(self._size_large)
+
+        # In the **same slot** as the subsprite pair, and the two never share it:
+        # one is a sprite map's answer to "how big are these records", the other a
+        # paged map's to "how do these maps go together", and no format asks both.
+        # They belong here for the same reason as everything else on this bar -
+        # neither is in the file, both are the user's and the project's to keep
+        # (``docs/design/tilemap-entry.md`` §6).
+        #
+        # It takes **Cols** over while it applies, which is the one thing not
+        # visible from here: pages are cut at a fixed size, so any other width
+        # splits them in the wrong place. Cols says so itself rather than relying
+        # on this being next to it (:data:`~...interpretation.COLS_ASSEMBLED_TIP`).
+        self._assembly_label = QLabel("Assembly ")
+        self._assembly_label.setToolTip(ASSEMBLY_TIP)
+        row.addWidget(self._assembly_label)
+        self._assembly = CompactComboBox(0.45)
+        self._assembly.setToolTip(ASSEMBLY_TIP)
+        self._assembly.activated.connect(self._on_assembly_change)
+        row.addWidget(self._assembly)
+
+        row.addSpacing(12)
+        # Reads the selected cell and writes it: the one gesture a tilemap has
+        # that no pixel control stands in for. It lives beside Base tile because
+        # both are "which tile", one for the whole map and one for a cell - and
+        # next to a canvas that can now label every cell with the number this
+        # sets (View > Show Tile IDs).
+        self._cell_index_label = QLabel("Cell ")
+        row.addWidget(self._cell_index_label)
+        self._cell_index = self._tilemap_hex_spin(
+            0,
+            0xFFFF,
+            "The tile the selected cells name - set it to point\n"
+            "them somewhere else. On a map that draws through\n"
+            "another tilemap this is which of *its* cells to\n"
+            "stamp, so the tile and its attributes both follow.\n"
+            "Its range is whatever the cell format can hold.",
+        )
+        self._cell_index.valueChanged.connect(self._on_cell_index_change)
+        row.addWidget(self._cell_index)
 
         # The cell codec is not here: it is a *format* picker, so it sits on the
         # codecs toolbar in the place the pixel format has on a pixel entry
@@ -119,13 +257,24 @@ class TilemapBarMixin:
 
     # -- the swap ------------------------------------------------------------
     def _sync_tilemap_bar(self) -> None:
-        """Show whichever bar the current entry has controls for, and fill it."""
-        doc = self._doc
-        is_tilemap = doc is not None and doc.is_tilemap
-        self._nav_stack.setCurrentWidget(
-            self._tilemap_bar if is_tilemap else self._navbar
-        )
-        if is_tilemap:
+        """Show whichever bar the current entry has controls for, and fill it.
+
+        Which bar is the capability's answer, asked here rather than left to the
+        gating pass: the two are pages of one stack, so what a tilemap needs is
+        the *other page* and not a greyed copy of this one — which is all
+        :mod:`~celpix.ui.main_window.capability_sync` can express
+        (:data:`~celpix.ui.main_window.capability_sync._GATED_IN_PLACE`).
+
+        The document has to be there as well as the capability, and the second
+        test is not redundant: a missing-file entry keeps ``current`` on itself
+        with nothing loaded (:meth:`~...session.SessionMixin._show_unavailable`),
+        and so does closing one — this runs from ``_clear_document_view`` for
+        exactly that reason. The capability alone would leave the binding bar on
+        screen describing an entry with nothing behind it.
+        """
+        binding = self._doc is not None and self._can(Capability.TILE_BINDING)
+        self._nav_stack.setCurrentWidget(self._tilemap_bar if binding else self._navbar)
+        if binding:
             self._refresh_tilemap_bar()
 
     def _refresh_tilemap_bar(self) -> None:
@@ -145,7 +294,196 @@ class TilemapBarMixin:
             self._fill_codec_combo(entry)
         with signals_blocked(self._tile_base):
             self._tile_base.setValue(source.base_index)
+        # Cells that are coordinates into another tilemap have no tile numbering
+        # for a base to shift: the map draws through that source and takes its
+        # base with it (``_load_tilemap_entry``). True once a tilemap is bound,
+        # and before that for a format that says its cells are coordinates -
+        # which is the whole of what `indirect` decides. Hidden rather than
+        # disabled, on the rule this bar exists for: a control that means nothing
+        # here is not a feature switched off, and the offset controls were
+        # replaced rather than greyed for exactly that reason.
+        chained = self._draws_through_tilemap(entry) or (
+            not source.is_bound and self._tilemap_is_indirect(entry)
+        )
+        self._tile_base_label.setVisible(not chained)
+        self._tile_base.setVisible(not chained)
+        self._sync_binding_jump(source)
+        self._sync_row_base()
+        self._sync_size_pair()
+        self._sync_cell_index()
         self._tile_binding_note.setText(self._binding_note(entry, source))
+
+    def _bake_binding_jump_icon(self) -> None:
+        """Paint the jump button's ring-and-dot in the theme's button-text color.
+
+        A pixmap, so it is baked and not styled: re-run when the theme or the
+        device scale changes (``_rebake_icons``), which is also why it is a
+        method rather than two lines at the build site.
+        """
+        self._tile_binding_jump.setIcon(
+            source_icon(
+                self.palette().color(QPalette.ColorRole.ButtonText),
+                ratio=self.devicePixelRatioF(),
+            )
+        )
+
+    def _sync_binding_jump(self, source: TileSource) -> None:
+        """Arm the jump button iff the binding names an entry, and say which.
+
+        Gated on there being an entry to show rather than on the binding
+        *resolving*: an unresolved source (a tilemap that draws through a tilemap
+        itself) is exactly the case where the user needs to go and look at it.
+        """
+        bound = self._binding_target(source)
+        self._tile_binding_jump.setEnabled(bound is not None)
+        self._tile_binding_jump.setToolTip(
+            f"Show {bound.name} - the entry these tiles come from\n"
+            "Back (Alt+Left, or the mouse's back button) returns here"
+            if bound is not None
+            else "Show the entry the tiles come from\nNothing is bound yet"
+        )
+
+    def _sync_row_base(self) -> None:
+        """Show the palette row base in force, where the cells have rows at all.
+
+        The value is read off the **document**, which carries the base in force —
+        the format's answer until this control overrode it
+        (:meth:`~...session.SessionMixin._row_base_for`) — so the spin opens on 8
+        for a sprite rather than on a 0 that would misdescribe what is drawn.
+
+        Hidden where the format gives a cell no palette row, on the rule this bar
+        exists for: there is then no row for a base to shift, and the colours are
+        the view's Subpal to choose instead — the two controls are never both
+        live (:meth:`~...rendering.RenderingMixin._sync_subpalette`).
+        """
+        doc = self._doc
+        rows = doc is not None and doc.cells_carry_palette_rows
+        self._row_base_label.setVisible(rows)
+        self._row_base.setVisible(rows)
+        if doc is None:
+            return
+        with signals_blocked(self._row_base):
+            self._row_base.setValue(doc.palette_row_base)
+
+    def _on_row_base_change(self, value: int) -> None:
+        """Redraw through a different palette row base — no re-read.
+
+        Unlike the base *tile*, which goes through the load path with the binding
+        it belongs to, this changes nothing about which bytes are read: the row
+        reaches the screen as an index shift at render time, so the entry keeps
+        the choice and a refresh is the whole of applying it — which is the one
+        in-place apply the binding command has
+        (:meth:`~celpix.ui.undo_commands.TilemapBindingState.rereads_from`).
+        """
+        entry = self._workspace.current
+        doc = self._doc
+        if entry is None or doc is None or not doc.is_tilemap or self._applying_undo:
+            return
+        before = self._tilemap_binding_state(entry)
+        self._push_tilemap_binding(
+            entry,
+            before,
+            replace(before, row_base=value),
+            f"set base row to {value}",
+        )
+
+    def _sync_size_pair(self) -> None:
+        """Show the subsprite sizes in force, on a sprite map and nowhere else.
+
+        Gated on the **format**'s declaration rather than on the loaded document
+        (:meth:`~...session.SessionMixin._tilemap_is_sprite`), so an object with no
+        binding yet still offers it — the pair says how its own records are read,
+        which is true before it has any art to read them against. The value comes
+        off the document, which carries the pair in force.
+        """
+        entry = self._workspace.current
+        sprite = entry is not None and self._tilemap_is_sprite(entry)
+        for widget in (
+            self._size_pair_label,
+            self._size_small_label,
+            self._size_small,
+            self._size_large_label,
+            self._size_large,
+        ):
+            widget.setVisible(sprite)
+        doc = self._doc
+        if not sprite or doc is None:
+            return
+        small, large = doc.sprite_size_pair
+        with signals_blocked(self._size_small), signals_blocked(self._size_large):
+            self._size_small.setValue(small)
+            self._size_large.setValue(large)
+
+    def _on_size_pair_change(self, _value: int) -> None:
+        """Redraw at a different size pair — a re-read, unlike the row base.
+
+        The pair decides how many tiles a subsprite covers and how big its bounding
+        box is, so the *frames* are built differently: it is decoded geometry rather
+        than a render-time shift, and the entry has to load again to pick it up.
+
+        Both spins arrive here, so a gesture on either lands the pair as it now
+        stands rather than only the box that moved — they are two halves of one
+        answer, and the format reads both.
+        """
+        entry = self._workspace.current
+        if entry is None or not self._tilemap_is_sprite(entry) or self._applying_undo:
+            return
+        pair = (self._size_small.value(), self._size_large.value())
+        before = self._tilemap_binding_state(entry)
+        self._push_tilemap_binding(
+            entry,
+            before,
+            replace(before, size_pair=pair),
+            f"set subsprite size to {pair[0]} or {pair[1]} tiles",
+        )
+
+    def _sync_cell_index(self) -> None:
+        """Show the selected cell's reference, ranged to what the format allows.
+
+        Hidden where there is nothing to set — a sprite object, or a format with
+        no index field — on the same rule as Base tile above: a control that means
+        nothing here is not a feature switched off. Disabled rather than hidden
+        with no selection, because then it is the *selection* that is missing and
+        the control is about to become useful again.
+
+        The one control on this bar driven by the **selection** pass as well as by
+        the refresh (:meth:`~...selection.SelectionMixin._sync_selection_actions`),
+        and it has to be: every other control here answers to the entry, which only
+        changes through a render, while this one answers to what is selected — and a
+        selection moves without anything being redrawn.
+
+        Three levels, and they are three genuinely different questions
+        (``docs/design/tilemap-entry.md`` §4). ``STAMP`` is the **kind**'s: only a
+        tilemap has a cell to point somewhere. ``cells_editable`` is this
+        **file**'s: a sprite object's records are subsprites at pixel offsets, so
+        there
+        is no cell under the cursor to set. The limit is the **format**'s: a cell
+        with no index field has no number this could hold. Only the first is the
+        capability table's, which is why this gate stays here rather than moving
+        into the gating pass — the pass runs after this one and its blanket
+        visibility would put the spin back on a sprite
+        (:data:`~celpix.ui.main_window.capability_sync._GATED_IN_PLACE`).
+        """
+        doc = self._doc
+        limit = self._cell_index_limit()
+        usable = (
+            doc is not None
+            and self._can(Capability.STAMP)
+            and doc.cells_editable
+            and limit is not None
+        )
+        self._cell_index_label.setVisible(usable)
+        self._cell_index.setVisible(usable)
+        if not usable:
+            return
+        selected = bool(self._selected_cells())
+        self._cell_index.setEnabled(selected)
+        with signals_blocked(self._cell_index):
+            self._cell_index.setMaximum(limit)
+            self._cell_index.setValue(self._selected_cell_index())
+
+    def _on_cell_index_change(self, value: int) -> None:
+        self._set_cell_index(value)
 
     def _binding_note(self, entry: Entry, source: TileSource) -> str:
         """One line saying where the tiles come from, and how they are read.
@@ -154,23 +492,32 @@ class TilemapBarMixin:
         second opinion about it — so this reports it rather than offering a
         control that would fight the entry's own picker.
         """
-        stamps = self._tilemap_is_indirect(entry)
         if not source.is_bound:
             return (
-                "No panel bound - this layout draws nothing until one is."
-                if stamps
+                "No source bound - this layout draws nothing until a tilemap is."
+                if self._tilemap_is_indirect(entry)
                 else "No tiles bound - every cell draws blank."
             )
-        entries = self._workspace.entries
-        index = source.entry_index
-        if index is None or not 0 <= index < len(entries):
+        bound = self._binding_target(source)
+        if bound is None:
             return "The entry it drew from is no longer open."
-        bound = entries[index]
-        if stamps:
-            # A stamp layout takes the panel's tiles *and* its attributes, so
-            # there is no format of its own to report - the panel's is the one
-            # that matters, and it is on the panel's own bar.
-            return f"Stamped from {bound.name}, view-only."
+        if bound.content_kind is ContentKind.TILEMAP:
+            if not self._can_supply_tiles(entry, bound):
+                # Gated on the same rule the binding itself uses, so the line
+                # cannot claim a resolution that did not happen. Names the broken
+                # link rather than repeating "no source": the binding here is
+                # fine, it is the source's own that has to move.
+                return (
+                    f"{bound.name} draws through a tilemap itself - not resolved."
+                    if self._draws_through_tilemap(bound)
+                    else f"{bound.name} cannot supply tiles - not resolved."
+                )
+            # A chained map takes its source's tiles *and* its attributes, so
+            # there is no pixel format of its own to report - the source's is the
+            # one that matters, and it is on that entry's own bar. What is worth
+            # saying instead is which edit lands where: a cell here restamps, and
+            # the stamp itself is edited on the entry named.
+            return f"Stamped from {bound.name} - edit it there to change the stamps."
         preset = bound.session.pixel_preset_id if bound.session is not None else ""
         try:
             name = self._registry.preset(preset).name
@@ -182,19 +529,23 @@ class TilemapBarMixin:
         combo = self._tile_binding
         combo.clear()
         combo.addItem("(none)", _NONE)
-        # A stamp layout draws through a *panel*, so its candidates are the other
-        # tilemaps; everything else takes pixel entries. Never the map itself,
-        # which would bind an entry to its own bytes.
-        wants = (
-            ContentKind.TILEMAP
-            if self._tilemap_is_indirect(entry)
-            else ContentKind.PIXELS
-        )
-        for index, candidate in enumerate(self._workspace.entries):
-            if candidate is entry or candidate.content_kind is not wants:
-                continue
-            if candidate.kind is EntryKind.BOOKMARK:
-                continue
+        # Any tilemap may draw through another one, so the list is both kinds,
+        # filtered by the single rule that says which entries qualify
+        # (``_can_supply_tiles``). What the format contributes is only the
+        # *order*: a map whose cells are coordinates cannot read a tile bank
+        # sensibly, so its tilemaps come first and the banks stay reachable
+        # instead of being hidden on the strength of a preset flag.
+        candidates = [
+            (index, candidate)
+            for index, candidate in enumerate(self._workspace.entries)
+            if self._can_supply_tiles(entry, candidate)
+        ]
+        if self._tilemap_is_indirect(entry):
+            # Stable, so entry order survives inside each group.
+            candidates.sort(
+                key=lambda pair: pair[1].content_kind is not ContentKind.TILEMAP
+            )
+        for index, candidate in candidates:
             combo.addItem(candidate.name, index)
         combo.addItem("From file...", _FROM_FILE)
         if source.mode is TileMode.ENTRY:
@@ -225,7 +576,7 @@ class TilemapBarMixin:
     # -- edits ---------------------------------------------------------------
     def _on_tile_binding_change(self, _index: int) -> None:
         entry = self._workspace.current
-        if entry is None:
+        if entry is None or self._applying_undo:
             return
         data = self._tile_binding.currentData()
         if data is _FROM_FILE:
@@ -233,13 +584,15 @@ class TilemapBarMixin:
             return
         if data is _NONE or data is None:
             source = TileSource(base_index=self._tile_base.value())
+            text = "unbind tiles"
         else:
             source = TileSource(
                 mode=TileMode.ENTRY,
                 entry_index=int(data),
                 base_index=self._tile_base.value(),
             )
-        self._rebind_tiles(entry, source)
+            text = f"bind tiles to {self._tile_binding.currentText()}"
+        self._rebind_tiles(entry, source, text)
 
     def _bind_tiles_from_file(self, entry: Entry) -> None:
         """Open a file of tiles as an entry, then bind this map to it.
@@ -253,23 +606,38 @@ class TilemapBarMixin:
         Opening activates the new entry (every file open does), so the view is
         put back on the map afterwards: the user asked for tiles *for this map*,
         not to go and look at them.
+
+        **Two undo steps, not one.** Opening the file is its own
+        ``AddEntryCommand`` and the bind is a second step on top of it — the same
+        shape registering a palette file and then applying it already has. One
+        Ctrl+Z therefore leaves the file open and unbinds, which is the useful
+        half to take back; a second closes it.
+
+        The prompt names what this entry is most likely after — a stamp layout
+        wants a panel, and asking it for "tiles" would name the thing its
+        coordinates cannot read. Only the wording follows the format, though: what
+        the dialog *accepts* is whatever a binding accepts (``_can_supply_tiles``).
         """
-        path, _ = QFileDialog.getOpenFileName(self, "Tiles for this tilemap")
+        title = (
+            "Panel for this stamp layout"
+            if self._tilemap_is_indirect(entry)
+            else "Tiles for this tilemap"
+        )
+        # Snapshotted before the open, which activates another entry and can
+        # re-read this one: the step being pushed is the *bind*, so its starting
+        # point is the binding as the user found it.
+        before = self._tilemap_binding_state(entry)
+        path, _ = QFileDialog.getOpenFileName(self, title)
         if not path:
             self._refresh_tilemap_bar()  # cancelled: put the combo back
             return
         self._load_pixel(path)
         bound = self._workspace.find_file(path)
-        wants = (
-            ContentKind.TILEMAP
-            if self._tilemap_is_indirect(entry)
-            else ContentKind.PIXELS
-        )
-        if bound is None or bound.content_kind is not wants:
-            # A file of the wrong kind cannot supply what this map needs — tiles
-            # for an ordinary tilemap, a panel for a stamp layout. It is still
-            # open, since the user asked for it, but the binding is left alone
-            # rather than pointed somewhere useless.
+        if bound is None or not self._can_supply_tiles(entry, bound):
+            # Nothing this map can draw through: not a graphics file, or a tilemap
+            # that draws through a tilemap itself and so has no tiles to lend. It
+            # stays open, since the user asked for it, but the binding is left
+            # alone rather than pointed somewhere useless.
             self._activate_entry(entry)
             self._refresh_tilemap_bar()
             return
@@ -278,16 +646,44 @@ class TilemapBarMixin:
             entry_index=self._workspace.entries.index(bound),
             base_index=self._tile_base.value(),
         )
-        entry.tile_source = source
+        entry.tile_source = source  # before the switch back, so the reload reads it
         self._activate_entry(entry)
-        self._rebind_tiles(entry, source)
+        self._rebind_tiles(entry, source, f"bind tiles to {bound.name}", before=before)
 
-    def _on_tile_base_change(self, value: int) -> None:
+    def _jump_to_bound_tiles(self) -> None:
+        """Show the entry this map draws its tiles from - the button beside the combo.
+
+        Navigation and nothing else: the bound entry is already a first-class
+        entry with a format, a view and a session of its own, so there is nothing
+        to reconfigure on arrival (unlike Jump to Source, which has to re-read a
+        parent under its slice's settings) and nothing to push onto the undo
+        stack. The way back is the window's own Back, which the switch has just
+        recorded (:mod:`celpix.ui.main_window.history`).
+
+        Read off the entry's live binding rather than off the combo: the button is
+        armed from the same binding the note describes, and the two must not be
+        able to disagree about where "there" is.
+        """
         entry = self._workspace.current
         if entry is None:
             return
+        bound = self._binding_target(entry.tile_source or TileSource())
+        if bound is None or bound is entry:
+            return
+        self._activate_entry(bound)
+        if self._workspace.current is bound:
+            self.statusBar().showMessage(
+                f"Showing {bound.name} - Back returns to {entry.name}"
+            )
+
+    def _on_tile_base_change(self, value: int) -> None:
+        entry = self._workspace.current
+        if entry is None or self._applying_undo:
+            return
         source = entry.tile_source or TileSource()
-        self._rebind_tiles(entry, _replaced(source, base_index=value))
+        self._rebind_tiles(
+            entry, replace(source, base_index=value), f"set base tile to ${value:X}"
+        )
 
     def _on_tilemap_preset_change(self, _index: int) -> None:
         """A different cell format for this entry — re-read it under the new one.
@@ -297,40 +693,254 @@ class TilemapBarMixin:
         path is the only thing that knows how to rebuild that.
         """
         entry = self._workspace.current
-        if entry is None or entry.content_kind is not ContentKind.TILEMAP:
+        if (
+            entry is None
+            or entry.content_kind is not ContentKind.TILEMAP
+            or self._applying_undo
+        ):
             return
-        entry.tilemap_preset_id = str(self._tilemap_preset.currentData())
-        self._reload_tilemap(entry)
+        before = self._tilemap_binding_state(entry)
+        self._push_tilemap_binding(
+            entry,
+            before,
+            replace(before, preset_id=str(self._tilemap_preset.currentData())),
+            f"switch cell format to {self._tilemap_preset.currentText()}",
+        )
 
-    def _rebind_tiles(self, entry: Entry, source: TileSource) -> None:
-        """Point ``entry`` at ``source`` and re-read it.
+    def _rebind_tiles(
+        self,
+        entry: Entry,
+        source: TileSource,
+        text: str = "bind tiles",
+        *,
+        before: TilemapBindingState | None = None,
+    ) -> None:
+        """Point ``entry`` at ``source`` and re-read it, as one undoable step.
 
-        The base index rides on the document as well as the entry, so a change
-        to it takes effect without a reload — but a change of *source* means
-        different bytes, and those only arrive through the load path.
+        Through the load path whichever field moved. A change of *source* has to
+        go that way — different bytes arrive no other route — and the base index
+        follows it rather than being patched onto the document in place, so there
+        is one way a binding takes effect instead of two that could disagree
+        about what else a rebind settles (:meth:`_apply_tilemap_binding`).
+
+        ``before`` overrides the snapshot this would take for itself, for the one
+        caller that has already pointed the entry at the source so the switch
+        back to it reads the right bytes (:meth:`_bind_tiles_from_file`).
         """
-        entry.tile_source = source
-        self._reload_tilemap(entry)
+        if before is None:
+            before = self._tilemap_binding_state(entry)
+        after = self._seeded_palette(entry, source, replace(before, tile_source=source))
+        self._push_tilemap_binding(entry, before, after, text)
 
-    def _reload_tilemap(self, entry: Entry) -> None:
-        """Re-read ``entry`` under its current binding and put it back on screen.
+    def _seeded_palette(
+        self, entry: Entry, source: TileSource, state: TilemapBindingState
+    ) -> TilemapBindingState:
+        """``state`` carrying the colours its tiles are read in, where it seeds.
+
+        The rule a new slice already follows: an entry is *seeded* from a related
+        one at creation and owns its palette from that moment on
+        (``docs/design/tilemap-entry.md`` §3). A tilemap's related entry is the
+        one it binds to, and the moment is the bind — the tiles were authored
+        against the bank's palette, so arriving on the built-in default means
+        every freshly bound map opens in colours nothing in the project chose.
+
+        Seeded **only while the map is still on the default palette**, which is
+        what keeps this from being a live read-through. Re-pointing the tile
+        source later does not re-seed: by then the palette is the tilemap's own
+        state, and replacing it would discard work done on it.
+
+        A bank that is itself on the default palette has nothing to give and is
+        left alone rather than copied — the two look identical on screen, and
+        copying would arm the guard against a later bind that *does* have
+        colours to offer.
+
+        Computed rather than applied, so the seed becomes part of the step the
+        bind pushes and comes back off with it: what lands where is
+        :meth:`_apply_tilemap_binding`'s to say, in both directions.
+        """
+        session = entry.session
+        if session is None or session.palette_mode is not PaletteMode.DEFAULT:
+            return state
+        # A palette the project restored but the entry has not loaded yet is
+        # still the entry's own answer: pending, not absent.
+        if entry.pending_palette is not None or entry.missing_palette is not None:
+            return state
+        bound = self._binding_target(source)
+        if bound is None or bound is entry or bound.session is None:
+            return state
+        seed = palette_source_for(bound)
+        if seed is None:
+            return state
+        return replace(
+            state,
+            palette_mode=bound.session.palette_mode,
+            palette_preset_id=bound.session.palette_preset_id,
+            # Consumed by the reload's _apply_restored_state — the same one-shot
+            # hand-off a project-restored palette arrives through, so an Offset
+            # seed resolves against the newly bound tiles, the file it came from.
+            pending_palette=seed,
+        )
+
+    # -- one step, one apply -------------------------------------------------
+    def _tilemap_binding_state(self, entry: Entry) -> TilemapBindingState:
+        """``entry``'s binding as it stands — the undo *before* of any gesture.
+
+        Read off the **entry** and its session rather than off the loaded
+        document, because that is where the binding lives: the document carries
+        the bases *in force*, which is the format's answer where the entry states
+        none, and restoring that number would pin a value the user never chose
+        (:meth:`~...session.SessionMixin._row_base_for`).
+        """
+        session = entry.session
+        return TilemapBindingState(
+            tile_source=entry.tile_source,
+            preset_id=entry.tilemap_preset_id,
+            row_base=entry.palette_row_base,
+            size_pair=entry.sprite_size_pair,
+            palette_mode=(
+                session.palette_mode if session is not None else PaletteMode.DEFAULT
+            ),
+            palette_preset_id=session.palette_preset_id if session is not None else "",
+            pending_palette=entry.pending_palette,
+        )
+
+    def _push_tilemap_binding(
+        self,
+        entry: Entry,
+        before: TilemapBindingState,
+        after: TilemapBindingState,
+        text: str,
+    ) -> None:
+        """Land ``after`` as one undoable step, unless it changes nothing.
+
+        The no-change guard is what keeps a spin re-entered at the value it
+        already held — or a combo put back on the entry it was already bound to
+        — from costing a step that would appear to do nothing when it came back.
+        """
+        if self._applying_undo or after == before:
+            return
+        self._push_command(TilemapBindingCommand(self, entry, text, before, after))
+
+    def _apply_tilemap_binding(
+        self, entry: Entry, state: TilemapBindingState, previously: TilemapBindingState
+    ) -> bool:
+        """Land ``state`` on ``entry``; False when the re-read it needed failed.
+
+        The single application path, so a gesture, an undo and a redo settle a
+        binding identically. Which of the two ways it lands is the state's own
+        answer (:meth:`~celpix.ui.undo_commands.TilemapBindingState.rereads_from`):
+        a palette row base alone is patched onto the document already loaded,
+        everything else drops it and reads the entry again.
+
+        ``previously`` is the *other end of the step*, not what the entry holds
+        now, and the difference is load-bearing: one push site points the entry
+        at its new source before this runs, so reading the entry here would say
+        the source had not moved and land a bind in place with the tiles unread.
+
+        **All of it or none of it.** A binding the entry cannot be read under —
+        a cell format its bytes do not fit — goes straight back, because the
+        alternative is a bar describing a read that did not happen: the cell
+        format picker on one format and the canvas still drawn in another. There
+        is nothing to undo in that case and the caller says so with the ``False``
+        (:class:`~celpix.ui.undo_commands.TilemapBindingCommand`).
+
+        The widgets need nothing here — every route ends in a refresh, and the
+        bar is filled from the render cycle (:meth:`_sync_tilemap_bar`), so the
+        spins and the combo follow whatever has just landed.
+        """
+        self._write_tilemap_binding(entry, state, previously)
+        doc = entry.doc
+        if doc is not None and not state.rereads_from(previously):
+            # A row base with a value of its own, and nothing else moved: the
+            # document holds the base in force and the render reads it there, so
+            # this is the whole of applying it.
+            doc.palette_row_base = state.row_base
+            self._refresh_view()  # which also re-marks the project modified
+            return True
+        if self._reload_tilemap(entry):
+            return True
+        # The document the re-read dropped is back (:meth:`_reload_tilemap`), so
+        # putting the fields back is the whole of undoing this — and it must not
+        # read again, or a binding that fails would fail twice on the way out.
+        self._write_tilemap_binding(entry, previously, state)
+        if self._doc is not None:
+            self._refresh_view()
+        return False
+
+    def _write_tilemap_binding(
+        self, entry: Entry, state: TilemapBindingState, previously: TilemapBindingState
+    ) -> None:
+        """Put ``state``'s fields on ``entry``, and nothing else.
+
+        No read and no refresh: what a change of these costs is the caller's to
+        decide, and the two callers want opposite things — one is applying a
+        binding, the other taking a failed one back off.
+        """
+        entry.tile_source = state.tile_source
+        entry.tilemap_preset_id = state.preset_id
+        entry.palette_row_base = state.row_base
+        entry.sprite_size_pair = state.size_pair
+        entry.pending_palette = state.pending_palette
+        session = entry.session
+        if session is None:
+            return
+        session.palette_mode = state.palette_mode
+        session.palette_preset_id = state.palette_preset_id
+        # The map is the entry on screen, and a reload does not restore a session
+        # — so a seeded (or un-seeded) mode has to move with it, or the dock would
+        # read Default over the seeded colours and the next entry switch would
+        # capture that back over the seed.
+        if (
+            state.palette_mode is not previously.palette_mode
+            and entry is self._workspace.current
+        ):
+            self._set_palette_mode(state.palette_mode)
+
+    def _binding_target(self, source: TileSource) -> Entry | None:
+        """The open entry ``source`` names, or None when it names nothing usable."""
+        if source.mode is not TileMode.ENTRY:
+            return None
+        entries = self._workspace.entries
+        index = source.entry_index
+        if index is None or not 0 <= index < len(entries):
+            return None
+        return entries[index]
+
+    def _reload_tilemap(self, entry: Entry) -> bool:
+        """Re-read ``entry`` under its current binding; False if it could not be.
 
         The document is dropped rather than patched: which bytes there are comes
         out of Read, and a binding change is a change of *which file* — there is
         nothing in the old document worth carrying over. A tilemap holds no
         unsaved pixel edits to lose, since its pixel half is another entry's.
+
+        The **palette is the exception**, and has to be handed across explicitly.
+        A Custom palette lives in the document and nowhere else, so dropping the
+        document drops the colours with it — nudging the base tile by one would
+        cost the user their palette. Carried the way a project restore and a new
+        slice already carry one, through the entry's pending source. An
+        unconsumed pending palette is left alone: it is a seed, or a restore,
+        that is already the answer and has not reached a document yet.
+
+        **A failed read puts the old document back.** Dropping it is how a
+        re-read starts, but a drop that is never replaced leaves the entry with
+        no document while the window is still showing the one it had: from then
+        on the answer to "what is this entry" depends on whether you ask the
+        entry or the window, a save writes through a document the entry has
+        disowned, and switching away captures nothing and switching back reports
+        the file as missing. So the old document is held until the new one is in
+        hand, and the entry ends up either re-read or exactly as it was.
         """
-        entry.doc = None
+        pending = entry.pending_palette
+        if pending is None:
+            entry.pending_palette = palette_source_for(entry)
+        previous, entry.doc = entry.doc, None
         if not self._load_entry(entry):
-            return
+            # The seed goes back with it: it described the read that did not
+            # happen, and the document being restored has its palette already.
+            entry.doc, entry.pending_palette = previous, pending
+            return False
         self._doc = entry.doc
         self._refresh_view()
         self._refresh_project_modified()
-
-
-def _replaced(source: TileSource, **changes) -> TileSource:
-    """``source`` with ``changes`` applied — ``dataclasses.replace`` by another
-    name, kept local so the call sites read as edits to a binding."""
-    from dataclasses import replace
-
-    return replace(source, **changes)
+        return True

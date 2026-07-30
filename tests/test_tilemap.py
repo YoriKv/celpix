@@ -13,7 +13,11 @@ from dataclasses import replace
 import pytest
 
 from celpix.core.capabilities import CAPABILITIES, Capability, ContentKind, supports
-from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
+from celpix.core.context import (
+    KEY_SOURCE_OFFSET,
+    KEY_TILEMAP_PAGE_ROWS,
+    PipelineContext,
+)
 from celpix.core.errors import Stage
 from celpix.core.tilemap import Cell, CellGrid
 from celpix.pipeline.pathway import PathwayConfig
@@ -406,6 +410,133 @@ def test_a_metatile_cell_becomes_a_block_of_four() -> None:
     assert doc.cell_tile_indices(Cell(index=0, flip_v=True)) == [16, 17, 0, 1]
 
 
+def test_a_metatile_at_the_top_of_the_index_field_wraps() -> None:
+    """A multi-tile cell's neighbours are found by adding to the format's index
+    field, so the addition wraps inside it: the SNES BG character number is 10
+    bits, and the 16x16 cell at 0x3FF draws 0x3FF, 0x000, 0x00F, 0x010 the way the
+    PPU's adder does. Verified against shiny-egg's `renderBgLayer`, which masks
+    the same field. Without the mask the run walks past the end of the bank and
+    three quarters of the cell renders blank.
+    """
+    from celpix.core.document import Document
+
+    def doc(mask: int, base: int = 0) -> Document:
+        return Document(
+            pixel_data=bytes(32 * 1024),
+            bytes_per_tile=32,
+            tile_width=8,
+            tile_height=8,
+            palette=None,
+            pixel_config=PathwayConfig(
+                source=FileRef("x"), interpret_preset_id="preset.pixel.snes-4bpp"
+            ),
+            palette_config=None,
+            cells=[Cell(index=0x3FF)],
+            cell_tiles=(2, 2),
+            cell_row_stride=16,
+            index_mask=mask,
+            tile_base_index=base,
+        )
+
+    top = Cell(index=0x3FF)
+    assert doc(0x3FF).cell_tile_indices(top) == [0x3FF, 0x000, 0x00F, 0x010]
+    # A flip reverses the order, and the wrap still applies to each member.
+    assert doc(0x3FF).cell_tile_indices(Cell(index=0x3FF, flip_h=True)) == [
+        0x000,
+        0x3FF,
+        0x010,
+        0x00F,
+    ]
+    # The base index is the bound source's, not the format's, so it is added
+    # *after* the wrap — masking it in would fold the binding into the hardware
+    # field and move a legitimately-based map.
+    assert doc(0x3FF, base=64).cell_tile_indices(top) == [0x43F, 0x40, 0x4F, 0x50]
+    # A format that does not bound its indices keeps the plain run, so nothing
+    # that has no field to wrap inside changes.
+    assert doc(0).cell_tile_indices(top) == [0x3FF, 0x400, 0x40F, 0x410]
+
+
+def test_the_wrap_comes_from_the_field_table_not_a_second_parameter() -> None:
+    """The mask is the ``index`` field's own width, read off the one place the
+    layout is stated. A parallel ``index_bits`` parameter would be a second place
+    to disagree with it — which is the mistake ``index_limit`` exists to avoid."""
+    from celpix.pipeline.pipeline import load_tilemap_data
+
+    registry = default_registry()
+    for preset_id, want in (
+        ("preset.tilemap.snes-bg", 0x3FF),
+        ("preset.tilemap.snes-bg-swapped", 0x3FF),
+        ("preset.tilemap.scgcad-panel", 0x3FF),
+        ("preset.tilemap.gb-bg", 0xFF),
+    ):
+        engine, preset = registry.engine_for(preset_id)
+        assert engine.index_limit(preset.params) == want
+
+    # And the load carries it onto the document, so the renderer has it without
+    # asking the registry again.
+    loaded = load_tilemap_data(
+        PathwayConfig(
+            source=FileRef("", data=bytes(0x40)),
+            interpret_preset_id="preset.tilemap.snes-bg",
+        ),
+        registry,
+    )
+    assert loaded.index_mask == 0x3FF
+
+
+def test_a_sprite_palette_row_counts_from_the_upper_half() -> None:
+    """A sprite's 3-bit palette field selects CGRAM rows 8-15, not 0-7: the console
+    keeps OBJ palettes in the upper half (snes-hardware-notes.md §6). So the format
+    states where its rows count from and the renderer adds it — the colour twin of
+    the tile base stating where its tiles count from. Without it an object renders
+    through the background's sixteen colours, which is not a wrong shade but the
+    wrong palette entirely.
+    """
+    from celpix.core.document import Document
+    from celpix.pipeline.pipeline import tilemap_tiles
+
+    registry = default_registry()
+
+    def doc(row_base: int, rows: tuple[int, ...] = (0,)) -> Document:
+        return Document(
+            pixel_data=bytes(32),  # one blank 4bpp tile
+            bytes_per_tile=32,
+            tile_width=8,
+            tile_height=8,
+            palette=None,
+            pixel_config=PathwayConfig(
+                source=FileRef("x"), interpret_preset_id="preset.pixel.snes-4bpp"
+            ),
+            palette_config=None,
+            cells=[Cell(index=0, palette_row=row) for row in rows],
+            palette_row_base=row_base,
+        )
+
+    # The row reaches the screen as a shift on the indices, so a cell on row 0 of a
+    # base-8 format lands on palette entry 8 * 16.
+    plain, _ = tilemap_tiles(doc(0), registry, columns=1)
+    shifted, _ = tilemap_tiles(doc(8), registry, columns=1)
+    assert plain[0].get(0, 0) == 0
+    assert shifted[0].get(0, 0) == 8 * 16
+
+    # The base is signed, because the palette loaded need not be the whole of
+    # CGRAM: a file holding only rows 8-15, as 0-7, counts *down*. A row the base
+    # pushes below 0 draws through row 0 — the shift is a byte translation, and a
+    # negative one has no map to build.
+    under, _ = tilemap_tiles(doc(-1, rows=(0, 2)), registry, columns=1)
+    assert [tile.get(0, 0) for tile in under] == [0, 1 * 16]
+
+
+def test_the_sprite_presets_declare_where_their_rows_start() -> None:
+    """Per format, because it is a fact about that cell's palette field: the two
+    subsprite formats count from row 8, and every background format from 0."""
+    registry = default_registry()
+    for preset_id in ("preset.tilemap.scgcad-object", "preset.tilemap.scgcad-obz"):
+        assert registry.preset(preset_id).params.get("palette_row_base") == 8
+    for preset_id in ("preset.tilemap.snes-bg", "preset.tilemap.scgcad-panel"):
+        assert registry.preset(preset_id).params.get("palette_row_base", 0) == 0
+
+
 def test_a_cell_naming_a_tile_the_source_lacks_renders_blank() -> None:
     """Tilemaps are routinely authored against a bank loaded from elsewhere, and
     half a picture beats an error."""
@@ -538,7 +669,7 @@ OBJECT = "preset.tilemap.scgcad-object"
 def _record(
     *, x=0, y=0, tile=0, palette=0, large=False, drawn=True, group=0, order="big"
 ) -> bytes:
-    """One 6-byte sprite part record, built the way the file stores it."""
+    """One 6-byte sprite subsprite record, built the way the file stores it."""
     attr = (tile & 0x1FF) | ((palette & 0x7) << 9)
     head = bytes(
         ((0x80 if drawn else 0) | (1 if large else 0), group, y & 0xFF, x & 0xFF)
@@ -557,7 +688,7 @@ def _obj_bytes(records: bytes, *, marker: bytes = b"Ver1.23 901226  ") -> bytes:
     return bytes(out)
 
 
-def _sprite_doc(cells, frames, size_pair=(8, 16), bank=None):
+def _sprite_doc(cells, frames, size_pair=(1, 2), bank=None):
     """A sprite document bound to ``bank`` (64 blank 4bpp tiles by default)."""
     from celpix.core.document import Document
 
@@ -578,7 +709,9 @@ def _sprite_doc(cells, frames, size_pair=(8, 16), bank=None):
     )
 
 
-def test_a_part_record_round_trips_including_what_celpix_has_no_field_for() -> None:
+def test_a_subsprite_record_round_trips_including_what_celpix_has_no_field_for() -> (
+    None
+):
     """Position, size bit and the tool's group byte have no home in a Cell, so
     they ride in ``flags``. Dropping them would zero a sprite's whole geometry on
     the next save."""
@@ -613,7 +746,7 @@ def test_the_later_build_stores_its_attribute_word_the_other_way_round() -> None
 
 
 def test_undrawn_slots_are_dropped_and_trailing_empty_frames_with_them() -> None:
-    """A file has room for a fixed 32 frames of 64 parts and the artist filled
+    """A file has room for a fixed 32 frames of 64 subsprites and the artist filled
     almost none of it — 94% of the corpus's slots are empty — so a view that drew
     every slot would bury the sprite at the top of a blank sheet."""
     from celpix.core.sprite import drawn_frames
@@ -621,7 +754,7 @@ def test_undrawn_slots_are_dropped_and_trailing_empty_frames_with_them() -> None
 
     registry = default_registry()
     params = dict(_params(registry, OBJECT))
-    params["parts_per_frame"] = 2
+    params["subsprites_per_frame"] = 2
     cells = ObjectCodec().decode(
         _record(tile=1) + _record(drawn=False) + _record(drawn=False) * 2,
         params,
@@ -632,20 +765,26 @@ def test_undrawn_slots_are_dropped_and_trailing_empty_frames_with_them() -> None
     assert len(drawn_frames(frames)) == 1
 
 
-def test_a_flipped_part_reverses_its_tile_order_as_well_as_each_tile() -> None:
-    """A mirrored 16x16 part shows its right-hand tile on the left, mirrored.
+def test_a_flipped_subsprite_reverses_its_tile_order_as_well_as_each_tile() -> None:
+    """A mirrored 16x16 subsprite shows its right-hand tile on the left, mirrored.
     Both halves are needed and neither is sufficient."""
-    from celpix.core.sprite import Part
+    from celpix.core.sprite import Subsprite
 
-    pair = (8, 16)
-    assert Part(index=0x20, large=True).tile_indices(pair) == [0x20, 0x21, 0x30, 0x31]
-    assert Part(index=0x20, large=True, flip_h=True).tile_indices(pair) == [
+    # (small, large) as multiples of the tile size, so `large` is a 2x2 of tiles.
+    pair = (1, 2)
+    assert Subsprite(index=0x20, large=True).tile_indices(pair) == [
+        0x20,
+        0x21,
+        0x30,
+        0x31,
+    ]
+    assert Subsprite(index=0x20, large=True, flip_h=True).tile_indices(pair) == [
         0x21,
         0x20,
         0x31,
         0x30,
     ]
-    assert Part(index=0x20, large=True, flip_v=True).tile_indices(pair) == [
+    assert Subsprite(index=0x20, large=True, flip_v=True).tile_indices(pair) == [
         0x30,
         0x31,
         0x20,
@@ -653,40 +792,131 @@ def test_a_flipped_part_reverses_its_tile_order_as_well_as_each_tile() -> None:
     ]
 
 
-def test_a_sprite_draws_its_parts_at_pixel_offsets_and_keeps_index_0_clear() -> None:
+def test_a_sprite_draws_its_subsprites_at_pixel_offsets_and_keeps_index_0_clear() -> (
+    None
+):
     """The whole reason a sprite object is not a cell grid: 66% of the corpus's Y
-    offsets are not multiples of 8, so a part lands between tiles. Index 0 has to
-    stay transparent too — parts overlap, and an opaque one would erase whatever
+    offsets are not multiples of 8, so one lands between tiles. Index 0 has to
+    stay transparent too — subsprites overlap, and an opaque one would erase whatever
     it was meant to sit in front of."""
-    from celpix.core.sprite import Part
+    from celpix.core.sprite import Subsprite
     from celpix.pipeline.pipeline import sprite_image
 
     # 4bpp planar: tile 1 is every bitplane set (index 15 throughout); tile 2 has
     # its left four pixels clear on every plane and its right four set.
     bank = bytes(32) + bytes([0xFF]) * 32 + bytes([0x0F]) * 32
-    front = Part(x=0, y=0, index=1)
-    behind = Part(x=3, y=5, index=2)
+    front = Subsprite(x=0, y=0, index=1)
+    behind = Subsprite(x=3, y=5, index=2)
     doc = _sprite_doc([], [(front, behind)], bank=bank)
-    image, drawn = sprite_image(doc, default_registry(), columns=1)
+    image, sheet = sprite_image(doc, default_registry(), columns=1)
 
-    assert drawn == 2
     assert (image.width, image.height) == (16, 16)  # the box, rounded out to tiles
-    assert image.get(0, 0) == 15  # the front part, at the origin
+    # The canvas grid the selection has to agree with: one frame, 2x2 tiles of it.
+    assert (sheet.frames, sheet.frame, sheet.slots) == (1, (2, 2), 4)
+    assert image.get(0, 0) == 15  # the front subsprite, at the origin
     assert image.get(10, 12) == 15  # the one behind it, at its odd offset
     assert image.get(4, 12) == 0  # ...and its transparent half stayed clear
 
 
 def test_a_sprite_object_is_view_only() -> None:
-    """A canvas position resolves to a *part* through an overlap order rather
+    """A canvas position resolves to a *subsprite* through an overlap order rather
     than to a cell through a grid, so what an edit would change is not settled
     (``docs/design/tilemap-entry.md`` §9)."""
-    from celpix.core.sprite import Part
+    from celpix.core.sprite import Subsprite
 
-    doc = _sprite_doc([Cell(index=1)], [(Part(index=1),)])
+    doc = _sprite_doc([Cell(index=1)], [(Subsprite(index=1),)])
     assert doc.is_sprite and doc.is_tilemap
     assert not doc.cells_editable
     # An ordinary tilemap is the control: same class, same cells, editable.
     assert _sprite_doc([Cell(index=1)], None).cells_editable
+
+
+OBZ = "preset.tilemap.scgcad-obz"
+
+
+def _obz_record(
+    *, x=0, y=0, tile=0, palette=0, priority=0, large=False, drawn=True, group=0
+) -> bytes:
+    """One 6-byte transfer-object subsprite record, as the file stores it."""
+    return bytes(
+        (
+            (0x80 if drawn else 0) | (0x40 if large else 0) | ((tile >> 8) & 0x0F),
+            tile & 0xFF,
+            x & 0xFF,
+            y & 0xFF,
+            ((priority & 0x3) << 4) | ((palette & 0x7) << 1),
+            group,
+        )
+    )
+
+
+def test_a_transfer_record_puts_every_field_somewhere_else() -> None:
+    """The reason it is a second engine and not a parameter: the character number
+    is 12 bits split across two bytes where a sprite object's is 9 inside a
+    console attribute word, and X and Y are the other way round. Read with the
+    object codec's layout, every one of these comes out different."""
+    from celpix.plugins.builtins.object_codec import ObzCodec
+
+    registry = default_registry()
+    codec, params = ObzCodec(), _params(registry, OBZ)
+    raw = _obz_record(x=-8, y=100, tile=0x9EE, palette=5, large=True, group=3)
+    ctx = PipelineContext()
+    (cell,) = codec.decode(raw, params, ctx)
+    assert (cell.index, cell.palette_row) == (0x9EE, 5)  # 12-bit, past a sprite's 9
+    (sub,) = codec.frames([cell], params)[0]
+    assert (sub.x, sub.y, sub.group, sub.large) == (-8, 100, 3, True)
+    assert codec.encode([cell], params, ctx) == raw
+
+
+def test_a_transfer_record_carries_the_attribute_byte_bit_the_tool_never_uses() -> None:
+    """An on-console sprite word keeps a character bit in the attribute byte's
+    bit 0; this record's character number is already 12 bits wide, so it is dead
+    here — set in none of the corpus's 606,208 slots. Carried anyway: assuming a
+    bit is zero is how a write corrupts the one file that disagrees."""
+    from celpix.plugins.builtins.object_codec import ObzCodec
+
+    codec, params = ObzCodec(), _params(default_registry(), OBZ)
+    raw = bytes.fromhex("80 01 00 00 0b 00".replace(" ", ""))
+    ctx = PipelineContext()
+    assert codec.encode(codec.decode(raw, params, ctx), params, ctx) == raw
+
+
+def test_the_two_signature_less_members_are_claimed_by_length_alone(tmp_path) -> None:
+    """A transfer object and a converted screen were written to be consumed, not
+    reopened, so neither carries the family signature and detection has only the
+    extension and the length. The length is what keeps that honest."""
+    from celpix.plugins.builtins.scgcad import OBZ_SIZE, STD_SIZE
+
+    registry = default_registry()
+    for name, size, want in (
+        ("baby-mario.OBZ", OBZ_SIZE, "container.scgcad-obz"),
+        ("id0.STD", STD_SIZE, "container.scgcad-std"),
+        ("baby-mario.OBZ", OBZ_SIZE + 1, "container.raw-file"),
+    ):
+        path = tmp_path / name
+        path.write_bytes(bytes(size))
+        assert detect_container(registry, str(path)) == want, (name, size)
+
+
+def test_a_converted_screen_is_64_wide_and_has_lost_its_attributes() -> None:
+    """The converter kept the low byte of each screen cell and dropped the high
+    one, then laid the four blocks out 2x2. So the file is a 64x64 grid of bare
+    character numbers: nothing but an index survives to be read back."""
+    from celpix.core.context import KEY_TILEMAP_COLUMNS
+    from celpix.plugins.builtins.scgcad import STD_SIZE, StdContainer
+
+    registry = default_registry()
+    body = bytearray(STD_SIZE)
+    body[:3] = b"\x20\x21\xff"
+    ctx = PipelineContext()
+    payload = StdContainer().read(ReadSource(data=bytes(body)), ctx)
+    assert ctx.get(KEY_TILEMAP_COLUMNS) == 64
+    cells = TilemapCodec().decode(
+        payload, _params(registry, "preset.tilemap.scgcad-std"), ctx
+    )
+    assert len(cells) == 64 * 64
+    assert [cell.index for cell in cells[:3]] == [0x20, 0x21, 0xFF]
+    assert not any(cell.flags or cell.palette_row for cell in cells)
 
 
 def test_an_unknown_content_kind_reads_as_pixels() -> None:
@@ -738,6 +968,59 @@ def test_saving_a_tilemap_writes_its_cells_through_its_own_container(tmp_path) -
     assert written[0x2000:] == _scr_bytes()[0x2000:]  # header + trailer intact
     again = load_tilemap_data(cfg, registry)
     assert again.cells[0] == Cell(index=0x2AB, palette_row=5, priority=1, flip_v=True)
+
+
+def test_an_assembled_map_is_laid_out_at_its_own_width(tmp_path) -> None:
+    """The width and the page placement are one answer, so the layout takes both
+    from the document and a caller cannot supply half of it.
+
+    Asked for one page's width while placing two pages across, the picture puts
+    page 1's first row where page 0's second belongs and the pages interleave —
+    at exactly the right cell count, so nothing downstream notices. A render can
+    be reached without going through the view at all (a bulk PNG export of
+    entries that were loaded and never shown), so agreeing by way of a sync pass
+    is not enough (``docs/design/tilemap-entry.md`` §6).
+    """
+    from celpix.core.document import Document
+    from celpix.pipeline.pipeline import load_tilemap_data, tilemap_tiles
+
+    registry = default_registry()
+    scr = tmp_path / "s.SCR"
+    scr.write_bytes(_scr_bytes(b"\x00" * 8))
+    cfg = PathwayConfig(
+        source=FileRef(str(scr)),
+        interpret_preset_id=SNES_BG,
+        container_id="container.scgcad-scr",
+    )
+    loaded = load_tilemap_data(cfg, registry)
+    doc = Document(
+        pixel_data=bytes(32 * 8),
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id="preset.pixel.snes-4bpp"
+        ),
+        palette_config=PathwayConfig(source=FileRef(""), interpret_preset_id=""),
+        cells=loaded.cells,
+        tilemap_config=cfg,
+        tilemap_ctx=loaded.ctx,
+    )
+    assert doc.pages == 4  # published by the container, not guessed here
+    assert doc.assembled_columns == 64  # two 32-cell pages across, by default
+
+    # A width of one page, which is what a project written before assemblies
+    # existed would have stored for this entry.
+    _tiles, layout = tilemap_tiles(doc, registry, 32)
+    assert layout.columns == 64
+
+    # And nothing is fixed on a map with no pages, whose width really is a
+    # preference: a panel is one sheet, so what is asked for is what is drawn.
+    doc.tilemap_ctx.set(KEY_TILEMAP_PAGE_ROWS, 0)
+    assert doc.assembled_columns == 0
+    _tiles, layout = tilemap_tiles(doc, registry, 32)
+    assert layout.columns == 32
 
 
 def test_saving_a_tilemap_never_writes_the_tiles_it_is_bound_to(tmp_path) -> None:
@@ -807,27 +1090,110 @@ def test_a_stamp_entrys_unused_bits_survive_a_round_trip() -> None:
     assert codec.encode(codec.decode(raw, params, ctx), params, ctx) == raw
 
 
+def test_a_cell_format_states_how_high_its_reference_can_go() -> None:
+    """The index field's own width, so a restamp is bounded by the format rather
+    than by a guess `encode` would later mask down. A stamp layout spends 14 bits
+    on a panel coordinate where a console BG entry spends 10 on a tile."""
+    registry = default_registry()
+    codec = TilemapCodec()
+    assert codec.index_limit(_params(registry, "preset.tilemap.scgcad-map")) == 0x3FFF
+    assert codec.index_limit(_params(registry, SNES_BG)) == 0x3FF
+    # A format with no index field has no reference to set at all.
+    assert codec.index_limit({"bytes": 2}) is None
+
+
+def test_a_restamped_layout_saves_its_own_coordinates(tmp_path) -> None:
+    """A chained map's writable half is its *own* entry table: a restamp changes
+    which panel cell a position names, and that is what reaches the file — header
+    and all 0x1000 entries otherwise intact."""
+    from celpix.core.document import CellChain, Document
+    from celpix.pipeline.pipeline import load_tilemap_data, save
+    from celpix.plugins.builtins.scgcad import HEADER
+
+    registry = default_registry()
+    original = bytearray(MAP_SIZE)
+    original[: len(SIGNATURE)] = SIGNATURE
+    original[0x70] = 2  # the panel bank selector: carried, never interpreted
+    original[HEADER : HEADER + 4] = b"\x00\x00\x40\x05"
+    original = bytes(original)
+    path = tmp_path / "layout.MAP"
+    path.write_bytes(original)
+    cfg = PathwayConfig(
+        source=FileRef(str(path)),
+        interpret_preset_id="preset.tilemap.scgcad-map",
+        container_id="container.scgcad-map",
+    )
+    loaded = load_tilemap_data(cfg, registry)
+    doc = Document(
+        pixel_data=b"",
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id=SNES_BG, write_enabled=False
+        ),
+        palette_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id="", write_enabled=False
+        ),
+        cells=loaded.cells,
+        chain=CellChain([Cell(index=9), Cell(index=11, palette_row=2)], False),
+        tilemap_config=cfg,
+        tilemap_data=loaded.data,
+        tilemap_ctx=loaded.ctx,
+    )
+    # It resolves through the chain without being told to, and the coordinate-only
+    # format takes the panel cell whole.
+    assert doc.drawn_cells[0] == Cell(index=9)
+
+    doc.cells[0] = Cell(index=1, flags=0b10)  # restamp, attribute-source bit kept
+    doc.resolve()
+    assert doc.drawn_cells[0] == Cell(index=11, palette_row=2)
+    save(doc, registry, palette=False)
+
+    written = path.read_bytes()
+    assert len(written) == MAP_SIZE
+    assert written[:HEADER] == original[:HEADER]  # header untouched
+    # The one entry that changed, and the rest of the table as it was.
+    assert written[HEADER : HEADER + 2] == b"\x80\x01"
+    assert written[HEADER + 2 : HEADER + 4] == original[HEADER + 2 : HEADER + 4]
+    again = load_tilemap_data(cfg, registry)
+    assert again.cells[0] == Cell(index=1, flags=0b10)
+
+
 def test_the_stamp_preset_declares_itself_indirect() -> None:
-    """The host reads this to know the entry binds to another *tilemap* — a
-    property of the format, not of whether a binding is resolved yet."""
+    """A hint about the format, read before any binding exists — it words the
+    binding bar and orders its candidates. It does not gate chaining, which is
+    generic and limited by depth instead."""
     registry = default_registry()
     assert _params(registry, "preset.tilemap.scgcad-map").get("indirect") is True
     assert not _params(registry, SNES_BG).get("indirect")
 
 
-def test_a_stamp_layout_resolves_through_the_panel_it_names() -> None:
-    from celpix.ui.main_window.session import _resolve_stamp
+def test_a_chained_cell_resolves_through_the_map_it_names() -> None:
+    """A coordinate-only format takes the source cell whole; a format that has
+    attributes of its own composes them over the top."""
+    from celpix.core.tilemap import resolve_cell as _resolve_through
 
-    panel = [
+    source = [
         Cell(index=10, palette_row=3, flip_h=True),
         Cell(index=20, palette_row=1),
     ]
-    # The panel's cell comes back whole: its tile *and* its attributes.
-    assert _resolve_stamp(Cell(index=1), panel) == Cell(index=20, palette_row=1)
-    assert _resolve_stamp(Cell(index=0), panel).flip_h
-    # An entry naming a cell the panel does not have draws blank rather than
-    # failing: a layout outliving the panel it was authored against is ordinary.
-    assert _resolve_stamp(Cell(index=999), panel) == Cell()
+    # A stamp layout's word has no attribute fields, so the source cell comes
+    # back as itself rather than as a rebuilt equal one.
+    assert _resolve_through(Cell(index=1), source, carry_rows=False) is source[1]
+    # A row the referring format has no field for must not override the source's:
+    # its decoded 0 means "no row here", not "row 0".
+    assert _resolve_through(Cell(index=0), source, carry_rows=False).palette_row == 3
+    # A cell the source does not have draws blank rather than failing: a layout
+    # outliving the panel it was authored against is ordinary.
+    assert _resolve_through(Cell(index=9), source, carry_rows=False) == Cell()
+    # A format that does carry attributes states its own row, and its flip
+    # *toggles* the source's rather than overwriting it - so a mirrored reference
+    # to an already-mirrored stamp faces its original way.
+    assert _resolve_through(
+        Cell(index=0, palette_row=2, flip_h=True), source, carry_rows=True
+    ) == Cell(index=10, palette_row=2, flip_h=False)
 
 
 # -- panels ----------------------------------------------------------------
@@ -893,6 +1259,58 @@ def test_a_screen_publishes_nothing_that_would_shift_its_cells() -> None:
     ctx = PipelineContext()
     ScrContainer().read(ReadSource(data=bytes(data)), ctx)
     assert 0x03EE not in ctx._entries.values()
+
+
+def test_a_screen_says_it_is_four_maps_and_nothing_else_does() -> None:
+    """The assembly exists because the file holds four independent screens, and
+    only the container knows that: nothing in 8 KiB of cells says whether it is
+    one map 128 rows tall or four 32 rows tall (``scgcad-formats.md`` §2)."""
+    from celpix.core.context import KEY_TILEMAP_PAGE_ROWS
+
+    ctx = PipelineContext()
+    ScrContainer().read(ReadSource(data=_scr_bytes()), ctx)
+    assert ctx.get(KEY_TILEMAP_PAGE_ROWS) == 32
+
+    # A panel is one long sheet and a layout one grid, so neither publishes pages
+    # — an assembly there would cut a map that has no seams.
+    ctx = PipelineContext()
+    PnlContainer().read(ReadSource(data=_pnl_bytes()), ctx)
+    assert ctx.get(KEY_TILEMAP_PAGE_ROWS) is None
+
+
+def test_pages_assemble_into_the_grid_the_view_asks_for() -> None:
+    """The placement itself: 2x2 puts screen 1 beside screen 0 rather than under
+    it, which is the console's own order and what the era's converter emitted
+    (``scgcad-formats.md`` §2, "Screen assembly").
+
+    Every choice is a permutation — the same cells, drawn elsewhere — which is
+    what makes an assembly free to change: nothing in the file moves.
+    """
+    from celpix.core.tilemap import (
+        default_pages_across,
+        page_assemblies,
+        page_order,
+        resolve_pages_across,
+    )
+
+    # Only the divisors, so no arrangement leaves a hole where a page should be.
+    assert page_assemblies(4) == (1, 2, 4)
+    # Closest to square, which for four 32x32 screens is the 64x64 the hardware
+    # assembles; ties go wide (two screens read side by side).
+    assert default_pages_across(32, 32, 4) == 2
+    assert default_pages_across(32, 32, 2) == 2
+    # A stored assembly this file cannot have falls back rather than shearing it.
+    assert resolve_pages_across(3, 32, 32, 4) == 2
+    assert resolve_pages_across(4, 32, 32, 4) == 4
+
+    order = page_order(32, 32, 4, 2)
+    assert sorted(order) == list(range(4096))  # a permutation, not a filter
+    assert order[0] == 0  # screen 0's first cell, top left
+    assert order[32] == 1024  # screen 1 begins at column 32 of the same row
+    assert order[64 * 32] == 2048  # screens 2 and 3 make the band below
+    assert order[64 * 32 + 32] == 3072
+    # One page across is the file's own order, which is what it was read as.
+    assert page_order(32, 32, 4, 1) == tuple(range(4096))
 
 
 def test_the_other_two_formats_state_their_widths() -> None:

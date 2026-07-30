@@ -44,7 +44,7 @@ from .lzss_ring import LzssRingCompression
 from .m7_vram import M7VramReshape
 from .n64_rom import N64RomContainer
 from .nibble_planar_codec import NibblePlanarCodec
-from .object_codec import ObjectCodec
+from .object_codec import ObjectCodec, ObzCodec
 from .packbits import PackBitsCompression
 from .packed_codec import PackedCodec
 from .passthrough import PassthroughCompression, PassthroughReshape
@@ -57,8 +57,10 @@ from .scgcad import (
     ColContainer,
     MapContainer,
     ObjContainer,
+    ObzContainer,
     PnlContainer,
     ScrContainer,
+    StdContainer,
 )
 from .split_planes import split_part_plugins
 from .tilemap_codec import TilemapCodec
@@ -81,6 +83,8 @@ def register_builtins(reg: Registry) -> None:
         PnlContainer(),
         MapContainer(),
         ObjContainer(),
+        ObzContainer(),
+        StdContainer(),
         CgxContainer(),
         ColContainer(),
         PassthroughReshape(),
@@ -106,6 +110,7 @@ def register_builtins(reg: Registry) -> None:
         IndexedColorCodec(),
         TilemapCodec(),
         ObjectCodec(),
+        ObzCodec(),
     ):
         reg.register(plugin)
 

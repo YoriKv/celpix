@@ -139,13 +139,20 @@ class PaletteRegions:
         region = self.region_at(pixel)
         return default if region is None else region.row
 
-    def rows_for(self, offsets: Sequence[int], default: int) -> list[int]:
+    def rows_for(self, offsets: Sequence[int], default: int | None) -> list[int | None]:
         """:meth:`row_at` over a whole window, in one call.
 
         The render path's entry point. Kept as one method rather than a loop at
         the call site so the per-tile work stays in a tight loop over cached
         state, and so the empty case — every document that has pinned nothing —
         short-circuits without touching the regions at all.
+
+        ``default`` may be ``None``, which is how a caller asks *which* offsets are
+        pinned rather than what each one renders through. The two are different
+        questions and only the second has an answer for an unpinned offset: a
+        renderer needs a row there and takes the view's, while a caller marking the
+        pinned ones has to be able to tell "pinned to the view's row" — a real pin,
+        with a row of its own that happens to match — from "not pinned at all".
         """
         if not self.regions:
             return [default] * len(offsets)

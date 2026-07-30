@@ -160,6 +160,28 @@ class TilemapCodec:
             raise ValueError(f"cell_tiles must be positive, got {across}x{down}")
         return int(across), int(down)
 
+    def index_limit(self, params: dict[str, Any]) -> int | None:
+        """How high a cell reference can go — the ``index`` field's own width.
+
+        The same trick :meth:`has_palette_rows` and :meth:`transform_cell` use: the
+        field table already knows, so the answer comes out of the one place the
+        layout is stated rather than a second that could disagree. A preset with no
+        ``index`` describes a format whose cells reference nothing settable.
+        """
+        field = _field(params, "index")
+        return field[1] if field else None  # the mask *is* the highest value
+
+    def has_palette_rows(self, params: dict[str, Any]) -> bool:
+        """Whether the preset places a palette field — the field table answers.
+
+        The same trick :meth:`transform_cell` uses, and for the same reason: a
+        preset that declares no ``palette`` describes a format with nowhere to
+        put a row, so the answer falls out of the one table rather than a second
+        one that could disagree with it. An index-only map (a Game Boy BG entry,
+        a converted screen) is exactly a preset without the field.
+        """
+        return _field(params, "palette") is not None
+
     def transform_cell(
         self, cell: Cell, op: CellOp, params: dict[str, Any]
     ) -> Cell | None:

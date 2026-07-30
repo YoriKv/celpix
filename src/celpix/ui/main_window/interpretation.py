@@ -60,6 +60,44 @@ ROWS_LOCKED_TIP = "Tile rows shown\nLocked by View > Entire File"
 # setting being held — there is no window to set the height of.
 ROWS_WHOLE_TIP = "Tile rows shown\nA tilemap is always shown whole"
 
+# The Subpal control's tooltip, in its two states. It picks the block of palette
+# entries the picture indexes into — except on a tilemap whose cells name a row
+# each, where the file has already answered and a second answer would shift a map
+# that is in the right colours (see MainWindow._sync_subpalette).
+# The Tile size readout's two states. On a tilemap the unit the user points at,
+# selects and edits is the cell — which may be a 2x2 metatile — so both the
+# caption and the number follow it (see MainWindow._refresh_tile_size).
+TILE_SIZE_TIP = "Size of one tile in pixels"
+TILE_SIZE_CELL_TIP = (
+    "Size of one map cell in pixels\nSelections and edits work a cell at a time"
+)
+
+SUBPAL_TIP = "Which block of palette entries tiles index into"
+SUBPAL_CELLS_TIP = (
+    "Which block of palette entries tiles index into\n"
+    "Set per cell by this tilemap's own palette rows"
+)
+
+# The Cols control's tooltip, and what it reads while a paged tilemap's assembly
+# owns the width (see MainWindow._settle_tilemap_assembly). Locked rather than
+# left free because an assembly *is* a width: any other column count cuts the
+# pages at the wrong place and shears the picture.
+COLS_TIP = "Tiles per row"
+# Names the control that has taken Cols over rather than pointing at it: the
+# assembly picker is on the binding bar, not beside this spin, so "the assembly
+# beside it" would send the user looking along the wrong row.
+COLS_ASSEMBLED_TIP = "Cells per row\nSet by Assembly, on the bar under the canvas"
+
+# The assembly picker's own tooltip. Deliberately says the file is silent: the
+# choice exists because nothing records which arrangement was meant, and a user
+# who thinks celPix read this out of the header would trust the wrong picture.
+ASSEMBLY_TIP = (
+    "How this file's separate maps are laid out:\n"
+    "2x2 is two of them across and two down.\n"
+    "The file does not record which was intended,\n"
+    "so this is a reading, not the file's own word."
+)
+
 
 def _group(caption: str, *widgets: QWidget, tooltip: str = "") -> QWidget:
     """A captioned run of toolbar controls as one widget, so it hides as one.
@@ -156,12 +194,7 @@ class InterpretationMixin:
         self._pixel_filter = ChecklistPopupButton(
             "Filter", self._pixel_filter_items, self._apply_pixel_filter
         )
-        self._pixel_filter.setIcon(
-            funnel_icon(
-                self.palette().color(QPalette.ColorRole.ButtonText),
-                ratio=self.devicePixelRatioF(),
-            )
-        )
+        self._bake_pixel_filter_icon()
         self._pixel_filter.setToolTip("Which formats appear in the dropdown")
         self._pixel_filter.setFixedHeight(self._pixel_preset.sizeHint().height())
         # Whole groups rather than loose widgets, because a tilemap entry swaps
@@ -237,11 +270,14 @@ class InterpretationMixin:
         # whatever size that landed on, so the number it derives *from* has to
         # be on screen. Read-only - the size is the codec's, not a setting.
         self._tile_size = QLabel()
-        add_labelled(
+        # The caption is kept because a tilemap relabels the pair: what the user
+        # points at, selects and edits there is a *cell*, which may be several
+        # tiles across (see :meth:`_refresh_tile_size`).
+        self._tile_size_label = add_labelled(
             view,
             "Tile:",
             self._tile_size,
-            "Size of one tile in pixels",
+            TILE_SIZE_TIP,
         )
         # Pinned wide enough for the sizes a re-cut reaches, so Cols doesn't
         # slide sideways each time the format or the width changes.
@@ -252,7 +288,17 @@ class InterpretationMixin:
         # Ranged well past a screenful of 8-px tiles because a bitmap width
         # derives this: a 4096-px bitmap of 8-px tiles is 512 columns.
         self._columns = self._spin(1, 512, 16, self._on_view_change)
-        add_labelled(view, "Cols:", self._columns, "Tiles per row")
+        # The caption is kept for the same reason Rows' and Subpal's are: an
+        # assembled tilemap locks the pair and has to say what locked it
+        # (:meth:`~...rendering.RenderingMixin._settle_tilemap_assembly`).
+        self._columns_label = add_labelled(view, "Cols:", self._columns, COLS_TIP)
+
+        # The assembly picker is **not** here, though it takes Cols over: it is a
+        # tilemap's alone, and this toolbar is every document's. It sits on the
+        # binding bar with the rest of what a map's file does not record
+        # (:meth:`~...tilemap_bar.TilemapBarMixin._build_tilemap_bar`), which is
+        # why Cols says what has locked it rather than relying on a picker beside
+        # it to be self-evident (:data:`COLS_ASSEMBLED_TIP`).
 
         # How many tile-rows the window shows - the "render N rows" view setting.
         # Kept on self with its caption because View > Entire File locks the pair
@@ -276,11 +322,15 @@ class InterpretationMixin:
         # Range 255: enough rows for a 512-entry palette under a 2-color (1bpp)
         # index space; the view refresh clamps to the loaded palette anyway.
         self._subpalette = self._spin(0, 255, 0, self._on_view_change)
-        add_labelled(
+        # The caption is kept because _sync_subpalette greys and retooltips the
+        # pair together on a tilemap whose cells carry their own rows - a
+        # live-looking label over a dead input is where "why can't I type here"
+        # lands (:func:`~celpix.ui.widgets.add_labelled`).
+        self._subpalette_label = add_labelled(
             view,
             "Subpal:",
             self._subpalette,
-            "Which block of palette entries tiles index into",
+            SUBPAL_TIP,
         )
 
         # The Selection Shape picker (what a canvas drag selects) lives on the
@@ -490,6 +540,19 @@ class InterpretationMixin:
             index = self._pixel_preset.findData(select_id)
             self._pixel_preset.setCurrentIndex(index if index >= 0 else 0)
 
+    def _bake_pixel_filter_icon(self) -> None:
+        """Paint the filter button's funnel in the theme's button-text color.
+
+        A pixmap, so it is baked and not styled: re-run when the theme or the
+        device scale changes (``_rebake_icons``).
+        """
+        self._pixel_filter.setIcon(
+            funnel_icon(
+                self.palette().color(QPalette.ColorRole.ButtonText),
+                ratio=self.devicePixelRatioF(),
+            )
+        )
+
     def _pixel_filter_items(self) -> list[tuple[str, str, bool]]:
         """``(id, name, checked)`` for every pixel preset — the filter popup's
         model. The format in force always reads as checked (it can't be hidden)."""
@@ -598,7 +661,18 @@ class InterpretationMixin:
         another format's index space (e.g. _apply_pixel_config's outgoing preset).
         A stale id (preset removed by a plugin refresh) falls back to the
         current preset rather than failing the reload.
+
+        **On a tilemap the combo is not the answer.** A tilemap has no pixel
+        format of its own — the picker is hidden there — and the one the combo
+        holds is whatever the toolbar happened to show when the map was opened.
+        Its tiles are read under the *bound* entry's format, and that is the
+        space a cell's palette row steps in
+        (:func:`~celpix.pipeline.pipeline.tilemap_tiles`), so a row would
+        otherwise be sized against a format nothing on screen is using.
         """
+        doc = self._doc
+        if preset_id is None and doc is not None and doc.is_tilemap:
+            preset_id = doc.pixel_config.interpret_preset_id
         if preset_id is not None:
             try:
                 bpp = pipeline.pixel_bpp(preset_id, self._registry)
@@ -711,18 +785,31 @@ class InterpretationMixin:
             self._columns_before_bitmap = None
 
     def _refresh_tile_size(self) -> None:
-        """Show the size the tiles on screen are actually cut to.
+        """Show the size of the unit the picture on screen is made of.
 
         Reads the document's own geometry rather than the preset's, so both a
         bitmap width that re-cut the codec's tiles and a fixed-size codec that
         ignored the width read true. With nothing open there is no geometry to
         report - the 8x8 fallback would be a guess about the next file.
+
+        On a **tilemap** that unit is the map's own cell, not the tile it is built
+        from: a screen of 16x16 cells is read, selected and edited a cell at a
+        time (:meth:`~...selection.SelectionMixin._cell_unit`), so reporting the
+        bound bank's 8x8 would name a thing no gesture in that view acts on. The
+        caption follows the number, since "Tile: 16x16" over cells made of four
+        8x8 tiles is the one reading that is wrong either way round.
         """
+        cell = self._grid_tilemap() is not None
+        self._tile_size_label.setText("Cell:" if cell else "Tile:")
+        tip = TILE_SIZE_CELL_TIP if cell else TILE_SIZE_TIP
+        for widget in (self._tile_size, self._tile_size_label):
+            widget.setToolTip(tip)
         if self._doc is None:
             self._tile_size.setText("\u2014")
             return
         tile_w, tile_h = self._pixel_tile_size()
-        self._tile_size.setText(f"{tile_w}\u00d7{tile_h}")
+        across, down = self._cell_unit()
+        self._tile_size.setText(f"{tile_w * across}\u00d7{tile_h * down}")
 
     def _pixel_tile_size(self) -> tuple[int, int]:
         # The atomic tile size is the codec's (recorded on the document at load) - not

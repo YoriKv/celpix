@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
 )
 
+from celpix.core.capabilities import Capability
 from celpix.core.errors import PipelineError
 from celpix.pipeline import importer
 from celpix.project import projectfile
@@ -394,6 +395,30 @@ class TransferMixin:
         )
         return path or None
 
+    def _refuse_import(self) -> bool:
+        """True — with the reason on the status bar — when an image cannot land.
+
+        The capability check every import passes through, here rather than on the
+        actions alone: **a drop is a gesture without a control**, so disabling
+        ``_import_png_action`` leaves it ungated. On a tilemap that mattered more
+        than a stray message would suggest — ``pixel_data`` there is the *bound*
+        entry's tile bytes (:class:`~celpix.core.document.Document`), so an import
+        painted over another entry's art, marked the map dirty for it, and left
+        the change unsaveable: a tilemap's Write puts back cells.
+
+        Bringing a picture into a map means matching it against the bound tiles,
+        which is a quantize-to-tiles problem the pixel importer does not solve
+        (``docs/design/tilemap-entry.md`` §4). So the answer is the entry the
+        tiles live in, which is where the ordinary importer already works.
+        """
+        if self._can(Capability.IMPORT_IMAGE):
+            return False
+        self.statusBar().showMessage(
+            "A tilemap has no pixels of its own - import into the entry it "
+            "draws its tiles from."
+        )
+        return True
+
     def _import_png_at(self, anchor: int, path: str) -> None:
         """Fit the image at ``path`` into this view and stamp it from ``anchor``.
 
@@ -407,6 +432,8 @@ class TransferMixin:
         keep whatever the file already holds.
         """
         assert self._doc is not None
+        if self._refuse_import():
+            return
         image = QImage(path)
         if image.isNull():
             self._alert(f"Could not read {path} as an image.", title="celPix - import")

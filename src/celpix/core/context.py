@@ -69,6 +69,16 @@ KEY_TILEMAP_COLUMNS = "tilemap.columns"
 # the corpus — a panel has three bytes shaped like this one and none of them is
 # it (``docs/graphics-formats-reference/scgcad-formats.md`` §3.1).
 KEY_TILEMAP_CELL_TILES = "tilemap.cell-tiles"
+# int: how many cell *rows* one **page** holds, for a format whose file is several
+# independent maps end to end rather than one — a screen file is four 32x32
+# screens (``docs/graphics-formats-reference/scgcad-formats.md`` §2). Published
+# alongside the width above, which is the page's width: a paged format states
+# both or neither, since a page with no stated width has no shape.
+#
+# What it buys is the **assembly**: nothing in the file records how those four
+# make up a larger screen, so laying them out is the user's choice and this is
+# what says there is a choice to make (``docs/design/tilemap-entry.md`` §6).
+KEY_TILEMAP_PAGE_ROWS = "tilemap.page-rows"
 # "little" | "big": the byte order a container knows its cells are in, where that
 # is a property of the *file* rather than of its format. The S-CG-CAD sprite
 # object is the case it exists for: 26 of the 1,341 in the corpus come from a

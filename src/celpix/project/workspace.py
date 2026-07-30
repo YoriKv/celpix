@@ -415,6 +415,25 @@ class Entry:
     # project state that no file states (`docs/design/tilemap-entry.md` §3).
     tile_source: TileSource | None = None
     tilemap_preset_id: str | None = None
+    # The palette row this map's cells count their own row 0 from — the tile
+    # base's colour twin, and the user's word on it. **None means the format's
+    # own answer**, which is right almost always: a sprite's 3-bit field counts
+    # from CGRAM row 8 and the preset says so
+    # (:attr:`~celpix.core.document.Document.palette_row_base`). What needs
+    # overriding is the palette that is actually loaded — the same object read
+    # against a file holding only the sprite half of CGRAM counts from row 0, and
+    # against one holding only rows 8-15 as 0-7 it counts *down*, so this is
+    # signed like ``TileSource.base_index``. None rather than 0 because 0 is a
+    # real answer the user may have to give against a format that says 8.
+    palette_row_base: int | None = None
+    # A **sprite map**'s two subsprite sizes, as multiples of the tile size — the
+    # pair each size bit chooses between (:data:`~celpix.core.sprite.
+    # DEFAULT_SUBSPRITE_TILES`). **None means the format's own answer.** Unlike the
+    # two bases this is not a correction to a guess: the pair was a *register* the game
+    # set per scene, so no file records it and a preset can only name the commonest.
+    # An object authored against another pair draws every subsprite at the wrong size
+    # until this says so, which is why it is the user's and why it is per entry.
+    sprite_size_pair: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         # A palette entry's content kind is not a separate choice — its ``kind``

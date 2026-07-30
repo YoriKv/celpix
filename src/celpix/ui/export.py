@@ -83,14 +83,20 @@ def _tilemap_image(doc: Document, registry: Registry, columns: int) -> QImage:
     span every palette row the map uses rather than one subpalette: a cell names
     its own row, the row is folded into the indices upstream, and one image
     carries one table.
+
+    Where the **format** has no palette row to give, the map indexes a single
+    block of the palette like a pixel document and the view's subpalette row says
+    which — the same fallback the canvas takes, so the file still matches the
+    screen (``rendering.RenderingMixin._render_tilemap``).
     """
     drawn = pipeline.tilemap_image(doc, registry, columns)
     index_space = min(
         256, 1 << pipeline.pixel_bpp(doc.pixel_config.interpret_preset_id, registry)
     )
     top = min(256, drawn.palette_rows * index_space)
+    base = 0 if doc.cells_carry_palette_rows else doc.view.subpalette_row * index_space
     return render_bridge.indexed_image(
-        drawn.grid, [doc.palette.color(i) for i in range(top)]
+        drawn.grid, [doc.palette.color(base + i) for i in range(top)]
     )
 
 

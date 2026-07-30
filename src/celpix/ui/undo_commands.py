@@ -52,7 +52,14 @@ from celpix.core.paletteregions import PaletteRegions
 from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.project.workspace import Entry, EntryKind, PaletteMode, SliceParams
+from celpix.project.workspace import (
+    Entry,
+    EntryKind,
+    PaletteMode,
+    PaletteSource,
+    SliceParams,
+    TileSource,
+)
 from celpix.ui.container_dialog import ContainerEdit
 
 if TYPE_CHECKING:
@@ -263,6 +270,115 @@ class TilemapCellsCommand(_InPlaceCommand):
     def _apply(self, state: tuple[list, int]) -> None:
         cells, revision = state
         self._window._set_cells(self._entry, cells, revision)
+
+
+@dataclass(frozen=True)
+class TilemapBindingState:
+    """What a tilemap entry draws from, and how its cells are read.
+
+    The whole of the binding bar's answer travels as one value — the tile
+    source, the cell format, the palette-row base and the sprite size pair —
+    because they are one kind of thing: project state no file records, set on
+    one bar and remembered per entry (``docs/design/tilemap-entry.md`` §3, §7).
+    A gesture moves exactly one of them, so a snapshot is four fields where
+    three are unchanged, which is cheaper than four command classes and cannot
+    get out of step with itself.
+
+    The three palette fields ride along because **binding seeds a palette**
+    (:meth:`~celpix.ui.main_window.tilemap_bar.TilemapBarMixin._seeded_palette`):
+    a map still on the default palette adopts its source's colours the first
+    time it is pointed at one, so a step that put the binding back and left
+    those colours would be half a revert. They are plain data — a mode, a preset
+    id and the pending source a load consumes — rather than the loaded palette a
+    :class:`PaletteState` carries, because at the moment this is captured the
+    seed has not been read yet.
+    """
+
+    tile_source: TileSource | None = None
+    preset_id: str | None = None
+    row_base: int | None = None
+    size_pair: tuple[int, int] | None = None
+    palette_mode: PaletteMode = PaletteMode.DEFAULT
+    palette_preset_id: str = ""
+    pending_palette: PaletteSource | None = None
+
+    def rereads_from(self, other: TilemapBindingState) -> bool:
+        """Whether arriving here from ``other`` means reading the entry again.
+
+        A palette **row base** alone can land on the document in place: it
+        reaches the screen as an index shift at render time, so nothing about
+        which bytes were read has moved. Everything else changes what the
+        document *is* — a different source or size pair decodes different tiles
+        and different frames, and a different cell format changes how many bytes
+        a cell even is — and the load path is the only thing that can rebuild
+        that (``_reload_tilemap``).
+
+        A base of ``None`` re-reads too, and that is not an edge case: it means
+        "whatever the format declares", which is a number only the load path
+        knows (:meth:`~celpix.ui.main_window.session.SessionMixin._row_base_for`).
+        So an in-place apply always has a real base to write, and undoing the
+        first-ever move of the spin restores the format's own answer rather than
+        pinning the value that happened to be on screen.
+        """
+        return (
+            self.tile_source != other.tile_source
+            or self.preset_id != other.preset_id
+            or self.size_pair != other.size_pair
+            or self.palette_mode is not other.palette_mode
+            or self.pending_palette != other.pending_palette
+            or self.row_base is None
+        )
+
+
+class TilemapBindingCommand(_CurrentEntryCommand):
+    """One change to a tilemap's binding, as before/after snapshots.
+
+    Sibling of :class:`PixelConfigCommand`, and for the same reason: the state
+    is small and re-deriving the document from it is what applying *means*, so
+    the command carries the configuration and never the bytes it produces. It
+    stamps no revision — a binding is project state, not the entry's data, so
+    the map is no more (or less) unsaved for having been re-pointed, though the
+    *project* is, which needs nothing here (it is computed by re-serializing).
+
+    Unlike the pixel switch there is no pre-validated payload: a tilemap load
+    builds the document and its bound tiles together, so there is nothing to
+    hand over half-done. So validation happens by *trying*, and the apply takes
+    a failure back off — which leaves the same outcome the pixel switch reaches
+    by refusing up front, as long as the dead step goes too. It does, on the
+    **first** redo: a command marked obsolete inside ``push()`` is dropped
+    instead of pushed, so a gesture that could not be read costs no step.
+
+    A later undo or redo that fails is the ordinary
+    ``docs/design/undo-redo.md`` §5 edge and is left alone — the state is
+    restored and the step stays where the history put it, because removing a
+    command from the middle of a stack strands every step underneath it.
+    """
+
+    def __init__(
+        self, window: MainWindow, entry: Entry, text: str, before, after
+    ) -> None:
+        super().__init__(window, entry, text, before, after)
+        self._pushed = False
+
+    def redo(self) -> None:
+        super().redo()
+        self._pushed = True
+
+    def _apply(self, state: TilemapBindingState) -> None:
+        # Which direction this is, so the apply can ask what *the step* moved
+        # rather than what the entry happens to hold. A push site that has
+        # already pointed the entry at its new source, so the switch back to it
+        # reads the right bytes (``_bind_tiles_from_file``), would otherwise look
+        # from the inside like a step that changed nothing but a palette row —
+        # and land in place, leaving the newly bound tiles unread.
+        previously = self._before if state is self._after else self._after
+        landed = self._window._apply_tilemap_binding(self._entry, state, previously)
+        if not landed and not self._pushed:
+            # The gesture could not be read and the apply put everything back, so
+            # this step stands for nothing. Marked here rather than by the push
+            # site because only ``redo()`` inside ``push()`` can still refuse the
+            # command — after that, dropping it would strand the history below it.
+            self.setObsolete(True)
 
 
 class PaletteRegionsCommand(_CurrentEntryCommand):

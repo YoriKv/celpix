@@ -1,9 +1,10 @@
-"""S-CG-CAD containers — SCR/PNL/MAP/OBJ references, CGX tiles, COL palettes.
+"""S-CG-CAD containers — SCR/PNL/MAP/OBJ/OBZ references, CGX tiles, COL palettes.
 
-One SNES-era authoring tool's file family. Each member is a fixed-size file: a
-payload, and a 0x100-byte metadata block carrying a 32-byte ASCII signature.
-Byte-exact specs, the confidence level behind each claim, and the corpus they
-were verified against are in
+One SNES-era authoring tool's file family, plus the two files its pipeline made
+*out* of them (OBZ, STD). Each member is a fixed-size file: a payload, and — for
+everything the tool itself reopens — a 0x100-byte metadata block carrying a
+32-byte ASCII signature. Byte-exact specs, the confidence level behind each
+claim, and the corpus they were verified against are in
 ``docs/graphics-formats-reference/scgcad-formats.md``.
 
 What makes these containers rather than codecs is that each one **frames** its
@@ -17,16 +18,19 @@ container declares which it frames (``PluginInfo.content_kinds``): a COL is a
 palette, a CGX is pixels, the other three are tilemaps. Without that, the palette
 would be offered a screen's container and vice versa.
 
-Three things a reader has to get right and would not guess:
+Four things a reader has to get right and would not guess:
 
 - **SCR puts its header last.** The signature is at 0x2000, past the payload, so
   detection cannot assume offset 0. PNL and MAP put theirs first, and a sprite
   object puts it at whichever of two offsets says which size it is.
+- **Two members carry no signature.** A transfer object and a converted screen
+  were written to be *consumed* rather than reopened, so nothing in the bytes
+  says what they are and detection has only a length and an extension.
 - **The byte orders disagree.** An SCR cell is little-endian, the console's own
   order; PNL and MAP words are byte-swapped. One rule for the family decodes SCR
   into noise (``scgcad-formats.md`` §5.2).
 - **A sprite object is not a grid.** Its records carry signed pixel offsets, so
-  what the view draws is frames of freely placed parts rather than cells laid out
+  what the view draws is frames of freely placed subsprites rather than cells laid out
   in rows (:mod:`celpix.core.sprite`).
 
 The trailing regions are preserved verbatim rather than regenerated, and they are
@@ -47,6 +51,7 @@ from celpix.core.context import (
     KEY_TILEMAP_CELL_TILES,
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_ENDIAN,
+    KEY_TILEMAP_PAGE_ROWS,
     PipelineContext,
 )
 from celpix.core.errors import Stage
@@ -82,11 +87,23 @@ COL_SIZE = 0x400
 COL_PAYLOAD = 0x200  # 256 BGR555 entries; the metadata block follows them
 COL_HEADER_AT = 0x200
 
-# A sprite object's records, then its header: 32 frames of 64 six-byte parts in
+# A sprite object's records, then its header: 32 frames of 64 six-byte subsprites in
 # the ordinary form and 128 frames in the extended one. Which it is shows in
 # where the signature sits, so these double as the detection offsets.
 OBJ_PAYLOADS = (0x3000, 0xC000)
 OBJ_SIZE = 0x3500  # the ordinary form, for a file that does not exist yet
+
+# The transfer form of a sprite object: 64 frames of 64 subsprites, then a 0xA00 tail
+# holding the animation table. The one member of the family that carries **no
+# signature at all** — none of the 148 in the corpus has one anywhere — so its
+# length and its extension are the whole of what identifies it.
+OBZ_SIZE = 0x6A00
+OBZ_PAYLOAD = 0x6000
+
+# A converted screen: the low byte of each of a screen's four blocks, laid out
+# 2x2 into one 64x64 grid of bare character numbers. Headerless and fixed-size.
+STD_SIZE = 0x1000
+STD_COLUMNS = 64
 # How many frames the strip puts on a row to start with. A sprite object has no
 # width of its own — its frames are separate pictures rather than one picture —
 # so this is a legible default rather than the file's own answer.
@@ -119,6 +136,7 @@ SCR_TILE_SIZE = 0x42  # screen cell size = 8 * (value + 1): 0 is 8x8, 1 is 16x16
 
 PANEL_COLUMNS = 32  # a panel is 32 cells wide; its 0x4000 cells make 512 rows
 SCREEN_COLUMNS = 32  # one 32x32 screen — four of them make up a screen file
+SCREEN_ROWS = 32  # and this is what makes each one a *page* rather than a band
 MAP_COLUMNS = 128
 
 
@@ -148,10 +166,12 @@ def _payload(source: ReadSource, ctx: PipelineContext, start: int, size: int) ->
 class ScrContainer:
     """Screen file: payload first, 0x100 header at 0x2000, 0x200 clear codes.
 
-    The four 0x800 screens are handed on as one buffer. How they assemble into a
-    larger screen is not recorded anywhere in the file — the era's own tooling
-    took a screen index on the command line — so it is a view choice rather than
-    something to decide here (``scgcad-formats.md`` §2).
+    The four 0x800 screens are handed on as one buffer, with their size published
+    so the view knows there are four (``KEY_TILEMAP_PAGE_ROWS``). How they
+    assemble into a larger screen is *not* recorded anywhere in the file — the
+    era's own tooling took a screen index on the command line — so which
+    arrangement to draw is a view choice rather than something to decide here
+    (``scgcad-formats.md`` §2).
 
     Sized by its magic offset rather than an exact length, which is also what
     reads the rarer 0x4100 variant correctly: that file is this layout with a
@@ -175,6 +195,11 @@ class ScrContainer:
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         ctx.set(KEY_TILEMAP_COLUMNS, SCREEN_COLUMNS)
+        # Four maps in one file, not one map four times as tall: saying so is what
+        # gives the view an assembly to offer, since the file itself records
+        # nothing about which the artist meant (`scgcad-formats.md` §2, "Screen
+        # assembly"). The rows are the page's; the columns above are its width.
+        ctx.set(KEY_TILEMAP_PAGE_ROWS, SCREEN_ROWS)
         # A screen states its own cell size, and 949 of the 1,622 surveyed set
         # this byte. That they mean it is measurable: of the cells those screens
         # actually draw, 76.1% carry a metatile-aligned index against 30.0% for
@@ -269,7 +294,7 @@ class MapContainer:
 
 
 class ObjContainer:
-    """Sprite object: part records first, then the header and an animation table.
+    """Sprite object: subsprite records first, then the header and animation table.
 
     Payload-first like a screen, and the header's *offset* is what says which of
     the two sizes this is — 0x3000 for an object, 0xC000 for the extended form
@@ -311,6 +336,75 @@ class ObjContainer:
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         existing = dest.existing or _blank_obj()
         return splice(existing, 0, data[: _obj_payload(existing)])
+
+
+class ObzContainer:
+    """Transfer object: 0x6000 of subsprite records, then a 0xA00 tail.
+
+    The same shape as a sprite object with the header taken away — the tool wrote
+    these to ship a whole set of frames to the devkit rather than to reopen them,
+    and none of the 148 in the corpus carries the family signature. So detection
+    has only the extension and the length, and a write has only the tail to
+    preserve: the animation table, which celPix reads no more here than it does
+    in an object (``scgcad-formats.md`` §9).
+
+    The records inside are **not** an object's records. Its own codec says how
+    (:class:`~celpix.plugins.builtins.object_codec.ObzCodec`).
+    """
+
+    info = PluginInfo(
+        id="container.scgcad-obz",
+        name="S-CG-CAD transfer object (OBZ)",
+        stage=Stage.CONTAINER,
+        extensions=(".obz",),
+        exact_size=OBZ_SIZE,
+        short_name="OBZ",
+    )
+    default_tilemap_preset = "preset.tilemap.scgcad-obz"
+
+    def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
+        ctx.set(KEY_TILEMAP_COLUMNS, OBJECT_COLUMNS)
+        return _payload(source, ctx, 0, OBZ_PAYLOAD)
+
+    def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
+        existing = dest.existing or bytes(OBZ_SIZE)
+        return splice(existing, 0, data[:OBZ_PAYLOAD])
+
+
+class StdContainer:
+    """Converted screen: 0x1000 bytes, 64x64 bare character numbers, no header.
+
+    Not something the authoring tool writes — a 1992 converter made it out of a
+    screen, keeping the **low byte** of each cell and dropping the high one, then
+    laid the screen's four blocks out 2x2 (``scgcad-formats.md`` §10). So it
+    holds a screen's shape with its attributes gone, which is why it reads
+    through a plain index-only cell rather than the screen's.
+
+    A container for a headerless file, because the two things celPix would
+    otherwise have to be told — that this is a tilemap and that it is 64 wide —
+    are both fixed by the format, and neither is guessable from 4 KiB of bytes.
+    """
+
+    info = PluginInfo(
+        id="container.scgcad-std",
+        name="Converted screen (STD)",
+        stage=Stage.CONTAINER,
+        extensions=(".std",),
+        exact_size=STD_SIZE,
+        short_name="STD",
+    )
+    default_tilemap_preset = "preset.tilemap.scgcad-std"
+
+    def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
+        ctx.set(KEY_TILEMAP_COLUMNS, STD_COLUMNS)
+        return _payload(source, ctx, 0, STD_SIZE)
+
+    def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
+        # The whole file is the payload, so there is nothing around it to keep —
+        # but splicing over what is there still leaves a short write's tail
+        # alone rather than truncating the file to it.
+        existing = dest.existing or bytes(STD_SIZE)
+        return splice(existing, 0, data[:STD_SIZE])
 
 
 def _obj_payload(data: bytes) -> int:

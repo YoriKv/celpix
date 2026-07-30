@@ -18,6 +18,7 @@ celPix is built on Python + Qt (PySide6) and runs on Windows, macOS, and Linux.
 - **Containers & Reshaping** - support for appending multiple files together and then a variety of byte "reshaping" plugins such as merging split ROM chips, deinterleaving, reversing bit order, etc
 - **Editing** - full set of editing tools with undo/redo, copy/paste/etc internally
   and to external editors.
+- **Tilemaps** - still experimental, but adding to and improving this functionality.
 - **Import & export** - PNG import/export supporting both indexed and RGB.
 - **Files, slices, and bookmarks** - edit multiple files at once, create bookmarks
   to quickly jump to different offsets and settings, create slices to work on

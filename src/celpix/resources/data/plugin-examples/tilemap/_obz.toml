@@ -1,0 +1,37 @@
+# Example tilemap preset — sprite object subsprites, the byte-per-field record.
+#
+# Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
+#
+# The third tilemap engine, and a near-twin of _object.toml: frames of subsprites
+# at signed pixel offsets, same as that one. What differs is the *record* — its
+# fields are spread across single bytes rather than packed into the console's
+# own sprite attribute word, its character number is 12 bits rather than 9, and
+# it stores X before Y where the other stores Y first.
+#
+# There is nothing to configure about that layout: it is fixed in the engine,
+# because it is one format's record rather than a family of them. If your format
+# is shaped like a sprite but lays its record out differently again, the engine
+# to copy is this one's code, not this file.
+#
+# Built on `codec.scgcad-obz`, as is the shipped scgcad-obz preset.
+
+id = "preset.tilemap.example-obz"
+name = "Example transfer object subsprite"
+engine_id = "codec.scgcad-obz"
+
+[params]
+# A **sprite map**: the tilemap variant whose cells are freely-placed subsprites
+# grouped into frames rather than positions in a grid (tilemap-entry.md sec 6).
+# Declared rather than inferred so the bar can describe an object before anything
+# is bound to it, exactly as `indirect` does for a stamp layout.
+layout = "sprite"
+
+# How many subsprite records make one frame. The whole payload is cut into frames
+# of this size, so it decides how the sheet is divided as much as how it is drawn.
+subsprites_per_frame = 64
+
+# The two sizes a subsprite's own size bit chooses between, each a square that
+# many tiles on a side. The file does not record the pair — the game set it in a
+# register — so this is a stated assumption you can change, not something read
+# from the bytes. `[1, 2]` is one tile, or two by two.
+subsprite_tiles = [1, 2]

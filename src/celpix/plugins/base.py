@@ -568,6 +568,53 @@ class TilemapCodecPlugin(Plugin, Protocol):
         """
         ...
 
+    def index_limit(self, params: dict[str, Any]) -> int | None:
+        """The highest ``index`` a cell can hold, or **None** if it has no index.
+
+        Optional, and the way a format declares that a cell's *reference* can be
+        set at all — the counterpart of :meth:`transform_cell` for the one field
+        every tilemap has an opinion about. What the host does with it is bound a
+        control to the format's own range rather than to a guess: a console BG
+        entry spends 10 bits on the tile number and a stamp layout 14 on a panel
+        coordinate, and a value too wide for the field would be masked down by
+        :meth:`encode` into a cell nobody asked for.
+
+        What the number *means* follows the document, not this method. On an
+        ordinary map it is a tile in the bound source; on a chained one it is a
+        position in the map being drawn through, so setting it **restamps** that
+        cell (``docs/design/tilemap-entry.md`` §3.1). The codec is answering the
+        same question either way: how wide is the field.
+
+        A plugin that omits this method has its cell references left alone, which
+        is the safe direction — a codec that was never asked where its index lives
+        must not have one inferred for it. Returning None says the same thing for a
+        format that genuinely has no index field to write.
+        """
+        ...
+
+    def has_palette_rows(self, params: dict[str, Any]) -> bool:
+        """Whether this format gives a cell a palette row to name.
+
+        Optional, and about the **format** rather than the file: a screen whose
+        cells all sit on row 0 still answers True, because the format has the
+        field and the zeros are its cells' answer. False is for a format with
+        nowhere to put one — a Game Boy map entry is a bare tile number, and a
+        converted screen kept only the low byte of each cell.
+
+        What it decides is who picks the colours. Where a format has rows, the
+        file has answered and the row travels in the indices; the view's
+        subpalette is switched off there, because a second row on top would
+        shift a map that is already in the colours it was authored in. Where a
+        format has none, nothing has answered and the picture still has to be
+        read under some row, so the subpalette control supplies it exactly as it
+        does on a pixel document (``docs/design/tilemap-entry.md`` §8).
+
+        A plugin that omits this method is taken to have rows. That is the safe
+        direction of the two: a format that carries rows and stayed quiet would
+        otherwise have a view-wide row added on top of its cells' own.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class Preset:

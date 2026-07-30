@@ -55,6 +55,9 @@ CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
     ("Select tiles while rearranging", "Right-drag"),
     ("Stamp a floating selection", "Esc"),
     ("Abandon a rearrange drag", "Esc"),
+    # Not the canvas's own, but a mouse gesture the whole window answers to, and
+    # this is where someone looks for one. Its keys are on the Navigate menu.
+    ("Back / forward through visited entries", "Mouse 4 / Mouse 5"),
 )
 
 # Keys a focused panel claims for itself, which is why they are not on the menu

@@ -50,6 +50,7 @@ from celpix.project.workspace import (
     EntryKind,
 )
 from celpix.ui import clipboard, render_bridge
+from celpix.ui.main_window.capability_sync import Gesture
 from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
     PixelEditCommand,
@@ -293,13 +294,23 @@ class SelectionMixin:
         target = (
             self._marquee if self._edit_mode is EditMode.PIXEL else self._selected_tile
         )
-        for action in (self._cut_action, self._copy_action, self._clear_action):
-            action.setEnabled(has_doc and target is not None)
+        # A tilemap whose cells are not what is on screen has no cell edit to
+        # make: a sprite object's cells are subsprites placed at pixel offsets, so
+        # there is none under the cursor to blank (``Document.cells_editable``).
+        editable = not (has_doc and self._doc.is_tilemap) or self._doc.cells_editable
+        for action in (self._cut_action, self._clear_action):
+            action.setEnabled(has_doc and target is not None and editable)
+        # Copy is not one of them, because it is a **read**: every kind on screen
+        # has something well-defined to lift, and where the cells are not it, the
+        # picture is - a sprite object copies the pixels of its sheet
+        # (:meth:`~...tilemap_edit.TilemapEditMixin._copy_sprite_pixels`).
+        self._copy_action.setEnabled(has_doc and target is not None)
         # A tilemap pastes from its own in-app buffer, so the system clipboard's
         # contents say nothing about whether a paste here would do anything.
         tilemap = has_doc and self._doc.is_tilemap
         self._paste_action.setEnabled(
             has_doc
+            and editable
             and (self._has_cell_clipboard() if tilemap else clipboard.has_content())
         )
         # An import needs no selection: with none, it lands at the view's start.
@@ -307,14 +318,113 @@ class SelectionMixin:
         self._select_all_action.setEnabled(has_doc)
 
     # -- tile selection ----------------------------------------------------
+    def _grid_tilemap(self):  # noqa: ANN201 - a Document
+        """The document on screen when its cells form a **grid**, else None.
+
+        The one test the three helpers below share, so a tilemap is recognised
+        the same way by all of them. A sprite object is deliberately not one: its
+        subsprites sit at signed pixel offsets rather than in a grid, so no layout
+        describes what is drawn there and none of the cell arithmetic applies
+        (``docs/design/tilemap-entry.md`` §9).
+        """
+        doc = self._doc
+        if doc is None or not doc.is_tilemap or doc.is_sprite:
+            return None
+        return doc
+
     def _view_layout(self) -> BlockLayout:
-        """The slot ↔ cell mapping the canvas is currently drawing with."""
+        """The slot ↔ cell mapping the canvas is currently drawing with.
+
+        On a **tilemap** that is the map's own layout rather than the arrangement
+        axes: a cell is the block — which is what places a 2x2 metatile's four
+        consecutive tiles as a square — and a row is that many tiles wider than
+        Cols says. It has to be the layout
+        :func:`~celpix.pipeline.pipeline.tilemap_tiles` composed the picture with,
+        or the selection reads the canvas's slots off a different grid than the
+        one they were placed on.
+
+        A **sprite object** has no cells for its slots to be cells *of*: its
+        subsprites
+        sit at signed pixel offsets, so what is drawn is a sheet of plain tiles and
+        the selection falls back to selecting those — the frame being the block they
+        group into, which is the layout the render placed them under
+        (:class:`~celpix.pipeline.pipeline.SpriteSheet`).
+        """
+        sheet = self._sprite_sheet()
+        if sheet is not None:
+            return BlockLayout(sheet.columns, *sheet.frame, "row")
+        doc = self._grid_tilemap()
+        if doc is not None:
+            across, down = self._cell_unit()
+            return BlockLayout(self._tilemap_columns() * across, across, down, "row")
         return BlockLayout(
             self._columns.value(),
             self._block_cols.value(),
             self._block_rows.value(),
             self._block_order.currentData(),
         )
+
+    def _cell_unit(self) -> tuple[int, int]:
+        """The block a selection snaps to, in canvas cells — i.e. in tiles.
+
+        1x1 on a pixel document: the tile is the unit there, and every snap below
+        reduces to what it always did. On a tilemap the unit is the map's own
+        **cell**, which may be a 2x2 metatile — and a quarter of a cell is not
+        something the file has. Everything a tilemap selection feeds works a whole
+        cell at a time (:meth:`~...tilemap_edit.TilemapEditMixin._selected_cells`,
+        the cell clipboard, a block flip), so selecting part of one would show a
+        highlight that no edit through it could honour.
+        """
+        doc = self._grid_tilemap()
+        if doc is None:
+            return 1, 1
+        across, down = doc.cell_tiles
+        return max(1, across), max(1, down)
+
+    def _selection_extent(self) -> int:
+        """How many canvas slots hold something a selection can name.
+
+        A pixel document's slots are its own tiles, so the file's tile count is
+        the bound. A tilemap's are its cells expanded into tiles, and
+        ``tile_count`` there counts the **tile bank it borrows from** — which says
+        nothing about how many cells there are. A 4096-cell screen over a
+        256-tile bank is the ordinary case, and bounding it by the bank would put
+        seven eighths of the map out of reach
+        (``docs/design/tilemap-entry.md`` §8).
+
+        A **sprite object**'s are the tiles of its drawn frames — the same
+        distinction arrived at from the other side: the bank it borrows from says
+        nothing about how big the sheet is, and the slots past the last frame hold
+        no picture to select (:attr:`~celpix.pipeline.pipeline.SpriteSheet.slots`).
+        """
+        doc = self._doc
+        if doc is None:
+            return 0
+        sheet = self._sprite_sheet()
+        if sheet is not None:
+            return sheet.slots
+        grid = self._grid_tilemap()
+        if grid is not None:
+            return len(grid.drawn_cells) * grid.tiles_per_cell
+        return doc.tile_count
+
+    def _window_slots(self) -> int:
+        """How many canvas slots the picture on screen has room for.
+
+        The view window on a pixel document; the whole map on a tilemap, which is
+        always drawn entire and has no window to page through. A sprite sheet is
+        drawn entire too, and does have room past its last frame — the space beside
+        a partial bottom row of frames — so it answers with the sheet rather than
+        with the filled part of it.
+        """
+        if self._doc is None:
+            return 0
+        sheet = self._sprite_sheet()
+        if sheet is not None:
+            return sheet.columns * sheet.rows
+        if self._grid_tilemap() is not None:
+            return self._selection_extent()
+        return self._columns.value() * self._view_rows()
 
     def _on_selection_shape_change(self) -> None:
         """Switching Linear ⇄ Rectangle collapses the selection to its anchor.
@@ -402,27 +512,42 @@ class SelectionMixin:
         cell rectangle, per the Shape picker. Blank padding past the file is
         clamped out of a linear range; a press that *starts* there is ignored,
         as the single click always was.
+
+        Both shapes snap **outward to whole units** (:meth:`_cell_unit`) before
+        anything is selected. That is a no-op on a pixel document, where the unit
+        is the tile the slots already count in, and is what makes a tilemap of
+        16x16 cells select one whole cell per click and grow a cell at a time.
         """
         if self._doc is None:
             return
-        count = self._doc.tile_count
+        count = self._selection_extent()
         if self._offset + min(anchor_slot, moving_slot) >= count:
             return
+        across, down = self._cell_unit()
         if self._selection_shape.currentData() is SelectionShape.RECT:
             layout = self._view_layout()
             ax, ay = layout.slot_to_cell(anchor_slot)
             mx, my = layout.slot_to_cell(moving_slot)
-            origin = layout.cell_to_slot(min(ax, mx), min(ay, my))
+            x0, y0 = min(ax, mx) // across * across, min(ay, my) // down * down
+            x1 = (max(ax, mx) // across + 1) * across
+            y1 = (max(ay, my) // down + 1) * down
+            origin = layout.cell_to_slot(x0, y0)
             if origin is None:
                 return
-            cells = (abs(mx - ax) + 1, abs(my - ay) + 1)
+            cells = (x1 - x0, y1 - y0)
             tiles = self._rect_tiles_for(origin, *cells)
             if not tiles or tiles[0] >= count:
                 return
             self._set_rect_selection(cells, tiles)
         else:
-            first = self._offset + min(anchor_slot, moving_slot)
-            last = min(self._offset + max(anchor_slot, moving_slot), count - 1)
+            # A cell's tiles are consecutive slots (``tilemap_tiles``), so a run
+            # of whole cells is still one contiguous run.
+            unit = across * down
+            first = self._offset + min(anchor_slot, moving_slot) // unit * unit
+            last = min(
+                self._offset + max(anchor_slot, moving_slot) // unit * unit + unit - 1,
+                count - 1,
+            )
             self._set_linear_selection(first, last)
         self._announce_selection()
 
@@ -444,7 +569,7 @@ class SelectionMixin:
 
     def _after_selection_change(self) -> None:
         self._sync_selection_actions()
-        self._revalidate_selection(self._columns.value() * self._view_rows())
+        self._revalidate_selection()
         self._refresh_hex()  # the hex highlight tracks the selection
 
     def _announce_selection(self) -> None:
@@ -454,6 +579,23 @@ class SelectionMixin:
             return
         first = self._selected_tile
         assert first is not None
+        if self._grid_tilemap() is not None:
+            self._announce_cell_selection()
+            return
+        if self._doc is not None and self._doc.is_sprite:
+            # Counted, and no byte address: a slot here is a square of the *drawn*
+            # sheet, and the bytes the tiles came from are the bank's - an offset
+            # would point into somebody else's file (:meth:`_cell_byte_range`).
+            if self._rect_size is not None:
+                cols, rows = self._rect_size
+                self.statusBar().showMessage(
+                    f"Selected {cols}×{rows} tiles ({len(tiles)}) of the sheet"
+                )
+            else:
+                self.statusBar().showMessage(
+                    f"Selected {counted(len(tiles), 'tile')} of the sheet"
+                )
+            return
         at_first = self._format_offset(self._tile_byte_offset(first))
         if self._rect_size is not None:
             cols, rows = self._rect_size
@@ -466,6 +608,33 @@ class SelectionMixin:
             self.statusBar().showMessage(
                 f"Selected tiles {first:,}–{tiles[-1]:,} ({len(tiles)} tiles) "
                 f"from {at_first}"
+            )
+
+    def _announce_cell_selection(self) -> None:
+        """The same summary for a tilemap, counted in the unit it selects in.
+
+        Cells rather than tiles, and no byte address: the selection names
+        positions in the *map*, while the bytes the window is over are the tile
+        bank it borrows from, so a file offset here would point at somebody
+        else's data (:meth:`_selection_byte_range`).
+
+        The numbers are the cells' positions in the **file**, which is what the hex
+        dump beside them highlights and what a save writes. On an assembled screen
+        file those need not run consecutively across a rectangle, so the range is
+        its lowest and highest rather than its first and last.
+        """
+        cells = self._selected_cells()
+        if not cells:
+            return
+        if self._rect_size is not None:
+            across, down = self._cell_unit()
+            cols, rows = self._rect_size[0] // across, self._rect_size[1] // down
+            self.statusBar().showMessage(f"Selected {cols}×{rows} cells ({len(cells)})")
+        elif len(cells) == 1:
+            self.statusBar().showMessage(f"Selected cell {cells[0]:,}")
+        else:
+            self.statusBar().showMessage(
+                f"Selected cells {min(cells):,}–{max(cells):,} ({len(cells)} cells)"
             )
 
     def _clear_selection(self) -> None:
@@ -485,11 +654,24 @@ class SelectionMixin:
         # not part of the sync above: they sit over *either* edit mode, so nothing
         # else would tell them a right-drag has just picked a different block.
         self._sync_rearrange_actions()
+        # The binding bar's Cell spin *reads* the selection as well as writing it,
+        # so it belongs to this pass and not to the refresh cycle: a selection
+        # changes without anything being re-rendered, and left to the render it
+        # would sit greyed over a live selection showing the cell before last
+        # (:meth:`~...tilemap_bar.TilemapBarMixin._sync_cell_index`).
+        self._sync_cell_index()
         self._palette_from_selection_action.setEnabled(has)
         self._sync_pin_actions()
-        # Only whole files spawn slices - slices never nest.
+        # Only whole files spawn slices - slices never nest. Nor does a tilemap:
+        # a slice is a pixel entry over a byte region, and the region a cell
+        # selection names is a run of records in a map, which is not a thing the
+        # pixel machinery on the other end of the dialog can open.
         current = self._workspace.current
-        can_slice = current is not None and current.kind is EntryKind.FILE
+        can_slice = (
+            current is not None
+            and current.kind is EntryKind.FILE
+            and not (self._doc is not None and self._doc.is_tilemap)
+        )
         self._new_slice_from_selection_action.setEnabled(has and can_slice)
         self._files_panel.set_has_selection(has)
 
@@ -502,7 +684,7 @@ class SelectionMixin:
         """
         if self._doc is None or self._selected_tile is None:
             return []
-        count = self._doc.tile_count
+        count = self._selection_extent()
         if self._rect_size is not None:
             return [t for t in self._rect_tiles if 0 <= t < count]
         last = min(self._selected_last or self._selected_tile, count - 1)
@@ -519,8 +701,7 @@ class SelectionMixin:
         """
         if self._doc is None or self._selected_tile is None:
             return False
-        window_tiles = self._columns.value() * self._view_rows()
-        return not (0 <= self._selected_tile - self._offset < window_tiles)
+        return not (0 <= self._selected_tile - self._offset < self._window_slots())
 
     def _anchor_tile(self) -> int:
         """The tile the selection anchors on: the selected tile - the top-left
@@ -674,11 +855,11 @@ class SelectionMixin:
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_copy()
             return True
-        if self._doc is not None and self._doc.is_tilemap:
+        if (copy := self._kind_handler(Gesture.COPY)) is not None:
             # Cells are indices into a tile source another program knows nothing
             # about, so they stay in celPix rather than going out as numbers
             # (:mod:`celpix.ui.main_window.tilemap_edit`).
-            return self._copy_cells()
+            return copy()
         selected = self._selection_tiles()
         run = self._selection_bounding_run()
         if self._doc is None or run is None:
@@ -778,8 +959,8 @@ class SelectionMixin:
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_cut()
             return
-        if self._doc is not None and self._doc.is_tilemap:
-            self._cut_cells()
+        if (cut := self._kind_handler(Gesture.CUT)) is not None:
+            cut()
             return
         if not self._copy_selection():
             return
@@ -791,8 +972,8 @@ class SelectionMixin:
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_clear()
             return
-        if self._doc is not None and self._doc.is_tilemap:
-            self._clear_cells()
+        if (clear := self._kind_handler(Gesture.CLEAR)) is not None:
+            clear()
             return
         written = self._blank_selection("clear tiles")
         if written:
@@ -820,8 +1001,8 @@ class SelectionMixin:
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_paste()
             return
-        if self._doc.is_tilemap:
-            self._paste_cells()
+        if (paste := self._kind_handler(Gesture.PASTE)) is not None:
+            paste()
             return
         first = self._stamp_anchor()
         incoming, picture = self._clipboard_tiles()
@@ -1130,17 +1311,15 @@ class SelectionMixin:
 
         Scoped to the window, not the file: the selection is what Copy acts on,
         and selecting a multi-megabyte ROM would mean decoding and rendering the
-        whole thing onto the clipboard.
+        whole thing onto the clipboard. On a tilemap the window *is* the file —
+        it is always drawn entire — so this takes every cell.
         """
         if self._doc is None:
             return
         if self._edit_mode is EditMode.PIXEL:
             self._pixel_select_all()
             return
-        count = min(
-            self._columns.value() * self._view_rows(),
-            self._doc.tile_count - self._offset,
-        )
+        count = min(self._window_slots(), self._selection_extent() - self._offset)
         if count <= 0:
             return
         self._select_tiles(self._offset, self._offset + count - 1)
@@ -1190,8 +1369,13 @@ class SelectionMixin:
         linearly at ``bytes_per_tile`` each, shifted by the grid's byte nudge.
         A rectangle highlights the span it *encloses* - the bytes its rows are
         spread across - since a byte range is all the hex dump can shade.
+
+        A **tilemap** answers in its own cells' bytes (:meth:`_cell_byte_range`),
+        which is the file its dump is showing.
         """
         assert self._doc is not None
+        if self._doc.is_tilemap:
+            return self._cell_byte_range()
         run = self._selection_bounding_run()
         if run is None:
             return None
@@ -1199,13 +1383,48 @@ class SelectionMixin:
         tb = self._doc.bytes_per_tile
         return self._nudge + first * tb, count * tb
 
-    def _revalidate_selection(self, window_tiles: int) -> None:
+    def _cell_byte_range(self) -> tuple[int, int] | None:
+        """The selected cells' enclosing ``(start, length)`` in the map's bytes.
+
+        The tilemap counterpart of the range above, over the entry's **own** file
+        rather than over the tiles it draws: cells are fixed-width records in file
+        order, so a run of cell indices is a byte span. A rectangle spans the
+        bytes it *encloses* for the same reason a rectangle of tiles does - its
+        rows sit apart in the file, and a byte range is all a dump can shade.
+
+        No nudge and no display base: both belong to the pixel view, and the range
+        is an index into the buffer the dump is rendering
+        (:meth:`~...rendering.RenderingMixin._refresh_tilemap_hex` adds the base
+        when it labels a row).
+
+        None for a sprite object - a canvas position there resolves to a *subsprite*
+        through an overlap order rather than to a cell, so there is no record for
+        the highlight to land on.
+
+        The span is read off the lowest and highest cell rather than the first and
+        last selected, because the selection is in *screen* order and an assembled
+        screen file draws its pages side by side: a rectangle over the right-hand
+        page starts at a higher record than one over the left, whichever was
+        dragged first.
+        """
+        doc = self._grid_tilemap()
+        if doc is None or doc.cell_bytes <= 0:
+            return None
+        cells = self._selected_cells()
+        if not cells:
+            return None
+        first, last = min(cells), max(cells)
+        return first * doc.cell_bytes, (last - first + 1) * doc.cell_bytes
+
+    def _revalidate_selection(self) -> None:
         """Re-derive the canvas highlight after the window moved or resized.
 
         Scrolling away hides the highlight but keeps the selection, so scrolling
         back restores it; a selection half in view paints just its visible part.
-        A selection starting past the file's end (file shrank) is dropped, one
-        merely running past it is trimmed.
+        A selection starting past the end of what can be selected (the file
+        shrank, or a map lost cells) is dropped, one merely running past it is
+        trimmed - both against :meth:`_selection_extent`, which on a tilemap is
+        its cells and not the bank it draws from.
 
         A **rectangle** additionally has to survive the view changing under it.
         Its cells are re-resolved against the current columns/arrangement, and if
@@ -1214,21 +1433,22 @@ class SelectionMixin:
         its top-left tile rather than left pointing at whatever moved underneath.
         """
         assert self._doc is not None
+        extent = self._selection_extent()
         if self._selected_tile is not None:
-            if self._selected_tile >= self._doc.tile_count:
+            if self._selected_tile >= extent:
                 self._clear_selection()
                 return
             if self._rect_size is not None:
                 self._revalidate_rect()
             else:
                 self._selected_last = min(
-                    self._selected_last or self._selected_tile,
-                    self._doc.tile_count - 1,
+                    self._selected_last or self._selected_tile, extent - 1
                 )
+        window_slots = self._window_slots()
         slots = {
             tile - self._offset
             for tile in self._selection_tiles()
-            if 0 <= tile - self._offset < window_tiles
+            if 0 <= tile - self._offset < window_slots
         }
         self._canvas.set_selection(slots, as_rect=self._rect_size is not None)
 

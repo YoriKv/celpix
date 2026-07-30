@@ -86,6 +86,7 @@ class Capability(Enum):
     # -- tilemap-only
     TILE_BINDING = auto()  # choose where this tilemap's tiles come from
     STAMP = auto()  # place a cell from the bound tile source
+    CELL_LABELS = auto()  # number each cell with the tile it names
 
 
 # Everything that is about bytes rather than about pixels: an entry of any kind
@@ -145,12 +146,19 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # hardware cell carries mirror bits and no transpose bit, so a tilemap can be
     # flipped and cannot be turned. One CELL_TRANSFORM capability would have had
     # to lie about one of the two.
+    #
+    # CELL_LABELS is tilemap-only because the label answers a question only a
+    # tilemap has. A cell *names* a tile that lives somewhere else, and which one
+    # is not recoverable by looking; a pixel document's tile has no name to show
+    # — its position in the file is its identity, and the position bar already
+    # says that.
     ContentKind.TILEMAP: _BYTE_LEVEL
     | {
         Capability.PALETTE_EDIT,
         Capability.TILE_SELECT,
         Capability.CLIPBOARD,
         Capability.CELL_FLIP,
+        Capability.CELL_LABELS,
         Capability.EXPORT_IMAGE,
         Capability.TILEMAP_CODEC,
         Capability.PALETTE_CODEC,
