@@ -58,7 +58,7 @@ KEY_PALETTE_ERROR = "palette.error"
 # change, and a format that states none of them is simply read without hints.
 #
 # int: how many cells across the map is, when the format fixes it — a screen and
-# a panel are 32, a stamp layout 128. Without it the width is a guess the user
+# a panel are 32, a stamp layout 64. Without it the width is a guess the user
 # has to make, and a wrong guess shears the picture into diagonal stripes rather
 # than failing, which is the worst way to be wrong.
 KEY_TILEMAP_COLUMNS = "tilemap.columns"
@@ -69,16 +69,51 @@ KEY_TILEMAP_COLUMNS = "tilemap.columns"
 # the corpus — a panel has three bytes shaped like this one and none of them is
 # it (``docs/graphics-formats-reference/scgcad-formats.md`` §3.1).
 KEY_TILEMAP_CELL_TILES = "tilemap.cell-tiles"
+# int: the palette row a cell's own row 0 counts from, when the *file* says.
+# Distinct from the preset's ``palette_row_base``, which is a fact about a kind
+# of cell — a sprite's rows always start at CGRAM 8. A screen and a panel carry
+# two header bytes (``col_half``, ``col_cell``) that move the base per *file*,
+# so no preset value can be right for all of them: 1,013 of 1,080 surveyed
+# panels want base 1 and 62 want 0 (``scgcad-formats.md`` §3.3). Published only
+# where those bytes have been checked against the corpus.
+KEY_TILEMAP_PALETTE_ROW_BASE = "tilemap.palette-row-base"
+# tuple[int, int]: how many cells one **stamp** covers, for a map whose cells are
+# subdivided into blocks a *referring* map indexes. Not a cell size — the cells
+# stay one tile each — but the step at which another format's coordinates land in
+# them, which only this file's header knows.
+#
+# A panel is the one format that states it (header 0x69/0x6A, as exponents), and
+# the reader that needs it is the stamp layout bound to it: a layout's entry names
+# the stamp's *top-left* cell and the rest of the block follows from this pair,
+# with the positions between two entries holding nothing anyone should draw
+# (``docs/graphics-formats-reference/scgcad-formats.md`` §4). Published by the
+# **source** map and read by the referrer, which is why it travels on the context
+# rather than in the layout's own preset: the layout's file does not know it, and
+# the same layout stamps differently against a differently divided panel.
+KEY_TILEMAP_STAMP_TILES = "tilemap.stamp-tiles"
 # int: how many cell *rows* one **page** holds, for a format whose file is several
 # independent maps end to end rather than one — a screen file is four 32x32
 # screens (``docs/graphics-formats-reference/scgcad-formats.md`` §2). Published
 # alongside the width above, which is the page's width: a paged format states
 # both or neither, since a page with no stated width has no shape.
 #
-# What it buys is the **assembly**: nothing in the file records how those four
-# make up a larger screen, so laying them out is the user's choice and this is
-# what says there is a choice to make (``docs/design/tilemap-entry.md`` §6).
+# What it buys is the **assembly**: the pages have to be laid out into one
+# picture, and this is what says there are several to lay out
+# (``docs/design/tilemap-entry.md`` §6).
 KEY_TILEMAP_PAGE_ROWS = "tilemap.page-rows"
+# int: how many pages across, for a format whose assembly is **structural** rather
+# than a reading. Published beside the page height above, and answering the
+# question that one raises: a screen's four quadrants are one 64x64 tilemap and
+# the editor's own loader says so outright — `load_scr` writes the four blocks
+# into a single array at row stride 64
+# (``docs/graphics-formats-reference/scgcad-asset-pipeline.md`` §2.7).
+#
+# Absent means the format does not state one, which leaves the layout the user's
+# to choose. That is the case this pair was first built for and it turned out not
+# to be the screen's; it is kept because "several maps end to end" and "and here
+# is how they go together" are genuinely two claims, and a format may make the
+# first without the second.
+KEY_TILEMAP_PAGES_ACROSS = "tilemap.pages-across"
 # "little" | "big": the byte order a container knows its cells are in, where that
 # is a property of the *file* rather than of its format. The S-CG-CAD sprite
 # object is the case it exists for: 26 of the 1,341 in the corpus come from a
@@ -87,6 +122,16 @@ KEY_TILEMAP_PAGE_ROWS = "tilemap.page-rows"
 # file is the better authority; a codec that ignores it is simply reading a
 # format where the question never arises.
 KEY_TILEMAP_ENDIAN = "tilemap.endian"
+# tuple[int, ...]: how many cells each frame of a sprite map holds, for a format
+# that stores its frames **variable-length** rather than in fixed slots. Every
+# other sprite format gives every frame the same number of subsprite slots and
+# marks the unused ones, so a frame is a fixed stride into the cells and no one
+# has to be told where the boundaries are. A format that instead counts each
+# frame keeps those counts *between* its records, which is structure rather than
+# payload — so the container takes them out and states them here, and the codec
+# groups by them (:meth:`~celpix.plugins.builtins.object_codec.SprCodec.frames`).
+# Absent means fixed slots, which is what ``subsprites_per_frame`` sizes.
+KEY_TILEMAP_FRAME_SIZES = "tilemap.frame-sizes"
 # str: the pixel preset a container believes its payload is in, when the format
 # says. A tile bank that records its own bit depth should not need it guessed —
 # the depths look alike enough that a wrong pick reads as plausible garbage. The
@@ -132,17 +177,39 @@ HINT_INFO: dict[str, tuple[str, str]] = {
         "Read small, a metatile map draws one quarter of every\n"
         "cell and drops the rest.",
     ),
+    KEY_TILEMAP_PALETTE_ROW_BASE: (
+        "Palette row base",
+        "The palette row this map's own row 0 counts from, as\n"
+        "its header states it. Read as 0 when the file says 1,\n"
+        "every tile draws through the wrong sixteen colours.",
+    ),
+    KEY_TILEMAP_STAMP_TILES: (
+        "Stamp size",
+        "How many cells one stamp covers, for a map that another\n"
+        "map's coordinates index in blocks. Read by the layout\n"
+        "bound to this one, not by this one.",
+    ),
     KEY_TILEMAP_PAGE_ROWS: (
         "Page height",
         "The file is several independent maps end to end, this\n"
-        "many cell rows each. How they assemble into one larger\n"
-        "picture is yours to choose - the file does not say.",
+        "many cell rows each, assembled into one picture.",
+    ),
+    KEY_TILEMAP_PAGES_ACROSS: (
+        "Pages across",
+        "How the pages above go together, where the format\n"
+        "settles it rather than leaving it to be read.",
     ),
     KEY_TILEMAP_ENDIAN: (
         "Cell byte order",
         "The byte order this file's cells are in, where the file\n"
         "itself states it. Overrides the format preset, the file\n"
         "being the better authority about its own bytes.",
+    ),
+    KEY_TILEMAP_FRAME_SIZES: (
+        "Frame sizes",
+        "How many subsprites each frame holds, for a format that\n"
+        "counts them rather than giving every frame the same\n"
+        "number of slots. Read off the file's own counts.",
     ),
     KEY_PIXEL_PRESET: (
         "Pixel format",

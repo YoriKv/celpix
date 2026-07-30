@@ -1,0 +1,35 @@
+# Yoshi's Island sprite pattern (SPR) subsprite record — 8 bytes, frames of
+# freely placed subsprites like a sprite object's, and not one field in the same
+# place:
+#
+#   byte 0-1  X offset, signed 16-bit - a sprite object spends one byte, and
+#             stores Y first
+#   byte 2-3  Y offset, signed 16-bit
+#   byte 4-5  character number, 16 bits wide where a sprite object's is 9
+#   byte 6    the console's attribute bits as a loose byte, `vhoopppN`
+#   byte 7    which of the two sizes, stored already shifted up one
+#
+# The record carries **no drawn bit**: a record that is present is drawn, and how
+# many each frame holds is a count byte the container reads out ahead of it. So
+# there is no `subsprites_per_frame` here — the frames are different lengths, and
+# the file says what they are.
+#
+# `subsprite_tiles` is the pair the size bit chooses between, as for a sprite
+# object: the file does not record which pair the game set.
+# See docs/graphics-formats-reference/ys-sprite-patterns.md.
+id = "preset.tilemap.ys-spr"
+name = "Yoshi's Island sprite pattern subsprite (SPR)"
+engine_id = "codec.ys-spr"
+
+[params]
+# A **sprite map**: the tilemap variant whose cells are freely-placed subsprites
+# grouped into frames rather than positions in a grid (tilemap-entry.md sec 6).
+# Declared rather than inferred so the bar can describe an object before anything
+# is bound to it, exactly as `indirect` does for a stamp layout.
+layout = "sprite"
+# A sprite's 3-bit palette field counts from CGRAM row 8: the console keeps OBJ
+# palettes in the upper half of CGRAM (snes-hardware-notes.md sec 6). So row 0
+# here means row 8 there, and without this the pattern draws through the
+# background's colours.
+palette_row_base = 8
+subsprite_tiles = [1, 2]

@@ -1,18 +1,22 @@
 # Stamp layout (MAP) entry — 16-bit big-endian, and NOT a tile reference: each
 # entry names a cell in a panel, which supplies the tile and its attributes.
 #
-#   bit 15     meaning unknown; set on 4% of real entries
-#   bit 14     attribute-source flag
+#   bit 15     unused; the tool's writer never sets it
+#   bit 14     drawn — the tool skips a position whose entry lacks it
 #   bits 13-5  panel Y (0-511)
 #   bits 4-0   panel X (0-31)
 #
 # The two coordinates are adjacent and the panel is 32 wide, so the low 14 bits
 # read as one number ARE `panelY * 32 + panelX` — the panel cell index. That is
 # why `index` spans them both rather than the codec needing to compose two
-# fields. `flags` carries bits 14-15 uninterpreted so a write stays byte-exact.
+# fields. `flags` carries bits 14-15 uninterpreted so a write stays byte-exact:
+# celPix has no per-position visibility to map bit 14 onto, so it draws every
+# position and writes the bit back exactly as it read it.
 #
 # Resolving an index into a tile needs the panel it was authored against; a MAP
-# on its own draws nothing. See docs/graphics-formats-reference/scgcad-formats.md §4.
+# on its own draws nothing. The panel also settles how big a block one entry
+# names — most are 2x2, and then only one entry in four is ever read.
+# See docs/graphics-formats-reference/scgcad-formats.md §4.
 id = "preset.tilemap.scgcad-map"
 name = "Stamp layout entry (panel coordinate)"
 engine_id = "codec.tilemap-packed"

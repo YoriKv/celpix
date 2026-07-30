@@ -85,19 +85,16 @@ SUBPAL_CELLS_TIP = (
 # left free because an assembly *is* a width: any other column count cuts the
 # pages at the wrong place and shears the picture.
 COLS_TIP = "Tiles per row"
-# Names the control that has taken Cols over rather than pointing at it: the
-# assembly picker is on the binding bar, not beside this spin, so "the assembly
-# beside it" would send the user looking along the wrong row.
-COLS_ASSEMBLED_TIP = "Cells per row\nSet by Assembly, on the bar under the canvas"
+# Says what has taken Cols over. There is no control to point at — a paged file
+# states its own layout — so this names the *file* as the authority rather than
+# sending the user looking for a picker along some other row.
+COLS_ASSEMBLED_TIP = "Cells per row\nFixed by how this file's pages assemble"
 
-# The assembly picker's own tooltip. Deliberately says the file is silent: the
-# choice exists because nothing records which arrangement was meant, and a user
-# who thinks celPix read this out of the header would trust the wrong picture.
-ASSEMBLY_TIP = (
-    "How this file's separate maps lay out:\n"
-    "2x2 is two across and two down\n"
-    "The file does not record which was intended"
-)
+# The Block W×H spins' width. Wide enough for the one digit every arrangement in
+# hand uses, with room to read a two-digit value typed into Custom — the range
+# allows 64 across and 256 down, and a box sized to the range would be a Rows-wide
+# reservation for a "2".
+BLOCK_SPIN_WIDTH = 42
 
 
 def _group(caption: str, *widgets: QWidget, tooltip: str = "") -> QWidget:
@@ -294,12 +291,11 @@ class InterpretationMixin:
         # (:meth:`~...rendering.RenderingMixin._settle_tilemap_assembly`).
         self._columns_label = add_labelled(view, "Cols:", self._columns, COLS_TIP)
 
-        # The assembly picker is **not** here, though it takes Cols over: it is a
-        # tilemap's alone, and this toolbar is every document's. It sits on the
-        # binding bar with the rest of what a map's file does not record
-        # (:meth:`~...tilemap_bar.TilemapBarMixin._build_tilemap_bar`), which is
-        # why Cols says what has locked it rather than relying on a picker beside
-        # it to be self-evident (:data:`COLS_ASSEMBLED_TIP`).
+        # A paged tilemap's assembly takes Cols over and has **no control at all**:
+        # every paged format celPix reads states its own layout, so there was never
+        # a choice to offer. That is why the caption above has to say what locked
+        # it (:data:`COLS_ASSEMBLED_TIP`) — there is nothing on screen to infer it
+        # from.
 
         # How many tile-rows the window shows - the "render N rows" view setting.
         # Kept on self with its caption because View > Entire File locks the pair
@@ -362,16 +358,38 @@ class InterpretationMixin:
 
         self._block_cols = self._spin(1, 64, 1, self._on_view_change)
         self._block_rows = self._spin(1, 256, 1, self._on_view_change)
-        self._block_cols.setFixedWidth(rows_width)
-        self._block_rows.setFixedWidth(rows_width)
+        # Narrower than the three digits Cols and Rows are pinned to: a block is a
+        # handful of tiles \u2014 every shipped arrangement is 1 or 2 a side \u2014 so
+        # sizing these to their *range* reserved a Rows-wide box for a "2".
+        self._block_cols.setFixedWidth(BLOCK_SPIN_WIDTH)
+        self._block_rows.setFixedWidth(BLOCK_SPIN_WIDTH)
+        self._block_cols.setToolTip("Tiles per block, across")
         self._block_rows.setToolTip("Tiles per block, down")
-        add_labelled(arrange, "Block:", self._block_cols, "Tiles per block, across")
         # The "x" between the pair belongs to both, so it carries the whole
         # control's sense rather than either side's half.
         times = QLabel("\u00d7")
         times.setToolTip("Block size, in tiles")
-        arrange.addWidget(times)
-        arrange.addWidget(self._block_rows)
+        # The three read as one control, so they go in a tight container instead
+        # of taking the toolbar's own gap between each \u2014 the treatment the pixel
+        # format and its filter button already get. "2 x 4" with a full toolbar
+        # gap either side of the x reads as three controls that happen to be
+        # adjacent.
+        block_pair = QWidget()
+        pair = QHBoxLayout(block_pair)
+        pair.setContentsMargins(0, 0, 0, 0)
+        pair.setSpacing(2)
+        pair.addWidget(self._block_cols)
+        pair.addWidget(times)
+        pair.addWidget(self._block_rows)
+        # Buddied to the first spin: the container cannot take focus, so the
+        # caption's mnemonic needs the input it actually names.
+        add_labelled(
+            arrange,
+            "Block:",
+            block_pair,
+            "Tiles per block, across",
+            buddy=self._block_cols,
+        )
         self._block_order = QComboBox()
         self._block_order.setToolTip(
             "How each block fills:\n"

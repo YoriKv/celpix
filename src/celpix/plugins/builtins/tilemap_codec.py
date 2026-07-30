@@ -23,6 +23,12 @@ Params:
   Carried through untouched so a write stays byte-exact; see :class:`Cell`.
 - ``cell_tiles`` — ``[across, down]``, how many tiles one cell covers
   (default ``[1, 1]``; a panel cell is ``[2, 2]``).
+- ``page_columns`` / ``page_rows`` / ``page_counts`` — the page geometry a
+  *format* fixes, for hardware that cuts a map into fixed screens and lays the
+  pieces out into one picture. Stated together or not at all, and only applied
+  when the file holds one of ``page_counts`` whole pages, so a run of cells the
+  hardware never produced keeps a width the user owns
+  (:meth:`TilemapCodec.decode`).
 
 Encoding is deliberately lossy in exactly one direction: a value too wide for
 its field is masked rather than raising. A cell can arrive from a format with a
@@ -36,7 +42,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from celpix.core.context import PipelineContext
+from celpix.core.context import (
+    KEY_TILEMAP_COLUMNS,
+    KEY_TILEMAP_PAGE_ROWS,
+    PipelineContext,
+)
 from celpix.core.errors import Stage
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins.base import PluginInfo
@@ -79,6 +89,41 @@ def _cell_bytes(params: dict[str, Any]) -> int:
     if size < 1:
         raise ValueError(f"cell size must be at least one byte, got {size}")
     return size
+
+
+def _publish_pages(cells: int, params: dict[str, Any], ctx: PipelineContext) -> None:
+    """State the page geometry the format fixes, where this file has that shape.
+
+    The pixel side's ``bitmap_width`` problem one level up: a format can cut a map
+    into fixed screens that only mean anything assembled, and read back to back
+    those screens stack in a column no hardware ever drew. A *container* states
+    the shape when it has a header to read it from
+    (:data:`~celpix.core.context.KEY_TILEMAP_PAGE_ROWS`); this is the same claim
+    made by the **entry format** instead, which is what covers a bare payload —
+    a tilemap lifted out of a ROM, or a screen file whose header was stripped —
+    since those carry no container to speak for them.
+
+    Only claimed at a page count the format actually comes in (``page_counts``).
+    The geometry drives a *locked* width, so claiming one wrongly is worse than
+    claiming none: a cell run some game laid out its own way would be pinned to a
+    shape it has not got, where saying nothing leaves the width the user's.
+
+    The container wins where it spoke, and by construction rather than by
+    precedence — a header is the better authority, and it has already run.
+    """
+    columns = int(params.get("page_columns", 0) or 0)
+    rows = int(params.get("page_rows", 0) or 0)
+    counts = params.get("page_counts") or ()
+    if columns <= 0 or rows <= 0 or ctx.get(KEY_TILEMAP_PAGE_ROWS):
+        return
+    per_page = columns * rows
+    if cells % per_page or cells // per_page not in {int(n) for n in counts}:
+        return
+    # Both halves or neither: a page with no stated width has no shape, and
+    # ``Document.page_size`` reads the width off the map width above.
+    if not ctx.get(KEY_TILEMAP_COLUMNS):
+        ctx.set(KEY_TILEMAP_COLUMNS, columns)
+    ctx.set(KEY_TILEMAP_PAGE_ROWS, rows)
 
 
 def _endian(params: dict[str, Any]) -> str:
@@ -131,6 +176,7 @@ class TilemapCodec:
                     flags=_get(word, fields["flags"]),
                 )
             )
+        _publish_pages(len(cells), params, ctx)
         return cells
 
     def encode(

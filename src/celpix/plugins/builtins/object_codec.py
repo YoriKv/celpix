@@ -1,4 +1,4 @@
-"""The sprite-object cell codecs: 6-byte subsprite records, and their frames.
+"""The sprite-object cell codecs: subsprite records, and their frames.
 
 A tilemap codec by protocol — bytes to a flat list of
 :class:`~celpix.core.tilemap.Cell` and back — but the cells are **subsprites**
@@ -9,12 +9,15 @@ packed engine has no need for, :meth:`frames`, which is what the view actually
 draws. The cells stay the file's own records, in the file's own order, so a
 write puts back exactly what was read.
 
-Two records, both 6 bytes and both frames-of-subsprites, but they agree on nothing
-below that — which is why they are two engines rather than one with a field
-table. The object record (:class:`ObjectCodec`) wraps the console's own sprite
-attribute word; the transfer record (:class:`ObzCodec`) spreads the same
-information across single bytes, widens the character number to 12 bits and
-swaps X with Y (``docs/graphics-formats-reference/scgcad-formats.md`` §9).
+Three records, all frames-of-subsprites, agreeing on nothing below that — which
+is why they are three engines rather than one with a field table. The object
+record (:class:`ObjectCodec`) wraps the console's own sprite attribute word; the
+transfer record (:class:`ObzCodec`) spreads the same information across single
+bytes, widens the character number to 12 bits and swaps X with Y
+(``docs/graphics-formats-reference/scgcad-formats.md`` §9); the sprite-pattern
+record (:class:`SprCodec`) comes from a different tool altogether, is 8 bytes
+rather than 6, and is the one whose frames are *counted* rather than slotted
+(``docs/graphics-formats-reference/ys-sprite-patterns.md``).
 
 The object record, 6 bytes and hardware-shaped:
 
@@ -41,7 +44,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from celpix.core.context import KEY_TILEMAP_ENDIAN, PipelineContext
+from celpix.core.context import (
+    KEY_TILEMAP_ENDIAN,
+    KEY_TILEMAP_FRAME_SIZES,
+    PipelineContext,
+)
 from celpix.core.errors import Stage
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, Frame, Subsprite
 from celpix.core.tilemap import Cell
@@ -49,6 +56,7 @@ from celpix.plugins.base import PluginInfo
 
 OBJECT_ENGINE = "codec.scgcad-object"
 OBZ_ENGINE = "codec.scgcad-obz"
+SPR_ENGINE = "codec.ys-spr"
 
 RECORD = 6  # bytes per subsprite
 SUBSPRITES_PER_FRAME = 64  # every frame has room for this many, used or not
@@ -98,11 +106,12 @@ def subsprites_per_frame(params: dict[str, Any]) -> int:
 
 
 class _SubspriteCodec:
-    """What the two subsprite records share: everything above the byte layout.
+    """What the subsprite records share: everything above the byte layout.
 
-    Both are 6 bytes, both group into frames of a fixed size, and both answer the
-    same three questions about a cell the same way. Only :meth:`decode`,
-    :meth:`encode` and ``_subsprite`` differ, which is the whole of the subclassing.
+    All three group into frames and answer the same three questions about a cell
+    the same way. Only :meth:`decode`, :meth:`encode` and ``_subsprite`` differ,
+    which is the whole of the subclassing — plus, for the one format that counts
+    its frames rather than slotting them, :meth:`frames`.
     """
 
     def bytes_per_cell(self, params: dict[str, Any]) -> int:
@@ -118,13 +127,20 @@ class _SubspriteCodec:
         """The two sizes a subsprite's own size bit chooses between."""
         return size_pair(params)
 
-    def frames(self, cells: list[Cell], params: dict[str, Any]) -> list[Frame]:
+    def frames(
+        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
+    ) -> list[Frame]:
         """The cells regrouped into frames of subsprites — what the view draws.
 
         The extra half of these engines, and the reason they are not the generic
         packed one. Undrawn subsprites are dropped here rather than carried as
         invisible ones: they are the file's empty slots, all 94% of them, and
         nothing downstream would have anything to do with them.
+
+        ``ctx`` is what lets a format whose frames are **not** a fixed stride say
+        so: the boundaries are then in the file rather than in the preset, so only
+        the container can have read them (:class:`SprCodec`). Ignored here, where
+        every frame has the same number of slots.
         """
         per_frame = subsprites_per_frame(params)
         return [
@@ -303,6 +319,152 @@ class ObzCodec(_SubspriteCodec):
         )
 
 
+# The sprite-pattern record, read as one 64-bit big-endian number for the reason
+# the transfer record is — every bit the tool does not use travels in
+# `Cell.flags` without being enumerated:
+#
+#   byte 0-1  X offset, signed 16-bit
+#   byte 2-3  Y offset, signed 16-bit
+#   byte 4-5  character number, 16 bits wide and 12 bits used
+#   byte 6    the console's attribute bits as a loose byte, `vhoopppN`
+#   byte 7    the size bit, stored already shifted up one
+#
+# The attribute byte lands one byte up from the bottom of the record, which is
+# where the transfer record's is too, so its four fields sit at the same shifts.
+SPR_RECORD = 8
+_SPR_INDEX = 16  # 16 bits: bytes 4-5 whole
+_SPR_PALETTE = 9
+_SPR_PRIORITY = 12
+_SPR_FLIP_H = 14
+_SPR_FLIP_V = 15
+_SPR_X = 48
+_SPR_Y = 32
+_SPR_LARGE = 1  # the size byte is `size << 1`, so the bit is one up
+# Every bit celPix gives a Cell field to. The complement rides in `flags`: both
+# offsets, the size byte, and **the attribute byte's bit 0**, which is the one
+# that has to be carried rather than recomputed. The tool derives that bit from
+# the character number's bit 8, and its own files disagree with it — 1,054 of the
+# corpus's 7,078 records, nearly 40% of those written by the earliest build. A
+# reader that recomputes it corrupts every one of them
+# (``docs/graphics-formats-reference/ys-sprite-patterns.md`` §3).
+_SPR_MODELLED = (0xFFFF << _SPR_INDEX) | (0x7 << _SPR_PALETTE) | (0xF << _SPR_PRIORITY)
+
+
+class SprCodec(_SubspriteCodec):
+    """The sprite-pattern record: 8 bytes, and frames the file *counts*.
+
+    The third subsprite record and the one that is not a fixed grid of slots.
+    Where the other two give every frame the same 64 slots and mark the used
+    ones, this format writes a count byte ahead of each frame's records and has
+    no drawn bit at all — a record that is present is drawn. So the frame
+    boundaries are file structure rather than payload, and they arrive on the
+    context after the container has taken them out
+    (:data:`~celpix.core.context.KEY_TILEMAP_FRAME_SIZES`).
+
+    Its offsets are a signed **16 bits** where an object's are one byte, and its
+    character number 16 bits where an object's is nine — both wider than anything
+    the corpus puts in them, and both carried at their full width so a write puts
+    back what was read.
+    """
+
+    info = PluginInfo(
+        id=SPR_ENGINE,
+        name="Yoshi's Island sprite pattern subsprite",
+        stage=Stage.INTERPRET_TILEMAP,
+    )
+
+    def bytes_per_cell(self, params: dict[str, Any]) -> int:
+        return SPR_RECORD
+
+    def decode(
+        self, data: bytes, params: dict[str, Any], ctx: PipelineContext
+    ) -> list[Cell]:
+        cells: list[Cell] = []
+        for at in range(0, len(data) - SPR_RECORD + 1, SPR_RECORD):
+            word = int.from_bytes(data[at : at + SPR_RECORD], "big")
+            cells.append(
+                Cell(
+                    index=(word >> _SPR_INDEX) & 0xFFFF,
+                    palette_row=(word >> _SPR_PALETTE) & 0x7,
+                    priority=(word >> _SPR_PRIORITY) & 0x3,
+                    flip_h=bool((word >> _SPR_FLIP_H) & 1),
+                    flip_v=bool((word >> _SPR_FLIP_V) & 1),
+                    flags=word & ~_SPR_MODELLED,
+                )
+            )
+        return cells
+
+    def encode(
+        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
+    ) -> bytes:
+        out = bytearray()
+        for cell in cells:
+            word = (
+                (cell.flags & ~_SPR_MODELLED)
+                | ((cell.index & 0xFFFF) << _SPR_INDEX)
+                | ((cell.palette_row & 0x7) << _SPR_PALETTE)
+                | ((cell.priority & 0x3) << _SPR_PRIORITY)
+                | ((1 << _SPR_FLIP_H) if cell.flip_h else 0)
+                | ((1 << _SPR_FLIP_V) if cell.flip_v else 0)
+            )
+            out += word.to_bytes(SPR_RECORD, "big")
+        return bytes(out)
+
+    def index_limit(self, params: dict[str, Any]) -> int | None:
+        """The character number's own width — two whole bytes of it."""
+        return 0xFFFF
+
+    def frames(
+        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
+    ) -> list[Frame]:
+        """The cells cut into frames at the boundaries the file counted.
+
+        The counts are the file's, so a frame here is however many subsprites the
+        artist put in it — there are no empty slots to drop, which is why nothing
+        below tests a drawn bit.
+
+        **Falls back to fixed slots when nothing published counts**, which happens
+        when this format is chosen by hand for bytes that came through another
+        container: no reading of an unframed buffer is right, so it degrades to
+        the one the other two sprite records use rather than inventing a third.
+        A short count list stops early and a long one runs out of cells, both
+        without raising: a truncated file should draw the frames it has.
+        """
+        sizes = ctx.get(KEY_TILEMAP_FRAME_SIZES)
+        if not sizes:
+            return super().frames(cells, params, ctx)
+        out: list[Frame] = []
+        at = 0
+        for size in sizes:
+            out.append(tuple(self._subsprite(cell) for cell in cells[at : at + size]))
+            at += size
+        return out
+
+    @staticmethod
+    def _subsprite(cell: Cell) -> Subsprite:
+        """One decoded subsprite — always one: the format has no undrawn slot.
+
+        No group byte either, so that field of the model stays 0 rather than
+        being fed a byte this record does not have.
+        """
+        flags = cell.flags
+        return Subsprite(
+            x=_signed16((flags >> _SPR_X) & 0xFFFF),
+            y=_signed16((flags >> _SPR_Y) & 0xFFFF),
+            index=cell.index,
+            palette_row=cell.palette_row,
+            priority=cell.priority,
+            flip_h=cell.flip_h,
+            flip_v=cell.flip_v,
+            large=bool((flags >> _SPR_LARGE) & 1),
+        )
+
+
 def _signed(value: int) -> int:
     """A byte offset as the signed number it is: subsprites sit around an origin."""
     return value - 0x100 if value > 0x7F else value
+
+
+def _signed16(value: int) -> int:
+    """The same for a format that spends two bytes on an offset it never fills."""
+    return value - 0x10000 if value > 0x7FFF else value

@@ -13,3 +13,19 @@ palette = { shift = 10, bits = 3 }
 priority = { shift = 13, bits = 1 }
 flip_h = { shift = 14, bits = 1 }
 flip_v = { shift = 15, bits = 1 }
+# The console cuts a background into 32x32 screens and lays the pieces
+# horizontally-then-vertically, so the four BG sizes are 1, 2 or 4 of them:
+# 32x32, 64x32 / 32x64, and 64x64 (snes-hardware-notes.md §5). That is a
+# property of the *entry format*, not of any one file wrapping it — a screen
+# file states the same shape from its header, and a bare 8 KB tilemap lifted
+# out of a ROM has no header to state it with. Read back to back the four
+# quadrants stack in a 32x128 column no console ever drew.
+#
+# `page_counts` is what keeps this from claiming maps the hardware never made:
+# a run of cells that is not one of those sizes is some game's own layout, and
+# it keeps a width the user owns rather than being locked to a shape it has not
+# got. Two pages stay ambiguous by nature — 64x32 and 32x64 are both real — so
+# the assembly itself is left to resolve rather than stated here.
+page_columns = 32
+page_rows = 32
+page_counts = [1, 2, 4]

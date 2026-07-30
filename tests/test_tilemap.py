@@ -760,7 +760,7 @@ def test_undrawn_slots_are_dropped_and_trailing_empty_frames_with_them() -> None
         params,
         PipelineContext(),
     )
-    frames = ObjectCodec().frames(cells, params)
+    frames = ObjectCodec().frames(cells, params, PipelineContext())
     assert [len(frame) for frame in frames] == [1, 0]
     assert len(drawn_frames(frames)) == 1
 
@@ -886,7 +886,7 @@ def test_a_transfer_record_puts_every_field_somewhere_else() -> None:
     ctx = PipelineContext()
     (cell,) = codec.decode(raw, params, ctx)
     assert (cell.index, cell.palette_row) == (0x9EE, 5)  # 12-bit, past a sprite's 9
-    (sub,) = codec.frames([cell], params)[0]
+    (sub,) = codec.frames([cell], params, ctx)[0]
     assert (sub.x, sub.y, sub.group, sub.large) == (-8, 100, 3, True)
     assert codec.encode([cell], params, ctx) == raw
 
@@ -1219,11 +1219,88 @@ def test_a_chained_cell_resolves_through_the_map_it_names() -> None:
     ) == Cell(index=10, palette_row=2, flip_h=False)
 
 
+def test_a_stamped_chain_expands_one_entry_across_its_whole_block() -> None:
+    """A 2x2 stamp means one entry in four is ever read: the entry at a block's
+    corner names the source cell its corner draws, and the rest of the block
+    walks the *source's* rows from there. Read one entry per position instead and
+    a layout draws four times its content out of stale words."""
+    from celpix.core.tilemap import expand_stamps
+
+    # A 4-wide source, so a step down a block is +4 rather than +2.
+    source = [Cell(index=100 + at) for at in range(16)]
+    # A 4-wide layout: two blocks across, two down. Only the even/even entries
+    # were ever written; the rest hold leftovers that must not be drawn.
+    stale = Cell(index=15)
+    cells = [
+        Cell(index=0), stale, Cell(index=2), stale,
+        stale, stale, stale, stale,
+        Cell(index=8), stale, Cell(index=10), stale,
+        stale, stale, stale, stale,
+    ]  # fmt: skip
+    out = expand_stamps(cells, source, 4, (2, 2), 4, carry_rows=False)
+    assert [cell.index for cell in out] == [
+        100, 101, 102, 103,
+        104, 105, 106, 107,
+        108, 109, 110, 111,
+        112, 113, 114, 115,
+    ]  # fmt: skip
+    # An unstamped chain is the same walk with nothing to expand, so the two
+    # agree wherever the block is 1x1 - which is what keeps the ordinary case on
+    # one code path rather than two that could drift.
+    assert [
+        cell.index
+        for cell in expand_stamps(cells, source, 4, (1, 1), 4, carry_rows=False)
+    ] == [cell.index + 100 for cell in cells]
+
+
+def test_a_stamped_layout_resolves_and_restamps_by_the_block(tmp_path) -> None:
+    """The document end of the same rule: what is drawn is one source cell per
+    position, and a click anywhere inside a block edits the one entry that block
+    came from — so the three positions the format never wrote stay unwritten."""
+    from celpix.core.context import KEY_TILEMAP_COLUMNS
+    from celpix.core.document import CellChain, Document
+
+    ctx = PipelineContext()
+    ctx.set(KEY_TILEMAP_COLUMNS, 4)
+    source = [Cell(index=100 + at) for at in range(16)]
+    doc = Document(
+        pixel_data=b"",
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id=SNES_BG, write_enabled=False
+        ),
+        palette_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id="", write_enabled=False
+        ),
+        cells=[Cell(index=at) for at in range(16)],
+        chain=CellChain(source, False, stamp=(2, 2), source_columns=4),
+        tilemap_ctx=ctx,
+    )
+    # Position 5 is inside the block whose corner is entry 0, so it draws the
+    # source cell one right and one down of the one entry 0 names.
+    assert doc.drawn_cells[5].index == 105
+    assert [doc.cell_at(at) for at in (0, 1, 4, 5)] == [0, 0, 0, 0]
+    assert [doc.cell_at(at) for at in (2, 7, 8, 15)] == [2, 2, 8, 10]
+
+    # A restamp re-resolves the whole block, not just the position clicked.
+    doc.cells[doc.cell_at(5)] = Cell(index=8)
+    doc.resolve()
+    assert [cell.index for cell in doc.drawn_cells[:6]] == [
+        108,
+        109,
+        102,
+        103,
+        112,
+        113,
+    ]
+
+
 # -- panels ----------------------------------------------------------------
 def _pnl_bytes(*, tile_size=0, width_exp=1, height_exp=1, body=b"") -> bytes:
-    """A panel whose three cell-size decoys are set as asked. The offsets are
-    spelled out here rather than imported because the container does not read
-    them at all — naming them in the module would be a constant nothing uses."""
+    """A panel whose cell-size decoy and two stamp exponents are set as asked."""
     from celpix.plugins.builtins.scgcad import HEADER, PNL_SIZE
 
     out = bytearray(PNL_SIZE)
@@ -1237,10 +1314,10 @@ def _pnl_bytes(*, tile_size=0, width_exp=1, height_exp=1, body=b"") -> bytes:
 
 def test_a_panel_word_is_one_tile_whatever_its_header_says() -> None:
     """A panel has three header bytes that look like a cell size — 0x62 and the
-    metatile exponents at 0x69/0x6A — and none of them is one. A 16x16 unit is
+    stamp exponents at 0x69/0x6A — and none of them is one. A 16x16 unit is
     stored as four adjacent words, in every panel of the corpus and under either
-    setting of 0x62, so reading any of the three would draw the panel at four
-    times its content (``scgcad-formats.md`` §3.1)."""
+    setting of 0x62, so reading any of the three as a cell size would draw the
+    panel at four times its content (``scgcad-formats.md`` §3.1)."""
     from celpix.core.context import KEY_TILEMAP_CELL_TILES, KEY_TILEMAP_COLUMNS
 
     for header in (
@@ -1251,6 +1328,28 @@ def test_a_panel_word_is_one_tile_whatever_its_header_says() -> None:
         PnlContainer().read(ReadSource(data=header), ctx)
         assert ctx.get(KEY_TILEMAP_CELL_TILES) is None
         assert ctx.get(KEY_TILEMAP_COLUMNS) == 32
+
+
+def test_a_panel_publishes_the_block_size_its_callers_index_in() -> None:
+    """0x69/0x6A are exponents, and what they size is the *stamp* — how big a
+    block of panel cells one layout coordinate names. Not this file's cell size,
+    which is why it is published for a bound layout and never applied here."""
+    from celpix.core.context import KEY_TILEMAP_STAMP_TILES
+
+    cases = {
+        (1, 1): (2, 2),  # all 167 panels of the surveyed source are 2x2
+        (0, 0): (1, 1),  # no subdivision: one coordinate names one cell
+        (2, 3): (4, 8),
+        # An exponent past the tool's own size menu is a corrupt byte, and a
+        # block wider than the panel is no division a layout could index.
+        (9, 1): (1, 2),
+    }
+    for (width_exp, height_exp), want in cases.items():
+        ctx = PipelineContext()
+        PnlContainer().read(
+            ReadSource(data=_pnl_bytes(width_exp=width_exp, height_exp=height_exp)), ctx
+        )
+        assert ctx.get(KEY_TILEMAP_STAMP_TILES) == want, (width_exp, height_exp)
 
 
 def test_a_screen_states_its_own_cell_size() -> None:
@@ -1284,20 +1383,79 @@ def test_a_screen_publishes_nothing_that_would_shift_its_cells() -> None:
     assert 0x03EE not in ctx._entries.values()
 
 
-def test_a_screen_says_it_is_four_maps_and_nothing_else_does() -> None:
-    """The assembly exists because the file holds four independent screens, and
-    only the container knows that: nothing in 8 KiB of cells says whether it is
-    one map 128 rows tall or four 32 rows tall (``scgcad-formats.md`` §2)."""
-    from celpix.core.context import KEY_TILEMAP_PAGE_ROWS
+def test_a_screen_says_it_is_four_quadrants_and_how_they_go_together() -> None:
+    """A screen's header settles both claims outright, which the entry format on
+    its own cannot: the cells say the shape is a screen's (below), but only the
+    file says the four quadrants are *this* file's 64x64 and not four maps.
+
+    Two keys because they are two claims. The layout is the editor's own
+    ``load_scr``, which writes the blocks into one array at row stride 64
+    (``scgcad-asset-pipeline.md`` §2.7), so it is stated rather than offered.
+    """
+    from celpix.core.context import KEY_TILEMAP_PAGE_ROWS, KEY_TILEMAP_PAGES_ACROSS
 
     ctx = PipelineContext()
     ScrContainer().read(ReadSource(data=_scr_bytes()), ctx)
     assert ctx.get(KEY_TILEMAP_PAGE_ROWS) == 32
+    assert ctx.get(KEY_TILEMAP_PAGES_ACROSS) == 2
 
     # A panel is one long sheet and a layout one grid, so neither publishes pages
     # — an assembly there would cut a map that has no seams.
     ctx = PipelineContext()
     PnlContainer().read(ReadSource(data=_pnl_bytes()), ctx)
+    assert ctx.get(KEY_TILEMAP_PAGE_ROWS) is None
+    assert ctx.get(KEY_TILEMAP_PAGES_ACROSS) is None
+
+
+def test_the_entry_format_states_a_screen_shape_a_bare_payload_cannot() -> None:
+    """A headerless SNES BG map still assembles, because the 32x32 screen is the
+    *format's* shape rather than any one wrapper's: the console cuts a background
+    into screens and lays them horizontally-then-vertically, so 1/2/4 pages are
+    the four BG sizes (``snes-hardware-notes.md`` §5). That is what covers a
+    tilemap lifted out of a ROM, and a screen file whose header was stripped —
+    neither has a container to speak for it, and read back to back the four
+    quadrants stack in a 32x128 column no console ever drew.
+
+    The gate is the load-bearing half. The geometry drives a **locked** width, so
+    claiming one wrongly is worse than claiming none: a cell run some game laid
+    out its own way must keep a width the user owns.
+    """
+    from celpix.core.context import KEY_TILEMAP_COLUMNS, KEY_TILEMAP_PAGES_ACROSS
+
+    codec, registry = TilemapCodec(), default_registry()
+    params = registry.preset("preset.tilemap.snes-bg").params
+
+    def geometry(cells: int, ctx: PipelineContext | None = None) -> tuple:
+        ctx = ctx or PipelineContext()
+        codec.decode(b"\x00\x00" * cells, params, ctx)
+        return ctx.get(KEY_TILEMAP_COLUMNS), ctx.get(KEY_TILEMAP_PAGE_ROWS)
+
+    # The hardware's own sizes: 32x32, 64x32 / 32x64, 64x64.
+    assert geometry(1024) == (32, 32)
+    assert geometry(2048) == (32, 32)
+    assert geometry(4096) == (32, 32)
+    # ...and nothing else. Three pages is no BG size, and a run that is not a
+    # whole number of screens was never cut into them.
+    assert geometry(3072) == (None, None)
+    assert geometry(5120) == (None, None)
+    assert geometry(1000) == (None, None)
+
+    # A header is the better authority and has already run, so a screen file's
+    # own statement is what survives - including its assembly, which the format
+    # alone cannot settle (two pages are 64x32 or 32x64, both real).
+    ctx = PipelineContext()
+    ScrContainer().read(ReadSource(data=_scr_bytes()), ctx)
+    assert geometry(4096, ctx) == (32, 32)
+    assert ctx.get(KEY_TILEMAP_PAGES_ACROSS) == 2
+
+    # A format that states no page geometry is left alone: a panel is one sheet
+    # 512 rows tall, and cutting it into screens would invent seams.
+    ctx = PipelineContext()
+    codec.decode(
+        b"\x00\x00" * 4096,
+        registry.preset("preset.tilemap.snes-bg-swapped").params,
+        ctx,
+    )
     assert ctx.get(KEY_TILEMAP_PAGE_ROWS) is None
 
 
@@ -1349,7 +1507,47 @@ def test_the_other_two_formats_state_their_widths() -> None:
     data[: len(SIGNATURE)] = SIGNATURE
     ctx = PipelineContext()
     MapContainer().read(ReadSource(data=bytes(data)), ctx)
-    assert ctx.get(KEY_TILEMAP_COLUMNS) == 128
+    # A screen's shape, which is what a layout is generated from.
+    assert ctx.get(KEY_TILEMAP_COLUMNS) == 64
+
+
+def test_a_screen_and_a_panel_state_the_palette_row_their_cells_count_from() -> None:
+    """The base is per *file*, not per format, so no preset value can be right
+    for all of them: 94% of surveyed panels want 1 and 93% of screens want 0.
+    Read as absent, a panel draws every tile through the wrong sixteen colours.
+    """
+    from celpix.core.context import KEY_TILEMAP_PALETTE_ROW_BASE
+    from celpix.plugins.builtins.scgcad import (
+        PNL_COL_CELL,
+        PNL_COL_HALF,
+        SCR_COL_CELL,
+        SCR_COL_HALF,
+        SCR_DEPTH,
+    )
+
+    # A panel: the colour half is 0 in every surveyed file, so the cell alone
+    # moves the base — and it is 1 in 1,013 of 1,080.
+    data = bytearray(_pnl_bytes())
+    data[PNL_COL_HALF], data[PNL_COL_CELL] = 0, 1
+    ctx = PipelineContext()
+    PnlContainer().read(ReadSource(data=bytes(data)), ctx)
+    assert ctx.get(KEY_TILEMAP_PALETTE_ROW_BASE) == 1
+
+    # A screen states its own depth, so its half converts to rows: at 4bpp a
+    # half is 8 rows, at 2bpp it is 32.
+    for depth, half, cell, want in (
+        (1, 0, 0, 0),
+        (1, 1, 0, 8),
+        (1, 0, 2, 2),
+        (0, 1, 1, 33),
+    ):
+        data = bytearray(_scr_bytes())
+        data[0x2000 + SCR_DEPTH] = depth
+        data[0x2000 + SCR_COL_HALF] = half
+        data[0x2000 + SCR_COL_CELL] = cell
+        ctx = PipelineContext()
+        ScrContainer().read(ReadSource(data=bytes(data)), ctx)
+        assert ctx.get(KEY_TILEMAP_PALETTE_ROW_BASE) == want, (depth, half, cell)
 
 
 # -- tile banks ------------------------------------------------------------
@@ -1588,3 +1786,172 @@ def test_a_sheet_tile_is_the_same_pixels_the_map_draws_for_that_cell() -> None:
         for y in range(16)
         for x in range(16)
     )
+
+
+# -- Yoshi's Island sprite patterns (SPR) ---------------------------------------
+
+SPR = "preset.tilemap.ys-spr"
+
+
+def _spr_record(
+    *,
+    x=0,
+    y=0,
+    tile=0,
+    palette=0,
+    priority=0,
+    flip_h=False,
+    flip_v=False,
+    large=False,
+    spare=0,
+) -> bytes:
+    """One 8-byte sprite-pattern record, as the file stores it.
+
+    ``spare`` is the attribute byte's bit 0 — the OAM name-table bit, which the
+    authoring tool derives from the character number and its own files disagree
+    with, so the two are settable independently here on purpose.
+    """
+    attr = (
+        (0x80 if flip_v else 0)
+        | (0x40 if flip_h else 0)
+        | ((priority & 0x3) << 4)
+        | ((palette & 0x7) << 1)
+        | (spare & 1)
+    )
+    return (
+        (x & 0xFFFF).to_bytes(2, "big")
+        + (y & 0xFFFF).to_bytes(2, "big")
+        + (tile & 0xFFFF).to_bytes(2, "big")
+        + bytes((attr, 0x02 if large else 0x00))
+    )
+
+
+def _spr_bytes(frames: list[bytes]) -> bytes:
+    """A whole pattern file: 32 counted frames, then the trailer and a signature."""
+    out = bytearray()
+    for at in range(32):
+        records = frames[at] if at < len(frames) else b""
+        out.append(len(records) // 8)
+        out += records
+    return bytes(out) + bytes(81) + b"OBJ TOOL Ver 2.00"
+
+
+def test_a_sprite_pattern_round_trips_with_its_counted_frames_re_interleaved() -> None:
+    """The count bytes sit *between* the records, so keeping them would leave the
+    buffer with no fixed cell stride. The container takes them out and states them
+    instead, and the write puts them back — which is what makes all 122 corpus
+    files re-encode byte-identically."""
+    from celpix.core.context import KEY_TILEMAP_FRAME_SIZES
+    from celpix.plugins.builtins.object_codec import SprCodec
+    from celpix.plugins.builtins.ys_spr import SprContainer
+
+    registry = default_registry()
+    codec, params = SprCodec(), _params(registry, SPR)
+    raw = _spr_bytes(
+        [
+            _spr_record(x=-8, y=21, tile=0x0F00, palette=6, large=True)
+            + _spr_record(x=8, y=21, tile=0x0F02, palette=6, large=True),
+            b"",
+            _spr_record(y=-56, tile=0x42, flip_h=True, priority=2),
+        ]
+    )
+    ctx = PipelineContext()
+    records = SprContainer().read(ReadSource(data=raw), ctx)
+    assert ctx.get(KEY_TILEMAP_FRAME_SIZES)[:4] == (2, 0, 1, 0)
+    assert len(records) == 3 * 8  # the counts are gone and the records contiguous
+
+    cells = codec.decode(records, params, ctx)
+    assert (cells[0].index, cells[0].palette_row) == (0x0F00, 6)
+    assert (cells[2].flip_h, cells[2].priority) == (True, 2)
+    written = SprContainer().write(
+        codec.encode(cells, params, ctx), WriteTarget(existing=raw), ctx
+    )
+    assert written == raw
+
+
+def test_the_attribute_bytes_spare_bit_is_carried_and_never_recomputed() -> None:
+    """The authoring tool derives it from the character number's bit 8 and its own
+    files disagree — 1,054 of the corpus's 7,078 records, nearly 40% of those the
+    earliest build wrote. A reader that recomputes it corrupts every one, so it
+    rides in ``flags`` like the offsets beside it."""
+    from celpix.plugins.builtins.object_codec import SprCodec
+
+    registry = default_registry()
+    codec, params = SprCodec(), _params(registry, SPR)
+    ctx = PipelineContext()
+    for tile, spare in ((0x0100, 0), (0x0042, 1)):  # both ways round the tool's rule
+        raw = _spr_record(tile=tile, spare=spare)
+        (cell,) = codec.decode(raw, params, ctx)
+        assert cell.index == tile
+        assert codec.encode([cell], params, ctx) == raw
+
+
+def test_frames_are_cut_where_the_file_counted_them_not_at_a_fixed_stride() -> None:
+    """This record has no drawn bit — a record that is present is drawn — so the
+    counts are the only thing saying where a frame ends, and they are the container's
+    to have read. Given none, there is no reading of a bare buffer at all, so it
+    falls back to the fixed slots the other two sprite records use rather than
+    inventing a third rule."""
+    from celpix.plugins.builtins.object_codec import SprCodec
+    from celpix.plugins.builtins.ys_spr import SprContainer
+
+    registry = default_registry()
+    codec, params = SprCodec(), _params(registry, SPR)
+    raw = _spr_bytes(
+        [
+            _spr_record(x=-8, y=21, large=True) + _spr_record(x=8, y=21, large=True),
+            b"",
+            _spr_record(tile=9),
+        ]
+    )
+    ctx = PipelineContext()
+    cells = codec.decode(SprContainer().read(ReadSource(data=raw), ctx), params, ctx)
+    frames = codec.frames(cells, params, ctx)
+    assert [len(frame) for frame in frames[:4]] == [2, 0, 1, 0]
+    # The geometry that rides in `flags` has to come back out with it.
+    assert [(s.x, s.y, s.large) for s in frames[0]] == [(-8, 21, True), (8, 21, True)]
+    assert frames[2][0].index == 9
+
+    bare = dict(params, subsprites_per_frame=2)
+    assert [len(f) for f in codec.frames(cells, bare, PipelineContext())] == [2, 1]
+
+
+def test_a_pattern_saved_to_a_new_path_keeps_its_frame_boundaries() -> None:
+    """A flat run of records says nothing about where one frame ends, and a
+    destination that does not exist yet has no counts to borrow. So Save As has only
+    the ones the *read* published — without them the whole pattern would come back
+    as one long frame."""
+    from celpix.core.context import KEY_TILEMAP_FRAME_SIZES
+    from celpix.plugins.builtins.object_codec import SprCodec
+    from celpix.plugins.builtins.ys_spr import SprContainer
+
+    registry = default_registry()
+    codec, params = SprCodec(), _params(registry, SPR)
+    raw = _spr_bytes([_spr_record(tile=1) * 2, b"", _spr_record(tile=9)])
+    ctx = PipelineContext()
+    cells = codec.decode(SprContainer().read(ReadSource(data=raw), ctx), params, ctx)
+
+    encoded = codec.encode(cells, params, ctx)
+    fresh = SprContainer().write(encoded, WriteTarget(existing=b""), ctx)
+    back = PipelineContext()
+    assert SprContainer().read(ReadSource(data=fresh), back) == encoded
+    assert back.get(KEY_TILEMAP_FRAME_SIZES) == ctx.get(KEY_TILEMAP_FRAME_SIZES)
+
+
+def test_a_foreign_spr_stops_the_walk_instead_of_failing_it(tmp_path) -> None:
+    """Detection is the extension alone: the signature sits at the end of a
+    variable-length file, which magic cannot probe, the sizes span an order of
+    magnitude so a length cannot narrow, and a third of the corpus has no signature
+    at all. So bytes that are not a pattern reach this container, and the frames
+    that did parse are a more useful answer than a refusal."""
+    from celpix.core.context import KEY_TILEMAP_FRAME_SIZES
+    from celpix.plugins.builtins.ys_spr import SprContainer
+
+    path = tmp_path / "doomguy.spr"
+    path.write_bytes(bytes(64))
+    assert detect_container(default_registry(), str(path)) == "container.ys-spr"
+
+    ctx = PipelineContext()
+    # A count running past the end of the file: no whole record follows it.
+    assert SprContainer().read(ReadSource(data=b"\x08\x00\x00"), ctx) == b""
+    assert ctx.get(KEY_TILEMAP_FRAME_SIZES) == (0,)

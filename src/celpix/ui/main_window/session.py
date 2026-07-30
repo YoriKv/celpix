@@ -32,7 +32,7 @@ from celpix.core.context import (
     KEY_PIXEL_PRESET,
     KEY_TILE_PALETTE_ROWS,
     KEY_TILEMAP_CELL_TILES,
-    KEY_TILEMAP_COLUMNS,
+    KEY_TILEMAP_STAMP_TILES,
     PipelineContext,
 )
 from celpix.core.document import CellChain, Document
@@ -248,7 +248,17 @@ class SessionMixin:
                 cells=loaded.cells,
                 # `resolved_cells` follows from this and is not passed: the
                 # document derives it, so an edit can re-derive it the same way.
-                chain=CellChain(through.cells or [], loaded.palette_rows),
+                #
+                # The stamp size and the source's width come off the *source's*
+                # context, which is the only place either is stated: a panel's
+                # header says how big a block its callers index in, and a layout's
+                # own file has no idea (`docs/design/tilemap-entry.md` §3.1).
+                chain=CellChain(
+                    through.cells or [],
+                    loaded.palette_rows,
+                    stamp=self._stamp_tiles(through),
+                    source_columns=through.stated_columns,
+                ),
                 # Writable, like any other tilemap: a cell edit here restamps, and
                 # what it writes back is this file's own entry table. The *pixel*
                 # config stays read-only above - the art belongs to the map at the
@@ -469,7 +479,22 @@ class SessionMixin:
         doc = entry.doc
         if doc is None or not doc.is_tilemap:
             return 0
-        return int(doc.tilemap_ctx.get(KEY_TILEMAP_COLUMNS, 0) or 0)
+        return doc.stated_columns
+
+    @staticmethod
+    def _stamp_tiles(through: Document) -> tuple[int, int]:
+        """How big a block of ``through``'s cells one coordinate into it names.
+
+        The source map's own answer, published by its container from its header
+        (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_TILES`). ``(1, 1)`` for
+        every format that states nothing, which is the reading that leaves a chain
+        resolving one coordinate to one cell.
+        """
+        stated = through.tilemap_ctx.get(KEY_TILEMAP_STAMP_TILES)
+        if not stated:
+            return (1, 1)
+        across, down = stated
+        return max(1, int(across)), max(1, int(down))
 
     def _tilemap_is_indirect(self, entry: Entry) -> bool:
         """Whether ``entry``'s **format** says its cells are coordinates.

@@ -26,21 +26,49 @@ tile the *canvas* selection names, so picking a cell over there shows what it is
 made of over here; the inner, softer one is this panel's own selection, the tile
 a stamp would place. One outline language across both grids, so a ring means the
 same thing wherever it is seen.
+
+**A lattice every 16 tiles** marks where the numbering rolls over — the page a
+bank is addressed in, not the tile boundaries, which are already visible here
+(:data:`GRID_STEP_TILES`). Fixed rather than following View ▸ Grid: that setting
+governs a *configurable* lattice over the art, and what this rules off is the ID
+space.
+
+**Ctrl+wheel zooms and space-drag pans**, which are the canvas's gestures with
+the canvas's meanings (:mod:`celpix.ui.canvas`). A bank read at 8x does not fit
+its dock, so this is a surface a user navigates rather than reads at a glance —
+and reaching for a different gesture on the second such surface is how one
+editor grows two navigation idioms. Both are reported rather than acted on: the
+zoom level lives in the dock's spin and the scrolling in its scroll area, and
+neither is this widget's.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, Qt, Signal
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtCore import QPointF, QRect, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
 from celpix.core import ceil_div
-from celpix.ui.canvas import CANVAS_BACKGROUND
+from celpix.ui.canvas import (
+    CANVAS_BACKGROUND,
+    GRID_COARSE_ALPHA,
+    GRID_STRUCTURE_COLOR,
+)
 from celpix.ui.widgets import ShortcutIsland, paint_selection_outline
+
+# How many tiles apart the lattice sits, both ways. A **fixed** step, unlike the
+# canvas's configurable grid: this is not marking tile boundaries — the tiles are
+# already visibly separate here — it is marking where the *numbering* rolls over,
+# and 16 across by 16 down is the 0x100-tile page a bank is addressed in. At the
+# sheet's default 16 columns that lands a line under every 256 IDs, which is the
+# unit a base tile is usually a multiple of.
+GRID_STEP_TILES = 16
 
 
 class TileSourcePanel(ShortcutIsland, QWidget):
     tile_selected = Signal(int)  # the ID of the newly selected tile
+    zoom_requested = Signal(int, object)  # steps, QPointF cursor pos (widget)
+    pan_requested = Signal(int, int)  # dx, dy
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -51,6 +79,13 @@ class TileSourcePanel(ShortcutIsland, QWidget):
         self._zoom = 2
         self._selected: int | None = None
         self._marked: int | None = None
+        # Space-drag panning, the canvas's split exactly: ``_pan_active`` is space
+        # held (armed, hand shown), ``_panning`` a drag in progress measured from
+        # ``_pan_last``. Modal over the mouse — while armed a press pans instead
+        # of picking, or a scrub across the sheet would fight the drag.
+        self._pan_active = False
+        self._panning = False
+        self._pan_last = QPointF()
         # ClickFocus, the canvas and palette grid's idiom: clicking a tile also
         # arms the arrow-key stepping below.
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
@@ -85,6 +120,29 @@ class TileSourcePanel(ShortcutIsland, QWidget):
         if zoom != self._zoom:
             self._zoom = max(1, zoom)
             self._update_size()
+
+    def set_pan_mode(self, on: bool) -> None:
+        """Arm/disarm space-drag panning (the window drives this off the space key).
+
+        Disarming ends a drag in progress, since the key can come up mid-drag —
+        the canvas's rule, and the reason both keep the armed flag and the
+        dragging flag apart.
+        """
+        if self._pan_active == on:
+            return
+        self._pan_active = on
+        if not on:
+            self._panning = False
+        self._apply_cursor()
+
+    def _apply_cursor(self) -> None:
+        """Hand while panning, the widget's own otherwise."""
+        if self._panning:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif self._pan_active:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        else:
+            self.unsetCursor()
 
     def set_marked_id(self, tile_id: int | None) -> None:
         """Ring the tile the canvas's selected cell names, or clear the ring."""
@@ -159,6 +217,14 @@ class TileSourcePanel(ShortcutIsland, QWidget):
 
     # -- interaction ---------------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        # Checked first, so an armed pan wins over the pick the same way it wins
+        # over selecting and painting on the canvas.
+        if self._pan_active and event.button() == Qt.MouseButton.LeftButton:
+            self._panning = True
+            self._pan_last = event.globalPosition()
+            self._apply_cursor()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             tile_id = self._id_at(event.position().x(), event.position().y())
             if tile_id is not None:
@@ -167,12 +233,50 @@ class TileSourcePanel(ShortcutIsland, QWidget):
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         """Drag to scrub the pick across the sheet, edges included."""
+        if self._panning:
+            # Global position, not widget-local: the widget shifts under the
+            # cursor as the view scrolls, which would feed back into the delta.
+            pos = event.globalPosition()
+            delta = pos - self._pan_last
+            self._pan_last = pos
+            self.pan_requested.emit(round(delta.x()), round(delta.y()))
+            event.accept()
+            return
         if not event.buttons() & Qt.MouseButton.LeftButton:
             super().mouseMoveEvent(event)
             return
         tile_id = self._id_near(event.position().x(), event.position().y())
         if tile_id is not None:
             self._select(tile_id)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        if self._panning and event.button() == Qt.MouseButton.LeftButton:
+            self._panning = False
+            self._apply_cursor()  # back to the open hand (space may still be held)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        """**Ctrl**+wheel zooms; a plain wheel falls through to the scroll area.
+
+        Reports a signed step per notch and the cursor position, leaving the
+        range and the cursor-anchoring to the dock — the canvas's division, and
+        for its reason: the level is a control's value, not this widget's.
+        """
+        if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            event.ignore()  # let the scroll area scroll as usual
+            return
+        if self._sheet.isNull():
+            return
+        dy = event.angleDelta().y()
+        if dy == 0:
+            return
+        # One step per 120-unit notch, but at least one so a high-resolution
+        # wheel sending small deltas still zooms.
+        steps = int(dy / 120) or (1 if dy > 0 else -1)
+        self.zoom_requested.emit(steps, event.position())
         event.accept()
 
     def keyPressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
@@ -215,6 +319,7 @@ class TileSourcePanel(ShortcutIsland, QWidget):
             painter.scale(self._zoom, self._zoom)
             painter.drawImage(0, 0, self._sheet)
             painter.resetTransform()
+            self._paint_grid(painter, event.rect())
         # The canvas's cell first, this panel's own pick inset one pixel inside
         # it and slightly soft — so a tile that is both still reads as two rings
         # rather than one thick one. The palette grid's convention exactly.
@@ -224,6 +329,34 @@ class TileSourcePanel(ShortcutIsland, QWidget):
             rect = self._cell_rect(self._selected).adjusted(1, 1, -1, -1)
             paint_selection_outline(painter, rect, alpha=230)
         painter.end()
+
+    def _paint_grid(self, painter: QPainter, exposed: QRect) -> None:
+        """Rule the sheet every :data:`GRID_STEP_TILES` cells, both ways.
+
+        The canvas's *structural* colour rather than its fine one, because that
+        is what this is: the same blue marks a block boundary over there, and one
+        grid language across the two is worth more than a second palette of
+        lines. Drawn over the tiles and under both rings, so a marked tile on a
+        boundary still reads as marked.
+
+        **Interior lines only** — the step counts from the sheet's own top-left,
+        so a line at 0 would be a border around the widget rather than a division
+        of it, which is the rule the canvas's lattice follows too. Lines outside
+        the exposed band are skipped: a bank read at 8x is mostly off screen.
+        """
+        cw, ch = self._cell_px[0] * self._zoom, self._cell_px[1] * self._zoom
+        if cw <= 0 or ch <= 0:
+            return
+        width, height = self.width(), self.height()
+        color = QColor(GRID_STRUCTURE_COLOR)
+        color.setAlpha(GRID_COARSE_ALPHA)
+        painter.setPen(color)
+        for x in range(cw * GRID_STEP_TILES, width, cw * GRID_STEP_TILES):
+            if exposed.left() <= x <= exposed.right():
+                painter.drawLine(x, exposed.top(), x, exposed.bottom())
+        for y in range(ch * GRID_STEP_TILES, height, ch * GRID_STEP_TILES):
+            if exposed.top() <= y <= exposed.bottom():
+                painter.drawLine(exposed.left(), y, exposed.right(), y)
 
     def sizeHint(self):  # noqa: ANN201 — Qt override
         return self.size()

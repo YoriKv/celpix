@@ -12,18 +12,23 @@ cost question answer itself: a background tab is not visible, and the sheet is
 composed only while it is (:meth:`~TileSourceDockMixin._refresh_tile_source`),
 exactly as the hex dump is.
 
-Nothing here writes cells. Picking a tile records *what* a stamp would place; the
-gesture that places it is the canvas's, and is not built yet
-(``docs/design/tilemap-entry.md`` §9).
+Picking a tile records *what* a stamp would place; the gesture that places it is
+the canvas's (``stamp_tool.py``). The one thing here that writes is **Set Base
+Tile**, and it writes the binding rather than a cell — through the Base tile
+spin's own path, so the two are one undoable step and cannot disagree
+(``docs/design/tilemap-entry.md`` §8).
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDockWidget,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -32,6 +37,7 @@ from PySide6.QtWidgets import (
 
 from celpix.core.tilemap import Cell, resolve_cell
 from celpix.pipeline import pipeline
+from celpix.project.workspace import TileSource
 from celpix.ui import render_bridge
 from celpix.ui.tile_source_panel import TileSourcePanel
 from celpix.ui.widgets import counted
@@ -68,6 +74,13 @@ class TileSourceDockMixin:
         """
         self._tile_source_panel = TileSourcePanel()
         self._tile_source_panel.tile_selected.connect(self._on_tile_source_selected)
+        self._tile_source_panel.zoom_requested.connect(self._on_tile_source_wheel_zoom)
+        self._tile_source_panel.pan_requested.connect(self._pan_tile_source)
+        # Which palette row the sheet was last composed through, so a selection
+        # that lands on a cell of the same row costs nothing. The row is a *render*
+        # input here (it is folded into the indices), so it cannot be applied to a
+        # sheet already composed - see :meth:`_tile_source_row`.
+        self._tile_source_row_shown: int | None = None
         # The tile a stamp would place. Held on the window rather than read back
         # off the panel because it is session state that outlives a rebuild of
         # the sheet, and because the stamp tool will want it without knowing
@@ -103,7 +116,9 @@ class TileSourceDockMixin:
         self._tile_source_zoom.setValue(_DEFAULT_ZOOM)
         self._tile_source_zoom.setKeyboardTracking(False)
         self._tile_source_zoom.setSuffix("x")
-        self._tile_source_zoom.setToolTip("Magnification of the sheet")
+        self._tile_source_zoom.setToolTip(
+            "Magnification of the sheet\nCtrl+wheel over the tiles does the same"
+        )
         self._tile_source_zoom.valueChanged.connect(self._on_tile_source_zoom)
         zoom_label = QLabel("Zoom")
         zoom_label.setToolTip(self._tile_source_zoom.toolTip())
@@ -128,6 +143,21 @@ class TileSourceDockMixin:
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
+        # Under the readout, because it acts on what the readout describes: the
+        # line above says which bank tile the pick resolves to, and this is the
+        # button that makes that tile the one cell 0 draws.
+        self._set_base_tile_button = QPushButton("Set Base Tile")
+        self._set_base_tile_button.setToolTip(
+            "Make the picked tile the one cell 0 draws\n"
+            "Shifts every cell by the same amount - use it when\n"
+            "the map and its tiles number from different places"
+        )
+        self._set_base_tile_button.clicked.connect(self._on_set_base_tile)
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
+        button_row.addWidget(self._set_base_tile_button)
+        button_row.addStretch(1)
+
         container = QWidget()
         column = QVBoxLayout(container)
         column.setContentsMargins(0, _ROW_GAP, 0, _ROW_GAP)
@@ -135,6 +165,7 @@ class TileSourceDockMixin:
         column.addLayout(header)
         column.addWidget(holder, 1)
         column.addWidget(self._tile_source_details)
+        column.addLayout(button_row)
 
         self._tile_source_dock = QDockWidget("Tile Source", self)
         self._tile_source_dock.setObjectName("tile-source-dock")  # keeps saveState
@@ -152,9 +183,107 @@ class TileSourceDockMixin:
         """Zoom is the panel's own; nothing has to be recomposed for it."""
         self._tile_source_panel.set_zoom(value)
 
+    def _on_tile_source_wheel_zoom(self, steps: int, pos) -> None:  # noqa: ANN001
+        """Ctrl+wheel over the sheet, anchored on the tile under the cursor.
+
+        The canvas's wheel zoom (``NavigationMixin._on_zoom_requested``) with its
+        one simplification: these levels are whole magnifications a spin steps
+        through, so a notch is a step rather than a walk along an uneven list.
+        Driving the spin rather than the panel is what keeps the readout, the
+        keyboard and the wheel one value.
+
+        ``pos`` is the cursor on the panel, which is already in sheet pixels
+        times the zoom — so the sheet pixel under it divides out, and putting it
+        back is the same two scroll-bar writes the canvas makes.
+        """
+        old = self._tile_source_zoom.value()
+        new = min(
+            max(old + steps, self._tile_source_zoom.minimum()),
+            self._tile_source_zoom.maximum(),
+        )
+        if new == old:
+            return
+        hbar = self._tile_source_scroll.horizontalScrollBar()
+        vbar = self._tile_source_scroll.verticalScrollBar()
+        view_x = pos.x() - hbar.value()
+        view_y = pos.y() - vbar.value()
+        img_x, img_y = pos.x() / old, pos.y() / old
+        self._tile_source_zoom.setValue(new)  # resizes the panel synchronously
+        hbar.setValue(round(img_x * new - view_x))
+        vbar.setValue(round(img_y * new - view_y))
+
+    def _pan_tile_source(self, dx: int, dy: int) -> None:
+        """Shift the sheet's scroll view by a space-drag delta (device pixels).
+
+        The bars clamp to the content, so a pan cannot push the sheet off screen
+        and is a no-op while it already fits — the canvas's ``_pan_view``, over
+        this dock's own scroll area.
+        """
+        hbar = self._tile_source_scroll.horizontalScrollBar()
+        vbar = self._tile_source_scroll.verticalScrollBar()
+        hbar.setValue(hbar.value() - dx)
+        vbar.setValue(vbar.value() - dy)
+
+    # -- set base tile -------------------------------------------------------
+    def _can_set_base_tile(self) -> bool:
+        """Whether the picked tile could become the base — the button's gate.
+
+        Needs a pick, a map with a tile numbering for a base to shift, and a
+        binding to hang it on. A **chained** map is the interesting exclusion and
+        the same one the binding bar makes: its cells are coordinates into
+        another map, which carries its own base, so there is nothing here for one
+        to mean (``docs/design/tilemap-entry.md`` §3.1).
+        """
+        doc, entry = self._doc, self._workspace.current
+        if doc is None or entry is None or self._source_tile_id is None:
+            return False
+        if not doc.is_tilemap or doc.is_sprite or doc.chain is not None:
+            return False
+        source = entry.tile_source
+        return source is not None and source.is_bound
+
+    def _on_set_base_tile(self) -> None:
+        """Make the picked tile the one cell 0 draws.
+
+        The base is stated in the **source's** tile numbers — it *is* the tile
+        cell 0 draws (:attr:`~celpix.core.document.Document.tile_base_index`) —
+        while the panel is addressed in cell IDs, so the pick has to be resolved
+        through the base in force before it can replace it. That is the same
+        arithmetic the readout above the button prints as "bank tile $N", so the
+        button does what the line says.
+
+        Through :meth:`~...tilemap_bar.TilemapBarMixin._rebind_tiles`, so this is
+        the Base tile spin's own step: one undoable command, one re-read, and the
+        spin follows because both read the entry back.
+
+        The pick then moves to **ID 0**, because that is where the tile the user
+        picked has just landed — the sheet is re-addressed by the base, so
+        leaving the pick on the old number would slide the ring onto a different
+        picture and read as the button having chosen the wrong tile.
+        """
+        if not self._can_set_base_tile():
+            return
+        entry = self._workspace.current
+        assert entry is not None and self._doc is not None
+        source = entry.tile_source or TileSource()
+        base = self._source_tile_id + self._doc.tile_base_index
+        if base == source.base_index:
+            return
+        self._rebind_tiles(
+            entry, replace(source, base_index=base), f"set base tile to ${base:X}"
+        )
+        # Only where the bind actually landed: a re-read that failed put the
+        # entry back as it was, and so is the sheet the pick addresses.
+        if (entry.tile_source or TileSource()).base_index == base:
+            self._set_source_tile(0)
+
+    def _sync_set_base_tile(self) -> None:
+        self._set_base_tile_button.setEnabled(self._can_set_base_tile())
+
     def _on_tile_source_selected(self, tile_id: int) -> None:
         self._source_tile_id = tile_id
         self._refresh_tile_source_details()
+        self._sync_set_base_tile()
 
     def _set_source_tile(self, tile_id: int) -> None:
         """Hold ``tile_id`` as the tile a stamp would place, from anywhere.
@@ -170,6 +299,7 @@ class TileSourceDockMixin:
         self._source_tile_id = tile_id
         self._tile_source_panel.select_id(tile_id)
         self._refresh_tile_source_details()
+        self._sync_set_base_tile()
 
     # -- the refresh ---------------------------------------------------------
     def _refresh_tile_source(self) -> None:
@@ -181,11 +311,12 @@ class TileSourceDockMixin:
         Palette being the tab a window opens on.
 
         What it draws is the map's own picture, one synthetic cell per tile ID
-        (:func:`~celpix.pipeline.pipeline.tile_source_image`), rendered on the
-        same two-colour-table rule the canvas follows: where the format gives a
-        cell a palette row the row is already folded into the indices and the
-        table must not offset again; where it does not, the sheet reads under the
-        view's subpalette row exactly as the map does.
+        (:func:`~celpix.pipeline.pipeline.tile_source_image`), in the palette row
+        :meth:`_tile_source_row` chooses and on the same two-colour-table rule the
+        canvas follows: where the format gives a cell a palette row the row is
+        already folded into the indices and the table must not offset again;
+        where it does not, the sheet reads under one shifted table exactly as the
+        map does.
         """
         if not self._tile_source_dock.isVisible():
             return
@@ -194,25 +325,36 @@ class TileSourceDockMixin:
         if note is not None or doc is None:
             self._tile_source_panel.clear()
             self._tile_source_details.setText(note or "")
+            self._tile_source_row_shown = None
+            self._sync_set_base_tile()
             return
+        row = self._tile_source_row()
         sheet = pipeline.tile_source_image(
             doc,
             self._registry,
             self._tile_source_columns.value(),
             self._cell_index_limit(),
+            row,
         )
+        self._tile_source_row_shown = row
         if not sheet.ids:
             self._tile_source_panel.clear()
             self._tile_source_details.setText(
                 "The bound entry has no tiles this map can reach."
             )
+            self._sync_set_base_tile()
             return
         if doc.cells_carry_palette_rows:
             image = render_bridge.render_pinned(sheet.grid, doc.palette)
         else:
-            base = doc.view.subpalette_row * self._index_space()
-            image = render_bridge.render(sheet.grid, doc.palette, base)
-        across, down = max(1, doc.cell_tiles[0]), max(1, doc.cell_tiles[1])
+            # No row field for the cells to have carried, so the row never
+            # reached the indices: it lands on the colour table instead.
+            image = render_bridge.render(
+                sheet.grid, doc.palette, row * self._index_space()
+            )
+        # The stamp, not the cell: where a source states a block size an ID names
+        # the whole block, so the click target has to be the whole block too.
+        across, down = doc.stamp_tiles
         self._tile_source_panel.set_zoom(self._tile_source_zoom.value())
         self._tile_source_panel.set_sheet(
             image,
@@ -227,6 +369,33 @@ class TileSourceDockMixin:
             self._tile_source_panel.select_id(self._source_tile_id)
         self._sync_tile_source_marker()
         self._refresh_tile_source_details()
+        self._sync_set_base_tile()
+
+    def _tile_source_row(self) -> int:
+        """Which palette row to read the sheet's tiles in.
+
+        **The selected cell's**, when there is one and the format gives cells a
+        row to have. A bank is indices until a row is chosen for it, and the row
+        the user cares about is the one the thing they just clicked is drawn in —
+        so picking a cell shows its tiles in its own colours, which is what makes
+        the panel answer "what else could this cell have named" rather than
+        "what would these tiles look like in row 0".
+
+        Otherwise the **Subpal row**, which is the palette dock's selected row:
+        clicking a swatch there sets this spin
+        (``PalettePanel.subpalette_row_selected``), so the two are one value and
+        the sheet follows whichever the user last said.
+
+        Read off the file's own cells rather than the resolved ones, because a
+        chained map's resolved rows are its *source's* and the sheet keeps those
+        anyway (:func:`~celpix.pipeline.pipeline.tile_source_image`).
+        """
+        doc = self._doc
+        if doc is not None and doc.cells and doc.cells_carry_palette_rows:
+            cells = self._selected_cells()
+            if cells:
+                return doc.cells[cells[0]].palette_row
+        return self._subpalette.value()
 
     def _tile_source_note(self) -> str | None:
         """Why there is no sheet to show, or ``None`` when there is one.
@@ -264,6 +433,13 @@ class TileSourceDockMixin:
         binding's base tile — the same number Show Tile IDs writes over the cell
         and the Cell spin holds, so the three cannot disagree about what a cell
         is called.
+
+        The selection also decides the sheet's **colours**
+        (:meth:`_tile_source_row`), and a row is folded into the indices at
+        compose time rather than applied to a finished sheet — so a pick that
+        lands on a different row has to recompose. Guarded on the row actually
+        moving, since most selection changes stay inside one row and the sheet is
+        the expensive panel.
         """
         if not self._tile_source_dock.isVisible():
             return
@@ -271,6 +447,9 @@ class TileSourceDockMixin:
         cells = self._selected_cells() if doc is not None else []
         if doc is None or doc.cells is None or not cells:
             self._tile_source_panel.set_marked_id(None)
+            return
+        if self._tile_source_row_shown != self._tile_source_row():
+            self._refresh_tile_source()  # re-marks and re-reads on the way out
             return
         self._tile_source_panel.set_marked_id(doc.cells[cells[0]].index)
 
@@ -311,7 +490,12 @@ class TileSourceDockMixin:
         stamp = resolve_cell(
             Cell(index=tile_id), chain.source, carry_rows=chain.carry_rows
         )
-        parts = [
+        # The corner cell's own attributes, which is what a block's other cells
+        # each have their own of - so the size is stated and the rest is left to
+        # the picture rather than listed cell by cell.
+        across, down = doc.stamp_cells
+        parts = [] if (across, down) == (1, 1) else [f"{across}x{down} cells"]
+        parts += [
             f"tile ${stamp.index + doc.tile_base_index:X}",
             f"row {stamp.palette_row}",
         ]

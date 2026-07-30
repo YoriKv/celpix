@@ -35,9 +35,9 @@ Four things a reader has to get right and would not guess:
 
 The trailing regions are preserved verbatim rather than regenerated, and they are
 not padding. A screen's 0x200 trailer and a panel's 0x8000 second table are both
-**clear codes** — a per-cell "draw this / don't" the artist set, which cannot be
-derived from the tile data and would be destroyed by regenerating it. celPix has
-no per-cell visibility to map them onto yet, so they ride through untouched
+**visibility tables** — a per-cell "draw this / don't", which cannot be derived
+from the tile data and would be destroyed by regenerating it. celPix has no
+per-cell visibility to map them onto yet, so they ride through untouched
 (``scgcad-formats.md`` §2.1, §3.2).
 """
 
@@ -52,6 +52,9 @@ from celpix.core.context import (
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_ENDIAN,
     KEY_TILEMAP_PAGE_ROWS,
+    KEY_TILEMAP_PAGES_ACROSS,
+    KEY_TILEMAP_PALETTE_ROW_BASE,
+    KEY_TILEMAP_STAMP_TILES,
     PipelineContext,
 )
 from celpix.core.errors import Stage
@@ -79,11 +82,11 @@ SCR_HEADER_AT = 0x2000
 SCR_SCREEN = 0x800
 
 PNL_SIZE = 0x10100
-PNL_TABLE = 0x8000  # tile table; an equal-sized clear-code table follows it
+PNL_TABLE = 0x8000  # tile table; an equal-sized registration table follows it
 
 MAP_SIZE = 0x2100
-MAP_PAYLOAD = 0x2000  # 0x1000 entries, laid out 128 wide
-MAP_WIDTH = 128
+MAP_PAYLOAD = 0x2000  # 0x1000 entries, laid out 64 wide
+MAP_WIDTH = 64
 
 COL_SIZE = 0x400
 COL_PAYLOAD = 0x200  # 256 BGR555 entries; the metadata block follows them
@@ -116,16 +119,33 @@ OBJECT_COLUMNS = 8
 # fields we read mean. Only the ones the view can act on are read; the rest of
 # the block is carried through untouched (`scgcad-formats.md` §2, §3).
 SCR_TILE_SIZE = 0x42  # screen cell size = 8 * (value + 1): 0 is 8x8, 1 is 16x16
+# Read as the **writer** writes it, not as the tool's own loader reads it back.
+# `save_scr` stores the editor's mode variable unmasked and the renderer switches
+# on it (`case 1` halves both loop bounds), so 1 means 16x16 and nothing else
+# does — but `load_scr` reads `header[0x42] & 2`, turning that 1 into a 0. That
+# masking is a bug in the tool, and it is the reading anyone tracing the loader
+# arrives at; against a byte the corpus only ever sets to 0 or 1 it would make
+# every screen 8x8. The corpus says otherwise — the value-1 screens are 76%
+# metatile-aligned against 30% for value-0 (`scgcad-formats.md` §2.3).
 
-# A panel's header carries the same-looking byte at 0x62 and two metatile
-# exponents at 0x69/0x6A, and **none of the three is this file's cell size**. A
-# panel word is always one 8x8 tile: a 16x16 unit is stored as four adjacent
-# words, which is measurable — across the whole corpus, in panels flagged either
-# way, the four tiles a metatile would expand to are already present as the four
-# words of a 2x2 group (`scgcad-formats.md` §3.1). Reading any of the three as a
-# cell size draws the panel at four times its content. The one independent
-# implementation of these formats reads the screen's byte and skips the panel's
-# for the same reason.
+# A panel's header carries the same-looking byte at 0x62 and two exponents at
+# 0x69/0x6A, and **none of the three is this file's cell size**. A panel word is
+# always one 8x8 tile: a 16x16 unit is stored as four adjacent words, which is
+# measurable — across the whole corpus, in panels flagged either way, the four
+# tiles a metatile would expand to are already present as the four words of a 2x2
+# group (`scgcad-formats.md` §3.1). Reading any of the three as a cell size draws
+# the panel at four times its content.
+#
+# The pair at 0x69/0x6A is a real field all the same, and what it sizes is the
+# **stamp**: how big a block of panel cells one stamp-layout coordinate names
+# (PNL_STAMP_EXPONENTS below). That is a fact about the panel's *callers*, not
+# about its own cells, which is why it is published for a bound layout to read and
+# never applied to the panel itself.
+PNL_STAMP_EXPONENTS = (0x69, 0x6A)  # log2 of the stamp's width and height, in cells
+# The tool's own size menu offers 1 to 32 cells, so the exponent it stores is 0-5.
+# Anything wider is a corrupt byte and reads as no stamp at all: a panel divided
+# into blocks bigger than itself has no division a layout could index.
+PNL_STAMP_MAX_EXPONENT = 5
 
 # The word at screen +0x47 / panel +0x67 is deliberately NOT read. It reads like
 # a base character index and is not one: it is non-zero in 83% of screens (most
@@ -136,10 +156,44 @@ SCR_TILE_SIZE = 0x42  # screen cell size = 8 * (value + 1): 0 is 8x8, 1 is 16x16
 # (`scgcad-formats.md` §2, "Unresolved"). The one independent implementation of
 # these formats adds it to nothing either. A tile base is the user's to set.
 
+# Where a screen and a panel each state the palette base their cells count from.
+# Header-relative: a screen's header sits at 0x2000, a panel's at 0.
+SCR_DEPTH = 0x40  # 0 = 2bpp, 1 = 4bpp, 2 = 8bpp
+SCR_COL_HALF, SCR_COL_CELL = 0x45, 0x46
+PNL_COL_HALF, PNL_COL_CELL = 0x65, 0x66
+
+# A cell's palette base is `col_half * 128 + col_cell * n + attr * n` colours,
+# for n = 4 / 16 / 128 by depth (`scgcad-formats.md` §3.3). The render counts in
+# *rows*, so divide through by n: the half contributes `128 // n` rows and the
+# cell one apiece.
+_ROWS_PER_HALF = {2: 32, 4: 8, 8: 1}
+_SCR_BPP = {0: 2, 1: 4, 2: 8}
+
+
+def _row_base(col_half: int, col_cell: int, bpp: int) -> int:
+    """The palette row this file's cells count their own row 0 from.
+
+    Worth publishing because it is genuinely per-file and the majority answer is
+    not zero: 1,013 of 1,080 surveyed panels carry ``col_cell = 1``, so reading
+    the field as absent draws 94% of them one row out. Screens are the mirror
+    image — 2,178 of 2,351 want 0 — which is why this stayed invisible until a
+    panel was rendered.
+    """
+    return (col_half & 1) * _ROWS_PER_HALF.get(bpp, 8) + (col_cell & 3)
+
+
 PANEL_COLUMNS = 32  # a panel is 32 cells wide; its 0x4000 cells make 512 rows
-SCREEN_COLUMNS = 32  # one 32x32 screen — four of them make up a screen file
+# A stamp layout is 64 x 64 tile positions, which is a screen's shape and not a
+# coincidence: a layout is *generated* from a screen, one entry per block of it.
+# The editor's own renderer and its converter both index the entry table at row
+# stride 64 (`scgcad-formats.md` §4), so the 0x1000 entries are 64 wide.
+MAP_COLUMNS = 64
+SCREEN_COLUMNS = 32  # one 32x32 quadrant — four of them make up a screen file
 SCREEN_ROWS = 32  # and this is what makes each one a *page* rather than a band
-MAP_COLUMNS = 128
+# Two across, two down: a screen is one 64x64 tilemap in four quadrant blocks,
+# which is the editor's own `load_scr` (`scgcad-asset-pipeline.md` §2.7) and not
+# an arrangement to be picked between.
+SCREEN_PAGES_ACROSS = 2
 
 
 def _cell_tiles(data: bytes, at: int) -> tuple[int, int]:
@@ -203,12 +257,13 @@ def _payload(source: ReadSource, ctx: PipelineContext, start: int, size: int) ->
 class ScrContainer:
     """Screen file: payload first, 0x100 header at 0x2000, 0x200 clear codes.
 
-    The four 0x800 screens are handed on as one buffer, with their size published
-    so the view knows there are four (``KEY_TILEMAP_PAGE_ROWS``). How they
-    assemble into a larger screen is *not* recorded anywhere in the file — the
-    era's own tooling took a screen index on the command line — so which
-    arrangement to draw is a view choice rather than something to decide here
-    (``scgcad-formats.md`` §2).
+    The four 0x800 blocks are handed on as one buffer, with their shape and their
+    **assembly** published (``KEY_TILEMAP_PAGE_ROWS``, ``KEY_TILEMAP_PAGES_ACROSS``).
+    A screen is not four screens that might go together somehow: it is **one
+    64x64 tilemap stored as four quadrants**, and the editor's own loader says so
+    — ``load_scr`` writes the four blocks into a single array at row stride 64,
+    offsets 0, 0x80, 0x2000, 0x2080, which is top-left, top-right, bottom-left,
+    bottom-right (``scgcad-asset-pipeline.md`` §2.7).
 
     Sized by its magic offset rather than an exact length, which is also what
     reads the rarer 0x4100 variant correctly: that file is this layout with a
@@ -232,11 +287,13 @@ class ScrContainer:
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         ctx.set(KEY_TILEMAP_COLUMNS, SCREEN_COLUMNS)
-        # Four maps in one file, not one map four times as tall: saying so is what
-        # gives the view an assembly to offer, since the file itself records
-        # nothing about which the artist meant (`scgcad-formats.md` §2, "Screen
-        # assembly"). The rows are the page's; the columns above are its width.
+        # Four quadrants in one file, not one map four times as tall. The rows are
+        # the page's; the columns above are its width.
         ctx.set(KEY_TILEMAP_PAGE_ROWS, SCREEN_ROWS)
+        # ...and 2x2 is the format's own answer rather than a reading of it, so
+        # the view is told outright instead of being left to offer a choice
+        # nothing in the corpus supports (`scgcad-asset-pipeline.md` §2.7).
+        ctx.set(KEY_TILEMAP_PAGES_ACROSS, SCREEN_PAGES_ACROSS)
         # A screen states its own cell size, and 949 of the 1,622 surveyed set
         # this byte. That they mean it is measurable: of the cells those screens
         # actually draw, 76.1% carry a metatile-aligned index against 30.0% for
@@ -245,6 +302,13 @@ class ScrContainer:
         # a 16x16 screen draws one quarter of every cell and drops the rest.
         header = source.data[SCR_HEADER_AT : SCR_HEADER_AT + HEADER]
         ctx.set(KEY_TILEMAP_CELL_TILES, _cell_tiles(header, SCR_TILE_SIZE))
+        # A screen states its own depth, so the half is convertible to rows here.
+        if len(header) > SCR_COL_CELL:
+            bpp = _SCR_BPP.get(header[SCR_DEPTH] & 3, 4)
+            ctx.set(
+                KEY_TILEMAP_PALETTE_ROW_BASE,
+                _row_base(header[SCR_COL_HALF], header[SCR_COL_CELL], bpp),
+            )
         return _payload(source, ctx, 0, SCR_PAYLOAD)
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
@@ -269,10 +333,11 @@ class ScrContainer:
             *_metadata_fields(data, SCR_HEADER_AT),
             ContainerField(
                 "Payload",
-                f"{format_size(SCR_PAYLOAD)} at 0x000000 - four 32x32 screens",
-                "The screens come out as one buffer with the page height\n"
-                "published, so the view knows there are four of them and\n"
-                "can offer an assembly.",
+                f"{format_size(SCR_PAYLOAD)} at 0x000000 - four 32x32 quadrants",
+                "One 64x64 tilemap stored as four quadrant blocks. They\n"
+                "come out as one buffer with their shape and their 2x2\n"
+                "layout published, so the view assembles them as the\n"
+                "editor that wrote them did.",
             ),
             ContainerField(
                 "Cell size byte",
@@ -309,13 +374,40 @@ def _blank_scr() -> bytes:
     return bytes(out)
 
 
-class PnlContainer:
-    """Panel file: 0x100 header, 0x8000 tile table, 0x8000 clear-code table.
+def _stamp_tiles(header: bytes) -> tuple[int, int]:
+    """A panel's stamp size in cells, from its two header exponents.
 
-    Only the tile table is the payload. The clear codes ride through untouched:
-    bit 15 is the only live bit and it is never set on an empty cell, but it
-    marks just 8% of the populated ones, so its polarity is unsettled and
-    anything written there would be a guess (``scgcad-formats.md`` §3.2).
+    ``(1, 1)`` — no stamping — for a header that does not have them or states one
+    too wide to mean anything, which is the reading that changes nothing: a
+    layout bound to such a panel resolves one coordinate to one cell, as it did
+    before the pair was read at all.
+    """
+    size = []
+    for at in PNL_STAMP_EXPONENTS:
+        exponent = header[at] if at < len(header) else 0
+        size.append(1 << exponent if exponent <= PNL_STAMP_MAX_EXPONENT else 1)
+    return size[0], size[1]
+
+
+class PnlContainer:
+    """Panel file: 0x100 header, 0x8000 tile table, 0x8000 registration table.
+
+    Only the tile table is the payload. The second table is the panel allocator's
+    bookkeeping — bit 15 of each word is the "this cell belongs to a registered
+    panel" flag the tool sets as it hands blocks out — and it doubles as the
+    editor's own draw test: a cell whose bit is clear renders as background, in
+    the panel view and through a stamp layout alike (``scgcad-formats.md`` §3.2).
+    That it marks only 8% of populated cells is the point rather than a puzzle,
+    the rest of the 16,384-cell grid being unregistered scratch.
+
+    It still rides through untouched, because celPix has no per-cell visibility to
+    map it onto and regenerating it would mean re-running the allocator. So a
+    panel here draws cells the tool would have left blank; what a save writes is
+    what it read.
+
+    What the container *does* read is the stamp size at 0x69/0x6A, which is not
+    about this file's own cells at all — it is the block size a bound stamp layout
+    indexes in (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_TILES`).
     """
 
     info = PluginInfo(
@@ -336,6 +428,25 @@ class PnlContainer:
         # No cell size published, on purpose: a panel word is one 8x8 tile in
         # every file of the corpus, whatever its header bytes say. See the note
         # beside SCR_TILE_SIZE for the three candidates and why none is read.
+        #
+        # The stamp size is a different claim and does get published: it says
+        # nothing about how *this* file is drawn, only how a layout bound to it
+        # carves it up, so it cannot draw the panel at four times its content the
+        # way reading one of those three as a cell size would.
+        ctx.set(KEY_TILEMAP_STAMP_TILES, _stamp_tiles(source.data[:HEADER]))
+        # The palette base is read, and it matters more here than anywhere else:
+        # a panel states no depth, so its colour *half* could not be converted
+        # into rows — but it does not have to be, because `col_half` is 0 in all
+        # 1,080 surveyed panels and only `col_cell` is ever non-zero. The 4bpp
+        # rows-per-half passed below is therefore unreachable in this corpus, and
+        # passed anyway so a panel that ever does set the half is not silently
+        # wrong by a whole half of CGRAM.
+        data = source.data
+        if len(data) > PNL_COL_CELL:
+            ctx.set(
+                KEY_TILEMAP_PALETTE_ROW_BASE,
+                _row_base(data[PNL_COL_HALF], data[PNL_COL_CELL], 4),
+            )
         return _payload(source, ctx, HEADER, PNL_TABLE)
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
@@ -346,9 +457,7 @@ class PnlContainer:
         self, source: ReadSource, ctx: PipelineContext
     ) -> tuple[ContainerField, ...]:
         data = source.data
-        candidates = " ".join(
-            f"{at:#04x}=0x{data[at]:02X}" for at in (0x62, 0x69, 0x6A) if at < len(data)
-        )
+        across, down = _stamp_tiles(data[:HEADER])
         return (
             *_metadata_fields(data, 0),
             ContainerField(
@@ -359,19 +468,31 @@ class PnlContainer:
                 "four adjacent words rather than as one bigger cell.",
             ),
             ContainerField(
-                "Clear-code table",
+                "Registration table",
                 f"{format_size(PNL_TABLE)} at {HEADER + PNL_TABLE:#06x}, preserved",
-                "The same size again, following the tiles. Only bit 15 is\n"
-                "live and its polarity is unsettled, so anything written\n"
-                "there would be a guess - it rides through untouched.",
+                "The same size again, following the tiles. Bit 15 marks\n"
+                "a cell the tool handed out as part of a panel, and it is\n"
+                "the tool's own draw test - clear renders as background.\n"
+                "celPix draws every cell and writes this back untouched.",
             ),
             ContainerField(
-                "Metatile bytes",
-                f"{candidates} - not read",
-                "Three header bytes shaped like a cell size, and none of\n"
-                "them is one: reading any as a cell size draws the panel\n"
-                "at four times its content. Measured against the corpus,\n"
-                "a panel word is always a single 8x8 tile.",
+                "Stamp size",
+                f"{across}x{down} cells at "
+                f"{PNL_STAMP_EXPONENTS[0]:#04x}/{PNL_STAMP_EXPONENTS[1]:#04x}",
+                "How big a block one stamp-layout coordinate names, as\n"
+                "two exponents. Published for a layout bound to this\n"
+                "panel; it is not this file's own cell size, which is one\n"
+                "8x8 tile per word whatever the header suggests.",
+            ),
+            ContainerField(
+                "Cell size byte",
+                f"0x{data[0x62]:02X} at 0x000062 - not read"
+                if len(data) > 0x62
+                else "absent",
+                "A header byte shaped like a cell size and not one:\n"
+                "reading it as one draws the panel at four times its\n"
+                "content. Measured against the corpus, a panel word is\n"
+                "always a single 8x8 tile.",
             ),
         )
 
@@ -383,6 +504,12 @@ class MapContainer:
     coordinate into a panel, and resolving one needs that panel
     (``scgcad-formats.md`` §4). The container's job stops at cutting the entry
     table out; the two-level resolution belongs to the tile binding.
+
+    The 0x1000 entries are **64 x 64 tile positions**, a screen's shape, because a
+    layout is generated from a screen one block at a time. How big a block is comes
+    from the panel rather than from here, and it is why most of these entries are
+    not read: at the commonest 2x2 the tool writes one entry in four and leaves the
+    other three at whatever the file already held.
     """
 
     info = PluginInfo(
@@ -415,7 +542,8 @@ class MapContainer:
             ContainerField(
                 "Entry table",
                 f"{format_size(MAP_PAYLOAD)} at {HEADER:#06x} - the payload",
-                f"0x{MAP_PAYLOAD // 2:X} entries, laid out {MAP_COLUMNS} wide.\n"
+                f"0x{MAP_PAYLOAD // 2:X} entries, laid out {MAP_COLUMNS} wide -\n"
+                "a screen's shape, which is what a layout is made from.\n"
                 "The width is fixed by the format, so it is published\n"
                 "rather than left as a guess.",
             ),
@@ -425,6 +553,13 @@ class MapContainer:
                 "A stamp layout holds no tiles and no attributes of its\n"
                 "own: resolving an entry needs the panel it was authored\n"
                 "against, which is what the tile binding supplies.",
+            ),
+            ContainerField(
+                "Stamp size",
+                "the panel's, not this file's",
+                "One entry names a block, and how big a block is comes\n"
+                "from the panel this layout is bound to. Until it is\n"
+                "bound, an entry reads as the single cell it names.",
             ),
         )
 

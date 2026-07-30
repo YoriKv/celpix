@@ -30,7 +30,6 @@ from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, tile_first_pixel
 from celpix.core.document import ViewOptions
 from celpix.core.palette import Palette
-from celpix.core.tilemap import page_assemblies
 from celpix.pipeline import pipeline
 from celpix.ui import render_bridge
 from celpix.ui.hex_view_panel import BYTES_PER_ROW
@@ -40,7 +39,7 @@ from celpix.ui.main_window.interpretation import (
     SUBPAL_CELLS_TIP,
     SUBPAL_TIP,
 )
-from celpix.ui.widgets import select_combo_data, signals_blocked
+from celpix.ui.widgets import signals_blocked
 
 
 class RenderingMixin:
@@ -261,7 +260,7 @@ class RenderingMixin:
                 doc.view.columns = width
 
     def _settle_tilemap_assembly(self) -> None:
-        """Fill the assembly picker, and let it own Cols while it applies.
+        """Let a paged tilemap's assembly own Cols while it applies.
 
         The tilemap counterpart of :meth:`_settle_bitmap_width_and_columns`, and
         it runs after that one for the same reason it exists: both take the column
@@ -271,35 +270,28 @@ class RenderingMixin:
         the wrong place and shears the picture into diagonal stripes
         (``docs/design/tilemap-entry.md`` §6).
 
-        The picker is **hidden** rather than disabled on a document with no pages,
-        which today is everything but a screen file: an assembly is not a setting
-        those have and switched off, it is a question they do not raise. That is
-        why it is not in the capability table either — being paged is a property
-        of the *format*, not of the content kind, exactly as carrying palette rows
-        is (:meth:`_sync_subpalette`), and it is the rule the whole binding bar it
-        now sits on is built on (``tilemap_bar``).
+        **There is no assembly control.** Every paged format celPix reads states
+        its own layout — a screen file's four quadrants are one 64x64 tilemap and
+        the editor's own loader says which corner each goes in
+        (:attr:`~celpix.core.document.Document.stated_pages_across`) — so the
+        arrangement was never the user's to pick, and a picker would have been
+        inviting them to shear a picture whose shape is not in question. The model
+        still resolves an unstated assembly through ``view.pages_across`` and
+        :func:`~celpix.core.tilemap.default_pages_across`, so a format that holds
+        pages without stating their layout still lays out sensibly; what went is
+        the widget, not the mechanism.
 
-        Hidden from **here** rather than from the bar's own refresh, unlike its
-        neighbours, because this pass has to run before the render either way — it
-        settles Cols — and the bar's refresh runs at the tail of the cycle. Doing it
-        twice would be two answers to one question, and nothing later puts it back.
-
-        The document's own ``view.pages_across`` is the source of truth and the
-        combo mirrors it, so an entry switch shows that entry's assembly even when
-        the option list is identical, and the handler's write is what a refresh
-        reads back.
+        What is left here is the width, which is not a choice either: it *is* the
+        assembly, and the spin mirrors it.
         """
         doc = self._doc
         pages = doc.pages if doc is not None else 0
-        self._assembly_label.setVisible(bool(pages))
-        self._assembly.setVisible(bool(pages))
         if not pages or doc is None:
             # Cols is left exactly as the bitmap-width pass set it: taking it over
             # is the only thing this pass does to it, so there is nothing to hand
             # back that the earlier owner has not already decided.
             self._label_columns(locked=False)
             return
-        self._fill_assembly_combo(pages, doc.pages_across)
         self._columns.setEnabled(False)
         self._label_columns(locked=True)
         # The spin **mirrors** the width rather than setting it: the layout and the
@@ -322,64 +314,24 @@ class RenderingMixin:
         self._columns_label.setToolTip(tip)
         self._columns_label.setEnabled(self._columns.isEnabled())
 
-    def _fill_assembly_combo(self, pages: int, across: int) -> None:
-        """Put this file's assemblies in the picker and select the one in force.
-
-        Only the arrangements that show every page (:func:`~celpix.core.tilemap.
-        page_assemblies`), labelled as the grid of pages they make — ``2x2`` for a
-        screen file's four screens. Refilled only when the options actually differ,
-        so switching between two screen files does not rebuild an identical list;
-        the selection is set either way, because those two files can be being read
-        in different assemblies.
-        """
-        wanted = [(f"{a}×{pages // a}", a) for a in page_assemblies(pages)]
-        current = [
-            (self._assembly.itemText(i), self._assembly.itemData(i))
-            for i in range(self._assembly.count())
-        ]
-        with signals_blocked(self._assembly):
-            if current != wanted:
-                self._assembly.clear()
-                for label, value in wanted:
-                    self._assembly.addItem(label, value)
-            select_combo_data(self._assembly, across)
-
     def _pages_across(self) -> int:
-        """The assembly the picker holds, or 0 where there is nothing to assemble.
+        """The assembly to store for this entry, or 0 where there is none to store.
 
         0 rather than 1 for an unpaged document, because the two say different
         things: 1 is "laid out in a column, having been asked", and 0 is "never
-        asked". Only the first is worth storing in a project.
+        asked". Only the first is worth keeping in a project — and a format that
+        **states** its assembly was never asked either, so it stores 0 too rather
+        than a copy of a fact the container republishes on every read.
 
-        Gated on the document rather than on whether the picker is on screen: what
-        may be stored is a fact about the file, and reading it off a widget's
-        visibility would make it a fact about the window.
+        Otherwise a passthrough of what the document already holds. Nothing in the
+        UI can set it since the picker went, so the only value it can carry is a
+        project's own — and carrying it is what keeps the field a working part of
+        the model rather than one that quietly empties on the first save.
         """
         doc = self._doc
-        if doc is None or not doc.pages:
+        if doc is None or not doc.pages or doc.stated_pages_across:
             return 0
-        value = self._assembly.currentData()
-        return int(value) if value is not None else doc.pages_across
-
-    def _on_assembly_change(self, _index: int) -> None:
-        """Lay the pages out differently — a view change, and nothing more.
-
-        No reload and no re-read: the cells keep the file's own order and only
-        where each one is drawn moves, so this is the same kind of change as the
-        block arrangement and costs one repaint. Written onto the document first
-        because that is what the refresh reads the assembly back out of.
-        """
-        doc = self._doc
-        value = self._assembly.currentData()
-        if doc is None or value is None:
-            return
-        doc.view.pages_across = int(value)
-        # A selection is in cells of the *picture*, and the picture has just been
-        # rearranged under it — the cells it names would be a different part of
-        # the map. Dropping it is the honest conversion, the one a shape switch
-        # already makes (``selection._on_selection_shape_change``).
-        self._clear_selection()
-        self._refresh_view()
+        return doc.view.pages_across
 
     def _render_tilemap(self):
         """Render a tilemap document — a grid of cells, or a sprite object's

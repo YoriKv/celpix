@@ -3,7 +3,11 @@
 ## v0.4.2 - unreleased
 
 - **File Container**: new info popup showing information about the file container
-- **Tilemaps**: Tile source panel and edit tiles mode
+- **Tilemaps**: Tile source panel and edit tiles mode, lots of codec fixes, added
+  Yoshi's Island sprite support
+- **Tile Source panel**: Ctrl+wheel zoom and hold-space panning like the canvas,
+  a Set Base Tile button, grid lines every 16 tiles, and the sheet now reads in
+  the selected cell's palette row
 - Tooltip cleanup pass
 
 ## v0.4.1 - 2026-07-30

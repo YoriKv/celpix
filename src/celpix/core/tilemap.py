@@ -129,11 +129,11 @@ class Cell:
 
     ``flags`` is the same idea generalised: bits a format has that celPix has no
     meaning for at all. A stamp layout's entry carries one saying whether the
-    panel cell's own attributes travel with it
-    (``docs/graphics-formats-reference/scgcad-formats.md`` §4), which is a
-    question about a tool celPix is not. Naming such a bit ``priority`` to get it
-    round-tripped would be a lie; dropping it would corrupt the file on the next
-    write. So it rides here, uninterpreted and intact.
+    authoring tool put anything at that position
+    (``docs/graphics-formats-reference/scgcad-formats.md`` §4) — a per-position
+    visibility celPix has nothing to map onto. Naming such a bit ``priority`` to
+    get it round-tripped would be a lie; dropping it would corrupt the file on the
+    next write. So it rides here, uninterpreted and intact.
     """
 
     index: int = 0
@@ -162,13 +162,22 @@ class Cell:
 BLANK = Cell()
 
 
-def resolve_cell(cell: Cell, source: list[Cell], *, carry_rows: bool) -> Cell:
+def resolve_cell(
+    cell: Cell, source: list[Cell], *, carry_rows: bool, at: int | None = None
+) -> Cell:
     """The cell ``cell`` names in the tilemap it draws through, or a blank.
 
     Where an ordinary cell's ``index`` is a tile number, a chained one is a
     position in another tilemap's cells (``docs/design/tilemap-entry.md`` §3.1).
     What comes back is that cell whole — its tile, its palette row, its flips —
     with the referring cell's own attributes composed on top.
+
+    ``at`` overrides which source position is read while leaving the referring
+    cell's own attributes in force. That is what a **stamp** needs: one entry
+    names a whole block, and the positions inside it read neighbouring source
+    cells off the one coordinate (:func:`expand_stamps`). A parameter rather than
+    a rebuilt ``Cell`` because a restamp re-resolves every position in the map
+    and the copies would be the bulk of the work.
 
     Composed rather than dropped because the referring format may carry
     attributes of its own, and discarding them would draw a picture neither file
@@ -187,19 +196,19 @@ def resolve_cell(cell: Cell, source: list[Cell], *, carry_rows: bool) -> Cell:
 
     Priority and ``flags`` come from the source cell. Neither is rendered, and a
     referring cell's flags are its own uninterpreted bits — a stamp layout's
-    attribute-source bit among them, whose *cleared* meaning is a per-bank
-    default living in the authoring tool rather than in the file
-    (``docs/graphics-formats-reference/scgcad-formats.md`` §4). Inventing that
-    default would draw a picture the file does not describe, so the source's own
-    attributes come through: the documented behaviour of the set bit, and the one
-    checkable against the source on screen.
+    drawn flag among them, which says whether the authoring tool would have put
+    anything at this position at all
+    (``docs/graphics-formats-reference/scgcad-formats.md`` §4). celPix has no
+    per-position visibility to map that onto, so it rides in ``flags`` and a
+    restamp writes it back exactly as it was read.
     """
-    if not 0 <= cell.index < len(source):
+    index = cell.index if at is None else at
+    if not 0 <= index < len(source):
         # A reference the source does not have draws blank rather than failing: a
         # layout outliving the panel it was authored against is ordinary, and so
         # is a restamp typed past the end of the panel.
         return BLANK
-    found = source[cell.index]
+    found = source[index]
     if not carry_rows and not (cell.flip_h or cell.flip_v):
         # A coordinate-only format has nothing to compose, so the source cell
         # comes back as itself — the same object, which is what keeps a 4096-cell
@@ -211,6 +220,83 @@ def resolve_cell(cell: Cell, source: list[Cell], *, carry_rows: bool) -> Cell:
         flip_h=found.flip_h != cell.flip_h,
         flip_v=found.flip_v != cell.flip_v,
     )
+
+
+def stamp_origin(position: int, columns: int, stamp: tuple[int, int]) -> int:
+    """Which entry the drawn position ``position`` takes its stamp from.
+
+    A stamped map's entries are **not** one per position: an entry names a whole
+    ``stamp``-sized block, and the positions between two entries hold whatever
+    the file last had there. So a position reads the entry at its block's
+    top-left corner, and the three-quarters of a 2x2 map that were never written
+    are never read either
+    (``docs/graphics-formats-reference/scgcad-formats.md`` §4).
+
+    The same snap answers both directions, which is why it is one function: it
+    picks the entry a position *draws*, and the entry a click on that position
+    *restamps* (:meth:`~celpix.core.document.Document.cell_at`). An edit anywhere
+    inside a block changes the block.
+    """
+    across, down = max(1, stamp[0]), max(1, stamp[1])
+    x, y = position % columns, position // columns
+    return (y - y % down) * columns + (x - x % across)
+
+
+def expand_stamps(
+    cells: list[Cell],
+    source: list[Cell],
+    columns: int,
+    stamp: tuple[int, int],
+    source_columns: int,
+    *,
+    carry_rows: bool,
+) -> list[Cell]:
+    """Resolve a stamped map into one source cell per **drawn position**.
+
+    The referring map is a grid of blocks and the source is a grid of cells, and
+    this is the one place the two shapes meet: the entry at a block's corner
+    names the source cell its corner draws, and the rest of the block walks the
+    source's *own* rows from there — offset ``x % across + (y % down) *
+    source_columns``. That last term is why ``source_columns`` is a parameter and
+    not the referrer's width: the block is a rectangle cut out of the source, so
+    stepping down a row inside it is a step of the source's width.
+
+    One entry in, ``across * down`` positions out — so the list that comes back
+    is the same length as ``cells`` whenever the map divides evenly, and it is in
+    **drawn** order rather than file order. Everything that indexes the file
+    (a save, the hex dump, a restamp) goes through
+    :meth:`~celpix.core.document.Document.cell_at` instead, which is what keeps
+    the two orders from being confused for each other.
+
+    **Not** :func:`tile_run`, and the difference is the whole reason both exist.
+    Each makes a 2x2 unit out of four tiles and they are otherwise nothing alike:
+
+    - A **hardware metatile** is one cell whose single index names four
+      *characters*, stepped by the VRAM row (:data:`VRAM_ROW_STRIDE`) and sharing
+      that one cell's palette row and flips. One set of attributes, four tiles.
+    - A **stamp** is one coordinate naming four *cells* of another map, stepped by
+      that map's row, each carrying its own tile, row, priority and flips. Four
+      sets of attributes, four tiles.
+
+    Applying the first rule to the second's data reads four tiles from the wrong
+    place and flattens four attribute sets into one. The two can also compose — a
+    stamped map whose source has metatile cells — which is why the strides are
+    separate parameters rather than one shared notion of "how big a unit is".
+    """
+    across, down = max(1, stamp[0]), max(1, stamp[1])
+    stride = max(1, source_columns)
+    out: list[Cell] = []
+    for position in range(len(cells)):
+        at = stamp_origin(position, columns, (across, down))
+        if not 0 <= at < len(cells):
+            out.append(BLANK)
+            continue
+        entry = cells[at]
+        offset = position % columns % across + position // columns % down * stride
+        out.append(
+            resolve_cell(entry, source, carry_rows=carry_rows, at=entry.index + offset)
+        )
+    return out
 
 
 class CellGrid:

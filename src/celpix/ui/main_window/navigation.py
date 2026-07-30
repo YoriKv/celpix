@@ -460,11 +460,18 @@ class NavigationMixin:
         return super().eventFilter(obj, event)
 
     def _handle_space_pan(self, event) -> bool:
-        """Arm/disarm the canvas's space-drag panning; True if the key is consumed.
+        """Arm/disarm space-drag panning; True if the key is consumed.
 
         Yields to popups and focused text inputs (space types/activates there) and
         stays inert with no document. Auto-repeat from a held space is swallowed
         but re-arms nothing.
+
+        **Which** surface pans is the focused widget's answer: the tile source
+        sheet is scrollable and magnifiable in its own right, so space over it
+        has to move it rather than the canvas behind it. Decided here rather than
+        by each panel claiming the key, because the key is filtered app-wide —
+        two claimants would arm both, and the one that is not being looked at
+        would sit holding an open hand until space came up.
         """
         if QApplication.activePopupWidget() is not None:
             return False
@@ -473,7 +480,22 @@ class NavigationMixin:
         if self._doc is None:
             return False
         if not event.isAutoRepeat():
-            self._canvas.set_pan_mode(event.type() == QEvent.Type.KeyPress)
+            on = event.type() == QEvent.Type.KeyPress
+            surface = (
+                self._tile_source_panel
+                if self._tile_source_panel.hasFocus()
+                else self._canvas
+            )
+            # The other one goes down regardless: focus can move while space is
+            # held, and a surface left armed keeps the hand cursor and eats the
+            # next press it gets.
+            other = (
+                self._canvas
+                if surface is self._tile_source_panel
+                else self._tile_source_panel
+            )
+            other.set_pan_mode(False)
+            surface.set_pan_mode(on)
         return True
 
     def _pan_view(self, dx: int, dy: int) -> None:

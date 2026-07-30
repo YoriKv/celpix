@@ -1,0 +1,46 @@
+# Example tilemap preset — sprite-pattern subsprites, the counted-frame record.
+#
+# Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
+#
+# The fourth tilemap engine, and the odd one among the three sprite records:
+# frames of subsprites at signed pixel offsets like the other two, but its frames
+# are **different lengths**. There is no drawn bit — a record that is present is
+# drawn — and how many each frame holds is a count byte the *container* reads out
+# ahead of the records and states on the context. So there is no
+# `subsprites_per_frame` below: nothing here could say where a frame ends.
+#
+# Point this preset at bytes that arrived through some other container and it has
+# no counts to go on, so it falls back to fixed slots. That is a fallback, not a
+# feature — if your format frames its subsprites some fixed way, the presets to
+# copy are _object.toml and _obz.toml.
+#
+# There is nothing to configure about the record layout either: 8 bytes, X and Y
+# as signed 16-bit pairs, a 16-bit character number, then the console's attribute
+# byte and the size bit. It is one format's record rather than a family of them,
+# so the engine's code is what to copy if yours differs.
+#
+# Built on `codec.ys-spr`, as is the shipped ys-spr preset.
+
+id = "preset.tilemap.example-ys-spr"
+name = "Example sprite pattern subsprite"
+engine_id = "codec.ys-spr"
+
+[params]
+# A **sprite map**: the tilemap variant whose cells are freely-placed subsprites
+# grouped into frames rather than positions in a grid (tilemap-entry.md sec 6).
+# Declared rather than inferred so the bar can describe an object before anything
+# is bound to it, exactly as `indirect` does for a stamp layout.
+layout = "sprite"
+
+# Which palette row a cell's row 0 means. A sprite's 3-bit field counts from
+# CGRAM row 8, the console keeping OBJ palettes in the upper half of it, so
+# without this a pattern draws through the background's sixteen colours — not a
+# wrong shade but the wrong palette. The binding bar's Base row overrides it,
+# since only the user knows which palette actually got loaded.
+palette_row_base = 8
+
+# The two sizes a subsprite's own size bit chooses between, each a square that
+# many tiles on a side. The file does not record the pair — the game set it in a
+# register — so this is a stated assumption you can change, not something read
+# from the bytes. `[1, 2]` is one tile, or two by two.
+subsprite_tiles = [1, 2]

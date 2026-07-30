@@ -62,7 +62,6 @@ from celpix.project.workspace import (
     TileSource,
     palette_source_for,
 )
-from celpix.ui.main_window.interpretation import ASSEMBLY_TIP
 from celpix.ui.undo_commands import TilemapBindingCommand, TilemapBindingState
 from celpix.ui.widgets import CompactComboBox, signals_blocked, source_icon
 
@@ -202,27 +201,6 @@ class TilemapBarMixin:
         )
         self._all_frames.toggled.connect(self._on_all_frames_change)
         row.addWidget(self._all_frames)
-
-        # In the **same slot** as the subsprite pair, and the two never share it:
-        # one is a sprite map's answer to "how big are these records", the other a
-        # paged map's to "how do these maps go together", and no format asks both.
-        # They belong here for the same reason as everything else on this bar -
-        # neither is in the file, both are the user's and the project's to keep
-        # (``docs/design/tilemap-entry.md`` §6).
-        #
-        # It takes **Cols** over while it applies, which is the one thing not
-        # visible from here: pages are cut at a fixed size, so any other width
-        # splits them in the wrong place. Cols says so itself rather than relying
-        # on this being next to it (:data:`~...interpretation.COLS_ASSEMBLED_TIP`).
-        self._assembly_label = QLabel("Assembly ")
-        self._assembly_label.setToolTip(ASSEMBLY_TIP)
-        row.addWidget(self._assembly_label)
-        # The narrowest combo in the app, and it can be: every label it will ever
-        # hold is three characters ("2×2"), so this is arrow plus room for them.
-        self._assembly = CompactComboBox(70)
-        self._assembly.setToolTip(ASSEMBLY_TIP)
-        self._assembly.activated.connect(self._on_assembly_change)
-        row.addWidget(self._assembly)
 
         row.addSpacing(12)
         # Reads the selected cell and writes it: the one gesture a tilemap has

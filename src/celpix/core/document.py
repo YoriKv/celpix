@@ -25,6 +25,7 @@ from celpix.core.context import (
     KEY_SOURCE_OFFSET,
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_PAGE_ROWS,
+    KEY_TILEMAP_PAGES_ACROSS,
     PipelineContext,
 )
 from celpix.core.palette import Palette
@@ -32,9 +33,12 @@ from celpix.core.paletteregions import PaletteRegions
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, drawn_frames
 from celpix.core.tilemap import (
     Cell,
+    expand_stamps,
+    page_assemblies,
     page_order,
     resolve_cell,
     resolve_pages_across,
+    stamp_origin,
     tile_run,
 )
 from celpix.core.tilerearrangement import TileRearrangement
@@ -201,10 +205,21 @@ class CellChain:
     the same question as :attr:`Document.cells_carry_palette_rows` — that one is
     true if either side of the chain states rows, because it gates the view's
     subpalette. This one says whose row wins per cell.
+
+    ``stamp`` and ``source_columns`` are the **source's** shape, not the
+    referrer's: how big a block of source cells one coordinate names, and how wide
+    the source is, which is the step between that block's rows
+    (:func:`~celpix.core.tilemap.expand_stamps`). Both live here because both are
+    the source map's answers — a panel states its stamp size in its own header and
+    the layout's file does not know it, so the same layout draws differently
+    against a differently divided panel. ``(1, 1)`` is the ordinary chain, where
+    one coordinate names one cell and there is no block to expand.
     """
 
     source: list[Cell]
     carry_rows: bool = True
+    stamp: tuple[int, int] = (1, 1)
+    source_columns: int = 0
 
 
 @dataclass
@@ -332,15 +347,47 @@ class Document:
         every cell edit, so a restamp shows the stamp it now names without the
         entry being re-read. A no-op on an unchained document, which has nothing
         to resolve through.
+
+        A **stamped** chain resolves per drawn position rather than per entry
+        (:func:`~celpix.core.tilemap.expand_stamps`): one coordinate names a block
+        of source cells, so the list that comes back is in drawn order and the
+        entries between two blocks are never read. It needs the referrer's own
+        width to know where a row ends, so a stamp the file states but a width it
+        does not falls back to the plain chain — resolving a grid whose shape is a
+        guess would lay a shear on top of one.
         """
         chain = self.chain
         if chain is None or self.cells is None:
             self.resolved_cells = None
             return
+        columns = self.stated_columns
+        if chain.stamp != (1, 1) and columns:
+            self.resolved_cells = expand_stamps(
+                self.cells,
+                chain.source,
+                columns,
+                chain.stamp,
+                chain.source_columns,
+                carry_rows=chain.carry_rows,
+            )
+            return
         self.resolved_cells = [
             resolve_cell(cell, chain.source, carry_rows=chain.carry_rows)
             for cell in self.cells
         ]
+
+    @property
+    def stated_columns(self) -> int:
+        """How many cells across the *format* says this map is, or 0 for none.
+
+        The container's width hint read straight off the context
+        (:data:`~celpix.core.context.KEY_TILEMAP_COLUMNS`). Distinct from the
+        view's Cols, which the user owns and which this only seeds: a stamped
+        resolution has to snap positions to blocks, and it can only do that
+        against a width the *file* fixes — snapping against a width the user was
+        free to change would move every block the moment they changed it.
+        """
+        return int(self.tilemap_ctx.get(KEY_TILEMAP_COLUMNS, 0) or 0)
 
     @property
     def is_tilemap(self) -> bool:
@@ -408,12 +455,46 @@ class Document:
 
     @property
     def drawn_cells(self) -> list[Cell]:
-        """The cells the view should draw — resolved ones where they exist."""
+        """The cells the view should draw — resolved ones where they exist.
+
+        In **drawn** order on a stamped chain, where one entry covers a block of
+        positions and the file's order has nothing one-to-one to be in
+        (:meth:`resolve`). Everything that names a file cell goes through
+        :meth:`cell_at`.
+        """
         return (
             self.resolved_cells
             if self.resolved_cells is not None
             else (self.cells or [])
         )
+
+    @property
+    def stamp_cells(self) -> tuple[int, int]:
+        """How many source cells one pickable stamp covers — ``(1, 1)`` for none.
+
+        The chain's stamp with one condition on it: the source's own cells must be
+        single tiles. A block is laid out as a rectangle of consecutive tiles, and
+        a block of *metatiles* interleaves two rectangles the layout cannot
+        express — so a format that stamped metatiles would preview stamp by stamp
+        here and draw correctly on the map either way. No format in hand does: the
+        only one that stamps is a panel, whose word is one 8x8 tile in every file
+        of the corpus (``docs/graphics-formats-reference/scgcad-formats.md`` §3.1).
+        """
+        chain = self.chain
+        if chain is None or self.cell_tiles != (1, 1):
+            return (1, 1)
+        return chain.stamp
+
+    @property
+    def stamp_tiles(self) -> tuple[int, int]:
+        """How many tiles one pickable stamp covers — the unit the sheet places.
+
+        :attr:`cell_tiles` for everything unstamped, which is most documents. The
+        tile source panel sizes its click targets off this, so a stamp is picked
+        whole rather than by its corner.
+        """
+        across, down = self.stamp_cells
+        return across * max(1, self.cell_tiles[0]), down * max(1, self.cell_tiles[1])
 
     @property
     def tiles_per_cell(self) -> int:
@@ -434,7 +515,7 @@ class Document:
         states no width has no page shape to speak of.
         """
         rows = int(self.tilemap_ctx.get(KEY_TILEMAP_PAGE_ROWS, 0) or 0)
-        columns = int(self.tilemap_ctx.get(KEY_TILEMAP_COLUMNS, 0) or 0)
+        columns = self.stated_columns
         return (columns, rows) if columns > 0 and rows > 0 else (0, 0)
 
     @property
@@ -460,10 +541,29 @@ class Document:
         return pages if pages > 1 and count % per_page == 0 else 0
 
     @property
+    def stated_pages_across(self) -> int:
+        """The assembly the **format** states, or 0 where it states none.
+
+        A screen file is the case this exists for: its four quadrants are one
+        64x64 tilemap and the editor's own loader says which corner each block
+        goes in, so the layout is structural rather than something to read off
+        the picture (:data:`~celpix.core.context.KEY_TILEMAP_PAGES_ACROSS`).
+        Checked against the pages actually present, so a file read under a cell
+        size that halves the page count does not get laid out to a shape it no
+        longer has.
+        """
+        across = int(self.tilemap_ctx.get(KEY_TILEMAP_PAGES_ACROSS, 0) or 0)
+        return across if across in page_assemblies(self.pages) else 0
+
+    @property
     def pages_across(self) -> int:
         """How many pages the view lays side by side — 1 when nothing is assembled.
 
-        The view's choice, checked against the pages this file actually has
+        The **format's** answer wins outright where it has one: an assembly it
+        states is a fact about the file, and offering the view's choice over it
+        would let a setting shear a picture whose shape is not in question.
+
+        Otherwise the view's, checked against the pages this file actually has
         (:func:`~celpix.core.tilemap.resolve_pages_across`), so an unpaged
         document and a stored assembly that no longer fits both answer 1 and the
         file draws in its own order.
@@ -471,6 +571,9 @@ class Document:
         pages = self.pages
         if not pages:
             return 1
+        stated = self.stated_pages_across
+        if stated:
+            return stated
         columns, rows = self.page_size
         return resolve_pages_across(self.view.pages_across, columns, rows, pages)
 
@@ -534,11 +637,23 @@ class Document:
         a position in the picture, and an edit needs the cell that position draws.
         Identity on an unassembled document, and out-of-range positions come back
         unchanged so a caller's own bounds check stays the one that decides.
+
+        Two steps, in file-order terms: the assembly says which file position a
+        drawn one shows, and a **stamp** then snaps that to the entry whose block
+        contains it (:func:`~celpix.core.tilemap.stamp_origin`) — so an edit
+        anywhere inside a block changes the one entry that block came from, and
+        the positions the format never wrote stay unwritten. Composed rather than
+        alternated because they answer different halves of the same question; no
+        format in hand does both.
         """
         order = self.cell_order
-        if order is None or not 0 <= position < len(order):
+        if order is not None and 0 <= position < len(order):
+            position = order[position]
+        chain = self.chain
+        columns = self.stated_columns
+        if chain is None or chain.stamp == (1, 1) or not columns:
             return position
-        return order[position]
+        return stamp_origin(position, columns, chain.stamp)
 
     def cell_tile_indices(self, cell: Cell) -> list[int]:
         """The source tile indices ``cell`` draws, in the order they appear.

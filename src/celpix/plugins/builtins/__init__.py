@@ -44,7 +44,7 @@ from .lzss_ring import LzssRingCompression
 from .m7_vram import M7VramReshape
 from .n64_rom import N64RomContainer
 from .nibble_planar_codec import NibblePlanarCodec
-from .object_codec import ObjectCodec, ObzCodec
+from .object_codec import ObjectCodec, ObzCodec, SprCodec
 from .packbits import PackBitsCompression
 from .packed_codec import PackedCodec
 from .passthrough import PassthroughCompression, PassthroughReshape
@@ -64,6 +64,7 @@ from .scgcad import (
 )
 from .split_planes import split_part_plugins
 from .tilemap_codec import TilemapCodec
+from .ys_spr import SprContainer
 
 if TYPE_CHECKING:
     from celpix.plugins.base import Preset, ReshapePlugin
@@ -85,6 +86,7 @@ def register_builtins(reg: Registry) -> None:
         ObjContainer(),
         ObzContainer(),
         StdContainer(),
+        SprContainer(),
         CgxContainer(),
         ColContainer(),
         PassthroughReshape(),
@@ -111,6 +113,7 @@ def register_builtins(reg: Registry) -> None:
         TilemapCodec(),
         ObjectCodec(),
         ObzCodec(),
+        SprCodec(),
     ):
         reg.register(plugin)
 

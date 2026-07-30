@@ -73,16 +73,24 @@ class TilemapEditMixin:
         back in **screen** order rather than sorted, because that is the order a
         copy of them travels in and the first of them is the one a paste anchors
         on; on an unassembled map the two orders are the same list.
+
+        The repeats the docstring promises to drop are two different repeats, and
+        both have to go. A cell drawn as several tiles is one already, which
+        :meth:`_selected_positions` handles. A **stamped** map adds the other
+        direction: several drawn positions share one entry, so a selection over a
+        block would otherwise name it once per position — and an operation that
+        *toggles* rather than sets would cancel itself out on the second visit.
         """
         doc = self._doc
         if doc is None or not doc.is_tilemap:
             return []
         count = len(doc.cells or [])
-        return [
-            index
-            for index in (doc.cell_at(at) for at in self._selected_positions())
-            if 0 <= index < count
-        ]
+        seen: dict[int, None] = {}
+        for at in self._selected_positions():
+            index = doc.cell_at(at)
+            if 0 <= index < count:
+                seen.setdefault(index, None)
+        return list(seen)
 
     def _selected_positions(self) -> list[int]:
         """The **drawn** positions the selection covers, in screen order.

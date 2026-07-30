@@ -225,7 +225,9 @@ def _spawn(argv: list[str]) -> bool:
     return True
 
 
-def add_labelled(layout, text: str, widget: QWidget, tooltip: str) -> QLabel:
+def add_labelled(
+    layout, text: str, widget: QWidget, tooltip: str, buddy: QWidget | None = None
+) -> QLabel:
     """Add ``text`` then ``widget`` to ``layout``, tooltipping *both*.
 
     A caption is half the hover target of the pair it names and reads as part of
@@ -235,12 +237,18 @@ def add_labelled(layout, text: str, widget: QWidget, tooltip: str) -> QLabel:
     adding a bare ``QLabel``. The label is also set as the widget's buddy, which
     is what makes a caption mnemonic focus the input.
 
+    ``buddy`` overrides which widget the mnemonic focuses, for the case
+    ``widget`` is a *container* holding a tight run of controls rather than one
+    input — a container takes no focus, so the mnemonic would land nowhere. Give
+    it the input the caption names, and give that input the same ``tooltip``, or
+    the caption and its buddy answer differently to a hover a pixel apart.
+
     Returns the label, for the few callers that later show/hide or restyle it.
     """
     widget.setToolTip(tooltip)
     label = QLabel(text)
     label.setToolTip(tooltip)
-    label.setBuddy(widget)
+    label.setBuddy(buddy if buddy is not None else widget)
     layout.addWidget(label)
     layout.addWidget(widget)
     return label
@@ -328,7 +336,7 @@ def paint_selection_outline(painter: QPainter, rect: QRect, alpha: int = 255) ->
 # control and a toolbar of them reads as a row — which is exactly what deriving
 # the width from the content could not give, since the registry decides how long
 # the longest preset name is and a plugin can make it longer at any time.
-PRESET_COMBO_WIDTH = 180
+PRESET_COMBO_WIDTH = 160
 
 
 class CompactComboBox(QComboBox):

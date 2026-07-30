@@ -28,6 +28,7 @@ from celpix.core.context import (
     KEY_SOURCE_FILES,
     KEY_SOURCE_OFFSET,
     KEY_SOURCE_PATH,
+    KEY_TILEMAP_PALETTE_ROW_BASE,
     PipelineContext,
     hint_info,
 )
@@ -671,7 +672,11 @@ def tilemap_tiles(
 
 
 def expand_cells(
-    doc: Document, reg: Registry, cells: list[Cell], columns: int
+    doc: Document,
+    reg: Registry,
+    cells: list[Cell],
+    columns: int,
+    block: tuple[int, int] | None = None,
 ) -> tuple[list, BlockLayout]:
     """``cells`` turned into ready-to-place tiles, and the layout to place them.
 
@@ -703,11 +708,17 @@ def expand_cells(
     flip-and-shift work is per distinct combination rather than per cell, and
     the repeats are the same grid object appearing in the list again.
 
+    ``block`` is how many tiles one *placed unit* covers, and defaults to one
+    cell's worth. The stamp sheet is what overrides it: there a unit is a whole
+    stamp of several cells (:attr:`~celpix.core.document.Document.stamp_tiles`),
+    and the cells arrive already expanded into blocks for it to square up.
+
     A cell naming a tile the source does not have renders blank rather than
     failing: a tilemap is routinely authored against a bank that is loaded
     elsewhere, and half a picture is more useful than an error.
     """
-    across, down = max(1, doc.cell_tiles[0]), max(1, doc.cell_tiles[1])
+    unit = block or doc.cell_tiles
+    across, down = max(1, unit[0]), max(1, unit[1])
     blank = IndexGrid(doc.tile_width, doc.tile_height)
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
     source = tile_bank(doc, reg)
@@ -847,7 +858,11 @@ class TileSheet(NamedTuple):
 
 
 def tile_source_image(
-    doc: Document, reg: Registry, columns: int, limit: int | None = None
+    doc: Document,
+    reg: Registry,
+    columns: int,
+    limit: int | None = None,
+    palette_row: int = 0,
 ) -> TileSheet:
     """The tiles ``doc`` can draw from, laid out as a sheet — the panel's picture.
 
@@ -861,20 +876,43 @@ def tile_source_image(
     is that source cell **resolved** (:func:`~celpix.core.tilemap.resolve_cell`)
     rather than a bare index: a stamp is its tile *plus* its attributes, and
     previewing it without them would show a picture the stamp does not make.
+    Where the source states a **stamp size**, an ID names a whole block of its
+    cells and the preview is that block — a quarter of each stamp is not what
+    will land, and the panel's promise is that what is on offer is.
 
-    ``columns`` is in cells, as everywhere else here — a panel cell is a 2x2
-    metatile, and the layout blocks accordingly.
+    ``columns`` is in units, as everywhere else here — a panel cell is a 2x2
+    metatile and a stamp is a block of cells, and the layout blocks accordingly.
+
+    ``palette_row`` is the row those synthetic cells claim, which is the whole of
+    what decides the sheet's colours: a tile is indices until a row is chosen for
+    it, and a bank authored for row 3 read at row 0 is the right art in the wrong
+    palette. **Not applied to a chained map**, whose cells resolve to real source
+    cells carrying rows of their own — a stamp is its tile *plus* its attributes,
+    and recolouring the preview would show a picture the stamp does not make.
     """
     ids = tile_source_ids(doc, limit)
     chain = doc.chain
     if chain is None:
-        cells = [Cell(index=at) for at in ids]
+        cells = [Cell(index=at, palette_row=palette_row) for at in ids]
     else:
+        # The block a coordinate names, walked the source's own rows the way the
+        # map resolves it (:func:`~celpix.core.tilemap.expand_stamps`) — one cell
+        # per ID wherever nothing is stamped, the loops collapsing to a single
+        # pass.
+        across, down = doc.stamp_cells
+        stride = max(1, chain.source_columns)
         cells = [
-            resolve_cell(Cell(index=at), chain.source, carry_rows=chain.carry_rows)
+            resolve_cell(
+                Cell(index=at),
+                chain.source,
+                carry_rows=chain.carry_rows,
+                at=at + dx + dy * stride,
+            )
             for at in ids
+            for dy in range(down)
+            for dx in range(across)
         ]
-    tiles, layout = expand_cells(doc, reg, cells, columns)
+    tiles, layout = expand_cells(doc, reg, cells, columns, doc.stamp_tiles)
     return TileSheet(compose_tiles(tiles, layout, None), ids)
 
 
@@ -1134,13 +1172,17 @@ def load_tilemap_data(cfg: PathwayConfig, reg: Registry) -> TilemapData:
     # format whose cells are subsprites groups them into frames itself, because
     # what they *mean* — which frame, at what offset, how big — is the same
     # knowledge that decoded them (:mod:`celpix.plugins.builtins.object_codec`).
+    # It is handed ``ctx`` as well as the cells, because where the frames are cut
+    # is not always in the preset: a format that counts each frame keeps those
+    # counts between its records, so the container is the only thing that can have
+    # read them (:data:`~celpix.core.context.KEY_TILEMAP_FRAME_SIZES`).
     frames = None
     size_pair = DEFAULT_SUBSPRITE_TILES
     if hasattr(engine, "frames"):
         frames = _run(
             Stage.INTERPRET_TILEMAP,
             Pathway.TILEMAP,
-            lambda: engine.frames(cells, preset.params),
+            lambda: engine.frames(cells, preset.params, ctx),
         )
         size_pair = _run(
             Stage.INTERPRET_TILEMAP,
@@ -1173,10 +1215,22 @@ def load_tilemap_data(cfg: PathwayConfig, reg: Registry) -> TilemapData:
         except Exception:  # noqa: BLE001 — a probe must not fail the load
             top = None
         mask = top if top and top > 0 else 0
-    # Where the format's rows count from. A plain parameter, unlike the index
-    # mask: no field table implies it — it is a fact about the console's palette
-    # layout for this kind of cell, not about how the cell is packed.
-    row_base = int(preset.params.get("palette_row_base", 0) or 0)
+    # Where the format's rows count from. Usually a plain preset parameter — a
+    # sprite's 3-bit field counts from CGRAM row 8 whatever file it came from,
+    # which is a fact about the console rather than about this map.
+    #
+    # But a *file* can say otherwise, and two of this family do: a screen and a
+    # panel each carry a colour-half and a colour-cell byte that move the base
+    # per file (`scgcad-formats.md` §3.3). The container reads those and publishes
+    # the answer, so it wins over the preset where it is present — 94% of panels
+    # state base 1, and taking the preset's 0 draws every one of them through the
+    # wrong sixteen colours.
+    stated = ctx.get(KEY_TILEMAP_PALETTE_ROW_BASE)
+    row_base = (
+        int(stated)
+        if stated is not None
+        else int(preset.params.get("palette_row_base", 0) or 0)
+    )
     return TilemapData(
         cells, cell_bytes, tiles, ctx, data, frames, size_pair, rows, mask, row_base
     )
