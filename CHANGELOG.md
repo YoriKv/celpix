@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.3 - unreleased
+## v0.4.3 - 2026-07-31
 
 - **Tilemaps**: tilemap improvements across the board
 
