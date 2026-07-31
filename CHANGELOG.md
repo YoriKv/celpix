@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.4 - unreleased
+## v0.4.4 - 2026-07-31
 
 - **View toggles**: Show Pinned Palette Colors and Show Pinned
   Palette Rows now stored in user preferences
