@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.5 - unreleased
+## v0.4.5 - 2026-07-31
 
 - **Palette rows**: unified palette row pin and tilemap palette row selection
 - **Formats**: added some tile and palette formats from SuperFamiconv
