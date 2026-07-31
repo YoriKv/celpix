@@ -3,7 +3,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.pce-sg-4bpp"
 name = "PC Engine SG 4bpp (16x16)"
-engine_id = "codec.planar"
+engine_id = "codec.pixel.planar"
 
 [params]
 bpp = 4

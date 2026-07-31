@@ -497,8 +497,10 @@ def test_a_sprite_palette_row_counts_from_the_upper_half() -> None:
 
     registry = default_registry()
 
-    def doc(row_base: int, rows: tuple[int, ...] = (0,)) -> Document:
-        return Document(
+    def doc(
+        row_base: int, rows: tuple[int, ...] = (0,), *, wrap: bool = False
+    ) -> Document:
+        made = Document(
             pixel_data=bytes(32),  # one blank 4bpp tile
             bytes_per_tile=32,
             tile_width=8,
@@ -511,6 +513,8 @@ def test_a_sprite_palette_row_counts_from_the_upper_half() -> None:
             cells=[Cell(index=0, palette_row=row) for row in rows],
             palette_row_base=row_base,
         )
+        made.view.wrap_palette_rows = wrap
+        return made
 
     # The row reaches the screen as a shift on the indices, so a cell on row 0 of a
     # base-8 format lands on palette entry 8 * 16.
@@ -520,11 +524,16 @@ def test_a_sprite_palette_row_counts_from_the_upper_half() -> None:
     assert shifted[0].get(0, 0) == 8 * 16
 
     # The base is signed, because the palette loaded need not be the whole of
-    # CGRAM: a file holding only rows 8-15, as 0-7, counts *down*. A row the base
-    # pushes below 0 draws through row 0 — the shift is a byte translation, and a
-    # negative one has no map to build.
+    # CGRAM: a file holding only rows 8-15, as 0-7, counts *down*. What a row it
+    # pushes off the end does is the user's to say (View ▸ Wrap Palette Rows), and
+    # both readings have to work off one number.
     under, _ = tilemap_tiles(doc(-1, rows=(0, 2)), registry, columns=1)
-    assert [tile.get(0, 0) for tile in under] == [0, 1 * 16]
+    assert [tile.get(0, 0) for tile in under] == [0, 1 * 16]  # off: stops at row 0
+    under, _ = tilemap_tiles(doc(-1, rows=(0, 2), wrap=True), registry, columns=1)
+    assert [tile.get(0, 0) for tile in under] == [15 * 16, 1 * 16]  # on: comes round
+    # And the same at the top end — sixteen rows at 4bpp, so 8 + 9 is row 1.
+    over, _ = tilemap_tiles(doc(8, rows=(9,), wrap=True), registry, columns=1)
+    assert over[0].get(0, 0) == 1 * 16
 
 
 def test_the_sprite_presets_declare_where_their_rows_start() -> None:
@@ -839,6 +848,35 @@ def test_a_sprite_draws_its_subsprites_at_pixel_offsets_and_keeps_index_0_clear(
     assert image.get(0, 0) == 15  # the front subsprite, at the origin
     assert image.get(10, 12) == 15  # the one behind it, at its odd offset
     assert image.get(4, 12) == 0  # ...and its transparent half stayed clear
+
+
+def test_a_palette_row_shifts_a_subsprite_without_making_index_0_opaque() -> None:
+    """The one thing a sprite's row shift must do differently from a tilemap's.
+
+    A cell's row is folded into its indices with ``IndexGrid.shifted``, which
+    moves index 0 along with everything else — right on a background, where 0 is
+    an ordinary colour. On a sprite 0 is *transparent*, so the same shift would
+    turn every hole into an opaque colour of that row and a subsprite would erase
+    what it sits in front of. Sprites therefore fold the row in through a table
+    that pins 0 to itself, and this is what says so.
+    """
+    from celpix.core.sprite import Subsprite
+    from celpix.pipeline.pipeline import sprite_image
+
+    # 4bpp planar: tile 1 is index 15 throughout; tile 2 is clear on its left
+    # half and set on its right.
+    bank = bytes(32) + bytes([0xFF]) * 32 + bytes([0x0F]) * 32
+    behind = Subsprite(x=0, y=0, index=1, palette_row=0)
+    front = Subsprite(x=0, y=0, index=2, palette_row=1)
+    doc = _sprite_doc([], [(front, behind)], bank=bank)
+    doc.palette_row_base = 2  # rows count from 2, so the front one draws row 3
+    image, _ = sprite_image(doc, default_registry(), columns=1)
+
+    # The front subsprite's opaque half carries its row: 15 + 3 * 16.
+    assert image.get(7, 0) == 15 + 3 * 16
+    # Its transparent half let the one behind show through at *its* row (2),
+    # rather than being painted with row 3's index 0.
+    assert image.get(0, 0) == 15 + 2 * 16
 
 
 def test_a_pixel_resolves_to_the_subsprite_a_user_can_see_there() -> None:
@@ -1645,25 +1683,33 @@ def _cgx_banks():
 
 def test_a_tile_banks_row_table_comes_out_as_a_hint() -> None:
     """One byte per tile, each the subpalette row that tile is meant to be read
-    under - which is what pinned regions otherwise have to be told by hand."""
-    from celpix.core.context import KEY_TILE_PALETTE_ROWS
+    under - which is what pinned regions otherwise have to be told by hand.
+
+    The rows come out **relative**, with what they count from published beside
+    them: the host applies a base to a named row once, at render, so a table that
+    had folded it in already would move a bank's art twice.
+    """
+    from celpix.core.context import KEY_TILE_PALETTE_ROW_BASE, KEY_TILE_PALETTE_ROWS
     from celpix.plugins.builtins.scgcad import CgxContainer
 
     rows = bytes([2, 2, 5, 0]) + bytes(0x3FC)
     ctx = PipelineContext()
     CgxContainer().read(ReadSource(data=_cgx_bytes(0x8500, rows)), ctx)
     assert ctx.get(KEY_TILE_PALETTE_ROWS)[:4] == bytes([2, 2, 5, 0])
-    # The table counts from the base the header states, exactly as a screen's
-    # cells do: a 4bpp colour half is eight rows. The cell beside it is 2bpp-only
-    # and must not move a 4bpp bank — 300 of 2,650 banks carry one, and applying
-    # it puts fourteen of them past the end of CGRAM.
+    assert ctx.get(KEY_TILE_PALETTE_ROW_BASE) == 0
+    # The base the header states, exactly as a screen's cells count from one: a
+    # 4bpp colour half is eight rows. The cell beside it is 2bpp-only and must not
+    # move a 4bpp bank — 300 of 2,650 banks carry one, and applying it puts
+    # fourteen of them past the end of CGRAM.
     ctx = PipelineContext()
     CgxContainer().read(ReadSource(data=_cgx_bytes(0x8500, rows, half=1, cell=1)), ctx)
-    assert ctx.get(KEY_TILE_PALETTE_ROWS)[:4] == bytes([10, 10, 13, 8])
+    assert ctx.get(KEY_TILE_PALETTE_ROWS)[:4] == bytes([2, 2, 5, 0])
+    assert ctx.get(KEY_TILE_PALETTE_ROW_BASE) == 8
     # At 2bpp it does count, and the group it picks is one 4-colour row.
     ctx = PipelineContext()
     CgxContainer().read(ReadSource(data=_cgx_bytes(0x4500, rows, half=0, cell=1)), ctx)
-    assert ctx.get(KEY_TILE_PALETTE_ROWS)[:4] == bytes([3, 3, 6, 1])
+    assert ctx.get(KEY_TILE_PALETTE_ROWS)[:4] == bytes([2, 2, 5, 0])
+    assert ctx.get(KEY_TILE_PALETTE_ROW_BASE) == 1
     # 8bpp banks carry no table, so nothing is claimed for them.
     ctx = PipelineContext()
     CgxContainer().read(ReadSource(data=_cgx_bytes(0x10100)), ctx)
@@ -1678,12 +1724,83 @@ def test_a_tile_banks_row_table_comes_out_as_a_hint() -> None:
 
 def test_a_tile_bank_of_an_unknown_size_is_passed_through_whole() -> None:
     """Better a few trailing junk tiles than a silently truncated bank."""
+    from celpix.core.context import KEY_PIXEL_PRESET
     from celpix.plugins.builtins.scgcad import CgxContainer
 
     data = bytearray(0x1234)
     data[0x1000 : 0x1000 + len(SIGNATURE)] = SIGNATURE
     out = CgxContainer().read(ReadSource(data=bytes(data)), PipelineContext())
     assert len(out) == 0x1234
+    # A length the family does not have, but the signature *is* at a payload's
+    # end: that is the same signal detection matched on, so the variant is
+    # settled and the tail stops at the tiles rather than decoding as three
+    # dozen more of them.
+    tailed = bytearray(0x8500 + 0x10)
+    tailed[0x8000 : 0x8000 + len(SIGNATURE)] = SIGNATURE
+    ctx = PipelineContext()
+    assert len(CgxContainer().read(ReadSource(data=bytes(tailed)), ctx)) == 0x8000
+    assert ctx.get(KEY_PIXEL_PRESET) == "preset.pixel.snes-4bpp"
+
+
+def test_a_tile_bank_saved_to_a_new_file_is_a_bank_of_its_own_depth() -> None:
+    """A payload alone is not a bank: nothing detects it, and reopening it lands
+    on raw bytes at a guessed depth. Each variant has to be built."""
+    from celpix.core.context import KEY_PIXEL_PRESET
+    from celpix.plugins.builtins.scgcad import CGX_DEPTH, CgxContainer
+
+    for size, (payload, preset, _) in _cgx_banks().items():
+        tiles = bytes(range(256)) * (payload // 256)
+        out = CgxContainer().write(tiles, WriteTarget(existing=b""), PipelineContext())
+        assert len(out) == size, hex(size)
+        # Stated both ways a real bank states it - where the signature sits, and
+        # the depth byte behind it - so either signal identifies it on reopening.
+        assert out[payload : payload + len(SIGNATURE)] == SIGNATURE, hex(size)
+        assert out[payload + CGX_DEPTH] == {0x4000: 0, 0x8000: 1}.get(payload, 2)
+        ctx = PipelineContext()
+        assert CgxContainer().read(ReadSource(data=out), ctx) == tiles, hex(size)
+        assert ctx.get(KEY_PIXEL_PRESET) == preset, hex(size)
+
+
+def test_saving_a_tile_bank_at_a_new_depth_rebuilds_its_container() -> None:
+    """The three variants are three lengths, so 4bpp tiles spliced into a 2bpp
+    bank can only be half dropped - and the file would still claim 2bpp."""
+    from celpix.plugins.builtins.scgcad import CGX_DEPTH, CgxContainer
+
+    out = CgxContainer().write(
+        b"\xcd" * 0x8000,
+        WriteTarget(existing=_cgx_bytes(0x4500, bytes([3]) * 0x400)),
+        PipelineContext(),
+    )
+    assert len(out) == 0x8500
+    assert out[:0x8000] == b"\xcd" * 0x8000
+    assert out[0x8000 + CGX_DEPTH] == 1
+
+
+def test_a_sprite_object_is_saved_at_the_form_its_records_are_in() -> None:
+    """Which form a file is shows only in where the signature sits, so a save
+    that assumes the ordinary one drops 96 of an extended object's 128 frames."""
+    from celpix.plugins.builtins.scgcad import (
+        OBJ_SIZES,
+        ObjContainer,
+    )
+
+    for payload, size in OBJ_SIZES.items():
+        records = bytes(range(256)) * (payload // 256)
+        out = ObjContainer().write(
+            records, WriteTarget(existing=b""), PipelineContext()
+        )
+        assert len(out) == size, hex(payload)
+        assert out[payload : payload + len(SIGNATURE)] == SIGNATURE, hex(payload)
+        read_back = ObjContainer().read(ReadSource(data=out), PipelineContext())
+        assert read_back == records, hex(payload)
+    # And a form change rebuilds rather than truncating into what is there.
+    ordinary = bytearray(OBJ_SIZES[0x3000])
+    ordinary[0x3000 : 0x3000 + len(SIGNATURE)] = SIGNATURE
+    out = ObjContainer().write(
+        b"\xcd" * 0xC000, WriteTarget(existing=bytes(ordinary)), PipelineContext()
+    )
+    assert len(out) == OBJ_SIZES[0xC000]
+    assert out[:0xC000] == b"\xcd" * 0xC000
 
 
 def test_writing_a_tile_bank_keeps_its_header_and_row_table() -> None:

@@ -571,15 +571,21 @@ class TransformMixin:
         return self._doc is not None and self._doc.tile_width == self._doc.tile_height
 
     def _block_geometry(self) -> tuple[int, int, int, int] | None:
-        """The block a block-transform acts on: ``(cols, rows, x0, y0)`` in cells.
+        """The block a block-transform acts on: ``(cols, rows, x0, y0)`` in canvas
+        **slots**, which are tiles.
+
+        Slots and not tilemap cells, and the distinction matters one call further
+        on: a tilemap's own rectangle is this divided down by
+        :attr:`~celpix.core.document.Document.cell_tiles`
+        (:meth:`~...tilemap_edit.TilemapEditMixin._cell_rect`).
 
         A selection of a **single unit** expands to the block it sits in, snapped
-        to the ``bc×br`` cell grid the layout lays down (see
+        to the ``bc×br`` grid of slots the layout lays down (see
         :class:`~celpix.core.arrangement.BlockLayout`) — so one click turns a whole
         unit, an arrangement block in the pixel view and a metatile cell on a
         tilemap, in **any** selection shape. A larger Rectangle selection *is*
-        the block (its own cell dimensions, anchored at its top-left cell). A linear
-        multi-unit run has no 2D block, so it returns ``None``.
+        the block (its own extent in slots, anchored at its top-left slot). A
+        linear multi-unit run has no 2D block, so it returns ``None``.
 
         The block comes off :meth:`~...selection.SelectionMixin._view_layout`
         rather than off the Block W×H spins, because on a tilemap the block is the

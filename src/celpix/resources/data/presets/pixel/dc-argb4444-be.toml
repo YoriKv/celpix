@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
 id = "preset.pixel.dc-argb4444-be"
 name = "Direct ARGB4444 (8x8, big-endian)"
-engine_id = "codec.direct-color"
+engine_id = "codec.pixel.direct-color"
 
 [params]
 bytes_per_pixel = 2

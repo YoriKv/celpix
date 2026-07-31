@@ -4,7 +4,7 @@
 # See docs/graphics-formats-reference/mame-formats.md §4.3.
 id = "preset.pixel.dc-ia16-be"
 name = "N64 IA16 (intensity+alpha, 8x8, big-endian)"
-engine_id = "codec.direct-color"
+engine_id = "codec.pixel.direct-color"
 
 [params]
 bytes_per_pixel = 2

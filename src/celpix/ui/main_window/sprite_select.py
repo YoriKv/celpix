@@ -5,11 +5,12 @@ position by the grid and the whole editor reads the answer — the Cell spin, th
 hex highlight, the tile source panel's ring. A sprite object has no grid to
 divide by. Its records sit at signed pixel offsets that are mostly not
 tile-aligned, they overlap, and one 8x8 square of the sheet routinely holds
-pieces of three of them (``docs/design/tilemap-entry.md`` §9), so the slot the
-canvas reports cannot name one. That left a sprite the one kind of document
-where clicking the picture told you nothing about what you had clicked.
+pieces of three of them (``docs/design/tilemap-entry.md`` §6, OBJ), so the slot
+the canvas reports cannot name one — which would otherwise leave a sprite the one
+kind of document where clicking the picture says nothing about what was clicked.
 
-This is that answer: the canvas reports the **pixel** a tile-mode press landed on
+So the answer is resolved from the pixel instead: the canvas reports the **pixel**
+a tile-mode press landed on
 (``Canvas.pixel_picked``), :func:`~celpix.pipeline.pipeline.subsprite_at` runs
 the render backwards to find which subsprite draws it, and the pick is held here
 for the two things that want it — the outline on the canvas, and the ring in the

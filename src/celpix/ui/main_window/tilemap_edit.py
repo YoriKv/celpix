@@ -37,6 +37,7 @@ from dataclasses import replace
 
 from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, compose_window, split_grid
+from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.errors import PipelineError
 from celpix.core.tilemap import Cell, CellGrid
 from celpix.pipeline import pipeline
@@ -116,9 +117,10 @@ class TilemapEditMixin:
     def _cell_rect(self) -> tuple[int, int, int, int] | None:
         """The selected rectangle in **cell** coordinates, or None.
 
-        The block geometry is in canvas cells, which are tiles; a metatile map
-        divides down to its own grid. A rectangle narrower than one cell has no
-        block to flip, so it comes back None rather than as an empty one.
+        The block geometry arrives in canvas **slots**, which are tiles
+        (:meth:`~...transform.TransformMixin._block_geometry`); a metatile map
+        divides down to its own cell grid. A rectangle narrower than one cell has
+        no block to flip, so it comes back None rather than as an empty one.
         """
         doc = self._doc
         geom = self._block_geometry()
@@ -127,6 +129,32 @@ class TilemapEditMixin:
         cols, rows, x0, y0 = geom
         across, down = max(1, doc.cell_tiles[0]), max(1, doc.cell_tiles[1])
         return (cols // across, rows // down, x0 // across, y0 // down)
+
+    # -- asking the format ---------------------------------------------------
+    def _tilemap_engine(self):  # noqa: ANN201 — an (engine, Preset) pair
+        """The current entry's cell codec and its preset, or None for neither.
+
+        Every question the editor asks a **format** about its cells goes through
+        here — which transforms it can express, how wide its index field is, what
+        it is called — and through the same preset id the entry was *read* under
+        (:meth:`~...session.SessionMixin._tilemap_preset_id`). That is the point
+        of it being one lookup: a probe answering for a different format than the
+        document holds would disable the flips and the Cell spin over a map that
+        is drawing perfectly well. A tilemap carved out by hand carries no preset
+        id of its own — no container declared one — and is read under the default,
+        so reading the entry's field raw would answer "no format" for it.
+
+        None off a tilemap entirely, and for a preset id the registry no longer
+        has: a format celPix does not have cannot have been asked what its cells
+        can do, which is the safe direction for every caller here.
+        """
+        entry = self._workspace.current
+        if entry is None or entry.content_kind is not ContentKind.TILEMAP:
+            return None
+        try:
+            return self._registry.engine_for(self._tilemap_preset_id(entry))
+        except KeyError:
+            return None
 
     # -- transforms ----------------------------------------------------------
     def _cell_transform(self, op) -> Callable[[Cell], Cell] | None:  # noqa: ANN001
@@ -149,13 +177,10 @@ class TilemapEditMixin:
         refuses, which is the safe direction: it cannot have been asked which of
         its fields a flip means.
         """
-        entry = self._workspace.current
-        if entry is None or not entry.tilemap_preset_id:
+        found = self._tilemap_engine()
+        if found is None:
             return None
-        try:
-            engine, preset = self._registry.engine_for(entry.tilemap_preset_id)
-        except KeyError:
-            return None
+        engine, preset = found
         apply = getattr(engine, "transform_cell", None)
         if apply is None or apply(Cell(), op.cell_op, preset.params) is None:
             return None
@@ -163,13 +188,8 @@ class TilemapEditMixin:
 
     def _tilemap_format_name(self) -> str:
         """This entry's cell format, named for a sentence about what it cannot do."""
-        entry = self._workspace.current
-        if entry is not None and entry.tilemap_preset_id:
-            try:
-                return self._registry.preset(entry.tilemap_preset_id).name
-            except KeyError:
-                pass
-        return "This tilemap format"
+        found = self._tilemap_engine()
+        return found[1].name if found is not None else "This tilemap format"
 
     def _refuse_transform(self, op) -> None:  # noqa: ANN001
         """Say which format cannot do this, and why it is the format's answer.
@@ -193,13 +213,10 @@ class TilemapEditMixin:
         not answer has its references left alone rather than clamped to a guess,
         because it cannot have been asked where its index field sits.
         """
-        entry = self._workspace.current
-        if entry is None or not entry.tilemap_preset_id:
+        found = self._tilemap_engine()
+        if found is None:
             return None
-        try:
-            engine, preset = self._registry.engine_for(entry.tilemap_preset_id)
-        except KeyError:
-            return None
+        engine, preset = found
         ask = getattr(engine, "index_limit", None)
         if ask is None:
             return None
@@ -208,6 +225,30 @@ class TilemapEditMixin:
         except Exception:  # noqa: BLE001 — a probe must not break the bar
             return None
         return top if top and top > 0 else None
+
+    def _cell_reference_settable(self) -> bool:
+        """Whether this entry has a cell reference to point somewhere at all.
+
+        **Three levels, and they are three different questions**
+        (``docs/design/tilemap-entry.md`` §4). ``STAMP`` is the **kind**'s: only a
+        tilemap has a cell that names a tile. ``cells_editable`` is this
+        **file**'s: a sprite object's records are subsprites at pixel offsets, so
+        there is no cell under the cursor to set. The limit is the **format**'s: a
+        cell with no index field has no number to hold.
+
+        One predicate because there are two ways to ask it — the binding bar's
+        Cell spin types the number and the Edit Tiles tool points at it
+        (:meth:`~...stamp_tool.StampToolMixin._stamp_available`) — and a control
+        that offered one gesture while the other was refused would be describing
+        two different documents.
+        """
+        doc = self._doc
+        return (
+            doc is not None
+            and self._can(Capability.STAMP)
+            and doc.cells_editable
+            and self._cell_index_limit() is not None
+        )
 
     def _set_cell_index(self, value: int) -> None:
         """Point every selected cell at reference ``value`` — one undoable step.

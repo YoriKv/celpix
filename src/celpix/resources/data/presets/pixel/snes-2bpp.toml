@@ -3,7 +3,7 @@
 # BG2 in modes 4/5). See docs/graphics-formats-reference/snes-hardware-notes.md.
 id = "preset.pixel.snes-2bpp"
 name = "SNES 2bpp (8x8)"
-engine_id = "codec.planar"
+engine_id = "codec.pixel.planar"
 
 [params]
 bpp = 2

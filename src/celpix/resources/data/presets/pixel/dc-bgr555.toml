@@ -3,7 +3,7 @@
 # 15 significant bits in a 2-byte pixel.
 id = "preset.pixel.dc-bgr555"
 name = "Direct BGR555 (8x8)"
-engine_id = "codec.direct-color"
+engine_id = "codec.pixel.direct-color"
 
 [params]
 bytes_per_pixel = 2

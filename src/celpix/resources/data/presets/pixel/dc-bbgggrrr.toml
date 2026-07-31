@@ -5,7 +5,7 @@
 # notes.
 id = "preset.pixel.dc-bbgggrrr"
 name = "Direct BBGGGRRR (SNES 8bpp)"
-engine_id = "codec.direct-color"
+engine_id = "codec.pixel.direct-color"
 
 [params]
 bytes_per_pixel = 1

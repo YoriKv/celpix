@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, NamedTuple, TypeVar
 
@@ -637,17 +638,25 @@ def patch_tile_bank(
     doc.tile_bank_cache = ((doc.pixel_data, *shape), bank)
 
 
-def drawn_palette_row(row: int, base: int) -> int:
-    """The palette row a cell's ``row`` draws through, under a row base.
+def drawn_palette_row(row: int, base: int, rows: int = 0) -> int:
+    """The palette row a stored ``row`` draws through, under a row base.
 
-    Clamped at 0 because a row before the palette's first is not a row. The base
-    is signed — a file whose cells name absolute rows, read against a palette
-    holding only those, counts *down*
-    (:attr:`~celpix.core.document.Document.palette_row_base`) — so without the
-    clamp a cell below the base would ask for a negative index shift, which no
-    colour table has.
+    The one arithmetic every named row goes through — a cell's, a subsprite's, a
+    pinned region's — so the four places that ask cannot answer differently
+    (:attr:`~celpix.core.document.Document.palette_row_base`).
+
+    ``rows`` is the **wrap** modulus, and 0 turns wrapping off — which is what
+    the document answers unless the user asked for it
+    (:meth:`~celpix.core.document.Document.palette_row_wrap`). Off, a row the
+    base pushes below the palette's first stops there, since no colour table has
+    a negative index; on, it comes round the other end, because the base states a
+    *distance* and a distance that overshoots still means something — row 0 of
+    eight, taken 8 rows up a palette eight rows tall, is row 0 again. Which of
+    those reads better is the file's business rather than a rule
+    (``docs/design/palette-editing.md`` §3), so it is a toggle.
     """
-    return max(0, row + base)
+    total = row + base
+    return total % rows if rows > 0 else max(0, total)
 
 
 def tilemap_tiles(
@@ -703,11 +712,17 @@ def expand_cells(
     to :func:`compose_tiles` as a bias list so that the shift shares the memo
     below — the same tile drawn twice through the same row is shifted once.
 
-    That memo is the reason this is cheap on a large map. A map is thousands of
-    cells over a bank of at most a few hundred distinct tiles, and what a cell
-    draws is decided entirely by ``(tile, flip_h, flip_v, row)`` — so the
-    flip-and-shift work is per distinct combination rather than per cell, and
-    the repeats are the same grid object appearing in the list again.
+    **Two memos, at two scales, and the second is what a real map hits.** What a
+    cell draws is decided entirely by ``(index, row, flip_h, flip_v)`` — priority
+    and ``flags`` reach no pixel — and maps repeat themselves heavily: a screen's
+    backdrop is one cell over half of it. So a *cell* that has been seen before
+    contributes its tile run again without the walk being redone, which is what
+    takes the per-cell cost down to a dict lookup on the ordinary map. Underneath
+    it the *tile* memo keys on ``(tile, flip_h, flip_v, shift)``, and catches what
+    the first cannot: distinct cells drawing the same tile through the same row,
+    which is most of a bank's use. The flip-and-shift work is then per distinct
+    combination rather than per cell, and every repeat is the same grid object
+    appearing in the list again.
 
     ``block`` is how many tiles one *placed unit* covers, and defaults to one
     cell's worth. The stamp sheet is what overrides it: there a unit is a whole
@@ -724,26 +739,34 @@ def expand_cells(
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
     source = tile_bank(doc, reg)
     count = len(source)
+    base = doc.palette_row_base
+    rows = doc.palette_row_wrap(space)
+    runs: dict[tuple[int, int, bool, bool], list] = {}
     drawn: dict[tuple[int, bool, bool, int], object] = {}
     tiles: list = []
     for cell in cells:
-        shift = drawn_palette_row(cell.palette_row, doc.palette_row_base) * space
         flip_h, flip_v = cell.flip_h, cell.flip_v
-        for index in doc.cell_tile_indices(cell):
-            key = (index, flip_h, flip_v, shift)
-            tile = drawn.get(key)
-            if tile is None:
-                tile = source[index] if 0 <= index < count else blank
-                if flip_h:
-                    tile = transform.flip_horizontal(tile)
-                if flip_v:
-                    tile = transform.flip_vertical(tile)
-                if shift and tile.bytes_per_pixel == 1:
-                    # Direct-colour grids carry their own ARGB and index no
-                    # palette, so there is no row to fold into them.
-                    tile = tile.shifted(shift)
-                drawn[key] = tile
-            tiles.append(tile)
+        run = runs.get((cell.index, cell.palette_row, flip_h, flip_v))
+        if run is None:
+            shift = drawn_palette_row(cell.palette_row, base, rows) * space
+            run = []
+            for index in doc.cell_tile_indices(cell):
+                key = (index, flip_h, flip_v, shift)
+                tile = drawn.get(key)
+                if tile is None:
+                    tile = source[index] if 0 <= index < count else blank
+                    if flip_h:
+                        tile = transform.flip_horizontal(tile)
+                    if flip_v:
+                        tile = transform.flip_vertical(tile)
+                    if shift and tile.bytes_per_pixel == 1:
+                        # Direct-colour grids carry their own ARGB and index no
+                        # palette, so there is no row to fold into them.
+                        tile = tile.shifted(shift)
+                    drawn[key] = tile
+                run.append(tile)
+            runs[(cell.index, cell.palette_row, flip_h, flip_v)] = run
+        tiles.extend(run)
     layout = BlockLayout(max(1, columns) * across, across, down, "row")
     return tiles, layout
 
@@ -779,17 +802,25 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
     """
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
     base = doc.palette_row_base
+    rows = doc.palette_row_wrap(space)
     if doc.is_sprite:
         frames = doc.shown_frames
         top = max(
-            (drawn_palette_row(s.palette_row, base) for frame in frames for s in frame),
+            (
+                drawn_palette_row(s.palette_row, base, rows)
+                for frame in frames
+                for s in frame
+            ),
             default=0,
         )
         grid, sheet = sprite_image(doc, reg, columns)
         drawn = sheet.slots
     else:
         top = max(
-            (drawn_palette_row(cell.palette_row, base) for cell in doc.drawn_cells),
+            (
+                drawn_palette_row(cell.palette_row, base, rows)
+                for cell in doc.drawn_cells
+            ),
             default=0,
         )
         tiles, layout = tilemap_tiles(doc, reg, columns)
@@ -1089,6 +1120,16 @@ def sprite_image(
     - **One box for the whole object.** Every frame is drawn in the same
       bounding box (:func:`~celpix.core.sprite.frame_bounds`), so a strip shows
       the object's motion instead of re-centring it away frame by frame.
+
+    Unlike :func:`expand_cells`, nothing here is memoized on the tile, and that
+    is measured rather than assumed. A frame strip does draw each of an object's
+    tiles once per frame it appears in, so the same
+    ``(tile, flip_h, flip_v, row)`` memo looks like it should apply — but it buys
+    nothing here, because the flip is not what this path spends its time on. The
+    blit is (``docs/design/tilemap-entry.md`` §8.2), and an object is a few
+    hundred tiles against a map's several thousand cells. Adding the memo would
+    put a fourth place in step with :class:`~celpix.core.tilemap.Cell`'s drawing
+    fields for no gain.
     """
     frames = doc.shown_frames
     pair = doc.sprite_size_pair
@@ -1105,6 +1146,7 @@ def sprite_image(
     image = IndexGrid(across * width, sheet.down * height)
     source = tile_bank(doc, reg)
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
+    rows = doc.palette_row_wrap(space)
     # A subsprite's own tiles step by the *tile* size, the codec's and not an
     # assumed 8: the size pair is stated in tiles for exactly this reason, and a
     # literal here would put the second half of every large one 8px from the first
@@ -1130,7 +1172,8 @@ def sprite_image(
                     tile,
                     ox + sub.x + (slot % side) * step_x,
                     oy + sub.y + (slot // side) * step_y,
-                    drawn_palette_row(sub.palette_row, doc.palette_row_base) * space,
+                    drawn_palette_row(sub.palette_row, doc.palette_row_base, rows)
+                    * space,
                 )
     return image, sheet
 
@@ -1202,32 +1245,75 @@ def subsprite_at(
     return covering
 
 
+@lru_cache(maxsize=64)
+def _transparent_shift(bias: int) -> bytes:
+    """The 256-byte map that adds ``bias`` to an index but **keeps 0 at 0**.
+
+    The sprite twin of :func:`~celpix.core.index_grid._shift`, and the difference
+    is the whole reason it is a second table: that one moves index 0 along with
+    the rest, which is right for a background and turns every transparent pixel
+    of a subsprite into an opaque colour of its row. Saturating at 255 for the
+    reason the other one does — a row clamped to the palette cannot reach it, so
+    this only keeps a hand-edited project from raising instead of rendering.
+
+    Cached because an object holds a handful of distinct palette rows and a frame
+    blits a few dozen subsprites through them.
+    """
+    return bytes([0]) + bytes(min(255, i + bias) for i in range(1, 256))
+
+
 def _blit(target: IndexGrid, tile: IndexGrid, x: int, y: int, bias: int) -> None:
     """Draw ``tile`` at ``(x, y)``, leaving index 0 and anything off-canvas alone.
 
-    Per pixel, because index 0 has to be skipped and the offset need not be
-    tile-aligned — neither a row copy nor a translate can express that. The cost
-    is bounded by what a sprite object *is*: a few dozen subsprites a frame, and the
-    corpus's largest object is a few hundred tiles all told.
+    Index 0 is transparent here — subsprites overlap, and one drawn as a solid
+    square would erase what it sits in front of — so this cannot be the plain row
+    copy :func:`~celpix.core.arrangement._compose_plain` uses. What it can avoid
+    is paying for that per *pixel*, and the three steps compound:
 
-    ``bias`` is the subsprite's palette row folded into the indices, the shift a
-    pinned palette region uses — but applied **here**, per pixel, rather than to
-    the tile up front. :meth:`~celpix.core.index_grid.IndexGrid.shifted` moves
-    index 0 along with the rest, which on a background is right and on a sprite
-    turns every transparent pixel into an opaque colour of that row.
+    - **The clip is per blit, not per pixel.** A subsprite lands at a signed
+      offset, so the columns falling outside the sheet are a prefix and a suffix
+      of every row and never a hole in the middle — one pair of bounds serves the
+      whole tile, where testing ``0 <= tx < width`` inside the loop paid for it
+      once per pixel to learn the same thing.
+    - **The palette row is folded in by a translate**, against
+      :func:`_transparent_shift`, rather than added and clamped per pixel. Same
+      answer at C speed — and, more to the point, it is what leaves a row with
+      *nothing left to do to it*.
+    - **A row with no transparent pixel is then one store.** Most of a
+      subsprite's rows are solid, and for those the test that made this
+      per-pixel does not apply at all: ``0 not in line`` is a C scan that buys a
+      slice assignment. This is the step the two above exist to enable, and it is
+      where most of the saving is.
+
+    The per-pixel fallback stays for rows that do have holes, which is what the
+    format actually holds; what changed is that it now runs over a clipped,
+    already-biased line and so has a single test in it.
     """
     width, height = target.width, target.height
+    tile_w = tile.width
+    first = max(0, -x)
+    last = min(tile_w, width - x)
+    if last <= first:
+        return
+    run = last - first
+    dst = target.data
+    src = tile.data
+    table = _transparent_shift(bias) if bias else None
     for row in range(tile.height):
         ty = y + row
         if not 0 <= ty < height:
             continue
-        start = row * tile.width
-        line = tile.data[start : start + tile.width]
-        base = ty * width
+        start = row * tile_w
+        line = src[start + first : start + last]
+        if table is not None:
+            line = line.translate(table)
+        at = ty * width + x + first
+        if 0 not in line:
+            dst[at : at + run] = line
+            continue
         for col, value in enumerate(line):
-            tx = x + col
-            if value and 0 <= tx < width:
-                target.data[base + tx] = min(255, value + bias)
+            if value:
+                dst[at + col] = value
 
 
 class PaletteData(NamedTuple):

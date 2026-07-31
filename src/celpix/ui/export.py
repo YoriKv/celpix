@@ -42,7 +42,10 @@ def _palette_biases(
 
     Regions are bounded here as the view bounds them, so a row that outran a
     shorter palette exports as the unpinned view shows it rather than as the
-    magenta missing-colour sentinel.
+    magenta missing-colour sentinel. And a pinned row is a **named** row, so it
+    goes through the document's base exactly as the canvas takes it
+    (:func:`~celpix.pipeline.pipeline.drawn_palette_row`); the view's own row,
+    which fills the unpinned tiles, is already absolute and does not.
     """
     view = doc.view
     if not view.show_palette_regions or view.palette_regions.is_empty():
@@ -50,9 +53,11 @@ def _palette_biases(
     index_space = min(
         256, 1 << pipeline.pixel_bpp(doc.pixel_config.interpret_preset_id, registry)
     )
-    max_row = min(max(0, len(doc.palette) - 1) // index_space, 256 // index_space - 1)
+    wrap = doc.palette_row_wrap(index_space)
     per_tile = doc.tile_width * doc.tile_height
-    regions = view.palette_regions.bounded(doc.tile_count * per_tile, max_row)
+    regions = view.palette_regions.bounded(
+        doc.tile_count * per_tile, doc.palette_rows(index_space) - 1
+    )
     if regions.is_empty():
         return None
     offsets = [
@@ -65,7 +70,15 @@ def _palette_biases(
         )
         for slot in range(doc.tile_count)
     ]
-    return [row * index_space for row in regions.rows_for(offsets, view.subpalette_row)]
+    return [
+        (
+            view.subpalette_row
+            if row is None
+            else pipeline.drawn_palette_row(row, doc.palette_row_base, wrap)
+        )
+        * index_space
+        for row in regions.rows_for(offsets, None)
+    ]
 
 
 def _tilemap_image(doc: Document, registry: Registry, columns: int) -> QImage:

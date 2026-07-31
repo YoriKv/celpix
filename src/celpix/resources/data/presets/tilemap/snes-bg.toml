@@ -3,7 +3,7 @@
 # See docs/graphics-formats-reference/snes-hardware-notes.md §5.
 id = "preset.tilemap.snes-bg"
 name = "SNES BG map (16-bit)"
-engine_id = "codec.tilemap-packed"
+engine_id = "codec.tilemap.packed"
 
 [params]
 bytes = 2

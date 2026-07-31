@@ -3,12 +3,12 @@
 # where this preset's id comes from.
 #
 # At 8bpp a packed field is a whole byte, so the pixel never shares one and the
-# decode is a straight copy — the degenerate case of codec.packed rather than a
+# decode is a straight copy — the degenerate case of codec.pixel.packed rather than a
 # format of its own.
 # See docs/graphics-formats-reference/implementation-guide.md §2 (chunky).
-id = "preset.pixel.chunky-8bpp"
+id = "preset.pixel.8bpp-linear"
 name = "8bpp linear (Mode 7 / NDS, 8x8)"
-engine_id = "codec.packed"
+engine_id = "codec.pixel.packed"
 
 [params]
 bpp = 8

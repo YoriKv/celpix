@@ -51,7 +51,7 @@ from celpix.core.errors import Stage
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins.base import PluginInfo
 
-TILEMAP_ENGINE = "codec.tilemap-packed"
+TILEMAP_ENGINE = "codec.tilemap.packed"
 
 # Where each Cell attribute is read from and written to. Named once so decode
 # and encode cannot drift apart, and so an unknown key in a preset is inert

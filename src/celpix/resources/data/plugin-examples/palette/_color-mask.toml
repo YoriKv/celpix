@@ -1,4 +1,4 @@
-# Example preset for the `codec.color-mask` engine. Files starting with "_" are
+# Example preset for the `codec.palette.mask` engine. Files starting with "_" are
 # ignored — copy this file, drop the underscore, edit it, press F5 in celPix.
 #
 # A preset is pure data: it names one built-in engine and fills in that engine's
@@ -10,14 +10,14 @@
 #
 # WHAT THE ENGINE DOES
 # --------------------
-# codec.color-mask decodes fixed-size palette entries that store colour as packed
+# codec.palette.mask decodes fixed-size palette entries that store colour as packed
 # bit fields — essentially every hardware palette that isn't a lookup into fixed
 # silicon colours (for those, see _color-indexed.toml). An entry's bytes are
 # assembled into one value by `byte_order`, each channel is masked out of it and
 # scaled up to 8 bits. A channel narrower than 8 bits is lossy: the *decoded
 # colour* round-trips, the raw bits cannot.
 #
-# It shares its mask arithmetic with codec.direct-color (_direct-color.toml) —
+# It shares its mask arithmetic with codec.pixel.direct-color (_direct-color.toml) —
 # the same maths, applied to a palette entry rather than to a pixel.
 #
 # SHIPPED PRESETS BUILT ON IT
@@ -31,7 +31,7 @@
 
 id = "preset.palette.example-color-mask"
 name = "Example RGB555"
-engine_id = "codec.color-mask"
+engine_id = "codec.palette.mask"
 
 [params]
 

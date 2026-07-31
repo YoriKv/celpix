@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
 id = "preset.pixel.snes-3bpp"
 name = "SNES 3bpp (8x8)"
-engine_id = "codec.planar"
+engine_id = "codec.pixel.planar"
 
 [params]
 bpp = 3

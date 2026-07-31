@@ -650,7 +650,7 @@ def test_a_slice_reads_its_parents_whole_file_list(tmp_path) -> None:
     sliced = ws.add_slice(parent.path, "gfx", 32, 64)
     assert sliced.paths == (str(first), str(second))
 
-    cfg = pixel_config_for(sliced, "preset.pixel.chunky-8bpp", reg, ws)
+    cfg = pixel_config_for(sliced, "preset.pixel.8bpp-linear", reg, ws)
     assert cfg.source.paths == (str(first), str(second))
     assert pipeline.load_pixel_data(cfg, reg).data == joined[32:96]
 

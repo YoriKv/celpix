@@ -5,9 +5,9 @@
 # — docs/design/plugin-system.md §2). The id keeps that historic spelling: ids
 # are stable, project files reference them.
 # See docs/graphics-formats-reference/implementation-guide.md §4.
-id = "preset.palette.r3g3b3"
+id = "preset.palette.grb333"
 name = "GRB333 (9-bit; YY-CHR R3G3B3)"
-engine_id = "codec.color-mask"
+engine_id = "codec.palette.mask"
 
 [params]
 bytes_per_entry = 2

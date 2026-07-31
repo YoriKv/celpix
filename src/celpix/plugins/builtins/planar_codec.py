@@ -55,7 +55,7 @@ class PlanarCodec:
     """Generic planar tile codec; behaviour comes entirely from ``params``."""
 
     info = PluginInfo(
-        id="codec.planar",
+        id="codec.pixel.planar",
         name="Planar (bitplane) codec",
         stage=Stage.INTERPRET_PIXEL,
     )

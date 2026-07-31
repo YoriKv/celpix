@@ -54,9 +54,9 @@ from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, Frame, Subsprite
 from celpix.core.tilemap import Cell
 from celpix.plugins.base import PluginInfo
 
-OBJECT_ENGINE = "codec.scgcad-object"
-OBZ_ENGINE = "codec.scgcad-obz"
-SPR_ENGINE = "codec.ys-spr"
+OBJECT_ENGINE = "codec.tilemap.scgcad-object"
+OBZ_ENGINE = "codec.tilemap.scgcad-obz"
+SPR_ENGINE = "codec.tilemap.ys-spr"
 
 RECORD = 6  # bytes per subsprite
 SUBSPRITES_PER_FRAME = 64  # every frame has room for this many, used or not

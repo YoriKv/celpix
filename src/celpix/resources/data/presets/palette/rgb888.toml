@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §4.
 id = "preset.palette.rgb888"
 name = "RGB888"
-engine_id = "codec.color-mask"
+engine_id = "codec.palette.mask"
 
 [params]
 bytes_per_entry = 3

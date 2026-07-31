@@ -23,7 +23,7 @@ class IndexedColorCodec:
     """Fixed-palette color codec; the ARGB table comes from ``params``."""
 
     info = PluginInfo(
-        id="codec.color-indexed",
+        id="codec.palette.indexed",
         name="Indexed (fixed hardware palette) color codec",
         stage=Stage.INTERPRET_PALETTE,
     )

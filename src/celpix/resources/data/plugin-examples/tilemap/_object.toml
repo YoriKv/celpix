@@ -11,11 +11,11 @@
 # records, a fixed number of them per frame, each with its own x/y. Anything laid
 # out in rows wants _packed.toml instead.
 #
-# Built on `codec.scgcad-object`, as is the shipped scgcad-object preset.
+# Built on `codec.tilemap.scgcad-object`, as is the shipped scgcad-object preset.
 
 id = "preset.tilemap.example-object"
 name = "Example sprite object subsprite"
-engine_id = "codec.scgcad-object"
+engine_id = "codec.tilemap.scgcad-object"
 
 [params]
 # A **sprite map**: the tilemap variant whose cells are freely-placed subsprites

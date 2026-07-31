@@ -1,9 +1,9 @@
 """The stamp tool: lay tiles into a tilemap's cells by pointing at them.
 
-The **placing** half of `docs/design/tilemap-entry.md` §9's first item. Setting a
-cell's reference by number already existed (the binding bar's Cell spin, over the
-selection) and choosing one by looking arrived with the tile source panel; what
-was missing was the gesture that puts the two together.
+The **placing** gesture (`docs/design/tilemap-entry.md` §8, "Edit Tiles"), and the
+third of three ways a cell is pointed somewhere: the binding bar's Cell spin sets
+a reference by number over the selection, the tile source panel chooses one by
+looking, and this puts a chosen tile into the cell under the cursor.
 
 Edit Tiles is a **modal tool over tile mode**, the shape the rearrange tool
 already has and for the same reason: it wants both mouse buttons, so it cannot
@@ -112,21 +112,13 @@ class StampToolMixin:
     def _stamp_available(self) -> bool:
         """Whether there is anything here to stamp into.
 
-        Three levels, and they are the three the Cell spin weighs, because they
-        are the same question asked by pointing instead of by typing
-        (``docs/design/tilemap-entry.md`` §4). ``STAMP`` is the **kind**'s: only
-        a tilemap has a cell that names a tile. ``cells_editable`` is this
-        **file**'s: a sprite object's records are subsprites at pixel offsets,
-        so there is no cell under the cursor. The limit is the **format**'s: a
-        cell with no index field has no number a stamp could set.
+        The Cell spin's own question, asked by pointing instead of by typing, so
+        it is literally the same predicate
+        (:meth:`~...tilemap_edit.TilemapEditMixin._cell_reference_settable`) —
+        the two gestures set one field, and one being offered while the other was
+        refused would describe two different documents.
         """
-        doc = self._doc
-        return (
-            doc is not None
-            and self._can(Capability.STAMP)
-            and doc.cells_editable
-            and self._cell_index_limit() is not None
-        )
+        return self._cell_reference_settable()
 
     def _toggle_stamping(self) -> None:
         """The ``T`` key. Goes through the action so the key and the button can

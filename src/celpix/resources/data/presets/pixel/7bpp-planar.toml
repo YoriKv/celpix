@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
 id = "preset.pixel.7bpp-planar"
 name = "7bpp planar (8x8)"
-engine_id = "codec.planar"
+engine_id = "codec.pixel.planar"
 
 [params]
 bpp = 7

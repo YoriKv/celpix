@@ -3,7 +3,7 @@
 # See docs/graphics-formats-reference/scgcad-formats.md §5.2.
 id = "preset.tilemap.snes-bg-swapped"
 name = "SNES BG map (16-bit, byte-swapped)"
-engine_id = "codec.tilemap-packed"
+engine_id = "codec.tilemap.packed"
 
 [params]
 bytes = 2

@@ -121,8 +121,10 @@ class RenderingMixin:
         """The **pinned** row of each visible slot, ``None`` where none is pinned.
 
         The whole of what pinned palette regions cost at render time. Each slot is
-        resolved to the pixel its tile starts at, and that pixel is looked up in the
-        regions.
+        resolved to the pixel its tile starts at, that pixel is looked up in the
+        regions, and the row it finds is taken through the entry's palette row
+        base — a pinned row is a *named* row, so the number that comes back is a
+        row of the palette on screen and not of the file's own numbering.
 
         A slot in no region answers ``None`` rather than the view's own subpalette
         row, because the two callers want different things from it and only one of
@@ -177,7 +179,10 @@ class RenderingMixin:
                 actual * per_tile
                 for actual in tile_rearrangement.actual_run(view.tile_offset, count)
             ]
-        return regions.rows_for(offsets, None)
+        return [
+            None if row is None else self._drawn_palette_row(row)
+            for row in regions.rows_for(offsets, None)
+        ]
 
     def _window_biases(self, cols: int, rows: int) -> list[int] | None:
         """The rows above as index shifts — what the composer actually applies.
@@ -188,7 +193,10 @@ class RenderingMixin:
 
         This is the end that fills the unpinned slots in, with the view's own row —
         every tile has to be drawn through some row, and an unpinned one is drawn
-        through exactly the row it would be without any of this.
+        through exactly the row it would be without any of this. The view's row is
+        the one row here that does *not* go through the base: it is a row picked
+        in the palette that is loaded, so it is already absolute
+        (:attr:`~celpix.core.document.Document.palette_row_base`).
         """
         per_row = self._window_palette_rows(cols, rows)
         if per_row is None:
@@ -505,6 +513,10 @@ class RenderingMixin:
             show_rearranged=self._show_rearranged,
             palette_regions=self._palette_regions,
             show_palette_regions=self._show_palette_regions,
+            # Like the toggle above it: a local preference the model reads here
+            # rather than a per-entry choice, so the render and the export take
+            # one bundle and cannot disagree about how the base ends.
+            wrap_palette_rows=self._wrap_palette_rows,
             # Off the picker, which the settle pass above has just brought into
             # step with the document — so this stores the assembly in force and
             # not a value one refresh behind it. 0 on everything unpaged, which is
@@ -658,6 +670,9 @@ class RenderingMixin:
         """
         palette = self._shown_palette()
         group = self._clamp_subpalette(palette)
+        # Before the grid: the base decides which rows the marks below land on,
+        # and it is shown or hidden by the same document that sizes them.
+        self._sync_row_base()
         self._palette_panel.set_colors(palette.colors)
         self._palette_panel.set_active_range(self._subpalette.value() * group, group)
         # After the range, which sizes the mark: the panel counts a pinned row in

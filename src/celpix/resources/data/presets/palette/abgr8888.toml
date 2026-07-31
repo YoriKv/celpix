@@ -3,9 +3,9 @@
 # docs/design/plugin-system.md §2). The id keeps its historic spelling: ids are
 # stable, project files reference them.
 # See docs/graphics-formats-reference/implementation-guide.md §4.
-id = "preset.palette.argb8888-be"
+id = "preset.palette.abgr8888"
 name = "ABGR8888 (bytes A,B,G,R)"
-engine_id = "codec.color-mask"
+engine_id = "codec.palette.mask"
 
 [params]
 bytes_per_entry = 4

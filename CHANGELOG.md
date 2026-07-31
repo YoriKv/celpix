@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.4 - unreleased
+
+- **View toggles**: Show Pinned Palette Colors and Show Pinned
+  Palette Rows now stored in user preferences
+- **Base Palette Row** now applies to tile banks as well as maps, and moved to the
+  palette panel
+- **Palette > Wrap Palette Rows** (off by default): lets a row the base pushes off
+  one end of the palette come back on at the other, instead of stopping at the
+  first/last row
+- **Plugin examples**: updated and some fixes applied, more uniform naming scheme
+
 ## v0.4.3 - 2026-07-31
 
 - **Tilemaps**: tilemap improvements across the board

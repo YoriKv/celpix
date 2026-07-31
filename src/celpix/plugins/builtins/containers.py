@@ -37,6 +37,13 @@ from celpix.plugins.base import (
 
 _INES_MAGIC = b"NES\x1a"
 
+# bytes: the ROM a pathway's tiles were read out of, so a Save As can put them
+# back into a copy of it. Set by Read, and the only thing Write has to go on when
+# the destination does not exist yet — the alternative being a bare CHR fragment
+# that is not a cartridge and will not reopen as one. Container-local, like
+# ``KEY_N64_SWAP``: nothing outside this file has a use for it.
+KEY_INES_SOURCE = "ines.source"
+
 
 def ines_chr_span(raw: bytes) -> tuple[int, int | None]:
     """``(start, length)`` of the CHR ROM in an iNES image; length None = to end.
@@ -68,6 +75,20 @@ class INesContainer:
     (:func:`ines_chr_span`) rather than trusting ``dest``: the read started past
     the PRG banks, an offset the host never learns. A destination that is not an
     iNES image is written plainly at ``dest.offset``, matching the read's fallback.
+
+    **A Save As copies the cartridge, not the tiles.** With no file at the
+    destination there is no header to splice into, and writing the CHR alone
+    yields a bare fragment that is not a ROM and will not reopen as one. So the
+    read stashes the image it came from (:data:`KEY_INES_SOURCE`) and the write
+    lays the edited tiles into a copy of it — header, trainer, PRG banks and any
+    tail included. Copying a document gives you the document.
+
+    **A header can declare more banks than the file holds** — a truncated dump, or
+    one whose header is simply wrong — and then the CHR would start past the end.
+    The read has nothing to show for such a file and the write must leave it
+    alone: splicing at an offset beyond the end zero-fills the gap the header
+    invented, which on an all-``0xFF`` header is four megabytes of padding
+    appended to the user's ROM.
     """
 
     info = PluginInfo(
@@ -84,7 +105,21 @@ class INesContainer:
         if raw[:4] == _INES_MAGIC and len(raw) >= 16:
             start, length = ines_chr_span(raw)
             ctx.set(KEY_SOURCE_OFFSET, start)
-            if length is None:
+            # Kept whole rather than as the two pieces around the CHR: a Save As
+            # splices into it by exactly the rule an in-place save uses, so the
+            # two directions cannot drift over where the tiles belong.
+            ctx.set(KEY_INES_SOURCE, raw)
+            if start >= len(raw):
+                warn(
+                    ctx,
+                    "Header declares more banks than the file holds",
+                    "The CHR ROM would start past the end of this file, so\n"
+                    "there is nothing to show. Either the dump is cut short\n"
+                    "or its header is wrong. A save leaves the file exactly\n"
+                    "as it is rather than padding out the missing banks.",
+                    self.info.id,
+                )
+            elif length is None:
                 warn(
                     ctx,
                     "CHR-RAM cart: no tile data in this file",
@@ -108,9 +143,23 @@ class INesContainer:
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         raw = dest.existing
+        if not raw:
+            # Save As. The ROM this pathway read is the thing being copied, so
+            # the tiles go back into a copy of it rather than out on their own.
+            source = ctx.get(KEY_INES_SOURCE)
+            if isinstance(source, (bytes, bytearray)):
+                raw = bytes(source)
         if raw[:4] == _INES_MAGIC and len(raw) >= 16:
-            return splice(raw, ines_chr_span(raw)[0], data)
-        return splice(raw, dest.offset, data)
+            start = ines_chr_span(raw)[0]
+            if start >= len(raw):
+                # The banks the header claims are not in the file, so the read
+                # found no CHR and there is nothing to put back. Splicing here
+                # would append the whole invented gap as zeroes.
+                return raw
+            return splice(raw, start, data)
+        # Deliberately `dest.existing`, not `raw`: a stashed source is only ever
+        # spliced into as an iNES image, never emitted as a plain buffer.
+        return splice(dest.existing, dest.offset, data)
 
     def describe(
         self, source: ReadSource, ctx: PipelineContext

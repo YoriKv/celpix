@@ -32,7 +32,7 @@ class ColorCodec:
     """Generic mask-based color codec; behaviour comes from ``params``."""
 
     info = PluginInfo(
-        id="codec.color-mask",
+        id="codec.palette.mask",
         name="Mask-based color codec",
         stage=Stage.INTERPRET_PALETTE,
     )

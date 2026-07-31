@@ -277,12 +277,16 @@ class TilemapBindingState:
     """What a tilemap entry draws from, and how its cells are read.
 
     The whole of the binding bar's answer travels as one value — the tile
-    source, the cell format, the palette-row base and the sprite size pair —
-    because they are one kind of thing: project state no file records, set on
-    one bar and remembered per entry (``docs/design/tilemap-entry.md`` §3, §7).
-    A gesture moves exactly one of them, so a snapshot is four fields where
-    three are unchanged, which is cheaper than four command classes and cannot
-    get out of step with itself.
+    source, the cell format and the sprite size pair — because they are one kind
+    of thing: project state no file records, set on one bar and remembered per
+    entry (``docs/design/tilemap-entry.md`` §3, §7). A gesture moves exactly one
+    of them, so a snapshot is three fields where two are unchanged, which is
+    cheaper than three command classes and cannot get out of step with itself.
+
+    The palette row base is **not** here, though the bar used to set it: it is a
+    fact about how a named row meets the palette that got loaded, which a tile
+    bank has as much as a map, so it travels on its own
+    (:class:`PaletteRowBaseCommand`).
 
     The three palette fields ride along because **binding seeds a palette**
     (:meth:`~celpix.ui.main_window.tilemap_bar.TilemapBarMixin._seeded_palette`):
@@ -296,38 +300,10 @@ class TilemapBindingState:
 
     tile_source: TileSource | None = None
     preset_id: str | None = None
-    row_base: int | None = None
     size_pair: tuple[int, int] | None = None
     palette_mode: PaletteMode = PaletteMode.DEFAULT
     palette_preset_id: str = ""
     pending_palette: PaletteSource | None = None
-
-    def rereads_from(self, other: TilemapBindingState) -> bool:
-        """Whether arriving here from ``other`` means reading the entry again.
-
-        A palette **row base** alone can land on the document in place: it
-        reaches the screen as an index shift at render time, so nothing about
-        which bytes were read has moved. Everything else changes what the
-        document *is* — a different source or size pair decodes different tiles
-        and different frames, and a different cell format changes how many bytes
-        a cell even is — and the load path is the only thing that can rebuild
-        that (``_reload_tilemap``).
-
-        A base of ``None`` re-reads too, and that is not an edge case: it means
-        "whatever the format declares", which is a number only the load path
-        knows (:meth:`~celpix.ui.main_window.session.SessionMixin._row_base_for`).
-        So an in-place apply always has a real base to write, and undoing the
-        first-ever move of the spin restores the format's own answer rather than
-        pinning the value that happened to be on screen.
-        """
-        return (
-            self.tile_source != other.tile_source
-            or self.preset_id != other.preset_id
-            or self.size_pair != other.size_pair
-            or self.palette_mode is not other.palette_mode
-            or self.pending_palette != other.pending_palette
-            or self.row_base is None
-        )
 
 
 class TilemapBindingCommand(_CurrentEntryCommand):
@@ -399,6 +375,29 @@ class PaletteRegionsCommand(_CurrentEntryCommand):
 
     def _apply(self, state: PaletteRegions) -> None:
         self._window._set_palette_regions(state)
+
+
+class PaletteRowBaseCommand(_CurrentEntryCommand):
+    """One move of the palette dock's Base Palette Row spin.
+
+    Its own step rather than a field of the binding above, because the base is
+    not a binding: a tile bank has one as much as a map does — a bank's per-tile
+    rows count from it exactly as a map's cells do — and a pixel entry has no
+    binding to carry it. Like a pinned region it stamps **no revision**: the base
+    changes how the bytes are read, never what they are.
+
+    The state is a pair, ``(entry, document)``, and both halves are needed. The
+    entry's is the user's own answer and may be ``None`` — "whatever the file
+    says" — while the document carries the base **in force**, which is the
+    resolved number a render reads
+    (:meth:`~celpix.ui.main_window.session.SessionMixin._row_base_for`). Carrying
+    the resolved one is what lets undo put back the file's answer without a
+    re-read: a pixel entry holds unsaved edits its document is the only copy of,
+    so reloading it to recover a number would cost the user their work.
+    """
+
+    def _apply(self, state: tuple[int | None, int]) -> None:
+        self._window._set_palette_row_base(self._entry, *state)
 
 
 class PixelConfigCommand(_CurrentEntryCommand):

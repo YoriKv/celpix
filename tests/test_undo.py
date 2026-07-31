@@ -470,6 +470,37 @@ def test_pinning_a_selection_is_one_undoable_step_that_leaves_bytes_clean(
     assert stack.count() == before + 1
 
 
+def test_the_base_palette_row_is_one_step_and_never_a_re_read(qtbot, tmp_path) -> None:
+    """The base is a reading, not an edit: on the stack, no revision stamped, and
+    landed on the document already loaded.
+
+    That last part is what makes it safe on a *pixel* entry, whose document holds
+    unsaved edits the file has never seen — a re-read to recover the number the
+    file states would take those with it. So undo carries the resolved base back
+    itself, and the entry's own answer returns to "whatever the file said".
+    """
+    window, _ = _open(qtbot, tmp_path)
+    entry = window._workspace.current
+    stack = window._undo_stack
+    before = stack.count()
+    assert entry.palette_row_base is None  # a raw file states none
+
+    window._row_base.setValue(5)
+    assert stack.count() == before + 1
+    assert (entry.palette_row_base, window._doc.palette_row_base) == (5, 5)
+    assert not entry.pixel_dirty  # a reading of the bytes, not a change to them
+
+    stack.undo()
+    assert entry.palette_row_base is None
+    assert window._doc.palette_row_base == 0  # the file's answer, back in force
+    stack.redo()
+    assert (entry.palette_row_base, window._doc.palette_row_base) == (5, 5)
+
+    # Re-entering the value it already holds is not a second step.
+    window._row_base.setValue(5)
+    assert stack.count() == before + 1
+
+
 def test_unpin_all_drops_every_region_and_arms_with_the_pinning(
     qtbot, tmp_path
 ) -> None:

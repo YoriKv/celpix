@@ -2,13 +2,20 @@
 
 :class:`~celpix.ui.palette_panel.PalettePanel` is a dumb swatch grid; everything
 around it is built here - the load-mode dropdown, the offset field and its step
-buttons, the source-file label, the color-format row, the details readout and
-the export button.
+buttons, the source-file label, the color-format row, the base palette row, the
+details readout and the export button.
 
 The header is **per-mode**, and :meth:`_set_palette_mode` is the single place
 that converges the mode member, the dropdown and which of those widgets are
 showing. What each mode wants is not re-listed here: it is asked of the mode
 itself (``decodes_raw_bytes``, ``has_external_file``, ``is_exportable``).
+
+**Base Palette Row** is the one control here that is per *entry* rather than per
+palette, and it is here because it is the question of where the two meet: a file
+numbers its rows from wherever its own palette sat in CGRAM, and the base is the
+distance from there to the palette in this dock. Every kind of entry has named
+rows to count - a map's cells, a sprite's parts, a bank's pinned rows - so it is
+gated on the document rather than on the mode (:meth:`_sync_row_base`).
 """
 
 from __future__ import annotations
@@ -33,13 +40,16 @@ from PySide6.QtWidgets import (
 
 from celpix.core.errors import Stage
 from celpix.project.workspace import (
+    Entry,
     PaletteMode,
 )
 from celpix.ui.palette_panel import PalettePanel
+from celpix.ui.undo_commands import PaletteRowBaseCommand
 from celpix.ui.widgets import (
     CommittingLineEdit,
     CompactComboBox,
     select_combo_data,
+    signals_blocked,
 )
 
 # Floor for the header's mode-specific slot (file name, or offset field plus
@@ -206,6 +216,31 @@ class PaletteDockMixin:
         format_row.addWidget(self._palette_preset)
         format_row.addStretch(1)
 
+        # Where a *named* row - a cell's, a subsprite's, a pinned region's -
+        # meets the palette that actually got loaded. It belongs under Format
+        # because it is about these colours rather than about the picture: the
+        # file numbers its rows from wherever its own palette sat in CGRAM, and
+        # this is the distance between there and here. Decimal, and signed, since
+        # the loaded palette is as often the upper half as the whole of it.
+        self._row_base_label = QLabel("Base (Offset) Palette Row:")
+        self._row_base = self._spin(-255, 255, 0, self._on_row_base_change)
+        tip = (
+            "Which palette row a named row 0 draws through\n"
+            "A map's cells, a sprite's parts and a bank's pinned\n"
+            "rows all count from here; the file says where it can\n"
+            "Palette > Wrap Palette Rows decides what happens\n"
+            "to a row this pushes off the end"
+        )
+        self._row_base.setToolTip(tip)
+        self._row_base_label.setToolTip(tip)
+        self._row_base_label.setBuddy(self._row_base)
+
+        row_base_row = QHBoxLayout()
+        row_base_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
+        row_base_row.addWidget(self._row_base_label)
+        row_base_row.addWidget(self._row_base)
+        row_base_row.addStretch(1)
+
         # Its own row under Format: it acts *on* the picked format rather than
         # being part of choosing it, and only Custom shows it at all.
         quantize_row = QHBoxLayout()
@@ -280,6 +315,7 @@ class PaletteDockMixin:
         column.setSpacing(_ROW_GAP)
         column.addLayout(header)
         column.addLayout(format_row)
+        column.addLayout(row_base_row)
         column.addLayout(quantize_row)
         column.addWidget(holder, 1)
         column.addWidget(self._color_details)
@@ -351,6 +387,11 @@ class PaletteDockMixin:
         self._build_show_regions_action()
         menu.addAction(self._show_palette_regions_action)
         menu.addAction(self._show_palette_rows_action)
+        # Below them and in a group of its own: the two above say whether the pins
+        # are shown, this says how the *base* behaves at the palette's ends — which
+        # a map's cells and a sprite's parts obey as much as a pin does.
+        menu.addSeparator()
+        menu.addAction(self._wrap_palette_rows_action)
 
     def _set_palette_mode(self, mode: PaletteMode) -> None:
         """Converge mode member, dropdown, and the per-mode header widgets
@@ -389,6 +430,74 @@ class PaletteDockMixin:
         # A file palette is Ctrl+W's second target, so loading or dropping one
         # changes what Write has to offer.
         self._sync_write_action()
+
+    # -- the base palette row ------------------------------------------------
+    def _sync_row_base(self) -> None:
+        """Show the palette row base in force, where anything counts from it.
+
+        The value is read off the **document**, which carries the base in force —
+        what the file said until this control overrode it
+        (:meth:`~...session.SessionMixin._row_base_for`) — so the spin opens on 8
+        for a sprite, or on a bank's own stated row, rather than on a 0 that
+        would misdescribe what is drawn.
+
+        Hidden on a tilemap whose format gives a cell no palette row: nothing
+        there names a row for a base to shift, and the colours are the view's
+        Subpal to choose instead — the two are never both live
+        (:meth:`~...rendering.RenderingMixin._sync_subpalette`). Shown on every
+        pixel entry, whose pinned rows count from it whether or not any are
+        pinned yet; hidden with no document at all, a palette shown on its own
+        having nothing to be a base *for*.
+        """
+        doc = self._doc
+        shown = doc is not None and (not doc.is_tilemap or doc.cells_carry_palette_rows)
+        self._row_base_label.setVisible(shown)
+        self._row_base.setVisible(shown)
+        if doc is None:
+            return
+        with signals_blocked(self._row_base):
+            self._row_base.setValue(doc.palette_row_base)
+
+    def _on_row_base_change(self, value: int) -> None:
+        """Redraw through a different palette row base — never a re-read.
+
+        The base reaches the screen as an index shift at render time, so nothing
+        about which bytes were read has moved and a refresh is the whole of
+        applying it. That matters most for a *pixel* entry, whose document holds
+        edits the file does not: re-reading to change a number would cost the
+        user their work.
+        """
+        entry = self._workspace.current
+        doc = self._doc
+        if entry is None or doc is None or self._applying_undo:
+            return
+        before = (entry.palette_row_base, doc.palette_row_base)
+        if before == (value, value):
+            return  # the entry already chose this: not a history step
+        self._push_command(
+            PaletteRowBaseCommand(
+                self,
+                entry,
+                f"set base palette row to {value}",
+                before,
+                (value, value),
+            )
+        )
+
+    def _set_palette_row_base(
+        self, entry: Entry, chosen: int | None, in_force: int
+    ) -> None:
+        """Land a base — :class:`PaletteRowBaseCommand`'s apply, both directions.
+
+        Both halves land: ``chosen`` is what the project keeps (``None`` where
+        the user has not overridden the file), ``in_force`` the resolved number
+        every render reads.
+        """
+        entry.palette_row_base = chosen
+        if entry.doc is not None:
+            entry.doc.palette_row_base = in_force
+        if self._doc is not None:
+            self._refresh_view()  # which also re-marks the project modified
 
     def _sync_palette_export_action(self) -> None:
         """Arm the dock's Export to File button iff there is a palette to write."""

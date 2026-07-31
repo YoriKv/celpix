@@ -19,7 +19,7 @@
 # See docs/graphics-formats-reference/scgcad-formats.md §4.
 id = "preset.tilemap.scgcad-map"
 name = "Stamp layout entry (panel coordinate)"
-engine_id = "codec.tilemap-packed"
+engine_id = "codec.tilemap.packed"
 
 [params]
 # The cells are coordinates into a panel, not tile references: the host reads

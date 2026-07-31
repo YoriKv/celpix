@@ -78,7 +78,7 @@ def swap_width(head: bytes) -> int:
 class N64RomContainer:
     info = PluginInfo(
         id="container.n64-rom",
-        name="Nintendo 64 ROM (normalise byte order)",
+        name="Nintendo 64 ROM (normalize byte order)",
         stage=Stage.CONTAINER,
         extensions=(".z64", ".v64", ".n64"),
         magic=tuple((0, sig) for sig in _ORDERS),

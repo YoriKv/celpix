@@ -1,12 +1,12 @@
-# Example preset for the `codec.color-indexed` engine. Copy, drop the
+# Example preset for the `codec.palette.indexed` engine. Copy, drop the
 # underscore, edit, press F5. See _color-mask.toml for what a preset is.
 #
 # WHAT THE ENGINE DOES
 # --------------------
-# codec.color-indexed is for hardware whose palette bytes are **not** colour at
+# codec.palette.indexed is for hardware whose palette bytes are **not** colour at
 # all, but indices into a fixed table baked into the machine — EGA, MSX, the NES.
 # One stored byte selects one entry, always, so the entry size is not a parameter
-# the way it is for codec.color-mask.
+# the way it is for codec.palette.mask.
 #
 # Encoding picks the **nearest** table entry — by Manhattan distance in RGB,
 # there being no inverse when several slots share a colour — so a colour that is
@@ -24,7 +24,7 @@
 
 id = "preset.palette.example-color-indexed"
 name = "Example 8-color indexed"
-engine_id = "codec.color-indexed"
+engine_id = "codec.palette.indexed"
 
 [params]
 

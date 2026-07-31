@@ -9,10 +9,16 @@ entry has a position to jump to. The two bars are pages of one stack, swapped by
 :meth:`~TilemapBarMixin._sync_tilemap_bar` from the render cycle.
 
 What replaces them is the binding: which **open entry** supplies the tiles the
-cells index into, where in it tile 0 sits, which palette row their row 0 draws
-through, and which codec reads the cells. None of that is recoverable from the
-file — a screen names a *bank slot* in a tool that had four loaded at once — so
-it is project state the user sets here and the project remembers (§3, §7).
+cells index into, where in it tile 0 sits, and which codec reads the cells. None
+of that is recoverable from the file — a screen names a *bank slot* in a tool
+that had four loaded at once — so it is project state the user sets here and the
+project remembers (§3, §7).
+
+The **palette row base** is not on this bar, though it is the colour twin of Base
+tile. A named row meeting the palette that got loaded is a question a tile bank
+has as much as a map — a bank's per-tile rows count from a base too — so the
+control belongs where the palette is, on the palette dock
+(:meth:`~...palette_dock.PaletteDockMixin._sync_row_base`).
 
 Binding names an entry and never a path. An entry already carries a container, a
 reshape, a pixel format and a Write of its own, and the map reads the tiles
@@ -31,9 +37,8 @@ Every control on the bar is **one undoable step**. They all set the same kind of
 thing — project state the file does not record — so they share one snapshot type
 and one apply, and a gesture, an undo and a redo settle a binding by the same
 route (:class:`~celpix.ui.undo_commands.TilemapBindingState`,
-:meth:`~TilemapBarMixin._apply_tilemap_binding`). Which of the four moved decides
-only whether the entry has to be read again: a palette row base lands on the
-document in place, and everything else drops it and reloads.
+:meth:`~TilemapBarMixin._apply_tilemap_binding`). Each of them changes what the
+document *is*, so landing one always drops it and reads the entry again.
 """
 
 from __future__ import annotations
@@ -135,21 +140,6 @@ class TilemapBarMixin:
         )
         self._tile_base.valueChanged.connect(self._on_tile_base_change)
         row.addWidget(self._tile_base)
-
-        row.addSpacing(12)
-        # The colour twin of Base tile, and next to it for that reason: one says
-        # where the cells' tile numbers count from, the other where their palette
-        # rows do. Decimal rather than hex, because a palette row is counted the
-        # way the dock counts them and not addressed.
-        self._row_base_label = QLabel("Base row ")
-        row.addWidget(self._row_base_label)
-        self._row_base = self._spin(-255, 255, 0, self._on_row_base_change)
-        self._row_base.setToolTip(
-            "Which palette row a cell's row 0 draws through\n"
-            "Starts where the format says (8 for a sprite)\n"
-            "Lower it when your palette holds only part of CGRAM"
-        )
-        row.addWidget(self._row_base)
 
         row.addSpacing(12)
         # A **sprite map**'s one piece of geometry that no file records: the pair a
@@ -322,7 +312,6 @@ class TilemapBarMixin:
         self._tile_base_label.setVisible(not chained)
         self._tile_base.setVisible(not chained)
         self._sync_binding_jump(source)
-        self._sync_row_base()
         self._sync_size_pair()
         self._sync_all_frames()
         self._sync_transparent_zero()
@@ -357,50 +346,6 @@ class TilemapBarMixin:
             "Back (Alt+Left) returns here"
             if bound is not None
             else "Show where the tiles come from\nNothing is bound yet"
-        )
-
-    def _sync_row_base(self) -> None:
-        """Show the palette row base in force, where the cells have rows at all.
-
-        The value is read off the **document**, which carries the base in force —
-        the format's answer until this control overrode it
-        (:meth:`~...session.SessionMixin._row_base_for`) — so the spin opens on 8
-        for a sprite rather than on a 0 that would misdescribe what is drawn.
-
-        Hidden where the format gives a cell no palette row, on the rule this bar
-        exists for: there is then no row for a base to shift, and the colours are
-        the view's Subpal to choose instead — the two controls are never both
-        live (:meth:`~...rendering.RenderingMixin._sync_subpalette`).
-        """
-        doc = self._doc
-        rows = doc is not None and doc.cells_carry_palette_rows
-        self._row_base_label.setVisible(rows)
-        self._row_base.setVisible(rows)
-        if doc is None:
-            return
-        with signals_blocked(self._row_base):
-            self._row_base.setValue(doc.palette_row_base)
-
-    def _on_row_base_change(self, value: int) -> None:
-        """Redraw through a different palette row base — no re-read.
-
-        Unlike the base *tile*, which goes through the load path with the binding
-        it belongs to, this changes nothing about which bytes are read: the row
-        reaches the screen as an index shift at render time, so the entry keeps
-        the choice and a refresh is the whole of applying it — which is the one
-        in-place apply the binding command has
-        (:meth:`~celpix.ui.undo_commands.TilemapBindingState.rereads_from`).
-        """
-        entry = self._workspace.current
-        doc = self._doc
-        if entry is None or doc is None or not doc.is_tilemap or self._applying_undo:
-            return
-        before = self._tilemap_binding_state(entry)
-        self._push_tilemap_binding(
-            entry,
-            before,
-            replace(before, row_base=value),
-            f"set base row to {value}",
         )
 
     def _sync_size_pair(self) -> None:
@@ -536,26 +481,16 @@ class TilemapBarMixin:
         changes through a render, while this one answers to what is selected — and a
         selection moves without anything being redrawn.
 
-        Three levels, and they are three genuinely different questions
-        (``docs/design/tilemap-entry.md`` §4). ``STAMP`` is the **kind**'s: only a
-        tilemap has a cell to point somewhere. ``cells_editable`` is this
-        **file**'s: a sprite object's records are subsprites at pixel offsets, so
-        there
-        is no cell under the cursor to set. The limit is the **format**'s: a cell
-        with no index field has no number this could hold. Only the first is the
-        capability table's, which is why this gate stays here rather than moving
-        into the gating pass — the pass runs after this one and its blanket
-        visibility would put the spin back on a sprite
-        (:data:`~celpix.ui.main_window.capability_sync._GATED_IN_PLACE`).
+        Whether it applies at all is three questions in one
+        (:meth:`~...tilemap_edit.TilemapEditMixin._cell_reference_settable`), the
+        same predicate the Edit Tiles tool arms on. Only the first of the three is
+        the capability table's, which is why this gate stays here rather than
+        moving into the gating pass: that pass runs after this one, and its
+        blanket visibility would put the spin back on a sprite object
+        (:mod:`~celpix.ui.main_window.capability_sync`).
         """
-        doc = self._doc
         limit = self._cell_index_limit()
-        usable = (
-            doc is not None
-            and self._can(Capability.STAMP)
-            and doc.cells_editable
-            and limit is not None
-        )
+        usable = self._cell_reference_settable()
         self._cell_index_label.setVisible(usable)
         self._cell_index.setVisible(usable)
         if not usable:
@@ -646,6 +581,11 @@ class TilemapBarMixin:
 
         Filled from here rather than at build time because the selection is the
         *entry's*, and this is the pass that runs whenever one is shown.
+
+        The format **in force**, not the entry's stored field: a tilemap no
+        container named a codec for is read under the default
+        (:meth:`~...session.SessionMixin._tilemap_preset_id`), and showing an
+        empty selection over it would name a format the canvas is not drawing.
         """
         combo = self._tilemap_preset
         combo.clear()
@@ -653,7 +593,7 @@ class TilemapBarMixin:
             self._registry.presets(Stage.INTERPRET_TILEMAP), key=lambda p: p.name
         ):
             combo.addItem(preset.name, preset.id)
-        at = combo.findData(entry.tilemap_preset_id)
+        at = combo.findData(self._tilemap_preset_id(entry))
         if at >= 0:
             combo.setCurrentIndex(at)
 
@@ -871,15 +811,14 @@ class TilemapBarMixin:
 
         Read off the **entry** and its session rather than off the loaded
         document, because that is where the binding lives: the document carries
-        the bases *in force*, which is the format's answer where the entry states
-        none, and restoring that number would pin a value the user never chose
-        (:meth:`~...session.SessionMixin._row_base_for`).
+        the size pair *in force*, which is the format's answer where the entry
+        states none, and restoring that number would pin a value the user never
+        chose (:meth:`~...session.SessionMixin._size_pair_for`).
         """
         session = entry.session
         return TilemapBindingState(
             tile_source=entry.tile_source,
             preset_id=entry.tilemap_preset_id,
-            row_base=entry.palette_row_base,
             size_pair=entry.sprite_size_pair,
             palette_mode=(
                 session.palette_mode if session is not None else PaletteMode.DEFAULT
@@ -911,10 +850,10 @@ class TilemapBarMixin:
         """Land ``state`` on ``entry``; False when the re-read it needed failed.
 
         The single application path, so a gesture, an undo and a redo settle a
-        binding identically. Which of the two ways it lands is the state's own
-        answer (:meth:`~celpix.ui.undo_commands.TilemapBindingState.rereads_from`):
-        a palette row base alone is patched onto the document already loaded,
-        everything else drops it and reads the entry again.
+        binding identically. Every field here changes what the document *is* — a
+        different source or size pair decodes different tiles and different
+        frames, a different cell format changes how many bytes a cell even is —
+        so landing one always means reading the entry again.
 
         ``previously`` is the *other end of the step*, not what the entry holds
         now, and the difference is load-bearing: one push site points the entry
@@ -933,14 +872,6 @@ class TilemapBarMixin:
         spins and the combo follow whatever has just landed.
         """
         self._write_tilemap_binding(entry, state, previously)
-        doc = entry.doc
-        if doc is not None and not state.rereads_from(previously):
-            # A row base with a value of its own, and nothing else moved: the
-            # document holds the base in force and the render reads it there, so
-            # this is the whole of applying it.
-            doc.palette_row_base = state.row_base
-            self._refresh_view()  # which also re-marks the project modified
-            return True
         if self._reload_tilemap(entry):
             return True
         # The document the re-read dropped is back (:meth:`_reload_tilemap`), so
@@ -962,7 +893,6 @@ class TilemapBarMixin:
         """
         entry.tile_source = state.tile_source
         entry.tilemap_preset_id = state.preset_id
-        entry.palette_row_base = state.row_base
         entry.sprite_size_pair = state.size_pair
         entry.pending_palette = state.pending_palette
         session = entry.session
@@ -979,16 +909,6 @@ class TilemapBarMixin:
             and entry is self._workspace.current
         ):
             self._set_palette_mode(state.palette_mode)
-
-    def _binding_target(self, source: TileSource) -> Entry | None:
-        """The open entry ``source`` names, or None when it names nothing usable."""
-        if source.mode is not TileMode.ENTRY:
-            return None
-        entries = self._workspace.entries
-        index = source.entry_index
-        if index is None or not 0 <= index < len(entries):
-            return None
-        return entries[index]
 
     def _reload_tilemap(self, entry: Entry) -> bool:
         """Re-read ``entry`` under its current binding; False if it could not be.

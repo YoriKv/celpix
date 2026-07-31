@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §4 (fixed hardware palettes).
 id = "preset.palette.nes-indexed"
 name = "NES/Famicom (64-color indexed)"
-engine_id = "codec.color-indexed"
+engine_id = "codec.palette.indexed"
 
 [params]
 colors = [

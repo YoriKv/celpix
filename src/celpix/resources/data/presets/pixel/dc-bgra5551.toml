@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
 id = "preset.pixel.dc-bgra5551"
 name = "Direct BGRA5551 (8x8)"
-engine_id = "codec.direct-color"
+engine_id = "codec.pixel.direct-color"
 
 [params]
 bytes_per_pixel = 2

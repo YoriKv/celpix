@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
 id = "preset.pixel.3bpp-planar"
 name = "3bpp planar, row-interleaved (8x8)"
-engine_id = "codec.planar"
+engine_id = "codec.pixel.planar"
 
 [params]
 bpp = 3

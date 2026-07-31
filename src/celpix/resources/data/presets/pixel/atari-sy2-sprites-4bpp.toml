@@ -7,7 +7,7 @@
 # See docs/graphics-formats-reference/mame-formats.md §3.2 and §3.3.
 id = "preset.pixel.atari-sy2-sprites-4bpp"
 name = "Atari System 2 sprites (16x16, 4bpp, split halves joined)"
-engine_id = "codec.nibble-planar"
+engine_id = "codec.pixel.nibble-planar"
 
 [params]
 bpp = 4

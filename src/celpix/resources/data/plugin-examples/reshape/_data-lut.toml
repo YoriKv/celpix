@@ -23,10 +23,10 @@
 #
 #   reshape.deinterleave-nibbles  [[7,5,3,1,6,4,2,0]] — two 4bpp pixels woven bit
 #                                 by bit through a byte, gathered back into a
-#                                 nibble each, then read with codec.packed.
+#                                 nibble each, then read with codec.pixel.packed.
 #   reshape.reverse-nibble-bits   [[4,5,6,7,0,1,2,3]] — four-pixel groups whose
 #                                 leftmost pixel is bit 0 of a nibble instead of
-#                                 bit 3; feeds codec.nibble-planar.
+#                                 bit 3; feeds codec.pixel.nibble-planar.
 #   reshape.reverse-byte-bits     [[0,1,2,3,4,5,6,7]] — a row read lsb-first,
 #                                 which is MAME's GFXENTRY_REVERSE.
 

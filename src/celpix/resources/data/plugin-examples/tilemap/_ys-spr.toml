@@ -19,11 +19,11 @@
 # byte and the size bit. It is one format's record rather than a family of them,
 # so the engine's code is what to copy if yours differs.
 #
-# Built on `codec.ys-spr`, as is the shipped ys-spr preset.
+# Built on `codec.tilemap.ys-spr`, as is the shipped ys-spr preset.
 
 id = "preset.tilemap.example-ys-spr"
 name = "Example sprite pattern subsprite"
-engine_id = "codec.ys-spr"
+engine_id = "codec.tilemap.ys-spr"
 
 [params]
 # A **sprite map**: the tilemap variant whose cells are freely-placed subsprites

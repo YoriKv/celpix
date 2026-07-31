@@ -38,7 +38,7 @@ class DirectColorCodec:
     """Truecolor tile codec; component masks come from ``params``."""
 
     info = PluginInfo(
-        id="codec.direct-color",
+        id="codec.pixel.direct-color",
         name="Direct-color (truecolor) tile codec",
         stage=Stage.INTERPRET_PIXEL,
     )

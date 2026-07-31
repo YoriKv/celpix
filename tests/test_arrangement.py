@@ -104,6 +104,33 @@ def test_compose_window_places_tiles_by_block_layout() -> None:
     assert (grid.get(1, 0), grid.get(1, 1)) == (2, 3)  # column 1 = tiles 2, 3
 
 
+def test_a_repeated_cell_row_composes_to_the_same_pixels_as_a_fresh_one() -> None:
+    """A cell row identical to the one above it reuses that band of the image
+    rather than composing it again, and the reuse is keyed on the tiles' object
+    *identity*. So the two things worth pinning are that a genuine repeat comes
+    out right, and that a row which merely looks similar is not treated as one:
+    an equal-but-distinct tile has to compose on its own.
+    """
+    a = IndexGrid(1, 1, bytes([7]))
+    b = IndexGrid(1, 1, bytes([9]))
+    twin = IndexGrid(1, 1, bytes([7]))  # equal to `a`, a different object
+
+    # Rows 0 and 1 are the same objects; row 2 differs; row 3 repeats row 2.
+    tiles = [a, b, a, b, b, a, b, a]
+    grid = compose_window(tiles, columns=2, first_tile=0, rows=4)
+    assert [grid.get(x, y) for y in range(4) for x in range(2)] == [
+        7, 9,
+        7, 9,
+        9, 7,
+        9, 7,
+    ]  # fmt: skip
+
+    # The identity key must not be the only thing consulted for *correctness*:
+    # a distinct object with the same pixels still composes to the same picture.
+    same = compose_window([a, b, twin, b], columns=2, first_tile=0, rows=2)
+    assert [same.get(x, y) for y in range(2) for x in range(2)] == [7, 9, 7, 9]
+
+
 def test_split_grid_inverts_compose_under_every_block_order() -> None:
     # Copy composes a run into an image and paste cuts it back apart; the pair
     # must be exact, or a round trip through an image editor scrambles tiles.

@@ -4,11 +4,17 @@ Built-ins register themselves in-process (see :func:`default_registry`); a
 user's plugins folder registers through the same seam
 (:mod:`celpix.plugins.discovery`), so no stage code knows where a plugin came
 from.
+
+Being the single place they are looked up is also what makes it the single place
+a **renamed** one is forwarded: both lookups fall back to
+:mod:`celpix.plugins.aliases` on a miss, so an id saved before a rename resolves
+without any caller knowing a rename happened.
 """
 
 from __future__ import annotations
 
 from celpix.core.errors import Stage
+from celpix.plugins.aliases import current_id
 from celpix.plugins.base import (
     STAGE_PASSTHROUGH,
     Plugin,
@@ -44,10 +50,14 @@ class Registry:
         bucket[plugin.info.id] = plugin
 
     def plugin(self, stage: Stage, plugin_id: str) -> Plugin:
-        try:
-            return self._plugins[stage][plugin_id]
-        except KeyError:
-            raise KeyError(f"no {stage.value} plugin with id {plugin_id!r}") from None
+        bucket = self._plugins[stage]
+        # The live id first, so a plugin that has taken a retired name wins over
+        # the alias — a user's own plugin is entitled to any id it likes, and
+        # theirs is the one in front of them.
+        plugin = bucket.get(plugin_id) or bucket.get(current_id(plugin_id))
+        if plugin is None:
+            raise KeyError(f"no {stage.value} plugin with id {plugin_id!r}")
+        return plugin
 
     def plugins(self, stage: Stage) -> list[Plugin]:
         return list(self._plugins[stage].values())
@@ -59,10 +69,14 @@ class Registry:
         self._presets[preset.id] = preset
 
     def preset(self, preset_id: str) -> Preset:
-        try:
-            return self._presets[preset_id]
-        except KeyError:
-            raise KeyError(f"no preset with id {preset_id!r}") from None
+        # Live id first, then the forwarding address — same order and same
+        # reason as `plugin` above.
+        preset = self._presets.get(preset_id) or self._presets.get(
+            current_id(preset_id)
+        )
+        if preset is None:
+            raise KeyError(f"no preset with id {preset_id!r}")
+        return preset
 
     def presets(self, stage: Stage | None = None) -> list[Preset]:
         items = self._presets.values()

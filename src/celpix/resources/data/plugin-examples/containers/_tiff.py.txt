@@ -31,6 +31,17 @@ strips joined out of a scattered file. Those mark the entry in the files list an
 spell themselves out in its tooltip without interrupting anyone. A plugin may also
 record notices and *then* raise, so a hard failure carries what led up to it.
 
+**Saving somewhere else.** A Save As hands ``write`` an *empty* destination, and
+this container cannot rebuild a TIFF from pixels alone — the strip map is in the
+file. So the read stashes the image it came from and the write copies that,
+edits spliced in. Any container whose framing is a lookup rather than a fixed
+header needs the same, and getting it wrong is the classic way to ship a Save As
+that writes a file nothing can reopen.
+
+**Describing the file.** ``describe`` is optional and display-only: it fills the
+container-info popup with what this container read and what it did about it. It
+runs after the read has already succeeded, so it can never fail a file.
+
 **What it doesn't do**, being an example: tiled TIFFs (``TileOffsets``, tag 324),
 multi-page files (only the first IFD is read), BigTIFF, and any compression beyond
 none/PackBits. Each is more parsing, not a different shape.
@@ -39,7 +50,20 @@ none/PackBits. Each is more parsing, not a different shape.
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.notices import inform, warn
-from celpix.plugins import PluginInfo, ReadSource, WriteTarget
+from celpix.plugins import (
+    ContainerField,
+    PluginInfo,
+    ReadSource,
+    WriteTarget,
+    format_size,
+)
+
+# The file this pathway's strips were read out of, so a Save As can put them back
+# into a copy of it. A container whose framing cannot be *regenerated* from the
+# payload needs this: the strip map lives in the IFD, and with no file at the
+# destination there is no IFD to look it up in. Keys of your own are fine on the
+# context — celPix only reads the ones it defines.
+KEY_TIFF_SOURCE = "tiff.source"
 
 _LITTLE = b"II*\x00"  # byte order + magic 42, together the whole signature
 _BIG = b"MM\x00*"
@@ -123,6 +147,8 @@ class TiffContainer:
         # strips after it are not contiguous with it, which is why the write
         # below cannot be a single splice.
         ctx.set(KEY_SOURCE_OFFSET, strips[0][0])
+        # Kept so a Save As has a TIFF to write into; see `write`.
+        ctx.set(KEY_TIFF_SOURCE, raw)
         name = _COMPRESSION_NAMES.get(compression, f"unsupported ({compression})")
         # Advisory, like everything on the context: it tells the user which
         # Compression entry to pick without this container deciding for them.
@@ -166,23 +192,88 @@ class TiffContainer:
         edit lands in several places at once, and everything between the strips is
         carried across untouched.
 
+        **Handle the empty destination.** A Save As to a path with no file at it
+        gives ``dest.existing == b""``, and the strip map lives in the file — so
+        with nothing there, there is nothing to look it up in. Reading the map out
+        of an empty buffer raises, and writing the strips on their own would emit
+        a bare pixel run that is not a TIFF and will not reopen as one. Both are
+        wrong in the same way: a Save As is a *copy of the document*, so the bytes
+        go back into a copy of the file they came from, which is what the read
+        stashed. Any container whose framing it cannot rebuild from the payload
+        alone wants this; celPix's own iNES and PVR plugins do the same.
+
         The strips are a fixed set of slots, so the edited data has to be exactly
         the size it was read as. It always is for an ordinary tile edit, which
         rewrites bytes in place; a re-compression that packed to a different size
         would not fit, and is refused rather than written half-way.
         """
-        strips, _compression = _strips(dest.existing)
+        existing = dest.existing
+        if not existing:
+            source = ctx.get(KEY_TIFF_SOURCE)
+            if not isinstance(source, (bytes, bytearray)):
+                raise ValueError(
+                    "cannot write a TIFF without one to write into: this pathway "
+                    "did not read one"
+                )
+            existing = bytes(source)
+        strips, _compression = _strips(existing)
         total = sum(length for _at, length in strips)
         if len(data) != total:
             raise ValueError(
                 f"{len(data)} bytes do not fit the image's {total}-byte strips"
             )
-        out = bytearray(dest.existing)
+        out = bytearray(existing)
         taken = 0
         for at, length in strips:
             out[at : at + length] = data[taken : taken + length]
             taken += length
         return bytes(out)
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        """Rows for the container-info popup — optional, and display-only.
+
+        celPix reaches this with ``getattr``, so a container without one simply
+        reports nothing: it was added after the first plugins were written and
+        does not break them. It runs *after* a successful read and must not be
+        able to retract one, so raising here costs the rows, not the file.
+
+        Report what the format says and what you did with it. ``value`` is this
+        file's answer, quoted the way the format quotes it; ``detail`` is the part
+        a hex editor cannot give — why the value matters, or why you ignored it.
+        Hard-wrap ``detail`` at about 60 characters: it becomes a tooltip, and Qt
+        does not wrap those.
+        """
+        try:
+            strips, compression = _strips(source.data)
+        except ValueError as exc:
+            return (ContainerField("Directory", f"unreadable - {exc}", ""),)
+        total = sum(length for _at, length in strips)
+        return (
+            ContainerField(
+                "Byte order",
+                "little-endian (II)" if source.data[:4] == _LITTLE else "big-endian (MM)",
+                "Set by the first two bytes and applied to every number\n"
+                "in the file, including the directory this container\n"
+                "walks to find the image.",
+            ),
+            ContainerField(
+                "Strips",
+                f"{len(strips)} totalling {format_size(total)}",
+                "The image data, which a TIFF may scatter through the\n"
+                "file. They are handed over joined end to end and written\n"
+                "back to their own places, so a position here is not a\n"
+                "file offset - which is what preserves_offsets declares.",
+            ),
+            ContainerField(
+                "Compression",
+                _COMPRESSION_NAMES.get(compression, f"unsupported ({compression})"),
+                "Reported, not undone: unpacking is the Compression\n"
+                "stage's job, and the two compose. Pick the matching\n"
+                "entry in the Compression dropdown.",
+            ),
+        )
 
 
 def register(registry):

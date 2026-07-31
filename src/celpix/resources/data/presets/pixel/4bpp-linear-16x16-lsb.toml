@@ -8,7 +8,7 @@
 # See docs/graphics-formats-reference/mame-formats.md §1.3.
 id = "preset.pixel.4bpp-linear-16x16-lsb"
 name = "4bpp linear, low nibble left (16x16)"
-engine_id = "codec.packed"
+engine_id = "codec.pixel.packed"
 
 [params]
 bpp = 4

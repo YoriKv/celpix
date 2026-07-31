@@ -70,29 +70,40 @@ _settings_isolated = False
 
 @pytest.fixture(autouse=True)
 def _isolate_settings(tmp_path_factory):
-    """Keep the suite's QSettings writes out of the developer's real config.
+    """Keep the suite's QSettings writes out of the developer's real config, and
+    out of each other's way.
 
     Opening or saving a project records it in the app-wide recent-projects list,
     so without this a run would litter a developer's own celPix settings with
-    temp paths — and read their real preferences back into the tests. Done once
-    per session (the format and path are process-wide Qt state) and guarded like
-    :func:`captured_alerts`, so the headless model-layer suites stay Qt-free.
+    temp paths — and read their real preferences back into the tests. The
+    redirect is done once per session (the format and path are process-wide Qt
+    state) and guarded like :func:`captured_alerts`, so the headless model-layer
+    suites stay Qt-free.
+
+    **Emptied before every test**, because a preference is written the moment its
+    menu entry is toggled: a test that leaves Show Pinned Palette Colors off would
+    otherwise change how every later test in the run renders, and one that asks
+    what a fresh window defaults to would be answering for the test before it.
     """
     global _settings_isolated
     qtcore = sys.modules.get("PySide6.QtCore")
-    if qtcore is None or _settings_isolated:
+    if qtcore is None:
         return
-    _settings_isolated = True
     settings = qtcore.QSettings
-    # The app's store names its own organization (celpix.ui.widgets.settings), so
-    # redirecting the format's user-scope path is all it takes; the application
-    # name pytest-qt leaves unset doesn't come into it.
-    settings.setDefaultFormat(settings.Format.IniFormat)
-    settings.setPath(
-        settings.Format.IniFormat,
-        settings.Scope.UserScope,
-        str(tmp_path_factory.mktemp("settings")),
-    )
+    if not _settings_isolated:
+        _settings_isolated = True
+        # The app's store names its own organization (celpix.ui.widgets.settings),
+        # so redirecting the format's user-scope path is all it takes; the
+        # application name pytest-qt leaves unset doesn't come into it.
+        settings.setDefaultFormat(settings.Format.IniFormat)
+        settings.setPath(
+            settings.Format.IniFormat,
+            settings.Scope.UserScope,
+            str(tmp_path_factory.mktemp("settings")),
+        )
+    from celpix.ui.widgets import settings as app_settings
+
+    app_settings().clear()
 
 
 @pytest.fixture(autouse=True)

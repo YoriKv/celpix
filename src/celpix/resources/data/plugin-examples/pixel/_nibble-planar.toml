@@ -1,9 +1,9 @@
-# Example preset for the `codec.nibble-planar` engine. Copy, drop the
+# Example preset for the `codec.pixel.nibble-planar` engine. Copy, drop the
 # underscore, edit, press F5. See _planar.toml for what a preset is.
 #
 # WHAT THE ENGINE DOES
 # --------------------
-# codec.nibble-planar is neither planar nor packed but splits the difference:
+# codec.pixel.nibble-planar is neither planar nor packed but splits the difference:
 # **one byte carries four pixels**, its high nibble holding one bitplane of those
 # four and its low nibble the next, with bit 3 of a nibble the leftmost pixel.
 #
@@ -27,7 +27,7 @@
 
 id = "preset.pixel.example-nibble-planar"
 name = "Example nibble-planar 2bpp"
-engine_id = "codec.nibble-planar"
+engine_id = "codec.pixel.nibble-planar"
 
 [params]
 

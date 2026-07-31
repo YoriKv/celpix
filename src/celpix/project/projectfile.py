@@ -38,6 +38,7 @@ from celpix.core.capabilities import ContentKind
 from celpix.core.document import ViewOptions
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
 from celpix.core.tilerearrangement import TileRearrangement
+from celpix.plugins.aliases import current_id
 from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE, RAW_CONTAINER
 from celpix.project.workspace import (
     Entry,
@@ -58,6 +59,12 @@ from celpix.project.workspace import (
 # the ordinary key-level tolerance below covers the rest. Once the format
 # settles, bumps start earning migrations — and a history of what each one
 # changed.
+#
+# Renamed plugin and preset **ids** are the exception, and are translated at
+# every version (:func:`_plugin_id`). They are not a schema detail: an id names
+# what an entry was opened *with*, so a rename with no forwarding address resets
+# that entry to pass-through, which reads as data loss. That mapping lives in
+# `plugins/aliases.py` and is independent of this number.
 PROJECT_VERSION = 1
 PROJECT_EXTENSION = ".celpix"
 
@@ -177,18 +184,20 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
     # palette entry, whose ``kind`` already implies it (Entry.__post_init__).
     if entry.content_kind not in (ContentKind.PIXELS, ContentKind.PALETTE):
         data["content_kind"] = entry.content_kind.value
+    # Not gated on the content kind, unlike the binding below it: a tile bank's
+    # pinned rows count from a base exactly as a map's cells do, so a pixel entry
+    # has one to keep. Written only once the user has overruled what the file
+    # said, so an entry reading in the rows its format states carries nothing —
+    # and written even at 0, which is a deliberate answer against a format that
+    # says 8 and not an absent one.
+    if entry.palette_row_base is not None:
+        data["palette_row_base"] = entry.palette_row_base
     if entry.content_kind is ContentKind.TILEMAP:
         if entry.tilemap_preset_id:
             data["tilemap_preset_id"] = entry.tilemap_preset_id
         source = entry.tile_source
         if source is not None and source.is_bound:
             data["tile_source"] = _tile_source_dict(source)
-        # Only once the user has overruled the format, so a map reading in the
-        # rows its preset states carries nothing — and a project written before
-        # this control existed round-trips unchanged. Written even at 0, which is
-        # a deliberate answer against a format that says 8 and not an absent one.
-        if entry.palette_row_base is not None:
-            data["palette_row_base"] = entry.palette_row_base
         if entry.sprite_size_pair is not None:
             data["sprite_size_pair"] = list(entry.sprite_size_pair)
     session = entry.session
@@ -255,12 +264,13 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
         # pinned, so a project that never used the feature is byte-identical.
         # Spans are pixel runs in the document's own picture space (pixel 0 is its
         # first pixel), which is what makes them meaningful under a planar codec
-        # where a byte is no run of pixels at all.
+        # where a byte is no run of pixels at all. The toggle that *shows* them
+        # does not ride along, unlike show_rearranged: it is a local preference in
+        # QSettings (``ui/main_window/palette_regions.py``).
         if not view.palette_regions.is_empty():
             data["view"]["palette_regions"] = [
                 [r.start, r.length, r.row] for r in view.palette_regions.regions
             ]
-            data["view"]["show_palette_regions"] = view.show_palette_regions
     palette = palette_source_for(entry)
     if palette is not None:
         data["palette"] = _palette_dict(palette, base_dir)
@@ -336,8 +346,8 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
             name=name if isinstance(name, str) and name else basename(path),
             kind=kind,
             path=path,
-            container_id=_str(raw.get("container_id"), RAW_CONTAINER),
-            palette_preset_id=_str(
+            container_id=_plugin_id(raw.get("container_id"), RAW_CONTAINER),
+            palette_preset_id=_plugin_id(
                 raw.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET
             ),
         )
@@ -353,17 +363,17 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         ),
         slice_offset=_int(raw.get(offset_key), 0),
         slice_length=_int(raw.get("slice_length"), None),
-        compression_id=_str(raw.get("compression_id"), NO_COMPRESSION),
-        reshape_id=_str(raw.get("reshape_id"), NO_RESHAPE),
+        compression_id=_plugin_id(raw.get("compression_id"), NO_COMPRESSION),
+        reshape_id=_plugin_id(raw.get("reshape_id"), NO_RESHAPE),
         # Absent for every file nothing claimed — plain bytes, which is also what
         # an entry naming a container the registry no longer has falls back to.
-        container_id=_str(raw.get("container_id"), RAW_CONTAINER),
+        container_id=_plugin_id(raw.get("container_id"), RAW_CONTAINER),
         # Absent on every project written before tilemaps existed, and on every
         # ordinary pixel entry since — ContentKind.parse falls back to PIXELS,
         # which is what those entries are.
         content_kind=ContentKind.parse(raw.get("content_kind")),
         tile_source=_tile_source(raw),
-        tilemap_preset_id=(_str(raw.get("tilemap_preset_id"), "") or None),
+        tilemap_preset_id=(_plugin_id(raw.get("tilemap_preset_id"), "") or None),
         # Absent means "whatever the format says", which is every entry that never
         # overrode it — so the default has to stay None and not 0.
         palette_row_base=_int(raw.get("palette_row_base"), None),
@@ -397,10 +407,12 @@ def _session_from(raw: object) -> EntrySession:
     # selected either way.
     data = raw if isinstance(raw, dict) else {}
     return EntrySession(
-        pixel_preset_id=_str(data.get("pixel_preset_id"), _DEFAULT_PIXEL_PRESET),
-        palette_preset_id=_str(data.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET),
+        pixel_preset_id=_plugin_id(data.get("pixel_preset_id"), _DEFAULT_PIXEL_PRESET),
+        palette_preset_id=_plugin_id(
+            data.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET
+        ),
         palette_mode=PaletteMode.parse(data.get("palette_mode")),
-        preview_compression_id=_str(data.get("compression_id"), NO_COMPRESSION),
+        preview_compression_id=_plugin_id(data.get("compression_id"), NO_COMPRESSION),
     )
 
 
@@ -430,9 +442,6 @@ def _view_from(raw: object) -> ViewOptions | None:
         tile_rearrangement=_tile_rearrangement(raw),
         show_rearranged=bool(raw.get("show_rearranged", defaults.show_rearranged)),
         palette_regions=_palette_regions(raw),
-        show_palette_regions=bool(
-            raw.get("show_palette_regions", defaults.show_palette_regions)
-        ),
     )
 
 
@@ -585,6 +594,21 @@ def _number(value: object, default: float) -> float:
 
 def _str(value: object, default: str) -> str:
     return value if isinstance(value, str) and value else default
+
+
+def _plugin_id(value: object, default: str) -> str:
+    """A stored plugin or preset id, forwarded through any rename since.
+
+    Applied on **load**, so the workspace only ever holds current ids and the
+    next save writes them: a project touched after an upgrade stops depending on
+    the alias table, while one that is never re-saved keeps opening through it
+    indefinitely (:mod:`celpix.plugins.aliases`).
+
+    An id this build has never heard of is left exactly as it was, renamed or
+    not. It may belong to a plugin the user has yet to install, and rewriting it
+    to a default would turn "your plugin is missing" into "your setting is gone".
+    """
+    return current_id(_str(value, default))
 
 
 # -- path handling (docs/design/project-format.md §3) ----------------------

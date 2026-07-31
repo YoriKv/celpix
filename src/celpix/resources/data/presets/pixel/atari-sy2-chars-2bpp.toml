@@ -4,7 +4,7 @@
 # See docs/graphics-formats-reference/mame-formats.md §3.1.
 id = "preset.pixel.atari-sy2-chars-2bpp"
 name = "Atari System 2 chars (8x8, 2bpp)"
-engine_id = "codec.nibble-planar"
+engine_id = "codec.pixel.nibble-planar"
 
 [params]
 bpp = 2

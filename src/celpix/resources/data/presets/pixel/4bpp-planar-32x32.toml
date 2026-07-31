@@ -3,7 +3,7 @@
 # See docs/graphics-formats-reference/mame-formats.md §1.3.
 id = "preset.pixel.4bpp-planar-32x32"
 name = "4bpp planar, interleaved (32x32)"
-engine_id = "codec.planar"
+engine_id = "codec.pixel.planar"
 
 [params]
 bpp = 4

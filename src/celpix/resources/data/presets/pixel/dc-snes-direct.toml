@@ -7,7 +7,7 @@
 # docs/graphics-formats-reference/snes-hardware-notes.md for the planar case.
 id = "preset.pixel.dc-snes-direct"
 name = "SNES 8bpp direct color (BBGGGRRR)"
-engine_id = "codec.direct-color"
+engine_id = "codec.pixel.direct-color"
 
 [params]
 bytes_per_pixel = 1

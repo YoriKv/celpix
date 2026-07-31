@@ -28,7 +28,7 @@ from celpix.core.context import (
     KEY_TILEMAP_PAGES_ACROSS,
     PipelineContext,
 )
-from celpix.core.palette import Palette
+from celpix.core.palette import Palette, palette_row_count
 from celpix.core.paletteregions import PaletteRegions
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, drawn_frames
 from celpix.core.tilemap import (
@@ -120,10 +120,15 @@ class ViewOptions:
     ``palette_regions`` pins regions of the picture to their own subpalette row,
     overriding ``subpalette_row`` for the tiles inside them — so a bank whose art
     is drawn under several hardware palettes can be read at once instead of one
-    group at a time. It changes no bytes and no indices: the row reaches the
+    group at a time. A pinned row is a **named** row like a cell's, so it counts
+    from :attr:`Document.palette_row_base` rather than being absolute. It changes
+    no bytes and no indices: the row reaches the
     screen as a shift applied to the *rendered* indices only
     (:mod:`celpix.core.paletteregions`). ``show_palette_regions`` is the toggle
-    between that and the plain single-row view, like ``show_rearranged``.
+    between that and the plain single-row view, like ``show_rearranged`` — but
+    unlike it, a **local preference** the UI carries app-wide rather than entry
+    state: it is here because rendering and export read the view options as one
+    bundle, and it is not written to the project file.
 
     ``tile_rearrangement`` rearranges *which* tile each position shows, so
     scattered tiles can be viewed and edited side by side; it moves no bytes, and
@@ -134,13 +139,17 @@ class ViewOptions:
     it. The map composes *before* the block placement: it decides which tile
     fills a slot, the arrangement decides where that slot lands.
 
-    ``pages_across`` is the block arrangement's tilemap counterpart, one level up:
-    a file holding several independent maps (:attr:`Document.pages`) states
-    neither how they assemble nor that they were meant to, so this says how many
-    to lay side by side and the rest follow in bands below
-    (:func:`~celpix.core.tilemap.page_order`). Display-only in the same sense —
-    the cells keep the file's order, only where each is drawn moves — and it owns
-    ``columns`` while it applies, since an assembly *is* a width.
+    ``pages_across`` is how many of a paged tilemap's independent maps
+    (:attr:`Document.pages`) lie side by side, the rest following in bands below
+    (:func:`~celpix.core.tilemap.page_order`). A **passthrough**: no control sets
+    it, because every paged format celPix reads states its own assembly and
+    :attr:`Document.pages_across` takes that answer over this one. It is here so
+    a project carrying one round-trips, and so a format that holds pages without
+    stating their layout has somewhere for a stored choice to live. Display-only
+    in the same sense as the axes above — the cells keep the file's order, only
+    where each is drawn moves — and an assembly owns ``columns`` while it
+    applies, since an assembly *is* a width
+    (:attr:`Document.assembled_columns`).
     """
 
     columns: int = 16
@@ -167,12 +176,24 @@ class ViewOptions:
     # for the tiles inside them (:mod:`celpix.core.paletteregions`).
     palette_regions: PaletteRegions = PaletteRegions()
     show_palette_regions: bool = True  # apply them, or render everything at the row
+    # Whether a named row the palette row base pushes past either end of the
+    # palette **wraps** to the other end, or stops at the palette's first row
+    # (:attr:`Document.palette_row_base`). Off by default: the file's rows and
+    # the palette usually line up, and there a wrap can only turn a base that is
+    # wrong into art drawn through a row that looks plausible — where stopping
+    # short leaves the mismatch visible. On, for reading a file against a palette
+    # holding a different slice of CGRAM than it was authored for. A **local
+    # preference** like ``show_palette_regions`` above, here for the same reason:
+    # rendering and export read the view options as one bundle.
+    wrap_palette_rows: bool = False
     # How many **pages** a paged tilemap lays across (:attr:`Document.pages`), and
     # so how its independent maps assemble into one picture: a screen file's four
     # 32x32 screens read 1x4, 2x2 or 4x1. 0 means nothing has chosen, which lands
-    # on the format's default. Meaningless on every other kind of document, where
-    # it stays 0. Display-only like the block axes above — the cells keep the
-    # file's own order and only where each is drawn moves.
+    # on the squarest arrangement the page count admits. Read only where no format
+    # has stated an assembly, and never written by a control — see the docstring.
+    # Meaningless on every other kind of document, where it stays 0. Display-only
+    # like the block axes above — the cells keep the file's own order and only
+    # where each is drawn moves.
     pages_across: int = 0
     # A **sprite map**'s counterpart of the two toggles above: show every frame
     # slot the file has room for, or stop after the last one holding a drawn
@@ -255,6 +276,28 @@ class Document:
     # did not touch (docs/design/palette-editing.md §2).
     palette_base_bytes: bytes = b""
     palette_edits: set[int] = field(default_factory=set)
+    # The palette row a **named** row 0 means, for every kind of document: a
+    # cell's row, a subsprite's, and a pinned region's on a pixel bank
+    # (:mod:`celpix.core.paletteregions`). Each of those is a small number
+    # relative to wherever its layer's colours were loaded, and only the file it
+    # came from knows where that is: a console BG entry's 3-bit row counts from
+    # CGRAM row 0, while a sprite's identical 3-bit field counts from row 8,
+    # because sprite palettes live in the upper half
+    # (``docs/graphics-formats-reference/snes-hardware-notes.md`` §6). Without it
+    # a sprite draws through the background's colours — which is not a wrong
+    # shade, it is the wrong sixteen colours.
+    #
+    # The base **in force**, which is what the file said until the user says
+    # otherwise on the palette dock: the palette actually loaded need not be the
+    # whole of CGRAM, and a sprite read against a palette file holding only the
+    # object half counts from row 0 again. Signed for that reason
+    # (:attr:`~celpix.project.workspace.Entry.palette_row_base`), and the render
+    # wraps a row it pushes past either end
+    # (:func:`~celpix.pipeline.pipeline.drawn_palette_row`).
+    #
+    # It never touches the view's own subpalette row, which is a row the user
+    # picked in the palette that is loaded and so already absolute.
+    palette_row_base: int = 0
 
     # -- the tilemap half (``docs/design/tilemap-entry.md``) -----------------
     # Set only on a tilemap document, and what :attr:`is_tilemap` tests. The
@@ -295,23 +338,6 @@ class Document:
     cell_row_stride: int = 0  # 0 = the cell's own width, i.e. consecutive tiles
     # The source tile that cell index 0 draws (a format's base-character field).
     tile_base_index: int = 0
-    # The palette row a cell's row **0** means — the tile base's colour twin. A
-    # cell carries a small row number relative to wherever its layer's colours
-    # were loaded, and only the format knows where that is: a console BG entry's
-    # 3-bit row counts from CGRAM row 0, while a sprite's identical 3-bit field
-    # counts from row 8, because sprite palettes live in the upper half
-    # (``docs/graphics-formats-reference/snes-hardware-notes.md`` §6). Without it a
-    # sprite draws through the background's colours — which is not a wrong shade,
-    # it is the wrong sixteen colours.
-    #
-    # The base **in force**, which is the format's answer until the user says
-    # otherwise on the tilemap bar: the palette actually loaded need not be the
-    # whole of CGRAM, and a sprite read against a palette file holding only the
-    # object half counts from row 0 again. Signed for that reason
-    # (:attr:`~celpix.project.workspace.Entry.palette_row_base`); the render
-    # clamps a row it pushes below 0
-    # (:func:`~celpix.pipeline.pipeline.drawn_palette_row`).
-    palette_row_base: int = 0
     # How wide the format's tile-index *field* is, as a mask (0 = unbounded).
     # A multi-tile cell's neighbours are found by adding to that field, so the
     # addition wraps inside it: an SNES BG index is 10 bits, so the 16x16 cell at
@@ -457,10 +483,9 @@ class Document:
 
         False only for a **sprite object**, where a canvas position resolves to a
         *subsprite* through an overlap order rather than to a cell through a grid,
-        so
-        there is no cell under the cursor to change
-        (``docs/design/tilemap-entry.md`` §9). It is not read-only on disk, so the
-        distinction is about the gesture, not the file.
+        so there is no cell under the cursor to change
+        (``docs/design/tilemap-entry.md`` §6, OBJ). It is not read-only on disk,
+        so the distinction is about the gesture, not the file.
         """
         return self.is_tilemap and not self.is_sprite
 
@@ -737,6 +762,27 @@ class Document:
         # Ceiling: a trailing partial tile counts — it's viewable, zero-padded.
         tb = self.bytes_per_tile
         return ceil_div(len(self.pixel_data), tb) if tb else 0
+
+    def palette_rows(self, index_space: int) -> int:
+        """How many subpalette rows this document's palette holds.
+
+        Asked of the document so the one place that copes with a document
+        carrying no palette at all is here — a render with nothing loaded still
+        has to place a named row somewhere, and every row the index space can
+        express is a better answer than "row 0" for a document whose palette has
+        yet to arrive.
+        """
+        return palette_row_count(len(self.palette) if self.palette else 0, index_space)
+
+    def palette_row_wrap(self, index_space: int) -> int:
+        """The modulus a named row wraps against, or 0 where wrapping is off.
+
+        The gate in one place, so every reader of a named row asks the same
+        question and none of them has to know the toggle exists
+        (:attr:`ViewOptions.wrap_palette_rows`,
+        :func:`~celpix.pipeline.pipeline.drawn_palette_row`).
+        """
+        return self.palette_rows(index_space) if self.view.wrap_palette_rows else 0
 
     def window_bytes(self, first_tile: int, count: int, nudge: int = 0) -> bytes:
         """The byte slice for ``count`` tiles starting at tile ``first_tile``.

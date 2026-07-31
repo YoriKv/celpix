@@ -1,16 +1,16 @@
-# Example preset for the `codec.direct-color` engine. Copy, drop the underscore,
+# Example preset for the `codec.pixel.direct-color` engine. Copy, drop the underscore,
 # edit, press F5. See _planar.toml for what a preset is.
 #
 # WHAT THE ENGINE DOES
 # --------------------
-# codec.direct-color decodes **palette-less** pixels: each one carries its own
+# codec.pixel.direct-color decodes **palette-less** pixels: each one carries its own
 # colour, so there is no index and no palette anywhere in the pipeline. A pixel
 # is a fixed number of bytes, assembled into one value by `byte_order`, and each
 # channel is then a plain bit mask over that value scaled up to 8 bits. A channel
 # narrower than 8 bits is therefore lossy: the *decoded colour* round-trips, the
 # raw bits cannot and never could.
 #
-# It shares its mask arithmetic with codec.color-mask (_color-mask.toml) — the
+# It shares its mask arithmetic with codec.palette.mask (_color-mask.toml) — the
 # same maths, applied to a pixel rather than to a palette entry.
 #
 # SHIPPED PRESETS BUILT ON IT
@@ -23,7 +23,7 @@
 
 id = "preset.pixel.example-direct-color"
 name = "Example direct color RGB565"
-engine_id = "codec.direct-color"
+engine_id = "codec.pixel.direct-color"
 
 [params]
 

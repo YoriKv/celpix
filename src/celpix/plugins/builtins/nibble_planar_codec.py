@@ -105,7 +105,7 @@ class NibblePlanarCodec:
     """Nibble-planar tile codec; geometry and depth come entirely from ``params``."""
 
     info = PluginInfo(
-        id="codec.nibble-planar",
+        id="codec.pixel.nibble-planar",
         name="Nibble-planar codec (two planes per byte)",
         stage=Stage.INTERPRET_PIXEL,
     )

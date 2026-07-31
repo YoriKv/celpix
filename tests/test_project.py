@@ -246,6 +246,79 @@ def test_inline_colors_survive_without_activation(tmp_path) -> None:
     assert loaded.entries[0].pending_view == ViewOptions(zoom=8)
 
 
+def test_a_project_written_before_a_rename_still_opens_and_is_rewritten(
+    tmp_path,
+) -> None:
+    """A plugin id is a compatibility surface: a project names the formats each
+    entry was opened with, so renaming one without a forwarding address resets
+    those entries to pass-through, which reads as data loss.
+
+    Loading forwards them, so the workspace holds current ids and the *next save*
+    writes them - a project touched after an upgrade stops depending on the
+    alias table, and one that is never re-saved keeps opening through it.
+    """
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(b"\x00" * 64)
+    project = tmp_path / "old.celpix"
+    # Hand-written the way v0.4.3 would have saved it, old ids throughout.
+    project.write_text(
+        json.dumps(
+            {
+                "version": PROJECT_VERSION,
+                "current": 0,
+                "entries": [
+                    {
+                        "kind": "file",
+                        "name": "rom.bin",
+                        "path": "rom.bin",
+                        "session": {
+                            "pixel_preset_id": "preset.pixel.chunky-8bpp",
+                            "palette_preset_id": "preset.palette.r4g4b4",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_project(str(project))
+    session = loaded.entries[0].session
+    assert session.pixel_preset_id == "preset.pixel.8bpp-linear"
+    assert session.palette_preset_id == "preset.palette.bgr444"
+
+    # ...and re-saving writes the new names, so the file stops needing the table.
+    ws = Workspace()
+    ws.replace(loaded.entries, loaded.current)
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    written = json.dumps(raw)
+    assert "chunky-8bpp" not in written and "r4g4b4" not in written
+    assert "preset.pixel.8bpp-linear" in written
+
+    # An id from a plugin this build simply hasn't got is left alone rather than
+    # reset: it may be one the user has yet to install, and rewriting it to a
+    # default turns "your plugin is missing" into "your setting is gone".
+    project.write_text(
+        json.dumps(
+            {
+                "version": PROJECT_VERSION,
+                "current": 0,
+                "entries": [
+                    {
+                        "kind": "file",
+                        "name": "rom.bin",
+                        "path": "rom.bin",
+                        "reshape_id": "reshape.somebody-elses",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_project(str(project)).entries[0].reshape_id == "reshape.somebody-elses"
+
+
 def test_pixel_format_filter_round_trips(tmp_path) -> None:
     rom = tmp_path / "rom.bin"
     rom.write_bytes(b"\x00" * 32)
@@ -402,6 +475,34 @@ def test_a_pixel_entry_writes_no_tilemap_keys(tmp_path) -> None:
     assert "content_kind" not in written
     assert "tile_source" not in written
     assert "tilemap_preset_id" not in written
+    assert "palette_row_base" not in written
+
+
+def test_a_pixel_entry_keeps_its_palette_row_base(tmp_path) -> None:
+    """A base is not part of a binding: a tile bank's pinned rows count from one
+    exactly as a map's cells do, so a pixel entry has one to keep.
+
+    0 is again the value that has to survive as a *choice* — a bank whose header
+    says 8, read against a palette holding only that half, is the whole reason
+    the override exists, and dropping a falsy one would put the header's answer
+    back on every project load.
+    """
+    (tmp_path / "bank.cgx").write_bytes(b"\x00" * 0x40)
+    ws = Workspace()
+    ws.entries.append(
+        Entry(
+            name="bank.cgx",
+            kind=EntryKind.FILE,
+            path=str(tmp_path / "bank.cgx"),
+            palette_row_base=0,
+        )
+    )
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+
+    entry = load_project(str(project)).entries[0]
+    assert entry.content_kind is ContentKind.PIXELS
+    assert entry.palette_row_base == 0
 
 
 def test_an_entry_bound_tile_source_stores_only_the_entry_index(tmp_path) -> None:
@@ -572,7 +673,9 @@ def test_palette_regions_round_trip_and_an_unpinned_view_omits_them(tmp_path) ->
     """Pinned regions persist; a project that pinned nothing carries no trace.
 
     Stored as pixel runs in the document's own picture space, so a triple reads as
-    "these pixels, this row" and stays hand-editable.
+    "these pixels, this row" and stays hand-editable. The toggle that shows them
+    stays out of the file — it is a local preference in QSettings, so a project
+    that pins something still writes only the pins.
     """
     rom = tmp_path / "gfx.bin"
     rom.write_bytes(b"\x00" * 256)
@@ -592,11 +695,10 @@ def test_palette_regions_round_trip_and_an_unpinned_view_omits_them(tmp_path) ->
     save_project(ws, str(project))
     raw = json.loads(project.read_text(encoding="utf-8"))
     assert raw["entries"][0]["view"]["palette_regions"] == [[64, 32, 3], [160, 16, 3]]
-    assert raw["entries"][0]["view"]["show_palette_regions"] is False
+    assert "show_palette_regions" not in raw["entries"][0]["view"]
 
     restored = load_project(str(project)).entries[0]
     assert restored.pending_view.palette_regions == entry.doc.view.palette_regions
-    assert restored.pending_view.show_palette_regions is False
 
 
 def test_a_page_assembly_round_trips_and_an_unpaged_entry_omits_it(tmp_path) -> None:

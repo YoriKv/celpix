@@ -52,7 +52,7 @@ def test_palette_preset_reports_entry_size(preset_id: str) -> None:
 # Index-producing pixel presets are bijective on whole buffers; direct-color is
 # lossy at <8bpp/component, so it's round-tripped separately (idempotency).
 _INDEX_PIXEL_IDS = [
-    p for p in _pixel_ids() if _REG.preset(p).engine_id != "codec.direct-color"
+    p for p in _pixel_ids() if _REG.preset(p).engine_id != "codec.pixel.direct-color"
 ]
 
 
@@ -74,7 +74,7 @@ def test_pixel_preset_round_trips(preset_id: str) -> None:
     assert engine.encode(tiles, params, PipelineContext()) == data
 
 
-@pytest.mark.parametrize("preset_id", _pixel_ids(engine="codec.direct-color"))
+@pytest.mark.parametrize("preset_id", _pixel_ids(engine="codec.pixel.direct-color"))
 def test_direct_color_round_trips(preset_id: str) -> None:
     """Direct-color presets decode to 8×8 ARGB tiles and round-trip idempotently."""
     engine, params = _pixel_engine(preset_id)
@@ -127,7 +127,7 @@ def test_intensity_presets_share_one_mask_across_rgb() -> None:
     assert first_pixels("preset.pixel.dc-ia16-be", bytes([0x80, 0x40])) == [0x40808080]
 
 
-@pytest.mark.parametrize("preset_id", _palette_ids(engine="codec.color-mask"))
+@pytest.mark.parametrize("preset_id", _palette_ids(engine="codec.palette.mask"))
 def test_mask_palette_round_trips(preset_id: str) -> None:
     """`decode(encode(pal)) == pal` for every mask-based palette preset.
 
@@ -145,7 +145,7 @@ def test_mask_palette_round_trips(preset_id: str) -> None:
     assert again == pal
 
 
-@pytest.mark.parametrize("preset_id", _palette_ids(engine="codec.color-indexed"))
+@pytest.mark.parametrize("preset_id", _palette_ids(engine="codec.palette.indexed"))
 def test_indexed_palette_round_trips_in_range(preset_id: str) -> None:
     """Indexed decode→encode recovers the same colors for every table index.
 
@@ -172,7 +172,7 @@ def test_indexed_palette_nearest_encode() -> None:
     assert engine.encode(Palette([0xFF000001]), params, PipelineContext()) == b"\x00"
 
 
-@pytest.mark.parametrize("preset_id", _pixel_ids(engine="codec.planar"))
+@pytest.mark.parametrize("preset_id", _pixel_ids(engine="codec.pixel.planar"))
 def test_planar_plane_maps_to_bit(preset_id: str) -> None:
     """Setting only plane k's MSB at row 0 must light bit k of pixel (0,0).
 
@@ -273,7 +273,7 @@ def test_packed_nibble_stride_splits_the_index_across_two_bytes(stride: int) -> 
     its low ones. Getting the halves the wrong way round still round-trips, so the
     order is pinned directly.
     """
-    engine = _REG.plugin(Stage.INTERPRET_PIXEL, "codec.packed")
+    engine = _REG.plugin(Stage.INTERPRET_PIXEL, "codec.pixel.packed")
     params = {"bpp": 8, "msb_first": True, "nibble_stride": stride}
     assert engine.bytes_per_tile(params) == 64  # an 8x8 8bpp tile, split or not
 
@@ -306,7 +306,7 @@ def test_packed_nibble_stride_1_reads_a_joined_pair_of_4bpp_halves() -> None:
     joined = _REG.plugin(Stage.RESHAPE, "reshape.split-planes-2").reshape(
         high + low, ctx
     )
-    engine = _REG.plugin(Stage.INTERPRET_PIXEL, "codec.packed")
+    engine = _REG.plugin(Stage.INTERPRET_PIXEL, "codec.pixel.packed")
     params = {"bpp": 8, "msb_first": True, "nibble_stride": 1}
     tile = engine.decode(joined, params, ctx)[0]
 
@@ -357,7 +357,7 @@ def test_chunky_is_row_major_index_per_byte() -> None:
     byte, so this pins that the degenerate depth really is a straight copy rather
     than something the field machinery reorders.
     """
-    engine, params = _pixel_engine("preset.pixel.chunky-8bpp")
+    engine, params = _pixel_engine("preset.pixel.8bpp-linear")
     assert params["bpp"] == 8
     tile = engine.decode(bytes(range(64)), params, PipelineContext())[0]
     assert [tile.get(x, 0) for x in range(8)] == list(range(8))  # row 0 = bytes 0..7
@@ -382,7 +382,7 @@ def test_split_mask_palette_gathers_the_stray_low_bits() -> None:
     high chunk first. Pinning the *low* bits is the point: drop them and the
     colour is still plausible (off by 1/32), so only an exact vector catches it.
     """
-    engine, params = _color_engine("preset.palette.r5g5b5-split-be")
+    engine, params = _color_engine("preset.palette.rgb555-split-be")
     # R nibble full, R low bit clear -> 5-bit 0b11110; G low bit alone -> 0b00001.
     pal = engine.decode(b"\xf0\x04", params, PipelineContext())
     assert pal.color(0) == 0xFFF70800
@@ -392,7 +392,7 @@ def test_split_mask_palette_write_back_keeps_every_defined_bit() -> None:
     """5 bits a channel survive a decode/encode round trip exactly, so editing one
     colour cannot quietly clear the low bits of the fifteen beside it. Bit 0 is
     unused by the hardware and is the only bit allowed to come back zeroed."""
-    engine, params = _color_engine("preset.palette.r5g5b5-split-be")
+    engine, params = _color_engine("preset.palette.rgb555-split-be")
     raw = bytes.fromhex("f008 0f04 00f2 ffff 1234 aa55 0000 8001")
     back = engine.encode(
         engine.decode(raw, params, PipelineContext()), params, PipelineContext()
@@ -404,8 +404,8 @@ def test_split_mask_direct_color_matches_the_palette_path() -> None:
     """Direct colour converts through precomputed byte-plane tables rather than
     per value, so it is a second implementation of the same gather. Given the same
     masks the two must agree pixel for pixel."""
-    palette_engine, palette_params = _color_engine("preset.palette.r5g5b5-split-be")
-    pixel_engine = _REG.plugin(Stage.INTERPRET_PIXEL, "codec.direct-color")
+    palette_engine, palette_params = _color_engine("preset.palette.rgb555-split-be")
+    pixel_engine = _REG.plugin(Stage.INTERPRET_PIXEL, "codec.pixel.direct-color")
     params = {
         "bytes_per_pixel": 2,
         "byte_order": "big",

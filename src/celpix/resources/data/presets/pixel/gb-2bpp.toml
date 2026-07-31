@@ -2,7 +2,7 @@
 # Matches *.2bpp.gb sheets. See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.gb-2bpp"
 name = "GB 2bpp (8x8)"
-engine_id = "codec.planar"
+engine_id = "codec.pixel.planar"
 
 [params]
 bpp = 2

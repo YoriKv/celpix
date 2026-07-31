@@ -1,10 +1,10 @@
-# Example preset for the `codec.packed` engine. Copy, drop the underscore, edit,
+# Example preset for the `codec.pixel.packed` engine. Copy, drop the underscore, edit,
 # press F5. See _planar.toml for what a preset is; this folder has one example
 # per pixel engine.
 #
 # WHAT THE ENGINE DOES
 # --------------------
-# codec.packed decodes **packed** (linear) formats: a pixel's index is a sub-byte
+# codec.pixel.packed decodes **packed** (linear) formats: a pixel's index is a sub-byte
 # field stored whole, with no planes. A byte holds 8 / bpp pixels and a row is
 # tile_width / pixels_per_byte bytes read left to right. Nothing in that is tied
 # to eight-pixel rows, so the tile size is a parameter.
@@ -20,13 +20,13 @@
 #                          its *left* pixels.
 #   4bpp-linear-16x16-lsb  tile_width/height 16: a row is eight bytes running the
 #                          full 16 pixels, the commonest wide arcade tile.
-#   chunky-8bpp            bpp 8 — one whole byte per pixel, a straight copy.
+#   8bpp-linear            bpp 8 — one whole byte per pixel, a straight copy.
 #                          SNES Mode 7, Nintendo DS 2D, generic 8bpp.
 #   snes-8bpp-bank         bpp 8 at 128x128: a whole Mode 7 bank as one "tile".
 
 id = "preset.pixel.example-packed"
 name = "Example packed 4bpp"
-engine_id = "codec.packed"
+engine_id = "codec.pixel.packed"
 
 [params]
 

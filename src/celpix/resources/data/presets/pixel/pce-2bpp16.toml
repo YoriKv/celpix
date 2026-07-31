@@ -3,7 +3,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.pce-2bpp16"
 name = "PC Engine 2bpp (16x16)"
-engine_id = "codec.planar"
+engine_id = "codec.pixel.planar"
 
 [params]
 bpp = 2

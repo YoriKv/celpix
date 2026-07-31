@@ -25,7 +25,7 @@ the bytes (:class:`ReadSource`); ``write`` is shown the destination as it stands
 container working whether its bytes came from a file, a parent's unsaved buffer,
 or several files joined together.
 
-Two cases still need handling, and they are most of what separates a container
+Three cases still need handling, and they are most of what separates a container
 that works from one that quietly eats data:
 
 - ``source.offset`` / ``source.length`` — the caller wants a bounded window, not
@@ -34,11 +34,28 @@ that works from one that quietly eats data:
 - ``dest.offset`` / ``dest.length`` — the save target is a slot *inside* a larger
   file. Returning just the payload truncates the file to it; ``splice`` lays the
   edit over ``dest.existing`` and keeps everything around it.
+- ``dest.existing`` is **empty** — a Save As, to a path with nothing at it yet.
+  There is no file to splice into, so the framing has to come from somewhere:
+  either you can rebuild it (this container can — the header is a constant), or
+  you cannot, and the read has to have stashed what you need on the context.
+  Write the payload on its own and you produce a file that is not your format and
+  will not reopen as one. ``_tiff.py`` shows the stash; celPix's own iNES plugin
+  does the same.
+
+``describe`` is a fourth, optional method: rows for the container-info popup,
+display-only and reached with ``getattr``, so leaving it out costs nothing. See
+``_tiff.py`` for a worked one.
 """
 
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
-from celpix.plugins import PluginInfo, ReadSource, WriteTarget, splice
+from celpix.plugins import (
+    ContainerField,
+    PluginInfo,
+    ReadSource,
+    WriteTarget,
+    splice,
+)
 
 _MAGIC = b"CELPIXEX"  # 8-byte header this toy container wraps its payload in
 
@@ -93,10 +110,37 @@ class ExampleContainer:
         file that already has its own framing, so the payload is spliced into what
         is there and every byte around it left alone. Skipping that branch and
         always returning ``magic + data`` truncates the file to one slice.
+
+        The whole-file branch is also what makes **Save As** right here: an empty
+        ``dest.existing`` is still a whole-file target, and this container can
+        rebuild its framing from nothing because the framing is a constant. Check
+        that for your own format — if the header records anything about the
+        payload (a length, an offset table, a checksum), it has to be regenerated
+        here or carried over from the read, or the copy is not your format.
         """
         if dest.whole_file:
             return _MAGIC + data
         return splice(dest.existing, dest.offset, data)
+
+    def describe(
+        self, source: ReadSource, ctx: PipelineContext
+    ) -> tuple[ContainerField, ...]:
+        """Optional: what this container found, for the container-info popup.
+
+        Display-only and reached with ``getattr``, so a container without one
+        reports nothing rather than breaking. ``detail`` becomes a tooltip — hard-
+        wrap it near 60 characters, because Qt will not wrap it for you.
+        """
+        present = source.data[: len(_MAGIC)] == _MAGIC
+        return (
+            ContainerField(
+                "Magic header",
+                f"{_MAGIC.decode()} at 0x000000" if present else "absent",
+                "The eight bytes this container frames its payload with.\n"
+                "Absent, the whole file is treated as payload - which is\n"
+                "what lets a half-written file still open.",
+            ),
+        )
 
 
 def register(registry):

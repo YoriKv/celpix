@@ -8,9 +8,9 @@
 #
 # The split masks below list each channel most significant chunk first — see
 # docs/graphics-formats-reference/implementation-guide.md §4.
-id = "preset.palette.r5g5b5-split-be"
+id = "preset.palette.rgb555-split-be"
 name = "RGB555 split low bits (15-bit, big-endian)"
-engine_id = "codec.color-mask"
+engine_id = "codec.palette.mask"
 
 [params]
 bytes_per_entry = 2

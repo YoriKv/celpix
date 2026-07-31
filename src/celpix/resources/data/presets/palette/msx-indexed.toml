@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §4 (fixed hardware palettes).
 id = "preset.palette.msx-indexed"
 name = "MSX (16-color indexed)"
-engine_id = "codec.color-indexed"
+engine_id = "codec.palette.indexed"
 
 [params]
 colors = [

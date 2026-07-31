@@ -134,6 +134,16 @@ class Cell:
     visibility celPix has nothing to map onto. Naming such a bit ``priority`` to
     get it round-tripped would be a lie; dropping it would corrupt the file on the
     next write. So it rides here, uninterpreted and intact.
+
+    **Four of these fields reach a pixel, and the render memoizes on exactly
+    those four.** ``index``, ``palette_row``, ``flip_h`` and ``flip_v`` decide
+    entirely what a cell draws; ``priority`` and ``flags`` decide nothing and are
+    carried for the round trip alone. So a **new field that changes the picture**
+    — the rotation bit ``docs/design/tilemap-entry.md`` §4 contemplates is the
+    live example — has to be added to that key as well as here
+    (:func:`~celpix.pipeline.pipeline.expand_cells`). Miss it and two cells
+    differing only in the new field draw the same, silently, and only the second
+    one is wrong.
     """
 
     index: int = 0
@@ -450,13 +460,18 @@ class CellGrid:
 # -- page assembly ---------------------------------------------------------
 #
 # Some formats hold several independent maps end to end in one file — a screen
-# file is four 32x32 screens — and nothing in the file records how they make up
-# a larger picture (``docs/graphics-formats-reference/scgcad-formats.md`` §2).
-# Read back to back the four stack in a column, which is a reading no console
-# ever used; laid two across they are the 64x64 screen the hardware assembles.
-# So the assembly is a **view choice** over pages the container declares, and
-# these three functions are the whole of it: which choices exist, which one to
-# start on, and the placement itself (``docs/design/tilemap-entry.md`` §6).
+# file is four 32x32 screens — and read back to back those four stack in a
+# column, which is a reading no console ever used; laid two across they are the
+# 64x64 screen the hardware assembles
+# (``docs/graphics-formats-reference/scgcad-formats.md`` §2).
+#
+# **Which assembly it is comes from the file**, not from a control: a container
+# publishes it where its header says (``KEY_TILEMAP_PAGES_ACROSS``) and an entry
+# format may state it where no container can, so there is nothing here to pick
+# (``docs/design/tilemap-entry.md`` §6). These four functions are what is left:
+# which assemblies a page count admits, which to fall back on where nothing has
+# stated one, how to reject a stored one the file cannot have, and the placement
+# itself.
 #
 # Placement is display-only, exactly like the block arrangement it reuses: the
 # cells stay in the file's own order and only *where each one is drawn* moves.
@@ -479,12 +494,14 @@ def page_assemblies(pages: int) -> tuple[int, ...]:
 def default_pages_across(page_columns: int, page_rows: int, pages: int) -> int:
     """The assembly to open a paged file on: the one closest to square in cells.
 
-    A guess either way — the file does not say — so the one to make is the least
-    misleading. For the four 32x32 screens this exists for, square is 2x2, which
-    is also the console's own multi-screen order and what the one independent
-    viewer of the format draws (``scgcad-formats.md`` §2 "Screen assembly"), so
-    the general rule and the specific evidence agree rather than having to be
-    reconciled.
+    The fallback, reached only where neither the container nor the entry format
+    states a layout (:attr:`~celpix.core.document.Document.stated_pages_across`).
+    Nothing then says which assembly was meant, so the guess to make is the least
+    misleading one. Four 32x32 screens are the case it is calibrated against:
+    square is 2x2, which is also the console's own multi-screen order and what
+    the one independent viewer of that format draws (``scgcad-formats.md`` §2
+    "Screen assembly") — so the general rule agrees with the layout a screen file
+    states for itself rather than having to be reconciled with it.
 
     Ties go to the **wider** layout: two pages read side by side before they read
     stacked, and the console's own two-screen mode is the horizontal one.

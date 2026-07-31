@@ -21,6 +21,13 @@ swatch click, the arrow keys, a drag across the grid — so a dialog would be a
 worse way to say a thing the user has just finished saying. Set Subpal, select the
 tiles, pin.
 
+What is **stored** is that row taken back through the entry's palette row base
+(:attr:`~celpix.core.document.Document.palette_row_base`), because a region's row
+is a *named* row like a cell's — the file's own numbering, which the base carries
+onto the palette that got loaded. Both ends of that follow: pinning lands on the
+colours that were selected, and moving the base afterwards re-aims every pin at
+once, which is what a bank whose per-tile rows seeded them needs.
+
 **A selection becomes pixel spans.** Bytes would not do: most retro codecs are
 planar, so a byte is one bitplane row and a byte boundary lands nowhere in
 particular in the picture — a byte span is only meaningful at whole-tile
@@ -48,7 +55,20 @@ from celpix.core.arrangement import tile_first_pixel, tile_pixel_spans
 from celpix.core.paletteregions import PaletteRegions
 from celpix.pipeline.pipeline import drawn_palette_row
 from celpix.ui.undo_commands import PaletteRegionsCommand
-from celpix.ui.widgets import counted
+from celpix.ui.widgets import counted, load_bool_setting, save_bool_setting
+
+# QSettings keys for the two "show me the pins" toggles. Local preferences rather
+# than project state, for the reason the grid's are (``window.py``): what the pins
+# *are* is a fact about the art and belongs to the entry, but whether you want
+# them drawn or numbered says how you are reading the sheet right now — and
+# carrying that in the .celpix would mean opening someone else's project changed
+# your view.
+SHOW_PALETTE_REGIONS_KEY = "view/show_palette_regions"
+SHOW_PALETTE_ROWS_KEY = "view/show_palette_rows"
+# And the third, for the same reason: whether a named row the palette row base
+# pushes off the end of the palette wraps round or stops short is a way of
+# reading a file against the colours in hand, not a property of either.
+WRAP_PALETTE_ROWS_KEY = "view/wrap_palette_rows"
 
 
 class PaletteRegionsMixin:
@@ -67,30 +87,50 @@ class PaletteRegionsMixin:
         any menu exists, so they have to be there first.
         """
         self._palette_regions = PaletteRegions()
-        self._show_palette_regions = True
+        self._show_palette_regions = load_bool_setting(SHOW_PALETTE_REGIONS_KEY, True)
         # Whether each pinned tile is *labelled* with its row number, as
-        # opposed to drawn through it. A local preference, not project
-        # state: it says how you want to read the pins, not what they are.
-        self._show_palette_rows = False
+        # opposed to drawn through it. A local preference like the one above,
+        # and off by default: a number over every pinned tile is a lot of ink
+        # for something wanted in bursts.
+        self._show_palette_rows = load_bool_setting(SHOW_PALETTE_ROWS_KEY, False)
+        # Whether the palette row base wraps rather than stopping at the palette's
+        # first row. Off by default: where a file's rows and the loaded palette
+        # line up — the ordinary case — wrapping can only turn a base that is
+        # wrong into art drawn through a plausible-looking row, where stopping
+        # short leaves the mismatch on screen to be seen and corrected.
+        self._wrap_palette_rows = load_bool_setting(WRAP_PALETTE_ROWS_KEY, False)
         self._build_pin_actions()
 
-    def _max_subpalette_row(self) -> int:
-        """The highest row the loaded palette can serve at this bit depth.
+    def _palette_row_count(self) -> int:
+        """How many subpalette rows the loaded palette serves at this bit depth.
 
-        A pinned row past the palette would render the magenta missing-colour
-        sentinel, and the index shift it implies could run past 255 — so this is
-        both the clamp for the gesture and the bound
-        :meth:`~celpix.core.paletteregions.PaletteRegions.bounded` trims to. At
-        8bpp it is 0 for any ordinary palette, which is the honest answer rather
-        than a special case: one row of 256 indices leaves nothing to pin *to*.
+        One more than the highest row anything may pin to. At 8bpp it is 1 for
+        any ordinary palette, which is the honest answer rather than a special
+        case: one row of 256 indices leaves nothing to pin *to*.
         """
         if self._doc is None:
-            return 0
-        space = self._index_space()
-        by_palette = (max(0, len(self._doc.palette) - 1)) // space
-        # The shift has to keep every index inside a byte, or a pinned tile could
-        # not be expressed in the Indexed8 image at all.
-        return min(by_palette, 256 // space - 1)
+            return 1
+        return self._doc.palette_rows(self._index_space())
+
+    def _max_subpalette_row(self) -> int:
+        """The highest row the loaded palette can serve — the bound
+        :meth:`~celpix.core.paletteregions.PaletteRegions.bounded` trims to."""
+        return self._palette_row_count() - 1
+
+    def _drawn_palette_row(self, row: int) -> int:
+        """A **named** row as the palette row it is drawn through.
+
+        The document's base applied, wrapping only where Wrap Palette Rows asks
+        for it (:func:`drawn_palette_row`). Every reader of a stored row goes
+        through here — the recolour, the label, the grid's mark — so a pinned
+        tile and the ring pointing at its colours cannot disagree.
+        """
+        doc = self._doc
+        if doc is None:
+            return row
+        return drawn_palette_row(
+            row, doc.palette_row_base, doc.palette_row_wrap(self._index_space())
+        )
 
     def _active_palette_regions(self) -> PaletteRegions:
         """The regions in force for rendering — empty while the toggle is off.
@@ -117,8 +157,9 @@ class PaletteRegionsMixin:
 
         On by default: pinning is only worth doing if the result is what you see,
         so the *off* state is the deliberate one — "show me the file's own
-        reading for a moment". A per-entry setting all the same, restored with
-        the rest of an entry's session.
+        reading for a moment". Whichever way it is left is remembered app-wide
+        across launches (:data:`SHOW_PALETTE_REGIONS_KEY`), not per entry: it is
+        a way of reading, and the pins it shows are what belongs to the entry.
 
         The shortcut is set for the label it puts in the menu and the F1 guide but
         given a widget context so it never fires here: bare letters are routed by
@@ -128,7 +169,7 @@ class PaletteRegionsMixin:
         # both of which share this menu.
         self._show_palette_regions_action = QAction("S&how Pinned Palette Colors", self)
         self._show_palette_regions_action.setCheckable(True)
-        self._show_palette_regions_action.setChecked(True)
+        self._show_palette_regions_action.setChecked(self._show_palette_regions)
         self._show_palette_regions_action.setShortcut(QKeySequence("Shift+P"))
         self._show_palette_regions_action.setShortcutContext(
             Qt.ShortcutContext.WidgetShortcut
@@ -147,12 +188,28 @@ class PaletteRegionsMixin:
         # number can be shown without the recolor, and either without the other.
         self._show_palette_rows_action = QAction("Show Pinned Palette &Rows", self)
         self._show_palette_rows_action.setCheckable(True)
-        self._show_palette_rows_action.setChecked(False)
+        self._show_palette_rows_action.setChecked(self._show_palette_rows)
         self._show_palette_rows_action.setToolTip(
             "Number each pinned tile with the subpalette row it uses\n"
             "Drawn in the grid's own color, in the tile's top-left corner"
         )
         self._show_palette_rows_action.toggled.connect(self._set_show_palette_rows)
+        # The third switch, and the one that is not about the pins alone: it says
+        # how the palette row **base** behaves at the ends of the palette, which a
+        # map's cells and a sprite's parts obey as much as a pinned row does. It
+        # sits with these two because it is the same kind of thing — a way of
+        # reading what is loaded, remembered app-wide and written to no project.
+        #
+        # Mnemonic "W": free in this menu, where "S", "P", "h" and "l" are taken.
+        self._wrap_palette_rows_action = QAction("&Wrap Palette Rows", self)
+        self._wrap_palette_rows_action.setCheckable(True)
+        self._wrap_palette_rows_action.setChecked(self._wrap_palette_rows)
+        self._wrap_palette_rows_action.setToolTip(
+            "Let Base Palette Row carry a row off one end of the\n"
+            "palette and back on at the other\n"
+            "Off, a row pushed below the first stops there"
+        )
+        self._wrap_palette_rows_action.toggled.connect(self._set_wrap_palette_rows)
 
     def _build_pin_actions(self) -> None:
         """The pin gestures, shared by the transform bar and two menus.
@@ -195,12 +252,27 @@ class PaletteRegionsMixin:
             self._show_palette_regions_action.toggle()
 
     def _set_show_palette_rows(self, on: bool) -> None:
+        save_bool_setting(SHOW_PALETTE_ROWS_KEY, on)
         self._show_palette_rows = on
         if self._doc is not None:
             self._refresh_view()
 
     def _set_show_palette_regions(self, on: bool) -> None:
+        save_bool_setting(SHOW_PALETTE_REGIONS_KEY, on)
         self._show_palette_regions = on
+        if self._doc is not None:
+            self._refresh_view()
+
+    def _set_wrap_palette_rows(self, on: bool) -> None:
+        """Turn the base's wraparound on or off, and redraw through it.
+
+        The refresh is what lands it: the flag reaches the model in the view
+        options ``_refresh_view`` captures, and every reader of a named row asks
+        the document rather than this member
+        (:meth:`~celpix.core.document.Document.palette_row_wrap`).
+        """
+        save_bool_setting(WRAP_PALETTE_ROWS_KEY, on)
+        self._wrap_palette_rows = on
         if self._doc is not None:
             self._refresh_view()
 
@@ -295,10 +367,15 @@ class PaletteRegionsMixin:
         if regions.is_empty():
             return None
         space = self._index_space()
-        rows = regions.rows_for(
-            self._tile_first_pixels(tiles), self._subpalette.value()
-        )
-        return [row * space for row in rows]
+        # None as the default, so an unpinned tile takes the view's row *without*
+        # the base: the view's row is already a row of the loaded palette, and
+        # only a pinned one is named relative to the file's own numbering.
+        view_row = self._subpalette.value()
+        rows = regions.rows_for(self._tile_first_pixels(tiles), None)
+        return [
+            (view_row if row is None else self._drawn_palette_row(row)) * space
+            for row in rows
+        ]
 
     def _sync_marked_palette_row(self) -> None:
         """Point the palette grid's blue ring at the selection's own row.
@@ -314,11 +391,11 @@ class PaletteRegionsMixin:
         """The palette row the selection draws through, when it names one itself.
 
         Three documents, three ways of naming it, one question. A **tilemap
-        cell** and a **subsprite** carry a row in the file, counted from the
-        document's base (:func:`~celpix.pipeline.pipeline.drawn_palette_row`), so
-        the row is theirs whatever the view is set to. On a **pixel** view
-        nothing in the bytes says a row at all and the answer is a pinned region
-        or nothing.
+        cell** and a **subsprite** carry a row in the file, so the row is theirs
+        whatever the view is set to. On a **pixel** view nothing in the bytes
+        says a row at all and the answer is a pinned region or nothing. All three
+        are named rows, so all three come back through the base
+        (:meth:`_drawn_palette_row`) — the mark rings the colours on screen.
 
         ``None`` unless the whole selection agrees on one row: a single mark
         cannot speak for a selection spanning two, and one that showed the first
@@ -333,7 +410,7 @@ class PaletteRegionsMixin:
             sub = self._picked_subsprite_record()
             if sub is None:
                 return None
-            return drawn_palette_row(sub.palette_row, doc.palette_row_base)
+            return self._drawn_palette_row(sub.palette_row)
         if doc.is_tilemap:
             if not doc.cells_carry_palette_rows:
                 return None  # a coordinate cell has no row field to read
@@ -344,11 +421,13 @@ class PaletteRegionsMixin:
             }
             if len(rows) != 1:
                 return None
-            return drawn_palette_row(rows.pop(), doc.palette_row_base)
-        return self._selection_pinned_row()
+            return self._drawn_palette_row(rows.pop())
+        pinned = self._selection_pinned_row()
+        return None if pinned is None else self._drawn_palette_row(pinned)
 
     def _selection_pinned_row(self) -> int | None:
-        """The subpalette row the selection is pinned to, for the palette grid.
+        """The row the selection is pinned to, as **stored** — the caller applies
+        the base.
 
         ``None`` unless every selected tile answers the same row: a single mark
         cannot speak for a selection spanning two, and one that showed only the
@@ -401,28 +480,47 @@ class PaletteRegionsMixin:
         return self._palette_base() if biases is None else biases[0]
 
     def _pin_selection(self) -> None:
-        """Pin the selection to the Subpal spinbox's current row."""
+        """Pin the selection to the Subpal spinbox's current row.
+
+        What is *stored* is that row taken back through the base, because a
+        region's row is a named one and the base is applied on the way out again
+        (:meth:`_drawn_palette_row`). So the colours the pin lands on are the
+        colours the user had selected — under a base of 8, pinning while row 11
+        is picked stores 3 and draws 11 — and re-aiming the whole entry with the
+        base spin afterwards moves this pin with everything else, which is the
+        point of storing it relative rather than absolute.
+
+        The plain difference is what makes that true under **either** reading of
+        the ends: it draws back through the base as the row that was picked
+        whether or not the base wraps. Wrapping only normalizes it into the
+        palette, so a pin made under one setting means the same thing under the
+        other.
+        """
         if self._doc is None or self._applying_undo:
             return
         spans = self._selection_spans()
         if not spans:
             return
-        row = min(self._subpalette.value(), self._max_subpalette_row())
+        row = self._subpalette.value() - self._doc.palette_row_base
+        wrap = self._doc.palette_row_wrap(self._index_space())
+        if wrap:
+            row %= wrap
         after = self._palette_regions.assigned(spans, row)
         if after == self._palette_regions:
             return  # already pinned there — not a history step
+        shown = self._drawn_palette_row(row)
         self._push_command(
             PaletteRegionsCommand(
                 self,
                 self._workspace.current,
-                f"pin subpalette {row}",
+                f"pin subpalette {shown}",
                 self._palette_regions,
                 after,
             )
         )
         count = len(self._selection_tiles())
         self.statusBar().showMessage(
-            f"Pinned {counted(count, 'tile')} to subpalette {row}."
+            f"Pinned {counted(count, 'tile')} to subpalette {shown}."
         )
 
     def _unpin_selection(self) -> None:

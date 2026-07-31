@@ -1,9 +1,9 @@
 # 1bpp 16x16 — byte 0 = left 8px, byte 1 = right 8px, so the row is two bytes and
 # the right half sits one byte past the left (group_stride = 1).
 # See docs/graphics-formats-reference/implementation-guide.md §2.
-id = "preset.pixel.1bpp16"
+id = "preset.pixel.1bpp-16x16"
 name = "1bpp (16x16)"
-engine_id = "codec.planar"
+engine_id = "codec.pixel.planar"
 
 [params]
 bpp = 1

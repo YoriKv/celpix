@@ -1,10 +1,10 @@
 # SNES 8bpp whole-bank — the tile is the entire 128x128 bank (16384 bytes).
-# One byte per pixel, so this is codec.packed at the depth where a field fills a
+# One byte per pixel, so this is codec.pixel.packed at the depth where a field fills a
 # whole byte.
 # See docs/graphics-formats-reference/implementation-guide.md §2 (chunky).
 id = "preset.pixel.snes-8bpp-bank"
 name = "SNES 8bpp whole-bank (128x128)"
-engine_id = "codec.packed"
+engine_id = "codec.pixel.packed"
 
 [params]
 bpp = 8

@@ -1,7 +1,7 @@
 # Two 4bpp pixels woven bit by bit through one byte: the even bit positions
 # carry one pixel's index, the odd ones the other. De-interleaving gathers each
 # pixel's four bits back into its own nibble, after which the byte is an
-# ordinary packed 4bpp pair and `codec.packed` reads the tile unchanged.
+# ordinary packed 4bpp pair and `codec.pixel.packed` reads the tile unchanged.
 #
 # The two weave phases differ only in which pixel ends up in the high nibble,
 # and that is exactly what the packed codec's `msb_first` already selects — so
@@ -11,7 +11,7 @@
 # In MAME terms: a gfx_layout with planeoffset { 0, 2, 4, 6 } and xoffset in
 # adjacent pairs ({ 0, 1, 8, 9, ... }). See docs/design/reshape-stage.md §8.
 id = "reshape.deinterleave-nibbles"
-name = "De-interleave alternating bits into nibbles"
+name = "Deinterleave alternating bits into nibbles"
 engine_id = "reshape.data-lut"
 
 [params]

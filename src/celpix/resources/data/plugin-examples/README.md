@@ -44,6 +44,10 @@ one whose layout matches your format:
   the low bits, attributes above it (nearly every hardware map)
 - `_object.toml` — parts carrying signed pixel offsets, drawn as frames rather
   than laid out in rows
+- `_obz.toml` — the same shape with each field in its own byte instead of packed
+  into a sprite attribute word
+- `_ys-spr.toml` — the same again where frames are *different lengths*, the count
+  coming from the container rather than the record
 
 Each names what its engine does, which shipped presets are built on it, and every
 parameter it takes with the values that parameter accepts.
@@ -73,6 +77,13 @@ Each `_example.py` documents its stage in full. In short:
   defaults to pixels and tilemaps, which is what almost every wrapper is; set it
   to `PALETTE` for one that frames a palette file, so the two are never offered
   each other's formats.
+- A container's save is handed the **destination**, which on a Save As is empty.
+  Writing the payload alone there produces a file that is not your format and
+  will not reopen as one, so rebuild the framing — or, if it cannot be rebuilt
+  from the payload, stash what you need on the context during the read.
+  `containers/_tiff.py` does exactly that.
+- A container may also implement **`describe`**, which fills the container-info
+  popup with what it read and what it did about it. Optional and display-only.
 
 If a plugin fails to load, celPix reports it and carries on — check the plugin
 issues it lists rather than looking for a crash.

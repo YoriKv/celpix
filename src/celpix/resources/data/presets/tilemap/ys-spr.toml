@@ -19,7 +19,7 @@
 # See docs/graphics-formats-reference/ys-sprite-patterns.md.
 id = "preset.tilemap.ys-spr"
 name = "Yoshi's Island sprite pattern subsprite (SPR)"
-engine_id = "codec.ys-spr"
+engine_id = "codec.tilemap.ys-spr"
 
 [params]
 # A **sprite map**: the tilemap variant whose cells are freely-placed subsprites

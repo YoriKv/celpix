@@ -1288,7 +1288,7 @@ def _write_planar_preset(dirpath, bpp: int) -> None:
     (pixel_dir / "custom.toml").write_text(
         "id = 'preset.pixel.custom'\n"
         "name = 'Custom'\n"
-        "engine_id = 'codec.planar'\n"
+        "engine_id = 'codec.pixel.planar'\n"
         "[params]\n"
         f"bpp = {bpp}\n"
         f"planes = {planes}\n"
@@ -8422,6 +8422,34 @@ def test_a_stamp_layout_opens_with_its_own_coordinate_codec(qtbot, tmp_path) -> 
     assert window._tilemap_is_indirect(entry)
 
 
+def test_a_forced_tilemap_open_is_editable_under_the_default_codec(
+    qtbot, tmp_path
+) -> None:
+    """File > Open tilemap data on a raw region: no container names a cell codec,
+    so the entry carries none and is read under the default. Everything that asks
+    the *format* a question has to resolve it the same way the load did, or the
+    flips, the Cell spin and Edit Tiles switch off over a map drawing perfectly
+    well.
+    """
+    from celpix.core.capabilities import ContentKind
+
+    path = tmp_path / "raw.bin"
+    path.write_bytes(bytes(range(256)) * 8)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+
+    entry = window._workspace.current
+    assert entry.tilemap_preset_id is None  # nothing declared one
+    assert entry.doc is not None and entry.doc.is_tilemap
+    # The default is a 10-bit console BG entry, and the probes have to say so.
+    assert window._cell_index_limit() == 0x3FF
+    assert window._tilemap_format_name() != "This tilemap format"
+    assert window._stamp_available()
+    # And the picker names the format the canvas is actually drawing in.
+    assert window._tilemap_preset.currentData() == "preset.tilemap.snes-bg"
+
+
 def test_a_stamp_layout_is_offered_panels_first_but_not_only(qtbot, tmp_path) -> None:
     """Chaining is gated on depth, not on format, so a tile bank stays reachable.
     What the format contributes is the *order* - its coordinates cannot read a
@@ -9009,6 +9037,86 @@ def test_a_tile_banks_rows_seed_pinned_palette_regions(qtbot, tmp_path) -> None:
     assert pinned[:3] == [(0, 2, 0), (2, 3, 3), (5, 1, 5)]
 
 
+def test_a_tile_banks_row_base_carries_its_pinned_rows(qtbot, tmp_path) -> None:
+    """A bank's row table is *relative*, and its header says what to: the two are
+    one statement, so the base has to reach the rows the table seeded.
+
+    Which is also what makes the base worth having on a pixel entry at all —
+    moving it re-aims every pin at once, rather than the user re-pinning a
+    thousand tiles because the palette they loaded is the other half of CGRAM.
+    """
+    rows = bytes([0, 0, 3]) + bytes(0x3FD)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    # col_half 1: the OBJ half, so this bank's rows count from 8 at 4bpp.
+    window._load_pixel(str(_cgx_file(tmp_path, 0x8500, rows, col=(1, 0))))
+    entry, doc = window._workspace.current, window._doc
+
+    assert doc.palette_row_base == 8
+    assert window._row_base.value() == 8
+    assert not window._row_base.isHidden()  # a pixel entry has one too
+    # Stored as the file states them, not folded in — or moving the base below
+    # would move the art twice.
+    per_tile = doc.tile_width * doc.tile_height
+    assert doc.view.palette_regions.row_at(2 * per_tile, 0) == 3
+    # ...and drawn eight rows up, tile 0 included: a bank pinned to its own row 0
+    # is pinned, and follows the base like every other.
+    assert window._tile_biases([0, 2]) == [8 * 16, 11 * 16]
+
+    # The palette that got loaded is the user's answer, and it moves all of them.
+    window._row_base.setValue(0)
+    assert entry.palette_row_base == 0 and window._doc.palette_row_base == 0
+    assert window._tile_biases([0, 2]) == [0, 3 * 16]
+
+
+def test_pinning_lands_on_the_colours_that_were_selected(qtbot, tmp_path) -> None:
+    """Pin takes the row from Subpal, and Subpal names a row of the palette on
+    screen — so under a base the *stored* row is that one counted back, and what
+    the pin draws is the colours the user was looking at when they pinned.
+
+    Asserted on the canvas image, because the whole question is which sixteen
+    colours reached the screen.
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))  # 8 SNES 4bpp tiles
+    window._columns.setValue(8)
+    window._rows.setValue(1)
+    area = window._doc.tile_width * window._doc.tile_height
+
+    window._row_base.setValue(8)
+    window._subpalette.setValue(11)
+    all_row_11 = window._canvas._image.copy()
+
+    window._set_linear_selection(4, 7)
+    window._pin_selection()
+    assert window._palette_regions.row_at(4 * area, 0) == 3  # 11, counted back
+    assert "subpalette 11" in window.statusBar().currentMessage()  # said as shown
+
+    # The pinned half keeps row 11's colours when the view moves off it, and the
+    # unpinned half does not.
+    window._subpalette.setValue(0)
+    pinned = window._canvas._image
+    assert pinned.pixelColor(36, 4) == all_row_11.pixelColor(36, 4)
+    assert pinned.pixelColor(4, 4) != all_row_11.pixelColor(4, 4)
+
+    # A row the base takes below the palette's first is stored as the plain
+    # difference, negative and all: what the pin has to mean is "draws through the
+    # row that was picked", and that holds under either reading of the ends.
+    window._subpalette.setValue(2)
+    window._set_linear_selection(0, 3)
+    window._pin_selection()
+    assert window._palette_regions.row_at(0, 0) == 2 - 8
+    assert window._tile_biases([0])[0] == 2 * 16
+
+    # With wrapping on the same pin is stored inside the palette instead, and
+    # draws through the same row — the two readings agree about what was picked.
+    window._wrap_palette_rows_action.setChecked(True)
+    window._pin_selection()
+    assert window._palette_regions.row_at(0, 0) == 10  # (2 - 8) of sixteen rows
+    assert window._tile_biases([0])[0] == 2 * 16
+
+
 def test_a_project_with_its_own_regions_is_not_overwritten_by_the_file(
     qtbot, tmp_path
 ) -> None:
@@ -9053,6 +9161,67 @@ def test_the_pinned_palette_toggles_are_two_separate_switches(qtbot, tmp_path) -
     assert window._canvas._palette_rows is None  # nothing pinned is *applied*...
     window._show_palette_regions_action.setChecked(True)
     assert window._canvas._palette_rows
+
+
+def test_the_pinned_palette_toggles_persist_as_local_preferences(
+    qtbot, tmp_path
+) -> None:
+    """Both are about how *you* read a sheet, not about any one entry or project,
+    so a fresh window comes up the way the last one was left — the grid's rule."""
+    _isolate_settings(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    # The defaults, off a store nothing has written yet.
+    assert window._show_palette_regions_action.isChecked()
+    assert not window._show_palette_rows_action.isChecked()
+
+    window._show_palette_regions_action.setChecked(False)
+    window._show_palette_rows_action.setChecked(True)
+
+    reopened = MainWindow()
+    qtbot.addWidget(reopened)
+    assert not reopened._show_palette_regions_action.isChecked()
+    assert reopened._show_palette_rows_action.isChecked()
+    # And the member the render cycle reads, not just the menu entry.
+    assert reopened._show_palette_regions is False
+    assert reopened._show_palette_rows is True
+
+
+def test_wrapping_the_palette_row_base_is_off_until_asked_for(qtbot, tmp_path) -> None:
+    """What a base carrying a row off the end of the palette does is a reading, so
+    it is a switch — and the one that leaves a wrong base visible is the default.
+
+    Off, the row stops at the palette's first; on, it comes round the far end. The
+    same preference rule as the two beside it: app-wide, and read off the document
+    rather than the window, so the export cannot disagree with the canvas.
+    """
+    _isolate_settings(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._wrap_palette_rows_action.text() == "&Wrap Palette Rows"
+    assert not window._wrap_palette_rows_action.isChecked()
+
+    window._load_pixel(str(_make_snes_file(tmp_path)))  # 8 SNES 4bpp tiles
+    window._columns.setValue(8)
+    window._rows.setValue(1)
+    window._set_linear_selection(0, 3)
+    window._subpalette.setValue(1)
+    window._pin_selection()
+    # Base -3 takes the pinned row below the palette. Off, it stops at row 0.
+    window._row_base.setValue(-3)
+    assert not window._doc.view.wrap_palette_rows
+    assert window._tile_biases([0])[0] == 0
+
+    # On, it comes round: sixteen rows at 4bpp, so 1 - 3 is row 14.
+    window._wrap_palette_rows_action.setChecked(True)
+    assert window._doc.view.wrap_palette_rows
+    assert window._tile_biases([0])[0] == 14 * 16
+
+    # And it outlives the window, like the two switches beside it.
+    reopened = MainWindow()
+    qtbot.addWidget(reopened)
+    assert reopened._wrap_palette_rows_action.isChecked()
+    assert reopened._wrap_palette_rows is True
 
 
 def test_the_row_labels_mark_the_pinned_tiles_and_not_the_view(qtbot, tmp_path) -> None:
@@ -9202,13 +9371,10 @@ def test_entire_file_still_locks_rows_on_a_pixel_entry(qtbot, tmp_path) -> None:
     qtbot.addWidget(window)
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._entire_file.setChecked(True)
-    try:
-        assert not window._rows.isEnabled()
-        assert "Entire File" in window._rows.toolTip()
-    finally:
-        # The toggle persists to QSettings, which every later window in the
-        # session reads: leaving it on would silently change what they show.
-        window._entire_file.setChecked(False)
+    # The toggle persists to QSettings; the settings store is emptied between
+    # tests (``conftest._isolate_settings``), so it goes no further than this one.
+    assert not window._rows.isEnabled()
+    assert "Entire File" in window._rows.toolTip()
 
 
 def test_open_tilemap_data_forces_the_tilemap_reading(

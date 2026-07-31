@@ -77,7 +77,7 @@ def register(registry):
 _PRESET = """
 id = "preset.pixel.custom-1bpp"
 name = "Custom 1bpp"
-engine_id = "codec.planar"
+engine_id = "codec.pixel.planar"
 
 [params]
 bpp = 1
@@ -500,7 +500,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         again = engine.encode(
             engine.decode(data, preset.params, ctx), preset.params, ctx
         )
-        if preset.engine_id == "codec.direct-color":
+        if preset.engine_id == "codec.pixel.direct-color":
             # Fewer than 8 bits a channel is lossy, so only the decoded value
             # round-trips — the raw bits cannot, and never could.
             assert engine.decode(again, preset.params, ctx) == engine.decode(
@@ -656,6 +656,67 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     # rather than written into part of the image.
     with pytest.raises(ValueError):
         tiff_plugin.write(b"short", WriteTarget(tiff), ctx)
+    # Save As: an *empty* destination, where the strip map cannot be looked up
+    # because the file holding it is the one being created. The read stashes the
+    # image it came from so the write copies that — without it this raised, and a
+    # container that instead wrote the strips alone would emit a pixel run that is
+    # not a TIFF. Every container has this case and it is the easiest to miss.
+    fresh_ctx = PipelineContext()
+    assert tiff_plugin.read(ReadSource(tiff), fresh_ctx) == b"AAAABBBB"
+    copied = tiff_plugin.write(b"12345678", WriteTarget(b""), fresh_ctx)
+    assert copied == _two_strip_tiff(b"1234", b"5678")
+    assert tiff_plugin.read(ReadSource(copied), PipelineContext()) == b"12345678"
+    # ...and with nothing read on this pathway there is genuinely nothing to copy,
+    # which is refused rather than guessed at.
+    with pytest.raises(ValueError):
+        tiff_plugin.write(b"12345678", WriteTarget(b""), PipelineContext())
+
+    # Both containers describe themselves for the container-info popup. Optional
+    # and display-only, so what matters is that the rows exist and every one
+    # explains itself — an unexplained row is the failure mode here.
+    for plugin, source in (
+        (example, ReadSource(blob)),
+        (tiff_plugin, ReadSource(tiff)),
+    ):
+        rows = plugin.describe(source, ctx)
+        assert rows and all(f.name and f.value and f.detail for f in rows)
+
+
+def test_example_presets_name_shipped_presets_that_exist(tmp_path) -> None:
+    """Each example TOML lists the shipped presets built on its engine, to point
+    a reader at a real one to copy. Those names are prose and drift silently — a
+    preset renamed or retired leaves the example naming something that is not
+    there, which is worse than naming nothing.
+    """
+    discovery.seed_examples(str(tmp_path))
+    known = {preset.id.rsplit(".", 1)[-1] for preset in default_registry().presets()}
+
+    named: dict[str, set[str]] = {}
+    for path in sorted(tmp_path.rglob("_*.toml")):
+        listing = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("# SHIPPED PRESETS"):
+                listing = True
+                continue
+            if not listing:
+                continue
+            # The block is `#   name  description`, ends at the first line that
+            # is not one, and its rules and continuation lines are neither.
+            body = line[1:].strip() if line.startswith("#") else ""
+            if not line.startswith("#") or not body:
+                break
+            if line.startswith("#   ") and not line.startswith("#     "):
+                first = body.split()[0]
+                if not first.startswith("-"):
+                    named.setdefault(path.name, set()).add(first)
+
+    # The parse has to actually find something, or this test passes by finding
+    # nothing to check the day the comment format changes.
+    assert len(named) >= 5, named
+    missing = {
+        name: sorted(found - known) for name, found in named.items() if found - known
+    }
+    assert not missing, f"examples name presets that do not exist: {missing}"
 
 
 def test_wrong_shaped_format_is_reported(tmp_path) -> None:

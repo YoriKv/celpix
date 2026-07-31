@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.6bpp-linear"
 name = "6bpp linear (8x8)"
-engine_id = "codec.linear-bespoke"
+engine_id = "codec.pixel.linear-bespoke"
 
 [params]
 bpp = 6

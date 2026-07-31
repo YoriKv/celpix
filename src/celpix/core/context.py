@@ -142,7 +142,9 @@ KEY_PIXEL_PRESET = "pixel.preset"
 # bytes: one palette row per tile, when the format carries a side table of them.
 # A tile bank that records which row each tile is meant to be read under is
 # saying what pinned palette regions otherwise have to be told by hand, so it
-# seeds them (``docs/design/palette-editing.md`` §3).
+# seeds them (``docs/design/palette-editing.md`` §3). **Relative rows**, counted
+# from the key below like every other named row — the host applies the base once,
+# at render, so a table that folded it in already would move the art twice.
 KEY_TILE_PALETTE_ROWS = "pixel.tile-palette-rows"
 # int: the palette row this *bank's* tiles count their own row 0 from, when its
 # header says. The pixel-pathway twin of
@@ -151,7 +153,8 @@ KEY_TILE_PALETTE_ROWS = "pixel.tile-palette-rows"
 # put a base, while the bank its subsprites draw from states one outright. So a
 # tilemap bound to such a bank takes the base from the art rather than from a
 # preset constant, which can only ever be the commonest case
-# (``docs/graphics-formats-reference/scgcad-formats.md`` §8.5).
+# (``docs/graphics-formats-reference/scgcad-formats.md`` §8.5) — and the bank
+# itself opens on it, its own pinned rows counting from the same origin.
 KEY_TILE_PALETTE_ROW_BASE = "pixel.palette-row-base"
 # One more well-known key lives in :mod:`celpix.core.notices` rather than here:
 # what a stage wants to *tell the user* without failing. It keeps company with

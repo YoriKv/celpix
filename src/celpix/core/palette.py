@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import colorsys
 
+from celpix.core import ceil_div
+
 # Rendered for any index that falls outside the loaded palette, so a short or
 # missing palette shows an obvious sentinel instead of crashing the canvas.
 MISSING_COLOR = 0xFFFF00FF  # opaque magenta
@@ -86,6 +88,28 @@ def _default_color(i: int) -> int:
     if i < len(_DEFAULT_HEAD) + len(_GRAY_RAMP):
         return _GRAY_RAMP[i - len(_DEFAULT_HEAD)]
     return _tail_color(i)
+
+
+def palette_row_count(colors: int, index_space: int) -> int:
+    """How many subpalette rows ``colors`` colours hold at ``index_space``.
+
+    One number, asked by everything that counts rows: the Subpal clamp, the
+    highest row a region may pin to, and the modulus a palette row base wraps
+    against (:func:`~celpix.pipeline.pipeline.drawn_palette_row`). A trailing
+    partial row counts — half a row of colours is still somewhere to point.
+
+    Capped at ``256 / index_space``, which is not the same bound: a row reaches
+    the screen as a shift folded into the *indices*, so a row past that could not
+    be expressed in an 8-bit index at all however long the palette is.
+
+    No colours at all is not "one row": it is a document whose palette has not
+    arrived, which is a state the render still has to place named rows in. The
+    index space's own count answers there, so nothing collapses onto row 0 while
+    waiting for colours that will make the rows real.
+    """
+    space = max(1, min(256, index_space))
+    limit = 256 // space
+    return limit if colors <= 0 else max(1, min(ceil_div(colors, space), limit))
 
 
 class Palette:

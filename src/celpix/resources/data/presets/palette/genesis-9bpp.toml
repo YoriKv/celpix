@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §4 (packed color formats).
 id = "preset.palette.genesis-9bpp"
 name = "BGR333 (9-bit, Genesis VDP CRAM)"
-engine_id = "codec.color-mask"
+engine_id = "codec.palette.mask"
 
 [params]
 bytes_per_entry = 2

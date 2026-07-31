@@ -8,7 +8,7 @@
 # See docs/graphics-formats-reference/scgcad-formats.md §3.1.
 id = "preset.tilemap.scgcad-panel"
 name = "Panel tile table (byte-swapped)"
-engine_id = "codec.tilemap-packed"
+engine_id = "codec.tilemap.packed"
 
 [params]
 bytes = 2

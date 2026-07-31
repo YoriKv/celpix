@@ -9,12 +9,12 @@
 # one engine covers the lot — a new map format is normally this file with the
 # shifts changed and no code at all.
 #
-# Built on `codec.tilemap-packed`, as are the shipped snes-bg, snes-bg-swapped,
-# gb-bg, scgcad-panel and scgcad-map presets.
+# Built on `codec.tilemap.packed`, as are the shipped snes-bg, snes-bg-swapped,
+# gb-bg, scgcad-panel, scgcad-map and scgcad-std presets.
 
 id = "preset.tilemap.example-packed"
 name = "Example packed cell (16-bit)"
-engine_id = "codec.tilemap-packed"
+engine_id = "codec.tilemap.packed"
 
 [params]
 # Cell width in bytes. 2 is the common case; a Game Boy map is 1.

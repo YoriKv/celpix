@@ -33,11 +33,17 @@ any future gate goes. This pass can only show, hide and disable a *named*
 control, all or nothing. That is the wrong instrument when the control is
 *replaced* rather than switched off — the binding bar and the navigation bar are
 two pages of one stack, so what a tilemap needs is the other page, not a greyed
-one — or when a finer condition sits underneath the kind's answer: the Cell spin
-also needs cells this file can edit and a format with an index field, and a
-blanket ``setVisible(True)`` from here would run *after* the pass that hid it and
-put it back on a sprite object. Both ask :meth:`~CapabilitySyncMixin._can`
-themselves instead, which is the same table read from the other end.
+one — or when the kind's answer only sharpens a condition some other ``_sync_*``
+was weighing anyway, where arriving as a separate veto would say the same thing
+twice. Both ask :meth:`~CapabilitySyncMixin._can` themselves instead, which is
+the same table read from the other end.
+
+Gating in place is not the same as a control that weighs more than its
+capability does. The Cell spin needs cells this file can edit and a format with
+an index field on top of ``STAMP``, and asks ``_can`` for itself — but ``STAMP``
+is gated from the table all the same, because the mode it switches needs only
+the kind's answer. A capability sits in exactly one of the three sets below; how
+many conditions a given control weighs underneath it is a separate question.
 
 **Dispatch.** :data:`_BEHAVIOURS` names which method implements each
 :class:`Gesture` on each content kind, and
@@ -127,9 +133,11 @@ _GATES: dict[Capability, tuple[str, ...]] = {
 # pass cannot express what they need — see the module docstring on why a replaced
 # control and a two-level condition both have to gate themselves.
 #
-# ``CELL_ROTATE`` is the third and the mildest: a quarter turn is already refused
-# on a non-square *tile*, so the kind's answer joins a condition the transform bar
-# was weighing anyway rather than arriving as a separate veto
+# ``TILE_BINDING`` is the replaced control: the binding bar and the navigation bar
+# are two pages of one stack, and this pass cannot ask for the other page.
+# ``CELL_ROTATE`` is the milder of the two: a quarter turn is already refused on a
+# non-square *tile*, so the kind's answer joins a condition the transform bar was
+# weighing anyway rather than arriving as a separate veto
 # (:meth:`~...transform.TransformMixin._sync_transform_actions`).
 # ``STAMP`` is deliberately **not** here, though its Cell spin still asks
 # :meth:`_can` itself. The capability's gate is the table's — it hides the Edit

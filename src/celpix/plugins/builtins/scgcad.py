@@ -97,7 +97,14 @@ COL_HEADER_AT = 0x200
 # the ordinary form and 128 frames in the extended one. Which it is shows in
 # where the signature sits, so these double as the detection offsets.
 OBJ_PAYLOADS = (0x3000, 0xC000)
-OBJ_SIZE = 0x3500  # the ordinary form, for a file that does not exist yet
+# Each form's whole length, keyed by its payload: 0x100 of header and then the
+# animation table, which is four times the size in the extended form for the four
+# times the frames it names. The write side needs the pair, an object saved to a
+# path with no file at it having to be *built* at the form its records are in —
+# the ordinary one holds a quarter of an extended object's frames, so writing one
+# into the other is not a shorter file but three quarters of the art gone.
+OBJ_SIZES = {0x3000: 0x3500, 0xC000: 0xC900}
+OBJ_SIZE = OBJ_SIZES[OBJ_PAYLOADS[0]]  # the ordinary form
 
 # The transfer form of a sprite object: 64 frames of 64 subsprites, then a 0xA00 tail
 # holding the animation table. The one member of the family that carries **no
@@ -163,6 +170,12 @@ SCR_DEPTH = 0x40  # 0 = 2bpp, 1 = 4bpp, 2 = 8bpp
 SCR_COL_HALF, SCR_COL_CELL = 0x45, 0x46
 PNL_COL_HALF, PNL_COL_CELL = 0x65, 0x66
 CGX_COL_HALF, CGX_COL_CELL = 0x22, 0x23
+# A bank states its depth in the same encoding a screen does, at its own offset,
+# and it is the file's *second* statement of which of the three variants it is —
+# the first being where the signature sits. All 1,744 surveyed banks agree with
+# their own length, so either signal identifies the variant on its own
+# (`scgcad-formats.md` §6).
+CGX_DEPTH = 0x20
 
 # The colour window a file was authored through: the half is 128 colours, and
 # the cell picks a 4-colour group inside it — but only at 2bpp, where a row *is*
@@ -172,7 +185,9 @@ CGX_COL_HALF, CGX_COL_CELL = 0x22, 0x23
 # divide through by n = 4 / 16 / 128 by depth.
 _ROWS_PER_HALF = {2: 32, 4: 8}  # 128 colours // n
 _ROWS_PER_CELL = {2: 1}  # a 4-colour group // n, and 2bpp only
-_SCR_BPP = {0: 2, 1: 4, 2: 8}
+# Shared by a screen's depth byte and a bank's: one encoding, two offsets.
+_DEPTH_BPP = {0: 2, 1: 4, 2: 8}
+_DEPTH_BYTE = {bpp: value for value, bpp in _DEPTH_BPP.items()}
 
 
 def _row_base(col_half: int, col_cell: int, bpp: int) -> int:
@@ -318,7 +333,7 @@ class ScrContainer:
         ctx.set(KEY_TILEMAP_CELL_TILES, _cell_tiles(header, SCR_TILE_SIZE))
         # A screen states its own depth, so the half is convertible to rows here.
         if len(header) > SCR_COL_CELL:
-            bpp = _SCR_BPP.get(header[SCR_DEPTH] & 3, 4)
+            bpp = _DEPTH_BPP.get(header[SCR_DEPTH] & 3, 4)
             ctx.set(
                 KEY_TILEMAP_PALETTE_ROW_BASE,
                 _row_base(header[SCR_COL_HALF], header[SCR_COL_CELL], bpp),
@@ -619,8 +634,21 @@ class ObjContainer:
         return _payload(source, ctx, 0, payload)
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
+        # The form comes from the records being saved, not from the file already
+        # at the path: splicing 128 frames into an ordinary object drops 96 of
+        # them, and a path with no file at it has no form to offer at all. Where
+        # the two agree the whole tail is preserved, animation table included —
+        # and that covers the `F` build, whose extra 0x20 bytes ride along
+        # untouched because the payload is where they are measured from.
         existing = dest.existing or _blank_obj()
-        return splice(existing, 0, data[: _obj_payload(existing)])
+        payload = _obj_payload(existing)
+        if payload == len(data):
+            return splice(existing, 0, data)
+        if len(data) in OBJ_SIZES:
+            return splice(_blank_obj(len(data)), 0, data)
+        # Records that are neither form's length: the destination decides, as it
+        # did before either form was named here.
+        return splice(existing, 0, data[:payload])
 
     def describe(
         self, source: ReadSource, ctx: PipelineContext
@@ -799,9 +827,17 @@ def _obj_payload(data: bytes) -> int:
     return OBJ_PAYLOADS[0]
 
 
-def _blank_obj() -> bytes:
-    out = bytearray(OBJ_SIZE)
-    out[OBJ_PAYLOADS[0] : OBJ_PAYLOADS[0] + len(SIGNATURE)] = SIGNATURE
+def _blank_obj(payload: int = OBJ_PAYLOADS[0]) -> bytes:
+    """An empty object of the form ``payload`` bytes of records names.
+
+    The signature's *position* is the whole of what says which form a file is, so
+    a blank has to be the right length with it in the right place; there is
+    nowhere else in the header the choice is written down. The build marker is
+    left blank, which reads as the common build and its big-endian attribute word
+    — the only one celPix could claim to have written.
+    """
+    out = bytearray(OBJ_SIZES[payload])
+    out[payload : payload + len(SIGNATURE)] = SIGNATURE
     return bytes(out)
 
 
@@ -885,7 +921,59 @@ CGX_BANKS: dict[int, tuple[int, str, int]] = {
     0x8500: (0x8000, "preset.pixel.snes-4bpp", 4),
     0x10100: (0x10000, "preset.pixel.snes-8bpp", 8),
 }
+# The same three, keyed by how many bytes of tiles they hold — which is what the
+# write side has to name a variant from. What comes out of the pipeline is the
+# payload; its length is the depth the user is actually saving at, and the ctx
+# hint the read published is not, having only ever seeded a picker they own.
+CGX_BY_PAYLOAD: dict[int, int] = {
+    payload: size for size, (payload, *_) in CGX_BANKS.items()
+}
 CGX_ROW_TABLE = 0x400  # one byte per tile, each a palette row
+
+
+def _cgx_bank(data: bytes) -> tuple[int, str, int] | None:
+    """Which of the three banks ``data`` is, by length and then by signature.
+
+    Length settles it for every well-formed file — the three differ by more than
+    their payloads, since only 2bpp and 4bpp carry an attribute table. Signature
+    position is the fallback for one that has picked up a tail, and it is the
+    same signal detection matched on: the metadata block sits *after* the tiles,
+    so where it starts is where they stop. Reading a tailed bank by length alone
+    hands the header and the table on as three dozen tiles of noise and states no
+    depth at all, which is exactly what the framing exists to prevent.
+
+    ``None`` for bytes that are neither, which the caller passes through whole.
+    """
+    bank = CGX_BANKS.get(len(data))
+    if bank is not None:
+        return bank
+    for bank in CGX_BANKS.values():
+        payload = bank[0]
+        if data[payload : payload + len(SIGNATURE)] == SIGNATURE:
+            return bank
+    return None
+
+
+def _blank_cgx(payload: int) -> bytes:
+    """An empty bank of the variant ``payload`` bytes of tiles names.
+
+    Stamped so the file states that variant both ways a real one does — the
+    signature's position, and the depth byte behind it — because a bank written
+    with neither is not a bank: nothing detects it, and reopening it lands on raw
+    bytes at a guessed depth. That is what a save to a path with no file at it
+    used to produce.
+
+    The attribute table is zero, and 8bpp has none. Row 0 is a row rather than a
+    sentinel (`scgcad-formats.md` §6), so a fresh bank saying every tile is row 0
+    is a statement it can stand behind, and the base its header states is 0 to
+    match.
+    """
+    size = CGX_BY_PAYLOAD[payload]
+    _, _, bpp = CGX_BANKS[size]
+    out = bytearray(size)
+    out[payload : payload + len(SIGNATURE)] = SIGNATURE
+    out[payload + CGX_DEPTH] = _DEPTH_BYTE[bpp]
+    return bytes(out)
 
 
 def _cgx_row_base(data: bytes, payload: int, bpp: int) -> int | None:
@@ -910,11 +998,16 @@ def _cgx_row_base(data: bytes, payload: int, bpp: int) -> int | None:
 
 
 def _cgx_rows(data: bytes, payload: int, bpp: int) -> bytes:
-    """A bank's per-tile palette rows as **absolute** rows, or empty when it
+    """A bank's per-tile palette rows as the file states them, or empty when it
     states none.
 
-    The raw table is *relative* — :func:`_cgx_row_base` is what it counts from —
-    and it is only there when the header is. The thirty-nine header-less banks
+    **Relative rows**, exactly as the table holds them: what they count from is
+    published beside them as :data:`~celpix.core.context.KEY_TILE_PALETTE_ROW_BASE`,
+    and the host applies the base to a named row once, at render
+    (:func:`~celpix.pipeline.pipeline.drawn_palette_row`). Folding it in here as
+    well would move a bank's art twice.
+
+    The table is only there when the header is. The thirty-nine header-less banks
     hold 0xFC throughout, a metadata block allocated and never written. Their
     tiles are real and at the depth the size gives, so the payload is still cut
     and the preset still published; the table is not a statement about them.
@@ -924,14 +1017,10 @@ def _cgx_rows(data: bytes, payload: int, bpp: int) -> bytes:
     """
     if bpp >= 8:
         return b""
-    base = _cgx_row_base(data, payload, bpp)
-    if base is None:
+    if _cgx_row_base(data, payload, bpp) is None:
         return b""
     at = payload + HEADER
-    # Capped because the result is one byte per tile and no palette has 256 rows
-    # — a table this far out of range is garbage either way, and what survives is
-    # bounded against the palette's real height before anything draws.
-    return bytes(min(base + row, 0xFF) for row in data[at : at + CGX_ROW_TABLE])
+    return data[at : at + CGX_ROW_TABLE]
 
 
 class CgxContainer:
@@ -941,6 +1030,19 @@ class CgxContainer:
     is the problem. The trailing header and table decode as a few dozen tiles of
     convincing noise at the end of every bank, and the bit depth has to be
     guessed from three that all look plausible. Both are in the file.
+
+    **Three variants, one per depth**, and they differ by more than their
+    payloads: 8bpp is too short to hold the attribute table at all, so the three
+    lengths are 0x4500, 0x8500 and 0x10100 for 0x4000, 0x8000 and 0x10000 of
+    tiles. Which one a file is comes from its length, and failing that from where
+    its signature sits (:func:`_cgx_bank`) — the two signals detection and
+    reading now share, so a bank with a tail is not read as a fourth thing.
+
+    A write names the variant from the **payload** instead, because that is the
+    depth being saved and the header of the file already there may be a
+    different one. Same variant, and everything around the tiles is preserved;
+    otherwise the bank is built (:func:`_blank_cgx`), which is also what a save
+    to a path with no file at it gets.
 
     Two hints go out on the context rather than being applied here: the pixel
     preset the payload is in, and the per-tile palette rows. A container's job is
@@ -959,7 +1061,7 @@ class CgxContainer:
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
-        bank = CGX_BANKS.get(len(source.data))
+        bank = _cgx_bank(source.data)
         if bank is None:
             # A size the family does not have: hand the bytes on whole rather
             # than cutting at a guess. Better a few trailing junk tiles than a
@@ -983,27 +1085,41 @@ class CgxContainer:
         # Splice, so the header and the row table come back untouched — the rows
         # are the file's own statement about its tiles and celPix has no reason
         # to rewrite them from an edit that changed pixels.
-        bank = CGX_BANKS.get(len(dest.existing))
-        payload = bank[0] if bank else len(data)
-        return splice(dest.existing, 0, data[:payload])
+        bank = _cgx_bank(dest.existing)
+        if bank is not None and bank[0] == len(data):
+            return splice(dest.existing, 0, data)
+        # Either there is no file there yet or the depth has changed under it,
+        # and both need a container built rather than one reused: the three
+        # variants are different lengths, so writing 4bpp tiles into a 2bpp bank
+        # can only drop half of them, and writing them into nothing at all leaves
+        # a payload no reader can identify. What the old file said about a
+        # different depth — its colour selectors, its table — is not a statement
+        # about these tiles, so none of it carries over.
+        if len(data) not in CGX_BY_PAYLOAD:
+            # Not one of the three payload sizes: the same pass-through the read
+            # half does for a length this family does not have.
+            return splice(dest.existing, 0, data)
+        return splice(_blank_cgx(len(data)), 0, data)
 
     def describe(
         self, source: ReadSource, ctx: PipelineContext
     ) -> tuple[ContainerField, ...]:
         data = source.data
-        bank = CGX_BANKS.get(len(data))
+        bank = _cgx_bank(data)
         if bank is None:
             return (
                 ContainerField(
                     "Bank size",
                     f"{len(data)} bytes - not a size this family has",
                     "The three tile banks are told apart by their length,\n"
-                    "and this is none of them. The bytes are handed on\n"
+                    "and failing that by where the signature sits. This\n"
+                    "file answers to neither, so the bytes are handed on\n"
                     "whole rather than cut at a guess: better a few\n"
                     "trailing junk tiles than a silently truncated bank.",
                 ),
             )
-        payload, preset_id, bpp = bank
+        payload, _, bpp = bank
+        stated = data[payload + CGX_DEPTH] if len(data) > payload + CGX_DEPTH else None
         if bpp >= 8:
             table = "none - 8bpp banks carry no table"
         elif not _cgx_rows(data, payload, bpp):
@@ -1025,12 +1141,18 @@ class CgxContainer:
             ),
             ContainerField(
                 "Bit depth",
-                f"{preset_id.rsplit('.', 1)[-1]} (by bank size)",
-                "In the file, so it need not be guessed - the three depths\n"
-                "look alike enough that a wrong pick reads as plausible\n"
-                "garbage. Published as the pixel format the view starts\n"
-                "at; the size and the header's own depth byte agree\n"
-                "across the whole surveyed corpus.",
+                f"{bpp}bpp - {len(data)} bytes"
+                + (
+                    ", header says none"
+                    if stated is None
+                    else f", header says {_DEPTH_BPP.get(stated & 3, bpp)}bpp"
+                ),
+                "In the file twice over, so it need not be guessed - the\n"
+                "three depths look alike enough that a wrong pick reads as\n"
+                "plausible garbage. The length is one statement and the\n"
+                "byte at +0x20 behind the signature is the other; they\n"
+                "agree across the whole surveyed corpus. Published as the\n"
+                "pixel format the view starts at.",
             ),
             ContainerField(
                 "Palette row table",

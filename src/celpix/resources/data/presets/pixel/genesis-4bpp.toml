@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §2 (packed / linear).
 id = "preset.pixel.genesis-4bpp"
 name = "Genesis 4bpp (MD/X68000/MSX, 8x8)"
-engine_id = "codec.packed"
+engine_id = "codec.pixel.packed"
 
 [params]
 bpp = 4

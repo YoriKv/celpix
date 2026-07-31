@@ -243,10 +243,10 @@ def test_pixel_write_optional(tmp_path) -> None:
         # width either (e.g. pce-sg is 4bpp over a 16-wide tile).
         ("preset.pixel.pce-sg-4bpp", 4),
         ("preset.pixel.pce-2bpp16", 2),
-        ("preset.pixel.1bpp16", 1),
+        ("preset.pixel.1bpp-16x16", 1),
         # Ordinary param-driven codecs: the derived value must equal declared bpp.
         ("preset.pixel.snes-4bpp", 4),
-        ("preset.pixel.chunky-8bpp", 8),
+        ("preset.pixel.8bpp-linear", 8),
         # Direct-color storage: params declare bpp=15 but 16 bits are stored per
         # pixel, so the geometry-derived value pins the "storage bits" semantics.
         ("preset.pixel.dc-rgb555", 16),
@@ -631,7 +631,7 @@ def _joined_configs(tmp_path, paths):
     pal.write_bytes(bytes(32))
     pixel = PathwayConfig(
         source=FileRef(tuple(str(p) for p in paths)),
-        interpret_preset_id="preset.pixel.chunky-8bpp",
+        interpret_preset_id="preset.pixel.8bpp-linear",
     )
     palette = PathwayConfig(
         source=FileRef(str(pal)),

@@ -332,23 +332,50 @@ def _compose_plain(
     first_tile: int,
     blank: bytes,
 ) -> None:
-    """Blit a row-major window, one whole image row per write.
+    """Blit a row-major window, one whole cell row of the image per write.
 
     The plain layout puts a cell row's tiles side by side, so each image row is
-    the concatenation of the same pixel row of ``cols`` consecutive tiles — one
-    ``join`` and one store, instead of a slice assignment per tile per row. The
-    difference is the whole cost of composing when the tiles are small: a bitmap
-    width can cut a window into tens of thousands of them.
+    the concatenation of the same pixel row of ``cols`` consecutive tiles — a
+    ``join`` instead of a slice assignment per tile per row. The difference is
+    the whole cost of composing when the tiles are small: a bitmap width can cut
+    a window into tens of thousands of them.
+
+    **A repeated cell row is composed once.** One cell row makes one contiguous
+    band of the image, and which band is decided entirely by *which tile objects*
+    sit in that row — so a row identical to the one above it is a second store of
+    the same bytes. That is not a rare case in the formats this draws: a panel is
+    mostly empty, a few hundred of its 512 rows carrying anything at all
+    (``docs/design/tilemap-entry.md`` §9), and a screen's backdrop covers bands of
+    it. The test is on the tiles' **identity**, not their pixels: the render memos
+    hand back the same grid object for a repeat
+    (:func:`~celpix.pipeline.pipeline.expand_cells`) and nothing mutates a tile
+    during a compose, so it is a pointer compare per tile rather than a pixel one.
+
+    Only the row immediately above is compared, and the band is re-read out of
+    the image rather than held. A run is what these files actually hold — an
+    empty region is contiguous — so a table of every distinct row would buy the
+    non-adjacent case at the price of a second copy of the whole image, on a
+    picture that may have no repeats at all. That picture is the pixel view,
+    which shares this function and is all-distinct by nature; the comparison
+    short-circuits on its very first tile there, which is what keeps the check
+    from costing it anything.
     """
     count = len(datas)
     span = cols * row_bytes
+    height = th * span  # one cell row's band of the image
     pos = 0
+    previous: list | None = None
     for cell_y in range(rows):
         base = first_tile + cell_y * cols
         row_tiles = [
             datas[idx] if 0 <= idx < count else blank
             for idx in range(base, base + cols)
         ]
+        if previous is not None and all(a is b for a, b in zip(row_tiles, previous)):
+            dst[pos : pos + height] = dst[pos - height : pos]
+            pos += height
+            continue
+        previous = row_tiles
         for y in range(th):
             start = y * row_bytes
             stop = start + row_bytes

@@ -193,6 +193,13 @@ class SessionMixin:
             pixel_config=cfg,
             palette_config=self._placeholder_palette_config(session.palette_preset_id),
             pixel_ctx=px.ctx,
+            # A bank states where its own rows count from, and its per-tile table
+            # (seeded as pinned regions below) counts from exactly there. Nothing
+            # in a preset can say it — it is a fact about this file — so the
+            # declared answer is 0 and the header is the only other voice.
+            palette_row_base=self._row_base_for(
+                entry, 0, stated=False, bank=px.ctx.get(KEY_TILE_PALETTE_ROW_BASE)
+            ),
         )
         self._apply_restored_state(entry)
         # After the restore: a project that stored regions of its own has just
@@ -222,8 +229,7 @@ class SessionMixin:
         # the pending view it would be read off has already been taken
         # (:meth:`~...rendering.RenderingMixin._apply_tilemap_columns`).
         restored = entry.pending_view is not None
-        preset_id = entry.tilemap_preset_id or _DEFAULT_TILEMAP_PRESET
-        cfg = self._tilemap_config(entry, preset_id)
+        cfg = self._tilemap_config(entry, self._tilemap_preset_id(entry))
         try:
             loaded = pipeline.load_tilemap_data(cfg, self._registry)
         except PipelineError as exc:
@@ -375,6 +381,12 @@ class SessionMixin:
         them and they behave like any other pin from there: visible, editable,
         and saved with the project.
 
+        The table's rows are stored as the file states them, which is **relative
+        to the entry's palette row base** (the same header states both). So they
+        are pinned unshifted and the base reaches them at render, like a cell's
+        row — which is what lets the base spin re-aim a whole bank at the palette
+        that actually got loaded without rewriting a region.
+
         Runs of equal rows collapse into one region each, because that is what a
         region *is*; a bank of 1024 tiles usually resolves to a few dozen.
 
@@ -445,16 +457,19 @@ class SessionMixin:
         stated: bool = True,
         bank: int | None = None,
     ) -> int:
-        """The palette row ``entry``'s cells count their row 0 from.
+        """The palette row ``entry``'s named rows count their row 0 from.
 
         Four answers, most specific first, resolved here so the document carries
         the base **in force** and every render reads one number rather than
-        choosing between several.
+        choosing between several. One question for both kinds of entry: what a
+        tilemap's cells count from, a tile bank's pinned rows count from too.
 
         The entry's own value wins outright: what no file can know is which
         palette got loaded (:attr:`~celpix.project.workspace.Entry.palette_row_base`).
         Then the map's own header, where its format has one — ``stated`` is
-        whether ``declared`` came from the file rather than from the preset.
+        whether ``declared`` came from the file rather than from the preset. A
+        pixel entry has no such field, so it passes ``stated=False`` and a
+        declared 0.
 
         Then, and this is the one that needs saying, **the bank's**. A sprite
         object names a 3-bit palette row and carries nothing to count it from,
@@ -489,22 +504,46 @@ class SessionMixin:
             return declared
         return chosen
 
+    def _tilemap_preset_id(self, entry: Entry) -> str:
+        """The cell format ``entry``'s own file is read under.
+
+        A container names one when the file is opened
+        (``detect.tilemap_preset_for``), so the fallback is for a tilemap carved
+        out by hand, which had no container to have said.
+        """
+        return entry.tilemap_preset_id or _DEFAULT_TILEMAP_PRESET
+
+    def _tilemap_declares(self, entry: Entry, name: str) -> object:
+        """What ``entry``'s cell **format** declares under ``name``, or None.
+
+        The format's answer and not the document's, which is the whole of what
+        these declarations are for: they are readable before anything is loaded
+        or bound, so the binding bar can describe an entry it has not read yet.
+        An object with no tile source is still an object, and a stamp layout with
+        none is still a stamp layout (:meth:`_tilemap_is_sprite`,
+        :meth:`_tilemap_is_indirect`).
+
+        None for a preset id nothing is registered under, which is the same
+        answer as a preset that declares nothing: a format celPix does not have
+        cannot have claimed anything about its cells.
+        """
+        try:
+            preset = self._registry.preset(self._tilemap_preset_id(entry))
+        except KeyError:
+            return None
+        return preset.params.get(name)
+
     def _tilemap_is_sprite(self, entry: Entry) -> bool:
         """Whether ``entry``'s **format** says its cells are subsprites.
 
         A *sprite map* is the tilemap variant whose cells are freely-placed
-        subsprites
-        grouped into frames rather than positions in a grid
-        (``docs/design/tilemap-entry.md`` §6). Declared by the preset, so — like
-        :meth:`_tilemap_is_indirect` — it answers before anything is loaded or
-        bound: an object with no tile source is still an object, and its size pair
-        is still the control it needs.
+        subsprites grouped into frames rather than positions in a grid
+        (``docs/design/tilemap-entry.md`` §6). Declared rather than inferred, so
+        it answers before anything is loaded (:meth:`_tilemap_declares`): an
+        object with no tile source is still an object, and its size pair is still
+        the control it needs.
         """
-        preset_id = entry.tilemap_preset_id or _DEFAULT_TILEMAP_PRESET
-        try:
-            return self._registry.preset(preset_id).params.get("layout") == "sprite"
-        except KeyError:
-            return False
+        return self._tilemap_declares(entry, "layout") == "sprite"
 
     def _tilemap_columns_hint(self, entry: Entry) -> int:
         """The width the entry's format states, or 0 when it states none.
@@ -535,19 +574,37 @@ class SessionMixin:
     def _tilemap_is_indirect(self, entry: Entry) -> bool:
         """Whether ``entry``'s **format** says its cells are coordinates.
 
-        Declared by the preset, so it is an answer before any binding exists —
-        which is the only thing it is for. Chaining itself is generic and gated on
-        depth (:meth:`_bound_tilemap`), so this never decides what a map may draw
-        through; it decides how the bar reads while nothing is bound yet. A stamp
-        layout with no source is still a stamp layout, and should be offered
-        panels first and no Base tile rather than being described as a map that
-        merely has not picked its art.
+        Declared rather than inferred, so it is an answer before any binding
+        exists (:meth:`_tilemap_declares`) — which is the only thing it is for.
+        Chaining itself is generic and gated on depth (:meth:`_bound_tilemap`), so
+        this never decides what a map may draw through; it decides how the bar
+        reads while nothing is bound yet. A stamp layout with no source is still a
+        stamp layout, and should be offered panels first and no Base tile rather
+        than being described as a map that merely has not picked its art.
         """
-        preset_id = entry.tilemap_preset_id or _DEFAULT_TILEMAP_PRESET
-        try:
-            return bool(self._registry.preset(preset_id).params.get("indirect"))
-        except KeyError:
-            return False
+        return bool(self._tilemap_declares(entry, "indirect"))
+
+    def _binding_target(self, source: TileSource) -> Entry | None:
+        """The open entry ``source`` names, or None when it names nothing usable.
+
+        The one place a binding's positional ``entry_index`` becomes an entry
+        (:class:`~celpix.project.workspace.TileSource`). Everything that asks
+        where a map's tiles come from resolves it here — the depth gate below, the
+        chained load, the pathway that reads the tiles, and the bar's combo, note
+        and jump button — so an index that no longer names anything reads the same
+        way to all of them instead of each carrying its own bounds check.
+
+        The index is positional and so only means something inside one project: a
+        binding kept across an entry being closed points past the end, and that
+        answers None rather than resolving to whatever now sits there.
+        """
+        if source.mode is not TileMode.ENTRY:
+            return None
+        entries = self._workspace.entries
+        index = source.entry_index
+        if index is None or not 0 <= index < len(entries):
+            return None
+        return entries[index]
 
     def _draws_through_tilemap(self, entry: Entry) -> bool:
         """Whether ``entry``'s binding names another tilemap rather than art.
@@ -560,14 +617,12 @@ class SessionMixin:
         if entry.content_kind is not ContentKind.TILEMAP:
             return False
         source = entry.tile_source
-        if source is None or source.mode is not TileMode.ENTRY:
-            return False
-        entries = self._workspace.entries
-        index = source.entry_index
-        if index is None or not 0 <= index < len(entries):
-            return False
-        bound = entries[index]
-        return bound is not entry and bound.content_kind is ContentKind.TILEMAP
+        bound = self._binding_target(source) if source is not None else None
+        return (
+            bound is not None
+            and bound is not entry
+            and bound.content_kind is ContentKind.TILEMAP
+        )
 
     def _can_supply_tiles(self, entry: Entry, candidate: Entry) -> bool:
         """Whether ``candidate`` is a source ``entry`` could draw through.
@@ -606,14 +661,8 @@ class SessionMixin:
         binding first and the second hop is an ordinary one.
         """
         source = entry.tile_source
-        entries = self._workspace.entries
-        if source is None or source.mode is not TileMode.ENTRY:
-            return None
-        index = source.entry_index
-        if index is None or not 0 <= index < len(entries):
-            return None
-        candidate = entries[index]
-        if not self._can_supply_tiles(entry, candidate):
+        candidate = self._binding_target(source) if source is not None else None
+        if candidate is None or not self._can_supply_tiles(entry, candidate):
             return None
         if candidate.content_kind is not ContentKind.TILEMAP:
             return None
@@ -724,11 +773,9 @@ class SessionMixin:
         show through in the map straight away, and why binding names an entry
         rather than a file: a file would have to restate all of it.
         """
-        index = source.entry_index
-        entries = self._workspace.entries
-        if index is None or not 0 <= index < len(entries):
-            raise KeyError(f"no open entry at index {index}")
-        bound = entries[index]
+        bound = self._binding_target(source)
+        if bound is None:
+            raise KeyError(f"no open entry at index {source.entry_index}")
         preset = (
             bound.session.pixel_preset_id
             if bound.session is not None
@@ -870,11 +917,10 @@ class SessionMixin:
         # Pinned palette regions belong to the entry for the same reason. Stored
         # unbounded — _active_palette_regions clips at render time against the
         # picture and the palette that are actually loaded, so a region survives a
-        # codec switch that temporarily puts it out of range.
+        # codec switch that temporarily puts it out of range. Whether they are
+        # *shown* does not switch with the entry: that is an app-wide preference
+        # in QSettings (``main_window/palette_regions.py``).
         self._palette_regions = view.palette_regions
-        self._show_palette_regions = view.show_palette_regions
-        with signals_blocked(self._show_palette_regions_action):
-            self._show_palette_regions_action.setChecked(view.show_palette_regions)
         self._selected_tile = session.selected_tile
         self._selected_last = (
             session.selected_last

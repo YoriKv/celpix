@@ -3,9 +3,9 @@
 # 256-wide linear bitmap (32 KB = 256x128 pages; larger banks are several of them
 # stacked). Use the plain 8bpp linear preset with 2D view for other widths.
 # See docs/graphics-formats-reference/implementation-guide.md §2 (chunky).
-id = "preset.pixel.chunky-8bpp-wide"
+id = "preset.pixel.8bpp-linear-256x128"
 name = "8bpp linear bitmap (256x128, Super FX)"
-engine_id = "codec.packed"
+engine_id = "codec.pixel.packed"
 
 [params]
 bpp = 8

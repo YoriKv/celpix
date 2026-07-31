@@ -340,7 +340,7 @@ class SelectionMixin:
         the same way by all of them. A sprite object is deliberately not one: its
         subsprites sit at signed pixel offsets rather than in a grid, so no layout
         describes what is drawn there and none of the cell arithmetic applies
-        (``docs/design/tilemap-entry.md`` §9).
+        (``docs/design/tilemap-entry.md`` §6, OBJ).
         """
         doc = self._doc
         if doc is None or not doc.is_tilemap or doc.is_sprite:
@@ -380,7 +380,7 @@ class SelectionMixin:
         )
 
     def _cell_unit(self) -> tuple[int, int]:
-        """The block a selection snaps to, in canvas cells — i.e. in tiles.
+        """The block a selection snaps to, in canvas **slots** — i.e. in tiles.
 
         1x1 on a pixel document: the tile is the unit there, and every snap below
         reduces to what it always did. On a tilemap the unit is the map's own

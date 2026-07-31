@@ -74,7 +74,7 @@ class PackedCodec:
     """Generic packed tile codec; behaviour comes entirely from ``params``."""
 
     info = PluginInfo(
-        id="codec.packed",
+        id="codec.pixel.packed",
         name="Packed (linear) codec",
         stage=Stage.INTERPRET_PIXEL,
     )

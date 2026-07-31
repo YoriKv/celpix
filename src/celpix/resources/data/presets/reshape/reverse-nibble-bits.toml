@@ -1,5 +1,5 @@
 # Four-pixel groups counted the other way round: bit 0 of a nibble is the
-# leftmost pixel, where `codec.nibble-planar` puts the leftmost pixel at bit 3
+# leftmost pixel, where `codec.pixel.nibble-planar` puts the leftmost pixel at bit 3
 # (docs/graphics-formats-reference/mame-formats.md §3). Reversing the bit order
 # inside each nibble — the nibbles themselves stay put — converts one convention
 # into the other, after which the nibble-planar presets read the tile directly.

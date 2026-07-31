@@ -3,7 +3,7 @@
 # rather than a wider cell; this preset reads the plain map either way.
 id = "preset.tilemap.gb-bg"
 name = "Game Boy BG map (8-bit, index only)"
-engine_id = "codec.tilemap-packed"
+engine_id = "codec.tilemap.packed"
 
 [params]
 bytes = 1

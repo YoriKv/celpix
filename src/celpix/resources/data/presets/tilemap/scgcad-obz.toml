@@ -14,7 +14,7 @@
 # See docs/graphics-formats-reference/scgcad-formats.md §9.
 id = "preset.tilemap.scgcad-obz"
 name = "Transfer object subsprite (OBZ)"
-engine_id = "codec.scgcad-obz"
+engine_id = "codec.tilemap.scgcad-obz"
 
 [params]
 # A **sprite map**: the tilemap variant whose cells are freely-placed subsprites

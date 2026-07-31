@@ -1,4 +1,4 @@
-# Example preset for the `codec.planar` engine. Files starting with "_" are
+# Example preset for the `codec.pixel.planar` engine. Files starting with "_" are
 # ignored — copy this file, drop the underscore, edit it, and press F5 in celPix.
 #
 # A preset is pure data: it names one built-in engine and fills in that engine's
@@ -10,7 +10,7 @@
 #
 # WHAT THE ENGINE DOES
 # --------------------
-# codec.planar decodes **bitplane** formats: bit k of a pixel's index comes from
+# codec.pixel.planar decodes **bitplane** formats: bit k of a pixel's index comes from
 # a separate byte called plane k, and within a byte pixel x is bit 7 - x. That
 # eight-pixel group is the engine's fixed unit; a tile is a whole number of them,
 # so wide tiles are a parameter rather than a different engine. The only thing
@@ -29,12 +29,12 @@
 #   sms-4bpp           bpp 4, planes {k,4} — four planes interleaved per row.
 #   4bpp-planar-16x16  tile_width 16 with group_stride 4: the row's second
 #                      eight-pixel group is four bytes further on.
-#   1bpp16-ff6         group_stride -1 — that tile stores its right half *first*.
+#   1bpp-16x11-ff6     group_stride -1 — that tile stores its right half *first*.
 
 # Unique id (never shown; keep it stable) and the name the format picker shows.
 id = "preset.pixel.example-planar"
 name = "Example planar 2bpp (GB-style)"
-engine_id = "codec.planar"
+engine_id = "codec.pixel.planar"
 
 [params]
 

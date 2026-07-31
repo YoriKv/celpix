@@ -13,11 +13,11 @@
 # is shaped like a sprite but lays its record out differently again, the engine
 # to copy is this one's code, not this file.
 #
-# Built on `codec.scgcad-obz`, as is the shipped scgcad-obz preset.
+# Built on `codec.tilemap.scgcad-obz`, as is the shipped scgcad-obz preset.
 
 id = "preset.tilemap.example-obz"
 name = "Example transfer object subsprite"
-engine_id = "codec.scgcad-obz"
+engine_id = "codec.tilemap.scgcad-obz"
 
 [params]
 # A **sprite map**: the tilemap variant whose cells are freely-placed subsprites

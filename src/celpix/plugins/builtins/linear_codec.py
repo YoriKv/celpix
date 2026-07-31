@@ -23,7 +23,7 @@ class LinearBespokeCodec:
     """3bpp/6bpp linear codec; ``bpp`` selects the fixed packing."""
 
     info = PluginInfo(
-        id="codec.linear-bespoke",
+        id="codec.pixel.linear-bespoke",
         name="Bespoke linear codec (3bpp/6bpp)",
         stage=Stage.INTERPRET_PIXEL,
     )

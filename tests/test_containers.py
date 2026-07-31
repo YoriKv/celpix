@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from celpix.core.address import format_hex
-from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
+from celpix.core.context import (
+    KEY_SOURCE_FILES,
+    KEY_SOURCE_OFFSET,
+    KEY_SOURCE_PATH,
+    PipelineContext,
+)
 from celpix.core.errors import Stage
 from celpix.core.notices import (
     KEY_NOTICES,
@@ -58,6 +63,68 @@ def test_ines_skips_header_to_chr() -> None:
 def test_ines_non_ines_reads_whole_file() -> None:
     plain = b"\x01\x02\x03\x04not-a-nes"
     assert INesContainer().read(ReadSource(plain), PipelineContext()) == plain
+
+
+def test_ines_save_as_copies_the_cartridge_not_just_the_tiles() -> None:
+    """A Save As is a copy of the document. With nothing at the destination there
+    is no header to splice into, and the CHR alone is not a ROM - it will not
+    even reopen as one."""
+    header = bytes([*b"NES\x1a", 2, 1, 0, 0]) + bytes(8)  # PRG=2, CHR=1
+    prg = bytes((i * 3) & 0xFF for i in range(2 * 16384))
+    chr_rom = bytes((i * 7) & 0xFF for i in range(8192))
+    tail = b"\xde\xad\xbe\xef"  # some dumps carry one; it is not ours to drop
+    rom = header + prg + chr_rom + tail
+
+    ctx = PipelineContext()
+    payload = INesContainer().read(ReadSource(rom), ctx)
+    edited = bytes(b ^ 0xFF for b in payload)
+    copy = INesContainer().write(edited, WriteTarget(existing=b""), ctx)
+
+    assert copy == header + prg + edited + tail
+    # ...and the copy is a cartridge again, which is the whole point: reopening
+    # it finds the CHR by the same header arithmetic and gets the edit back.
+    assert INesContainer().read(ReadSource(copy), PipelineContext()) == edited
+
+    # Save As onto a ROM that *does* exist writes into that one, not the source.
+    other_header = bytes([*b"NES\x1a", 1, 1, 0, 0]) + bytes(8)
+    other = other_header + bytes(16384) + bytes(8192)
+    out = INesContainer().write(edited, WriteTarget(existing=other), ctx)
+    assert out == other_header + bytes(16384) + edited
+
+    # A pathway that read a non-iNES file has nothing stashed and stays plain.
+    plain_ctx = PipelineContext()
+    plain = b"\x01\x02\x03\x04not-a-nes"
+    got = INesContainer().read(ReadSource(plain), plain_ctx)
+    assert INesContainer().write(got, WriteTarget(existing=b""), plain_ctx) == plain
+
+
+def test_ines_header_declaring_banks_the_file_lacks_is_left_alone() -> None:
+    """The CHR would start past the end, so there is nothing to put back - and
+    splicing there appends the whole invented gap as zeroes. An all-0xFF header
+    grows a 40 KB ROM to four megabytes."""
+    header = bytes([*b"NES\x1a", 0xFF, 0xFF, 0, 0]) + bytes(8)
+    rom = header + bytes((i * 11) & 0xFF for i in range(0x8000))
+
+    ctx = PipelineContext()
+    assert INesContainer().read(ReadSource(rom), ctx) == b""
+    # ...and the reader says why the canvas is empty rather than leaving it a
+    # mystery: nothing else in the file explains it.
+    assert any("more banks" in n.summary for n in notices(ctx))
+
+    out = INesContainer().write(b"", WriteTarget(existing=rom), PipelineContext())
+    assert out == rom
+
+    # A dump merely *short* of its last CHR bank still reads and writes what is
+    # there - the guard is "starts past the end", not "shorter than declared".
+    header = bytes([*b"NES\x1a", 1, 4, 0, 0]) + bytes(8)
+    short = header + bytes(16384) + bytes((i * 3) & 0xFF for i in range(0x6000))
+    payload = INesContainer().read(ReadSource(short), PipelineContext())
+    assert len(payload) == 0x6000  # three of the four declared banks
+    edited = bytes(0xA5 for _ in payload)
+    out = INesContainer().write(edited, WriteTarget(existing=short), PipelineContext())
+    assert len(out) == len(short)
+    assert out[16 + 16384 :] == edited
+    assert out[: 16 + 16384] == short[: 16 + 16384]
 
 
 def test_smd_deinterleaves() -> None:
@@ -189,7 +256,7 @@ _CONTAINER_SAMPLES = {
 def _container_config(reg, path, container_id):
     return PathwayConfig(
         source=FileRef(str(path), offset=0),  # the host's header box, unticked
-        interpret_preset_id="preset.pixel.chunky-8bpp",
+        interpret_preset_id="preset.pixel.8bpp-linear",
         container_id=resolved_container_id(reg, container_id),
         write_enabled=container_write_enabled(reg, container_id),
     )
@@ -474,11 +541,17 @@ def test_container_report_separates_parsed_fields_from_published_hints(
     assert fields["PRG banks"].startswith("2 ") and fields["CHR banks"].startswith("1 ")
     assert all(f.detail for f in report.fields)  # every row explains its value
 
-    # The one hint an iNES read publishes, in the app's own hex, and labelled
-    # rather than left as the raw key.
+    # What an iNES read publishes: the payload offset in the app's own hex and
+    # labelled rather than left as the raw key, and the container's own
+    # save-side stash of the ROM - unlabelled, as a plugin key it has written no
+    # label for is meant to be, and sized rather than dumped.
     assert [(f.name, f.value) for f in report.hints] == [
-        ("Payload offset", format_hex(16 + 2 * 16384))
+        ("ines.source", f"{len(rom)} bytes"),
+        ("Payload offset", format_hex(16 + 2 * 16384)),
     ]
+    # The host's own provenance is the point of the test and must stay out: it
+    # was on the context before the container ran, so it is not a hint.
+    assert not {f.name for f in report.hints} & {KEY_SOURCE_PATH, KEY_SOURCE_FILES}
     assert report.notices == ()
 
 
