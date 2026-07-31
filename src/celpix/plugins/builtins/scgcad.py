@@ -47,6 +47,7 @@ from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_PIXEL_PRESET,
     KEY_SOURCE_OFFSET,
+    KEY_TILE_PALETTE_ROW_BASE,
     KEY_TILE_PALETTE_ROWS,
     KEY_TILEMAP_CELL_TILES,
     KEY_TILEMAP_COLUMNS,
@@ -137,7 +138,7 @@ SCR_TILE_SIZE = 0x42  # screen cell size = 8 * (value + 1): 0 is 8x8, 1 is 16x16
 # the panel at four times its content.
 #
 # The pair at 0x69/0x6A is a real field all the same, and what it sizes is the
-# **stamp**: how big a block of panel cells one stamp-layout coordinate names
+# **stamp**: how many panel cells one stamp-layout coordinate names
 # (PNL_STAMP_EXPONENTS below). That is a fact about the panel's *callers*, not
 # about its own cells, which is why it is published for a bound layout to read and
 # never applied to the panel itself.
@@ -161,25 +162,38 @@ PNL_STAMP_MAX_EXPONENT = 5
 SCR_DEPTH = 0x40  # 0 = 2bpp, 1 = 4bpp, 2 = 8bpp
 SCR_COL_HALF, SCR_COL_CELL = 0x45, 0x46
 PNL_COL_HALF, PNL_COL_CELL = 0x65, 0x66
+CGX_COL_HALF, CGX_COL_CELL = 0x22, 0x23
 
-# A cell's palette base is `col_half * 128 + col_cell * n + attr * n` colours,
-# for n = 4 / 16 / 128 by depth (`scgcad-formats.md` §3.3). The render counts in
-# *rows*, so divide through by n: the half contributes `128 // n` rows and the
-# cell one apiece.
-_ROWS_PER_HALF = {2: 32, 4: 8, 8: 1}
+# The colour window a file was authored through: the half is 128 colours, and
+# the cell picks a 4-colour group inside it — but only at 2bpp, where a row *is*
+# four colours and the group is therefore one row. At 4bpp the window is the
+# whole 128-colour half with no group to pick, and at 8bpp it is all 256 with no
+# half either (`scgcad-formats.md` §3.3). The render counts in *rows*, so both
+# divide through by n = 4 / 16 / 128 by depth.
+_ROWS_PER_HALF = {2: 32, 4: 8}  # 128 colours // n
+_ROWS_PER_CELL = {2: 1}  # a 4-colour group // n, and 2bpp only
 _SCR_BPP = {0: 2, 1: 4, 2: 8}
 
 
 def _row_base(col_half: int, col_cell: int, bpp: int) -> int:
     """The palette row this file's cells count their own row 0 from.
 
-    Worth publishing because it is genuinely per-file and the majority answer is
-    not zero: 1,013 of 1,080 surveyed panels carry ``col_cell = 1``, so reading
-    the field as absent draws 94% of them one row out. Screens are the mirror
-    image — 2,178 of 2,351 want 0 — which is why this stayed invisible until a
-    panel was rendered.
+    **The cell is 2bpp-only**, which is the whole subtlety here and is not
+    guessable from the field: at 4bpp it is stale editor state and applying it
+    draws every cell one row out. The editor says so twice — its colour window is
+    the whole 128-colour half at 4bpp, with no 4-colour group left to pick, and
+    the cell control refuses to move outside 2bpp at all
+    (`scgcad-formats.md` §3.3).
+
+    The corpus agrees, and the check is independent of the code: a 4bpp bank with
+    ``col_cell = 1`` states per-tile rows that only line up with the panels drawn
+    against it when the cell is dropped — 806 of 808 against 0 of 808 — and
+    fourteen banks otherwise claim a row past the end of CGRAM, which no reading
+    of a real file should produce.
     """
-    return (col_half & 1) * _ROWS_PER_HALF.get(bpp, 8) + (col_cell & 3)
+    return (col_half & 1) * _ROWS_PER_HALF.get(bpp, 0) + (col_cell & 3) * (
+        _ROWS_PER_CELL.get(bpp, 0)
+    )
 
 
 PANEL_COLUMNS = 32  # a panel is 32 cells wide; its 0x4000 cells make 512 rows
@@ -863,15 +877,61 @@ def _blank(size: int) -> bytes:
 
 
 # A tile bank, by file size: payload length, the pixel preset that reads it, and
-# whether a per-tile palette-row table follows the header. All 1024 tiles; the
-# depth is what changes. Size and the header's own depth byte agree across the
-# whole surveyed corpus, so either would do and neither has to trust the other.
-CGX_BANKS: dict[int, tuple[int, str, bool]] = {
-    0x4500: (0x4000, "preset.pixel.snes-2bpp", True),
-    0x8500: (0x8000, "preset.pixel.snes-4bpp", True),
-    0x10100: (0x10000, "preset.pixel.snes-8bpp", False),
+# its depth in bits. All 1024 tiles; the depth is what changes. Size and the
+# header's own depth byte agree across the whole surveyed corpus, so either would
+# do and neither has to trust the other.
+CGX_BANKS: dict[int, tuple[int, str, int]] = {
+    0x4500: (0x4000, "preset.pixel.snes-2bpp", 2),
+    0x8500: (0x8000, "preset.pixel.snes-4bpp", 4),
+    0x10100: (0x10000, "preset.pixel.snes-8bpp", 8),
 }
 CGX_ROW_TABLE = 0x400  # one byte per tile, each a palette row
+
+
+def _cgx_row_base(data: bytes, payload: int, bpp: int) -> int | None:
+    """The palette row this bank's tiles count their own row 0 from, or None.
+
+    ``col_half * 128 + col_cell * n`` colours, the same per-file base a screen or
+    a panel applies (``scgcad-formats.md`` §3.3), divided through by ``n`` into
+    rows. 1,072 of the 2,304 surveyed banks set one — 766 of them a whole colour
+    half, which is eight rows out at 4bpp.
+
+    It is the base for everything drawn *from* the bank, so it answers for the
+    formats that carry a palette row and have nowhere to put a base: a sprite
+    object's 3-bit field, an 8bpp bank's absent attribute table. None where the
+    header is not there to be read — thirty-nine banks of the corpus carry no
+    signature at all, their 0x100 header zeroed, and a zero base read off that is
+    an invention rather than a reading.
+    """
+    header = data[payload : payload + HEADER]
+    if header[: len(SIGNATURE)] != SIGNATURE or len(header) <= CGX_COL_CELL:
+        return None
+    return _row_base(header[CGX_COL_HALF], header[CGX_COL_CELL], bpp)
+
+
+def _cgx_rows(data: bytes, payload: int, bpp: int) -> bytes:
+    """A bank's per-tile palette rows as **absolute** rows, or empty when it
+    states none.
+
+    The raw table is *relative* — :func:`_cgx_row_base` is what it counts from —
+    and it is only there when the header is. The thirty-nine header-less banks
+    hold 0xFC throughout, a metadata block allocated and never written. Their
+    tiles are real and at the depth the size gives, so the payload is still cut
+    and the preset still published; the table is not a statement about them.
+
+    An 8bpp bank is too short to hold a table at all, which is also the guard
+    the only other implementation of this format applies.
+    """
+    if bpp >= 8:
+        return b""
+    base = _cgx_row_base(data, payload, bpp)
+    if base is None:
+        return b""
+    at = payload + HEADER
+    # Capped because the result is one byte per tile and no palette has 256 rows
+    # — a table this far out of range is garbage either way, and what survives is
+    # bounded against the palette's real height before anything draws.
+    return bytes(min(base + row, 0xFF) for row in data[at : at + CGX_ROW_TABLE])
 
 
 class CgxContainer:
@@ -905,11 +965,17 @@ class CgxContainer:
             # than cutting at a guess. Better a few trailing junk tiles than a
             # silently truncated bank.
             return plain_read(source, ctx)
-        payload, preset_id, has_rows = bank
+        payload, preset_id, bpp = bank
         ctx.set(KEY_PIXEL_PRESET, preset_id)
-        if has_rows:
-            at = payload + HEADER
-            ctx.set(KEY_TILE_PALETTE_ROWS, source.data[at : at + CGX_ROW_TABLE])
+        rows = _cgx_rows(source.data, payload, bpp)
+        if rows:
+            ctx.set(KEY_TILE_PALETTE_ROWS, rows)
+        # Published beside the table rather than only folded into it: a tilemap
+        # bound to this bank draws its own cells' rows from the same origin, and
+        # a sprite object's 3-bit field has no header of its own to say so.
+        base = _cgx_row_base(source.data, payload, bpp)
+        if base is not None:
+            ctx.set(KEY_TILE_PALETTE_ROW_BASE, base)
         ctx.set(KEY_SOURCE_OFFSET, 0)
         return source.data[:payload]
 
@@ -937,7 +1003,17 @@ class CgxContainer:
                     "trailing junk tiles than a silently truncated bank.",
                 ),
             )
-        payload, preset_id, has_rows = bank
+        payload, preset_id, bpp = bank
+        if bpp >= 8:
+            table = "none - 8bpp banks carry no table"
+        elif not _cgx_rows(data, payload, bpp):
+            table = "present but not read - the header is absent"
+        else:
+            base = _cgx_row_base(data, payload, bpp)
+            table = (
+                f"{format_size(CGX_ROW_TABLE)} at {payload + HEADER:#06x}"
+                f", counted from row {base}"
+            )
         return (
             *_metadata_fields(data, payload),
             ContainerField(
@@ -958,13 +1034,13 @@ class CgxContainer:
             ),
             ContainerField(
                 "Palette row table",
-                f"{format_size(CGX_ROW_TABLE)} at {payload + HEADER:#06x}"
-                if has_rows
-                else "none - 8bpp banks carry no table",
+                table,
                 "One byte per tile naming the palette row it is meant to\n"
-                "be read under. Published so it can seed pinned palette\n"
-                "regions, and preserved on write: the rows are the file's\n"
-                "own statement, not something to re-derive from a pixel\n"
-                "edit.",
+                "be read under, counted from the base this file's header\n"
+                "states. Published so it can seed pinned palette regions,\n"
+                "and preserved on write: the rows are the file's own\n"
+                "statement, not something to re-derive from a pixel edit.\n"
+                "A bank with no header states no rows: the table is there\n"
+                "but nothing wrote it.",
             ),
         )

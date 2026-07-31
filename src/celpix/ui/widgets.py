@@ -309,7 +309,9 @@ def tinted_glyph(source: QImage, color: QColor, box: QSize, ratio: float) -> QPi
     return canvas
 
 
-def paint_selection_outline(painter: QPainter, rect: QRect, alpha: int = 255) -> None:
+def paint_selection_outline(
+    painter: QPainter, rect: QRect, alpha: int = 255, color: QColor | None = None
+) -> None:
     """The app's shared selection outline: a white ring over a black one.
 
     One outline language for every "this is the active thing" highlight (the
@@ -320,12 +322,20 @@ def paint_selection_outline(painter: QPainter, rect: QRect, alpha: int = 255) ->
     wherever focus is, because the selection is the state, not the focus;
     ``alpha`` softens both layers together where the ring sits over small art.
 
-    The white layer sits flush on the selected area's boundary and the black one
+    ``color`` replaces the outer layer for a ring that is **not** a selection —
+    the tile source panel's mark for what the canvas is pointing at, which shares
+    a grid with that panel's own pick and would otherwise read as a second one of
+    them. The dark under-layer stays whatever it is, since that is what keeps the
+    ring off the art rather than on it.
+
+    The outer layer sits flush on the selected area's boundary and the black one
     just inside it, so the whole 2px band lands *within* ``rect``: an aliased
     ``drawRect`` renders one pixel past its path, hence the -1 insets.
     """
     painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.setPen(QPen(QColor(255, 255, 255, alpha), 1))
+    outer = QColor(color) if color is not None else QColor(255, 255, 255)
+    outer.setAlpha(alpha)
+    painter.setPen(QPen(outer, 1))
     painter.drawRect(rect.adjusted(0, 0, -1, -1))
     painter.setPen(QPen(QColor(0, 0, 0, alpha), 1))
     painter.drawRect(rect.adjusted(1, 1, -2, -2))

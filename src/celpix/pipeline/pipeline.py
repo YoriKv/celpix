@@ -10,6 +10,7 @@ with the palette's save optional. Any stage that cannot proceed raises
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, NamedTuple, TypeVar
@@ -797,15 +798,20 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
     return TilemapImage(grid, drawn, min(max(1, 256 // max(1, space)), top + 1))
 
 
-def tile_source_ids(doc: Document, limit: int | None = None) -> range:
-    """Which tile IDs a tilemap's cells can usefully name — the panel's extent.
+def tile_source_span(doc: Document, limit: int | None = None) -> range:
+    """Every tile ID a tilemap's cells can reach — the run that resolves.
 
     An **ID** is what a cell holds and what a hex editor shows at its bytes: the
     file's own number, before the binding's base tile
     (:attr:`~celpix.core.document.Document.tile_base_index`). The run that comes
     back is the contiguous span of those numbers that resolves to something to
-    look at, which is what the tile source panel lays out
-    (``docs/design/tilemap-entry.md`` §8).
+    look at (``docs/design/tilemap-entry.md`` §8).
+
+    This is the **legality** question — is there anything at this ID — which is
+    not the same as what the tile source panel offers: where a cell covers
+    several tiles every ID in here resolves, but only one in four names a whole
+    unit, and it is those the sheet lays out (:func:`tile_source_ids`). Anything
+    validating an ID a user already has wants this one.
 
     Only the resolving run, rather than the format's whole index space: a 10-bit
     console cell can name 1024 tiles and is routinely bound to a 256-tile bank,
@@ -823,8 +829,10 @@ def tile_source_ids(doc: Document, limit: int | None = None) -> range:
       map numbering from ``$100`` against a slice of exactly those tiles has a
       base of ``-0x100`` and a run **starting at** ``$100`` — the numbers the
       file actually holds.
-    - A **sprite object** has no cell grid at all: its records sit at signed
-      pixel offsets, so there is no ID space and the run is empty.
+    - A **sprite object**'s reading is the same one. It has no cell grid, but a
+      *subsprite* names a tile in exactly the same numbers a cell does, so the
+      run of tiles it can reach is the bank the same way — what differs is that
+      nothing here is placed into a grid, not what the numbers mean.
 
     ``limit`` is the codec's index-field width
     (:meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`), passed in
@@ -832,7 +840,7 @@ def tile_source_ids(doc: Document, limit: int | None = None) -> range:
     format did not answer, and an unanswered field is left alone rather than
     clamped to a guess — the same protocol the flips follow.
     """
-    if not doc.is_tilemap or doc.is_sprite:
+    if not doc.is_tilemap:
         return range(0)
     if doc.chain is not None:
         start, stop = 0, len(doc.chain.source)
@@ -844,17 +852,72 @@ def tile_source_ids(doc: Document, limit: int | None = None) -> range:
     return range(start, max(start, stop))
 
 
+def tile_source_ids(doc: Document, limit: int | None = None) -> Sequence[int]:
+    """Which tile IDs the tile source panel offers — one entry per whole unit.
+
+    :func:`tile_source_span` for a cell that draws a single tile, which is most
+    documents: every ID resolves and every ID is its own picture, so the run is
+    the menu.
+
+    Where a cell draws **several** tiles the two part company. A 16x16 cell names
+    the tile at its top-left and takes the other three from around it — ``N+1``,
+    ``N+0x10``, ``N+0x11`` in a 16-tile-wide VRAM array — so ID ``N+1`` names a
+    unit overlapping ``N``'s by three quarters, and offering the whole span shows
+    the bank four times over as a smear of one-tile-shifted windows. What is
+    actually on offer is the bank *read in that unit*: the IDs sitting on the
+    unit's own grid, one entry per distinct 16x16 metatile
+    (``docs/graphics-formats-reference/scgcad-formats.md`` §2.3, where that
+    alignment is the test that shows the screen's cell-size byte means what it
+    says). A **stamped chain** is the same shape one level up — a coordinate
+    names a rectangle of source cells, stepped by the source's width — so it is
+    the same walk over ``stamp_cells`` and the source's own columns.
+
+    A **sprite object**'s unit is the tile whichever size its subsprites are.
+    Both sizes occur within one object and a sheet cannot be laid out in two, so
+    it is laid out in the thing both are made of — a large subsprite's ID is on
+    it, as the tile it names and the corner its other three are found from.
+
+    Alignment is the sheet's, not the format's: an unaligned index is legal and
+    draws the unit starting there, which is what the tool that wrote it did. So
+    this narrows what is *offered*, never what can be held — the Cell spin still
+    reaches every ID in the span, a cell already holding an unaligned one keeps
+    it, and the sheet simply has no square to ring it in.
+
+    The sequence is in reading order and **not contiguous**, so a position in it
+    is a slot and only the values are IDs: index it, do not do arithmetic on it.
+    """
+    span = tile_source_span(doc, limit)
+    chain = doc.chain
+    if chain is not None:
+        unit, stride, offset = doc.stamp_cells, chain.source_columns, 0
+    else:
+        unit = doc.cell_tiles
+        # The walk runs in the bank's numbering, where the neighbours are: the
+        # base is what turns a file's ID into it, so alignment is measured on
+        # ``base + id`` and never on the file's own number.
+        stride, offset = doc.cell_row_stride or unit[0], doc.tile_base_index
+    across, down = max(1, unit[0]), max(1, unit[1])
+    if across == 1 and down == 1:
+        return span
+    stride = max(across, stride)
+    return [
+        at
+        for at in span
+        if (at + offset) % stride % across == 0 and (at + offset) // stride % down == 0
+    ]
+
+
 class TileSheet(NamedTuple):
     """A tilemap's tile source drawn as a sheet, and which IDs are in it.
 
     The two travel together because they have to agree: the panel resolves a
-    click to a slot and the slot means nothing without the ID the sheet started
-    at. Computing them apart is how a sheet ends up labelled with the previous
-    document's numbers.
+    click to a slot and the slot means nothing without the list saying which ID
+    that slot holds. Computing them apart is how a sheet ends up labelled with
+    the previous document's numbers.
     """
 
     grid: IndexGrid
-    ids: range
+    ids: Sequence[int]
 
 
 def tile_source_image(
@@ -876,12 +939,13 @@ def tile_source_image(
     is that source cell **resolved** (:func:`~celpix.core.tilemap.resolve_cell`)
     rather than a bare index: a stamp is its tile *plus* its attributes, and
     previewing it without them would show a picture the stamp does not make.
-    Where the source states a **stamp size**, an ID names a whole block of its
-    cells and the preview is that block — a quarter of each stamp is not what
-    will land, and the panel's promise is that what is on offer is.
+    Where the source states a **stamp size**, an ID names a whole stamp of its
+    cells and the preview is that stamp — a quarter of one is not what will land,
+    and the tile source panel's promise is that what is on offer is.
 
-    ``columns`` is in units, as everywhere else here — a panel cell is a 2x2
-    metatile and a stamp is a block of cells, and the layout blocks accordingly.
+    ``columns`` is in units, as everywhere else here, and a unit is one cell — a
+    2x2 metatile where the cell format says so — or a whole stamp of cells. The
+    layout's block is sized to whichever it is.
 
     ``palette_row`` is the row those synthetic cells claim, which is the whole of
     what decides the sheet's colours: a tile is indices until a row is chosen for
@@ -914,6 +978,29 @@ def tile_source_image(
         ]
     tiles, layout = expand_cells(doc, reg, cells, columns, doc.stamp_tiles)
     return TileSheet(compose_tiles(tiles, layout, None), ids)
+
+
+# A sprite sheet is allocated whole, one byte per pixel, and every number that
+# sizes it comes out of the file: a subsprite's offsets are signed and up to 16
+# bits wide, and how many frames there are is however many the bytes divide into.
+# Point a subsprite cell format at bytes that are not it — which the format picker
+# lets a user do, and which detection cannot always prevent — and those multiply
+# into an image no machine holds: 4 KB of unrelated data decodes to offsets around
+# ±32000 and asks for 33 GB. So the extent is bounded and a sheet past it is
+# reported as the misinterpretation it is, rather than left to surface as a
+# MemoryError with no stage, no pathway and nothing on it a user could act on.
+SPRITE_SHEET_PIXELS = 64 << 20  # a genuine object's sheet is ~100x under this
+
+
+def _check_sprite_extent(pixels: int, what: str) -> None:
+    if pixels <= SPRITE_SHEET_PIXELS:
+        return
+    raise PipelineError(
+        Stage.INTERPRET_TILEMAP,
+        Pathway.TILEMAP,
+        f"{what}, past the {SPRITE_SHEET_PIXELS >> 20} megapixel sheet limit - "
+        "these bytes are unlikely to be this cell format",
+    )
 
 
 class SpriteSheet(NamedTuple):
@@ -1008,6 +1095,13 @@ def sprite_image(
     sheet = sprite_sheet(doc, columns)
     left, top, width, height = sheet.box
     across = sheet.across
+    # The exact allocation, checked before it is made: the read is bounded on an
+    # estimate (:func:`load_tilemap_data`), and this is where the tile size the
+    # map is *bound* to, and the columns the view is laid out at, finally join it.
+    _check_sprite_extent(
+        across * width * sheet.down * height,
+        f"a {across * width}x{sheet.down * height} pixel sprite sheet",
+    )
     image = IndexGrid(across * width, sheet.down * height)
     source = tile_bank(doc, reg)
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
@@ -1039,6 +1133,73 @@ def sprite_image(
                     drawn_palette_row(sub.palette_row, doc.palette_row_base) * space,
                 )
     return image, sheet
+
+
+def subsprite_at(
+    doc: Document, reg: Registry, columns: int, x: int, y: int
+) -> tuple[int, int] | None:
+    """Which subsprite the sheet pixel ``(x, y)`` shows — ``(frame, subsprite)``.
+
+    :func:`sprite_image` run backwards, and the only way to ask the question: a
+    sprite object has no cell grid to divide a position by, its subsprites sit at
+    signed pixel offsets that are mostly not tile-aligned, and they overlap. A
+    slot cannot answer it — one 8x8 square of the sheet routinely holds pieces of
+    three subsprites — which is why the canvas reports the pixel for this.
+
+    **Front to back, and what is drawn wins.** The file lists a frame's
+    subsprites topmost-first, so the walk is in file order; but index 0 is
+    transparent and a large subsprite is mostly hole, so the first one whose
+    *box* covers the pixel is not always the one the user is pointing at. So the
+    first one that actually draws something there is the answer, and the
+    front-most box hit is the fallback — a click on a subsprite's transparent
+    part still picks it where nothing else claims the pixel, rather than picking
+    nothing and reading as a dead click.
+
+    ``columns`` is the frames-across the view is laid out at, as everywhere else
+    on the sprite side; ``None`` for a pixel off the sheet, past the last frame,
+    or on a document that is not a sprite object.
+    """
+    if not doc.is_sprite:
+        return None
+    frames = doc.shown_frames
+    sheet = sprite_sheet(doc, columns)
+    left, top, width, height = sheet.box
+    if not (0 <= x < sheet.across * width and 0 <= y < sheet.down * height):
+        return None
+    at = (y // height) * sheet.across + (x // width)
+    if not 0 <= at < len(frames):
+        return None
+    # Into the object's own coordinates: every frame is drawn in the same box, so
+    # backing the box's origin out is what turns a sheet pixel into the offset a
+    # subsprite states.
+    px, py = x % width + left, y % height + top
+    pair = doc.sprite_size_pair
+    step_x, step_y = max(1, doc.tile_width), max(1, doc.tile_height)
+    source = tile_bank(doc, reg)
+    covering: tuple[int, int] | None = None
+    for index, sub in enumerate(frames[at]):
+        side = sub.tiles(pair)
+        dx, dy = px - sub.x, py - sub.y
+        col, row = dx // step_x, dy // step_y
+        if not (0 <= col < side and 0 <= row < side):
+            continue
+        if covering is None:
+            covering = (at, index)
+        tile_index = sub.tile_indices(pair)[row * side + col] + doc.tile_base_index
+        if not 0 <= tile_index < len(source):
+            continue
+        tile = source[tile_index]
+        # The walk already mirrored the *order* of the tiles, so what is left is
+        # mirroring the pixel inside the one under the cursor — the render's own
+        # two halves, taken apart (:func:`~celpix.core.tilemap.tile_run`).
+        tx, ty = dx % step_x, dy % step_y
+        if sub.flip_h:
+            tx = tile.width - 1 - tx
+        if sub.flip_v:
+            ty = tile.height - 1 - ty
+        if tile.get(tx, ty):
+            return at, index
+    return covering
 
 
 def _blit(target: IndexGrid, tile: IndexGrid, x: int, y: int, bias: int) -> None:
@@ -1188,6 +1349,18 @@ def load_tilemap_data(cfg: PathwayConfig, reg: Registry) -> TilemapData:
             Stage.INTERPRET_TILEMAP,
             Pathway.TILEMAP,
             lambda: engine.size_pair(preset.params),
+        )
+        # Bounded here as well as at the allocation itself, because *this* is the
+        # call the UI can take back: a read that fails leaves the binding on what
+        # it was and says why, where a render that fails has already replaced the
+        # document it was drawing (``docs/design/tilemap-entry.md`` §6). The box
+        # is measured over nominal 8px tiles — the real ones come from whatever
+        # entry the map is bound to, and are not known until the document exists —
+        # which is close enough for a limit the offsets, not the tiles, blow past.
+        box = frame_bounds(frames, size_pair)
+        _check_sprite_extent(
+            len(frames) * box[2] * box[3],
+            f"{len(frames)} frames of subsprites, {box[2]}x{box[3]} pixels each",
         )
     # The other optional half: whether the format has a palette row for a cell to
     # name. **True when the engine does not answer**, which is the safe

@@ -507,14 +507,19 @@ def test_replace_swaps_list_and_notifies(tmp_path) -> None:
     ws.set_current(old)
     added: list[Entry] = []
     removed: list[Entry] = []
+    resets: list[int] = []
     ws.on_added.append(added.append)
     ws.on_removed.append(removed.append)
+    ws.on_reset.append(lambda: resets.append(len(ws.entries)))
 
     new = Entry(name="b.bin", kind=EntryKind.FILE, path=str(tmp_path / "b.bin"))
     ws.replace([new], new)
     assert ws.entries == [new]
     assert ws.current is new
-    assert removed == [old]
+    # The old list goes as one reset (the list already empty when it fires),
+    # never as a removal per entry; the new one is still built one at a time.
+    assert resets == [0]
+    assert removed == []
     assert added == [new]
 
 

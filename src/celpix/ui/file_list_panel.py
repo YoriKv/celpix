@@ -313,6 +313,21 @@ class FileListPanel(QWidget):
         entry: Entry = item.data(0, Qt.ItemDataRole.UserRole)
         return entry.slice_offset
 
+    def clear_entries(self) -> None:
+        """Drop every row at once — the workspace's ``on_reset``.
+
+        Not the same shape as removing each entry in turn: the section headers
+        go with the rows rather than being torn down one by one as each kind
+        empties, and an inline rename in flight is abandoned rather than left
+        pointing at an entry the swap discarded.
+        """
+        with signals_blocked(self._tree):  # clearing must not emit an activation
+            self._tree.clear()
+        self._sections.clear()
+        self._items.clear()
+        self._current = None
+        self._editing = None
+
     def remove_entry(self, entry: Entry) -> None:
         item = self._items.pop(entry, None)
         if item is None:

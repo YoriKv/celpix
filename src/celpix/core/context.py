@@ -144,6 +144,15 @@ KEY_PIXEL_PRESET = "pixel.preset"
 # saying what pinned palette regions otherwise have to be told by hand, so it
 # seeds them (``docs/design/palette-editing.md`` §3).
 KEY_TILE_PALETTE_ROWS = "pixel.tile-palette-rows"
+# int: the palette row this *bank's* tiles count their own row 0 from, when its
+# header says. The pixel-pathway twin of
+# :data:`KEY_TILEMAP_PALETTE_ROW_BASE`, and the answer for the formats that
+# leave the question open: a sprite object names a 3-bit row and has nowhere to
+# put a base, while the bank its subsprites draw from states one outright. So a
+# tilemap bound to such a bank takes the base from the art rather than from a
+# preset constant, which can only ever be the commonest case
+# (``docs/graphics-formats-reference/scgcad-formats.md`` §8.5).
+KEY_TILE_PALETTE_ROW_BASE = "pixel.palette-row-base"
 # One more well-known key lives in :mod:`celpix.core.notices` rather than here:
 # what a stage wants to *tell the user* without failing. It keeps company with
 # the notice type and its helpers, since unlike the scalars above it is only ever
@@ -222,6 +231,12 @@ HINT_INFO: dict[str, tuple[str, str]] = {
         "A side table naming the palette row each tile is meant\n"
         "to be read under, which is what pinned palette regions\n"
         "otherwise have to be told by hand.",
+    ),
+    KEY_TILE_PALETTE_ROW_BASE: (
+        "Palette row base",
+        "The palette row this bank's tiles count their own row 0\n"
+        "from, as its header states it. A tilemap bound to the\n"
+        "bank counts from here too, unless its own file says.",
     ),
     KEY_PALETTE_ERROR: (
         "Palette read error",

@@ -189,3 +189,14 @@ class HistoryMixin:
         self._history = kept
         self._history_pos = max(-1, min(pos, len(kept) - 1))
         self._sync_history_actions()
+
+    def _forget_all_visits(self) -> None:
+        """Wipe the trail - the workspace's ``on_reset``.
+
+        A project swap discards every entry the trail could name, so there is
+        nothing left to go back to: the new project opens on a fresh trail the
+        same way it opens on a cleared undo stack.
+        """
+        self._history = []
+        self._history_pos = -1
+        self._sync_history_actions()

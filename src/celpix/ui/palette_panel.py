@@ -26,6 +26,15 @@ the active range (:meth:`set_active_range`), sized by the pixel format's index
 space (``2^bpp``): stepping, click mapping and the outline all use it, so a
 2bpp view works in 4-entry subpalettes (four per display row) and an 8bpp view
 in one 256-entry block.
+
+**Three marks, and they answer three questions.** The active range is the row the
+view draws through, the swatch ring is the color being inspected, and the third —
+:meth:`set_marked_row` — is the row the *canvas selection* draws through when it
+has one of its own: a pinned region on a pixel view, a cell's or a subsprite's
+stored palette row on a tilemap. The first two are the panel's own state and wear
+the app's selection white; the marked row is somewhere else's, so it is drawn in
+the grid's structural blue, as the tile source panel marks the tile the canvas is
+pointing at.
 """
 
 from __future__ import annotations
@@ -36,6 +45,7 @@ from PySide6.QtWidgets import QWidget
 
 from celpix.core import ceil_div
 from celpix.core.palette import FULL_PALETTE_COUNT
+from celpix.ui.canvas import GRID_STRUCTURE_COLOR
 from celpix.ui.widgets import ShortcutIsland, paint_selection_outline
 
 SWATCH_SIZE = 14  # logical px per swatch; Qt scales logical painting on HiDPI
@@ -63,6 +73,7 @@ class PalettePanel(ShortcutIsland, QWidget):
         self._start = 0
         self._count = 16
         self._selected: int | None = None
+        self._marked_row: int | None = None
         # Eyedropper: while armed, a click samples a swatch's color instead of
         # selecting it (see :meth:`set_eyedropper`).
         self._eyedropper = False
@@ -134,6 +145,18 @@ class PalettePanel(ShortcutIsland, QWidget):
         start, count = max(0, start), max(1, count)
         if (start, count) != (self._start, self._count):  # skip repaint otherwise
             self._start, self._count = start, count
+            self.update()
+
+    def set_marked_row(self, row: int | None) -> None:
+        """Mark subpalette ``row`` as the one the canvas selection draws through.
+
+        ``None`` when nothing is selected, when nothing the selection covers
+        names a row of its own, or when it spans rows that disagree — a mark that
+        names one row cannot answer for several. Sized like the active range, in
+        whole subpalettes of the pixel format's index space.
+        """
+        if row != self._marked_row:
+            self._marked_row = row
             self.update()
 
     def selected_index(self) -> int | None:
@@ -294,6 +317,7 @@ class PalettePanel(ShortcutIsland, QWidget):
         for i, color in enumerate(self._colors):
             painter.fillRect(self._swatch_rect(i), QColor.fromRgba(color & 0xFFFFFFFF))
         self._paint_active_range(painter)
+        self._paint_marked_row(painter)
         self._paint_selection(painter)
         painter.end()
 
@@ -307,23 +331,43 @@ class PalettePanel(ShortcutIsland, QWidget):
             SWATCH_SIZE,
         )
 
-    def _paint_active_range(self, painter: QPainter) -> None:
-        # start = subpalette_row * count with count a power of two, so the range
-        # is either a segment within one display row (count <= 16, e.g. a 2bpp
-        # quarter row) or a whole block of rows (count > 16, e.g. 8bpp = 16
-        # rows). Drawn even when the range lies past the loaded colors: a short
-        # palette still shows where the active window sits.
+    def _range_rect(self, start: int) -> QRect:
+        """The swatches of one subpalette, from entry ``start``.
+
+        ``count`` is a power of two, so a subpalette is either a segment within
+        one display row (count <= 16, e.g. a 2bpp quarter row) or a whole block
+        of rows (count > 16, e.g. 8bpp = 16 rows) — never a ragged wrap.
+        """
         if self._count <= SWATCH_COLUMNS:
-            rect = self._swatch_rect(self._start)
+            rect = self._swatch_rect(start)
             rect.setWidth(self._count * SWATCH_SIZE)
-        else:
-            rect = QRect(
-                0,
-                (self._start // SWATCH_COLUMNS) * SWATCH_SIZE,
-                SWATCH_COLUMNS * SWATCH_SIZE,
-                (self._count // SWATCH_COLUMNS) * SWATCH_SIZE,
-            )
-        paint_selection_outline(painter, rect)
+            return rect
+        return QRect(
+            0,
+            (start // SWATCH_COLUMNS) * SWATCH_SIZE,
+            SWATCH_COLUMNS * SWATCH_SIZE,
+            (self._count // SWATCH_COLUMNS) * SWATCH_SIZE,
+        )
+
+    def _paint_active_range(self, painter: QPainter) -> None:
+        # Drawn even when the range lies past the loaded colors: a short palette
+        # still shows where the active window sits.
+        paint_selection_outline(painter, self._range_rect(self._start))
+
+    def _paint_marked_row(self, painter: QPainter) -> None:
+        """The row the canvas selection draws through, in the grid's structural
+        blue — the tile source panel's language for "what the canvas is pointing
+        at", against the white the panel wears for its own choices.
+
+        Inset a pixel so a row that is *both* marked and active reads as two
+        rings rather than one thick one, which is not a rare coincidence: pinning
+        a selection takes the row the view is already on, so the two land
+        together the moment after the gesture.
+        """
+        if self._marked_row is None:
+            return
+        rect = self._range_rect(self._marked_row * self._count).adjusted(1, 1, -1, -1)
+        paint_selection_outline(painter, rect, color=GRID_STRUCTURE_COLOR)
 
     def _paint_selection(self, painter: QPainter) -> None:
         if self._selected is None:

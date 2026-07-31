@@ -16,7 +16,7 @@ different things:
   each tile *and* permute the tiles' positions within the block. Needs a 2D block:
   a rectangle selection, or a **single** selected tile — in any selection shape —
   which expands to the arrangement block (Block W×H) it sits in, so one click turns
-  a whole metatile. Only a linear *multi*-tile run has no block.
+  a whole 16×16 unit. Only a linear *multi*-tile run has no block.
 
 Which groups are on the bar follows the current interaction
 (:meth:`_sync_transform_bar_mode`): Tile + Block while editing tiles, a dedicated
@@ -386,6 +386,9 @@ class TransformMixin:
         doesn't fire the change handler.
         """
         self._selection_shape = CompactComboBox(100)
+        # Whether Rectangle is currently being imposed rather than chosen - what
+        # ``SelectionMixin._sync_selection_shape`` watches for a crossing.
+        self._selection_shape_forced = False
         for shape, label in (
             (SelectionShape.LINEAR, "Linear"),
             (SelectionShape.RECT, "Rectangle"),
@@ -573,7 +576,8 @@ class TransformMixin:
         A selection of a **single unit** expands to the block it sits in, snapped
         to the ``bc×br`` cell grid the layout lays down (see
         :class:`~celpix.core.arrangement.BlockLayout`) — so one click turns a whole
-        metatile, in **any** selection shape. A larger Rectangle selection *is*
+        unit, an arrangement block in the pixel view and a metatile cell on a
+        tilemap, in **any** selection shape. A larger Rectangle selection *is*
         the block (its own cell dimensions, anchored at its top-left cell). A linear
         multi-unit run has no 2D block, so it returns ``None``.
 

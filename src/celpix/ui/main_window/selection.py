@@ -36,6 +36,7 @@ from celpix.core.arrangement import (
     BlockLayout,
     compose_window,
 )
+from celpix.core.capabilities import ContentKind
 from celpix.core.errors import PipelineError
 from celpix.core.index_grid import IndexGrid
 from celpix.core.quantize import QuantizeReport
@@ -250,6 +251,13 @@ class SelectionMixin:
         Inert wherever Rectangle is forced (see :meth:`_sync_selection_shape`) —
         the combo carries the preference and its change handler does the rest of
         the work.
+
+        Set through the combo's **own signal**, not :func:`select_combo_data`:
+        this is the user choosing a shape, so it has to reach
+        :meth:`_on_selection_shape_change` — the one place that persists the
+        preference and collapses the selection. Blocking the signal would leave a
+        shape on screen that nothing remembers, and the next document that forces
+        Rectangle would hand back the stale stored one.
         """
         if not self._can_toggle_selection_mode():
             return
@@ -259,7 +267,9 @@ class SelectionMixin:
             if current is SelectionShape.RECT
             else SelectionShape.RECT
         )
-        select_combo_data(self._selection_shape, shape)
+        index = self._selection_shape.findData(shape)
+        if index >= 0:
+            self._selection_shape.setCurrentIndex(index)
 
     def _toggle_edit_mode(self) -> None:
         """Swap tile ⇄ pixel editing, when a document is open to edit."""
@@ -446,31 +456,50 @@ class SelectionMixin:
     def _sync_selection_shape(self) -> None:
         """Force Rectangle where a run has no meaning, else restore the preference.
 
-        Two interactions work on rectangles alone: pixel editing, which selects an
-        *area* of pixels, and the rearrange tool, whose drag carries a block whose
-        shape has to survive being put down somewhere else — a linear run is a run
-        through *storage*, so the tiles it holds need not be adjacent on screen at
-        all, and there is nothing coherent for a drag to pick up or land. So the
-        picker is forced to Rectangle and disabled for either, with signals blocked
-        so the user's own preference survives and comes back when both let go.
+        Three things work on rectangles alone. **Pixel editing** selects an *area*
+        of pixels. The **rearrange tool**'s drag carries a block whose shape has to
+        survive being put down somewhere else — a linear run is a run through
+        *storage*, so the tiles it holds need not be adjacent on screen at all, and
+        there is nothing coherent for a drag to pick up or land. And a **tilemap**
+        is edited as the picture it draws: everything downstream of a selection
+        there — the cell clipboard, a block flip, a stamp — acts on a rectangle of
+        cells, so a run wrapping the map's rows would name a set no edit through it
+        could treat as one thing. A sprite object goes with it: its sheet is
+        composed from frames, so a run over it is not even the contiguous byte
+        range that is Linear's whole justification.
+
+        The picker is forced to Rectangle and disabled for any of them, with
+        signals blocked so the user's own preference survives and comes back when
+        they let go.
 
         A linear run already on screen collapses to its anchor tile rather than
         being reinterpreted as a rectangle — the same honest conversion
         :meth:`_on_selection_shape_change` makes when the user switches by hand.
+
+        Only the *crossing* touches the combo. The kind is re-read on every
+        render, so a pass that re-seeded the box each time would overwrite any
+        shape set programmatically rather than through the picker's own handler
+        (which is what persists it).
         """
-        forced = self._edit_mode is EditMode.PIXEL or self._rearranging
-        with signals_blocked(self._selection_shape):
-            select_combo_data(
-                self._selection_shape,
-                SelectionShape.RECT
-                if forced
-                else load_enum_setting(SELECTION_SHAPE_KEY, SelectionShape.LINEAR),
-            )
+        forced = (
+            self._edit_mode is EditMode.PIXEL
+            or self._rearranging
+            or self._content_kind() is ContentKind.TILEMAP
+        )
+        if forced is not self._selection_shape_forced:
+            self._selection_shape_forced = forced
+            with signals_blocked(self._selection_shape):
+                select_combo_data(
+                    self._selection_shape,
+                    SelectionShape.RECT
+                    if forced
+                    else load_enum_setting(SELECTION_SHAPE_KEY, SelectionShape.LINEAR),
+                )
+            if forced and self._rect_size is None and self._selected_tile is not None:
+                self._select_tiles(self._selected_tile, self._selected_tile)
         self._selection_shape.setEnabled(not forced)
         # The keyboard route to the same swap has to go with it.
         self._sync_edit_actions()
-        if forced and self._rect_size is None and self._selected_tile is not None:
-            self._select_tiles(self._selected_tile, self._selected_tile)
 
     def _rect_tiles_for(
         self, origin_slot: int, cols: int, rows: int
@@ -667,8 +696,10 @@ class SelectionMixin:
         self._sync_cell_index()
         # The tile source panel's ring is in the same position for the same
         # reason: it marks the tile the selected cell names, and a selection
-        # moves without anything being re-rendered.
+        # moves without anything being re-rendered. The palette grid's pinned-row
+        # mark is the third of the same kind.
         self._sync_tile_source_marker()
+        self._sync_marked_palette_row()
         self._palette_from_selection_action.setEnabled(has)
         self._sync_pin_actions()
         # Only whole files spawn slices - slices never nest. Nor does a tilemap:

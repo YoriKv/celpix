@@ -360,14 +360,22 @@ class RenderingMixin:
         drawn = pipeline.tilemap_image(
             self._doc, self._registry, self._tilemap_columns()
         )
+        clear = self._doc.view.transparent_zero
         if self._doc.cells_carry_palette_rows:
             return (
-                render_bridge.render_pinned(drawn.grid, self._doc.palette),
+                render_bridge.render_pinned(
+                    drawn.grid,
+                    self._doc.palette,
+                    self._index_space(),
+                    transparent_zero=clear,
+                ),
                 drawn.drawn,
             )
         base = self._doc.view.subpalette_row * self._index_space()
         return (
-            render_bridge.render(drawn.grid, self._doc.palette, base),
+            render_bridge.render(
+                drawn.grid, self._doc.palette, base, transparent_zero=clear
+            ),
             drawn.drawn,
         )
 
@@ -506,6 +514,11 @@ class RenderingMixin:
             # window keeps one answer per entry and the box that sets it is
             # hidden where it does not apply, so there is nothing here to gate.
             show_all_frames=self._show_all_frames,
+            # Only the tilemap render reads it (:meth:`_tilemap_render`), and the
+            # box that sets it is hidden everywhere else — stored for every entry
+            # all the same, on the same rule as the frame count above: the window
+            # keeps one answer per entry rather than a second place to gate it.
+            transparent_zero=self._transparent_zero,
         )
         # Deferred decode: only the visible window's bytes are sliced, then decoded
         # and laid out by the shared arrangement path (2D reflow / block layout).
@@ -573,6 +586,9 @@ class RenderingMixin:
         # image has to have that hole punched back into it.
         self._refresh_float_preview()
         self._revalidate_selection()
+        # And the sprite object's pick beside it: Cols re-flows the frames, so a
+        # pick that survives is at a different pixel than it was.
+        self._revalidate_subsprite()
         # Follows the Pattern picker: a 2D pattern locks the rearrange tool out
         # (see rearrange.py), and nothing else tells it the pattern changed.
         self._sync_rearrange_actions()
@@ -606,6 +622,10 @@ class RenderingMixin:
         # changing: a cell codec swapped on the toolbar reloads through here and
         # nothing else would re-decide them.
         self._sync_selection_actions()
+        # Which shapes a drag may describe follows the kind on screen, not just
+        # the mode the user is in - a tilemap is rectangle-only however it was
+        # opened, so the entry changing has to re-decide it.
+        self._sync_selection_shape()
         # Last, so its veto is the final word: every pass above enables controls
         # on grounds that are true in general and beside the point for a document
         # of the wrong kind (``docs/design/tilemap-entry.md`` §4).
@@ -640,6 +660,11 @@ class RenderingMixin:
         group = self._clamp_subpalette(palette)
         self._palette_panel.set_colors(palette.colors)
         self._palette_panel.set_active_range(self._subpalette.value() * group, group)
+        # After the range, which sizes the mark: the panel counts a pinned row in
+        # whole subpalettes of the same index space. Here as well as on the
+        # selection path because pinning, unpinning and hiding the pinned render
+        # all move the mark without moving the selection.
+        self._sync_marked_palette_row()
         self._refresh_color_details()
         self._sync_color_editor()
 

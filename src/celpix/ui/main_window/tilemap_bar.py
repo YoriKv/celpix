@@ -202,6 +202,28 @@ class TilemapBarMixin:
         self._all_frames.toggled.connect(self._on_all_frames_change)
         row.addWidget(self._all_frames)
 
+        # How these formats say "empty". Index 0 of a BG palette row is the
+        # console's transparent colour, so a blank cell is not a special tile
+        # number - it names a real tile whose pixels are all 0, and the map is
+        # full of them: a screen's backdrop is one such cell repeated over half
+        # of it. Drawn opaque that becomes a flat slab of whatever colour sits at
+        # row 0, which is the single thing that makes a correctly bound map look
+        # wrong.
+        #
+        # Not undoable and not gated on the format, unlike the two beside it: it
+        # says how to *show* a colour every indexed format has, so there is no
+        # kind of tilemap it means nothing on - the reading All Frames' comment
+        # gives for the same choice.
+        self._transparent_zero_box = QCheckBox("Transparent 0")
+        self._transparent_zero_box.setToolTip(
+            "Draw palette index 0 as nothing, the way the console does\n"
+            "A blank cell names a real tile whose pixels are all 0 -\n"
+            "opaque, a backdrop covers half a screen in one flat colour\n"
+            "Off leaves index 0 an ordinary colour, to see and to edit"
+        )
+        self._transparent_zero_box.toggled.connect(self._on_transparent_zero_change)
+        row.addWidget(self._transparent_zero_box)
+
         row.addSpacing(12)
         # Reads the selected cell and writes it: the one gesture a tilemap has
         # that no pixel control stands in for. It lives beside Base tile because
@@ -303,6 +325,7 @@ class TilemapBarMixin:
         self._sync_row_base()
         self._sync_size_pair()
         self._sync_all_frames()
+        self._sync_transparent_zero()
         self._sync_cell_index()
         self._tile_binding_note.setText(self._binding_note(entry, source))
 
@@ -468,6 +491,33 @@ class TilemapBarMixin:
         if self._show_all_frames == on:
             return
         self._show_all_frames = on
+        if self._doc is not None:
+            self._refresh_view()
+
+    def _sync_transparent_zero(self) -> None:
+        """Hold the entry's backdrop choice on the box.
+
+        Always visible, unlike the two boxes before it: every indexed format has
+        an index 0, so there is no tilemap this asks a meaningless question of.
+
+        Signal-blocked for the reason :meth:`_sync_all_frames` is — this is a
+        restore, and an echo would push the entry we just left onto this one.
+        """
+        with signals_blocked(self._transparent_zero_box):
+            self._transparent_zero_box.setChecked(self._transparent_zero)
+
+    def _on_transparent_zero_change(self, on: bool) -> None:
+        """Redraw with index 0 clear, or as the colour that sits there.
+
+        A **view** toggle like All Frames: nothing is re-read and nothing is
+        undoable, because no index moves — only the colour table the render
+        resolves them through changes, one entry of it per palette row
+        (:func:`~celpix.ui.render_bridge._clear_zeros`). The refresh is what lands
+        it, via the view capture at the top of that cycle.
+        """
+        if self._transparent_zero == on:
+            return
+        self._transparent_zero = on
         if self._doc is not None:
             self._refresh_view()
 

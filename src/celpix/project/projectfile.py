@@ -232,6 +232,10 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
         # entry that never saw the box leaves the key out entirely.
         if view.show_all_frames:
             data["view"]["show_all_frames"] = True
+        # Same rule again: off by default and only a tilemap offers the box, so a
+        # project that never asked for it is byte-identical.
+        if view.transparent_zero:
+            data["view"]["transparent_zero"] = True
         # Only a document that was actually rearranged carries the map, so an
         # ordinary project's file is unchanged by the feature existing. Each half
         # is written only if it holds something: a rearrangement that just turns
@@ -422,6 +426,7 @@ def _view_from(raw: object) -> ViewOptions | None:
         # (:attr:`~celpix.core.document.Document.pages_across`).
         pages_across=_int(raw.get("pages_across"), defaults.pages_across),
         show_all_frames=bool(raw.get("show_all_frames", defaults.show_all_frames)),
+        transparent_zero=bool(raw.get("transparent_zero", defaults.transparent_zero)),
         tile_rearrangement=_tile_rearrangement(raw),
         show_rearranged=bool(raw.get("show_rearranged", defaults.show_rearranged)),
         palette_regions=_palette_regions(raw),

@@ -46,6 +46,7 @@ from PySide6.QtGui import QAction, QKeySequence
 
 from celpix.core.arrangement import tile_first_pixel, tile_pixel_spans
 from celpix.core.paletteregions import PaletteRegions
+from celpix.pipeline.pipeline import drawn_palette_row
 from celpix.ui.undo_commands import PaletteRegionsCommand
 from celpix.ui.widgets import counted
 
@@ -249,18 +250,15 @@ class PaletteRegionsMixin:
             spans.append((tile_rearrangement.actual(tile) * per_tile, per_tile))
         return spans
 
-    def _tile_biases(self, tiles: list[int]) -> list[int] | None:
-        """Index shifts for an arbitrary list of tiles, or None if none is pinned.
+    def _tile_first_pixels(self, tiles: list[int]) -> list[int]:
+        """The pixel a region lookup resolves each of ``tiles`` by.
 
-        What the clipboard image renders through, so a copied region leaves in the
-        colours it was shown in. Takes the tiles it is given rather than a window,
-        because a copy carries the *selection* — which for a rectangle is not a
-        run — and must stay in step with it one for one.
+        A tile belongs to the region holding its **first** pixel, whatever the
+        walk (``docs/design/palette-editing.md`` §3), and a rearrangement is
+        resolved first: a region names where the tile *lives*, so dragging it
+        elsewhere takes its row with it.
         """
         assert self._doc is not None
-        regions = self._active_palette_regions()
-        if regions.is_empty():
-            return None
         doc = self._doc
         cols = self._columns.value()
         view_2d = self._two_d.isChecked()
@@ -282,9 +280,100 @@ class PaletteRegionsMixin:
                 )
                 continue
             offsets.append(tile_rearrangement.actual(tile) * per_tile)
+        return offsets
+
+    def _tile_biases(self, tiles: list[int]) -> list[int] | None:
+        """Index shifts for an arbitrary list of tiles, or None if none is pinned.
+
+        What the clipboard image renders through, so a copied region leaves in the
+        colours it was shown in. Takes the tiles it is given rather than a window,
+        because a copy carries the *selection* — which for a rectangle is not a
+        run — and must stay in step with it one for one.
+        """
+        assert self._doc is not None
+        regions = self._active_palette_regions()
+        if regions.is_empty():
+            return None
         space = self._index_space()
-        rows = regions.rows_for(offsets, self._subpalette.value())
+        rows = regions.rows_for(
+            self._tile_first_pixels(tiles), self._subpalette.value()
+        )
         return [row * space for row in rows]
+
+    def _sync_marked_palette_row(self) -> None:
+        """Point the palette grid's blue ring at the selection's own row.
+
+        Driven from three places, since each can move without the others: the
+        selection pass (a different tile or cell), the palette refresh (a pin, an
+        unpin, a row base, or the pinned render toggled off under a still
+        selection), and a sprite object's pick, which is a selection of its own.
+        """
+        self._palette_panel.set_marked_row(self._selection_palette_row())
+
+    def _selection_palette_row(self) -> int | None:
+        """The palette row the selection draws through, when it names one itself.
+
+        Three documents, three ways of naming it, one question. A **tilemap
+        cell** and a **subsprite** carry a row in the file, counted from the
+        document's base (:func:`~celpix.pipeline.pipeline.drawn_palette_row`), so
+        the row is theirs whatever the view is set to. On a **pixel** view
+        nothing in the bytes says a row at all and the answer is a pinned region
+        or nothing.
+
+        ``None`` unless the whole selection agrees on one row: a single mark
+        cannot speak for a selection spanning two, and one that showed the first
+        tile's row would be a quiet lie about the rest.
+        """
+        doc = self._doc
+        if doc is None:
+            return None
+        if doc.is_sprite:
+            # No cell grid to select in — the record under the last press is what
+            # a sprite object answers with (``sprite_select.py``).
+            sub = self._picked_subsprite_record()
+            if sub is None:
+                return None
+            return drawn_palette_row(sub.palette_row, doc.palette_row_base)
+        if doc.is_tilemap:
+            if not doc.cells_carry_palette_rows:
+                return None  # a coordinate cell has no row field to read
+            rows = {
+                doc.cells[at].palette_row
+                for at in self._selected_cells()
+                if 0 <= at < len(doc.cells)
+            }
+            if len(rows) != 1:
+                return None
+            return drawn_palette_row(rows.pop(), doc.palette_row_base)
+        return self._selection_pinned_row()
+
+    def _selection_pinned_row(self) -> int | None:
+        """The subpalette row the selection is pinned to, for the palette grid.
+
+        ``None`` unless every selected tile answers the same row: a single mark
+        cannot speak for a selection spanning two, and one that showed only the
+        first tile's row would be a quiet lie about the rest. ``None`` too when
+        nothing is pinned, when nothing is selected, and while the pinned render
+        is toggled off — the mark says where the colours on screen come from, so
+        it goes away with them.
+        """
+        if self._doc is None:
+            return None
+        regions = self._active_palette_regions()
+        if regions.is_empty():
+            return None
+        tiles = self._selection_tiles()
+        if not tiles:
+            return None
+        # None as the default, which is how this asks *which* tiles are pinned
+        # rather than what each renders through: a tile pinned to the row the
+        # view is already on is a pin like any other, and the two questions have
+        # different answers exactly there.
+        rows = regions.rows_for(self._tile_first_pixels(tiles), None)
+        first = rows[0]
+        if first is None or any(row != first for row in rows):
+            return None
+        return first
 
     def _pinned_palette_base(self, x: int, y: int) -> int:
         """The palette base the pixel at window position ``(x, y)`` is *shown* through.

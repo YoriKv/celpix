@@ -108,6 +108,7 @@ class EntriesMixin:
         # palette dock and every document-bound action land on the idle state.
         self._workspace.replace([], None)
         self._fill_pixel_combo(self._pixel_preset_id())
+        self._sync_locate_action()  # an empty project references nothing
         self._undo_stack.clear()
         self._project_path = None
         self._saved_project = None
@@ -237,7 +238,15 @@ class EntriesMixin:
             self._relocate_missing(prompt_summary=True)
 
     def _sync_locate_action(self) -> None:
-        """Arm File ▸ Locate missing files iff the project has missing files."""
+        """Arm File ▸ Locate missing files iff the project has missing files.
+
+        Called from the points where the entry list changes shape - once per
+        user-level operation, never per entry. The scan behind it stats *every*
+        referenced path, so hanging it off the per-entry removal notification
+        made a closed file with slices, or a project load, probe the disk
+        quadratically: seconds of frozen UI when the files sit on a slow or
+        disconnected drive.
+        """
         self._locate_missing_action.setEnabled(bool(missing_paths(self._workspace)))
 
     def _relocate_missing(self, *, prompt_summary: bool) -> None:
@@ -1216,6 +1225,7 @@ class EntriesMixin:
         for link in consumers:
             self._convert_graphic_to_custom(link.entry, colors, preset)
         self._workspace.close(palette)
+        self._sync_locate_action()
         self._reshow_current_entry()
 
     def _apply_restore_palette_consumers(
@@ -1223,6 +1233,7 @@ class EntriesMixin:
     ) -> None:
         """Re-register the palette and relink every graphic - the command's undo."""
         self._workspace.insert(palette, index)
+        self._sync_locate_action()
         for link in consumers:
             self._relink_graphic_to_file_palette(link)
         self._reshow_current_entry()

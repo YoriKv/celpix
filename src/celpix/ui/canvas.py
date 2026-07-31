@@ -205,6 +205,14 @@ class Canvas(QWidget):
     # reaches another slot. The anchor stays the pressed slot, so the window
     # can grow/shrink the range live; a plain click emits (slot, slot).
     slots_selected = Signal(int, int)
+    # Where a **tile-mode** left press landed, in image pixels — the same press
+    # ``slots_selected`` reports as a slot, said again more precisely. What needs
+    # it is the sprite object, whose subsprites sit at signed pixel offsets and
+    # overlap: one 8x8 square of the sheet routinely holds pieces of three of
+    # them, so the slot cannot say which was clicked and only the pixel can
+    # (:func:`~celpix.pipeline.pipeline.subsprite_at`). Press only, not the drag:
+    # it identifies a thing rather than sweeping a range.
+    pixel_picked = Signal(int, int)  # x, y — image pixels
     # ARGB sampled under the cursor while the eyedropper is armed. The rendered
     # image is sampled rather than the palette, so the value is right for any
     # view — indexed through a subpalette, or a direct-color codec with no
@@ -303,6 +311,11 @@ class Canvas(QWidget):
         self._marquee: QRect | None = None
         self._float_image: QImage | None = None
         self._float_pos = (0, 0)
+        # The picked subsprite's box, in image pixels (:meth:`set_pick_outline`).
+        # A pixel-space overlay drawn in **tile** mode, which is the one thing
+        # separating it from the marquee above: what it outlines is not on the
+        # slot grid the tile selection is made of.
+        self._pick_outline: QRect | None = None
         # Rearrange tool: like the eyedropper and the pan it is a modal flag the
         # mouse handlers check before the mode split (it is armed over tile mode,
         # never together with pixel mode). ``_rearrange_slot`` is the last slot
@@ -609,6 +622,19 @@ class Canvas(QWidget):
         self._marquee = rect
         self.update()
 
+    def set_pick_outline(self, rect: QRect | None) -> None:
+        """Outline a pixel-space ``rect`` that is not a slot (``None`` clears it).
+
+        The picked subsprite, and only that: what is drawn on a sprite object
+        does not sit on the slot grid, so the tile selection's own highlight
+        cannot describe it. Drawn in the **structural** colour rather than the
+        selection's white, the same distinction the tile source panel's two rings
+        make — the white square is where the user clicked, this is what the click
+        resolved to.
+        """
+        self._pick_outline = rect
+        self.update()
+
     def set_float(self, image: QImage | None, x: int = 0, y: int = 0) -> None:
         """Show a floating selection ``image`` at image-pixel ``(x, y)``.
 
@@ -724,6 +750,9 @@ class Canvas(QWidget):
             if slot is not None:
                 self._drag_anchor = self._drag_slot = slot
                 self.slots_selected.emit(slot, slot)
+                pixel = self._pixel_at(event.position())
+                if pixel is not None:
+                    self.pixel_picked.emit(*pixel)
         # Let the default handling run too so ClickFocus keeps focusing us.
         super().mousePressEvent(event)
 
@@ -1057,10 +1086,15 @@ class Canvas(QWidget):
         # nothing (not even a grid line) suggests a tile is there. Clip is set
         # under the identity transform, so it stays in device coordinates while
         # the scale below only affects what's drawn.
+        # Laid down under everything, so a transparent pixel has something
+        # defined behind it rather than whatever the widget was last painted
+        # with. The image is opaque unless Transparent 0 is on, and then the
+        # backdrop showing through *is* the point — the same neutral colour a
+        # past-end slot gets, which is already this canvas's way of saying
+        # nothing is here.
+        painter.fillRect(exposed, CANVAS_BACKGROUND)
         background = self._background_region()
         if background is not None:
-            painter.setClipRegion(background)
-            painter.fillRect(exposed, CANVAS_BACKGROUND)
             painter.setClipRegion(QRegion(self.rect()).subtracted(background))
         painter.scale(z, z)
         painter.drawImage(0, 0, self._image)
@@ -1094,11 +1128,21 @@ class Canvas(QWidget):
         tile mode included, and it restores them by driving these same setters. A
         pixel rectangle drawn over the tile view is then a stray outline the user
         has no way to explain or dismiss.
+
+        The **pick outline** is the exception, and ungated for the reason the
+        others are gated: nothing but the window sets it, it is cleared the moment
+        what is on screen stops being a sprite object, and it says which subsprite
+        is selected — which is as true while its pixels are being edited as while
+        they are being looked at.
         """
+        z = self._zoom
+        if self._pick_outline is not None:
+            paint_selection_outline(
+                painter, self._scaled(self._pick_outline, z), color=GRID_STRUCTURE_COLOR
+            )
         pixel_mode = self._edit_mode is EditMode.PIXEL
         if not (pixel_mode or self._rearranging):
             return
-        z = self._zoom
         if self._rearranging:
             self._paint_drop_target(painter, exposed)
         if self._float_image is not None:
@@ -1114,15 +1158,18 @@ class Canvas(QWidget):
         if not pixel_mode:
             return
         if self._marquee is not None and not self._marquee.isNull():
-            m = self._marquee
-            rect = QRect(
-                round(m.x() * z),
-                round(m.y() * z),
-                round(m.width() * z),
-                round(m.height() * z),
-            )
-            paint_selection_outline(painter, rect)
+            paint_selection_outline(painter, self._scaled(self._marquee, z))
         self._paint_pen_preview(painter)
+
+    @staticmethod
+    def _scaled(rect: QRect, zoom: float) -> QRect:
+        """An image-pixel rectangle in device pixels, rounded whole."""
+        return QRect(
+            round(rect.x() * zoom),
+            round(rect.y() * zoom),
+            round(rect.width() * zoom),
+            round(rect.height() * zoom),
+        )
 
     def _paint_drop_target(self, painter: QPainter, exposed: QRect) -> None:
         """Outline the cells a rearrange drag would land on.

@@ -10,8 +10,11 @@ change the codec — overview.md §4):
 - **Block grouping / order** (:class:`BlockLayout`) — group tiles into
   ``block_columns`` × ``block_rows`` blocks, filled row-major, column-major, or
   row-interleaved. This is *placement only*: the same decoded tiles land in
-  different cells. It is how N-tile sprites/metatiles read as coherent units —
-  8×16 (row-interleave) and Mega Drive / Neo Geo sprites (column-major).
+  different cells. It is how N-tile sprites and 16×16 tile groups read as
+  coherent units — 8×16 (row-interleave) and Mega Drive / Neo Geo sprites
+  (column-major). This grouping is the **user's**, over decoded tiles; a cell
+  format's *metatile* and a map's *stamp* are different things that draw the same
+  square (``docs/design/terminology.md``).
 - **2D / wide-bitmap** (:func:`reflow_2d`) — a different *byte walk*: the source is
   treated as one wide bitmap ``columns`` tiles across, so each tile's pixel-rows are
   strided ``columns`` tiles apart in the file rather than contiguous. This changes
@@ -74,7 +77,7 @@ class ArrangementPreset:
 
 # Documented block/order/2D combinations, named by the hardware that uses them
 # (console names are hardware, not other projects — fine to name here). Order runs
-# plain → 2D → the sprite/metatile groupings. The mappings behind each are worked
+# plain → 2D → the sprite and tile-block groupings. The mappings behind each are worked
 # out in docs/design-reference/navigation-and-preview.md and the tests in
 # tests/test_arrangement.py. "Linear" is the default plain back-to-back walk.
 ARRANGEMENT_PRESETS: tuple[ArrangementPreset, ...] = (
@@ -91,10 +94,12 @@ ARRANGEMENT_PRESETS: tuple[ArrangementPreset, ...] = (
         block_rows=2,
         block_order="row-interleave",
     ),
-    # 2×2 metatiles read row-major (YY-CHR's x16y16): 16×16 units of four 8×8 tiles.
+    # 2×2 tile blocks read row-major (YY-CHR's x16y16): 16×16 units of four 8×8
+    # tiles. A *view* grouping, which is why it is a block and not a metatile —
+    # it asserts nothing about any cell format (docs/design/terminology.md).
     ArrangementPreset(
-        "metatile-2x2",
-        "16×16 metatiles (2×2)",
+        "block-2x2",
+        "16×16 tile blocks (2×2)",
         block_columns=2,
         block_rows=2,
     ),
@@ -142,6 +147,12 @@ class BlockLayout:
     so the ordinary view path is unchanged (the order can't matter for a 1×1
     block). Both mappings share the same slot space the canvas uses (slot 0 = the
     window's first tile).
+
+    This is placement machinery, and its "block" is **whatever unit the caller
+    passes** — the view's own grouping, a metatile cell's tiles, a whole stamp's,
+    or a page of a multi-map file. That reuse is the point, but the word does not
+    travel with it: a caller names the unit it hands over rather than calling a
+    stamp or a page a block (``docs/design/terminology.md``).
     """
 
     columns: int

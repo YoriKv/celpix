@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.3 - unreleased
+
+- **Tilemaps**: tilemap improvements across the board
+
 ## v0.4.2 - 2026-07-30
 
 - **File Container**: new info popup showing information about the file container

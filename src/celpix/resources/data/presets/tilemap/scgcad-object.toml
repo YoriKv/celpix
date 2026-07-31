@@ -31,6 +31,12 @@ layout = "sprite"
 # palettes in the upper half of CGRAM (snes-hardware-notes.md sec 6). So row 0
 # here means row 8 there, and without this the object draws through the
 # background's colours.
+#
+# The last word, not the first. An object's own header states no base, but the
+# tile bank it is bound to does, and that is the origin the bank's per-tile row
+# table counts from too - so a bank that says otherwise wins over this
+# (scgcad-formats.md sec 8.5). What stays here is the answer for a bank with no
+# header, and for bytes bound through anything that is not a bank at all.
 palette_row_base = 8
 endian = "big"
 subsprites_per_frame = 64

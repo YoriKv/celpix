@@ -208,8 +208,13 @@ class StampToolMixin:
         Validated against the IDs this map can actually reach rather than trusted
         from the panel, because the panel only composes while its tab is showing
         — so the pick has to survive being made against one document and used
-        against another. :func:`~celpix.pipeline.pipeline.tile_source_ids` answers
-        that without composing anything.
+        against another. :func:`~celpix.pipeline.pipeline.tile_source_span`
+        answers that without composing anything.
+
+        The **span**, not the sheet's own narrower run: an ID picked off a cell
+        by the eyedropper is whatever that cell holds, and a map is free to hold
+        one that starts a unit halfway through another. Refusing to place a tile
+        the map already draws would be the panel's layout overruling the file.
         """
         doc = self._doc
         held = self._source_tile_id
@@ -217,7 +222,7 @@ class StampToolMixin:
             return None
         return (
             held
-            if held in pipeline.tile_source_ids(doc, self._cell_index_limit())
+            if held in pipeline.tile_source_span(doc, self._cell_index_limit())
             else None
         )
 

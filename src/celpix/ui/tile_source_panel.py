@@ -17,15 +17,23 @@ the same pixels.
 **The grid is addressed in IDs, not slots.** The run does not always start at 0:
 a map numbering its tiles from ``$100`` against a slice of exactly those has a
 negative base tile, and the IDs it holds — the numbers in its bytes, and the
-ones its Cell spin sets — start at ``$100``. Every signal and every readout here
-speaks that number, so what the panel says carries to the binding bar, a hex
-editor or a bank listing unchanged.
+ones its Cell spin sets — start at ``$100``. Nor is it always contiguous: where a
+cell draws a whole 16x16 unit the IDs between two units name overlapping windows
+rather than pictures of their own, so the sheet steps over them
+(:func:`~celpix.pipeline.pipeline.tile_source_ids`). A slot is therefore a
+*position in that list*, and the ID is what the list holds there — the one place
+the two may not be confused. Every signal and every readout here speaks the ID,
+so what the panel says carries to the binding bar, a hex editor or a bank
+listing unchanged.
 
-**Two rings, in the palette grid's own convention.** The outer one marks the
+**Two rings, and they are two different questions.** The outer one marks the
 tile the *canvas* selection names, so picking a cell over there shows what it is
 made of over here; the inner, softer one is this panel's own selection, the tile
-a stamp would place. One outline language across both grids, so a ring means the
-same thing wherever it is seen.
+a stamp would place. Only the inner is a selection, so only the inner wears the
+app's selection white (the palette grid's convention, which this otherwise
+follows) — the outer is drawn in the grid's structural blue, the colour that
+marks structure rather than choice everywhere else. Two rings in one white on
+one small square read as one ring drawn twice.
 
 **A lattice every 16 tiles** marks where the numbering rolls over — the page a
 bank is addressed in, not the tile boundaries, which are already visible here
@@ -43,6 +51,8 @@ neither is this widget's.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 from PySide6.QtCore import QPointF, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter
@@ -73,7 +83,7 @@ class TileSourcePanel(ShortcutIsland, QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._sheet = QImage()
-        self._ids = range(0)
+        self._ids: Sequence[int] = range(0)
         self._cell_px = (8, 8)  # one cell's size in image pixels
         self._columns = 16
         self._zoom = 2
@@ -93,7 +103,11 @@ class TileSourcePanel(ShortcutIsland, QWidget):
 
     # -- what to show --------------------------------------------------------
     def set_sheet(
-        self, sheet: QImage, ids: range, cell_px: tuple[int, int], columns: int
+        self,
+        sheet: QImage,
+        ids: Sequence[int],
+        cell_px: tuple[int, int],
+        columns: int,
     ) -> None:
         """Show ``sheet``, whose slots hold ``ids`` laid out ``columns`` across.
 
@@ -190,7 +204,7 @@ class TileSourcePanel(ShortcutIsland, QWidget):
         row = int(y_px) // (ch * self._zoom)
         slot = row * self._columns + col
         if 0 <= col < self._columns and 0 <= slot < len(self._ids):
-            return self._ids.start + slot
+            return self._ids[slot]
         return None
 
     def _id_near(self, x_px: float, y_px: float) -> int | None:
@@ -207,13 +221,21 @@ class TileSourcePanel(ShortcutIsland, QWidget):
         col = min(max(int(x_px) // (cw * self._zoom), 0), self._columns - 1)
         row = min(max(int(y_px) // (ch * self._zoom), 0), self._rows() - 1)
         slot = min(row * self._columns + col, len(self._ids) - 1)
-        return self._ids.start + slot
+        return self._ids[slot]
 
-    def _cell_rect(self, tile_id: int) -> QRect:
-        """Where ``tile_id`` sits on the widget — the grid geometry, in one place."""
-        slot = tile_id - self._ids.start
+    def _cell_rect(self, slot: int) -> QRect:
+        """Where the ``slot``-th entry sits — the grid geometry, in one place.
+
+        In slots rather than IDs because the run may step over the IDs between
+        two units, so only the list can say which square a number is in.
+        """
         cw, ch = self._cell_px[0] * self._zoom, self._cell_px[1] * self._zoom
         return QRect((slot % self._columns) * cw, (slot // self._columns) * ch, cw, ch)
+
+    def _slot_of(self, tile_id: int) -> int:
+        """Which square ``tile_id`` sits in. Only asked of an ID on the sheet —
+        both rings drop an ID the run does not hold before they get here."""
+        return self._ids.index(tile_id)
 
     # -- interaction ---------------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
@@ -280,10 +302,12 @@ class TileSourcePanel(ShortcutIsland, QWidget):
         event.accept()
 
     def keyPressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        """Arrows step the pick — Left/Right by one ID (crossing display rows),
-        Up/Down by one row. Movement clamps to the run on show; a step off the
-        top or bottom stays put rather than being yanked to a corner, which would
-        change the column under the user."""
+        """Arrows step the pick — Left/Right by one square (crossing display
+        rows), Up/Down by one row. Stepped in **slots**, not IDs: the two agree
+        on an unbroken run and the run is not always unbroken, and what a user
+        means by Right is the next square either way. Movement clamps to the
+        sheet; a step off the top or bottom stays put rather than being yanked to
+        a corner, which would change the column under the user."""
         if not self._ids:
             super().keyPressEvent(event)
             return
@@ -297,12 +321,12 @@ class TileSourcePanel(ShortcutIsland, QWidget):
         if delta is None:
             super().keyPressEvent(event)
             return
-        base = self._selected if self._selected is not None else self._ids.start
+        base = self._slot_of(self._selected) if self._selected is not None else 0
         target = base + delta
-        if abs(delta) == self._columns and target not in self._ids:
+        if abs(delta) == self._columns and not 0 <= target < len(self._ids):
             event.accept()
             return
-        self._select(min(max(self._ids.start, target), self._ids[-1]))
+        self._select(self._ids[min(max(0, target), len(self._ids) - 1)])
         event.accept()
 
     # -- painting ------------------------------------------------------------
@@ -320,13 +344,18 @@ class TileSourcePanel(ShortcutIsland, QWidget):
             painter.drawImage(0, 0, self._sheet)
             painter.resetTransform()
             self._paint_grid(painter, event.rect())
-        # The canvas's cell first, this panel's own pick inset one pixel inside
-        # it and slightly soft — so a tile that is both still reads as two rings
-        # rather than one thick one. The palette grid's convention exactly.
+        # The canvas's cell first, in the structural blue; this panel's own pick
+        # inset one pixel inside it and slightly soft — so a tile that is both
+        # still reads as two rings rather than one thick one, and the two answer
+        # visibly different questions rather than sitting one alpha step apart.
         if self._marked is not None:
-            paint_selection_outline(painter, self._cell_rect(self._marked))
+            paint_selection_outline(
+                painter,
+                self._cell_rect(self._slot_of(self._marked)),
+                color=GRID_STRUCTURE_COLOR,
+            )
         if self._selected is not None:
-            rect = self._cell_rect(self._selected).adjusted(1, 1, -1, -1)
+            rect = self._cell_rect(self._slot_of(self._selected)).adjusted(1, 1, -1, -1)
             paint_selection_outline(painter, rect, alpha=230)
         painter.end()
 

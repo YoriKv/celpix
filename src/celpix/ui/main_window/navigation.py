@@ -19,6 +19,7 @@ from collections.abc import Callable
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import (
     QAction,
+    QCursor,
     QPalette,
 )
 from PySide6.QtWidgets import (
@@ -360,6 +361,20 @@ class NavigationMixin:
         QTreeWidget,
     )
 
+    # The same yield for the **space bar**, which the pan gesture claims
+    # window-wide - and a shorter list, because the two keys are not typed in the
+    # same places. Space is a character in a text input and picks the current row
+    # in a list, so those keep it; a spin box, a slider and the palette grid do
+    # nothing with it, and yielding to them left the pan dead exactly where it is
+    # most wanted - on the Zoom spin the user has just clicked before reaching for
+    # the sheet they magnified.
+    _SPACE_INPUT_TYPES = (
+        QComboBox,
+        QLineEdit,
+        QTextEdit,
+        QTreeWidget,
+    )
+
     def _build_nav_keys(self) -> None:
         """Map navigation keys to handlers, applied window-wide by :meth:`eventFilter`.
 
@@ -466,29 +481,23 @@ class NavigationMixin:
         stays inert with no document. Auto-repeat from a held space is swallowed
         but re-arms nothing.
 
-        **Which** surface pans is the focused widget's answer: the tile source
-        sheet is scrollable and magnifiable in its own right, so space over it
-        has to move it rather than the canvas behind it. Decided here rather than
-        by each panel claiming the key, because the key is filtered app-wide —
-        two claimants would arm both, and the one that is not being looked at
-        would sit holding an open hand until space came up.
+        **Which** surface pans is :meth:`_pan_surface`'s answer. Decided here
+        rather than by each panel claiming the key, because the key is filtered
+        app-wide — two claimants would arm both, and the one that is not being
+        looked at would sit holding an open hand until space came up.
         """
         if QApplication.activePopupWidget() is not None:
             return False
-        if isinstance(QApplication.focusWidget(), self._ARROW_INPUT_TYPES):
+        if isinstance(QApplication.focusWidget(), self._SPACE_INPUT_TYPES):
             return False
         if self._doc is None:
             return False
         if not event.isAutoRepeat():
             on = event.type() == QEvent.Type.KeyPress
-            surface = (
-                self._tile_source_panel
-                if self._tile_source_panel.hasFocus()
-                else self._canvas
-            )
-            # The other one goes down regardless: focus can move while space is
-            # held, and a surface left armed keeps the hand cursor and eats the
-            # next press it gets.
+            surface = self._pan_surface()
+            # The other one goes down regardless: the pointer can move while
+            # space is held, and a surface left armed keeps the hand cursor and
+            # eats the next press it gets.
             other = (
                 self._canvas
                 if surface is self._tile_source_panel
@@ -497,6 +506,30 @@ class NavigationMixin:
             other.set_pan_mode(False)
             surface.set_pan_mode(on)
         return True
+
+    def _pan_surface(self):  # noqa: ANN201 — Canvas | TileSourcePanel
+        """Which surface a space-drag pans: whichever one the **pointer** is over.
+
+        The tile source sheet is scrollable and magnifiable in its own right, so
+        space over it has to move it rather than the canvas behind it. The
+        pointer decides rather than the focus ring, because the pointer is what
+        does the dragging: a user reaches for the sheet with the mouse — often
+        straight from the Zoom spin that made it too big for its dock, having
+        never clicked a tile — and the surface that grows a hand cursor has to be
+        the one under the hand. It is also the surface that will get the press:
+        arming the other one would leave a hand hovering over a sheet that does
+        not move.
+
+        ``visibleRegion`` rather than the panel's rectangle, because that
+        rectangle is the whole sheet — most of it scrolled out of the dock, and
+        all of it while the Palette holds their shared tab. The region is what is
+        actually on screen, so it answers "on the sheet" and "the sheet is even
+        showing" in one test.
+        """
+        panel = self._tile_source_panel
+        if panel.visibleRegion().contains(panel.mapFromGlobal(QCursor.pos())):
+            return panel
+        return self._canvas
 
     def _pan_view(self, dx: int, dy: int) -> None:
         """Shift the scroll view by a space-drag delta (device pixels).

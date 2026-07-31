@@ -145,13 +145,10 @@ class TileSourceDockMixin:
 
         # Under the readout, because it acts on what the readout describes: the
         # line above says which bank tile the pick resolves to, and this is the
-        # button that makes that tile the one cell 0 draws.
+        # button that makes that tile the one a reference of 0 draws. Its tooltip
+        # is set per document, the reference being a cell on a map and a subsprite
+        # on an object (:meth:`_sync_set_base_tile`).
         self._set_base_tile_button = QPushButton("Set Base Tile")
-        self._set_base_tile_button.setToolTip(
-            "Make the picked tile the one cell 0 draws\n"
-            "Shifts every cell by the same amount - use it when\n"
-            "the map and its tiles number from different places"
-        )
         self._set_base_tile_button.clicked.connect(self._on_set_base_tile)
         button_row = QHBoxLayout()
         button_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
@@ -228,29 +225,36 @@ class TileSourceDockMixin:
     def _can_set_base_tile(self) -> bool:
         """Whether the picked tile could become the base — the button's gate.
 
-        Needs a pick, a map with a tile numbering for a base to shift, and a
-        binding to hang it on. A **chained** map is the interesting exclusion and
-        the same one the binding bar makes: its cells are coordinates into
-        another map, which carries its own base, so there is nothing here for one
-        to mean (``docs/design/tilemap-entry.md`` §3.1).
+        Needs a pick, a tilemap with a tile numbering for a base to shift, and a
+        binding to hang it on. A **chained** map is the only exclusion, and the
+        same one the binding bar makes: its cells are coordinates into another
+        map, which carries its own base, so there is nothing here for one to mean
+        (``docs/design/tilemap-entry.md`` §3.1).
+
+        A **sprite object** is not one. Its records are not cells, but they hold
+        tile numbers in the same space and the base shifts them the same way — the
+        binding bar shows it the Base tile spin for exactly that reason, so
+        refusing the pointing gesture for the value that spin holds would be this
+        panel disagreeing with the bar about the same number.
         """
         doc, entry = self._doc, self._workspace.current
         if doc is None or entry is None or self._source_tile_id is None:
             return False
-        if not doc.is_tilemap or doc.is_sprite or doc.chain is not None:
+        if not doc.is_tilemap or doc.chain is not None:
             return False
         source = entry.tile_source
         return source is not None and source.is_bound
 
     def _on_set_base_tile(self) -> None:
-        """Make the picked tile the one cell 0 draws.
+        """Make the picked tile the one a reference of 0 draws.
 
-        The base is stated in the **source's** tile numbers — it *is* the tile
-        cell 0 draws (:attr:`~celpix.core.document.Document.tile_base_index`) —
-        while the panel is addressed in cell IDs, so the pick has to be resolved
-        through the base in force before it can replace it. That is the same
-        arithmetic the readout above the button prints as "bank tile $N", so the
-        button does what the line says.
+        The base is stated in the **source's** tile numbers — it *is* the tile a
+        reference of 0 draws (:attr:`~celpix.core.document.Document.
+        tile_base_index`), a cell holding 0 on a map and a subsprite holding 0 on
+        an object — while the panel is addressed in the file's own IDs, so the
+        pick has to be resolved through the base in force before it can replace
+        it. That is the same arithmetic the readout above the button prints as
+        "bank tile $N", so the button does what the line says.
 
         Through :meth:`~...tilemap_bar.TilemapBarMixin._rebind_tiles`, so this is
         the Base tile spin's own step: one undoable command, one re-read, and the
@@ -278,7 +282,27 @@ class TileSourceDockMixin:
             self._set_source_tile(0)
 
     def _sync_set_base_tile(self) -> None:
+        """Converge the button with the pick — and with what it would shift.
+
+        The tooltip is part of that: the base moves *references*, and what a
+        reference is on screen is a cell on a map and a subsprite on a sprite
+        object. One sentence describing cells over a file that has none is the
+        kind of wrong a user cannot check.
+        """
         self._set_base_tile_button.setEnabled(self._can_set_base_tile())
+        doc = self._doc
+        if doc is not None and doc.is_sprite:
+            self._set_base_tile_button.setToolTip(
+                "Make the picked tile the one a subsprite holding $0 draws\n"
+                "Shifts every subsprite's tile by the same amount - use it\n"
+                "when the object and its tiles number from different places"
+            )
+            return
+        self._set_base_tile_button.setToolTip(
+            "Make the picked tile the one cell 0 draws\n"
+            "Shifts every cell by the same amount - use it when\n"
+            "the map and its tiles number from different places"
+        )
 
     def _on_tile_source_selected(self, tile_id: int) -> None:
         self._source_tile_id = tile_id
@@ -389,8 +413,16 @@ class TileSourceDockMixin:
         Read off the file's own cells rather than the resolved ones, because a
         chained map's resolved rows are its *source's* and the sheet keeps those
         anyway (:func:`~celpix.pipeline.pipeline.tile_source_image`).
+
+        On a **sprite object** the picked subsprite answers instead of a cell,
+        which is the same rule reached through the thing that document selects in
+        (``sprite_select.py``): a subsprite carries its own row, and the sheet
+        shows what else the picked one could have drawn.
         """
         doc = self._doc
+        if doc is not None and doc.is_sprite:
+            sub = self._picked_subsprite_record()
+            return sub.palette_row if sub is not None else self._subpalette.value()
         if doc is not None and doc.cells and doc.cells_carry_palette_rows:
             cells = self._selected_cells()
             if cells:
@@ -405,14 +437,17 @@ class TileSourceDockMixin:
         since been closed. Naming which one is the whole value of the note — the
         second is a control on the binding bar away from being fixed, the third
         is a file to reopen.
+
+        A **sprite object** is not among them. It has no cell grid, but its
+        subsprites name tiles in the same numbers a cell does, so the bank it
+        draws from is exactly as worth looking at — and with a subsprite picked
+        the ring answers the question the panel exists for, "what is this made
+        of", on the one kind of document the canvas could not answer it for
+        (``sprite_select.py``).
         """
         doc = self._doc
         if doc is None or not doc.is_tilemap:
             return "No tilemap on screen - open one to see the tiles it draws from."
-        if doc.is_sprite:
-            # A sprite object's records sit at signed pixel offsets, so there is
-            # no cell naming a tile and no ID space to lay out.
-            return "A sprite object has no tile IDs - its frames place tiles directly."
         entry = self._workspace.current
         source = entry.tile_source if entry is not None else None
         if source is None or not source.is_bound:
@@ -422,7 +457,8 @@ class TileSourceDockMixin:
         return None
 
     def _sync_tile_source_marker(self) -> None:
-        """Ring the tile the canvas's selected cell names.
+        """Ring the tile the canvas's selection names — its cell's, or, on a
+        sprite object, its picked subsprite's (``sprite_select.py``).
 
         Driven by the **selection** pass as well as by the refresh, and it has to
         be: a selection moves without anything being redrawn, and the whole point
@@ -444,6 +480,17 @@ class TileSourceDockMixin:
         if not self._tile_source_dock.isVisible():
             return
         doc = self._doc
+        if doc is not None and doc.is_sprite:
+            if self._tile_source_row_shown != self._tile_source_row():
+                self._refresh_tile_source()  # re-marks and re-reads on the way out
+                return
+            sub = self._picked_subsprite_record()
+            # The corner tile of a large subsprite, which is the number the
+            # record holds and the only one of its four that is on the sheet:
+            # the sheet is laid out in tiles, both subsprite sizes being made of
+            # them (:func:`~celpix.pipeline.pipeline.tile_source_ids`).
+            self._tile_source_panel.set_marked_id(None if sub is None else sub.index)
+            return
         cells = self._selected_cells() if doc is not None else []
         if doc is None or doc.cells is None or not cells:
             self._tile_source_panel.set_marked_id(None)
@@ -475,13 +522,30 @@ class TileSourceDockMixin:
         Both end with how many cells use it, which is the reverse question the
         panel is otherwise silent about: one scan over the cells, run on a click
         rather than on a repaint.
+
+        A **sprite object** takes the first reading and counts its *subsprites*
+        instead — over the frames that are drawn, not over the file's records: an
+        object has room for a fixed 32 or 128 frames and most of them are empty,
+        so counting the records would report every unused one as a user of tile
+        ``$0`` (``docs/graphics-formats-reference/scgcad-formats.md`` §8).
         """
         doc = self._doc
         if doc is None:
             return "No tile selected."
-        used = counted(
-            sum(1 for cell in doc.cells or [] if cell.index == tile_id), "cell"
-        )
+        if doc.is_sprite:
+            used = counted(
+                sum(
+                    1
+                    for frame in doc.shown_frames
+                    for sub in frame
+                    if sub.index == tile_id
+                ),
+                "subsprite",
+            )
+        else:
+            used = counted(
+                sum(1 for cell in doc.cells or [] if cell.index == tile_id), "cell"
+            )
         chain = doc.chain
         if chain is None:
             bank = tile_id + doc.tile_base_index

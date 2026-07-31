@@ -550,6 +550,10 @@ class Workspace:
         self.hidden_pixel_presets: set[str] = set()
         self.on_added: list[Callable[[Entry], None]] = []
         self.on_removed: list[Callable[[Entry], None]] = []
+        # Fired instead of per-entry removals when the whole list is swapped —
+        # see :meth:`replace`. A listener that mirrors the list drops everything
+        # it holds and rebuilds from the additions that follow.
+        self.on_reset: list[Callable[[], None]] = []
         self.on_current_changed: list[Callable[[Entry | None], None]] = []
         self.on_dirty_changed: list[Callable[[Entry], None]] = []
         self._revision = 0  # allocator for per-entry revision tokens
@@ -822,13 +826,19 @@ class Workspace:
         """Swap the whole list for ``entries`` — a loaded project replaces the
         workspace, never merges into it.
 
-        Notifies removal of every old entry and addition of every new one, and
-        sets ``current`` last so the activation lands on a populated list.
+        The old list goes as **one** ``on_reset``, not an ``on_removed`` per
+        entry: closing a project is a single operation, and reporting it n times
+        makes every listener pay its per-removal cost n times over for a list
+        that is about to be empty anyway (a tree unwound row by row, a visit
+        trail rebuilt per entry, a missing-file scan re-run over the shrinking
+        remainder). Additions stay per-entry — the new list *is* built one entry
+        at a time. ``current`` is set last, so the activation lands on a
+        populated list.
         """
         self.set_current(None)
-        for entry in list(self.entries):
-            self.entries.remove(entry)
-            self._notify(self.on_removed, entry)
+        self.entries.clear()
+        for callback in list(self.on_reset):
+            callback()
         self.entries.extend(entries)
         for entry in entries:
             self._notify(self.on_added, entry)

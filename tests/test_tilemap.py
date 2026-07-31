@@ -18,7 +18,7 @@ from celpix.core.context import (
     KEY_TILEMAP_PAGE_ROWS,
     PipelineContext,
 )
-from celpix.core.errors import Stage
+from celpix.core.errors import PipelineError, Stage
 from celpix.core.tilemap import Cell, CellGrid
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.pipeline import encode_cells, load_tilemap_data
@@ -841,6 +841,45 @@ def test_a_sprite_draws_its_subsprites_at_pixel_offsets_and_keeps_index_0_clear(
     assert image.get(4, 12) == 0  # ...and its transparent half stayed clear
 
 
+def test_a_pixel_resolves_to_the_subsprite_a_user_can_see_there() -> None:
+    """The render run backwards, and the only way to ask what was clicked: a
+    sprite object has no grid to divide a position by, and its subsprites
+    overlap, so the slot cannot name one.
+
+    Front-to-back is the file's order, but a subsprite is mostly hole — index 0
+    is transparent — so the front-most *box* is not what the user is pointing at.
+    What is drawn there wins, and a box covering nothing but transparency is the
+    fallback rather than the answer.
+    """
+    from celpix.core.sprite import Subsprite
+    from celpix.pipeline.pipeline import subsprite_at
+
+    # 4bpp planar: tile 1 is opaque throughout, tile 2 clear on its left four
+    # pixels and set on its right four.
+    bank = bytes(32) + bytes([0xFF]) * 32 + bytes([0x0F]) * 32
+    registry = default_registry()
+    doc = _sprite_doc(
+        [],
+        [
+            # Both at the origin: the half-clear one in front of the opaque one.
+            (Subsprite(x=0, y=0, index=2), Subsprite(x=0, y=0, index=1)),
+            (Subsprite(x=8, y=0, index=2),),
+        ],
+        bank=bank,
+    )
+    at = lambda x, y: subsprite_at(doc, registry, 2, x, y)  # noqa: E731 — two frames across
+
+    assert at(6, 2) == (0, 0)  # the front one draws here, so it is the answer
+    assert at(2, 2) == (0, 1)  # ...and where it does not, the one behind it does
+    assert at(12, 2) is None  # nothing is drawn in the rest of frame 0's box
+
+    # Frame 1 sits a whole box to the right, which is the arithmetic the blit
+    # does outward. Its subsprite is transparent at this pixel and no one else
+    # covers it, so the box hit stands in rather than the click reading as dead.
+    assert at(16 + 10, 2) == (1, 0)
+    assert at(200, 2) is None and at(6, 200) is None  # off the sheet entirely
+
+
 def test_a_sprite_object_is_view_only() -> None:
     """A canvas position resolves to a *subsprite* through an overlap order rather
     than to a cell through a grid, so what an edit would change is not settled
@@ -1512,9 +1551,13 @@ def test_the_other_two_formats_state_their_widths() -> None:
 
 
 def test_a_screen_and_a_panel_state_the_palette_row_their_cells_count_from() -> None:
-    """The base is per *file*, not per format, so no preset value can be right
-    for all of them: 94% of surveyed panels want 1 and 93% of screens want 0.
-    Read as absent, a panel draws every tile through the wrong sixteen colours.
+    """The base is per *file*, not per format — and the **cell is 2bpp-only**,
+    which is the part no reading of the field alone would give you.
+
+    At 4bpp the editor's colour window is the whole 128-colour half and only the
+    half selects it; the cell is left over from the last time the file was 2bpp.
+    Applying it there draws every cell one row out, which is 94% of panels
+    (1,013 of 1,080 carry ``col_cell = 1``).
     """
     from celpix.core.context import KEY_TILEMAP_PALETTE_ROW_BASE
     from celpix.plugins.builtins.scgcad import (
@@ -1525,21 +1568,24 @@ def test_a_screen_and_a_panel_state_the_palette_row_their_cells_count_from() -> 
         SCR_DEPTH,
     )
 
-    # A panel: the colour half is 0 in every surveyed file, so the cell alone
-    # moves the base — and it is 1 in 1,013 of 1,080.
+    # A panel is always 4bpp, so its near-universal cell = 1 must not move it.
     data = bytearray(_pnl_bytes())
     data[PNL_COL_HALF], data[PNL_COL_CELL] = 0, 1
     ctx = PipelineContext()
     PnlContainer().read(ReadSource(data=bytes(data)), ctx)
-    assert ctx.get(KEY_TILEMAP_PALETTE_ROW_BASE) == 1
+    assert ctx.get(KEY_TILEMAP_PALETTE_ROW_BASE) == 0
 
-    # A screen states its own depth, so its half converts to rows: at 4bpp a
-    # half is 8 rows, at 2bpp it is 32.
+    # A screen states its own depth, so the half converts to rows — 8 at 4bpp,
+    # 32 at 2bpp — and the cell counts only at 2bpp, where it steps a 32-colour
+    # window through the half: 8 rows of four colours apiece.
     for depth, half, cell, want in (
         (1, 0, 0, 0),
         (1, 1, 0, 8),
-        (1, 0, 2, 2),
+        (1, 0, 2, 0),  # 4bpp: the cell is not a base
+        (1, 1, 3, 8),  # nor does it move one that the half set
+        (0, 0, 1, 1),  # 2bpp: the group is one 4-colour row
         (0, 1, 1, 33),
+        (2, 1, 1, 0),  # 8bpp sees all 256 colours, so neither applies
     ):
         data = bytearray(_scr_bytes())
         data[0x2000 + SCR_DEPTH] = depth
@@ -1551,12 +1597,26 @@ def test_a_screen_and_a_panel_state_the_palette_row_their_cells_count_from() -> 
 
 
 # -- tile banks ------------------------------------------------------------
-def _cgx_bytes(size: int, rows: bytes = b"") -> bytes:
-    from celpix.plugins.builtins.scgcad import CGX_BANKS, HEADER
+def _cgx_bytes(
+    size: int,
+    rows: bytes = b"",
+    half: int = 0,
+    cell: int = 0,
+    signed: bool = True,
+) -> bytes:
+    from celpix.plugins.builtins.scgcad import (
+        CGX_BANKS,
+        CGX_COL_CELL,
+        CGX_COL_HALF,
+        HEADER,
+    )
 
     payload = CGX_BANKS[size][0]
     out = bytearray(size)
-    out[payload : payload + len(SIGNATURE)] = SIGNATURE
+    if signed:
+        out[payload : payload + len(SIGNATURE)] = SIGNATURE
+    out[payload + CGX_COL_HALF] = half
+    out[payload + CGX_COL_CELL] = cell
     if rows:
         at = payload + HEADER
         out[at : at + len(rows)] = rows
@@ -1593,9 +1653,26 @@ def test_a_tile_banks_row_table_comes_out_as_a_hint() -> None:
     ctx = PipelineContext()
     CgxContainer().read(ReadSource(data=_cgx_bytes(0x8500, rows)), ctx)
     assert ctx.get(KEY_TILE_PALETTE_ROWS)[:4] == bytes([2, 2, 5, 0])
+    # The table counts from the base the header states, exactly as a screen's
+    # cells do: a 4bpp colour half is eight rows. The cell beside it is 2bpp-only
+    # and must not move a 4bpp bank — 300 of 2,650 banks carry one, and applying
+    # it puts fourteen of them past the end of CGRAM.
+    ctx = PipelineContext()
+    CgxContainer().read(ReadSource(data=_cgx_bytes(0x8500, rows, half=1, cell=1)), ctx)
+    assert ctx.get(KEY_TILE_PALETTE_ROWS)[:4] == bytes([10, 10, 13, 8])
+    # At 2bpp it does count, and the group it picks is one 4-colour row.
+    ctx = PipelineContext()
+    CgxContainer().read(ReadSource(data=_cgx_bytes(0x4500, rows, half=0, cell=1)), ctx)
+    assert ctx.get(KEY_TILE_PALETTE_ROWS)[:4] == bytes([3, 3, 6, 1])
     # 8bpp banks carry no table, so nothing is claimed for them.
     ctx = PipelineContext()
     CgxContainer().read(ReadSource(data=_cgx_bytes(0x10100)), ctx)
+    assert ctx.get(KEY_TILE_PALETTE_ROWS) is None
+    # Nor does a bank with no header state any rows: the table is there, but a
+    # block nothing ever wrote says nothing about the tiles in front of it.
+    ctx = PipelineContext()
+    data = _cgx_bytes(0x8500, bytes([0xFC]) * 0x400, signed=False)
+    assert len(CgxContainer().read(ReadSource(data=data), ctx)) == 0x8000
     assert ctx.get(KEY_TILE_PALETTE_ROWS) is None
 
 
@@ -1740,6 +1817,34 @@ def test_the_tile_source_run_is_the_ids_that_land_in_the_bank() -> None:
     assert tile_source_ids(doc, limit=999) == range(0, 4)
 
 
+def test_a_metatile_sheet_offers_whole_units_and_not_every_window() -> None:
+    """A 16x16 cell takes its other three tiles from around the one it names, so
+    the ID next to a unit's names a window three quarters the same. Offering the
+    whole span shows the bank four times over as one-tile-shifted smears; what is
+    on offer is the bank *read in that unit*.
+
+    Aligned to the bank's numbering rather than the file's: the base is what
+    turns one into the other, and it is the bank the neighbours are found in.
+    """
+    from celpix.pipeline.pipeline import tile_source_ids, tile_source_span
+
+    # 64 tiles: four VRAM rows of 16, so two rows of eight metatiles.
+    doc = _bank_doc(bytes(32 * 64), [Cell(index=0)])
+    doc.cell_tiles, doc.cell_row_stride = (2, 2), 16
+    assert list(tile_source_ids(doc)) == [
+        *range(0, 16, 2),
+        *range(32, 48, 2),
+    ]
+    # Narrowed for the sheet, never for the file: every ID still resolves, which
+    # is what an ID a user already holds is checked against.
+    assert tile_source_span(doc) == range(0, 64)
+
+    # A map numbering from partway into the bank: ID 3 is bank tile 2, which is
+    # a metatile's corner even though 3 is not.
+    doc.tile_base_index = -1
+    assert list(tile_source_ids(doc))[:4] == [1, 3, 5, 7]
+
+
 def test_a_sheet_tile_is_the_same_pixels_the_map_draws_for_that_cell() -> None:
     """The point of the panel: what is on offer has to be what will land.
 
@@ -1767,17 +1872,19 @@ def test_a_sheet_tile_is_the_same_pixels_the_map_draws_for_that_cell() -> None:
             source=FileRef("x"), interpret_preset_id="preset.pixel.snes-4bpp"
         ),
         palette_config=None,
-        cells=[Cell(index=3)],
+        cells=[Cell(index=6)],
         cell_tiles=(2, 2),
         cell_row_stride=16,
     )
     sheet = tile_source_image(doc, registry, columns=4)
-    assert sheet.ids == range(0, 32)
-    assert (sheet.grid.width, sheet.grid.height) == (4 * 16, 8 * 16)
+    # One entry per whole metatile of the bank's single VRAM row, so 8 units laid
+    # out four across.
+    assert list(sheet.ids) == list(range(0, 16, 2))
+    assert (sheet.grid.width, sheet.grid.height) == (4 * 16, 2 * 16)
 
     # The map's own render of the single cell it holds, composed at one cell
-    # across, has to be the sheet's ID 3 pixel for pixel — the fourth cell of the
-    # sheet's top row, at x = 3 * 16.
+    # across, has to be the sheet's ID 6 pixel for pixel — the fourth square of
+    # the sheet's top row, at x = 3 * 16.
     tiles, layout = tilemap_tiles(doc, registry, columns=1)
     drawn = compose_tiles(tiles, layout, None)
     assert (drawn.width, drawn.height) == (16, 16)
@@ -1936,6 +2043,41 @@ def test_a_pattern_saved_to_a_new_path_keeps_its_frame_boundaries() -> None:
     back = PipelineContext()
     assert SprContainer().read(ReadSource(data=fresh), back) == encoded
     assert back.get(KEY_TILEMAP_FRAME_SIZES) == ctx.get(KEY_TILEMAP_FRAME_SIZES)
+
+
+def test_a_sprite_sheet_no_machine_could_hold_is_refused_not_allocated(
+    tmp_path,
+) -> None:
+    """The one way a foreign file is worse than merely wrong: a subsprite's offsets
+    are signed 16 bits and its frames are however many the bytes divide into, so
+    unrelated data multiplies into an image of tens of gigabytes — 4 KB of it asks
+    for 33. Caught at the **read** because that is the call the binding bar can take
+    back, leaving the entry on the format it had; a render that fails has already
+    replaced the document it was drawing."""
+    from celpix.core.sprite import Subsprite
+    from celpix.pipeline.pipeline import sprite_image
+
+    far = _spr_record(x=-0x4000, y=-0x4000) + _spr_record(x=0x4000, y=0x4000)
+    path = tmp_path / "not-a-pattern.spr"
+    path.write_bytes(_spr_bytes([far] * 4))
+    with pytest.raises(PipelineError) as caught:
+        load_tilemap_data(
+            PathwayConfig(
+                source=FileRef(str(path)),
+                interpret_preset_id=SPR,
+                container_id="container.ys-spr",
+            ),
+            default_registry(),
+        )
+    assert caught.value.stage is Stage.INTERPRET_TILEMAP
+
+    # And again where the allocation actually happens, which is the only point that
+    # knows the tile size the map is bound to and the columns it is laid out at.
+    doc = _sprite_doc(
+        [], [(Subsprite(x=-0x4000, y=-0x4000), Subsprite(x=0x4000, y=0x4000))]
+    )
+    with pytest.raises(PipelineError):
+        sprite_image(doc, default_registry(), columns=1)
 
 
 def test_a_foreign_spr_stops_the_walk_instead_of_failing_it(tmp_path) -> None:

@@ -543,7 +543,7 @@ class RearrangeMixin:
 
         The block comes from the same :meth:`_block_geometry` the destructive
         group uses, so a lone selected tile expands to its arrangement block and
-        one click turns a whole metatile.
+        one click turns a whole 16×16 unit.
 
         Order doesn't matter between the two halves: the permutation shuffles
         tiles *among* the block's positions, so the set of tiles in the block —

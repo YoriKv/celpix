@@ -760,7 +760,14 @@ def test_mode_toggles_swap_only_when_available(qtbot, tmp_path) -> None:
     assert window._can_toggle_selection_mode()
     first = window._selection_shape.currentData()
     window._toggle_selection_mode()
-    assert window._selection_shape.currentData() is not first
+    swapped = window._selection_shape.currentData()
+    assert swapped is not first
+    # The toggle is the user picking a shape, so it must persist exactly as the
+    # combo does - a round trip through a mode that forces Rectangle has to hand
+    # *this* shape back, not the one that was stored before the toggle.
+    window._toggle_edit_mode()  # pixel mode forces Rectangle
+    window._toggle_edit_mode()
+    assert window._selection_shape.currentData() is swapped
     window._toggle_selection_mode()
     assert window._selection_shape.currentData() is first  # swaps back
     window._toggle_edit_mode()
@@ -865,12 +872,12 @@ def test_transform_bar_swaps_groups_with_edit_mode(qtbot, tmp_path) -> None:
 # -- arrangement round-trip ------------------------------------------------
 def test_pixel_edit_round_trips_under_block_layout(qtbot, tmp_path) -> None:
     window = _window(qtbot, tmp_path, tiles=16)
-    # A 2×2 metatile arrangement: compose and split must agree so a pixel drawn
+    # A 2×2 tile-block arrangement: compose and split must agree so a pixel drawn
     # on screen re-decodes to the same on-screen spot (through the byte edit).
     window._block_cols.setValue(2)
     window._block_rows.setValue(2)
     window._tool = Tool.PENCIL
-    # Draw in the second metatile column (past the block boundary).
+    # Draw in the second block column (past the block boundary).
     window._on_pixel_pressed(10, 2, Qt.MouseButton.LeftButton)
     window._on_pixel_released(10, 2)
     # A fresh decode+compose (not the working grid) still shows the pixel there.

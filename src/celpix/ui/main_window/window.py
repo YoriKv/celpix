@@ -105,6 +105,7 @@ from celpix.ui.main_window.selection import (
     SelectionMixin,
 )
 from celpix.ui.main_window.session import SessionMixin
+from celpix.ui.main_window.sprite_select import SpriteSelectMixin
 from celpix.ui.main_window.stamp_tool import StampToolMixin
 from celpix.ui.main_window.tile_source_dock import TileSourceDockMixin
 from celpix.ui.main_window.tilemap_bar import TilemapBarMixin
@@ -164,6 +165,7 @@ class MainWindow(
     TilemapEditMixin,
     TileSourceDockMixin,
     StampToolMixin,
+    SpriteSelectMixin,
     CapabilitySyncMixin,
     RenderingMixin,
     EntriesMixin,
@@ -317,13 +319,21 @@ class MainWindow(
         # the binding bar that owns the box, because _refresh_view's view capture
         # reads it and the bar is built after this point.
         self._show_all_frames = False
+        # Whether a tilemap draws palette index 0 as the backdrop. Here for the
+        # same reason, and read by the same capture.
+        self._transparent_zero = False
         # The visit trail, before the first entry can become current (the empty
         # state at the tail of this method already is a current-entry change).
         self._init_history()
 
         self._canvas = Canvas()
         self._overlay = DecompressOverlay(self)
+        self._init_sprite_select()
         self._canvas.slots_selected.connect(self._on_slots_selected)
+        # After slots_selected, because the two report one press and this is the
+        # more specific of the answers: on a sprite object the status line should
+        # end up saying which subsprite, not which square of the sheet.
+        self._connect_sprite_canvas()
         self._canvas.color_picked.connect(self._on_color_picked)
         self._connect_pixel_canvas()
         self._canvas.rearrange_started.connect(self._on_rearrange_started)
@@ -486,11 +496,13 @@ class MainWindow(
         ws.on_removed.append(self._files_panel.remove_entry)
         ws.on_current_changed.append(self._on_current_entry_changed)
         ws.on_dirty_changed.append(self._on_entry_dirty_changed)
-        # Removing (or restoring, via undo) an entry can change whether any
-        # references are missing - keep the Locate menu's enabled state honest.
-        ws.on_removed.append(lambda _entry: self._sync_locate_action())
         # A closed entry can't be gone back to, so it leaves the visit trail.
         ws.on_removed.append(self._forget_visits)
+        # Swapping the whole list is one operation, not n removals: the panel
+        # and the trail drop everything in one go rather than unwinding entry by
+        # entry (see Workspace.replace).
+        ws.on_reset.append(self._files_panel.clear_entries)
+        ws.on_reset.append(self._forget_all_visits)
 
     def _on_entry_added(self, entry: Entry) -> None:
         # The panel nests a slice under its parent file's item when it's open.
@@ -696,6 +708,7 @@ class MainWindow(
         one in the dock is the opening gesture's call, not the add's
         (:meth:`_open_palette_data`)."""
         self._workspace.insert(entry, len(self._workspace.entries))
+        self._sync_locate_action()
         if entry.kind in (EntryKind.FILE, EntryKind.SLICE):
             self._activate_entry(entry)
 
@@ -703,6 +716,7 @@ class MainWindow(
         """Take ``entry`` (and, for a file, its slices) out of the workspace;
         the current view repoints to a neighbour via the workspace."""
         self._workspace.close(entry)
+        self._sync_locate_action()
 
     def _apply_restore_entries(
         self, victims: list[tuple[int, Entry]], was_current: Entry | None
@@ -715,6 +729,7 @@ class MainWindow(
         """
         for index, entry in sorted(victims, key=lambda pair: pair[0]):
             self._workspace.insert(entry, index)
+        self._sync_locate_action()
         if any(entry is was_current for _, entry in victims):
             self._activate_entry(was_current)
 

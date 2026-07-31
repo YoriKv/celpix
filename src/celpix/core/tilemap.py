@@ -59,7 +59,7 @@ def tile_run(
     alone would mirror each tile in place and leave the layout unmirrored, and
     reversing alone would move them without turning them. Both halves are needed
     and neither is sufficient — the same rule :meth:`CellGrid.flipped_h` follows
-    over a block of cells. Only the ordering is here; mirroring the tile's pixels
+    over a rectangle of cells. Only the ordering is here; mirroring the tile's pixels
     is the renderer's half.
 
     Shared by the two things that index a tile array this way, a tilemap cell
@@ -226,16 +226,16 @@ def stamp_origin(position: int, columns: int, stamp: tuple[int, int]) -> int:
     """Which entry the drawn position ``position`` takes its stamp from.
 
     A stamped map's entries are **not** one per position: an entry names a whole
-    ``stamp``-sized block, and the positions between two entries hold whatever
-    the file last had there. So a position reads the entry at its block's
-    top-left corner, and the three-quarters of a 2x2 map that were never written
-    are never read either
+    ``stamp``-sized rectangle of source cells, and the positions between two
+    entries hold whatever the file last had there. So a position reads the entry
+    at its stamp's top-left corner, and the three-quarters of a 2x2 map that were
+    never written are never read either
     (``docs/graphics-formats-reference/scgcad-formats.md`` §4).
 
     The same snap answers both directions, which is why it is one function: it
     picks the entry a position *draws*, and the entry a click on that position
     *restamps* (:meth:`~celpix.core.document.Document.cell_at`). An edit anywhere
-    inside a block changes the block.
+    inside a stamp changes the one entry that stamp came from.
     """
     across, down = max(1, stamp[0]), max(1, stamp[1])
     x, y = position % columns, position // columns
@@ -253,12 +253,12 @@ def expand_stamps(
 ) -> list[Cell]:
     """Resolve a stamped map into one source cell per **drawn position**.
 
-    The referring map is a grid of blocks and the source is a grid of cells, and
-    this is the one place the two shapes meet: the entry at a block's corner
-    names the source cell its corner draws, and the rest of the block walks the
+    The referring map is a grid of stamps and the source is a grid of cells, and
+    this is the one place the two shapes meet: the entry at a stamp's corner
+    names the source cell that corner draws, and the rest of the stamp walks the
     source's *own* rows from there — offset ``x % across + (y % down) *
     source_columns``. That last term is why ``source_columns`` is a parameter and
-    not the referrer's width: the block is a rectangle cut out of the source, so
+    not the referrer's width: a stamp is a rectangle cut out of the source, so
     stepping down a row inside it is a step of the source's width.
 
     One entry in, ``across * down`` positions out — so the list that comes back

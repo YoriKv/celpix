@@ -182,6 +182,17 @@ class ViewOptions:
     # point. Display-only in the same sense as the rest of these — the records
     # are untouched either way, and neither reading moves a byte.
     show_all_frames: bool = False
+    # Draw palette index 0 as nothing rather than as the colour sitting there.
+    # On the console index 0 of a BG palette row is **transparent** — the backdrop
+    # shows through — so a tile whose pixels are all 0 occupies space and paints
+    # none of it. That is how these formats say "empty": a screen's blank cell
+    # names a real tile number whose art happens to be a run of zero bytes
+    # (``docs/graphics-formats-reference/scgcad-formats.md``), and drawing it
+    # opaque turns a third of a map into a flat slab of whichever colour row 0
+    # holds. Off by default because index 0 is an ordinary colour to edit and
+    # hiding it wholesale would be the wrong default for a pixel document; the
+    # tilemap bar is where it can be asked for, on the entry it answers for.
+    transparent_zero: bool = False
 
 
 @dataclass(frozen=True)
@@ -207,13 +218,13 @@ class CellChain:
     subpalette. This one says whose row wins per cell.
 
     ``stamp`` and ``source_columns`` are the **source's** shape, not the
-    referrer's: how big a block of source cells one coordinate names, and how wide
-    the source is, which is the step between that block's rows
+    referrer's: how many source cells one coordinate names, and how wide the
+    source is, which is the step between that stamp's rows
     (:func:`~celpix.core.tilemap.expand_stamps`). Both live here because both are
     the source map's answers — a panel states its stamp size in its own header and
     the layout's file does not know it, so the same layout draws differently
     against a differently divided panel. ``(1, 1)`` is the ordinary chain, where
-    one coordinate names one cell and there is no block to expand.
+    one coordinate names one cell and there is no stamp to expand.
     """
 
     source: list[Cell]
@@ -473,12 +484,13 @@ class Document:
         """How many source cells one pickable stamp covers — ``(1, 1)`` for none.
 
         The chain's stamp with one condition on it: the source's own cells must be
-        single tiles. A block is laid out as a rectangle of consecutive tiles, and
-        a block of *metatiles* interleaves two rectangles the layout cannot
-        express — so a format that stamped metatiles would preview stamp by stamp
-        here and draw correctly on the map either way. No format in hand does: the
-        only one that stamps is a panel, whose word is one 8x8 tile in every file
-        of the corpus (``docs/graphics-formats-reference/scgcad-formats.md`` §3.1).
+        single tiles. A stamp is placed as one layout block — a rectangle of
+        consecutive tiles — and a stamp of *metatile* cells interleaves two
+        rectangles no single block can express, so a format that stamped metatiles
+        would preview stamp by stamp here and draw correctly on the map either
+        way. No format in hand does: the only one that stamps is a PNL panel,
+        whose word is one 8x8 tile in every file of the corpus
+        (``docs/graphics-formats-reference/scgcad-formats.md`` §3.1).
         """
         chain = self.chain
         if chain is None or self.cell_tiles != (1, 1):

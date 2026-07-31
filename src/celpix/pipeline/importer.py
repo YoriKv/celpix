@@ -16,7 +16,7 @@ pipeline never asks:
    canvas should look like, not which storage slots to fill. The caller stamps
    each cut tile at its canvas cell and lets the view's arrangement decide
    which stored tile that cell is, exactly as if the user had painted the
-   pixels by hand — so a blocked view (a 2×2 metatile, an 8×16 sprite) shows
+   pixels by hand — so a blocked view (a 2×2 tile block, an 8×16 sprite) shows
    the image as pasted.
 
 The result is a list of tiles, a report of how lossy the fit was, and how far

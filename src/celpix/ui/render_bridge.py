@@ -24,24 +24,65 @@ from PySide6.QtGui import QImage
 
 from celpix.core.palette import Palette
 
+TRANSPARENT = 0x00000000
 
-def render(grid, palette: Palette, subpalette_base: int = 0) -> QImage:
+
+def _clear_zeros(table: list[int], stride: int) -> list[int]:
+    """``table`` with every palette row's index 0 made fully transparent.
+
+    The console's rule, applied at the one seam where indices become pixels: index
+    0 of a BG palette row paints nothing. Doing it in the **colour table** rather
+    than to the grid is what keeps it free — no second rasterization, and the same
+    image object as before — and it is also the only place that can, since the
+    indices themselves have to stay editable as the numbers the file holds.
+
+    ``stride`` is the width of one palette row in colours (``2**bpp``), because
+    which entries mean "index 0" depends on whether the row is folded into the
+    indices: at ``stride`` 256 only entry 0 is one (:func:`render`, where the row
+    lives in the table's offset), and at 16 every sixteenth is
+    (:func:`render_pinned`, where it lives in the indices).
+    """
+    out = list(table)
+    for at in range(0, len(out), max(1, stride)):
+        out[at] = TRANSPARENT
+    return out
+
+
+def render(
+    grid,
+    palette: Palette,
+    subpalette_base: int = 0,
+    *,
+    transparent_zero: bool = False,
+) -> QImage:
     """Rasterize ``grid`` to a QImage.
 
     An index grid resolves through ``palette`` (offset by ``subpalette_base``, so a
     tile drawn for palette row *n* renders correctly, ``base = n * 2**bpp``). A
     direct-color :class:`~celpix.core.argb_grid.ArgbGrid` already carries ARGB and
     is blitted straight to ``Format_ARGB32``, ignoring the palette.
+
+    ``transparent_zero`` clears index 0 (:func:`_clear_zeros`). Only entry 0 is
+    cleared here: the whole table is already one palette row, offset by
+    ``subpalette_base``, so index 0 of *this* row is the only index 0 there is.
     """
     if grid.bytes_per_pixel == 4:
         return _render_argb(grid)
     # QRgb is 0xAARRGGBB — exactly what Palette stores — so colors pass straight
     # through. A too-short palette yields the magenta sentinel per Palette.color.
     table = [palette.color(subpalette_base + i) for i in range(256)]
+    if transparent_zero:
+        table = _clear_zeros(table, 256)
     return indexed_image(grid, table)
 
 
-def render_pinned(grid, palette: Palette) -> QImage:
+def render_pinned(
+    grid,
+    palette: Palette,
+    row_stride: int = 0,
+    *,
+    transparent_zero: bool = False,
+) -> QImage:
     """Rasterize ``grid`` when its indices already carry their subpalette row.
 
     The counterpart of :func:`render` for a view with pinned palette regions
@@ -52,12 +93,20 @@ def render_pinned(grid, palette: Palette) -> QImage:
     unoffset. An unpinned tile is shifted by the view's own row, so the two paths
     agree pixel for pixel wherever nothing is pinned.
 
+    ``row_stride`` is one palette row in colours, and is needed **only** for
+    ``transparent_zero``: with the row in the indices, every ``row_stride``-th
+    entry is some row's index 0, and clearing entry 0 alone would leave every
+    other row's blank pixels opaque.
+
     A direct-colour grid never carries indices, so it renders exactly as
     :func:`render` would.
     """
     if grid.bytes_per_pixel == 4:
         return _render_argb(grid)
-    return indexed_image(grid, [palette.color(i) for i in range(256)])
+    table = [palette.color(i) for i in range(256)]
+    if transparent_zero:
+        table = _clear_zeros(table, row_stride or 256)
+    return indexed_image(grid, table)
 
 
 def indexed_image(grid, color_table: list[int]) -> QImage:

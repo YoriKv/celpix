@@ -30,8 +30,10 @@ from PySide6.QtGui import QImage
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_PIXEL_PRESET,
+    KEY_TILE_PALETTE_ROW_BASE,
     KEY_TILE_PALETTE_ROWS,
     KEY_TILEMAP_CELL_TILES,
+    KEY_TILEMAP_PALETTE_ROW_BASE,
     KEY_TILEMAP_STAMP_TILES,
     PipelineContext,
 )
@@ -320,7 +322,12 @@ class SessionMixin:
             cell_tiles=cell_tiles,
             cell_row_stride=VRAM_ROW_STRIDE if cell_tiles != (1, 1) else 0,
             index_mask=loaded.index_mask,
-            palette_row_base=self._row_base_for(entry, loaded.palette_row_base),
+            palette_row_base=self._row_base_for(
+                entry,
+                loaded.palette_row_base,
+                stated=loaded.ctx.get(KEY_TILEMAP_PALETTE_ROW_BASE) is not None,
+                bank=tiles.ctx.get(KEY_TILE_PALETTE_ROW_BASE),
+            ),
             tile_base_index=(
                 entry.tile_source.base_index if entry.tile_source is not None else 0
             ),
@@ -370,6 +377,14 @@ class SessionMixin:
 
         Runs of equal rows collapse into one region each, because that is what a
         region *is*; a bank of 1024 tiles usually resolves to a few dozen.
+
+        Row 0 is pinned like any other. It is a row the file *named*, not an
+        absence of one — the only other implementation of the format renders it
+        through the same base-plus-attribute arithmetic as rows 1-7, and a
+        surveyed 4bpp bank uses all eight values with 0 the commonest at 39% of
+        tiles. Leaving it out would let exactly those tiles drift with the view's
+        subpalette selector while their neighbours stayed put, so the picture
+        stops matching the file the moment the view is not on row 0.
         """
         doc = entry.doc
         if doc is None or not table or doc.bytes_per_tile <= 0:
@@ -381,10 +396,9 @@ class SessionMixin:
         for index in range(1, len(table) + 1):
             here = table[index] if index < len(table) else None
             if here != row:
-                if row:  # row 0 is the default; pinning it would say nothing
-                    regions.append(
-                        PaletteRegion(start * per_tile, (index - start) * per_tile, row)
-                    )
+                regions.append(
+                    PaletteRegion(start * per_tile, (index - start) * per_tile, row)
+                )
                 start, row = index, here
         if regions:
             doc.view.palette_regions = PaletteRegions.from_regions(regions)
@@ -423,18 +437,40 @@ class SessionMixin:
         if low and reach >= count and reach - low < count:
             entry.tile_source = replace(source, base_index=-low)
 
-    def _row_base_for(self, entry: Entry, declared: int) -> int:
+    def _row_base_for(
+        self,
+        entry: Entry,
+        declared: int,
+        *,
+        stated: bool = True,
+        bank: int | None = None,
+    ) -> int:
         """The palette row ``entry``'s cells count their row 0 from.
 
-        ``declared`` is what the format says — 8 for a sprite, whose 3-bit field
-        counts from the upper half of CGRAM — and the entry's own value overrules
-        it, because what the format cannot know is which palette got loaded
-        (:attr:`~celpix.project.workspace.Entry.palette_row_base`). Resolved on the
-        load path so the document carries the base **in force** and every render
-        reads one number rather than choosing between two.
+        Four answers, most specific first, resolved here so the document carries
+        the base **in force** and every render reads one number rather than
+        choosing between several.
+
+        The entry's own value wins outright: what no file can know is which
+        palette got loaded (:attr:`~celpix.project.workspace.Entry.palette_row_base`).
+        Then the map's own header, where its format has one — ``stated`` is
+        whether ``declared`` came from the file rather than from the preset.
+
+        Then, and this is the one that needs saying, **the bank's**. A sprite
+        object names a 3-bit palette row and carries nothing to count it from,
+        so the preset's 8 is standing in for the commonest case rather than
+        reading anything; the tile bank those subsprites draw from *does* state
+        a base, and it is the same origin its own per-tile row table counts from
+        (:data:`~celpix.core.context.KEY_TILE_PALETTE_ROW_BASE`). Where the art
+        says, the art wins over a constant. The preset is the last resort, for a
+        bank whose header is absent or a format with no such field at all.
         """
         chosen = entry.palette_row_base
-        return declared if chosen is None else chosen
+        if chosen is not None:
+            return chosen
+        if stated or bank is None:
+            return declared
+        return bank
 
     def _size_pair_for(
         self, entry: Entry, declared: tuple[int, int]
@@ -827,6 +863,10 @@ class SessionMixin:
         # box itself is filled from the binding bar's own refresh, which runs at
         # the tail of the render this leads into.
         self._show_all_frames = view.show_all_frames
+        # And the backdrop toggle with it: which cells read as empty is a fact
+        # about the map being looked at, so it must not follow the user from the
+        # last entry onto this one.
+        self._transparent_zero = view.transparent_zero
         # Pinned palette regions belong to the entry for the same reason. Stored
         # unbounded — _active_palette_regions clips at render time against the
         # picture and the palette that are actually loaded, so a region survives a
@@ -882,6 +922,10 @@ class SessionMixin:
         self._selected_last = None
         self._rect_size, self._rect_tiles = None, ()
         self._canvas.set_selection(None)
+        # No render runs on the way out of a document, so the sprite object's
+        # pick has to be dropped here as well as in the refresh — an outline left
+        # behind would sit over whatever is shown next.
+        self._set_picked_subsprite(None)
         self._sync_selection_actions()
         # Called after _doc is cleared, so it settles on "unavailable": the tool
         # disarms and both its switches grey out. They need saying explicitly
@@ -952,6 +996,9 @@ class SessionMixin:
         self._refresh_tile_source()
         self._refresh_window_title()
         self._sync_nav()
+        # Nothing open reads as pixels, so this is what hands the shape picker
+        # back after a tilemap was closed.
+        self._sync_selection_shape()
         # The empty state is a *kind* like any other, and the gating pass is what
         # says so: nothing open reads as pixels
         # (:meth:`~...capability_sync.CapabilitySyncMixin._content_kind`), so the

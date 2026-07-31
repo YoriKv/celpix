@@ -3,7 +3,7 @@
 # is four adjacent words rather than one word standing for four tiles. That holds
 # for all 1,172 surveyed panels, including the 80 whose header byte at 0x62 says
 # 16x16 — a panel has three header bytes shaped like a cell size (0x62 and the
-# metatile exponents at 0x69/0x6A) and not one of them is one. A screen's
+# stamp exponents at 0x69/0x6A) and not one of them is one. A screen's
 # equivalent field *is* real, which is why the screen container reads its own.
 # See docs/graphics-formats-reference/scgcad-formats.md §3.1.
 id = "preset.tilemap.scgcad-panel"
