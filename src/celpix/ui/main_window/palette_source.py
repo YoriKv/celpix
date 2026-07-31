@@ -764,8 +764,10 @@ class PaletteSourceMixin:
         fmt, region = emustate.locate_palette(data)
         # A locator extracts the palette out of a container/memory image rather
         # than pointing at a file offset, so those bytes feed the pipeline direct.
-        entry_bytes = pipeline.palette_entry_size(region.preset_id, self._registry)
-        length = min(len(region.data), region.count * entry_bytes)
+        length = min(
+            len(region.data),
+            pipeline.palette_read_bytes(region.count, region.preset_id, self._registry),
+        )
         ref = FileRef(path, offset=0, length=length, data=region.data)
         return fmt, PathwayConfig(
             source=ref, interpret_preset_id=region.preset_id, write_enabled=False
@@ -1331,27 +1333,27 @@ class PaletteSourceMixin:
         """
         entry = entry if entry is not None else self._workspace.current
         assert entry is not None and entry.doc is not None
-        bpe = pipeline.palette_entry_size(
-            preset_id or self._palette_preset_id(), self._registry
-        )
+        fmt = preset_id or self._palette_preset_id()
         view, end = self._offset_palette_space(entry)
         writable = view is None
         base = 0 if view is None else view[1]
         avail = end - byte_off if byte_off >= base else 0
-        colors = min(FULL_PALETTE_COUNT, avail // bpe)
+        colors = min(
+            FULL_PALETTE_COUNT,
+            pipeline.palette_entry_capacity(avail, fmt, self._registry),
+        )
         if colors <= 0:
             return None, writable
+        length = pipeline.palette_read_bytes(colors, fmt, self._registry)
         # The whole file list, as the pixel pathway reads it: the offset
         # addresses the joined buffer, so a several-chip region cannot be
         # answered from its first chip alone.
         paths = entry.doc.pixel_config.source.paths
         if view is None:
-            return FileRef(paths, offset=byte_off, length=colors * bpe), True
+            return FileRef(paths, offset=byte_off, length=length), True
         data, base = view
         return (
-            FileRef(
-                paths, offset=byte_off, length=colors * bpe, data=data, data_base=base
-            ),
+            FileRef(paths, offset=byte_off, length=length, data=data, data_base=base),
             False,
         )
 
@@ -1371,12 +1373,16 @@ class PaletteSourceMixin:
         entry, so clamping at EOF alone is not enough. ``None`` when not even one
         entry fits, and capped at a full palette.
         """
-        bpe = pipeline.palette_entry_size(self._palette_preset_id(), self._registry)
+        preset_id = self._palette_preset_id()
         avail = Path(path).stat().st_size - byte_off
-        colors = min(FULL_PALETTE_COUNT, max(0, avail) // bpe)
+        colors = min(
+            FULL_PALETTE_COUNT,
+            pipeline.palette_entry_capacity(avail, preset_id, self._registry),
+        )
         if colors == 0:
             return None
-        return FileRef(path, offset=byte_off, length=colors * bpe)
+        length = pipeline.palette_read_bytes(colors, preset_id, self._registry)
+        return FileRef(path, offset=byte_off, length=length)
 
     def _load_palette_at_offset(self, byte_off: int) -> bool:
         """Load palette data at ``byte_off`` in the owning file's coordinates.

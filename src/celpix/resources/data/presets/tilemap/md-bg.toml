@@ -1,0 +1,18 @@
+# Mega Drive VDP nametable entry — 16-bit **big-endian** (68000 order, which is
+# how the words sit in a ROM): index 0-10, H flip 11, V flip 12, palette 13-14,
+# priority 15.
+id = "preset.tilemap.md-bg"
+name = "Mega Drive nametable (16-bit)"
+engine_id = "codec.tilemap.packed"
+
+[params]
+bytes = 2
+endian = "big"
+index = { shift = 0, bits = 11 }
+flip_h = { shift = 11, bits = 1 }
+flip_v = { shift = 12, bits = 1 }
+palette = { shift = 13, bits = 2 }
+priority = { shift = 15, bits = 1 }
+# No page geometry: a Mega Drive plane is one contiguous run at a size the VDP
+# registers pick (32/64/128 wide), not a set of fixed screens laid out into a
+# picture, so the width is the user's.

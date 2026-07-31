@@ -99,6 +99,21 @@ def _scan(data: bytes) -> tuple[tuple[int, ...], bytes, int]:
     return tuple(sizes), bytes(records), at
 
 
+def _signature(trailer: bytes) -> str:
+    """The tool's name out of the tail, or ``""`` when the tail is not one.
+
+    A signature is NUL-less ASCII running to the end of the file, so a tail
+    holding anything else is the earliest build's uninitialised buffer instead of
+    a name. Testing that rather than decoding whatever is there matters because
+    the buffer is largely NULs, and those survive a ``strip()`` into a string
+    that is non-empty, unprintable, and drawn as a blank field.
+    """
+    raw = trailer[TRAILER:].rstrip(b"\x00")
+    if not raw or not all(0x20 <= byte <= 0x7E for byte in raw):
+        return ""
+    return raw.decode("ascii").strip()
+
+
 class SprContainer:
     """Sprite pattern: counted frames of 8-byte records, then an opaque tail.
 
@@ -173,7 +188,7 @@ class SprContainer:
     ) -> tuple[ContainerField, ...]:
         sizes, records, trailer_at = _scan(source.data)
         trailer = source.data[trailer_at:]
-        signature = trailer[TRAILER:].decode("ascii", "replace").strip()
+        signature = _signature(trailer)
         drawn = sum(1 for size in sizes if size)
         return (
             ContainerField(

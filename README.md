@@ -62,6 +62,7 @@ tools for accuracy where available.
 - **[CrystalTile2](https://www.romhacking.net/utilities/818/)**
 - **[Advynia](https://github.com/KarisaAdvynia/Advynia)**
 - **[DreamCompress](https://www.romhacking.net/utilities/1900/)**
+- **[SuperFamiconv](https://github.com/Optiroc/SuperFamiconv)**
 
 ## AI Use Disclaimer
 

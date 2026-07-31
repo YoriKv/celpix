@@ -544,9 +544,20 @@ class ColorCodecPlugin(Plugin, Protocol):
     ) -> bytes: ...
 
     def bytes_per_entry(self, params: dict[str, Any]) -> int:
-        """Byte size of one palette entry under ``params`` — the palette-side
-        mirror of :meth:`PixelCodecPlugin.bytes_per_tile`, so the host can size a
-        byte window for a wanted number of entries."""
+        """Byte size of one palette **read unit** under ``params`` — the
+        palette-side mirror of :meth:`PixelCodecPlugin.bytes_per_tile`, so the
+        host can size a byte window for a wanted number of entries.
+
+        A unit is one entry for every format whose entry is a whole number of
+        bytes, which is all but the handheld grayscale registers; those pack
+        several entries into a unit and say so with ``entries_per_unit``."""
+        ...
+
+    # entries_per_unit is optional, reached with getattr and assumed to be 1: a
+    # colour codec whose entries are byte-sized (every one of them until the
+    # Game Boy's four-shades-per-byte BGP register) has nothing to declare.
+    def entries_per_unit(self, params: dict[str, Any]) -> int:
+        """How many palette entries one :meth:`bytes_per_entry` unit holds."""
         ...
 
 
@@ -646,6 +657,25 @@ class TilemapCodecPlugin(Plugin, Protocol):
         is the safe direction — a codec that was never asked where its index lives
         must not have one inferred for it. Returning None says the same thing for a
         format that genuinely has no index field to write.
+        """
+        ...
+
+    def palette_row_limit(self, params: dict[str, Any]) -> int | None:
+        """The highest ``palette_row`` a cell can hold, or **None** for none.
+
+        :meth:`index_limit` for the colour field, and the same protocol for the
+        same reason: a row too wide for the field would be masked down by
+        :meth:`encode` into a cell nobody asked for. It is what lets the host
+        *assign* a row to a selection — the tilemap reading of the pin gesture,
+        which stores the row where the file already keeps it instead of in the
+        project (``docs/design/palette-editing.md`` §4).
+
+        Distinct from :meth:`has_palette_rows`, which is about **reading**: that
+        one is taken as True when a plugin stays quiet, because a format carrying
+        rows silently would otherwise be drawn with a view-wide row on top. This
+        one is about **writing**, where the safe default is the other way round —
+        a codec that was never asked where its row lives must not have one
+        inferred and written into its bytes.
         """
         ...
 

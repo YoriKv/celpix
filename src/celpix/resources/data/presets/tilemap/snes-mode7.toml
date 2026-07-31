@@ -1,0 +1,22 @@
+# SNES Mode 7 / GBA affine BG map — one byte per cell, tile number only. Neither
+# mode has room for attributes: Mode 7 gets one 8bpp tile set and no flips at
+# all, and a GBA affine background is the same shape.
+#
+# In a VRAM dump these bytes are not contiguous — Mode 7 interleaves the map into
+# the even addresses and the tile pixels into the odd ones — so run the Mode 7
+# VRAM reshape first and read the second half here
+# (docs/graphics-formats-reference/superfamiconv-formats.md §5).
+id = "preset.tilemap.snes-mode7"
+name = "SNES Mode 7 map (8-bit, also GBA affine)"
+engine_id = "codec.tilemap.packed"
+
+[params]
+bytes = 1
+endian = "little"
+index = { shift = 0, bits = 8 }
+# Mode 7's map is always the full 128x128, which a bare 16 KiB payload has no
+# other way to say. A GBA affine map is smaller and square, so it falls outside
+# the count and keeps a width the user owns.
+page_columns = 128
+page_rows = 128
+page_counts = [1]

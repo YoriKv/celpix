@@ -67,6 +67,7 @@ class Capability(Enum):
     TILE_REARRANGE = auto()  # the display-only permutation (tile-rearrange.md)
 
     # -- shared, but implemented per content kind
+    PALETTE_ROW = auto()  # give the selection a named subpalette row of its own
     TILE_SELECT = auto()  # select a tile or a rectangle of them
     CLIPBOARD = auto()  # copy / cut / paste
     CELL_FLIP = auto()  # mirror a tile or a block of them
@@ -112,6 +113,7 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
         Capability.PIXEL_EDIT,
         Capability.PALETTE_EDIT,
         Capability.PALETTE_REGIONS,
+        Capability.PALETTE_ROW,
         Capability.TILE_REARRANGE,
         Capability.TILE_SELECT,
         Capability.CLIPBOARD,
@@ -128,7 +130,9 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # Six deliberate absences. PIXEL_EDIT: there are no pixels here to paint —
     # editing the art means editing the bound entry. PALETTE_REGIONS: a cell
     # already names its own palette row, so pinning a row over a span would be a
-    # second, conflicting answer to a question the file has already answered.
+    # second, conflicting answer to a question the file has already answered —
+    # which is why PALETTE_ROW is here instead, the same gesture landing in the
+    # cells the file already answers with (`docs/design/palette-editing.md` §4).
     # TILE_REARRANGE: a rearrangement is display state precisely because it moves
     # no bytes, and moving a cell *is* the byte edit. IMPORT_IMAGE: bringing a
     # picture in would mean matching it against the bound tiles, which is a
@@ -155,6 +159,7 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     ContentKind.TILEMAP: _BYTE_LEVEL
     | {
         Capability.PALETTE_EDIT,
+        Capability.PALETTE_ROW,
         Capability.TILE_SELECT,
         Capability.CLIPBOARD,
         Capability.CELL_FLIP,

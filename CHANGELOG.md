@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.5 - unreleased
+
+- **Palette rows**: unified palette row pin and tilemap palette row selection
+- **Formats**: added some tile and palette formats from SuperFamiconv
+- Various tilemap and palette fixes
+
 ## v0.4.4 - 2026-07-31
 
 - **View toggles**: Show Pinned Palette Colors and Show Pinned

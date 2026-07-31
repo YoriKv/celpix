@@ -15,7 +15,11 @@ laid out that way. A mask is therefore a **tuple of contiguous chunks, most
 significant first** (a plain mask parses to a one-chunk tuple), and the order is
 carried rather than inferred: which chunk holds the high bits is a property of
 the format, and boards exist that put the stray bit above the run as well as
-below.
+below. :func:`gather` / :func:`scatter` are that split-field kernel on its own,
+and a tilemap cell's fields are the same problem once more — a Game Boy Color
+index is bits 0-7 plus bit 8 stranded in the attribute byte — so
+:mod:`~celpix.plugins.builtins.tilemap_codec` reads its own
+``{ shift, bits }`` chunks through them.
 
 :func:`value_to_argb` / :func:`argb_to_value` are the per-value form a palette
 wants: a handful of entries, one at a time. A direct-color *image* needs the same
@@ -68,9 +72,7 @@ def _width(sw: tuple[tuple[int, int], ...]) -> int:
     return sum(width for _, width in sw)
 
 
-def _gather(
-    value: int, chunks: tuple[int, ...], sw: tuple[tuple[int, int], ...]
-) -> int:
+def gather(value: int, chunks: tuple[int, ...], sw: tuple[tuple[int, int], ...]) -> int:
     """Pack ``value``'s masked bits down into one field, chunks high-to-low.
 
     Linear in ``value``: each chunk lands at a fixed field position, so gathering
@@ -83,8 +85,8 @@ def _gather(
     return raw
 
 
-def _scatter(raw: int, chunks: tuple[int, ...], sw: tuple[tuple[int, int], ...]) -> int:
-    """Inverse of :func:`_gather`: spread a field back over its chunks."""
+def scatter(raw: int, chunks: tuple[int, ...], sw: tuple[tuple[int, int], ...]) -> int:
+    """Inverse of :func:`gather`: spread a field back over its chunks."""
     value = 0
     rest = _width(sw)
     for chunk, (shift, width) in zip(chunks, sw):
@@ -94,10 +96,24 @@ def _scatter(raw: int, chunks: tuple[int, ...], sw: tuple[tuple[int, int], ...])
 
 
 def _scale_up(raw: int, width: int) -> int:
-    """Scale a ``width``-bit field up to 8 bits by replicating its high bits."""
+    """Scale a ``width``-bit field up to 8 bits by replicating its high bits.
+
+    The pattern is repeated until it fills eight bits, not copied once: at four
+    bits and up one copy already reaches the bottom, but a 3-bit ``7`` tiled once
+    is ``0xE7`` and the format plainly means white. Genesis and PC Engine palettes
+    are 3 bits a channel and the handheld greys are 2 and 3, so the difference is
+    the whole top of their range.
+
+    The first copy lands in the top ``width`` bits, which is what keeps
+    :func:`_scale_down` an exact inverse however many follow it.
+    """
     if width >= 8:
         return (raw >> (width - 8)) & 0xFF
-    return ((raw << (8 - width)) | (raw >> max(0, 2 * width - 8))) & 0xFF
+    out, filled = 0, 0
+    while filled < 8:
+        out = (out << width) | raw
+        filled += width
+    return (out >> (filled - 8)) & 0xFF
 
 
 def _scale_down(comp8: int, width: int) -> int:
@@ -144,15 +160,30 @@ def shift_widths(
     }
 
 
+def _flip(raw: int, width: int, invert: bool) -> int:
+    """Complement a field within its own width, for formats that count darkness.
+
+    A grayscale LCD stores *how dark* a shade is, not how bright: 0 is white on a
+    Game Boy, a WonderSwan and a Neo Geo Pocket alike. That is one xor away from
+    an ordinary brightness field, so those palettes stay data
+    (``docs/graphics-formats-reference/superfamiconv-formats.md`` §3.3) instead of
+    each needing its own engine. Its own inverse, so the round trip is unaffected.
+    """
+    return raw ^ ((1 << width) - 1) if invert else raw
+
+
 def value_to_argb(
     value: int,
     masks: dict[str, tuple[int, ...]],
     sw: dict[str, tuple[tuple[int, int], ...]],
+    invert: bool = False,
 ) -> int:
     argb = 0
     for comp in COMPONENTS:
         if comp in masks:
-            comp8 = _scale_up(_gather(value, masks[comp], sw[comp]), _width(sw[comp]))
+            width = _width(sw[comp])
+            raw = _flip(gather(value, masks[comp], sw[comp]), width, invert)
+            comp8 = _scale_up(raw, width)
         elif comp == "a":
             comp8 = 0xFF  # no alpha field → opaque
         else:
@@ -165,11 +196,14 @@ def argb_to_value(
     argb: int,
     masks: dict[str, tuple[int, ...]],
     sw: dict[str, tuple[tuple[int, int], ...]],
+    invert: bool = False,
 ) -> int:
     value = 0
     for comp, chunks in masks.items():
         comp8 = (argb >> _ARGB_SHIFT[comp]) & 0xFF
-        value |= _scatter(_scale_down(comp8, _width(sw[comp])), chunks, sw[comp])
+        width = _width(sw[comp])
+        raw = _flip(_scale_down(comp8, width), width, invert)
+        value |= scatter(raw, chunks, sw[comp])
     return value
 
 
@@ -208,7 +242,7 @@ def decode_tables(
                 continue
             per_byte.append(
                 bytes(
-                    _scale_up(_gather(value << up, chunks, sw[comp]), width)
+                    _scale_up(gather(value << up, chunks, sw[comp]), width)
                     for value in range(256)
                 )
             )
@@ -240,7 +274,7 @@ def encode_tables(
             width = _width(sw[comp])
             per_comp.append(
                 bytes(
-                    (_scatter(_scale_down(value, width), chunks, sw[comp]) >> up) & 0xFF
+                    (scatter(_scale_down(value, width), chunks, sw[comp]) >> up) & 0xFF
                     for value in range(256)
                 )
             )

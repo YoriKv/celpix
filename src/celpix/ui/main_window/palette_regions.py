@@ -1,4 +1,14 @@
-"""Pinning a region of the picture to its own subpalette row.
+"""Giving part of the picture a subpalette row of its own.
+
+**One gesture, two stores.** Selecting something and saying "these draw through
+row *n*" is one question, and the answer is kept wherever the document already
+keeps such things: a pixel document has nothing in its bytes that could say a row,
+so it becomes a pinned region held in the project; a tilemap's cells carry the
+field already, so the same gesture writes it there and the file keeps it
+(:meth:`~celpix.ui.main_window.tilemap_edit.TilemapEditMixin.
+_assign_cell_palette_row`). The row picked, the base it is stored through, the
+number over a tile and the ring in the palette grid are shared — only the store
+differs. The rest of this module is the pinned half.
 
 celPix renders everything through one global subpalette row, but a ROM's tile bank
 usually isn't drawn under one palette: the status bar sits at palette 0, the player
@@ -54,6 +64,7 @@ from PySide6.QtGui import QAction, QKeySequence
 from celpix.core.arrangement import tile_first_pixel, tile_pixel_spans
 from celpix.core.paletteregions import PaletteRegions
 from celpix.pipeline.pipeline import drawn_palette_row
+from celpix.ui.main_window.capability_sync import Gesture
 from celpix.ui.undo_commands import PaletteRegionsCommand
 from celpix.ui.widgets import counted, load_bool_setting, save_bool_setting
 
@@ -186,12 +197,18 @@ class PaletteRegionsMixin:
         # share their first colors, and a bank seeded from a file's own table
         # (`session._seed_tile_palette_rows`) can carry dozens of them. So the
         # number can be shown without the recolor, and either without the other.
-        self._show_palette_rows_action = QAction("Show Pinned Palette &Rows", self)
+        #
+        # Not "pinned" rows: what it numbers is every *named* row, which on a
+        # tilemap is the cells' own (`rendering._palette_row_labels`). The
+        # recolour toggle above it stays about the pins alone — a map is drawn
+        # through its cells' rows whether or not anything is switched on.
+        self._show_palette_rows_action = QAction("Show Palette &Rows", self)
         self._show_palette_rows_action.setCheckable(True)
         self._show_palette_rows_action.setChecked(self._show_palette_rows)
         self._show_palette_rows_action.setToolTip(
-            "Number each pinned tile with the subpalette row it uses\n"
-            "Drawn in the grid's own color, in the tile's top-left corner"
+            "Number each tile with the subpalette row it names\n"
+            "A pinned row on a pixel view, a cell's own on a tilemap\n"
+            "Drawn in the grid's own color, in the tile's bottom-left"
         )
         self._show_palette_rows_action.toggled.connect(self._set_show_palette_rows)
         # The third switch, and the one that is not about the pins alone: it says
@@ -277,15 +294,73 @@ class PaletteRegionsMixin:
             self._refresh_view()
 
     def _sync_pin_actions(self) -> None:
-        """Enable the gestures only when there is a selection to pin.
+        """Enable the gestures only when there is a selection to act on, and word
+        the assignment for the document it would act on.
 
-        Unpin All is the exception: it needs pinned regions, not a selection.
+        Unpin All is the exception to the first half: it needs pinned regions,
+        not a selection.
+
+        The assignment gesture is the exception to the second. It is one gesture
+        with two stores (:meth:`_pin_selection`), and where it *puts* the row is
+        the difference a user has to be told about: on a tilemap it edits the
+        file, which is not what "pin" means anywhere else in celPix — a pin is
+        display state the bytes know nothing about. So the label follows the
+        kind, the way the tile-size caption does. It is also the one gesture with
+        a **format** condition under the kind's: a cell with no palette field has
+        nowhere to write a row (:meth:`~...tilemap_edit.TilemapEditMixin.
+        _cell_palette_row_limit`), which is what a stamp layout's coordinate word
+        answers — there the row belongs to the map being stamped, and that is
+        where it is edited.
+
+        This also owns the row **labels** toggle, which is no longer the pinned
+        regions' alone: what it numbers is every named row, and a tilemap's cells
+        are named rows (:meth:`~...rendering.RenderingMixin._palette_row_labels`).
         """
-        has_selection = self._doc is not None and bool(self._selection_tiles())
-        pinned = self._doc is not None and not self._palette_regions.is_empty()
-        self._pin_palette_action.setEnabled(has_selection)
+        doc = self._doc
+        has_selection = doc is not None and bool(self._selection_tiles())
+        pinned = doc is not None and not self._palette_regions.is_empty()
+        if doc is not None and doc.is_tilemap:
+            text, short = "Set &Selection's Palette Row", "Set Row"
+            tip = (
+                "Write the current Subpal row into the selected\n"
+                "cells, which is where this format keeps it"
+            )
+            writable = self._cell_palette_row_limit() is not None
+        else:
+            text, short = "Pin &Selection to Subpalette", "Pin"
+            tip = (
+                "Render the selected tiles through the current\n"
+                "Subpal row, whatever the view is set to"
+            )
+            writable = True
+        self._pin_palette_action.setText(text)
+        self._pin_palette_action.setIconText(short)
+        self._pin_palette_action.setToolTip(tip)
+        self._pin_palette_action.setEnabled(has_selection and writable)
         self._unpin_palette_action.setEnabled(has_selection and pinned)
         self._unpin_all_action.setEnabled(pinned)
+        self._show_palette_rows_action.setEnabled(self._has_named_palette_rows())
+
+    def _has_named_palette_rows(self) -> bool:
+        """Whether anything on screen can name a subpalette row of its own.
+
+        What the row labels answer, and the one predicate for both stores: a
+        pixel document always can (a pin is a gesture away, and none yet is a
+        picture with no numbers on it rather than a control that means nothing),
+        a tilemap can where its format gives a cell the field.
+
+        Nothing open reads as a pixel document, the rule the capability pass
+        follows (``capability_sync._content_kind``) — it is a preference about how
+        you read a sheet, and it can be set before there is one.
+
+        A **sprite object** cannot, though its subsprites carry rows: they sit at
+        pixel offsets rather than in slots, so there is no square for a number to
+        belong to — the same reason the tile-id labels skip it.
+        """
+        doc = self._doc
+        if doc is None or not doc.is_tilemap:
+            return True
+        return doc.cells_carry_palette_rows and not doc.is_sprite
 
     # -- the gestures ------------------------------------------------------
     def _selection_spans(self) -> list[tuple[int, int]]:
@@ -414,10 +489,17 @@ class PaletteRegionsMixin:
         if doc.is_tilemap:
             if not doc.cells_carry_palette_rows:
                 return None  # a coordinate cell has no row field to read
+            # The **drawn** cells, at the positions the selection covers, which is
+            # not the same list as the file's own: a chained map's cells are
+            # coordinates and the row that reaches the screen is the source cell's
+            # (:meth:`~celpix.core.document.Document.resolve`). The file's own word
+            # there carries a 0 that is no row anybody chose — the row a stamp
+            # draws through is not in the bytes this entry holds at all.
+            cells = doc.laid_out_cells
             rows = {
-                doc.cells[at].palette_row
-                for at in self._selected_cells()
-                if 0 <= at < len(doc.cells)
+                cells[at].palette_row
+                for at in self._selected_positions()
+                if 0 <= at < len(cells)
             }
             if len(rows) != 1:
                 return None
@@ -479,32 +561,55 @@ class PaletteRegionsMixin:
         biases = self._tile_biases([tile])
         return self._palette_base() if biases is None else biases[0]
 
-    def _pin_selection(self) -> None:
-        """Pin the selection to the Subpal spinbox's current row.
+    def _named_row_picked(self) -> int:
+        """The Subpal row as a **named** row — what an assignment stores.
 
-        What is *stored* is that row taken back through the base, because a
-        region's row is a named one and the base is applied on the way out again
-        (:meth:`_drawn_palette_row`). So the colours the pin lands on are the
-        colours the user had selected — under a base of 8, pinning while row 11
-        is picked stores 3 and draws 11 — and re-aiming the whole entry with the
-        base spin afterwards moves this pin with everything else, which is the
-        point of storing it relative rather than absolute.
+        The row taken back through the base, because both stores keep a *named*
+        row and the base is applied again on the way out
+        (:meth:`_drawn_palette_row`). So what lands is the colours the user had
+        selected — under a base of 8, assigning while row 11 is picked stores 3
+        and draws 11 — and re-aiming the whole entry with the base spin
+        afterwards moves it with everything else, which is the point of storing
+        it relative rather than absolute.
 
         The plain difference is what makes that true under **either** reading of
         the ends: it draws back through the base as the row that was picked
         whether or not the base wraps. Wrapping only normalizes it into the
-        palette, so a pin made under one setting means the same thing under the
-        other.
+        palette, so a row assigned under one setting means the same thing under
+        the other.
+
+        Shared by the two stores so they cannot disagree about what the gesture
+        means: a pinned region and a cell's own field take the same number from
+        the same place (:meth:`_pin_selection`).
+        """
+        assert self._doc is not None
+        row = self._subpalette.value() - self._doc.palette_row_base
+        wrap = self._doc.palette_row_wrap(self._index_space())
+        return row % wrap if wrap else row
+
+    def _pin_selection(self) -> None:
+        """Give the selection a subpalette row of its own — the Subpal spin's.
+
+        **One gesture, two stores.** A pixel document has nothing in its bytes
+        that could say a row, so the answer is a pinned region held in the
+        project; a tilemap's cells carry the field already, so the same gesture
+        writes it there and the file keeps it
+        (:meth:`~...tilemap_edit.TilemapEditMixin._assign_cell_palette_row`).
+        Which one runs is the kind's, through the usual dispatch — what is shared
+        is the row itself (:meth:`_named_row_picked`), so the two cannot drift
+        into meaning different things by the number they land on.
+
+        This body is the pixel one, as every shared gesture's is.
         """
         if self._doc is None or self._applying_undo:
+            return
+        if (assign := self._kind_handler(Gesture.ASSIGN_PALETTE_ROW)) is not None:
+            assign()
             return
         spans = self._selection_spans()
         if not spans:
             return
-        row = self._subpalette.value() - self._doc.palette_row_base
-        wrap = self._doc.palette_row_wrap(self._index_space())
-        if wrap:
-            row %= wrap
+        row = self._named_row_picked()
         after = self._palette_regions.assigned(spans, row)
         if after == self._palette_regions:
             return  # already pinned there — not a history step

@@ -7376,14 +7376,20 @@ def test_a_format_with_palette_rows_ignores_subpal_even_at_row_zero(
     """The other half, and the case that makes it a *format* question: a console
     BG cell has a palette field, so the file has answered even where every cell
     answers 0. A view-wide row on top would shift a map that is in the colours it
-    was authored in — the way to change one is to edit the cells."""
+    was authored in — the way to change one is to edit the cells.
+
+    The spin stays live all the same, and its tooltip is the whole of the
+    difference: it is the row being *picked*, which is what the assignment
+    gesture writes into those cells. Only the render ignores it."""
     from celpix.core.tilemap import Cell
+    from celpix.ui.main_window.interpretation import SUBPAL_CELLS_TIP
 
     window, _bank, _entry = _bound_screen(
         qtbot, tmp_path, [Cell(index=1), Cell(index=0)]
     )
     assert window._doc.cells_carry_palette_rows
-    assert not window._subpalette.isEnabled()
+    assert window._subpalette.isEnabled()
+    assert window._subpalette.toolTip() == SUBPAL_CELLS_TIP
     before = window._canvas._image.copy()
     window._subpalette.setValue(1)
     window._refresh_view()
@@ -9145,7 +9151,9 @@ def test_the_pinned_palette_toggles_are_two_separate_switches(qtbot, tmp_path) -
     window = MainWindow()
     qtbot.addWidget(window)
     assert window._show_palette_regions_action.text() == "S&how Pinned Palette Colors"
-    assert window._show_palette_rows_action.text() == "Show Pinned Palette &Rows"
+    # The rows toggle is not the pins' alone - it numbers every named row, which
+    # on a tilemap is the cells' own - so it is not named for them.
+    assert window._show_palette_rows_action.text() == "Show Palette &Rows"
     assert window._show_palette_regions_action.isChecked()
     assert not window._show_palette_rows_action.isChecked()
 
@@ -9324,6 +9332,114 @@ def test_the_palette_grid_marks_the_row_a_selected_cell_draws_in(
 
     window._clear_selection()
     assert panel._marked_row is None
+
+
+def _stamp_layout_over(qtbot, tmp_path, cells, entries):
+    """A stamp layout bound to a panel of ``cells``, itself bound to a bank.
+
+    Two hops, which is what makes the palette row worth a fixture: a layout's own
+    word is a coordinate with no colour field, so every row on screen is one the
+    panel states.
+    """
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_pnl_file(tmp_path, cells)))
+    panel = window._workspace.entries[1]
+    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    window._reload_tilemap(panel)
+    window._load_pixel(str(_map_file(tmp_path, entries)))
+    layout = window._workspace.current
+    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    window._reload_tilemap(layout)
+    return window, layout, panel
+
+
+def test_the_palette_grid_marks_the_row_a_stamped_cell_is_drawn_in(
+    qtbot, tmp_path
+) -> None:
+    """A chained map's row is the *source* cell's: its own word is a coordinate,
+    and what reaches the screen is whatever the stamp it names carries. So the
+    mark has to read the drawn cells and not the file's own, which held a 0 that
+    is never a row anybody chose."""
+    from celpix.core.tilemap import Cell
+
+    cells = [Cell()] * 34
+    cells[0], cells[1] = Cell(index=1, palette_row=5), Cell(index=2, palette_row=5)
+    cells[32], cells[33] = Cell(index=3, palette_row=5), Cell(index=4, palette_row=5)
+    window, _layout, _panel = _stamp_layout_over(
+        qtbot, tmp_path, cells, [Cell(index=0)]
+    )
+    assert window._doc.cells[0].palette_row == 0  # the coordinate word
+    assert window._doc.drawn_cells[0].palette_row == 5  # the stamp's own
+
+    window._select_tiles(0, 0)
+    assert window._palette_panel._marked_row == 5
+    # And the same row is what the label over that cell says, from the one
+    # computation - a mark and a number that could disagree would be worse than
+    # either alone.
+    window._show_palette_rows_action.setChecked(True)
+    assert window._canvas._palette_rows[0] == 5
+
+
+def test_the_pin_gesture_writes_a_tilemap_cells_own_palette_row(
+    qtbot, tmp_path
+) -> None:
+    """One gesture, two stores. A pixel document has nothing in its bytes that
+    could say a row, so pinning holds it in the project; a cell has the field, so
+    the same gesture writes it there - through the base, clamped to what the
+    field can hold, and undoable like any other cell edit."""
+    from celpix.core.tilemap import Cell
+
+    window, _bank, _entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=1), Cell(index=2)]
+    )
+    window._select_tiles(0, 0)
+    window._subpalette.setValue(3)
+    window._pin_selection()
+    assert window._doc.cells[0].palette_row == 3
+    assert window._doc.cells[1].palette_row == 0  # only what was selected
+    assert window._palette_panel._marked_row == 3
+
+    # Stored as a *named* row, so the base is taken back off on the way in and
+    # put on again on the way out - the colours picked are the colours landed on.
+    window._row_base.setValue(4)
+    window._subpalette.setValue(6)
+    window._pin_selection()
+    assert window._doc.cells[0].palette_row == 2
+    assert window._palette_panel._marked_row == 6
+    window._row_base.setValue(0)
+
+    # Clamped to the field: a console BG cell spends three bits on the row, so
+    # row 9 would come back as 1 if encode were left to mask it down.
+    window._subpalette.setValue(9)
+    window._pin_selection()
+    assert window._doc.cells[0].palette_row == 7
+
+    window._undo_stack.undo()
+    assert window._doc.cells[0].palette_row == 2
+
+
+def test_a_stamp_layout_has_no_palette_row_of_its_own_to_set(qtbot, tmp_path) -> None:
+    """The row a stamped position draws through belongs to the panel it names, and
+    that is where it is editable: the layout's own word is a coordinate with no
+    colour field, so the gesture is off rather than writing a bit encode drops."""
+    from celpix.core.tilemap import Cell
+
+    window, _layout, panel = _stamp_layout_over(
+        qtbot, tmp_path, [Cell(index=1, palette_row=5)] * 34, [Cell(index=0)]
+    )
+    window._select_tiles(0, 0)
+    assert window._cell_palette_row_limit() is None
+    assert not window._pin_palette_action.isEnabled()
+
+    # The panel itself is where the row lives, so there the gesture is armed.
+    window._activate_entry(panel)
+    window._select_tiles(0, 0)
+    assert window._cell_palette_row_limit() == 7
+    assert window._pin_palette_action.isEnabled()
 
 
 def test_a_tilemap_hides_the_position_bar_and_disables_the_row_count(

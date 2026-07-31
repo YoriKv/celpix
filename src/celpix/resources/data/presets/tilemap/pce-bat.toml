@@ -1,0 +1,12 @@
+# PC Engine BAT (background attribute table) entry — 16-bit little-endian:
+# index 0-11, palette 12-15. The VDC has no per-cell flip or priority, which is
+# why those fields are absent rather than zero.
+id = "preset.tilemap.pce-bat"
+name = "PC Engine BAT (16-bit)"
+engine_id = "codec.tilemap.packed"
+
+[params]
+bytes = 2
+endian = "little"
+index = { shift = 0, bits = 12 }
+palette = { shift = 12, bits = 4 }

@@ -81,6 +81,7 @@ class Gesture(Enum):
     PASTE = auto()
     TRANSFORM_TILES = auto()
     TRANSFORM_BLOCK = auto()
+    ASSIGN_PALETTE_ROW = auto()
 
 
 # Which controls each capability gates, by attribute name. Names rather than
@@ -93,12 +94,15 @@ _GATES: dict[Capability, tuple[str, ...]] = {
         "_edit_mode_action",
         "_toggle_edit_mode_action",
     ),
+    # The two *unpin* gestures and the recolour toggle, and not the third gesture
+    # beside them: pinning a row is what a pixel document does with a row it has
+    # been given, so the gesture that gives one rides on PALETTE_ROW and is gated
+    # by its own sync (see _GATED_IN_PLACE). Unpinning has no tilemap reading —
+    # every cell has a row, so there is no "back to the view's" to return to.
     Capability.PALETTE_REGIONS: (
-        "_pin_palette_action",
         "_unpin_palette_action",
         "_unpin_all_action",
         "_show_palette_regions_action",
-        "_show_palette_rows_action",
     ),
     # The three switches are gated from here, but the tool's *state* is not
     # something this pass can reach: an armed tool has to be put down, not greyed
@@ -146,10 +150,17 @@ _GATES: dict[Capability, tuple[str, ...]] = {
 # finer question underneath it rather than a second place the capability is
 # gated. A capability sits in exactly one bucket; a control may still weigh more
 # than that bucket says.
+#
+# ``PALETTE_ROW`` is a two-level condition of the third sort: both kinds declare
+# it, so the table's gate would always be true, while what the two controls
+# underneath it actually need is finer and per-kind — a selection and, on a
+# tilemap, a format with a palette field to write
+# (:meth:`~...palette_regions.PaletteRegionsMixin._sync_pin_actions`).
 _GATED_IN_PLACE = frozenset(
     {
         Capability.TILE_BINDING,  # tilemap_bar._sync_tilemap_bar — the stack swap
         Capability.CELL_ROTATE,  # transform._sync_transform_actions
+        Capability.PALETTE_ROW,  # palette_regions._sync_pin_actions
     }
 )
 
@@ -211,7 +222,6 @@ _GATE_OWNS = frozenset(
     {
         "_edit_mode_action",
         "_show_palette_regions_action",
-        "_show_palette_rows_action",
         "_show_tile_ids_action",
         # Hidden groups have to be in here too, or the veto below would leave a
         # group disabled behind its own hiding and it would come back grey.
@@ -237,7 +247,7 @@ _NOT_BUILT_YET: dict[ContentKind, frozenset[Capability]] = {}
 #
 # An entry here is an **override, not the whole dispatch**. The shared method's
 # own body is the ``PIXELS`` implementation: that is where each of these gestures
-# has always been implemented, and lifting six pixel bodies out into named
+# has always been implemented, and lifting seven pixel bodies out into named
 # methods purely to fill a second column would buy nothing but a second name for
 # each. So a kind absent from this table runs the shared body, and what the table
 # reads as is the list of gestures that mean something else somewhere.
@@ -249,6 +259,7 @@ _BEHAVIOURS: dict[ContentKind, dict[Gesture, str]] = {
         Gesture.PASTE: "_paste_cells",
         Gesture.TRANSFORM_TILES: "_transform_cells",
         Gesture.TRANSFORM_BLOCK: "_transform_cell_block",
+        Gesture.ASSIGN_PALETTE_ROW: "_assign_cell_palette_row",
     },
 }
 
@@ -269,6 +280,11 @@ _GESTURE_CAPABILITY: dict[Gesture, Capability] = {
     # (``CELL_ROTATE`` in :data:`_GATED_IN_PLACE`).
     Gesture.TRANSFORM_TILES: Capability.CELL_FLIP,
     Gesture.TRANSFORM_BLOCK: Capability.CELL_FLIP,
+    # One gesture, two stores: the pixel body writes a pinned region into the
+    # project, the tilemap one writes the row into the cells the file already
+    # keeps it in. Both kinds declare the capability, which is what says the
+    # question — "give this selection a row of its own" — is the same one.
+    Gesture.ASSIGN_PALETTE_ROW: Capability.PALETTE_ROW,
 }
 
 

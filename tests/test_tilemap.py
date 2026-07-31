@@ -152,6 +152,37 @@ def test_an_index_only_format_decodes_and_re_encodes_without_attributes() -> Non
     )
 
 
+@pytest.mark.parametrize(
+    ("preset_id", "index", "raw", "limit"),
+    [
+        # GBC: low 8 bits of the tile in byte 0, bit 8 stranded at word bit 11,
+        # palette 8-10, hflip 13. 0x1A5 needs both chunks to survive.
+        ("preset.tilemap.gbc-bg", 0x1A5, b"\xa5\x2d", 0x1FF),
+        # WonderSwan: bits 0-8 in place, bit 9 stranded at word bit 13.
+        ("preset.tilemap.ws-bg", 0x3FF, b"\xff\xff", 0x3FF),
+        ("preset.tilemap.ws-bg", 0x155, b"\x55\x93", 0x3FF),
+    ],
+)
+def test_a_split_index_survives_both_of_its_chunks(
+    preset_id: str, index: int, raw: bytes, limit: int
+) -> None:
+    """A tile number parked in two non-adjacent bit ranges round-trips whole.
+
+    Hardware that outgrew the room left for its tile number puts the extra bits
+    wherever there was space, so the field is a *list* of chunks. Getting the
+    chunk order backwards still round-trips within celPix — it is only wrong
+    against the console — hence the pinned bytes, which are what
+    SuperFamiconv's own packer emits (``superfamiconv-formats.md`` §4).
+    """
+    registry = default_registry()
+    codec, params, ctx = TilemapCodec(), _params(registry, preset_id), PipelineContext()
+    (cell,) = codec.decode(raw, params, ctx)
+    assert cell.index == index
+    assert codec.encode([cell], params, ctx) == raw
+    # The width both chunks add up to, not just the low one's.
+    assert codec.index_limit(params) == limit
+
+
 def test_a_too_wide_index_is_masked_not_raised() -> None:
     """One cell out of range must not cost the whole save."""
     registry = default_registry()
@@ -2214,3 +2245,20 @@ def test_a_foreign_spr_stops_the_walk_instead_of_failing_it(tmp_path) -> None:
     # A count running past the end of the file: no whole record follows it.
     assert SprContainer().read(ReadSource(data=b"\x08\x00\x00"), ctx) == b""
     assert ctx.get(KEY_TILEMAP_FRAME_SIZES) == (0,)
+
+
+def test_an_uninitialised_trailer_reports_no_signature_rather_than_its_bytes() -> None:
+    """The earliest build leaves 512 bytes of stale buffer where the later ones put
+    81 and a name. A signature is NUL-less ASCII to the end of the file, so anything
+    else is that buffer — and reporting it anyway puts NULs in a field the user then
+    sees as blank, which reads as a broken row rather than as a file with no name."""
+    from celpix.plugins.builtins.ys_spr import SprContainer
+
+    def signature(trailer: bytes) -> str:
+        raw = bytes(32) + trailer  # 32 empty frames, then whatever tail
+        (field, *_) = SprContainer().describe(ReadSource(data=raw), PipelineContext())
+        return field.value
+
+    assert signature(bytes(81) + b"OBJ TOOL Ver 2.00").startswith("OBJ TOOL Ver 2.00 ")
+    assert "none" in signature(bytes(512))
+    assert "none" in signature(bytes(81) + b"\x0c\x02\x00\x40" * 8)  # stale records

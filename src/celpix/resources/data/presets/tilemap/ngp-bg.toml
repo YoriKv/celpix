@@ -1,0 +1,17 @@
+# Neo Geo Pocket (mono) scroll map entry — 16-bit little-endian: index 0-8,
+# palette select 13, V flip 14, H flip 15.
+#
+# The flip bits are the other way round from every other console we read —
+# vertical below horizontal — so this is not the Neo Geo Pocket Color entry with
+# a narrower palette field. That one is `ngpc-bg`.
+id = "preset.tilemap.ngp-bg"
+name = "Neo Geo Pocket map (16-bit, mono)"
+engine_id = "codec.tilemap.packed"
+
+[params]
+bytes = 2
+endian = "little"
+index = { shift = 0, bits = 9 }
+palette = { shift = 13, bits = 1 }
+flip_v = { shift = 14, bits = 1 }
+flip_h = { shift = 15, bits = 1 }

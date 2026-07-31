@@ -721,3 +721,41 @@ def test_one_file_in_the_list_behaves_exactly_as_before(tmp_path) -> None:
     doc.pixel_data = blobs[0] + b"\xff" * 32  # longer than the file on disk
     pipeline.save(doc, reg, pixel=True, palette=False)
     assert paths[0].read_bytes() == blobs[0] + b"\xff" * 32
+
+
+@pytest.mark.parametrize(
+    ("preset_id", "per_unit", "unit_bytes"),
+    [
+        ("preset.palette.bgr555", 1, 2),  # an entry is a unit, the ordinary case
+        ("preset.palette.sms-6bpp", 1, 1),
+        ("preset.palette.gb-bgp", 4, 1),  # four shades share one register byte
+        ("preset.palette.ws-gray", 2, 1),  # two nibbles a byte
+    ],
+)
+def test_palette_window_sizing_survives_packed_entries(
+    preset_id: str, per_unit: int, unit_bytes: int
+) -> None:
+    """Colour count ⇄ byte length, for formats where an entry is under a byte.
+
+    The host sizes every palette read window with these two, so reading the pair
+    the wrong way round silently loads a quarter of a Game Boy palette — or four
+    times as many bytes as the source has. Rounding has to go *up* on the way to
+    bytes and *down* on the way back, since neither half of a shared byte can be
+    read alone.
+    """
+    reg = default_registry()
+    assert pipeline.palette_entries_per_unit(preset_id, reg) == per_unit
+    assert pipeline.palette_entry_size(preset_id, reg) == unit_bytes
+
+    # A whole number of units round-trips exactly, both ways.
+    for units in (1, 3, 8):
+        count = units * per_unit
+        nbytes = units * unit_bytes
+        assert pipeline.palette_read_bytes(count, preset_id, reg) == nbytes
+        assert pipeline.palette_entry_capacity(nbytes, preset_id, reg) == count
+
+    # A part-unit read reaches for the whole unit; a part-unit buffer yields none
+    # of it, so a window never lands on bytes the codec would reject.
+    assert pipeline.palette_read_bytes(1, preset_id, reg) == unit_bytes
+    assert pipeline.palette_entry_capacity(unit_bytes - 1, preset_id, reg) == 0
+    assert pipeline.palette_read_bytes(0, preset_id, reg) == 0

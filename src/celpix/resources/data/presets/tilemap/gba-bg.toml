@@ -1,0 +1,23 @@
+# GBA text BG map entry — 16-bit little-endian: index 0-9, H flip 10, V flip 11,
+# palette 12-15. No priority bit: the GBA sets priority per background, not per
+# cell.
+id = "preset.tilemap.gba-bg"
+name = "GBA BG map (16-bit)"
+engine_id = "codec.tilemap.packed"
+
+[params]
+bytes = 2
+endian = "little"
+index = { shift = 0, bits = 10 }
+flip_h = { shift = 10, bits = 1 }
+flip_v = { shift = 11, bits = 1 }
+palette = { shift = 12, bits = 4 }
+# Same screen-block scheme the SNES uses, and stated for the same reason: the
+# console cuts a background into 32x32 blocks and lays them out
+# horizontally-then-vertically, so the four text-BG sizes are 1, 2 or 4 of them.
+# Read back to back the blocks would otherwise stack in a column no GBA drew.
+# Two blocks stay ambiguous by nature (512x256 and 256x512 are both real), so the
+# assembly resolves that rather than this preset. See `snes-bg.toml`.
+page_columns = 32
+page_rows = 32
+page_counts = [1, 2, 4]

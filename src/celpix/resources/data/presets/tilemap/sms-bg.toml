@@ -1,0 +1,17 @@
+# Master System / Game Gear name table entry — 16-bit little-endian: index 0-8,
+# H flip 9, V flip 10, palette select 11 (sprite bank vs background bank),
+# priority 12.
+id = "preset.tilemap.sms-bg"
+name = "Master System name table (16-bit, also Game Gear)"
+engine_id = "codec.tilemap.packed"
+
+[params]
+bytes = 2
+endian = "little"
+index = { shift = 0, bits = 9 }
+flip_h = { shift = 9, bits = 1 }
+flip_v = { shift = 10, bits = 1 }
+palette = { shift = 11, bits = 1 }
+priority = { shift = 12, bits = 1 }
+# No page geometry: the visible name table is 32 columns by 24 or 28 rows
+# depending on the display mode, so a cell count does not name one shape.

@@ -1,0 +1,25 @@
+# Game Boy Color BG map cell, read as the interleaved 16-bit pair a converter
+# emits: tile byte then attribute byte. Palette 8-10, tile bit 8 at 11, H flip
+# 13, V flip 14, BG-to-OBJ priority 15.
+#
+# The tile number is **split**: its low eight bits are the whole first byte and
+# its ninth bit is stranded up in the attribute byte, because the number outgrew
+# the room left for it. That is what the two-chunk `index` says, most significant
+# chunk first.
+#
+# On the console itself the two bytes are not adjacent at all — the map is in
+# VRAM bank 0 and the attributes in bank 1 — so a *banked* dump is two separate
+# regions instead. Join them with the split-plane reshape (2 parts, 1-byte unit)
+# and this preset reads the result; a map with no attribute half is `gb-bg`.
+id = "preset.tilemap.gbc-bg"
+name = "Game Boy Color BG map (16-bit, interleaved)"
+engine_id = "codec.tilemap.packed"
+
+[params]
+bytes = 2
+endian = "little"
+index = [{ shift = 11, bits = 1 }, { shift = 0, bits = 8 }]
+palette = { shift = 8, bits = 3 }
+flip_h = { shift = 13, bits = 1 }
+flip_v = { shift = 14, bits = 1 }
+priority = { shift = 15, bits = 1 }

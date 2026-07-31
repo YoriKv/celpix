@@ -423,8 +423,54 @@ class RenderingMixin:
             labels.extend([None] * (per_cell - 1))
         return labels
 
+    def _palette_row_labels(self, cols: int, rows: int) -> list[int | None] | None:
+        """The row to number each canvas slot with — the overlay, for both stores.
+
+        One switch over two answers, because it is one question: which slots name
+        a subpalette row of their own, and which row. A pixel document's named
+        rows are its pinned regions (:meth:`_window_palette_rows`); a tilemap's
+        are its cells (:meth:`_cell_palette_rows`). Both come back as rows of the
+        palette on screen, taken through the base, so the number over a tile and
+        the ring in the palette grid are the same number
+        (:meth:`~...palette_regions.PaletteRegionsMixin._drawn_palette_row`).
+        """
+        if not self._show_palette_rows:
+            return None
+        doc = self._doc
+        if doc is not None and doc.is_tilemap:
+            return self._cell_palette_rows()
+        return self._window_palette_rows(cols, rows)
+
+    def _cell_palette_rows(self) -> list[int | None] | None:
+        """The row each visible cell draws through, by canvas slot — or None.
+
+        :meth:`_tile_id_labels`' twin, and the same shape for the same reasons:
+        indexed by **tile** slot because that is the space the canvas places in,
+        one number per cell so a metatile is labelled once, and walked in the
+        order the cells are *drawn* so an assembled screen numbers the half of
+        the picture it is looking at.
+
+        The **drawn** cells, so a chained map shows the rows its stamps actually
+        carry rather than the zeros its own coordinate words hold
+        (:meth:`~celpix.core.document.Document.resolve`).
+
+        None where the format gives a cell no row — there the whole map is read
+        under Subpal and a number over every cell would repeat one control — and
+        None for a sprite object, whose subsprites sit at pixel offsets rather
+        than in slots.
+        """
+        doc = self._doc
+        if doc is None or doc.is_sprite or not doc.cells_carry_palette_rows:
+            return None
+        per_cell = doc.tiles_per_cell
+        labels: list[int | None] = []
+        for cell in doc.laid_out_cells:
+            labels.append(self._drawn_palette_row(cell.palette_row))
+            labels.extend([None] * (per_cell - 1))
+        return labels
+
     def _sync_subpalette(self) -> None:
-        """Grey Subpal (and its caption) where the format has already answered it.
+        """Say what Subpal means here — the view's row, or the row being picked.
 
         A cell that has a palette row to name is the format's word on which
         colours the map is read in, whatever this file's cells set it to: a
@@ -434,17 +480,21 @@ class RenderingMixin:
         has to be read under *some* row — so the spin is that row, as it is on a
         pixel document.
 
-        Owns the enabled state in both directions, because nothing else does:
-        every other pass leaves the spin alone, so a veto here would switch it
-        off for the rest of the session (``capability_sync``'s rule). Not in the
-        capability table because it is the *format* that decides, not the
-        content kind — two tilemaps can answer differently.
+        Live either way, and the tooltip is the whole of the difference. What the
+        spin is on such a map is the row being *pointed at* — the block the
+        palette grid outlines, the row the tile sheet is read in, and the row Set
+        Selection's Palette Row writes into the cells
+        (:meth:`~...tilemap_edit.TilemapEditMixin._assign_cell_palette_row`). Only
+        the render ignores it, and greying the input would refuse the one gesture
+        that needs it in order to say so.
+
+        Not in the capability table because it is the *format* that decides, not
+        the content kind — two tilemaps can answer differently.
         """
         assert self._doc is not None
-        usable = not (self._doc.is_tilemap and self._doc.cells_carry_palette_rows)
-        tip = SUBPAL_TIP if usable else SUBPAL_CELLS_TIP
+        view_row = not (self._doc.is_tilemap and self._doc.cells_carry_palette_rows)
+        tip = SUBPAL_TIP if view_row else SUBPAL_CELLS_TIP
         for widget in (self._subpalette, self._subpalette_label):
-            widget.setEnabled(usable)
             widget.setToolTip(tip)
 
     def _render_rearranged(self, layout: BlockLayout, rows: int):
@@ -586,10 +636,9 @@ class RenderingMixin:
         self._canvas.set_arrangement(*block)
         self._canvas.set_filled_tiles(filled)
         # The labels are their own switch: a row can be shown without the
-        # recolour and either without the other (`palette_regions.py`).
-        self._canvas.set_palette_rows(
-            self._window_palette_rows(cols, rows) if self._show_palette_rows else None
-        )
+        # recolour and either without the other (`palette_regions.py`). One
+        # switch, two stores - a pixel document's pins, a tilemap's cells.
+        self._canvas.set_palette_rows(self._palette_row_labels(cols, rows))
         # The tilemap-side annotation, and the same kind of thing: a number laid
         # over the art saying what the picture cannot.
         self._canvas.set_tile_ids(self._tile_id_labels())

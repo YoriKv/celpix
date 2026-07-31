@@ -38,15 +38,27 @@ def _color_engine(preset_id: str):
     return _REG.plugin(Stage.INTERPRET_PALETTE, p.engine_id), p.params
 
 
+def _entries_per_unit(engine, params) -> int:  # noqa: ANN001
+    """What the host assumes of a codec that doesn't declare it: one per unit."""
+    per_unit = getattr(engine, "entries_per_unit", None)
+    return per_unit(params) if per_unit else 1
+
+
 @pytest.mark.parametrize("preset_id", _palette_ids())
 def test_palette_preset_reports_entry_size(preset_id: str) -> None:
     """`bytes_per_entry` matches what decode actually consumes, for every palette
-    preset — the host relies on it to size "load N entries" byte windows."""
+    preset — the host relies on it to size "load N entries" byte windows.
+
+    Stated per *unit* rather than per entry, because the handheld grayscale
+    registers pack four entries into one: three units of a Game Boy palette byte
+    decode to twelve shades, and a host that read the pair the other way round
+    would size every window a quarter too small."""
     engine, params = _color_engine(preset_id)
     bpe = engine.bytes_per_entry(params)
-    assert bpe > 0
+    per_unit = _entries_per_unit(engine, params)
+    assert bpe > 0 and per_unit > 0
     palette = engine.decode(b"\x00" * (3 * bpe), params, PipelineContext())
-    assert len(palette) == 3
+    assert len(palette) == 3 * per_unit
 
 
 # Index-producing pixel presets are bijective on whole buffers; direct-color is
@@ -135,10 +147,10 @@ def test_mask_palette_round_trips(preset_id: str) -> None:
     where the raw bits don't round-trip but the decoded canonical value does.
     """
     engine, params = _color_engine(preset_id)
-    size = int(params["bytes_per_entry"])
+    size = engine.bytes_per_entry(params)
     data = bytes((i * 53 + 11) & 0xFF for i in range(size * 16))
     pal = engine.decode(data, params, PipelineContext())
-    assert len(pal) == 16
+    assert len(pal) == 16 * _entries_per_unit(engine, params)
     again = engine.decode(
         engine.encode(pal, params, PipelineContext()), params, PipelineContext()
     )
@@ -375,6 +387,59 @@ def test_bgr555_known_vector() -> None:
     # Pure blue: B field (0x7C00) all set, LE u16 -> bytes 00 7C.
     pal = engine.decode(b"\x00\x7c", params, PipelineContext())
     assert pal.color(0) == 0xFF0000FF
+
+
+def test_a_low_bit_channel_reaches_full_white() -> None:
+    """A field's maximum must scale to 0xFF, however few bits it has.
+
+    Replicating the pattern once leaves a 3-bit `7` at 0xE7 and a 2-bit `3` at
+    0xC3 — plausible enough to pass unnoticed, and wrong by the whole top of the
+    range for the Genesis, the PC Engine and the handheld greys, which are all
+    2-3 bits a channel.
+    """
+    for preset_id, data, expect in [
+        ("preset.palette.genesis-9bpp", b"\x0e\xee", 0xFFFFFFFF),  # 3 bits
+        ("preset.palette.pce-grb333", b"\xff\x01", 0xFFFFFFFF),  # 3 bits, packed
+        ("preset.palette.sms-6bpp", b"\x3f", 0xFFFFFFFF),  # 2 bits
+    ]:
+        engine, params = _color_engine(preset_id)
+        assert engine.decode(data, params, PipelineContext()).color(0) == expect
+
+
+def test_the_game_boy_palette_register_is_four_shades_in_one_byte() -> None:
+    """`BGP` = 0xE4 is the identity palette: white, light, dark, black.
+
+    Pins all three things that make a register a palette — entries packed from
+    the low bits up, a value that counts darkness rather than brightness, and one
+    field driving R, G and B — in the one byte every Game Boy programmer knows
+    the expected output of.
+    """
+    engine, params = _color_engine("preset.palette.gb-bgp")
+    assert engine.bytes_per_entry(params) == 1
+    assert engine.entries_per_unit(params) == 4
+    pal = engine.decode(b"\xe4", params, PipelineContext())
+    assert [pal.color(i) for i in range(4)] == [
+        0xFFFFFFFF,
+        0xFFAAAAAA,
+        0xFF555555,
+        0xFF000000,
+    ]
+    assert engine.encode(pal, params, PipelineContext()) == b"\xe4"
+
+
+def test_a_grey_format_reduces_a_colour_by_luma() -> None:
+    """One field for three channels means a colour has to become a shade.
+
+    Writing the same mask three times instead would put each channel's own value
+    through the field and OR the results, which turns a pure red into black on an
+    inverted format — so the reduction has to be stated, not fallen into.
+    """
+    engine, params = _color_engine("preset.palette.ngp-gray")
+    raw = engine.encode(Palette([0xFFFF0000]), params, PipelineContext())
+    # Rec. 601 luma of pure red is 0.299 -> 2/7 of the way up an inverted 3-bit
+    # ramp, so the stored darkness is 5 and it reads back as a dark grey.
+    assert raw == b"\x05"
+    assert engine.decode(raw, params, PipelineContext()).color(0) == 0xFF494949
 
 
 def test_split_mask_palette_gathers_the_stray_low_bits() -> None:

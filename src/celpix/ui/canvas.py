@@ -396,14 +396,20 @@ class Canvas(QWidget):
         self.update()
 
     def set_palette_rows(self, rows: list[int | None] | None) -> None:
-        """Label each **pinned** slot with its subpalette row, or stop labelling.
+        """Label each slot with the subpalette row it **names**, or stop
+        labelling.
 
         Indexed by slot, like the selection: slot 0 is the window's first tile. A
-        slot with nothing pinned is ``None`` and carries no number — the overlay
-        exists to pick the pinned few out of a window, so numbering the rest says
-        nothing. That has to be stated by the caller and cannot be inferred here:
-        a row is a row, and "pinned to the row the view is already on" is a pin
-        like any other (``docs/design/palette-editing.md``).
+        slot that names no row of its own is ``None`` and carries no number — on
+        a pixel document the overlay exists to pick the pinned few out of a
+        window, so numbering the rest says nothing. That has to be stated by the
+        caller and cannot be inferred here: a row is a row, and "pinned to the
+        row the view is already on" is a pin like any other
+        (``docs/design/palette-editing.md``).
+
+        A tilemap fills it from its **cells**, which name a row each; one number
+        per cell, so a metatile's other slots are ``None`` for the reason
+        :meth:`set_tile_ids`' are.
         """
         self._palette_rows = rows
         self.update()
@@ -1449,13 +1455,20 @@ class Canvas(QWidget):
         return pixmap
 
     def _paint_palette_rows(self, painter: QPainter, exposed: QRect) -> None:
-        """Number each pinned tile with its subpalette row, top-left corner.
+        """Number each labelled tile with its subpalette row, bottom-left corner.
 
         In the grid's own colour, because it is the same kind of thing: an
         annotation laid over the art rather than part of it, and one the eye
         should be able to ignore. Skipped entirely below a zoom where a digit
         would not fit inside a tile — a number spilling across its neighbours
         would say less than nothing.
+
+        The **bottom** left, because the two overlays can now be on together: a
+        tilemap's cells name both a tile and a row, so the id keeps the top-left
+        corner it has always had and the row sits under it. Per *tile* rather
+        than per cell (:meth:`_paint_tile_ids` widens to the cell): the labels
+        arrive per slot on a pixel document, where a block arrangement would
+        otherwise stack a block's worth of numbers in one place.
         """
         rows = self._palette_rows
         if not rows:
@@ -1473,7 +1486,7 @@ class Canvas(QWidget):
         painter.setPen(_tinted(GRID_FINE_COLOR, GRID_COARSE_ALPHA))
         for slot, row in enumerate(rows):
             if row is None:
-                continue  # nothing pinned here; row 0 pinned is still a pin
+                continue  # this slot names no row; row 0 named is still a row
             tile_x, tile_y = layout.slot_to_cell(slot)
             if not (0 <= tile_x < cols and 0 <= tile_y < canvas_rows):
                 continue
@@ -1482,16 +1495,16 @@ class Canvas(QWidget):
                 continue
             painter.drawText(
                 rect.adjusted(1, 0, 0, 0),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
                 str(row),
             )
 
     def _paint_tile_ids(self, painter: QPainter, exposed: QRect) -> None:
         """Number each tilemap cell with the tile it names, top-left corner.
 
-        The palette-row overlay's twin, in the same colour and the same corner,
-        and they never appear together: a pixel document has no named tiles and a
-        tilemap has no pinned rows (``core/capabilities.py``).
+        The palette-row overlay's twin, in the same colour and the corner above
+        it: a tilemap cell names a tile *and* a row, so the two can be on
+        together and the id keeps the top-left it has always had.
 
         Two differences the number itself forces. It is drawn into the whole
         **cell** rather than one tile, because a metatile's label would not fit

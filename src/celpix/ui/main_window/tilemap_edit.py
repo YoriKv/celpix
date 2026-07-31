@@ -250,6 +250,75 @@ class TilemapEditMixin:
             and self._cell_index_limit() is not None
         )
 
+    # -- cell palette rows ---------------------------------------------------
+    def _cell_palette_row_limit(self) -> int | None:
+        """The highest palette row this entry's own cells can hold, or None.
+
+        :meth:`_cell_index_limit` for the colour field, on the same protocol
+        (:meth:`~celpix.plugins.base.TilemapCodecPlugin.palette_row_limit`) and
+        refusing on the same terms: a codec that does not answer has its rows
+        left alone rather than clamped to a guess.
+
+        It answers **this file's** format, which is what makes it the right test
+        for a chained map: a stamp layout's word is a coordinate with no palette
+        field, so the row a position draws through is the *panel's* and the panel
+        is where it can be changed (``docs/design/tilemap-entry.md`` §3.1). The
+        drawn row and the writable row are two different questions there, and
+        only this one is about bytes this entry owns.
+
+        None too on a sprite object, whose records this path cannot reach at all
+        (:attr:`~celpix.core.document.Document.cells_editable`) — stated here so
+        the caller has one predicate rather than two.
+        """
+        doc = self._doc
+        found = self._tilemap_engine()
+        if doc is None or not doc.cells_editable or found is None:
+            return None
+        engine, preset = found
+        ask = getattr(engine, "palette_row_limit", None)
+        if ask is None:
+            return None
+        try:
+            top = ask(preset.params)
+        except Exception:  # noqa: BLE001 — a probe must not break the bar
+            return None
+        return top if top and top > 0 else None
+
+    def _assign_cell_palette_row(self) -> None:
+        """The tilemap reading of the pin gesture: write the row into the cells.
+
+        Same question as pinning a region and the same row picked the same way
+        (:meth:`~...palette_regions.PaletteRegionsMixin._named_row_picked`) —
+        what differs is where it is kept. A pixel document has nothing in its
+        bytes that could say a row, so a pin is display state the project
+        carries; a cell has the field already, so this is an ordinary cell edit
+        and the file keeps the answer.
+
+        Clamped to what the field can hold rather than left for :meth:`encode` to
+        mask down later, the rule :meth:`_set_cell_index` follows: a row wider
+        than three bits would come back as a row nobody asked for.
+        """
+        doc = self._doc
+        indices = self._selected_cells()
+        if doc is None or doc.cells is None or not indices:
+            return
+        limit = self._cell_palette_row_limit()
+        if limit is None:
+            self.statusBar().showMessage(
+                f"{self._tilemap_format_name()} has no palette row to set"
+                " - nothing changed."
+            )
+            return
+        row = max(0, min(self._named_row_picked(), limit))
+        cells = list(doc.cells)
+        for at in indices:
+            cells[at] = replace(cells[at], palette_row=row)
+        if self._apply_cells(cells, "set cell palette row"):
+            shown = self._drawn_palette_row(row)
+            self.statusBar().showMessage(
+                f"Set {counted(len(indices), 'cell')} to subpalette {shown}."
+            )
+
     def _set_cell_index(self, value: int) -> None:
         """Point every selected cell at reference ``value`` — one undoable step.
 

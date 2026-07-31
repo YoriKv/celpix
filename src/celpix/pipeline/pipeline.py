@@ -1686,13 +1686,63 @@ def _hint_value(key: str, value: object) -> str:
 
 
 def palette_entry_size(preset_id: str, reg: Registry) -> int:
-    """Byte size of one palette entry under the preset — for sizing palette reads."""
+    """Byte size of one palette **read unit** — the stride palette windows step by.
+
+    One entry for nearly every format. The handheld grayscale registers pack
+    several into a unit, so pair this with :func:`palette_entries_per_unit`
+    whenever converting between a colour count and a byte length —
+    :func:`palette_read_bytes` and :func:`palette_entry_capacity` are that
+    conversion.
+    """
     engine, preset = reg.engine_for(preset_id)
     return _run(
         Stage.INTERPRET_PALETTE,
         Pathway.PALETTE,
         lambda: engine.bytes_per_entry(preset.params),
     )
+
+
+def palette_entries_per_unit(preset_id: str, reg: Registry) -> int:
+    """How many palette entries one read unit holds — 1 unless they are packed.
+
+    Optional on the codec surface, so a colour codec that predates packed
+    entries (or a third-party one that never needed them) answers 1 by omission.
+    """
+    engine, preset = reg.engine_for(preset_id)
+    per_unit = getattr(engine, "entries_per_unit", None)
+    if per_unit is None:
+        return 1
+    return max(
+        1,
+        _run(
+            Stage.INTERPRET_PALETTE,
+            Pathway.PALETTE,
+            lambda: per_unit(preset.params),
+        ),
+    )
+
+
+def palette_read_bytes(count: int, preset_id: str, reg: Registry) -> int:
+    """Bytes a read window needs to hold ``count`` palette entries.
+
+    Rounded up to a whole unit: a packed format has no way to read three of the
+    four shades in a Game Boy's palette byte.
+    """
+    per_unit = palette_entries_per_unit(preset_id, reg)
+    units = (max(0, count) + per_unit - 1) // per_unit
+    return units * palette_entry_size(preset_id, reg)
+
+
+def palette_entry_capacity(nbytes: int, preset_id: str, reg: Registry) -> int:
+    """How many whole palette entries fit in ``nbytes`` — floored to whole units.
+
+    The inverse of :func:`palette_read_bytes`. Flooring is what keeps a window
+    off a partial trailing unit, which the colour codecs reject.
+    """
+    size = palette_entry_size(preset_id, reg)
+    if size <= 0:
+        return 0
+    return (max(0, nbytes) // size) * palette_entries_per_unit(preset_id, reg)
 
 
 def quantize_color(argb: int, preset_id: str, reg: Registry) -> int:
@@ -2123,9 +2173,14 @@ def _splice_palette(doc: Document, encoded: bytes, engine, preset) -> bytes:  # 
     )
     if size <= 0:
         return encoded
+    per_unit = getattr(engine, "entries_per_unit", None)
+    step = max(1, per_unit(preset.params)) if per_unit is not None else 1
     out = bytearray(original)
     for index in doc.palette_edits:
-        start = index * size
+        # The unit the entry lives in, not the entry: a Game Boy shade shares its
+        # byte with three others, so the byte is the smallest thing that can be
+        # put back. Its neighbours re-encode to what they already were.
+        start = (index // step) * size
         if 0 <= start and start + size <= len(out):
             out[start : start + size] = encoded[start : start + size]
     return bytes(out)

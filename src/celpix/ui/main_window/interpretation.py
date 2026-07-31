@@ -75,9 +75,15 @@ TILE_SIZE_CELL_TIP = (
 )
 
 SUBPAL_TIP = "Which block of palette entries tiles index into"
+# On a tilemap whose cells carry rows the spin does not recolour anything - the
+# file has answered that, and a view-wide row on top would shift a map already in
+# its authored colours. It is still the row being *pointed at*: the palette grid
+# outlines it, the tile sheet is read in it, and Set Selection's Palette Row
+# writes it into the cells. So it stays live and says which of the two it is.
 SUBPAL_CELLS_TIP = (
-    "Which block of palette entries tiles index into\n"
-    "Set per cell by this tilemap's own palette rows"
+    "Which palette row the next assignment uses\n"
+    "This map draws through its cells' own rows; Palette >\n"
+    "Set Selection's Palette Row writes this one into them"
 )
 
 # The Cols control's tooltip, and what it reads while a paged tilemap's assembly
@@ -322,10 +328,11 @@ class InterpretationMixin:
         # Range 255: enough rows for a 512-entry palette under a 2-color (1bpp)
         # index space; the view refresh clamps to the loaded palette anyway.
         self._subpalette = self._spin(0, 255, 0, self._on_view_change)
-        # The caption is kept because _sync_subpalette greys and retooltips the
-        # pair together on a tilemap whose cells carry their own rows - a
-        # live-looking label over a dead input is where "why can't I type here"
-        # lands (:func:`~celpix.ui.widgets.add_labelled`).
+        # The caption is kept because _sync_subpalette retooltips the pair
+        # together on a tilemap whose cells carry their own rows, where the spin
+        # picks a row to *assign* rather than one to draw through - and a label
+        # is as likely to be hovered as the input
+        # (:func:`~celpix.ui.widgets.add_labelled`).
         self._subpalette_label = add_labelled(
             view,
             "Subpal:",

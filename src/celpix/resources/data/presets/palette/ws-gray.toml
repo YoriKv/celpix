@@ -1,0 +1,19 @@
+# WonderSwan (mono) — one nibble per shade, three bits of it used, counting
+# *darkness*: 0 is white and 7 is black. Four nibbles fill the 16-bit word that
+# holds one whole palette, low nibble first.
+#
+# Stated as 4 bits rather than 3 because the nibble is the *slot*: the fourth bit
+# is padding the format leaves, not part of the shade, so the mask is what says
+# how much of the slot is real.
+# See docs/graphics-formats-reference/superfamiconv-formats.md §3.3.
+id = "preset.palette.ws-gray"
+name = "WonderSwan mono palette (4 x 3-bit grey)"
+engine_id = "codec.palette.mask"
+
+[params]
+bits_per_entry = 4
+invert = true
+gray = true
+
+[params.masks]
+r = 0x07

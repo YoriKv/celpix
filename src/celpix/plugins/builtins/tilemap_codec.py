@@ -19,6 +19,15 @@ Params:
   ``{ shift, bits }`` table naming where that field sits in the word. A field
   omitted from the preset does not exist in the format: it decodes as zero and
   is dropped on encode, which is how a plain index-only map is described.
+
+  **A field need not be contiguous.** Hardware that grew a tile number past the
+  room left for it parks the extra bits wherever there was space: a Game Boy
+  Color map entry holds bits 0-7 of the index in its first byte and bit 8 alone
+  up in the attribute byte, and the WonderSwan does the same with bit 9. So a
+  field may also be a **list** of ``{ shift, bits }`` tables, **most significant
+  chunk first** — the same convention, and the same kernel, the colour masks
+  already use for split channels
+  (:mod:`~celpix.plugins.builtins._mask`). A single table is the one-chunk case.
 - ``flags`` — the same, for bits the format has and celPix has no meaning for.
   Carried through untouched so a write stays byte-exact; see :class:`Cell`.
 - ``cell_tiles`` — ``[across, down]``, how many tiles one cell covers
@@ -50,6 +59,7 @@ from celpix.core.context import (
 from celpix.core.errors import Stage
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._mask import gather, scatter
 
 TILEMAP_ENGINE = "codec.tilemap.packed"
 
@@ -68,19 +78,49 @@ _MIRRORS = {
 }
 
 
-def _field(params: dict[str, Any], name: str) -> tuple[int, int] | None:
-    """``(shift, mask)`` for field ``name``, or None when the format lacks it."""
+# One field's placement in the word: the chunk masks it occupies and their
+# (shift, width) pairs, both most-significant chunk first — the argument pair
+# ``_mask.gather`` / ``_mask.scatter`` take.
+_Field = tuple[tuple[int, ...], tuple[tuple[int, int], ...]]
+
+
+def _field(params: dict[str, Any], name: str) -> _Field | None:
+    """Field ``name``'s chunks, or None when the format lacks it.
+
+    One ``{ shift, bits }`` table or a list of them, most significant first. A
+    chunk with no bits contributes nothing, and a field left with no chunks at
+    all is a field the format does not have.
+    """
     spec = params.get(name)
     if not spec:
         return None
-    shift = int(spec.get("shift", 0))
-    bits = int(spec.get("bits", 0))
-    if bits <= 0:
+    chunks: list[int] = []
+    sw: list[tuple[int, int]] = []
+    seen = 0
+    for part in spec if isinstance(spec, (list, tuple)) else (spec,):
+        shift = int(part.get("shift", 0))
+        bits = int(part.get("bits", 0))
+        if bits <= 0:
+            continue
+        mask = ((1 << bits) - 1) << shift
+        if mask & seen:
+            raise ValueError(f"tilemap field {name!r}: chunks overlap")
+        seen |= mask
+        chunks.append(mask)
+        sw.append((shift, bits))
+    if not chunks:
         return None
-    return shift, (1 << bits) - 1
+    return tuple(chunks), tuple(sw)
 
 
-def _layout(params: dict[str, Any]) -> dict[str, tuple[int, int] | None]:
+def _limit(field: _Field | None) -> int | None:
+    """The highest value a field can hold — all its chunks' bits set."""
+    if field is None:
+        return None
+    return (1 << sum(width for _, width in field[1])) - 1
+
+
+def _layout(params: dict[str, Any]) -> dict[str, _Field | None]:
     return {name: _field(params, name) for name in _FIELDS}
 
 
@@ -133,18 +173,17 @@ def _endian(params: dict[str, Any]) -> str:
     return order
 
 
-def _get(word: int, field: tuple[int, int] | None) -> int:
-    shift, mask = field if field else (0, 0)
-    return (word >> shift) & mask if field else 0
+def _get(word: int, field: _Field | None) -> int:
+    return gather(word, *field) if field else 0
 
 
-def _put(word: int, field: tuple[int, int] | None, value: int) -> int:
+def _put(word: int, field: _Field | None, value: int) -> int:
     if field is None:
         return word
-    shift, mask = field
     # Masked, not checked: see the module docstring on why a too-wide value
-    # costs its high bits rather than the whole save.
-    return word | ((value & mask) << shift)
+    # costs its high bits rather than the whole save. ``scatter`` drops whatever
+    # sits above the chunks' combined width, which is that same masking.
+    return word | scatter(value, *field)
 
 
 class TilemapCodec:
@@ -214,8 +253,16 @@ class TilemapCodec:
         layout is stated rather than a second that could disagree. A preset with no
         ``index`` describes a format whose cells reference nothing settable.
         """
-        field = _field(params, "index")
-        return field[1] if field else None  # the mask *is* the highest value
+        return _limit(_field(params, "index"))
+
+    def palette_row_limit(self, params: dict[str, Any]) -> int | None:
+        """How high a cell's palette row can go — the ``palette`` field's width.
+
+        :meth:`index_limit` for the colour field, off the same table: three bits
+        on a console BG entry, so rows 0-7, and nothing at all on a format that
+        places no ``palette``.
+        """
+        return _limit(_field(params, "palette"))
 
     def has_palette_rows(self, params: dict[str, Any]) -> bool:
         """Whether the preset places a palette field — the field table answers.

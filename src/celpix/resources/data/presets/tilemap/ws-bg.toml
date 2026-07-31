@@ -1,0 +1,20 @@
+# WonderSwan screen map entry — 16-bit little-endian: index 0-8 plus bit 9
+# stranded at 13, palette 9-12, H flip 14, V flip 15.
+#
+# The split `index` is the WonderSwan Color's doing: the mono machine's 512 tiles
+# needed nine bits, and the Color's 1024 needed a tenth with nowhere contiguous
+# left to put it. Reading mono data with this preset is harmless — bit 13 is 0
+# there — so one preset serves both, and both packings of the Color's *pixels*
+# (`wsc`/`wsc_packed`) share it too, since the map does not know how the tiles
+# it names are stored.
+id = "preset.tilemap.ws-bg"
+name = "WonderSwan screen map (16-bit)"
+engine_id = "codec.tilemap.packed"
+
+[params]
+bytes = 2
+endian = "little"
+index = [{ shift = 13, bits = 1 }, { shift = 0, bits = 9 }]
+palette = { shift = 9, bits = 4 }
+flip_h = { shift = 14, bits = 1 }
+flip_v = { shift = 15, bits = 1 }

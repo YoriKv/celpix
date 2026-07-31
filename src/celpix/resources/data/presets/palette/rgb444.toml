@@ -1,0 +1,20 @@
+# RGB444 — 12-bit: R=bits 8-11, G=4-7, B=0-3, little-endian u16, top nibble
+# unused. WonderSwan Color palette RAM.
+#
+# The mirror of `bgr444`, which is the same three nibbles the other way round
+# (Neo Geo Pocket Color, and much arcade hardware). Two handhelds one generation
+# apart disagreeing about nibble order is exactly the kind of thing that renders
+# as a red/blue swap rather than as garbage, so the pair is worth having.
+# See docs/graphics-formats-reference/superfamiconv-formats.md §3.3.
+id = "preset.palette.rgb444"
+name = "RGB444 (12-bit, WonderSwan Color)"
+engine_id = "codec.palette.mask"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"
+
+[params.masks]
+r = 0x0F00
+g = 0x00F0
+b = 0x000F
