@@ -47,6 +47,7 @@ from typing import Any
 from celpix.core.context import (
     KEY_TILEMAP_ENDIAN,
     KEY_TILEMAP_FRAME_SIZES,
+    KEY_TILEMAP_SUBSPRITES_PER_FRAME,
     PipelineContext,
 )
 from celpix.core.errors import Stage
@@ -101,7 +102,27 @@ def size_pair(params: dict[str, Any]) -> tuple[int, int]:
     return small, large
 
 
-def subsprites_per_frame(params: dict[str, Any]) -> int:
+def subsprites_per_frame(
+    params: dict[str, Any], ctx: PipelineContext | None = None
+) -> int:
+    """How many subsprite slots one frame holds, the file's answer preferred.
+
+    The same shape as :func:`_endian`, and for a sharper reason. A sprite object
+    has **two forms with the same payload size** that divide it differently — the
+    ordinary one into 32 frames of 64 slots, the extended one into 64 frames of
+    **128** (``scgcad-formats.md`` §8.1, from the build's own ``eobjcnvX.c``) — so
+    the stride cannot be derived from the byte count, and one preset serving both
+    would mis-frame whichever it was not written for. Getting it wrong parses every
+    record correctly and cuts the frames in the wrong places, which is why a
+    byte-exact round trip never noticed.
+
+    The container is what knows: deciding which form it is holding is how it found
+    the signature. So it publishes, and the preset only says what to assume when
+    nothing did.
+    """
+    stated = ctx.get(KEY_TILEMAP_SUBSPRITES_PER_FRAME) if ctx is not None else None
+    if stated:
+        return max(1, int(stated))
     return max(1, int(params.get("subsprites_per_frame", SUBSPRITES_PER_FRAME)))
 
 
@@ -137,12 +158,14 @@ class _SubspriteCodec:
         invisible ones: they are the file's empty slots, all 94% of them, and
         nothing downstream would have anything to do with them.
 
-        ``ctx`` is what lets a format whose frames are **not** a fixed stride say
-        so: the boundaries are then in the file rather than in the preset, so only
-        the container can have read them (:class:`SprCodec`). Ignored here, where
-        every frame has the same number of slots.
+        ``ctx`` carries the two things a *file* can settle about its own framing
+        that a preset cannot. A format whose frames are **not** a fixed stride
+        states their boundaries (:class:`SprCodec`); and a format with two forms
+        that slot the same payload differently states the stride
+        (:func:`subsprites_per_frame`), which is the sprite object's case and the
+        one that cannot be worked out from the byte count.
         """
-        per_frame = subsprites_per_frame(params)
+        per_frame = subsprites_per_frame(params, ctx)
         return [
             tuple(
                 sub

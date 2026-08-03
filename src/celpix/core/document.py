@@ -23,6 +23,8 @@ from enum import Enum
 from celpix.core import ceil_div
 from celpix.core.context import (
     KEY_SOURCE_OFFSET,
+    KEY_TILEMAP_ANIMATIONS,
+    KEY_TILEMAP_ANIMATIONS_INFERRED,
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_PAGE_ROWS,
     KEY_TILEMAP_PAGES_ACROSS,
@@ -449,6 +451,26 @@ class Document:
         return self.sprite_frames is not None
 
     @property
+    def folds_palette_rows(self) -> bool:
+        """Whether this document's picture carries its palette row in the *indices*.
+
+        True only for a tilemap whose format gives cells a row: that is the one
+        composition where the row is folded in by
+        :func:`~celpix.pipeline.pipeline.expand_cells` rather than applied at the
+        colour table, and so the one where an index on screen is not the index a
+        tile stores. Every consumer of that distinction reads it here — which
+        colour table a render picks, what a pen has to add, what a commit has to
+        take back off — so the picture and the bytes behind it cannot disagree
+        about which of them the row is in.
+
+        The pair matters because :attr:`cells_carry_palette_rows` **defaults to
+        True**: it is a statement about a cell format, and a document with no
+        cells has not made it. Reading it alone takes a pixel document down the
+        tilemap branch of all of the above.
+        """
+        return self.is_tilemap and self.cells_carry_palette_rows
+
+    @property
     def shown_frames(self) -> list:
         """The frames the view draws — every slot, or up to the last drawn one.
 
@@ -468,6 +490,35 @@ class Document:
         if self.view.show_all_frames:
             return list(frames) or [()]
         return drawn_frames(frames)
+
+    @property
+    def animations(self) -> tuple:
+        """The sequences this file's format carries, or empty where it carries none.
+
+        The container reads them off the tail it preserves and states them
+        (:data:`~celpix.core.context.KEY_TILEMAP_ANIMATIONS`); this is where a
+        reader picks them up. Empty for every document that is not a sprite
+        object, and for one whose table is all terminator — which most files'
+        later groups are, so "has sequences" is
+        :meth:`any` over this rather than its length.
+
+        Deliberately **not** consulted by anything that draws: the frames are
+        drawn from the records in file order, and a sequence only says what a
+        player would step through (``docs/design/tilemap-entry.md`` §6).
+        """
+        return tuple(self.tilemap_ctx.get(KEY_TILEMAP_ANIMATIONS, ()) or ())
+
+    @property
+    def animations_inferred(self) -> bool:
+        """Whether :attr:`animations` is a reading of the bytes rather than a spec.
+
+        True for the one format whose writer emits its animation blocks opaquely,
+        so the split into frames and durations comes off the corpus
+        (:data:`~celpix.core.context.KEY_TILEMAP_ANIMATIONS_INFERRED`). Carried
+        this far because it is the player that has to say it: a guess shown as
+        confidently as a confirmed reading becomes a fact by repetition.
+        """
+        return bool(self.tilemap_ctx.get(KEY_TILEMAP_ANIMATIONS_INFERRED, False))
 
     @property
     def cells_editable(self) -> bool:

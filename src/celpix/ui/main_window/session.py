@@ -142,7 +142,26 @@ class SessionMixin:
         # what was edited through a slice of it; they are the same bytes.
         self._fold_slice_edits_into(entry)
         self._restore_session(entry)
+        self._drop_unavailable_edit_mode()
         self._refresh_view()
+
+    def _drop_unavailable_edit_mode(self) -> None:
+        """Leave pixel mode when the entry now on screen has no pixels to paint.
+
+        The mode is app-wide interaction state and nothing else resets it on a
+        switch (``docs/design/pixel-editing.md``), so without this the canvas keeps
+        reporting pixel gestures over a document that cannot take them — a sprite
+        object, or a map with nothing bound — with the rail hidden and the toggle
+        grey, which reads as "off" and is not. What the gestures would then reach
+        is not nothing: on a tilemap they would land in the borrowed tile buffer
+        and mark the *map* dirty, whose save writes cells, so the edit would be
+        visible until the next repaint and then gone.
+
+        Left alone in every other case: the mode is a preference, and coming back
+        to a document that can paint should find the brush where it was put down.
+        """
+        if self._edit_mode is EditMode.PIXEL and not self._pixel_edit_available():
+            self._set_edit_mode(EditMode.TILE)
 
     def _load_entry(self, entry: Entry, *, quiet: bool = False) -> bool:
         """Load ``entry``'s document through the pipeline; False on failure.
@@ -587,24 +606,28 @@ class SessionMixin:
     def _binding_target(self, source: TileSource) -> Entry | None:
         """The open entry ``source`` names, or None when it names nothing usable.
 
-        The one place a binding's positional ``entry_index`` becomes an entry
+        The one place a binding becomes a usable entry
         (:class:`~celpix.project.workspace.TileSource`). Everything that asks
         where a map's tiles come from resolves it here — the depth gate below, the
         chained load, the pathway that reads the tiles, and the bar's combo, note
-        and jump button — so an index that no longer names anything reads the same
-        way to all of them instead of each carrying its own bounds check.
+        and jump button — so a binding that no longer names anything reads the
+        same way to all of them instead of each carrying its own check.
 
-        The index is positional and so only means something inside one project: a
-        binding kept across an entry being closed points past the end, and that
-        answers None rather than resolving to whatever now sits there.
+        The check is that the entry is still **open**, which is the one thing
+        holding it by identity cannot answer on its own: a closed entry is a live
+        object that undo may yet put back, so the binding keeps it and simply does
+        not resolve while it is out of the list. Scanned by identity rather than
+        by ``in``, which would ask :class:`Entry` for an equality it deliberately
+        does not have.
         """
         if source.mode is not TileMode.ENTRY:
             return None
-        entries = self._workspace.entries
-        index = source.entry_index
-        if index is None or not 0 <= index < len(entries):
+        entry = source.entry
+        if entry is None or not any(
+            open_ is entry for open_ in self._workspace.entries
+        ):
             return None
-        return entries[index]
+        return entry
 
     def _draws_through_tilemap(self, entry: Entry) -> bool:
         """Whether ``entry``'s binding names another tilemap rather than art.
@@ -675,6 +698,83 @@ class SessionMixin:
             return None
         return doc
 
+    def _tile_bank_owner(self, entry: Entry) -> Entry | None:
+        """The pixel entry whose bytes ``entry`` draws its tiles from.
+
+        A tilemap's ``pixel_data`` is a *copy* of that entry's art, read through
+        its pathway — so a pixel edit made on the map has to be deposited into the
+        entry that owns those bytes rather than spliced into the borrowed buffer,
+        which nothing else can see and no save would write. This is the same "one
+        region, one authority" rule a slice follows into its parent
+        (``docs/design/slices-and-parents.md``); the owner here is reached through
+        the binding instead of through the file list.
+
+        Walks the binding to the art: one hop for an ordinary map, two for a
+        chained one, whose tiles belong to the map at the end of the chain rather
+        than to the stamps in between. The bound at two is
+        :meth:`_draws_through_tilemap`'s, not a separate limit — a source that
+        draws through a tilemap itself cannot be bound in the first place, so the
+        walk cannot go further than the chain gate already allows.
+
+        None when the binding names nothing, or names something that is not art:
+        an edit with no owner is refused rather than deposited into a guess.
+        """
+        seen: set[int] = set()
+        at: Entry | None = entry
+        while at is not None and id(at) not in seen:
+            seen.add(id(at))
+            if at.content_kind is ContentKind.PIXELS:
+                return at
+            if at.content_kind is not ContentKind.TILEMAP:
+                return None
+            source = at.tile_source
+            at = self._binding_target(source) if source is not None else None
+        return None
+
+    def _entries_bound_to(self, owner: Entry) -> list[Entry]:
+        """Every open entry that draws its tiles from ``owner``'s bytes.
+
+        The audience for a change to those bytes: each of them holds a decoded
+        copy, so an edit made on any one of them — or on ``owner`` itself — has to
+        reach the rest or two views of one bank drift apart
+        (:meth:`~celpix.ui.main_window.selection.SelectionMixin._apply_pixel_bytes`).
+
+        Resolved through :meth:`_tile_bank_owner`, so a chained map counts as
+        drawing from the bank at the end of its chain — which is where its own
+        ``pixel_data`` came from.
+        """
+        return [
+            other
+            for other in self._workspace.entries
+            if other is not owner
+            and other.doc is not None
+            and other.doc.is_tilemap
+            and self._tile_bank_owner(other) is owner
+        ]
+
+    def _resync_tile_bindings(
+        self, owner: Entry, splices: list[tuple[int, bytes]]
+    ) -> None:
+        """Carry a pixel edit into every open map that borrows ``owner``'s bytes.
+
+        A map holds a decoded **copy** of the bank it is bound to, so an edit to
+        those bytes reaches it only if it is put there. That is the pixel twin of
+        :meth:`_rechain_dependents`, which does the same for the cells a chained
+        map borrows, and it runs in both directions from one place: whether the
+        stroke was made on the bank's own entry or on a map drawing through it,
+        the bytes end up in ``owner`` and every other view of them is caught here.
+
+        The same splices, because the copies were decoded through the *same*
+        pathway — ``_tile_source_config`` builds the map's reader from the bound
+        entry's own config, so the two buffers hold the same bytes at the same
+        offsets and a splice that is right for one is right for the other. Each
+        map's cached bank is patched rather than dropped, so the repaint the
+        caller is about to do costs only the tiles that changed
+        (``docs/design/tilemap-entry.md`` §8.2).
+        """
+        for other in self._entries_bound_to(owner):
+            self._land_splices(other.doc, splices)
+
     def _rechain_dependents(self, entry: Entry) -> bool:
         """Re-point every open map drawing through ``entry`` at its new cells.
 
@@ -689,17 +789,15 @@ class SessionMixin:
         in step without either being reloaded.
         """
         cells = entry.doc.cells if entry.doc is not None else None
-        entries = self._workspace.entries
-        if cells is None or entry not in entries:
+        if cells is None:
             return False
-        at = entries.index(entry)
         current = False
-        for other in entries:
+        for other in self._workspace.entries:
             doc = other.doc
             source = other.tile_source
             if other is entry or doc is None or doc.chain is None:
                 continue
-            if source is None or source.entry_index != at:
+            if source is None or source.entry is not entry:
                 continue
             doc.chain = replace(doc.chain, source=cells)
             doc.resolve()
@@ -718,6 +816,14 @@ class SessionMixin:
             return self._no_tiles()
         try:
             cfg = self._tile_source_config(entry, source)
+        except (PipelineError, KeyError) as exc:
+            if not quiet:
+                self._report_tile_binding(entry, exc)
+            return self._no_tiles()
+        live = self._live_bound_tiles(source, cfg)
+        if live is not None:
+            return live
+        try:
             px = pipeline.load_pixel_data(cfg, self._registry)
         except (PipelineError, KeyError) as exc:
             if not quiet:
@@ -725,6 +831,53 @@ class SessionMixin:
             return self._no_tiles()
         return _BoundTiles(
             px.data, px.bytes_per_tile, px.tile_width, px.tile_height, px.ctx, cfg
+        )
+
+    def _live_bound_tiles(
+        self, source: TileSource, cfg: PathwayConfig
+    ) -> _BoundTiles | None:
+        """The bound entry's **loaded** art, taken from its document rather than read.
+
+        A binding names an entry and not a path precisely so the map draws what
+        that entry currently holds (:class:`
+        ~celpix.project.workspace.TileSource`) — and an entry's unsaved edits live
+        only in its document, so re-reading the pathway would show the file as it
+        was on disk. That is the difference between a bank edited in its own view
+        showing through in the map straight away and not showing at all until
+        both are saved; with pixel editing *through* a map it is sharper still,
+        since a rebind re-reads and would take an undeposited edit back out
+        (``docs/design/tilemap-entry.md`` §8.4).
+
+        **The same rule as** :func:`~celpix.project.workspace.entry_view_bytes`,
+        which is that rule's single definition — "the live document's bytes when
+        one is loaded, else the region read fresh" — and this is a second
+        implementation of it rather than a caller. They are not merged because
+        that function returns ``(data, base)`` and drops the
+        :class:`~celpix.core.context.PipelineContext` a bound read has to carry,
+        and because the geometry below has no counterpart there. Anything that
+        changes what "live bytes" means has to change both; that is the cost of
+        the split, recorded here so it is not discovered.
+
+        None when there is no document to take, which is the ordinary case on a
+        project load: entries are lazy, and the pathway read below is what fills
+        this in. The config still comes from the bound entry either way, so the
+        two routes produce the same bytes — this one just cannot be stale.
+
+        The **geometry** is taken from that document too, not from the config: a
+        document read under one pixel preset and a config naming another would
+        cut the same buffer into different tiles.
+        """
+        bound = self._binding_target(source)
+        doc = bound.doc if bound is not None else None
+        if doc is None or doc.is_tilemap:
+            return None
+        return _BoundTiles(
+            doc.pixel_data,
+            doc.bytes_per_tile,
+            doc.tile_width,
+            doc.tile_height,
+            doc.pixel_ctx,
+            cfg,
         )
 
     def _no_tiles(self) -> _BoundTiles:
@@ -775,7 +928,8 @@ class SessionMixin:
         """
         bound = self._binding_target(source)
         if bound is None:
-            raise KeyError(f"no open entry at index {source.entry_index}")
+            name = source.entry.name if source.entry is not None else "nothing"
+            raise KeyError(f"the tiles are bound to {name}, which is not open")
         preset = (
             bound.session.pixel_preset_id
             if bound.session is not None
@@ -987,6 +1141,8 @@ class SessionMixin:
         # document, so the tile size would otherwise still read the old entry's.
         self._refresh_tile_size()
         self._overlay.hide_overlay()
+        self._animation.hide_overlay()
+        self._animation_action.setEnabled(False)
         self._hex_panel.clear()
         # No document, no palette source - blank the dock's per-mode widgets
         # (the mode member itself is left alone: it still mirrors the entry's

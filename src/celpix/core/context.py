@@ -132,6 +132,35 @@ KEY_TILEMAP_ENDIAN = "tilemap.endian"
 # groups by them (:meth:`~celpix.plugins.builtins.object_codec.SprCodec.frames`).
 # Absent means fixed slots, which is what ``subsprites_per_frame`` sizes.
 KEY_TILEMAP_FRAME_SIZES = "tilemap.frame-sizes"
+# int: how many subsprite slots one frame of a **fixed-slot** sprite map holds,
+# where the *file* settles it rather than the preset. A sprite object comes in two
+# forms carrying the same payload size, and they divide it differently — the
+# ordinary one 32 frames of 64, the extended one 64 frames of **128** — so the
+# stride cannot be read off the byte count and a preset written for one mis-frames
+# the other. Which form a file is is exactly what the container had to decide to
+# find the signature at all, so it is the thing that knows
+# (``graphics-formats-reference/scgcad-formats.md`` §8.1). Advisory in the usual
+# way: absent means the preset's ``subsprites_per_frame`` stands.
+KEY_TILEMAP_SUBSPRITES_PER_FRAME = "tilemap.subsprites-per-frame"
+# tuple[Sequence, ...]: the order a sprite map's frames are meant to play in,
+# where the format carries such a table (:mod:`celpix.core.animation`). It lives
+# in the part of the file the container preserves opaquely — past the records, and
+# past the header — so the container is the only thing that has both the bytes and
+# the offsets to read it from; the codec is handed the payload alone and never
+# sees it. Absent means the format has no sequences, which is every one but the
+# sprite family. Advisory in the strongest sense: nothing renders from it, and a
+# save writes the table back from the bytes it was read from rather than from
+# this, so a file whose table this misreads still round-trips.
+KEY_TILEMAP_ANIMATIONS = "tilemap.animations"
+# bool: whether the sequences above are a *reading of the data* rather than a
+# spec. One format in hand is — the Yoshi sprite trailer's two 40-byte blocks are
+# emitted by their writer as opaque byte arrays, so "the first block is frames and
+# the second durations" comes off the corpus and not off the code
+# (``graphics-formats-reference/ys-sprite-patterns.md`` §4). Published so a reader
+# can say which it is looking at, since a player showing an inferred split as
+# confidently as a confirmed one is how a guess becomes a fact by repetition.
+# Absent means confirmed, which is the ordinary case.
+KEY_TILEMAP_ANIMATIONS_INFERRED = "tilemap.animations-inferred"
 # str: the pixel preset a container believes its payload is in, when the format
 # says. A tile bank that records its own bit depth should not need it guessed —
 # the depths look alike enough that a wrong pick reads as plausible garbage. The

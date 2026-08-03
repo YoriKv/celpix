@@ -173,16 +173,31 @@ class _EditModeCommand(_StateCommand):
     mode, or a tile edit with the pixel tools armed. The mode therefore travels
     with the command alongside the entry, and reaching the change means restoring
     both.
+
+    ``through`` splits the entry the change is *seen* in from the entry that owns
+    the bytes, which are usually one and are not when a pixel edit is made through
+    a **tilemap**: the gesture happens on the map, the bytes belong to the tile
+    bank it is bound to (``docs/design/tilemap-entry.md`` §8.1). Reaching the bank
+    would take the view off the picture the stroke was drawn on, and reverting the
+    stroke somewhere it cannot be seen is the thing this class exists to prevent.
     """
 
     def __init__(
-        self, window: MainWindow, entry: Entry, text: str, before, after
+        self,
+        window: MainWindow,
+        entry: Entry,
+        text: str,
+        before,
+        after,
+        *,
+        through: Entry | None = None,
     ) -> None:
         super().__init__(window, entry, text, before, after)
         self._mode = window._edit_mode
+        self._through = through if through is not None else entry
 
     def _reach(self) -> bool:
-        return self._window._ensure_edit_context(self._entry, self._mode)
+        return self._window._ensure_edit_context(self._through, self._mode)
 
 
 class OffsetMoveCommand(_CurrentEntryCommand):
@@ -592,7 +607,13 @@ class PixelEditCommand(_EditModeCommand):
         text: str,
         *,
         regions: list[tuple[int, bytes, bytes]],  # (start, before, after), disjoint
+        through: Entry | None = None,
     ) -> None:
+        # ``entry`` is whose bytes these are; ``through`` is where they were
+        # edited, and differs only for a pixel edit made on a **tilemap** — the
+        # map borrows its art from the bound entry, so the dirt and the save
+        # belong to that entry while the picture belongs to the map.
+        #
         # The data pathway's revision on either side of this command, so an
         # undo hands the entry back the exact unsaved-state it had before.
         #
@@ -624,6 +645,7 @@ class PixelEditCommand(_EditModeCommand):
                 after_revision,
                 after_revision,
             ),
+            through=through,
         )
 
     def _apply(self, state: tuple[list[tuple[int, bytes]], int, int]) -> None:
@@ -633,8 +655,13 @@ class PixelEditCommand(_EditModeCommand):
         so the order they land in doesn't matter — but the view must not be
         rebuilt between them, or a multi-region edit would flicker through
         half-applied states.
+
+        The entry travels with the command rather than being read off the window:
+        an edit made through a tilemap lands in a *different* entry than the one
+        on screen, and one made in another entry lands after the reach above has
+        switched to it — so "whose bytes" must not be re-asked at apply time.
         """
-        self._window._apply_pixel_bytes(*state)
+        self._window._apply_pixel_bytes(*state, entry=self._entry)
 
 
 @dataclass(frozen=True)
@@ -808,6 +835,13 @@ class RemoveEntriesCommand(QUndoCommand):
     Captures the removed entries with their list positions plus which entry
     was current, so undo reinstates the files pane exactly (parents re-insert
     before their slices because they sit at lower indices).
+
+    **Tile bindings need no capture.** A binding holds the bound entry itself
+    (:class:`~celpix.project.workspace.TileSource`), so closing a tile bank leaves
+    every map still holding it — resolving to "not open" meanwhile — and the
+    re-insert below puts the same object back and the maps are bound again. That
+    is the whole of what identity buys over a position: nothing to snapshot, and
+    nothing that can be restored inconsistently.
     """
 
     def __init__(

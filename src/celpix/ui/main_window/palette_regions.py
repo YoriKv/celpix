@@ -63,6 +63,7 @@ from PySide6.QtGui import QAction, QKeySequence
 
 from celpix.core.arrangement import tile_first_pixel, tile_pixel_spans
 from celpix.core.paletteregions import PaletteRegions
+from celpix.core.tilemap import Cell
 from celpix.pipeline.pipeline import drawn_palette_row
 from celpix.ui.main_window.capability_sync import Gesture
 from celpix.ui.undo_commands import PaletteRegionsCommand
@@ -128,20 +129,24 @@ class PaletteRegionsMixin:
         :meth:`~celpix.core.paletteregions.PaletteRegions.bounded` trims to."""
         return self._palette_row_count() - 1
 
-    def _drawn_palette_row(self, row: int) -> int:
+    def _drawn_palette_row(self, row: int, space: int | None = None) -> int:
         """A **named** row as the palette row it is drawn through.
 
         The document's base applied, wrapping only where Wrap Palette Rows asks
         for it (:func:`drawn_palette_row`). Every reader of a stored row goes
         through here — the recolour, the label, the grid's mark — so a pinned
         tile and the ring pointing at its colours cannot disagree.
+
+        ``space`` lets a caller resolving many rows hoist :meth:`_index_space` out
+        of its loop. That resolves the codec through the registry on every call —
+        cheap once, and the dominant cost when a stroke asks per tile.
         """
         doc = self._doc
         if doc is None:
             return row
-        return drawn_palette_row(
-            row, doc.palette_row_base, doc.palette_row_wrap(self._index_space())
-        )
+        if space is None:
+            space = self._index_space()
+        return drawn_palette_row(row, doc.palette_row_base, doc.palette_row_wrap(space))
 
     def _active_palette_regions(self) -> PaletteRegions:
         """The regions in force for rendering — empty while the toggle is off.
@@ -536,6 +541,40 @@ class PaletteRegionsMixin:
             return None
         return first
 
+    def _folds_palette_rows(self) -> bool:
+        """:attr:`~celpix.core.document.Document.folds_palette_rows` for the entry
+        on screen — the window's None-safe reading of it."""
+        doc = self._doc
+        return doc is not None and doc.folds_palette_rows
+
+    def _cell_paint_base(self, cell: Cell, space: int | None = None) -> int:
+        """How much of ``cell``'s picture is palette row rather than tile index.
+
+        A tilemap whose format gives cells a palette row has that row folded into
+        the **indices** (:func:`~celpix.pipeline.pipeline.expand_cells`), so what is
+        composed is absolute palette indices while the tile behind it stores a
+        row-relative one. This is the distance between the two, and it has to be
+        the *same number going each way*: the pen adds it, so a stroke previews in
+        the colours the cell is drawn in, and the commit takes it back off, so the
+        tile stores what its format can hold. Anything that adds one and subtracts
+        another bakes the difference into the file.
+
+        **Zero where the format has no row field.** Nothing is folded in there;
+        the map is composed row-relative and read under the view's own Subpal at
+        the colour table, exactly as a pixel document is
+        (``docs/design/tilemap-entry.md`` §8) — so the pen writes what it always
+        wrote and there is nothing to take back off.
+
+        ``space`` is hoisted by the two per-cell loops that drive this — the pen
+        and the commit — since resolving it goes through the registry and nothing
+        about it moves during a gesture.
+        """
+        if not self._folds_palette_rows():
+            return 0
+        if space is None:
+            space = self._index_space()
+        return self._drawn_palette_row(cell.palette_row, space) * space
+
     def _pinned_palette_base(self, x: int, y: int) -> int:
         """The palette base the pixel at window position ``(x, y)`` is *shown* through.
 
@@ -548,8 +587,22 @@ class PaletteRegionsMixin:
 
         Falls back to the view's base wherever nothing is pinned, or when the
         position lands in a block-layout gap or past the last tile.
+
+        A **tilemap** whose cells carry their own rows answers from the cell under
+        the pixel instead. Pinned regions and per-cell rows are two answers to one
+        question and the capability table keeps them apart (``PALETTE_REGIONS`` is
+        absent from the kind), so the two branches can never both apply — and
+        keeping them in one function is what stops the pen and the eyedropper
+        disagreeing about which row they are working in.
         """
         assert self._doc is not None
+        if self._folds_palette_rows():
+            found = self._bank_tile_at_pixel(x, y)
+            return (
+                self._palette_base()
+                if found is None
+                else self._cell_paint_base(found[0])
+            )
         if self._active_palette_regions().is_empty():
             return self._palette_base()
         tile_w, tile_h = self._pixel_tile_size()

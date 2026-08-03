@@ -784,11 +784,54 @@ class TilemapImage(NamedTuple):
     an export has to size its colour table to: one image carries one table, so a
     map drawing through four palette rows needs four rows of it
     (:func:`~celpix.ui.export.document_image`).
+
+    ``hidden`` is the ``(x, y, w, h)`` pixel rectangles of the positions the map
+    does not draw (:attr:`~celpix.core.tilemap.Cell.visible`), for the caller to
+    paint the background over. Rectangles rather than positions because the
+    geometry — cell size, the assembly's width — is settled here and a second
+    caller working it out again is a second chance to get it wrong; and because
+    a run of hidden cells merges into one of them, which is what most of a
+    sparsely-drawn layout is.
     """
 
     grid: IndexGrid
     drawn: int
     palette_rows: int
+    hidden: tuple[tuple[int, int, int, int], ...] = ()
+
+
+def hidden_rects(doc: Document, columns: int) -> tuple[tuple[int, int, int, int], ...]:
+    """The pixel rectangles of ``doc``'s undrawn positions, runs merged.
+
+    In **laid-out** order, since these land on the composed picture and an
+    assembled screen draws its pages side by side
+    (:attr:`~celpix.core.document.Document.laid_out_cells`).
+
+    Empty for every format with no visibility bit, which is all but one, and the
+    walk short-circuits on the ``all`` scan rather than building a list per cell.
+    """
+    cells = doc.laid_out_cells
+    if all(cell.visible for cell in cells):
+        return ()
+    across, down = doc.cell_tiles
+    cell_w, cell_h = across * doc.tile_width, down * doc.tile_height
+    cols = max(1, columns)
+    rects: list[tuple[int, int, int, int]] = []
+    # A row at a time, so a run can only merge within one: spanning the wrap would
+    # paint a rectangle across the whole picture and blank the left of the next row.
+    for at in range(0, len(cells), cols):
+        row = cells[at : at + cols]
+        y = at // cols * cell_h
+        start: int | None = None
+        for col in range(len(row) + 1):  # one past the end flushes the last run
+            if col < len(row) and not row[col].visible:
+                if start is None:
+                    start = col
+                continue
+            if start is not None:
+                rects.append((start * cell_w, y, (col - start) * cell_w, cell_h))
+                start = None
+    return tuple(rects)
 
 
 def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
@@ -803,6 +846,7 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
     base = doc.palette_row_base
     rows = doc.palette_row_wrap(space)
+    hidden: tuple[tuple[int, int, int, int], ...] = ()
     if doc.is_sprite:
         frames = doc.shown_frames
         top = max(
@@ -815,6 +859,10 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
         )
         grid, sheet = sprite_image(doc, reg, columns)
         drawn = sheet.slots
+        # An object has no undrawn *position* to paint: its records sit at signed
+        # offsets rather than in a grid, and one that is not drawn is dropped
+        # outright by the codec rather than leaving a hole behind
+        # (``plugins.builtins.object_codec``).
     else:
         top = max(
             (
@@ -826,7 +874,11 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
         tiles, layout = tilemap_tiles(doc, reg, columns)
         # No bias list: the rows are already in the indices (see tilemap_tiles).
         grid, drawn = compose_tiles(tiles, layout, None), len(tiles)
-    return TilemapImage(grid, drawn, min(max(1, 256 // max(1, space)), top + 1))
+        # The same width the tiles were laid out at, for the same reason: an
+        # assembly owns its columns, and rectangles measured against the caller's
+        # would land a row off down the picture.
+        hidden = hidden_rects(doc, doc.assembled_columns or columns)
+    return TilemapImage(grid, drawn, min(max(1, 256 // max(1, space)), top + 1), hidden)
 
 
 def tile_source_span(doc: Document, limit: int | None = None) -> range:

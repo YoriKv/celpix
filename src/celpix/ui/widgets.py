@@ -10,6 +10,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import TypeVar
@@ -490,6 +491,50 @@ def funnel_icon(color: QColor, size: int = 16, ratio: float = 1.0) -> QIcon:
     painter.end()
     pixmap.setDevicePixelRatio(ratio)
     return QIcon(pixmap)
+
+
+# Amber for the warning level. The QToolTip rule is not decoration: Qt applies a
+# bare `color:` to the widget's *tooltip* as well, which would render the whole
+# explanation amber — pinning it to palette(text) keeps the tooltip readable in
+# either theme.
+BADGE_WARNING_STYLE = "QLabel { color: #c08a30; } QToolTip { color: palette(text); }"
+
+
+@dataclass(frozen=True)
+class Badge:
+    """A tool window's status-bar annotation: the state its picture cannot show.
+
+    Both windows that carry one have the same problem — a picture that looks
+    equally plausible whether or not something is wrong with it, so the something
+    has to be said in words. A decompression that stopped early looks like a
+    decompression that finished; an animation whose steps name frames the file
+    does not have plays as one that does not.
+
+    ``text`` is the few words shown; ``detail`` the tooltip's fuller explanation
+    (hard-wrapped by the caller — see the tooltip rule in
+    ``docs/py-qt-reference/pyside6-pitfalls.md``); ``warning`` picks amber over
+    the standard text colour. That last is the difference between a **problem**
+    and a **fact**: a scheme with an end marker that did not reach one *was* cut
+    short, while a stream-based one was only ever going to decode as far as it was
+    fed, and neither reading applies to the other.
+    """
+
+    text: str
+    detail: str
+    warning: bool = False
+
+
+def apply_badge(label: QLabel, badge: Badge | None) -> None:
+    """Put ``badge`` on ``label``, or empty and hide it when there is none.
+
+    The three writes every badge needs kept in one place, since a window that set
+    the text and forgot the stylesheet would carry the last badge's colour into
+    this one's words.
+    """
+    label.setText(badge.text if badge else "")
+    label.setToolTip(badge.detail if badge else "")
+    label.setStyleSheet(BADGE_WARNING_STYLE if badge and badge.warning else "")
+    label.setVisible(badge is not None)
 
 
 # The zoom multipliers the view offers, in order. Whole numbers magnify, and

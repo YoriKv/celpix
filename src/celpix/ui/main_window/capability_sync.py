@@ -23,9 +23,13 @@ of those would switch it off for the rest of the session, so for them the gate
 owns enablement in both directions.
 
 A control that would be **meaningless** on this kind is hidden; one that is
-merely unavailable is disabled. The pixel tools are the clear case of the first:
-a panel of brushes over a tilemap is not a disabled feature, it is furniture for
-a different room.
+merely unavailable is disabled. The stamp tool is the clear case of the first: a
+tool for placing cells is not a feature switched off on a pixel document, it is
+furniture for a different room. The pixel tools rail is the counter-example that
+shows why the distinction is per *kind* and not per control — it used to be
+hidden on a tilemap, and stopped being once a map's pixels became editable
+through it (``docs/design/tilemap-entry.md`` §8.4); what varies now is whether
+*this* map has a bank to paint into, which no per-kind table can say.
 
 Two capabilities gate **in place** rather than through this pass, listed in
 :data:`_GATED_IN_PLACE`, and the reason is worth stating because it decides where
@@ -89,11 +93,6 @@ class Gesture(Enum):
 # module has no business depending on; a name that does not resolve is skipped,
 # so a control that has not been built yet costs nothing.
 _GATES: dict[Capability, tuple[str, ...]] = {
-    Capability.PIXEL_EDIT: (
-        "_tools_panel",
-        "_edit_mode_action",
-        "_toggle_edit_mode_action",
-    ),
     # The two *unpin* gestures and the recolour toggle, and not the third gesture
     # beside them: pinning a row is what a pixel document does with a row it has
     # been given, so the gesture that gives one rides on PALETTE_ROW and is gated
@@ -115,9 +114,9 @@ _GATES: dict[Capability, tuple[str, ...]] = {
         "_show_rearranged_action",
     ),
     Capability.CELL_LABELS: ("_show_tile_ids_action",),
-    # The Edit Tiles mode. Hidden rather than greyed off a tilemap: a tool for
-    # placing cells is not a feature switched off on a pixel document, it is
-    # furniture for a different room — the reading the pixel tools rail gets.
+    # The Edit Tiles mode. Hidden rather than greyed off a *pixel* document: a
+    # tool for placing cells is not a feature switched off there, it is furniture
+    # for a different room.
     # The Cell spin rides on this capability too and gates itself, because it
     # needs the format's word as well (see _GATED_IN_PLACE's note).
     Capability.STAMP: ("_stamp_action", "_toggle_stamp_action"),
@@ -156,11 +155,20 @@ _GATES: dict[Capability, tuple[str, ...]] = {
 # underneath it actually need is finer and per-kind — a selection and, on a
 # tilemap, a format with a palette field to write
 # (:meth:`~...palette_regions.PaletteRegionsMixin._sync_pin_actions`).
+#
+# ``PIXEL_EDIT`` is the same shape and arrived at it the same way. Both kinds
+# declare it — a tilemap's pixels are the bound entry's, and painting them is
+# what ``tilemap-entry.md`` §8.4 is — so a gate here would always be true, while
+# what the rail and the two mode toggles need is per *document*: a map with
+# nothing bound has no bank to deposit into, and a sprite object has no cell
+# under a canvas pixel at all. ``_pixel_edit_available`` asks ``_can`` and then
+# both of those (:meth:`~...selection.SelectionMixin._pixel_edit_available`).
 _GATED_IN_PLACE = frozenset(
     {
         Capability.TILE_BINDING,  # tilemap_bar._sync_tilemap_bar — the stack swap
         Capability.CELL_ROTATE,  # transform._sync_transform_actions
         Capability.PALETTE_ROW,  # palette_regions._sync_pin_actions
+        Capability.PIXEL_EDIT,  # selection._pixel_edit_available
     }
 )
 
@@ -198,7 +206,6 @@ _UNGATED = frozenset(
 # half of one control cannot stay behind when the horizontal half is replaced.
 _HIDDEN = frozenset(
     {
-        "_tools_panel",
         "_stamp_action",
         "_toggle_stamp_action",
         "_tile_offset_bar",
@@ -220,7 +227,6 @@ _HIDDEN = frozenset(
 # it costs to give it an owner later.
 _GATE_OWNS = frozenset(
     {
-        "_edit_mode_action",
         "_show_palette_regions_action",
         "_show_tile_ids_action",
         # Hidden groups have to be in here too, or the veto below would leave a

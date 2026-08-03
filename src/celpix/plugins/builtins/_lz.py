@@ -16,8 +16,10 @@ encoding these formats get for free.
 What stays with each scheme is what only it knows: which distances it can reach,
 what a match costs to write, and whether the longest match is the one it wants —
 PRS deliberately prefers a nearer, shorter match when the cheaper op more than
-pays for the bytes given up. So :meth:`longest` is offered for the two schemes
-that want length alone, and :meth:`candidates` for the one that scores its own.
+pays for the bytes given up. So :meth:`longest` is offered for the schemes that
+want length alone, :meth:`candidates` for the one that scores its own, and
+:meth:`all_longest` for the one that parses by shortest path and therefore has to
+price every position before it knows which it will use.
 """
 
 from __future__ import annotations
@@ -142,6 +144,71 @@ class MatchFinder:
         if offset >= distance:
             offset %= distance
         return self._data[candidate + offset] == self._data[at + length - 1]
+
+    def all_longest(self, limit: int) -> tuple[list[int], list[int]]:
+        """The longest match at *every* position, as parallel length/offset lists.
+
+        A greedy parse only asks about the positions it lands on, so it can index
+        as it walks; a shortest-path parse has to price a match at every position
+        before it knows which ones it will use, which is what this answers in one
+        pass. Positions are still indexed in order, so no candidate is offered
+        before the decoder would have produced it.
+
+        The pass is seeded rather than restarted: a match of ``L`` at ``pos`` from
+        candidate ``c`` means ``c + 1`` matches at least ``L - 1`` at ``pos + 1``,
+        the same bytes with both ends shifted one on. Extending that seed by
+        direct comparison first often reaches ``limit`` outright, and then the
+        chain needs no walk at all — which is exactly the input that makes a chain
+        long and every candidate on it a tie (a long fill, a repeating block).
+
+        Lengths below ``min_match`` come back as ``0``, offset ``0``: too short to
+        be worth writing, and no caller should be able to mistake one for usable.
+        """
+        data = self._data
+        n = self._n
+        min_match = self._min_match
+        lengths = [0] * n
+        offsets = [0] * n
+        seed_len = 0
+        seed_at = 0
+        for pos in range(n):
+            room = n - pos
+            cap = limit if limit < room else room
+            best_len, best_at = 0, 0
+            if cap >= min_match:
+                if seed_len > min_match and (
+                    self._window is None or pos - (seed_at + 1) <= self._window
+                ):
+                    candidate = seed_at + 1
+                    length = seed_len - 1
+                    while (
+                        length < cap and data[pos + length] == data[candidate + length]
+                    ):
+                        length += 1
+                    best_len, best_at = length, candidate
+                if best_len < cap:
+                    for candidate in self.candidates(pos):
+                        if (
+                            best_len
+                            and data[candidate + best_len] != data[pos + best_len]
+                        ):
+                            continue  # cannot reach best_len + 1, so cannot win
+                        length = 0
+                        while (
+                            length < cap
+                            and data[pos + length] == data[candidate + length]
+                        ):
+                            length += 1
+                        if length > best_len:
+                            best_len, best_at = length, candidate
+                            if best_len == cap:
+                                break
+            if best_len >= min_match:
+                lengths[pos] = best_len
+                offsets[pos] = best_at
+            seed_len, seed_at = best_len, best_at
+            self.add(pos)
+        return lengths, offsets
 
     def longest(self, pos: int, limit: int) -> tuple[int, int]:
         """The longest reachable match at ``pos``, as ``(length, candidate)``.

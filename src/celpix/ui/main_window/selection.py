@@ -36,10 +36,11 @@ from celpix.core.arrangement import (
     BlockLayout,
     compose_window,
 )
-from celpix.core.capabilities import ContentKind
+from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.errors import PipelineError
 from celpix.core.index_grid import IndexGrid
 from celpix.core.quantize import QuantizeReport
+from celpix.core.tilemap import Cell
 from celpix.core.tilerearrangement import (
     apply_orientation,
     coalesce_runs,
@@ -48,6 +49,7 @@ from celpix.core.tilerearrangement import (
 from celpix.pipeline import importer, pipeline
 from celpix.pipeline.importer import ImportedTiles
 from celpix.project.workspace import (
+    Entry,
     EntryKind,
 )
 from celpix.ui import clipboard, render_bridge
@@ -289,7 +291,40 @@ class SelectionMixin:
         )
 
     def _can_toggle_edit_mode(self) -> bool:
-        return self._doc is not None
+        return self._doc is not None and self._pixel_edit_available()
+
+    def _pixel_edit_available(self) -> bool:
+        """Whether the document on screen has pixels a gesture could paint.
+
+        The **kind**'s answer sharpened by the document's, which is the shape the
+        rearrange tool's availability already has: a capability can only say what
+        is true of every entry of a kind, and two tilemaps differ here
+        (``docs/design/tilemap-entry.md`` §4).
+
+        A pixel document always qualifies. A tilemap qualifies when a canvas
+        position resolves to a tile it can write — which asks two things and both
+        can fail on their own:
+
+        - **A grid**, so a position names a cell at all. A sprite object's records
+          sit at signed pixel offsets and overlap, so what a pixel belongs to is an
+          overlap order rather than a slot; that is an undecided question, not
+          missing arithmetic (§6, OBJ).
+        - **A bank to write into.** The art belongs to the bound entry, so an
+          unbound map — or one whose binding no longer names anything — has
+          nothing to deposit into and must not offer a brush over a picture of
+          placeholders.
+        """
+        doc = self._doc
+        if doc is None or not self._can(Capability.PIXEL_EDIT):
+            return False
+        if not doc.is_tilemap:
+            return True
+        entry = self._workspace.current
+        return (
+            not doc.is_sprite
+            and entry is not None
+            and self._tile_bank_owner(entry) is not None
+        )
 
     def _clipboard_actions(self) -> tuple[QAction, ...]:
         return (
@@ -302,7 +337,14 @@ class SelectionMixin:
     def _sync_edit_actions(self) -> None:
         """Converge the clipboard actions with the selection and the clipboard."""
         self._toggle_selection_mode_action.setEnabled(self._can_toggle_selection_mode())
-        self._toggle_edit_mode_action.setEnabled(self._can_toggle_edit_mode())
+        # Both spellings of the same toggle — the Edit menu's and the transform
+        # bar's — settle here, because the answer moves with the *document* and
+        # this pass is the one the refresh cycle runs. The capability gate used to
+        # own the toolbar one, and can no longer: it answers per kind, and two
+        # tilemaps differ (:meth:`_pixel_edit_available`).
+        can_paint = self._can_toggle_edit_mode()
+        self._toggle_edit_mode_action.setEnabled(can_paint)
+        self._edit_mode_action.setEnabled(can_paint)
         has_doc = self._doc is not None
         # Pixel mode gates Cut/Copy/Clear on a pixel marquee, tile mode on a
         # tile run; everything else about the five is the same in both.
@@ -395,6 +437,75 @@ class SelectionMixin:
             return 1, 1
         across, down = doc.cell_tiles
         return max(1, across), max(1, down)
+
+    def _bank_tile_at_slot(
+        self, slot: int, cells: list[Cell] | None = None
+    ) -> tuple[Cell, int] | None:
+        """Which tile of the bound bank canvas ``slot`` draws, and through which cell.
+
+        The step a pixel edit on a tilemap turns on: the canvas places in tile
+        slots, a slot names one tile of one cell, and the cell names where in the
+        bank that tile lives. Both halves come from the document rather than being
+        re-derived — :attr:`~celpix.core.document.Document.laid_out_cells` is what
+        the renderer walked (so the assembly and a chained map's resolution are
+        already in it) and
+        :meth:`~celpix.core.document.Document.cell_tile_indices` is the walk it
+        took (so the metatile stride, the index mask and the base index are the
+        renderer's own). Reading either off anything else is how the edit ends up
+        one tile from where the user pointed.
+
+        The cell travels back with the index because the tile alone is not enough
+        to write through: what is on screen has the cell's flips applied and its
+        palette row folded into the indices, and both have to come off again.
+
+        None where the slot draws nothing — past the last cell, or a cell pointing
+        outside the bank, which renders blank and has no bytes to edit.
+
+        ``cells`` lets a caller resolving many slots hoist
+        :attr:`~celpix.core.document.Document.laid_out_cells` out of its loop.
+        That property *builds* a list on an assembled document, so asking per slot
+        turns a fill into one pass over every cell in the file per pixel it
+        touches. Callers that ask once are unaffected and pass nothing.
+        """
+        doc = self._grid_tilemap()
+        if doc is None:
+            return None
+        position, ordinal = divmod(slot, max(1, doc.tiles_per_cell))
+        if cells is None:
+            cells = doc.laid_out_cells
+        if not 0 <= position < len(cells):
+            return None
+        cell = cells[position]
+        run = doc.cell_tile_indices(cell)
+        if not 0 <= ordinal < len(run):
+            return None
+        index = run[ordinal]
+        if not 0 <= index < doc.tile_count:
+            return None
+        return cell, index
+
+    def _bank_tile_at_pixel(
+        self,
+        x: int,
+        y: int,
+        cells: list[Cell] | None = None,
+        layout: BlockLayout | None = None,
+    ) -> tuple[Cell, int] | None:
+        """:meth:`_bank_tile_at_slot` for a canvas *pixel* — what the pen lands on.
+
+        ``cells`` and ``layout`` are the same hoist :meth:`_bank_tile_at_slot`
+        offers, one level up: a stroke resolves this per tile it touches, and both
+        of them are rebuilt per call otherwise — the cell list on an assembled
+        document, and a fresh :class:`BlockLayout` whose derived sizes are cached
+        on the instance and so thrown away with it.
+        """
+        tile_w, tile_h = self._pixel_tile_size()
+        if tile_w <= 0 or tile_h <= 0:
+            return None
+        if layout is None:
+            layout = self._view_layout()
+        slot = layout.cell_to_slot(x // tile_w, y // tile_h)
+        return None if slot is None else self._bank_tile_at_slot(slot, cells)
 
     def _selection_extent(self) -> int:
         """How many canvas slots hold something a selection can name.
@@ -1241,25 +1352,122 @@ class SelectionMixin:
         tiles = tiles[: max(0, self._doc.tile_count - first)]
         if not tiles:
             return 0
-        spans = self._encode_spans(first, tiles)
+        spans = self._encode_spans(self._actual_runs(first, tiles), self._view_frame())
         if spans is None:
             return 0
+        self._push_pixel_regions(spans, self._doc.pixel_data, entry, text)
+        return len(tiles)
+
+    def _apply_bank_tile_edit(self, tiles: dict[int, object], text: str) -> int:
+        """Write ``{bank index: tile}`` back through a tilemap, as one undoable edit.
+
+        The tilemap twin of :meth:`_apply_tile_edit`, and it differs in the two
+        ways a map differs from a file of tiles.
+
+        **The indices are a set, not a run.** A map draws the bank in whatever
+        order its cells ask for, so one gesture reaches a scattered handful of
+        tiles; they are grouped into consecutive runs here only to keep the splice
+        count down, not because the gesture had a shape.
+
+        **The bytes belong to somebody else.** ``pixel_data`` on this document is a
+        *copy* of the bound entry's art, so the command is pushed against that
+        entry — which is what makes the map read clean, the bank read dirty, and a
+        write of the bank the thing that puts the edit on disk
+        (``docs/design/tilemap-entry.md`` §8.1, ``slices-and-parents.md``). The map
+        travels as ``through`` so an undo comes back to the picture the stroke was
+        drawn on rather than to the bank.
+
+        The encode uses the codec's **plain 1-D frame** rather than
+        :meth:`_view_frame`: the bank was decoded that way
+        (:func:`~celpix.pipeline.pipeline.tile_bank`), so bank tile N is the Nth
+        ``bytes_per_tile`` of the buffer, and handing over the view's Cols — which
+        counts *cells* here — would scatter the bytes under the 2-D stripe walk.
+        """
+        doc = self._doc
+        entry = self._workspace.current
+        if doc is None or entry is None or self._applying_undo or not tiles:
+            return 0
+        owner = self._tile_bank_owner(entry)
+        if owner is None:
+            self.statusBar().showMessage(
+                "This map has no tiles bound - nothing to paint on."
+            )
+            return 0
+        if owner.doc is None:
+            self._load_entry(owner, quiet=True)
+        if owner.doc is None:
+            return 0
+        # The *owner's* bytes are what the splices land in and what an undo puts
+        # back, so they are what "did this change anything" has to be asked of.
+        # The map's copy is derived from them and agrees, but only one of the two
+        # is the authority (``slices-and-parents.md``).
+        source = owner.doc.pixel_data
+        spans = self._encode_spans(self._bank_runs(tiles))
+        if spans is None:
+            return 0
+        self._push_pixel_regions(spans, source, owner, text, through=entry)
+        return len(tiles)
+
+    @staticmethod
+    def _bank_runs(tiles: dict[int, object]) -> list[tuple[int, list]]:
+        """``{index: tile}`` as ``(first, tiles)`` runs of consecutive indices.
+
+        One splice per run instead of one per tile: a stroke along a row of cells
+        drawn from a run of the bank is the common case, and it is worth not
+        paying a separate encode and a separate undo region for each of them.
+
+        ``gap=0`` because this feeds a **write**: the gap-merging a read can
+        afford would rewrite tiles between the runs, which belong to somebody
+        else (:meth:`_encode_spans`).
+        """
+        return [
+            (first, [tiles[index] for index in range(first, first + count)])
+            for first, count in coalesce_runs(tiles, gap=0)
+        ]
+
+    def _push_pixel_regions(
+        self,
+        spans: list[tuple[int, bytes]],
+        source: bytes,
+        entry: Entry,
+        text: str,
+        *,
+        through: Entry | None = None,
+    ) -> None:
+        """Push ``spans`` against ``source`` as one undoable edit, if they change it.
+
+        The tail both write paths share — the pixel view's and a tilemap's — so
+        the two rules in it are stated once. An edit that would write back the
+        bytes already there is **skipped rather than pushed**, so a redundant
+        paste does not clutter the history; and the *before* half of every region
+        is read from the buffer the splices will land in, which is not always the
+        document on screen (:meth:`_apply_bank_tile_edit`).
+        """
         regions = [
-            (start, self._doc.pixel_data[start : start + len(data)], data)
-            for start, data in spans
+            (start, source[start : start + len(data)], data) for start, data in spans
         ]
         regions = [r for r in regions if r[1] != r[2]]
         if regions:
-            self._push_command(PixelEditCommand(self, entry, text, regions=regions))
-        return len(tiles)
+            self._push_command(
+                PixelEditCommand(self, entry, text, regions=regions, through=through)
+            )
 
-    def _encode_spans(self, first: int, tiles: list) -> list[tuple[int, bytes]] | None:
-        """``(start, bytes)`` splices that put ``tiles`` at virtual ``first``.
+    def _encode_spans(
+        self, runs: list[tuple[int, list]], frame: dict | None = None
+    ) -> list[tuple[int, bytes]] | None:
+        """``(start, bytes)`` splices that put each of ``runs`` where it belongs.
 
         Unrearranged this is the single splice it has always been. A rearranged
         run is cut wherever the actual indices stop being consecutive — strictly,
         unlike the gap-merging a *read* can afford, because the tiles in a gap
         belong to somebody else and must not be rewritten.
+
+        The runs are worked out by the caller because the two write paths group
+        differently: the pixel view resolves a rearrangement
+        (:meth:`_actual_runs`), a tilemap coalesces scattered bank indices
+        (:meth:`_bank_runs`). ``frame`` is likewise the caller's, since a
+        tilemap's bank is encoded under the codec's plain 1-D reading rather than
+        the view's.
 
         The splices are **disjoint**, which is what lets them be computed
         independently and applied in any order. That rests on rearrangement being
@@ -1271,12 +1479,11 @@ class SelectionMixin:
         the tile that split them — so no two spans can touch.
         """
         assert self._doc is not None
-        frame = self._view_frame()
         spans = []
-        for run_first, run_tiles in self._actual_runs(first, tiles):
+        for run_first, run_tiles in runs:
             try:
                 start, data = pipeline.encode_tiles(
-                    self._doc, self._registry, run_first, run_tiles, **frame
+                    self._doc, self._registry, run_first, run_tiles, **(frame or {})
                 )
             except PipelineError as exc:
                 self._report(exc)
@@ -1309,7 +1516,12 @@ class SelectionMixin:
         return runs
 
     def _apply_pixel_bytes(
-        self, splices: list[tuple[int, bytes]], revision: int, owner_revision: int = 0
+        self,
+        splices: list[tuple[int, bytes]],
+        revision: int,
+        owner_revision: int = 0,
+        *,
+        entry: Entry,
     ) -> None:
         """Land a pixel edit's byte regions - :class:`PixelEditCommand`'s apply.
 
@@ -1323,22 +1535,46 @@ class SelectionMixin:
 
         The edit then crosses the file/slice boundary (
         :meth:`_propagate_pixel_edit`), which is where ``owner_revision`` lands.
+
+        ``entry`` is **whose bytes these are**, which is not always the entry on
+        screen: a pixel edit made through a tilemap lands in the tile bank the map
+        is bound to (``docs/design/tilemap-entry.md`` §8.4). It is carried by the
+        command rather than read from ``self._workspace.current`` for that reason,
+        and because an undo reaching another entry has already switched to it by
+        the time this runs.
         """
-        if self._doc is None:
+        # A lazily-loaded owner: an edit deposited into an entry the user has
+        # never activated still has to reach its buffer, since that buffer is
+        # what a write of it puts on disk.
+        if entry.doc is None:
+            self._load_entry(entry, quiet=True)
+        if entry.doc is None:
             return
-        for start, data in splices:
-            self._doc.replace_bytes(start, data)
-        # A tilemap draws every cell from a cached decode of these same bytes
-        # (:func:`~celpix.pipeline.pipeline.tile_bank`), so the edit is carried
-        # into it here rather than invalidating it: only the tiles just written
-        # are re-decoded, and the refresh below then shows the change in every
-        # cell that draws them at once. A no-op on a document with no bank.
-        pipeline.patch_tile_bank(self._doc, self._registry, splices)
-        entry = self._workspace.current
-        if entry is not None:
-            self._workspace.set_pixel_revision(entry, revision)
-            self._propagate_pixel_edit(entry, owner_revision)
+        self._land_splices(entry.doc, splices)
+        self._workspace.set_pixel_revision(entry, revision)
+        self._propagate_pixel_edit(entry, owner_revision)
+        self._resync_tile_bindings(entry, splices)
         self._refresh_view()
+
+    def _land_splices(self, doc, splices: list[tuple[int, bytes]]) -> None:  # noqa: ANN001 — a Document
+        """Put ``splices`` into ``doc``'s bytes and into everything derived from them.
+
+        The pair is what "these bytes changed" means to a document, and it is a
+        pair rather than one call because a tilemap draws every cell from a cached
+        decode of the same buffer (:func:`~celpix.pipeline.pipeline.tile_bank`).
+        Carrying the edit into that cache rather than dropping it re-decodes only
+        the tiles just written, and every cell drawing one of them then shows the
+        change on the same repaint (``docs/design/tilemap-entry.md`` §8.2). A
+        no-op on a document with no bank.
+
+        One method because the same two steps are owed to every *other* document
+        holding a copy of these bytes as well (:meth:`~...session.SessionMixin.
+        _resync_tile_bindings`), and a third thing derived from a buffer would
+        otherwise have to be found in two places.
+        """
+        for start, data in splices:
+            doc.replace_bytes(start, data)
+        pipeline.patch_tile_bank(doc, self._registry, splices)
 
     def _select_tiles(self, first: int, last: int) -> None:
         """Set a linear selection directly (an edit landing, not a gesture)."""

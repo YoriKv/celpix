@@ -368,24 +368,54 @@ class RenderingMixin:
         drawn = pipeline.tilemap_image(
             self._doc, self._registry, self._tilemap_columns()
         )
-        clear = self._doc.view.transparent_zero
-        if self._doc.cells_carry_palette_rows:
-            return (
-                render_bridge.render_pinned(
-                    drawn.grid,
-                    self._doc.palette,
-                    self._index_space(),
-                    transparent_zero=clear,
-                ),
-                drawn.drawn,
-            )
-        base = self._doc.view.subpalette_row * self._index_space()
+        # The composed grid travels with the image because a **float** needs the
+        # same one to punch its hole into, and composing a map is the expensive
+        # half of a repaint — it is the whole file, not a view window, so asking
+        # for it twice doubles the cost of every repaint made while pixels are in
+        # the air. The two branches beside this one compose only their window,
+        # and hand back None rather than pretending otherwise.
         return (
-            render_bridge.render(
-                drawn.grid, self._doc.palette, base, transparent_zero=clear
-            ),
+            self._tilemap_grid_image(drawn.grid, drawn.hidden),
             drawn.drawn,
+            drawn.grid,
         )
+
+    def _tilemap_grid_image(self, grid, hidden=()):
+        """A composed tilemap grid as a QImage, under this document's colour rule.
+
+        ``hidden`` is the undrawn positions to paint the background over
+        (:func:`~celpix.ui.render_bridge.paint_hidden`). It defaults to none for
+        the **live preview**, which composes a window of the map mid-stroke and
+        has no business blanking positions the stroke is not touching.
+
+        Two colour-table paths, decided by whether the **format** gives a cell a
+        palette row (:attr:`~celpix.core.document.Document.folds_palette_rows`).
+        Where it does the row is already folded into the indices upstream and the
+        table must not offset again — the pinned-region path, and the one every
+        hardware map takes, including one whose cells all sit on row 0: those
+        zeros are the file's answer and stand until something edits them. Where
+        the format has no such field (a Game Boy map's bare tile number, a
+        converted screen's low byte) nothing has answered, and the map indexes one
+        block of the palette exactly as a pixel document does — Subpal picks which.
+
+        Split out because the **live preview** of a stroke has to pick the same
+        way (:meth:`~...pixel_edit.PixelEditMixin._render_preview`): a preview
+        drawn through the other table would jump a row the moment the mouse went
+        down and jump back on release. Two copies of this choice drifted on two
+        arguments within a day of existing.
+        """
+        assert self._doc is not None
+        clear = self._doc.view.transparent_zero
+        if self._doc.folds_palette_rows:
+            image = render_bridge.render_pinned(
+                grid, self._doc.palette, self._index_space(), transparent_zero=clear
+            )
+        else:
+            base = self._doc.view.subpalette_row * self._index_space()
+            image = render_bridge.render(
+                grid, self._doc.palette, base, transparent_zero=clear
+            )
+        return render_bridge.paint_hidden(image, hidden)
 
     def _tile_id_labels(self) -> list[int | None] | None:
         """The tile each visible cell names, by canvas slot — or None for no labels.
@@ -590,11 +620,12 @@ class RenderingMixin:
         layout = BlockLayout(
             cols, view.block_columns, view.block_rows, view.block_order
         )
+        composed = None
         if self._doc.is_tilemap:
             # A third route beside the two byte/tile ones: the cells are the
             # document, and the tiles come from wherever it is bound. Placement
             # is still the shared composer — see _render_tilemap.
-            image, filled = self._render_tilemap()
+            image, filled, composed = self._render_tilemap()
         elif self._active_tile_rearrangement().is_identity():
             engine, preset = self._registry.engine_for(
                 self._doc.pixel_config.interpret_preset_id
@@ -644,8 +675,9 @@ class RenderingMixin:
         self._canvas.set_tile_ids(self._tile_id_labels())
         self._canvas.set_image(image)
         # A lifted float's source is shown blank, never written, so a fresh base
-        # image has to have that hole punched back into it.
-        self._refresh_float_preview()
+        # image has to have that hole punched back into it — over the grid this
+        # render just composed, where there is one, rather than a second copy of it.
+        self._refresh_float_preview(composed)
         self._revalidate_selection()
         # And the sprite object's pick beside it: Cols re-flows the frames, so a
         # pick that survives is at a different pixel than it was.
@@ -670,6 +702,11 @@ class RenderingMixin:
         # changing (a palette edit, another subpalette row, a new format).
         self._sync_paint_preview()
         self._refresh_overlay()
+        # Beside the decompression overlay, and for the same reason: both are tool
+        # windows holding a picture of *this* entry, so both have to be told when
+        # the entry underneath them changes.
+        self._animation_action.setEnabled(self._animation_available())
+        self._sync_animation()
         self._refresh_hex()
         # Rows owns its own enabled state (two different reasons to have no row
         # count to set), so it is refreshed here rather than gated below.

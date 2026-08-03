@@ -204,12 +204,27 @@ class TileMode(str, Enum):
 
 @dataclass(frozen=True)
 class TileSource:
-    """Where a tilemap's tiles come from, as restorable plain data.
+    """Where a tilemap's tiles come from.
 
-    ``entry_index`` is positional within the project's own entry list, the same
-    shape the project's ``current`` pointer already uses. It is stable inside one
-    file and meaningless outside it, which is correct — "the third entry" only
-    names something in a project that has a third entry.
+    ``entry`` is the bound :class:`Entry` **itself**, not a position in the list.
+    That distinction is the whole of why this field is an object: a binding
+    decides which file a pixel edit made through the map is *deposited* into
+    (``docs/design/tilemap-entry.md`` §8.4), and a positional index silently names
+    a different entry the moment anything ahead of it is closed or reordered — so
+    the binding would follow the number rather than the file the user pointed at.
+    Held by identity, which :class:`Entry` has (``eq=False``), so it costs a
+    reference and cannot go stale while the entry is open.
+
+    It is **not** what gets written. A project file has no way to name an object,
+    so the position is computed on save and resolved back on load, in
+    :mod:`~celpix.project.projectfile` and nowhere else — the one place a
+    positional index is meaningful, since there the list is fixed.
+
+    A binding whose entry has been **closed** still holds it, and answers "not
+    open" rather than "somebody else"
+    (:meth:`~celpix.ui.main_window.session.SessionMixin._binding_target`). That is
+    also what makes closing a tile bank undoable for free: the restore puts the
+    same object back, and every map bound to it is bound to it again.
 
     ``base_index`` shifts every cell: cell index N draws source tile
     ``base_index + N``. It is what lets a map and its art be bound together when
@@ -233,7 +248,7 @@ class TileSource:
     """
 
     mode: TileMode = TileMode.NONE
-    entry_index: int | None = None
+    entry: Entry | None = None
     base_index: int = 0
 
     @property
@@ -1084,6 +1099,12 @@ def entry_view_bytes(
     Everything that resolves an offset in this entry's coordinates reads through
     this — a slice of a reordering parent, an Offset palette — so they can never
     disagree with the view about what the bytes at an offset are.
+
+    One exception, and it is deliberate: a **tilemap's bound tiles** apply the
+    same rule in their own function
+    (:meth:`~celpix.ui.main_window.session.SessionMixin._live_bound_tiles`),
+    because they need the read's context and its tile geometry as well as its
+    bytes, and this returns neither. The two must move together.
     """
     if entry.doc is not None:
         return entry.doc.pixel_data, entry.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)

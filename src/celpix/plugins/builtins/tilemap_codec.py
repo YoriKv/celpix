@@ -66,7 +66,10 @@ TILEMAP_ENGINE = "codec.tilemap.packed"
 # Where each Cell attribute is read from and written to. Named once so decode
 # and encode cannot drift apart, and so an unknown key in a preset is inert
 # rather than half-applied.
-_FIELDS = ("index", "palette", "priority", "flip_h", "flip_v", "flags")
+# ``drawn`` is set where the position IS drawn, which is how the one format that
+# has it stores the bit; a preset placing no ``drawn`` describes a format whose
+# every position is drawn, and every other format in hand is that.
+_FIELDS = ("index", "palette", "priority", "flip_h", "flip_v", "drawn", "flags")
 
 # The transforms this engine can express, and the bit each one lives in. The op's
 # own name *is* the preset field, which is what lets "does this format support
@@ -212,6 +215,10 @@ class TilemapCodec:
                     priority=_get(word, fields["priority"]),
                     flip_h=bool(_get(word, fields["flip_h"])),
                     flip_v=bool(_get(word, fields["flip_v"])),
+                    # Absent field reads 0, which for every other Cell attribute
+                    # is the right default and for this one is its opposite.
+                    visible=fields["drawn"] is None
+                    or bool(_get(word, fields["drawn"])),
                     flags=_get(word, fields["flags"]),
                 )
             )
@@ -232,6 +239,7 @@ class TilemapCodec:
             word = _put(word, fields["priority"], cell.priority)
             word = _put(word, fields["flip_h"], int(cell.flip_h))
             word = _put(word, fields["flip_v"], int(cell.flip_v))
+            word = _put(word, fields["drawn"], int(cell.visible))
             word = _put(word, fields["flags"], cell.flags)
             out += word.to_bytes(size, order)
         return bytes(out)

@@ -32,6 +32,25 @@ def test_render_bridge_subpalette_offset(qtbot) -> None:
     assert image.pixel(0, 0) & 0xFFFFFFFF == 0xFF222222
 
 
+def test_render_bridge_paints_undrawn_positions_black(qtbot) -> None:
+    """A map's undrawn positions are painted over the composed picture rather than
+    composed into it: every index in the grid belongs to the palette and none is
+    reserved, so there is no index that could have meant "nothing here".
+
+    Which forces a format change — Qt cannot paint onto ``Format_Indexed8`` — and
+    that is why a map with nothing hidden must come back untouched, still indexed
+    and still cheap to re-table on a palette change.
+    """
+    grid = IndexGrid(2, 1, bytearray([1, 1]))
+    palette = Palette([0xFF000000, 0xFFFF0000])  # black, red
+    indexed = render_bridge.render(grid, palette)
+    assert render_bridge.paint_hidden(indexed, ()) is indexed
+
+    painted = render_bridge.paint_hidden(indexed, ((1, 0, 1, 1),))
+    assert painted.pixel(0, 0) & 0xFFFFFFFF == 0xFFFF0000  # the cell that draws
+    assert painted.pixel(1, 0) & 0xFFFFFFFF == 0xFF000000  # opaque, not a hole
+
+
 def test_render_bridge_transparent_zero_clears_every_rows_index_0(qtbot) -> None:
     """Which entries mean "index 0" depends on where the palette row lives.
 
@@ -2890,7 +2909,9 @@ def test_a_slice_edit_reaches_its_parent_and_the_parents_container(
 
     cut = window._workspace.add_slice(parent.path, "gfx", 0x4000, 0x100)
     window._workspace.set_current(cut)
-    window._apply_pixel_bytes([(0, b"\x5a" * 32)], window._workspace.next_revision())
+    window._apply_pixel_bytes(
+        [(0, b"\x5a" * 32)], window._workspace.next_revision(), entry=cut
+    )
 
     # The file's own view holds the edit made through the slice - same bytes.
     window._workspace.set_current(parent)
@@ -6821,7 +6842,9 @@ def test_exporting_a_tilemap_writes_the_map_and_not_the_tiles_it_borrows(
     scr = _scr_file(tmp_path, [Cell(index=1), Cell(index=2, palette_row=3)])
     window._load_pixel(str(scr))
     entry = window._workspace.current
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     entry.doc = None
     window._activate_entry(window._workspace.entries[0])
     window._activate_entry(entry)
@@ -6864,7 +6887,9 @@ def test_a_sprite_object_opens_and_draws_its_frames_one_after_another(
     # many across" a sheet of separate pictures has.
     assert window._columns.value() == 8
 
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     entry.doc = None  # re-read through the new binding
     window._activate_entry(window._workspace.entries[0])
     window._activate_entry(entry)
@@ -6901,7 +6926,9 @@ def test_a_sprite_sheet_selects_its_drawn_tiles_and_backs_its_empty_frames(
     obj = _obj_file(tmp_path, [(0, 0, 1), (24, 5, 2)])
     window._load_pixel(str(obj))
     entry = window._workspace.current
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     entry.doc = None  # re-read through the new binding
     window._activate_entry(window._workspace.entries[0])
     window._activate_entry(entry)
@@ -7023,7 +7050,9 @@ def test_transparent_zero_clears_a_blank_cell_on_every_palette_row(
     window._load_pixel(str(bank))
     window._load_pixel(str(screen))
     entry = window._workspace.current
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(entry)
     assert not window._transparent_zero_box.isHidden()
     steps = window._undo_stack.count()
@@ -7065,7 +7094,9 @@ def test_all_frames_is_a_sprite_maps_own_switch_and_grows_the_sheet(
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
     obj = window._workspace.current
-    obj.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    obj.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(obj)
     assert not window._all_frames.isHidden()
     assert window._sprite_sheet().frames == 1
@@ -7110,7 +7141,9 @@ def test_copying_a_rectangle_of_a_sprite_sheet_lifts_the_pixels_it_draws(
     # The second part is at y=5, so it lands across two tile rows of the sheet.
     window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1), (24, 5, 2)])))
     entry = window._workspace.current
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     entry.doc = None  # re-read through the new binding
     window._activate_entry(window._workspace.entries[0])
     window._activate_entry(entry)
@@ -7195,7 +7228,9 @@ def test_a_tilemap_bound_to_an_entry_draws_that_entrys_tiles(qtbot, tmp_path) ->
     window._load_pixel(str(scr))
 
     entry = window._workspace.find_file(str(scr))
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     entry.doc = None  # re-read through the new binding
     window._activate_entry(window._workspace.entries[0])
     window._activate_entry(entry)
@@ -7231,7 +7266,9 @@ def _bound_screen(qtbot, tmp_path, cells):
     window._load_pixel(str(scr))
     entry = window._workspace.find_file(str(scr))
     window._activate_entry(entry)
-    window._rebind_tiles(entry, TileSource(mode=TileMode.ENTRY, entry_index=0))
+    window._rebind_tiles(
+        entry, TileSource(mode=TileMode.ENTRY, entry=window._workspace.entries[0])
+    )
     return window, bank, entry
 
 
@@ -7312,7 +7349,9 @@ def test_binding_seeds_the_maps_palette_from_the_entry_it_binds_to(
     bank.doc.palette = Palette(reds)
     bank.session.palette_mode = PaletteMode.CUSTOM
     window._activate_entry(entry)
-    window._rebind_tiles(entry, TileSource(mode=TileMode.ENTRY, entry_index=0))
+    window._rebind_tiles(
+        entry, TileSource(mode=TileMode.ENTRY, entry=window._workspace.entries[0])
+    )
 
     assert entry.session.palette_mode is PaletteMode.CUSTOM
     assert entry.doc.palette.colors == reds
@@ -7342,9 +7381,7 @@ def test_binding_seeds_the_maps_palette_from_the_entry_it_binds_to(
     window._activate_entry(entry)
     window._rebind_tiles(
         entry,
-        TileSource(
-            mode=TileMode.ENTRY, entry_index=window._workspace.entries.index(second)
-        ),
+        TileSource(mode=TileMode.ENTRY, entry=second),
     )
     assert entry.doc.palette.colors == reds
 
@@ -7592,7 +7629,9 @@ def test_a_tilemaps_subpalette_is_sized_by_the_bound_entrys_format(
     window._load_pixel(str(scr))
     entry = window._workspace.find_file(str(scr))
     window._activate_entry(entry)
-    window._rebind_tiles(entry, TileSource(mode=TileMode.ENTRY, entry_index=0))
+    window._rebind_tiles(
+        entry, TileSource(mode=TileMode.ENTRY, entry=window._workspace.entries[0])
+    )
 
     assert entry.session.pixel_preset_id == "preset.pixel.snes-2bpp"
     assert window._doc.pixel_config.interpret_preset_id == "preset.pixel.snes-4bpp"
@@ -7630,7 +7669,7 @@ def test_binding_from_a_file_opens_it_as_an_entry_first(
     bound = window._workspace.find_file(str(tiles))
     assert bound is not None and bound.content_kind is ContentKind.PIXELS
     assert entry.tile_source.mode is TileMode.ENTRY
-    assert entry.tile_source.entry_index == window._workspace.entries.index(bound)
+    assert entry.tile_source.entry is bound
     # The view comes back to the map: tiles were asked for *for* it.
     assert window._workspace.current is entry
     assert window._doc.is_tilemap and window._doc.pixel_data
@@ -7654,7 +7693,7 @@ def test_binding_from_a_file_whose_own_source_is_a_tilemap_is_refused(
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
     window._load_pixel(str(other))
     window._workspace.current.tile_source = TileSource(
-        mode=TileMode.ENTRY, entry_index=0
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
     )
     entry = window._workspace.entries[0]
     window._activate_entry(entry)
@@ -7738,7 +7777,7 @@ def test_choosing_an_entry_in_the_bar_binds_and_redraws(qtbot, tmp_path) -> None
     window._on_tile_binding_change(combo.currentIndex())
 
     assert entry.tile_source.mode is TileMode.ENTRY
-    assert entry.tile_source.entry_index == 0
+    assert entry.tile_source.entry is window._workspace.entries[0]
     assert window._doc.pixel_data  # re-read through the binding
     assert not window._canvas._image.isNull()
 
@@ -7754,7 +7793,9 @@ def test_the_base_tile_shifts_which_tiles_the_cells_draw(qtbot, tmp_path) -> Non
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=0)])))
     entry = window._workspace.current
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(entry)
 
     window._tile_base.setValue(3)
@@ -7818,7 +7859,7 @@ def test_a_bank_that_states_a_row_base_beats_the_sprite_preset(qtbot, tmp_path) 
     window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
     obj = window._workspace.current
     combo = window._tile_binding
-    combo.setCurrentIndex(combo.findData(0))
+    combo.setCurrentIndex(combo.findData(window._workspace.entries[0]))
     window._on_tile_binding_change(combo.currentIndex())
     assert window._doc.palette_row_base == 0
     assert window._row_base.value() == 0
@@ -7828,7 +7869,7 @@ def test_a_bank_that_states_a_row_base_beats_the_sprite_preset(qtbot, tmp_path) 
     # it to a 4bpp base is what put fourteen of them past the end of CGRAM.
     window._load_pixel(str(_cgx_file(tmp_path, col=(1, 1), name="cell.CGX")))
     window._activate_entry(obj)  # loading a bank makes it current; go back
-    combo.setCurrentIndex(combo.findData(2))
+    combo.setCurrentIndex(combo.findData(window._workspace.entries[2]))
     window._on_tile_binding_change(combo.currentIndex())
     assert window._doc.palette_row_base == 8
 
@@ -7851,7 +7892,7 @@ def test_a_bank_with_no_header_leaves_the_sprite_preset_to_answer(
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
     combo = window._tile_binding
-    combo.setCurrentIndex(combo.findData(0))
+    combo.setCurrentIndex(combo.findData(window._workspace.entries[0]))
     window._on_tile_binding_change(combo.currentIndex())
     assert window._doc.palette_row_base == 8
 
@@ -7868,7 +7909,7 @@ def test_a_screen_states_its_own_row_base_over_the_banks(qtbot, tmp_path) -> Non
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
     scr = window._workspace.current
     combo = window._tile_binding
-    combo.setCurrentIndex(combo.findData(0))
+    combo.setCurrentIndex(combo.findData(window._workspace.entries[0]))
     window._on_tile_binding_change(combo.currentIndex())
     # The screen's own header is all zero, and a stated 0 is an answer.
     assert scr.palette_row_base is None
@@ -7942,7 +7983,9 @@ def test_the_bar_says_where_the_tiles_come_from(qtbot, tmp_path) -> None:
     entry = window._workspace.current
     assert "No tiles bound" in window._tile_binding_note.text()
 
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(entry)
     note = window._tile_binding_note.text()
     assert "s.4bpp.sfc" in note and "SNES 4bpp" in note
@@ -7961,7 +8004,9 @@ def test_the_bar_jumps_to_the_entry_the_tiles_come_from(qtbot, tmp_path) -> None
     tiles, tilemap = window._workspace.entries
     assert not window._tile_binding_jump.isEnabled()  # unbound: nowhere to go
 
-    tilemap.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    tilemap.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(tilemap)
     assert window._tile_binding_jump.isEnabled()
     assert tiles.name in window._tile_binding_jump.toolTip()
@@ -7989,9 +8034,11 @@ def test_a_tilemap_switches_off_the_controls_it_has_no_capability_for(
     assert window._edit_mode_action.isEnabled()
 
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
-    # Meaningless here, so hidden rather than greyed: a panel of brushes over a
-    # tilemap is furniture for a different room.
-    assert window._tools_panel.isHidden()
+    # The brushes stay: a tilemap *is* painted on, through the entry it borrows
+    # its tiles from. What decides whether they can be reached is per document
+    # rather than per kind, so it is the mode toggle that goes grey — this map
+    # has nothing bound, and a brush with no bank under it would write nowhere.
+    assert not window._tools_panel.isHidden()
     assert not window._edit_mode_action.isEnabled()
     assert not window._rearrange_action.isEnabled()
     assert not window._pin_palette_action.isEnabled()
@@ -8007,7 +8054,7 @@ def test_leaving_a_tilemap_gives_the_pixel_controls_back(qtbot, tmp_path) -> Non
     qtbot.addWidget(window)
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
-    assert window._tools_panel.isHidden()
+    assert not window._edit_mode_action.isEnabled()  # nothing bound to paint on
 
     window._activate_entry(window._workspace.entries[0])
     assert not window._tools_panel.isHidden()
@@ -8188,7 +8235,9 @@ def _bound_tilemap(qtbot, tmp_path, cells, maker=None):
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str((maker or _scr_file)(tmp_path, cells)))
     entry = window._workspace.current
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(entry)
     return window, entry
 
@@ -8490,12 +8539,16 @@ def test_a_stamp_layout_draws_through_the_panel_and_can_be_restamped(
         str(_pnl_file(tmp_path, [Cell(index=0), Cell(index=1, flip_h=True)]))
     )
     panel = window._workspace.entries[1]
-    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(panel)
 
     window._load_pixel(str(_map_file(tmp_path, [Cell(index=1), Cell(index=0)])))
     layout = window._workspace.current
-    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    layout.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[1]
+    )
     window._reload_tilemap(layout)
 
     doc = window._doc
@@ -8543,13 +8596,17 @@ def test_a_stamp_layout_draws_the_panels_whole_block_per_entry(qtbot, tmp_path) 
     )
     window._load_pixel(str(_pnl_file(tmp_path, cells)))
     panel = window._workspace.entries[1]
-    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(panel)
 
     # Entry 0 names coordinate 0; entry 1 is a leftover the format never reads.
     window._load_pixel(str(_map_file(tmp_path, [Cell(index=0), Cell(index=999)])))
     layout = window._workspace.current
-    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    layout.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[1]
+    )
     window._reload_tilemap(layout)
 
     doc = window._doc
@@ -8576,12 +8633,16 @@ def test_an_ordinary_tilemap_can_draw_through_another_tilemap(qtbot, tmp_path) -
         str(_pnl_file(tmp_path, [Cell(index=0), Cell(index=7, palette_row=2)]))
     )
     panel = window._workspace.entries[1]
-    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(panel)
 
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1, palette_row=1)])))
     screen = window._workspace.current
-    screen.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    screen.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[1]
+    )
     window._reload_tilemap(screen)
 
     doc = window._doc
@@ -8649,15 +8710,21 @@ def test_a_chain_two_tilemaps_deep_is_refused_and_says_so(qtbot, tmp_path) -> No
 
     # 1 -> 0 is fine, so 2 -> 1 resolves...
     panel = window._workspace.entries[1]
-    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     layout = window._workspace.entries[2]
-    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    layout.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[1]
+    )
     window._reload_tilemap(layout)
     assert window._doc.is_indirect
 
     # ...but pointing the panel at a tilemap too makes the chain one hop deeper,
     # and the layout stops resolving rather than reaching past it.
-    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=2)
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[2]
+    )
     window._reload_tilemap(layout)
 
     assert not window._doc.is_indirect
@@ -8675,11 +8742,15 @@ def test_editing_a_stamp_layout_is_refused(qtbot, tmp_path) -> None:
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1)])))
     panel = window._workspace.entries[1]
-    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(panel)
     window._load_pixel(str(_map_file(tmp_path, [Cell(index=0)])))
     layout = window._workspace.current
-    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    layout.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[1]
+    )
     window._reload_tilemap(layout)
 
     before = list(window._doc.cells)
@@ -8699,11 +8770,15 @@ def _bound_stamp_layout(window, tmp_path):
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=0), Cell(index=1)])))
     panel = window._workspace.entries[1]
-    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(panel)
     window._load_pixel(str(_map_file(tmp_path, [Cell(index=1), Cell(index=0)])))
     layout = window._workspace.current
-    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    layout.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[1]
+    )
     window._reload_tilemap(layout)
     return layout
 
@@ -8723,7 +8798,9 @@ def test_a_dropped_png_is_refused_on_a_tilemap(qtbot, tmp_path) -> None:
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
     entry = window._workspace.current
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(entry)
     png = tmp_path / "picture.png"
     image = QImage(16, 16, QImage.Format.Format_ARGB32)
@@ -8751,7 +8828,9 @@ def test_a_format_with_no_flip_bit_disables_the_flip_buttons(qtbot, tmp_path) ->
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
     entry = window._workspace.current
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(entry)
     window._set_linear_selection(0, 0)
     assert window._tile_group.flip_h.isEnabled()  # the console map mirrors
@@ -8804,7 +8883,9 @@ def test_a_stamp_layout_has_no_base_tile_control(qtbot, tmp_path) -> None:
     # ...and it comes back for an ordinary map, which numbers into a tile bank.
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)], name="screen2.SCR")))
     entry = window._workspace.current
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(entry)
 
     assert not window._tile_base.isHidden()
@@ -8857,19 +8938,21 @@ def test_every_binding_control_is_one_undoable_step(qtbot, tmp_path) -> None:
     declared_pair = window._doc.sprite_size_pair
 
     combo = window._tile_binding
-    combo.setCurrentIndex(combo.findData(0))
+    combo.setCurrentIndex(combo.findData(window._workspace.entries[0]))
     window._on_tile_binding_change(combo.currentIndex())
-    assert obj.tile_source.entry_index == 0
+    assert obj.tile_source.entry is window._workspace.entries[0]
     window._undo_stack.undo()
     assert obj.tile_source is None  # unbound is *no* source, not a blank one
     window._undo_stack.redo()
-    assert obj.tile_source.entry_index == 0
+    assert obj.tile_source.entry is window._workspace.entries[0]
 
     window._tile_base.setValue(0x40)
     assert obj.tile_source.base_index == 0x40
     window._undo_stack.undo()
     assert obj.tile_source.base_index == 0
-    assert obj.tile_source.entry_index == 0  # the binding around it is untouched
+    assert (
+        obj.tile_source.entry is window._workspace.entries[0]
+    )  # the binding around it is untouched
 
     # The row base is the one control applied *without* a re-read, so its undo is
     # the one that could quietly take a different route back.
@@ -9348,11 +9431,15 @@ def _stamp_layout_over(qtbot, tmp_path, cells, entries):
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str(_pnl_file(tmp_path, cells)))
     panel = window._workspace.entries[1]
-    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     window._reload_tilemap(panel)
     window._load_pixel(str(_map_file(tmp_path, entries)))
     layout = window._workspace.current
-    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=1)
+    layout.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[1]
+    )
     window._reload_tilemap(layout)
     return window, layout, panel
 
@@ -9719,9 +9806,7 @@ def _bound_to_slice(qtbot, tmp_path, monkeypatch, cells, *, tile_offset=0x400):
     )
     window._open_tilemap()
     tilemap = window._workspace.current
-    tilemap.tile_source = TileSource(
-        mode=TileMode.ENTRY, entry_index=window._workspace.entries.index(sliced)
-    )
+    tilemap.tile_source = TileSource(mode=TileMode.ENTRY, entry=sliced)
     window._reload_tilemap(tilemap)
     return window, tilemap, sliced
 
@@ -9843,7 +9928,9 @@ def _shown_sprite_source(qtbot, tmp_path, parts):
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str(_obj_file(tmp_path, parts)))
     entry = window._workspace.current
-    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry_index=0)
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
     entry.doc = None  # re-read through the new binding
     window._activate_entry(window._workspace.entries[0])
     window._activate_entry(entry)
@@ -10239,3 +10326,413 @@ def test_stamping_with_nothing_held_says_so(qtbot, tmp_path) -> None:
     window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
     assert window._doc.cells[0].index == 1
     assert "Tile Source" in window.statusBar().currentMessage()
+
+
+# -- pixel editing through a tilemap ---------------------------------------
+def _painting_on(window, *, tool=None):
+    """Put ``window`` into pixel mode with a drawing tool armed."""
+    from celpix.ui.tools import EditMode, Tool
+
+    window._set_edit_mode(EditMode.PIXEL)
+    window._on_tool_selected(tool or Tool.PENCIL)
+
+
+def _paint(window, x, y, index):
+    """One pencil click at canvas pixel ``(x, y)`` in palette ``index``."""
+    from PySide6.QtCore import Qt
+
+    window._palette_panel.select_index(index)
+    window._on_pixel_pressed(x, y, Qt.MouseButton.LeftButton)
+    window._on_pixel_released(x, y)
+
+
+def _bank_tile(window, entry, index):
+    """Bank tile ``index`` as ``entry``'s document currently holds it."""
+    from celpix.pipeline import pipeline
+
+    return pipeline.decode_tiles(entry.doc, window._registry, index, 1)[0]
+
+
+def test_painting_a_map_deposits_into_the_entry_it_borrows_tiles_from(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """The whole of the feature in one step. A tilemap's ``pixel_data`` is a copy
+    of the bound entry's art, so an edit that only spliced it would be visible,
+    unsavable and gone on the next reload. It has to land in the entry that owns
+    those bytes — which for a map bound to a *slice* means the slice **and** the
+    file it is a window into, the fold that rule already does
+    (``docs/design/slices-and-parents.md``)."""
+    from celpix.core.tilemap import Cell
+
+    window, tilemap, sliced = _bound_to_slice(
+        qtbot, tmp_path, monkeypatch, [Cell(index=i) for i in range(16)]
+    )
+    rom = window._workspace.entries[0]
+    window._activate_entry(sliced)
+    window._activate_entry(tilemap)
+    _painting_on(window)
+
+    # Cell 2 sits at canvas x 16..23 and draws bank tile 2.
+    _paint(window, 16, 0, 9)
+
+    assert _bank_tile(window, sliced, 2).get(0, 0) == 9
+    assert sliced.pixel_dirty and rom.pixel_dirty  # the bytes are one set
+    assert not tilemap.pixel_dirty  # its own data is its cells, and they stand
+    # The map's borrowed copy is kept in step, so the picture agrees with the file.
+    assert tilemap.doc.pixel_data == sliced.doc.pixel_data
+
+    window._undo_stack.undo()
+    assert _bank_tile(window, sliced, 2).get(0, 0) != 9
+    assert not sliced.pixel_dirty and not rom.pixel_dirty
+    # Undo comes back to the picture the stroke was drawn on, not to the bank.
+    assert window._workspace.current is tilemap
+
+
+def test_painting_through_a_flipped_cell_stores_the_tile_unmirrored(
+    qtbot, tmp_path
+) -> None:
+    """A mirrored cell shows its tile the other way round, so a stroke on its left
+    edge belongs at the tile's right. Miss the un-flip and the mirror bakes itself
+    into the file — the art then comes apart the moment the same tile is drawn
+    somewhere unflipped, which is the ordinary case for a mirrored one."""
+    from celpix.core.tilemap import Cell
+
+    window, bank, _entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=0), Cell(index=1, flip_h=True)]
+    )
+    window._activate_entry(bank)
+    window._activate_entry(window._workspace.entries[1])
+    _painting_on(window)
+
+    _paint(window, 8, 0, 5)  # the leftmost pixel of the flipped cell
+
+    tile = _bank_tile(window, bank, 1)
+    assert tile.get(7, 0) == 5  # stored at the far edge
+    assert tile.get(0, 0) != 5
+
+
+def test_painting_a_cell_stores_its_palette_row_relative_index(qtbot, tmp_path) -> None:
+    """A cell's row is folded into the *indices* to reach the screen, so what is
+    composed is absolute palette indices while the tile stores a row-relative one.
+    Storing the absolute number would write an index the format cannot hold, and
+    the same tile drawn on another row would come back a different colour."""
+    from celpix.core.tilemap import Cell
+
+    window, bank, _entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=0), Cell(index=1, palette_row=2)]
+    )
+    window._activate_entry(bank)
+    window._activate_entry(window._workspace.entries[1])
+    _painting_on(window)
+
+    _paint(window, 8, 0, 0x21)  # colour 1 of row 2, as the picture shows it
+
+    assert _bank_tile(window, bank, 1).get(0, 0) == 1
+
+
+def test_one_stroke_over_two_cells_drawing_one_tile_leaves_the_last(
+    qtbot, tmp_path
+) -> None:
+    """A map's picture is a many-to-one scatter of its bank, so a gesture can
+    reach one tile from several cells — and then the two halves of the stroke
+    disagree about what that tile should hold. There is no answer that keeps
+    both, and every cell drawing it repaints together, so the rule is that the
+    last slot wins. Worth pinning because what is *lost* is invisible: the
+    stroke's first half looks applied until the repaint takes it away."""
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+    from celpix.ui.tools import Tool
+
+    window, bank, _entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=3), Cell(index=3)]
+    )
+    window._activate_entry(bank)
+    window._activate_entry(window._workspace.entries[1])
+    _painting_on(window, tool=Tool.LINE)
+    was = _bank_tile(window, bank, 3)
+    assert was.get(4, 0) != 7  # the pixel the first half claims, before anything
+
+    # One drag from cell 0's top-left across into cell 1: it covers all eight
+    # pixels of the tile through the first cell and only two through the second.
+    window._palette_panel.select_index(7)
+    window._on_pixel_pressed(0, 0, Qt.MouseButton.LeftButton)
+    window._on_pixel_moved(9, 0)
+    window._on_pixel_released(9, 0)
+
+    tile = _bank_tile(window, bank, 3)
+    assert [tile.get(x, 0) for x in (0, 1)] == [7, 7]  # what cell 1 painted
+    assert tile.get(4, 0) == was.get(4, 0)  # what cell 0 painted, overwritten
+
+
+def test_painting_a_metatile_cell_writes_the_tile_its_stride_names(
+    qtbot, tmp_path
+) -> None:
+    """A cell covering four tiles does not take them from four consecutive
+    indices: the second row is ``cell_row_stride`` away, because the hardware
+    reads the map against a tile array wider than the cell. So a stroke in the
+    lower half of a cell belongs to a tile nowhere near the upper half's, and
+    getting it wrong writes over somebody else's art rather than failing."""
+    from celpix.core.tilemap import Cell
+
+    window, bank, entry = _bound_screen(qtbot, tmp_path, [Cell(index=0)])
+    entry.doc.cell_tiles = (2, 2)
+    entry.doc.cell_row_stride = 4  # cell 0 draws tiles 0, 1, 4, 5
+    window._activate_entry(bank)
+    window._activate_entry(entry)
+    _painting_on(window)
+
+    _paint(window, 0, 8, 6)  # the cell's lower-left tile
+
+    assert _bank_tile(window, bank, 4).get(0, 0) == 6  # the stride's answer
+    assert _bank_tile(window, bank, 2).get(0, 0) != 6  # not the next tile along
+
+
+def test_painting_a_stamp_layout_reaches_the_bank_at_the_end_of_the_chain(
+    qtbot, tmp_path
+) -> None:
+    """A layout's cells are coordinates into a panel and the panel's are tiles of
+    a bank, so the art is two hops away and belongs to neither map. The deposit
+    has to walk to it — and must leave the panel's own cells alone, since what
+    was edited is a tile, not the stamp that names it."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    layout = _bound_stamp_layout(window, tmp_path)
+    bank, panel = window._workspace.entries[0], window._workspace.entries[1]
+    window._activate_entry(bank)
+    window._activate_entry(layout)
+    _painting_on(window)
+    cells = list(panel.doc.cells)
+
+    _paint(window, 0, 0, 9)
+
+    assert _bank_tile(window, bank, 1).get(0, 0) == 9
+    assert bank.pixel_dirty
+    assert not panel.pixel_dirty and not layout.pixel_dirty
+    assert panel.doc.cells == cells  # a pixel edit is not a restamp
+
+
+def test_a_bank_edited_in_its_own_view_shows_through_in_an_open_map(
+    qtbot, tmp_path
+) -> None:
+    """A map holds a decoded copy of its bank, so an edit to the bank reaches it
+    only if it is put there. Without that the two views of one file disagree
+    until something reloads — which is the promise a binding makes by naming an
+    *entry* rather than a path."""
+    from celpix.core.tilemap import Cell
+
+    window, bank, entry = _bound_screen(qtbot, tmp_path, [Cell(index=1)])
+    window._activate_entry(bank)
+    _painting_on(window)
+
+    _paint(window, 8, 0, 6)  # bank tile 1, in the bank's own view
+
+    assert entry.doc.pixel_data == bank.doc.pixel_data
+    # And a re-read of the map takes the *unsaved* bytes, not the file's.
+    window._reload_tilemap(entry)
+    assert _bank_tile(window, entry, 1).get(0, 0) == 6
+
+
+def test_pixel_mode_is_unavailable_where_a_gesture_would_reach_nothing(
+    qtbot, tmp_path
+) -> None:
+    """Two documents have no tile under a canvas pixel: a map with nothing bound,
+    and a sprite object, whose records overlap at signed offsets so what a pixel
+    belongs to is an overlap order rather than a slot. The mode is app-wide and
+    nothing else resets it, so arriving on one of them from a pixel-mode session
+    has to put the brush down — otherwise the canvas keeps reporting gestures
+    that land in a borrowed buffer and mark the wrong entry dirty."""
+    from celpix.core.tilemap import Cell
+    from celpix.ui.tools import EditMode
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    _painting_on(window)
+
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))  # nothing bound
+    assert window._edit_mode is EditMode.TILE
+    assert not window._edit_mode_action.isEnabled()
+    assert not window._pixel_edit_available()
+
+    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
+    assert not window._pixel_edit_available()
+
+
+def test_closing_an_entry_never_re_points_a_binding_at_another_file(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A binding names an entry, not a place in the list. Held positionally,
+    removing anything ahead of the bound entry shifted every later binding onto
+    its neighbour — which drew the wrong art while a binding was only read, and
+    would *write* into a file the user never pointed at now that a stroke is
+    deposited into the entry it names. Closing the bank itself is the other half:
+    the binding keeps holding it and simply stops resolving, so undoing the close
+    binds the maps back with nothing to restore."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    spare = tmp_path / "spare.4bpp"
+    spare.write_bytes(bytes(32 * 8))
+    window._load_pixel(str(spare))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[1]
+    )
+    window._reload_tilemap(entry)
+    bound = window._workspace.entries[1]
+
+    window._apply_close_entry(window._workspace.entries[0])
+
+    assert window._binding_target(entry.tile_source) is bound  # followed, not shifted
+
+    # And closing the bound entry unbinds without losing what it was bound to, so
+    # undo needs no snapshot of its own to put the binding back.
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.Yes
+    )
+    window._remove_entry(bound)
+    assert window._binding_target(entry.tile_source) is None
+    assert entry.tile_source.entry is bound  # kept, so undo has nothing to restore
+    window._undo_stack.undo()
+    assert window._binding_target(entry.tile_source) is bound
+
+
+def test_the_eyedropper_reads_a_map_without_composing_it(qtbot, tmp_path) -> None:
+    """A right-click wants one pixel, and a map's picture is the whole file — so
+    the sample resolves the single tile under the cursor instead of building an
+    image to read one value out of. The risk in that is the fast path and the
+    composed picture disagreeing, so this pins them equal over every pixel of a
+    cell drawn plainly, one mirrored, and one on a palette row of its own."""
+    from celpix.core.tilemap import Cell
+
+    window, bank, entry = _bound_screen(
+        qtbot,
+        tmp_path,
+        [
+            Cell(index=1),
+            Cell(index=2, flip_h=True, flip_v=True),
+            Cell(index=3, palette_row=2),
+        ],
+    )
+    window._activate_entry(bank)
+    window._activate_entry(entry)
+    _painting_on(window)
+
+    composed = window._window_grid()
+    for x in range(24):  # the three cells, every pixel of their top rows
+        for y in range(8):
+            assert window._sampled_value(x, y) == composed.get(x, y), (x, y)
+
+
+# -- the animation player --------------------------------------------------
+def _obj_with_sequence(tmp_path, steps, parts=((0, 0, 1),), name="anim.OBJ"):
+    """A sprite object whose first animation group holds ``steps``.
+
+    ``steps`` are ``(duration, frame)`` pairs, written the way the file stores
+    them - duration byte first - and terminated the way the tool's writer does.
+    """
+    from celpix.plugins.builtins.scgcad import HEADER, OBJ_PAYLOADS, OBJ_SIZE, SIGNATURE
+
+    out = bytearray(OBJ_SIZE)
+    for at, (x, y, tile) in enumerate(parts):
+        out[at * 6 : at * 6 + 6] = bytes((0x80, 0, y & 0xFF, x & 0xFF)) + (
+            tile & 0x1FF
+        ).to_bytes(2, "big")
+    payload = OBJ_PAYLOADS[0]
+    out[payload : payload + len(SIGNATURE)] = SIGNATURE
+    table = payload + HEADER
+    for at, (duration, frame) in enumerate(steps):
+        out[table + at * 2 : table + at * 2 + 2] = bytes((duration, frame))
+    path = tmp_path / name
+    path.write_bytes(bytes(out))
+    return path
+
+
+def test_the_player_can_show_a_frame_the_canvas_strip_trims(qtbot, tmp_path) -> None:
+    """The canvas stops after the last frame holding a drawn subsprite, which is
+    right for a file whose trailing slots hold a template rather than art. A
+    *sequence* can name a frame past that - 349 of the corpus's objects do - so
+    the player composes its own untrimmed strip and every slot has a rectangle.
+
+    The regression this guards is handing the player the canvas's strip, which
+    would report a perfectly real frame as one the file does not have.
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+    # Only frame 0 is drawn, so the canvas trims to one frame - and the sequence
+    # names frame 3, four slots past where the trim stops.
+    window._load_pixel(str(_obj_with_sequence(tmp_path, [(2, 0), (2, 3)])))
+
+    assert len(window._doc.shown_frames) == 1  # the trim really is biting
+    assert window._animation_action.isEnabled()
+    window._show_animation()
+    assert window._animation.isVisible()
+
+    assert len(window._animation._rects) == 32  # every slot the file has
+    window._animation._advance(1)  # onto the step naming frame 3
+    assert "frame 3" in window._animation._status.currentMessage()
+    assert "not in file" not in window._animation._status.currentMessage()
+
+
+def test_a_step_naming_a_frame_the_file_lacks_says_so_and_warns(
+    qtbot, tmp_path
+) -> None:
+    """The table carries whatever was in the tool's buffer past its terminator, so
+    a step can name a frame that was never drawn - 7,019 of them across the
+    corpus. The picture cannot show that, so the status line and an amber badge
+    do; the step is still walked rather than skipped."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_obj_with_sequence(tmp_path, [(2, 0), (2, 200)])))
+    window._show_animation()
+    player = window._animation
+
+    assert player._badge.isVisible()
+    assert "1 missing frame" in player._badge.text()
+    player._advance(1)
+    assert "not in file" in player._status.currentMessage()
+    # Walked, not skipped: one more step comes back to where it started.
+    player._advance(1)
+    assert player._step == 0
+
+
+def test_the_player_is_offered_only_where_there_is_something_to_play(
+    qtbot, tmp_path
+) -> None:
+    """Sharper than the content kind, and sharper than the capability table can
+    be: every sprite object carries a table and the corpus fills a handful of its
+    16 slots, so an object whose groups are all terminator would open a window
+    with an empty picker in it."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_obj_with_sequence(tmp_path, [], name="silent.OBJ")))
+    assert not window._animation_action.isEnabled()
+
+    window._load_pixel(str(_obj_with_sequence(tmp_path, [(4, 0)], name="live.OBJ")))
+    assert window._animation_action.isEnabled()
+    # And a document that is not a sprite object at all has none either.
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    assert not window._animation_action.isEnabled()
+
+
+def test_the_players_zoom_is_its_own(qtbot, tmp_path) -> None:
+    """Deliberately not the main view's: the frame is this module's widget rather
+    than a Canvas precisely so the two levels can differ. Changing either must
+    leave the other alone."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_obj_with_sequence(tmp_path, [(2, 0)])))
+    window._show_animation()
+    player = window._animation
+
+    before = window._zoom.value()
+    player._zoom.setValue(player._zoom.value() + 3)
+    assert window._zoom.value() == before
+    assert player._frame._zoom == player._zoom.value()

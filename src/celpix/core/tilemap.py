@@ -28,6 +28,7 @@ from enum import Enum
 from functools import lru_cache
 
 from celpix.core.arrangement import BlockLayout
+from celpix.core.tilerearrangement import TILE_FLIP_H, TILE_FLIP_V
 
 # The index step between one row of a multi-tile cell and the next. **Not** the
 # cell's own width: console VRAM behaves as a 16-tile-wide array, so a 16x16 BG
@@ -127,23 +128,34 @@ class Cell:
     background layers on hardware, which celPix does not simulate; storing it is
     what keeps a round-trip byte-exact.
 
-    ``flags`` is the same idea generalised: bits a format has that celPix has no
-    meaning for at all. A stamp layout's entry carries one saying whether the
-    authoring tool put anything at that position
-    (``docs/graphics-formats-reference/scgcad-formats.md`` §4) — a per-position
-    visibility celPix has nothing to map onto. Naming such a bit ``priority`` to
-    get it round-tripped would be a lie; dropping it would corrupt the file on the
-    next write. So it rides here, uninterpreted and intact.
+    ``visible`` is whether the position is drawn at all. A stamp layout's entry
+    carries such a bit (``docs/graphics-formats-reference/scgcad-formats.md`` §4)
+    and the authoring tool skips a position that lacks it, so a map read without
+    it draws panel content over roughly a quarter of the positions its author
+    left blank. Cleared, the position paints the background rather than its cell
+    (``docs/design/tilemap-entry.md`` §6). Defaults True, which is what every
+    format with no such bit means.
 
-    **Four of these fields reach a pixel, and the render memoizes on exactly
+    ``flags`` is the same idea as ``priority`` generalised: bits a format has that
+    celPix has no meaning for at all. Naming such a bit ``priority`` to get it
+    round-tripped would be a lie; dropping it would corrupt the file on the next
+    write. So it rides here, uninterpreted and intact.
+
+    **Four of these fields reach a *tile*, and the render memoizes on exactly
     those four.** ``index``, ``palette_row``, ``flip_h`` and ``flip_v`` decide
     entirely what a cell draws; ``priority`` and ``flags`` decide nothing and are
-    carried for the round trip alone. So a **new field that changes the picture**
-    — the rotation bit ``docs/design/tilemap-entry.md`` §4 contemplates is the
-    live example — has to be added to that key as well as here
+    carried for the round trip alone. So a **new field that changes the tile** —
+    the rotation bit ``docs/design/tilemap-entry.md`` §4 contemplates is the live
+    example — has to be added to that key as well as here
     (:func:`~celpix.pipeline.pipeline.expand_cells`). Miss it and two cells
     differing only in the new field draw the same, silently, and only the second
     one is wrong.
+
+    ``visible`` is deliberately **not** in that key, and is the one field that
+    changes the picture without changing a tile: a hidden position is painted
+    over the composed image by position
+    (:attr:`~celpix.pipeline.pipeline.TilemapImage.hidden`), so the tile it would
+    have drawn is still the tile its twin draws and the memo stays sound.
     """
 
     index: int = 0
@@ -151,6 +163,7 @@ class Cell:
     priority: int = 0
     flip_h: bool = False
     flip_v: bool = False
+    visible: bool = True
     flags: int = 0
 
     def flipped_h(self) -> Cell:
@@ -170,6 +183,21 @@ class Cell:
 
 
 BLANK = Cell()
+
+
+def cell_orientation(cell: Cell) -> int:
+    """``cell``'s flips as the orientation flags the transform helpers take.
+
+    A cell mirrors its tile exactly as a rearranged view does, so the two say it
+    the same way and the *same* pair of functions turns a tile for display
+    (:func:`~celpix.core.tilerearrangement.apply_orientation`) and back for a
+    write (:func:`~celpix.core.tilerearrangement.unapply_orientation`). A pixel
+    edit made through a tilemap needs the second, and spelling the inverse out by
+    hand instead is how the order of a future third operation comes to differ
+    between the two paths — a rotation is already contemplated on :class:`Cell`
+    and would land here rather than in every caller.
+    """
+    return (TILE_FLIP_H if cell.flip_h else 0) | (TILE_FLIP_V if cell.flip_v else 0)
 
 
 def resolve_cell(
@@ -204,31 +232,37 @@ def resolve_cell(
       decoded 0 from a format without the field means "no row here", not "row
       0", and letting it through would silently black out the source's rows.
 
-    Priority and ``flags`` come from the source cell. Neither is rendered, and a
-    referring cell's flags are its own uninterpreted bits — a stamp layout's
-    drawn flag among them, which says whether the authoring tool would have put
-    anything at this position at all
-    (``docs/graphics-formats-reference/scgcad-formats.md`` §4). celPix has no
-    per-position visibility to map that onto, so it rides in ``flags`` and a
-    restamp writes it back exactly as it was read.
+    Priority and ``flags`` come from the source cell, and neither is rendered.
+
+    - **Visibility is the referrer's**, and is the one attribute that does not
+      compose. The bit lives on the *layout* entry — it is the layout's author
+      who decided this position stays blank — while the panel cell it names knows
+      nothing about where it is stamped and is drawn elsewhere on the same map
+      (``docs/graphics-formats-reference/scgcad-formats.md`` §4). Taking the
+      source's would blank every position stamping a hidden cell; ``and``-ing the
+      two would do the same. A source with no such bit reads True and leaves the
+      referrer's answer standing, which is every format but one.
     """
     index = cell.index if at is None else at
     if not 0 <= index < len(source):
         # A reference the source does not have draws blank rather than failing: a
         # layout outliving the panel it was authored against is ordinary, and so
         # is a restamp typed past the end of the panel.
-        return BLANK
+        return BLANK if cell.visible else replace(BLANK, visible=False)
     found = source[index]
-    if not carry_rows and not (cell.flip_h or cell.flip_v):
+    if cell.visible and not carry_rows and not (cell.flip_h or cell.flip_v):
         # A coordinate-only format has nothing to compose, so the source cell
         # comes back as itself — the same object, which is what keeps a 4096-cell
-        # layout from rebuilding every cell it resolves.
+        # layout from rebuilding every cell it resolves. A *hidden* referrer has
+        # something to say and takes the slow path, which on the one format that
+        # has the bit is the minority of positions.
         return found
     return replace(
         found,
         palette_row=cell.palette_row if carry_rows else found.palette_row,
         flip_h=found.flip_h != cell.flip_h,
         flip_v=found.flip_v != cell.flip_v,
+        visible=cell.visible,
     )
 
 

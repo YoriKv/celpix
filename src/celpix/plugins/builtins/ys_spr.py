@@ -44,8 +44,11 @@ below is written to survive that rather than to reject it.
 
 from __future__ import annotations
 
+from celpix.core.animation import read_parallel_sequences
 from celpix.core.context import (
     KEY_SOURCE_OFFSET,
+    KEY_TILEMAP_ANIMATIONS,
+    KEY_TILEMAP_ANIMATIONS_INFERRED,
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_FRAME_SIZES,
     PipelineContext,
@@ -62,6 +65,7 @@ from celpix.plugins.builtins.object_codec import SPR_RECORD
 
 FRAMES = 32  # every file has exactly this many, empty ones included
 TRAILER = 81  # 40 bytes of frame numbers, 40 of durations, one flag byte
+ANIMATION_STEPS = 40  # one of those blocks; the trailer holds one sequence
 FRAMES_ACROSS = 8  # how many frames the sheet opens laid out at, as for an object
 
 
@@ -138,9 +142,17 @@ class SprContainer:
     default_tilemap_preset = "preset.tilemap.ys-spr"
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
-        sizes, records, _ = _scan(source.data)
+        sizes, records, trailer_at = _scan(source.data)
         ctx.set(KEY_TILEMAP_COLUMNS, FRAMES_ACROSS)
         ctx.set(KEY_TILEMAP_FRAME_SIZES, sizes)
+        # The one animation table in hand that is a *reading* rather than a spec,
+        # and it says so: the two blocks are opaque byte arrays to the writer, so
+        # which is frames and which durations comes off the corpus.
+        ctx.set(
+            KEY_TILEMAP_ANIMATIONS,
+            read_parallel_sequences(source.data, trailer_at, ANIMATION_STEPS),
+        )
+        ctx.set(KEY_TILEMAP_ANIMATIONS_INFERRED, True)
         # Zero because the records *begin* at 1 and then drift: no single offset
         # describes where this payload came from, so the addresses beside the hex
         # dump are stated as positions in the record stream it is showing rather
@@ -212,9 +224,11 @@ class SprContainer:
             ContainerField(
                 "Trailer",
                 f"{format_size(len(trailer))} at {trailer_at:#06x}, preserved",
-                "40 frame numbers, 40 durations and a flag byte, which\n"
-                "celPix draws frames in file order instead of reading.\n"
-                "The earliest build leaves 512 bytes of uninitialised\n"
-                "buffer here instead; both ride through a save intact.",
+                "40 frame numbers, then 40 durations, then a flag byte.\n"
+                "That split is read off the corpus rather than off the\n"
+                "writer, which emits both blocks opaquely - so the player\n"
+                "says it is a reading. The earliest build leaves 512 bytes\n"
+                "of uninitialised buffer here instead; both ride through\n"
+                "a save intact.",
             ),
         )

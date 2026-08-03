@@ -636,7 +636,7 @@ def test_writes_stay_disjoint_so_a_scattered_edit_keeps_every_tile(
         TileRearrangement().swap(0, 30).swap(1, 17).swap(2, 45)
     )
     blanks = window._blank_tiles(3)
-    spans = window._encode_spans(0, blanks)
+    spans = window._encode_spans(window._actual_runs(0, blanks), window._view_frame())
     assert len(spans) == 3
     ends = sorted((start, start + len(data)) for start, data in spans)
     assert all(a[1] <= b[0] for a, b in zip(ends, ends[1:]))

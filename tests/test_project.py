@@ -444,7 +444,9 @@ def test_a_tilemap_entry_round_trips_with_its_binding(tmp_path) -> None:
             path=str(tmp_path / "m.scr"),
             content_kind=ContentKind.TILEMAP,
             tilemap_preset_id="preset.tilemap.snes-bg",
-            tile_source=TileSource(mode=TileMode.ENTRY, entry_index=0, base_index=16),
+            tile_source=TileSource(
+                mode=TileMode.ENTRY, entry=ws.entries[0], base_index=16
+            ),
             # 0 is the value that has to survive as a *choice*: the user setting it
             # against a format that says 8 is exactly the override this field is
             # for, so a falsy value must not be dropped as "nothing was set".
@@ -454,13 +456,17 @@ def test_a_tilemap_entry_round_trips_with_its_binding(tmp_path) -> None:
     project = tmp_path / "p.celpix"
     save_project(ws, str(project))
 
-    entry = load_project(str(project)).entries[1]
+    loaded = load_project(str(project))
+    entry = loaded.entries[1]
     assert entry.content_kind is ContentKind.TILEMAP
     assert entry.tilemap_preset_id == "preset.tilemap.snes-bg"
     assert entry.palette_row_base == 0
     source = entry.tile_source
     assert source is not None and source.mode is TileMode.ENTRY
-    assert (source.entry_index, source.base_index) == (0, 16)
+    # Resolved back to the *object* at the stored position, which is the entry
+    # this project's first row loaded as — not a number kept for later.
+    assert source.entry is loaded.entries[0]
+    assert source.base_index == 16
 
 
 def test_a_pixel_entry_writes_no_tilemap_keys(tmp_path) -> None:
@@ -506,24 +512,38 @@ def test_a_pixel_entry_keeps_its_palette_row_base(tmp_path) -> None:
 
 
 def test_an_entry_bound_tile_source_stores_only_the_entry_index(tmp_path) -> None:
-    """Writing the whole dataclass would put a path on an entry binding, and a
-    reader has no way to tell a meaningless field from a meant one."""
+    """A binding holds the bound entry itself, and a file cannot name an object —
+    so saving is where it becomes a position. Writing the whole dataclass would
+    put a path on an entry binding, and a reader has no way to tell a meaningless
+    field from a meant one."""
     (tmp_path / "m.scr").write_bytes(b"\x00" * 0x100)
     ws = Workspace()
+    banks = [
+        Entry(name=f"b{n}", kind=EntryKind.FILE, path=str(tmp_path / "m.scr"))
+        for n in range(3)
+    ]
+    ws.entries.extend(banks)
     ws.entries.append(
         Entry(
             name="m.scr",
             kind=EntryKind.FILE,
             path=str(tmp_path / "m.scr"),
             content_kind=ContentKind.TILEMAP,
-            tile_source=TileSource(mode=TileMode.ENTRY, entry_index=2),
+            tile_source=TileSource(mode=TileMode.ENTRY, entry=banks[2]),
         )
     )
-    stored = project_dict(ws, str(tmp_path / "p.celpix"))["entries"][0]
+    stored = project_dict(ws, str(tmp_path / "p.celpix"))["entries"][3]
+    # The bound entry's *position* at save time, worked out here and nowhere else.
     assert stored["tile_source"] == {"mode": "entry", "entry_index": 2}
     # And a map reading in the rows its format states carries no row base at all,
     # so nothing written before that control existed changes shape.
     assert "palette_row_base" not in stored
+
+    # A binding onto an entry that is no longer open writes -1, which reads back
+    # as unbound rather than as whatever now sits at a stale index.
+    ws.entries.remove(banks[2])
+    stored = project_dict(ws, str(tmp_path / "p.celpix"))["entries"][2]
+    assert stored["tile_source"] == {"mode": "entry", "entry_index": -1}
 
 
 def test_a_broken_tile_binding_leaves_the_tilemap_unbound(tmp_path) -> None:

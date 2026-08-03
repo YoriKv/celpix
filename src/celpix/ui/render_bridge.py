@@ -20,11 +20,18 @@ travels in the indices instead and the table is the plain palette:
 
 from __future__ import annotations
 
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QColor, QImage, QPainter
 
 from celpix.core.palette import Palette
 
 TRANSPARENT = 0x00000000
+
+# What a position the map does not draw is painted with. Black rather than the
+# canvas surround, because it stands for the *picture's* own background — the
+# colour the authoring tool's screen showed through an undrawn position, and part
+# of the exported file — where the surround stands for "no file here" and stops
+# at the canvas. Opaque, so an export carries it rather than a hole.
+HIDDEN_BACKGROUND = QColor(0x00, 0x00, 0x00)
 
 
 def _clear_zeros(table: list[int], stride: int) -> list[int]:
@@ -138,6 +145,37 @@ def indexed_image(grid, color_table: list[int]) -> QImage:
     # QImage does not copy the Python buffer; return an owning copy so ``buf`` can
     # be freed safely.
     return image.copy()
+
+
+def paint_hidden(image: QImage, rects: tuple[tuple[int, int, int, int], ...]) -> QImage:
+    """``image`` with the map's undrawn positions filled in the background colour.
+
+    The last step of rendering a tilemap, and the only one that touches pixels
+    the composer did not put there. It is a *paint* rather than an index the
+    composer could have written, because the composed grid's every index belongs
+    to the palette and none of them is reserved: a map using all sixteen rows
+    leaves nothing to mean "nothing here", and taking an index anyway would
+    silently repaint whichever colour lost the draw
+    (``docs/design/tilemap-entry.md`` §6).
+
+    Both the canvas and PNG export call it on the output of one
+    :func:`~celpix.pipeline.pipeline.tilemap_image`, so what is exported is what
+    is on screen — the rectangles are computed once, in the pipeline, and this
+    end only fills them.
+
+    An image with nothing hidden comes back **untouched and still indexed**,
+    which is every document but a stamp layout that uses the bit: the conversion
+    below is what a fill costs, since Qt cannot paint onto ``Format_Indexed8``,
+    and a map that needs no fill should not pay a format change for it.
+    """
+    if not rects or image.isNull():
+        return image
+    out = image.convertToFormat(QImage.Format.Format_ARGB32)
+    painter = QPainter(out)
+    for x, y, w, h in rects:
+        painter.fillRect(x, y, w, h, HIDDEN_BACKGROUND)
+    painter.end()
+    return out
 
 
 def _render_argb(grid) -> QImage:

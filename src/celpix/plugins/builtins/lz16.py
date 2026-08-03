@@ -25,11 +25,18 @@ consumes the buffer exactly. That needs the buffer to end exactly where the
 structure does — an over-read buffer defeats it, which is why a context key can
 supply the count explicitly.
 
-The compressor encodes every row both ways, keeps the shorter, and picks the 7
-predictor colors by ranking. Two rankings are tried, color-change frequency across
-the delta encoding and maximal-run frequency, and the smaller result wins.
-Byte-identity with a particular original blob is a non-goal; round-tripping is the
-contract.
+Two compressors ship, and they differ only in how the 7 predictor colors are
+chosen — both encode every row twice (RLE and delta) and keep the shorter:
+
+- :func:`compress` reproduces **the original tooling's parse**, ranking colors by
+  color-change frequency across the delta encoding. Re-encoding a blob decoded
+  from a cart reproduces its bytes exactly, which is what keeps an unedited
+  structure byte-identical on save-back (and therefore certain to fit its slot).
+- :func:`compress_improved` also tries a maximal-run ranking and keeps whichever
+  encodes smaller. It wins a handful of bytes per blob on real data, at the cost
+  of that byte-identity.
+
+Both round-trip; only :func:`compress` reproduces original bytes.
 """
 
 from __future__ import annotations
@@ -400,10 +407,12 @@ def _rank_colors(counts: list[int]) -> bytearray:
 
 
 def _predictors_by_color_changes(pixels: bytearray, pixel_rows: int) -> bytearray:
-    """Rank colors by delta-mode color-change frequency.
+    """Rank colors by delta-mode color-change frequency — the original rule.
 
     Replays the delta walk, boundary carries included, so the counts match what
-    :func:`_encode_delta_row` will emit.
+    :func:`_encode_delta_row` will emit. This is the ranking the original tooling
+    used: a raw pixel-frequency count picks different predictors and so writes a
+    different header, which is what makes this the byte-exact choice.
     """
     counts = [0] * 16
     now = bytearray(ROW_PIXELS)
@@ -478,8 +487,7 @@ def _encode_with_predictors(
     return bits
 
 
-def compress(tiles: bytes) -> bytes:
-    """Encode 4bpp tile bytes (a whole number of 512-byte tile rows)."""
+def _compress(tiles: bytes, *, improved: bool) -> bytes:
     if len(tiles) == 0 or len(tiles) % BYTES_PER_TILE_ROW != 0:
         raise ValueError(
             f"LZ16 data must be a positive multiple of {BYTES_PER_TILE_ROW} "
@@ -489,11 +497,12 @@ def compress(tiles: bytes) -> bytes:
     pixels = _tiles_to_pixels(tiles)
     pixel_rows = tile_rows * 8
 
+    rankings = [_predictors_by_color_changes(pixels, pixel_rows)]
+    if improved:
+        rankings.append(_predictors_by_run_frequency(pixels, pixel_rows))
+
     best: list[int] | None = None
-    for predictors in (
-        _predictors_by_color_changes(pixels, pixel_rows),
-        _predictors_by_run_frequency(pixels, pixel_rows),
-    ):
+    for predictors in rankings:
         bits = _encode_with_predictors(pixels, pixel_rows, predictors)
         if best is None or len(bits) < len(best):
             best = bits
@@ -503,6 +512,25 @@ def compress(tiles: bytes) -> bytes:
         if bit:
             out[k >> 3] |= 1 << (k & 7)
     return bytes(out)
+
+
+def compress(tiles: bytes) -> bytes:
+    """Encode 4bpp tile bytes (a whole number of 512-byte tile rows).
+
+    The original tooling's parse: re-encoding tiles decoded from a cart blob
+    reproduces that blob byte for byte.
+    """
+    return _compress(tiles, improved=False)
+
+
+def compress_improved(tiles: bytes) -> bytes:
+    """As :func:`compress`, plus a maximal-run predictor ranking as a rival.
+
+    Keeps whichever ranking encodes smaller, so the result is a few bytes tighter
+    on data whose background color the color-change ranking under-weights — and
+    no longer byte-identical to an original blob when the rival wins.
+    """
+    return _compress(tiles, improved=True)
 
 
 class Lz16Compression:
@@ -536,3 +564,18 @@ class Lz16Compression:
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
         return compress(data)
+
+
+class Lz16ImprovedCompression(Lz16Compression):
+    """Same stream, a tighter parse — decoding is identical, so the two are
+    interchangeable on read and only a save-back tells them apart."""
+
+    info = PluginInfo(
+        id="compression.lz16-improved",
+        name="LZ16 improved (Yoshi's Island Super FX)",
+        stage=Stage.COMPRESSION,
+        self_delimiting=False,
+    )
+
+    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        return compress_improved(data)

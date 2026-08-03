@@ -564,14 +564,15 @@ class TilemapBarMixin:
             candidates.sort(
                 key=lambda pair: pair[1].content_kind is not ContentKind.TILEMAP
             )
-        for index, candidate in candidates:
-            combo.addItem(candidate.name, index)
+        for _index, candidate in candidates:
+            combo.addItem(candidate.name, candidate)
         combo.addItem("From file...", _FROM_FILE)
         if source.mode is TileMode.ENTRY:
-            at = combo.findData(source.entry_index)
-            # A binding whose entry has since been closed keeps its stored index
-            # but has nothing to select: show it as unbound rather than silently
-            # landing on whichever entry now sits at that position.
+            at = combo.findData(source.entry)
+            # A binding whose entry has since been closed keeps holding it, and
+            # the combo only lists entries that are open — so it has nothing to
+            # select and shows as unbound until the entry comes back or the map
+            # is re-pointed.
             combo.setCurrentIndex(at if at >= 0 else 0)
         else:
             combo.setCurrentIndex(0)
@@ -612,7 +613,7 @@ class TilemapBarMixin:
         else:
             source = TileSource(
                 mode=TileMode.ENTRY,
-                entry_index=int(data),
+                entry=data,
                 base_index=self._tile_base.value(),
             )
             text = f"bind tiles to {self._tile_binding.currentText()}"
@@ -667,7 +668,7 @@ class TilemapBarMixin:
             return
         source = TileSource(
             mode=TileMode.ENTRY,
-            entry_index=self._workspace.entries.index(bound),
+            entry=bound,
             base_index=self._tile_base.value(),
         )
         entry.tile_source = source  # before the switch back, so the reload reads it
@@ -915,8 +916,12 @@ class TilemapBarMixin:
 
         The document is dropped rather than patched: which bytes there are comes
         out of Read, and a binding change is a change of *which file* — there is
-        nothing in the old document worth carrying over. A tilemap holds no
-        unsaved pixel edits to lose, since its pixel half is another entry's.
+        nothing in the old document worth carrying over. Its pixel half is
+        another entry's, and unsaved edits to it live *there* — the map is given
+        that entry's live buffer rather than a re-read of the file
+        (:meth:`~...session.SessionMixin._live_bound_tiles`), so a rebind cannot
+        take a pixel edit made through the map back out again
+        (``docs/design/tilemap-entry.md`` §8.4).
 
         The **palette is the exception**, and has to be handed across explicitly.
         A Custom palette lives in the document and nowhere else, so dropping the

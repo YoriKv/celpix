@@ -18,7 +18,7 @@ the result with :meth:`~celpix.project.workspace.Workspace.replace`.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from os import listdir
 from os.path import (
     abspath,
@@ -111,7 +111,7 @@ def project_dict(ws: Workspace, path: str) -> dict[str, object]:
     document: dict[str, object] = {
         "version": PROJECT_VERSION,
         "current": ws.entries.index(ws.current) if ws.current is not None else None,
-        "entries": [_entry_dict(entry, base_dir) for entry in ws.entries],
+        "entries": [_entry_dict(entry, base_dir, ws.entries) for entry in ws.entries],
     }
     # A view-only project setting: which pixel codecs the dropdown lists. Sorted
     # so the serialized form is stable (the UI diffs documents to spot unsaved
@@ -141,7 +141,7 @@ _KIND_NAMES = {
 _KINDS_BY_NAME = {name: kind for kind, name in _KIND_NAMES.items()}
 
 
-def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
+def _entry_dict(entry: Entry, base_dir: str, entries: list[Entry]) -> dict[str, object]:
     data: dict[str, object] = {
         "kind": _KIND_NAMES[entry.kind],
         "name": entry.name,
@@ -197,7 +197,7 @@ def _entry_dict(entry: Entry, base_dir: str) -> dict[str, object]:
             data["tilemap_preset_id"] = entry.tilemap_preset_id
         source = entry.tile_source
         if source is not None and source.is_bound:
-            data["tile_source"] = _tile_source_dict(source)
+            data["tile_source"] = _tile_source_dict(source, entries)
         if entry.sprite_size_pair is not None:
             data["sprite_size_pair"] = list(entry.sprite_size_pair)
     session = entry.session
@@ -308,6 +308,7 @@ def load_project(path: str) -> LoadedProject:
             parsed.append(_entry_from_dict(raw, base_dir))
         except Exception:  # noqa: BLE001 — a garbage entry degrades, never aborts
             parsed.append(None)
+    _bind_tile_sources(data.get("entries", []), parsed)
     index = _int(data.get("current"), -1)
     current = parsed[index] if 0 <= index < len(parsed) else None
     if current is not None and current.kind not in (EntryKind.FILE, EntryKind.SLICE):
@@ -372,7 +373,6 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         # ordinary pixel entry since — ContentKind.parse falls back to PIXELS,
         # which is what those entries are.
         content_kind=ContentKind.parse(raw.get("content_kind")),
-        tile_source=_tile_source(raw),
         tilemap_preset_id=(_plugin_id(raw.get("tilemap_preset_id"), "") or None),
         # Absent means "whatever the format says", which is every entry that never
         # overrode it — so the default has to stay None and not 0.
@@ -445,23 +445,36 @@ def _view_from(raw: object) -> ViewOptions | None:
     )
 
 
-def _tile_source_dict(source: TileSource) -> dict[str, object]:
+def _tile_source_dict(source: TileSource, entries: list[Entry]) -> dict[str, object]:
     """A bound tile source as JSON. ``base_index`` rides along when it is set.
+
+    A binding holds the bound :class:`Entry` itself, and a file cannot name an
+    object — so this is where it becomes a **position**, and
+    :func:`_bind_tile_sources` is where a position becomes an object again. The
+    two are the only places the positional form exists, which is what keeps it
+    from being something the running editor can get wrong: in a file the list is
+    fixed, so "the third entry" names something, and in a session it does not
+    (:class:`~celpix.project.workspace.TileSource`).
+
+    ``-1`` for an entry that is not in the list, which is what a binding onto a
+    closed entry writes: it round-trips to unbound rather than to whatever now
+    sits at the index a stale number would have held.
 
     No path: the tiles are always another entry in this same project, and that
     entry stores its own path once, where relocating it fixes both.
     """
-    data: dict[str, object] = {
-        "mode": source.mode.value,
-        "entry_index": source.entry_index,
-    }
+    at = next((i for i, entry in enumerate(entries) if entry is source.entry), -1)
+    data: dict[str, object] = {"mode": source.mode.value, "entry_index": at}
     if source.base_index:
         data["base_index"] = source.base_index
     return data
 
 
-def _tile_source(raw: dict) -> TileSource | None:
-    """A stored tile source, or ``None`` for anything unusable.
+def _tile_source(raw: dict) -> tuple[TileSource, int] | None:
+    """A stored tile source and the entry position it named, or ``None``.
+
+    The position is handed back separately because the entry it names may not be
+    parsed yet — :func:`_bind_tile_sources` resolves it once they all are.
 
     Tolerant like the rest of this path: an unreadable binding leaves the tilemap
     unbound — it opens showing placeholder cells and can be re-pointed — rather
@@ -476,11 +489,30 @@ def _tile_source(raw: dict) -> TileSource | None:
         return None
     if mode is TileMode.NONE:
         return None
-    return TileSource(
-        mode=mode,
-        entry_index=_int(data.get("entry_index"), None),
-        base_index=_int(data.get("base_index"), 0) or 0,
-    )
+    source = TileSource(mode=mode, base_index=_int(data.get("base_index"), 0) or 0)
+    return source, _int(data.get("entry_index"), -1)
+
+
+def _bind_tile_sources(raw_entries: list, parsed: list[Entry | None]) -> None:
+    """Point every parsed binding at the entry its stored position named.
+
+    Resolved against ``parsed``, which is **positional including the entries that
+    failed to parse** — a stored index counts those, since it was written against
+    a list that had them. Resolving against the surviving entries instead would
+    shift every binding past a dropped one onto its neighbour.
+
+    A position naming nothing leaves the map unbound, on the same rule the rest
+    of this module follows: the map opens on placeholders and can be re-pointed.
+    """
+    for raw, entry in zip(raw_entries, parsed):
+        if entry is None or not isinstance(raw, dict):
+            continue
+        found = _tile_source(raw)
+        if found is None:
+            continue
+        source, at = found
+        target = parsed[at] if 0 <= at < len(parsed) else None
+        entry.tile_source = replace(source, entry=target) if target else None
 
 
 def _palette_regions(raw: dict) -> PaletteRegions:

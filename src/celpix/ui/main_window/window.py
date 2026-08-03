@@ -74,12 +74,14 @@ from celpix.project.workspace import (
     Workspace,
     data_missing,
 )
+from celpix.ui.animation_overlay import AnimationOverlay
 from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas, GridStyle
 from celpix.ui.color_editor import ColorEditorDialog
 from celpix.ui.decompress_overlay import DecompressOverlay
 from celpix.ui.file_list_panel import FileListPanel
 from celpix.ui.help_dialogs import AboutDialog, ShortcutGuide, shortcut_sections
 from celpix.ui.hex_view_panel import HexViewPanel
+from celpix.ui.main_window.animation import AnimationMixin
 from celpix.ui.main_window.capability_sync import CapabilitySyncMixin
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
@@ -150,6 +152,7 @@ TILE_IDS_KEY = "view/tile_ids"
 
 class MainWindow(
     NavigationMixin,
+    AnimationMixin,
     HistoryMixin,
     InterpretationMixin,
     PaletteSourceMixin,
@@ -328,6 +331,7 @@ class MainWindow(
 
         self._canvas = Canvas()
         self._overlay = DecompressOverlay(self)
+        self._animation = AnimationOverlay(self)
         self._init_sprite_select()
         self._canvas.slots_selected.connect(self._on_slots_selected)
         # After slots_selected, because the two report one press and this is the
@@ -986,6 +990,8 @@ class MainWindow(
         self._build_entire_file_action(menu)
         self._build_zoom_actions(menu)
         menu.addSeparator()
+        self._build_animation_action(menu)
+        menu.addSeparator()
         self._build_theme_menu(menu)
 
     def _build_tile_ids_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
@@ -1022,6 +1028,30 @@ class MainWindow(
         self._show_tile_ids = on
         if self._doc is not None:
             self._refresh_view()
+
+    def _build_animation_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
+        """View ▸ Animation - open the player for this object's sequences.
+
+        A command rather than a checkable toggle, and the one thing that makes it
+        different from the docks in Panels: the window it opens is a `Qt.Tool`
+        that the user closes from its own frame, so a checkbox here would be a
+        second answer to a question the window itself already holds.
+
+        Enabled only where there is something to play, which is sharper than the
+        content kind (:meth:`~...animation.AnimationMixin._animation_available`):
+        every sprite object has a table and most of its sequences are empty.
+
+        Mnemonic "A": free among the View entries, and the word's own first
+        letter.
+        """
+        self._animation_action = QAction("&Animation...", self)
+        self._animation_action.setToolTip(
+            "Play this sprite object's animation sequences\n"
+            "Its own window, with its own zoom"
+        )
+        self._animation_action.triggered.connect(self._show_animation)
+        self._animation_action.setEnabled(False)
+        view_menu.addAction(self._animation_action)
 
     def _build_entire_file_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Entire File - drop the row window and show all of it at once.

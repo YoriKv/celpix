@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.6 - unreleased
+
+- **Pixel editing on a tilemap**: the drawing tools now work on the map itself,
+  and the edit lands in the tile bank it is bound to
+- **Animation player** (View -> Animation): sprite files now play their stored
+  animation sequences in a window of their own
+- Added "improved" versions of LZ compression that compress better, the base
+  versions are byte exact
+
 ## v0.4.5 - 2026-07-31
 
 - **Palette rows**: unified palette row pin and tilemap palette row selection

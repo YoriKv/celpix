@@ -127,8 +127,16 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # A tilemap carries its own palette, so it edits colors and picks a color
     # format like any other entry (`docs/design/tilemap-entry.md` §3).
     #
-    # Six deliberate absences. PIXEL_EDIT: there are no pixels here to paint —
-    # editing the art means editing the bound entry. PALETTE_REGIONS: a cell
+    # PIXEL_EDIT is here because a tilemap's `pixel_data` **is** the bound entry's
+    # art: a canvas position resolves through the cell it lands in to a tile of
+    # that bank, so the pixels under the cursor are real and editable. Where they
+    # are *deposited* is the bound entry rather than the map, which is the
+    # capability's one wrinkle and not something a gate could express — the kind
+    # can say a brush belongs here, only the document can say whether this
+    # particular map has a bank to paint into (`docs/design/tilemap-entry.md` §8.1;
+    # `_pixel_edit_available` is the finer answer).
+    #
+    # Five deliberate absences. PALETTE_REGIONS: a cell
     # already names its own palette row, so pinning a row over a span would be a
     # second, conflicting answer to a question the file has already answered —
     # which is why PALETTE_ROW is here instead, the same gesture landing in the
@@ -136,9 +144,10 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # TILE_REARRANGE: a rearrangement is display state precisely because it moves
     # no bytes, and moving a cell *is* the byte edit. IMPORT_IMAGE: bringing a
     # picture in would mean matching it against the bound tiles, which is a
-    # quantize-to-tiles problem and not the pixel importer's.
+    # quantize-to-tiles problem and not the pixel importer's — and unlike a brush
+    # it has no cell under it to say which tile a given pixel belongs to.
     #
-    # NAVIGATION is the sixth: a tilemap is always shown entire, so there is no
+    # NAVIGATION is the fourth: a tilemap is always shown entire, so there is no
     # window to move through it and no offset to jump to. The row count and the
     # position bar address a coordinate space it does not have
     # (``docs/design/tilemap-entry.md`` §8). COMPRESSION_SCAN follows it out for
@@ -158,6 +167,7 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # says that.
     ContentKind.TILEMAP: _BYTE_LEVEL
     | {
+        Capability.PIXEL_EDIT,
         Capability.PALETTE_EDIT,
         Capability.PALETTE_ROW,
         Capability.TILE_SELECT,

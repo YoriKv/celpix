@@ -38,7 +38,7 @@ from .gb_rom import GbRomContainer
 from .indexed_codec import IndexedColorCodec
 from .konami_rle import KonamiFdsRle, KonamiNesRle
 from .linear_codec import LinearBespokeCodec
-from .lz16 import Lz16Compression
+from .lz16 import Lz16Compression, Lz16ImprovedCompression
 from .lz_command import Lz1, Lz2
 from .lzss_ring import LzssRingCompression
 from .m7_vram import M7VramReshape
@@ -99,6 +99,7 @@ def register_builtins(reg: Registry) -> None:
         Lz1(),
         Lz2(),
         Lz16Compression(),
+        Lz16ImprovedCompression(),
         LzssRingCompression(),
         PrsCompression(),
         PvrCompression(),

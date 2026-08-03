@@ -25,8 +25,13 @@ from celpix.plugins.builtins import (
     packbits,
     prs,
 )
+from celpix.plugins.builtins._lz import MatchFinder
 from celpix.plugins.builtins.konami_rle import KonamiNesRle
-from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS, Lz16Compression
+from celpix.plugins.builtins.lz16 import (
+    KEY_LZ16_ROWS,
+    Lz16Compression,
+    Lz16ImprovedCompression,
+)
 from celpix.plugins.builtins.lz_command import Lz1, Lz2
 from celpix.plugins.builtins.lzss_ring import LzssRingCompression
 from celpix.plugins.builtins.packbits import PackBitsCompression
@@ -105,6 +110,36 @@ def test_lz_round_trip(big_endian: bool) -> None:
         assert out == data
         # Trailing garbage is never consumed — the terminator bounds the read.
         assert consumed == len(packed)
+
+
+def test_match_finder_seeded_scan_never_loses_to_the_plain_search() -> None:
+    # `all_longest` seeds each position from the previous position's match rather
+    # than walking the chain from scratch. If the shortcut ever missed a longer
+    # match nothing would fail — the stream still round-trips, it is just bigger —
+    # so what it guarantees has to be asserted directly. The seed only raises the
+    # bar the walk then has to beat, and it can name a candidate older than the
+    # chain cap reaches, so the result is never *worse* than the plain search and
+    # is sometimes better; every reported match must still be a real one.
+    rng = random.Random(11)
+    payloads = [
+        bytes(64),
+        b"abcabcabc" * 40,
+        bytes(rng.choice(b"\x00\x0f\xf0\xff") for _ in range(1200)),
+        bytes(rng.randrange(256) for _ in range(600)),
+    ]
+    for data in payloads:
+        n = len(data)
+        kwargs = {"min_match": 3, "window": None, "max_candidates": 64}
+        lengths, offsets = MatchFinder(data, **kwargs).all_longest(1024)
+        reference = MatchFinder(data, **kwargs)
+        for pos in range(n):
+            want, _ = reference.longest(pos, min(n - pos, 1024))
+            reference.add(pos)
+            assert lengths[pos] >= (want if want >= 3 else 0)
+            if lengths[pos]:
+                end = offsets[pos] + lengths[pos]
+                assert offsets[pos] < pos
+                assert data[pos : pos + lengths[pos]] == data[offsets[pos] : end]
 
 
 def test_lz_partial_decode_returns_valid_prefix() -> None:
@@ -229,6 +264,31 @@ def test_lz16_partial_rejects_non_lz16_data() -> None:
     # one row is "not LZ16", not a truncated structure.
     with pytest.raises(ValueError):
         lz16.decompress_partial(b"\x12\x34")
+
+
+def test_lz16_improved_beats_the_byte_exact_parse_and_still_round_trips() -> None:
+    # The two compressors differ only in predictor ranking, so they only diverge
+    # on data where the two rankings disagree: a background color that is nearly
+    # always *unchanged* row-to-row is cheap by run frequency but invisible to
+    # the color-change count, which spends its seven slots on the figures. Eight
+    # colors changing per row push it out.
+    pixels = bytearray(128 * 8)
+    for y in range(8):
+        for i in range(8):
+            color = (y * 8 + i) % 15 + 1
+            pixels[y * 128 + i * 4 : y * 128 + i * 4 + 2] = bytes([color, color])
+    tiles = lz16._pixels_to_tiles(pixels, 1)
+
+    exact = lz16.compress(tiles)
+    improved = lz16.compress_improved(tiles)
+    assert len(improved) < len(exact)
+    assert lz16.decompress(exact, 1)[0] == tiles
+    assert lz16.decompress(improved, 1)[0] == tiles
+
+    ctx = PipelineContext()
+    assert Lz16ImprovedCompression().compress(tiles, ctx) == improved
+    # Decoding is shared: either plugin reads either stream.
+    assert Lz16Compression().decompress(improved, PipelineContext()) == tiles
 
 
 def test_lz16_compress_rejects_partial_tile_rows() -> None:

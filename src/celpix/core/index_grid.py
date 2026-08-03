@@ -25,8 +25,18 @@ def _shift(bias: int) -> bytes:
     Cached because a window holds at most a handful of distinct biases (one per
     pinned subpalette row on screen) and rebuilding the map per tile would cost
     more than the translate it feeds.
+
+    Saturating at **both** ends. Past 255 is unreachable once the row is clamped
+    to the palette (``row * 2**bpp + index <= 255`` always holds then), so that
+    end only keeps a hand-edited project file from raising instead of rendering.
+    Below 0 is reached by a **negative** bias, which is how a pixel edit made
+    through a tilemap takes the cell's palette row back out of an index on the way
+    to the tile that stores it (``docs/design/tilemap-entry.md`` §8.1) — and there
+    the clamp is the meaning rather than a guard: a pixel cleared to palette index
+    0 lands on the tile's own index 0, which is what "empty" is in every one of
+    these formats.
     """
-    return bytes(min(255, i + bias) for i in range(256))
+    return bytes(max(0, min(255, i + bias)) for i in range(256))
 
 
 class IndexGrid(PixelGrid):

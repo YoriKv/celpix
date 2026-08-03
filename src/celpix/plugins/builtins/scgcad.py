@@ -43,12 +43,14 @@ per-cell visibility to map them onto yet, so they ride through untouched
 
 from __future__ import annotations
 
+from celpix.core.animation import read_sequences
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_PIXEL_PRESET,
     KEY_SOURCE_OFFSET,
     KEY_TILE_PALETTE_ROW_BASE,
     KEY_TILE_PALETTE_ROWS,
+    KEY_TILEMAP_ANIMATIONS,
     KEY_TILEMAP_CELL_TILES,
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_ENDIAN,
@@ -56,6 +58,7 @@ from celpix.core.context import (
     KEY_TILEMAP_PAGES_ACROSS,
     KEY_TILEMAP_PALETTE_ROW_BASE,
     KEY_TILEMAP_STAMP_TILES,
+    KEY_TILEMAP_SUBSPRITES_PER_FRAME,
     PipelineContext,
 )
 from celpix.core.errors import Stage
@@ -93,10 +96,18 @@ COL_SIZE = 0x400
 COL_PAYLOAD = 0x200  # 256 BGR555 entries; the metadata block follows them
 COL_HEADER_AT = 0x200
 
-# A sprite object's records, then its header: 32 frames of 64 six-byte subsprites in
-# the ordinary form and 128 frames in the extended one. Which it is shows in
-# where the signature sits, so these double as the detection offsets.
+# A sprite object's records, then its header: 32 frames of 64 six-byte subsprites
+# in the ordinary form and **64 frames of 128** in the extended one. Which it is
+# shows in where the signature sits, so these double as the detection offsets.
 OBJ_PAYLOADS = (0x3000, 0xC000)
+# How each form slots that payload. Not derivable from the size — 0xC000 is 64x128
+# and 128x64 alike — so it is stated, and the pair is what the container publishes
+# for the codec to frame by (``KEY_TILEMAP_SUBSPRITES_PER_FRAME``). The extended
+# form's build converter declares `obj_data[64][128][6]` against the ordinary one's
+# `[32][64][6]`, and the corpus agrees: over 301 extended objects the drawn records
+# peak at slot 127 and fall away monotonically, with slot 63 at 6% of that — one
+# period of 128, not two of 64 (``scgcad-formats.md`` §8.1).
+OBJ_SUBSPRITES_PER_FRAME = {0x3000: 64, 0xC000: 128}
 # Each form's whole length, keyed by its payload: 0x100 of header and then the
 # animation table, which is four times the size in the extended form for the four
 # times the frames it names. The write side needs the pair, an object saved to a
@@ -105,6 +116,13 @@ OBJ_PAYLOADS = (0x3000, 0xC000)
 # into the other is not a shorter file but three quarters of the art gone.
 OBJ_SIZES = {0x3000: 0x3500, 0xC000: 0xC900}
 OBJ_SIZE = OBJ_SIZES[OBJ_PAYLOADS[0]]  # the ordinary form
+# How many animation sequences each form holds, and how many steps each of those
+# has room for. One group per 64 bytes of table, which is what the sizes above
+# already say — stated rather than divided out, because the step count is the same
+# 32 in both forms and only the group count grows with the frames
+# (``scgcad-formats.md`` §8.3).
+OBJ_SEQUENCES = {0x3000: 16, 0xC000: 32}
+OBJ_SEQUENCE_STEPS = 32
 
 # The transfer form of a sprite object: 64 frames of 64 subsprites, then a 0xA00 tail
 # holding the animation table. The one member of the family that carries **no
@@ -112,6 +130,12 @@ OBJ_SIZE = OBJ_SIZES[OBJ_PAYLOADS[0]]  # the ordinary form
 # length and its extension are the whole of what identifies it.
 OBZ_SIZE = 0x6A00
 OBZ_PAYLOAD = 0x6000
+# Its animation table is the object's read at a different shape: 16 sequences of
+# 64 steps in the 0x800 that follows the records, then a 0x200 tail nothing has
+# decoded (``scgcad-formats.md`` §9).
+OBZ_SEQUENCES = 16
+OBZ_SEQUENCE_STEPS = 64
+OBZ_TABLE = (OBZ_SEQUENCES, OBZ_SEQUENCE_STEPS)  # the pair both readers take
 
 # A converted screen: the low byte of each of a screen's four blocks, laid out
 # 2x2 into one 64x64 grid of bare character numbers. Headerless and fixed-size.
@@ -239,6 +263,16 @@ def _cell_tiles(data: bytes, at: int) -> tuple[int, int]:
 def _text(raw: bytes) -> str:
     """ASCII out of a fixed-width header field: cut at the first NUL, stripped."""
     return raw.split(b"\x00")[0].decode("ascii", "replace").strip()
+
+
+def _live_sequences(data: bytes, at: int, count: int, steps: int) -> int:
+    """How many of an animation table's groups hold anything at all.
+
+    The number worth reporting, since a file has room for 16 or 32 and the corpus
+    fills a handful: 502 non-empty groups across 1,341 objects
+    (``scgcad-formats.md`` §8.3).
+    """
+    return sum(1 for sequence in read_sequences(data, at, count, steps) if sequence)
 
 
 def _metadata_fields(data: bytes, at: int) -> list[ContainerField]:
@@ -624,6 +658,13 @@ class ObjContainer:
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         payload = _obj_payload(source.data)
         ctx.set(KEY_TILEMAP_COLUMNS, OBJECT_COLUMNS)
+        # The two forms hold the same payload and divide it differently — 32
+        # frames of 64 slots against 64 of 128 — so the stride is not derivable
+        # from the size and has to come from *which form this is*, which is the
+        # question already answered above. The extended object's own converter
+        # declares `obj_data[64][128][6]` where the ordinary one declares
+        # `[32][64][6]` (``scgcad-formats.md`` §8.1).
+        ctx.set(KEY_TILEMAP_SUBSPRITES_PER_FRAME, OBJ_SUBSPRITES_PER_FRAME[payload])
         marker = source.data[payload + 0x10 : payload + 0x20]
         # The `F` build byte-swaps the attribute word. Keyed off the marker
         # rather than the file size, which is the other signal and the indirect
@@ -631,6 +672,20 @@ class ObjContainer:
         # extra per-sequence positions, not the thing being asked about.
         swapped = marker.rstrip().endswith(b"F")
         ctx.set(KEY_TILEMAP_ENDIAN, "little" if swapped else "big")
+        # The animation table, from the tail this container is about to cut away.
+        # Read here rather than by the codec because the codec is handed the
+        # payload alone and the table is past it — and read at all only because a
+        # reader wants it; the write side still preserves these bytes opaquely,
+        # so nothing downstream can make a save depend on this being right.
+        ctx.set(
+            KEY_TILEMAP_ANIMATIONS,
+            read_sequences(
+                source.data,
+                payload + HEADER,
+                OBJ_SEQUENCES[payload],
+                OBJ_SEQUENCE_STEPS,
+            ),
+        )
         return _payload(source, ctx, 0, payload)
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
@@ -658,6 +713,7 @@ class ObjContainer:
         marker = _text(data[payload + 0x10 : payload + 0x20])
         swapped = marker.rstrip().endswith("F")
         extended = payload == OBJ_PAYLOADS[1]
+        groups = OBJ_SEQUENCES[payload]
         return (
             *_metadata_fields(data, payload),
             ContainerField(
@@ -680,10 +736,13 @@ class ObjContainer:
             ContainerField(
                 "Animation table",
                 f"{format_size(max(0, len(data) - payload - HEADER))}"
-                f" at {payload + HEADER:#06x}, preserved",
+                f" at {payload + HEADER:#06x}, "
+                f"{_live_sequences(data, payload + HEADER, groups, OBJ_SEQUENCE_STEPS)}"
+                f" of {groups} sequences used",
                 "Runs of (duration, frame) naming frames in the payload.\n"
-                "celPix draws the frames themselves in file order and\n"
-                "does not read this; playing them is a separate feature.",
+                "Read for playback only: celPix draws the frames\n"
+                "themselves in file order, and a save writes these bytes\n"
+                "back exactly as they were read.",
             ),
         )
 
@@ -695,8 +754,8 @@ class ObzContainer:
     these to ship a whole set of frames to the devkit rather than to reopen them,
     and none of the 148 in the corpus carries the family signature. So detection
     has only the extension and the length, and a write has only the tail to
-    preserve: the animation table, which celPix reads no more here than it does
-    in an object (``scgcad-formats.md`` §9).
+    preserve — which holds the animation table, read here exactly as an object's
+    is and at the same confidence (``scgcad-formats.md`` §9).
 
     The records inside are **not** an object's records. Its own codec says how
     (:class:`~celpix.plugins.builtins.object_codec.ObzCodec`).
@@ -714,6 +773,13 @@ class ObzContainer:
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         ctx.set(KEY_TILEMAP_COLUMNS, OBJECT_COLUMNS)
+        # The table sits where the records stop, with no header between them —
+        # the one difference from an object, whose 0x100 metadata block comes
+        # first. Same steps, same terminator, wider groups.
+        ctx.set(
+            KEY_TILEMAP_ANIMATIONS,
+            read_sequences(source.data, OBZ_PAYLOAD, OBZ_SEQUENCES, OBZ_SEQUENCE_STEPS),
+        )
         return _payload(source, ctx, 0, OBZ_PAYLOAD)
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
@@ -742,10 +808,12 @@ class ObzContainer:
             ),
             ContainerField(
                 "Animation table",
-                f"{format_size(OBZ_SIZE - OBZ_PAYLOAD)}"
-                f" at {OBZ_PAYLOAD:#06x}, preserved",
-                "The tail this container does not read, kept exactly as\n"
-                "it stands so a save leaves the frame timings alone.",
+                f"{format_size(OBZ_SIZE - OBZ_PAYLOAD)} at {OBZ_PAYLOAD:#06x}, "
+                f"{_live_sequences(source.data, OBZ_PAYLOAD, *OBZ_TABLE)}"
+                f" of {OBZ_SEQUENCES} sequences used",
+                "16 sequences of 64 (duration, frame), read for playback\n"
+                "only. The whole tail is kept exactly as it stands, so a\n"
+                "save leaves the frame timings alone.",
             ),
         )
 

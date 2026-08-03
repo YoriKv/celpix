@@ -358,10 +358,16 @@ def test_a_tilemap_flips_but_does_not_rotate() -> None:
 def test_the_kinds_differ_where_the_design_says_they_do() -> None:
     pixels = CAPABILITIES[ContentKind.PIXELS]
     tilemap = CAPABILITIES[ContentKind.TILEMAP]
-    # A tilemap has no pixels to paint and no display-only permutation: moving a
-    # cell *is* the byte edit, which is exactly what a rearrangement is not.
-    assert Capability.PIXEL_EDIT not in tilemap
+    # A tilemap has no display-only permutation: moving a cell *is* the byte
+    # edit, which is exactly what a rearrangement is not.
     assert Capability.TILE_REARRANGE not in tilemap
+    # It does have pixels to paint, though they belong to the entry it is bound
+    # to — the kind says a brush belongs here and `_pixel_edit_available` says
+    # whether this particular map has a bank to paint into.
+    assert Capability.PIXEL_EDIT in tilemap
+    # ...but not a picture to bring *in*: an import has no cell under it to say
+    # which tile a given pixel belongs to.
+    assert Capability.IMPORT_IMAGE not in tilemap
     # A cell already names its own palette row, so pinning one over a span would
     # be a second, conflicting answer to a question the file has answered.
     assert Capability.PALETTE_REGIONS not in tilemap
@@ -1203,17 +1209,36 @@ def test_a_stamp_entry_reads_as_one_panel_cell_index() -> None:
     registry = default_registry()
     codec, ctx = TilemapCodec(), PipelineContext()
     params = _params(registry, "preset.tilemap.scgcad-map")
-    # panelX = 5, panelY = 9  ->  index 9*32 + 5 = 293, attribute-source set.
+    # panelX = 5, panelY = 9  ->  index 9*32 + 5 = 293, and the drawn bit set.
     word = (1 << 14) | (9 << 5) | 5
     (cell,) = codec.decode(word.to_bytes(2, "big"), params, ctx)
     assert cell.index == 9 * 32 + 5
-    assert cell.flags == 1  # bit 14, carried and not interpreted
+    assert cell.visible  # bit 14
+    assert cell.flags == 0  # bit 15, carried and not interpreted
+
+
+def test_a_stamp_entry_without_its_drawn_bit_reads_as_hidden() -> None:
+    """Bit 14 is the one top bit celPix models: cleared, the authoring tool paints
+    the background instead of the panel cell, and a map read without it draws over
+    a quarter of the positions its author left blank (scgcad-formats.md §4).
+
+    A format that places no `drawn` field means every position drawn — the absent
+    field reads 0, which for this one attribute is the opposite of its default."""
+    registry = default_registry()
+    codec, ctx = TilemapCodec(), PipelineContext()
+    params = _params(registry, "preset.tilemap.scgcad-map")
+    drawn, blank = codec.decode(b"\x40\x05\x00\x05", params, ctx)
+    assert (drawn.visible, blank.visible) == (True, False)
+    assert drawn.index == blank.index == 5  # the coordinate is the same either way
+    (cell,) = codec.decode(b"\x00\x05", _params(registry, SNES_BG), ctx)
+    assert cell.visible
 
 
 def test_a_stamp_entrys_unused_bits_survive_a_round_trip() -> None:
-    """Bits 14-15 mean something to the authoring tool and nothing to celPix.
-    Naming one `priority` to get it carried would be a lie; dropping it would
-    corrupt the file on the next write."""
+    """Bit 15 means something to the authoring tool and nothing to celPix — this
+    tool's writer never sets it, yet 4.1% of the corpus has it. Naming it
+    `priority` to get it carried would be a lie; dropping it would corrupt the
+    file on the next write. Bit 14 round-trips too, but as `visible`."""
     registry = default_registry()
     codec, ctx = TilemapCodec(), PipelineContext()
     params = _params(registry, "preset.tilemap.scgcad-map")
@@ -1274,10 +1299,12 @@ def test_a_restamped_layout_saves_its_own_coordinates(tmp_path) -> None:
         tilemap_ctx=loaded.ctx,
     )
     # It resolves through the chain without being told to, and the coordinate-only
-    # format takes the panel cell whole.
-    assert doc.drawn_cells[0] == Cell(index=9)
+    # format takes the panel cell whole. Entry 0 has no drawn bit, and visibility
+    # is the *referrer's*: the panel cell it names is drawn wherever else it is
+    # stamped, and this position is the one the layout's author left blank.
+    assert doc.drawn_cells[0] == Cell(index=9, visible=False)
 
-    doc.cells[0] = Cell(index=1, flags=0b10)  # restamp, attribute-source bit kept
+    doc.cells[0] = Cell(index=1, flags=1)  # restamp, bit 15 kept, now drawn
     doc.resolve()
     assert doc.drawn_cells[0] == Cell(index=11, palette_row=2)
     save(doc, registry, palette=False)
@@ -1286,10 +1313,128 @@ def test_a_restamped_layout_saves_its_own_coordinates(tmp_path) -> None:
     assert len(written) == MAP_SIZE
     assert written[:HEADER] == original[:HEADER]  # header untouched
     # The one entry that changed, and the rest of the table as it was.
-    assert written[HEADER : HEADER + 2] == b"\x80\x01"
+    assert written[HEADER : HEADER + 2] == b"\xc0\x01"
     assert written[HEADER + 2 : HEADER + 4] == original[HEADER + 2 : HEADER + 4]
     again = load_tilemap_data(cfg, registry)
-    assert again.cells[0] == Cell(index=1, flags=0b10)
+    assert again.cells[0] == Cell(index=1, flags=1)
+
+
+def test_undrawn_positions_come_back_as_merged_pixel_rectangles() -> None:
+    """What the renderer paints the background over. Merged into runs because a
+    sparse layout is mostly background and a rectangle per cell would be thousands
+    of them — but only *within a row*, since a run spanning the wrap would paint a
+    band across the whole picture and blank the left of the next row.
+
+    Pixels, not positions, because the geometry (cell size, the assembly's width)
+    is settled in the pipeline: a second caller working it out again is a second
+    chance to get it wrong.
+    """
+    from celpix.core.document import Document
+    from celpix.pipeline.pipeline import hidden_rects
+
+    def doc(visible: str, cell_tiles: tuple[int, int] = (1, 1)) -> Document:
+        return Document(
+            pixel_data=bytes(32 * 1024),
+            bytes_per_tile=32,
+            tile_width=8,
+            tile_height=8,
+            palette=None,
+            pixel_config=PathwayConfig(
+                source=FileRef("x"), interpret_preset_id="preset.pixel.snes-4bpp"
+            ),
+            palette_config=None,
+            cells=[Cell(visible=c == "#") for c in visible],
+            cell_tiles=cell_tiles,
+        )
+
+    # Two rows of four. The pair at the end of row 0 and the pair at the start of
+    # row 1 are adjacent in the cell list and must NOT merge across the wrap.
+    assert hidden_rects(doc("##....##"), 4) == ((16, 0, 16, 8), (0, 8, 16, 8))
+    # A whole row merges to one rectangle; isolated cells stay their own.
+    assert hidden_rects(doc("....#.#."), 4) == (
+        (0, 0, 32, 8),
+        (8, 8, 8, 8),
+        (24, 8, 8, 8),
+    )
+    # A metatile cell is 16x16, so the rectangle covers the unit the map places.
+    assert hidden_rects(doc(".#", (2, 2)), 2) == ((0, 0, 16, 16),)
+    # Nothing hidden is the common case and costs no list at all.
+    assert hidden_rects(doc("####"), 4) == ()
+
+
+def test_two_parallel_blocks_read_as_one_sequence() -> None:
+    """The other shape a sprite trailer comes in: where the S-CG-CAD object
+    interleaves a step's two bytes, this format writes all 40 frame numbers and
+    then all 40 durations, so step n pairs data[at + n] with data[at + 40 + n].
+
+    Checked against `CLR-P.SPR`, whose blocks the format reference quotes
+    (ys-sprite-patterns.md §4) - two long steps and then a run at two ticks each.
+    """
+    from celpix.core.animation import Step, read_parallel_sequences
+
+    frames = bytes((0x00, 0x0D, 0x02, 0x03, 0x04, 0x05)) + bytes(34)
+    durations = bytes((0x20, 0x22, 0x02, 0x02, 0x02, 0x02)) + bytes(34)
+    (sequence,) = read_parallel_sequences(frames + durations, 0, 40)
+
+    assert sequence.steps == (
+        Step(0x20, 0x00),
+        Step(0x22, 0x0D),
+        Step(2, 2),
+        Step(2, 3),
+        Step(2, 4),
+        Step(2, 5),
+    )
+    # The blocks run to 40 and nothing states a terminator, so this stops where
+    # the sibling format's table does - which is also what the zero tail reads as.
+    assert sequence.ticks == 0x20 + 0x22 + 8
+
+
+def test_a_sprite_pattern_states_that_its_animation_is_a_reading() -> None:
+    """The tool emits both blocks as opaque byte arrays, so "A is frames, B is
+    durations" comes off the corpus rather than off the writer. celPix reads it
+    anyway - it is the only account of these files there is - but says which it
+    is, so a guess does not become a fact by being shown confidently."""
+    from celpix.core.animation import Step
+    from celpix.core.context import (
+        KEY_TILEMAP_ANIMATIONS,
+        KEY_TILEMAP_ANIMATIONS_INFERRED,
+    )
+    from celpix.plugins.builtins.ys_spr import SprContainer
+
+    raw = _spr_bytes([_spr_record(tile=1)], steps=[(3, 0), (3, 1)])
+    ctx = PipelineContext()
+    SprContainer().read(ReadSource(data=raw), ctx)
+
+    (sequence,) = ctx.get(KEY_TILEMAP_ANIMATIONS)
+    assert sequence.steps == (Step(3, 0), Step(3, 1))
+    assert ctx.get(KEY_TILEMAP_ANIMATIONS_INFERRED) is True
+
+
+def test_a_transfer_object_reads_the_same_table_at_its_own_shape() -> None:
+    """An OBZ is a sprite object with the header taken away, so its table sits
+    where the records stop rather than past a 0x100 metadata block - and it is 16
+    sequences of 64 where an object's is 16 of 32. Same steps, same terminator."""
+    from celpix.core.animation import Step
+    from celpix.core.context import KEY_TILEMAP_ANIMATIONS
+    from celpix.plugins.builtins.scgcad import (
+        OBZ_PAYLOAD,
+        OBZ_SEQUENCES,
+        OBZ_SIZE,
+        ObzContainer,
+    )
+
+    blob = bytearray(OBZ_SIZE)
+    blob[OBZ_PAYLOAD : OBZ_PAYLOAD + 4] = bytes((5, 1, 5, 2))
+    # The second group starts a whole 64-step group later, not 32.
+    blob[OBZ_PAYLOAD + 128 : OBZ_PAYLOAD + 130] = bytes((9, 7))
+    ctx = PipelineContext()
+    ObzContainer().read(ReadSource(data=bytes(blob)), ctx)
+
+    groups = ctx.get(KEY_TILEMAP_ANIMATIONS)
+    assert len(groups) == OBZ_SEQUENCES
+    assert groups[0].steps == (Step(5, 1), Step(5, 2))
+    assert groups[1].steps == (Step(9, 7),)
+    assert not any(groups[2:])
 
 
 def test_the_stamp_preset_declares_itself_indirect() -> None:
@@ -2081,14 +2226,23 @@ def _spr_record(
     )
 
 
-def _spr_bytes(frames: list[bytes]) -> bytes:
-    """A whole pattern file: 32 counted frames, then the trailer and a signature."""
+def _spr_bytes(frames: list[bytes], steps=()) -> bytes:
+    """A whole pattern file: 32 counted frames, then the trailer and a signature.
+
+    ``steps`` are ``(duration, frame)`` pairs written into the trailer the way
+    this format stores them — all 40 frame numbers first, then all 40 durations,
+    which is the split the two blocks are read at.
+    """
     out = bytearray()
     for at in range(32):
         records = frames[at] if at < len(frames) else b""
         out.append(len(records) // 8)
         out += records
-    return bytes(out) + bytes(81) + b"OBJ TOOL Ver 2.00"
+    trailer = bytearray(81)
+    for at, (duration, frame) in enumerate(steps):
+        trailer[at] = frame
+        trailer[40 + at] = duration
+    return bytes(out) + bytes(trailer) + b"OBJ TOOL Ver 2.00"
 
 
 def test_a_sprite_pattern_round_trips_with_its_counted_frames_re_interleaved() -> None:
@@ -2262,3 +2416,116 @@ def test_an_uninitialised_trailer_reports_no_signature_rather_than_its_bytes() -
     assert signature(bytes(81) + b"OBJ TOOL Ver 2.00").startswith("OBJ TOOL Ver 2.00 ")
     assert "none" in signature(bytes(512))
     assert "none" in signature(bytes(81) + b"\x0c\x02\x00\x40" * 8)  # stale records
+
+
+def test_an_extended_object_frames_at_128_slots_not_64(tmp_path) -> None:
+    """The two sprite-object forms hold the **same payload size** and divide it
+    differently — 32 frames of 64 slots, against 64 of 128 — so the stride cannot
+    be derived from the byte count and has to come from which form the container
+    found. Getting it wrong parses every record correctly and cuts the frames in
+    the wrong places, so the byte-exact round trip never notices: an extended
+    object just draws twice as many frames, alternating empty and populated, with
+    every frame number doubled against the animation table that names them.
+
+    First-party: the build's own converter declares ``obj_data[64][128][6]`` for
+    an ``.OBX`` where the ordinary one declares ``[32][64][6]``. The corpus agrees
+    — over 301 extended objects the drawn records peak at slot 127 and fall away
+    monotonically, with slot 63 at 6% of that (``scgcad-formats.md`` §8.1).
+    """
+    from celpix.plugins.builtins.object_codec import ObjectCodec
+    from celpix.plugins.builtins.scgcad import (
+        OBJ_PAYLOADS,
+        OBJ_SIZES,
+        ObjContainer,
+    )
+
+    payload = OBJ_PAYLOADS[1]  # the extended form
+    # One drawn record in the last slot of what is really frame 0 — slot 127.
+    # Read at a stride of 64 it would land in frame 1 instead, and frame 0 would
+    # come back empty.
+    records = bytearray(payload)
+    records[127 * 6 : 128 * 6] = _record(x=8, y=8, tile=5)
+    blob = bytearray(OBJ_SIZES[payload])
+    blob[:payload] = records
+    blob[payload : payload + len(SIGNATURE)] = SIGNATURE
+    path = tmp_path / "big.OBX"
+    path.write_bytes(bytes(blob))
+
+    ctx = PipelineContext()
+    data = ObjContainer().read(ReadSource(data=bytes(blob), path=str(path)), ctx)
+    params = default_registry().preset(OBJECT).params
+    codec = ObjectCodec()
+    frames = codec.frames(codec.decode(data, params, ctx), params, ctx)
+
+    assert len(frames) == 64  # not 128
+    assert len(frames[0]) == 1  # the record is frame 0's last slot, not frame 1's
+    assert not frames[1]
+
+
+# -- animation sequences ---------------------------------------------------
+def test_a_sequence_stops_at_its_terminator_and_keeps_its_slot() -> None:
+    """Two rules the corpus forces (scgcad-formats.md §8.3). Reading stops at the
+    (0, 0) terminator, because the tool left whatever was in the buffer behind it
+    — 7,019 steps across the corpus name a frame that does not exist. And an empty
+    group is still a group: they are numbered slots, so skipping one would slide
+    every later sequence onto a number naming a different one in the file.
+    """
+    from celpix.core.animation import Sequence, Step, read_sequences
+
+    # Group 0: frames 1, 3, 4, 5 at three ticks each — `ANA-JUGEMU-NEW.OBJ`'s
+    # ping-pong, whose group 1 is that run reversed. Group 2 is left empty, and
+    # group 3 terminates after one step with garbage behind it.
+    table = bytearray(4 * 4 * 2)
+    table[0:8] = bytes((3, 1, 3, 3, 3, 4, 3, 5))
+    table[8:16] = bytes((3, 5, 3, 4, 3, 3, 3, 1))
+    table[24:32] = bytes((2, 9, 0, 0, 7, 7, 8, 8))
+    groups = read_sequences(bytes(table), 0, 4, 4)
+
+    assert groups[0] == Sequence(tuple(Step(3, f) for f in (1, 3, 4, 5)))
+    assert groups[1].steps == groups[0].steps[::-1]
+    assert groups[2] == Sequence(())  # the slot survives, and reads as falsy
+    assert not groups[2]
+    assert groups[3] == Sequence((Step(2, 9),))  # the trailing 0x0707 is not a step
+    assert groups[0].ticks == 12
+
+
+def test_steps_naming_a_frame_the_file_lacks_are_counted_not_dropped() -> None:
+    """Dropping them would quietly renumber a sequence's steps, and what a reader
+    needs to say is that the file claims something impossible — not a tidied
+    version of it. 349 corpus files hold live steps past their last drawn frame."""
+    from celpix.core.animation import Sequence, Step, unknown_frames
+
+    groups = (
+        Sequence((Step(2, 0), Step(2, 40), Step(2, 3))),
+        Sequence((Step(1, 99),)),
+    )
+    assert unknown_frames(groups, frames=8) == 2  # 40 and 99, not 0 or 3
+    assert unknown_frames(groups, frames=100) == 0
+    assert len(groups[0].steps) == 3  # kept, at their own step numbers
+
+
+def test_an_object_publishes_the_sequences_in_the_tail_it_cuts_away(tmp_path) -> None:
+    """The table sits past the records and past the header, in the part the
+    container preserves opaquely — so the container is the only thing holding both
+    the bytes and the offsets, and the codec never sees it. Both forms, since the
+    extended one doubles the groups while keeping 32 steps each."""
+    from celpix.core.animation import Step
+    from celpix.core.context import KEY_TILEMAP_ANIMATIONS
+    from celpix.plugins.builtins.scgcad import (
+        HEADER,
+        OBJ_PAYLOADS,
+        OBJ_SIZES,
+        ObjContainer,
+    )
+
+    for payload, sequences in zip(OBJ_PAYLOADS, (16, 32), strict=True):
+        blob = bytearray(OBJ_SIZES[payload])
+        blob[payload : payload + len(SIGNATURE)] = SIGNATURE
+        at = payload + HEADER
+        blob[at : at + 4] = bytes((4, 2, 4, 6))  # frames 2 then 6, four ticks each
+        ctx = PipelineContext()
+        ObjContainer().read(ReadSource(data=bytes(blob)), ctx)
+        groups = ctx.get(KEY_TILEMAP_ANIMATIONS)
+        assert len(groups) == sequences
+        assert groups[0].steps == (Step(4, 2), Step(4, 6))
+        assert not any(groups[1:])

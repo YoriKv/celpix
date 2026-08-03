@@ -108,8 +108,11 @@ def _tilemap_image(doc: Document, registry: Registry, columns: int) -> QImage:
     )
     top = min(256, drawn.palette_rows * index_space)
     base = 0 if doc.cells_carry_palette_rows else doc.view.subpalette_row * index_space
-    return render_bridge.indexed_image(
-        drawn.grid, [doc.palette.color(base + i) for i in range(top)]
+    return render_bridge.paint_hidden(
+        render_bridge.indexed_image(
+            drawn.grid, [doc.palette.color(base + i) for i in range(top)]
+        ),
+        drawn.hidden,
     )
 
 

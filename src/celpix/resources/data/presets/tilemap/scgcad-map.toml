@@ -9,9 +9,10 @@
 # The two coordinates are adjacent and the panel is 32 wide, so the low 14 bits
 # read as one number ARE `panelY * 32 + panelX` — the panel cell index. That is
 # why `index` spans them both rather than the codec needing to compose two
-# fields. `flags` carries bits 14-15 uninterpreted so a write stays byte-exact:
-# celPix has no per-position visibility to map bit 14 onto, so it draws every
-# position and writes the bit back exactly as it read it.
+# fields. Bit 14 is the only one of the top two that means anything: cleared, the
+# position paints the background instead of its panel cell. Bit 15 rides in
+# `flags` uninterpreted — this tool's writer never sets it, yet 4.1% of the
+# corpus has it, so a write keeps it rather than deciding what it was for.
 #
 # Resolving an index into a tile needs the panel it was authored against; a MAP
 # on its own draws nothing. The panel also settles how big a block one entry
@@ -31,4 +32,5 @@ endian = "big"
 # field spans 0-511, the panel's full cell height, not a count of 16x16 units.
 # A resolved layout takes its cell size from the panel it draws through anyway.
 index = { shift = 0, bits = 14 }
-flags = { shift = 14, bits = 2 }
+drawn = { shift = 14, bits = 1 }
+flags = { shift = 15, bits = 1 }
