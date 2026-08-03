@@ -39,6 +39,27 @@ def _shift(bias: int) -> bytes:
     return bytes(max(0, min(255, i + bias)) for i in range(256))
 
 
+@lru_cache(maxsize=256)
+def _fold(row_size: int) -> bytes:
+    """The 256-byte map that reduces an absolute index to its place in its row.
+
+    The inverse of :func:`_shift` for the one direction that has to be lossless:
+    taking a **composed** pixel back to the index its tile stores. A composed
+    index is ``row * row_size + stored``, and what a tile can hold is the
+    ``stored`` part, so the row comes off by remainder rather than by subtraction.
+
+    Subtracting a *particular* row's base is right only while the pixel came from
+    that row. It does not, whenever a gesture **relocates** pixels rather than
+    painting them — a float dragged onto a cell of another row, a paste, a
+    marquee flip spanning two rows — and there the subtraction went negative and
+    :func:`_shift` clamped it to 0, blanking every pixel whose colour sat below
+    the destination's base. Reducing instead keeps the pattern and lets the
+    destination cell's row recolour it, which is what moving art between palette
+    rows means in every editor of this kind.
+    """
+    return bytes(i % max(1, row_size) for i in range(256))
+
+
 class IndexGrid(PixelGrid):
     """A row-major grid of 8-bit palette indices.
 
@@ -78,3 +99,19 @@ class IndexGrid(PixelGrid):
         if not bias:
             return self
         return IndexGrid(self._width, self._height, self._data.translate(_shift(bias)))
+
+    def folded(self, row_size: int) -> IndexGrid:
+        """A new grid with every index reduced to its position within its row.
+
+        How a **composed** pixel becomes the index a tile stores, and the exact
+        inverse of :meth:`shifted` for indices the shift produced
+        (:func:`_fold`). Used on the way from a gesture to the bank, where
+        subtracting the destination cell's own row is only right for pixels that
+        were painted there — not for pixels moved in from a cell of another row,
+        which is where the subtraction used to go negative and clamp to nothing.
+        """
+        if row_size <= 0 or row_size >= 256:
+            return self
+        return IndexGrid(
+            self._width, self._height, self._data.translate(_fold(row_size))
+        )

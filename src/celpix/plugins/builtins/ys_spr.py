@@ -66,6 +66,9 @@ from celpix.plugins.builtins.object_codec import SPR_RECORD
 FRAMES = 32  # every file has exactly this many, empty ones included
 TRAILER = 81  # 40 bytes of frame numbers, 40 of durations, one flag byte
 ANIMATION_STEPS = 40  # one of those blocks; the trailer holds one sequence
+# The earliest build's tail: 512 bytes of uninitialised buffer where the later
+# one writes 81 and a signature. A tail this big is not a table.
+_DEAD_TRAILER = 512
 FRAMES_ACROSS = 8  # how many frames the sheet opens laid out at, as for an object
 
 
@@ -118,6 +121,19 @@ def _signature(trailer: bytes) -> str:
     return raw.decode("ascii").strip()
 
 
+def _is_animation_trailer(data: bytes, at: int) -> bool:
+    """Whether the tail at ``at`` is the animation blocks rather than dead buffer.
+
+    Length is what separates them, and it separates them by a wide margin: the
+    later build writes ``TRAILER`` plus a tool name — a hundred-odd bytes — where
+    the earliest leaves 512 of uninitialised buffer
+    (``docs/graphics-formats-reference/ys-sprite-patterns.md`` §4). The signature
+    is the wrong test even though it looks like the obvious one, since a third of
+    the corpus carries none and those files' blocks are real.
+    """
+    return 0 < len(data) - at < _DEAD_TRAILER
+
+
 class SprContainer:
     """Sprite pattern: counted frames of 8-byte records, then an opaque tail.
 
@@ -148,11 +164,20 @@ class SprContainer:
         # The one animation table in hand that is a *reading* rather than a spec,
         # and it says so: the two blocks are opaque byte arrays to the writer, so
         # which is frames and which durations comes off the corpus.
-        ctx.set(
-            KEY_TILEMAP_ANIMATIONS,
-            read_parallel_sequences(source.data, trailer_at, ANIMATION_STEPS),
-        )
-        ctx.set(KEY_TILEMAP_ANIMATIONS_INFERRED, True)
+        #
+        # **Only where the tail is a table at all.** The earliest build leaves 512
+        # bytes of uninitialised buffer here — stale records from whatever file
+        # the tool had open — and the reference says outright that it is not data.
+        # Read anyway it yields confident nonsense: `Step(255, 255)`, frame
+        # numbers past anything the file holds, offered in the player as a real
+        # animation. The badge would not save it either, since what that says is
+        # that the block *split* is inferred, not that the bytes are rubbish.
+        if _is_animation_trailer(source.data, trailer_at):
+            ctx.set(
+                KEY_TILEMAP_ANIMATIONS,
+                read_parallel_sequences(source.data, trailer_at, ANIMATION_STEPS),
+            )
+            ctx.set(KEY_TILEMAP_ANIMATIONS_INFERRED, True)
         # Zero because the records *begin* at 1 and then drift: no single offset
         # describes where this payload came from, so the addresses beside the hex
         # dump are stated as positions in the record stream it is showing rather

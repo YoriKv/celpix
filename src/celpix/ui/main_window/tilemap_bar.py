@@ -187,7 +187,7 @@ class TilemapBarMixin:
         self._all_frames.setToolTip(
             "Show every frame slot the file has room for\n"
             "Off stops after the last frame that draws something -\n"
-            "a file holds 32 or 128 and most are empty"
+            "a file holds 32 or 64 and most are empty"
         )
         self._all_frames.toggled.connect(self._on_all_frames_change)
         row.addWidget(self._all_frames)
@@ -950,6 +950,11 @@ class TilemapBarMixin:
             entry.doc, entry.pending_palette = previous, pending
             return False
         self._doc = entry.doc
+        # A re-read is where a binding takes effect, so it is where pixel mode can
+        # stop being available without the view having moved: unbind a map that is
+        # being painted on and the mode would otherwise stay armed with both
+        # toggles greyed, leaving no way out of it but switching entries.
+        self._drop_unavailable_edit_mode()
         self._refresh_view()
         self._refresh_project_modified()
         return True

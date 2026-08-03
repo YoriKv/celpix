@@ -10736,3 +10736,119 @@ def test_the_players_zoom_is_its_own(qtbot, tmp_path) -> None:
     player._zoom.setValue(player._zoom.value() + 3)
     assert window._zoom.value() == before
     assert player._frame._zoom == player._zoom.value()
+
+
+def test_a_chain_grown_too_deep_after_binding_owns_no_art(qtbot, tmp_path) -> None:
+    """The depth rule is checked where a binding is *made*, and a source can gain
+    a binding of its own afterwards: bind a to b while b is unbound, then bind b
+    to c, and a is three deep with nothing having re-asked.
+
+    Every consumer has to re-ask per hop, because the ungated walk found art at
+    the end of a chain the resolution refuses - so the map read a file of
+    coordinates through a pixel codec, drew it as art, and a pen stroke deposited
+    into a real art file the user was not looking at. One click cost a tile.
+    """
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window, bank, a = _bound_screen(qtbot, tmp_path, [Cell(index=1)])
+    b = window._workspace.find_file(str(_scr_file(tmp_path, [Cell(index=2)], "b.SCR")))
+    if b is None:
+        window._load_pixel(str(_scr_file(tmp_path, [Cell(index=2)], "b.SCR")))
+        b = window._workspace.find_file(str(tmp_path / "b.SCR"))
+    c = _scr_file(tmp_path, [Cell(index=3)], "c.SCR")
+    window._load_pixel(str(c))
+    c_entry = window._workspace.find_file(str(c))
+
+    # a -> b is allowed while b is unbound; c -> bank is an ordinary binding.
+    window._rebind_tiles(a, TileSource(mode=TileMode.ENTRY, entry=b))
+    window._rebind_tiles(c_entry, TileSource(mode=TileMode.ENTRY, entry=bank))
+    # ...and now b -> c, which puts a three deep without a ever being consulted.
+    window._rebind_tiles(b, TileSource(mode=TileMode.ENTRY, entry=c_entry))
+
+    # The owner walk and the resolution agree, and neither reaches the art.
+    assert window._tile_bank_owner(a) is None
+    assert window._bound_tilemap(a) is None
+    window._activate_entry(a)
+    # So no pixel edit is offered, which is what keeps a stroke out of the bank.
+    assert not window._pixel_edit_available()
+
+
+def test_the_eyedropper_on_a_row_bearing_cell_arms_the_pen_with_what_it_picked(
+    qtbot, tmp_path
+) -> None:
+    """The sampled value already carries the cell's palette row - that is what
+    makes it equal the composed picture - so the eyedropper must not add the row a
+    second time. Counted twice it selected the swatch two rows on, dragged Subpal
+    to double the cell's row, and, once the palette is only as long as the file
+    needs, ran off the end: select_index matched nothing and the pen fell back to
+    index 0, so the next stroke painted with colour 0.
+    """
+    from celpix.core.palette import Palette
+    from celpix.core.tilemap import Cell
+
+    cells = [Cell(index=1, palette_row=1)]
+    window, _bank, entry = _bound_screen(qtbot, tmp_path, cells)
+    window._activate_entry(entry)
+    # A palette no longer than the file needs, which is what turns the double-add
+    # from a wrong swatch into a silent fallback to 0.
+    entry.doc.palette = Palette([0xFF000000 + i for i in range(32)])
+    _painting_on(window)
+
+    picked = window._sampled_value(0, 0)
+    assert picked is not None and picked >= 16  # row 1 really is folded in
+    window._eyedrop_at(0, 0)
+    assert window._palette_panel.selected_index() == picked
+    assert window._pen_value() == picked % 16
+
+
+def test_unbinding_a_map_being_painted_on_leaves_pixel_mode(qtbot, tmp_path) -> None:
+    """A binding change is where pixel editing can stop being available without
+    the view having moved, and the mode is app-wide state nothing else resets.
+    Left armed, the canvas went on reporting paint gestures while both mode
+    toggles were greyed - so the mode read as "off", was not, and could only be
+    escaped by switching entries."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+    from celpix.ui.tools import EditMode
+
+    window, _bank, entry = _bound_screen(qtbot, tmp_path, [Cell(index=1)])
+    window._activate_entry(entry)
+    _painting_on(window)
+    assert window._edit_mode is EditMode.PIXEL
+
+    window._rebind_tiles(entry, TileSource(mode=TileMode.NONE))
+    assert not window._pixel_edit_available()
+    assert window._edit_mode is EditMode.TILE
+
+
+def test_moving_pixels_onto_a_higher_palette_row_keeps_them(qtbot, tmp_path) -> None:
+    """Pixels reaching the bank were painted through the destination cell for a
+    stroke, but *moved in from another* for a float, a paste or a marquee flip.
+    Subtracting the destination cell's row then went negative and clamped to zero,
+    so relocating art onto any cell past palette row 0 wrote nothing but index 0 -
+    a paste onto such a cell blanked the tile outright.
+
+    Reducing into the row instead keeps the pattern and lets the destination's row
+    recolour it, which is what moving art between palette rows means.
+    """
+    from celpix.core.index_grid import IndexGrid
+    from celpix.core.tilemap import Cell
+
+    window, bank, entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=1), Cell(index=2, palette_row=2)]
+    )
+    window._activate_entry(entry)
+    _painting_on(window)
+
+    # The source cell's tile, as composed on screen: row 0, so absolute == stored.
+    source = [window._sampled_value(x, 0) for x in range(8)]
+    assert any(source), "the source tile has to hold something to move"
+
+    # Land that row of pixels on cell 1, which draws through palette row 2 - so
+    # what arrives carries row 0's absolute indices, not row 2's.
+    moved = IndexGrid(8, 8, bytearray(bytes(source) + bytes(56)))
+    tiles = [IndexGrid(8, 8), moved]
+    edits = window._bank_tiles_from(window._doc, [1], tiles)
+    landed = edits[2]
+    assert [landed.get(x, 0) for x in range(8)] == source

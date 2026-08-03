@@ -106,4 +106,8 @@ class AnimationMixin:
         if not self._animation_available():
             self._animation.hide_overlay()
             return
-        self._show_animation()
+        # Asked for rather than done: the strip is every frame the file has, and
+        # this runs on each refresh of the entry underneath — once per pixel of a
+        # stroke. The window coalesces the burst (`request_refresh`), so an open
+        # player costs one recompose per burst instead of one per repaint.
+        self._animation.request_refresh()

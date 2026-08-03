@@ -30,6 +30,7 @@ from celpix.core.context import (
     KEY_SOURCE_FILES,
     KEY_SOURCE_OFFSET,
     KEY_SOURCE_PATH,
+    KEY_TILEMAP_ANIMATIONS,
     KEY_TILEMAP_PALETTE_ROW_BASE,
     PipelineContext,
     hint_info,
@@ -807,6 +808,12 @@ def hidden_rects(doc: Document, columns: int) -> tuple[tuple[int, int, int, int]
     assembled screen draws its pages side by side
     (:attr:`~celpix.core.document.Document.laid_out_cells`).
 
+    ``columns`` is resolved the way :func:`tilemap_tiles` resolves it — an
+    assembly owns its width — so a caller that has only the view's number gets
+    rectangles against the width the tiles were actually laid out at. Doing it
+    here rather than at each call site is what stops the live preview and the
+    committed render from disagreeing by a row.
+
     Empty for every format with no visibility bit, which is all but one, and the
     walk short-circuits on the ``all`` scan rather than building a list per cell.
     """
@@ -815,7 +822,7 @@ def hidden_rects(doc: Document, columns: int) -> tuple[tuple[int, int, int, int]
         return ()
     across, down = doc.cell_tiles
     cell_w, cell_h = across * doc.tile_width, down * doc.tile_height
-    cols = max(1, columns)
+    cols = max(1, doc.assembled_columns or columns)
     rects: list[tuple[int, int, int, int]] = []
     # A row at a time, so a run can only merge within one: spanning the wrap would
     # paint a rectangle across the whole picture and blank the left of the next row.
@@ -874,10 +881,7 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
         tiles, layout = tilemap_tiles(doc, reg, columns)
         # No bias list: the rows are already in the indices (see tilemap_tiles).
         grid, drawn = compose_tiles(tiles, layout, None), len(tiles)
-        # The same width the tiles were laid out at, for the same reason: an
-        # assembly owns its columns, and rectangles measured against the caller's
-        # would land a row off down the picture.
-        hidden = hidden_rects(doc, doc.assembled_columns or columns)
+        hidden = hidden_rects(doc, columns)
     return TilemapImage(grid, drawn, min(max(1, 256 // max(1, space)), top + 1), hidden)
 
 
@@ -1547,16 +1551,30 @@ def load_tilemap_data(cfg: PathwayConfig, reg: Registry) -> TilemapData:
     )
 
 
-def encode_cells(cells: list[Cell], preset_id: str, reg: Registry) -> bytes:
+def encode_cells(
+    cells: list[Cell],
+    preset_id: str,
+    reg: Registry,
+    ctx: PipelineContext | None = None,
+) -> bytes:
     """``cells`` back to bytes under ``preset_id`` — the save-side half.
 
     Separate from a whole-document save because a tilemap edit is local: the
     caller encodes the cells that changed and splices them into the buffer
     :func:`load_tilemap_data` returned, rather than re-encoding a grid whose
     trailing partial row was never part of the file.
+
+    ``ctx`` should be the **document's own**, as :func:`_save_tilemap` passes it:
+    a container may have stated something about this file that the preset cannot
+    know, and the live case is byte order — 26 corpus sprite objects come from a
+    build that stores the attribute word the other way round and say so in their
+    header (:data:`~celpix.core.context.KEY_TILEMAP_ENDIAN`). Encoding those
+    against a fresh context would write every word back swapped. A default one is
+    kept for callers with no document behind them, where the preset is the whole
+    of the answer.
     """
     engine, preset = reg.engine_for(preset_id)
-    ctx = PipelineContext()
+    ctx = PipelineContext() if ctx is None else ctx
     return _run(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
@@ -1734,7 +1752,16 @@ def _hint_value(key: str, value: object) -> str:
         and all(isinstance(part, int) for part in value)
     ):
         return f"{value[0]} x {value[1]}"
-    return str(value)
+    if key == KEY_TILEMAP_ANIMATIONS and isinstance(value, tuple):
+        live = [sequence for sequence in value if sequence]
+        steps = sum(len(sequence.steps) for sequence in live)
+        return f"{len(live)} of {len(value)} sequences, {steps} steps"
+    # A backstop for anything else that is big: this lands in one cell of a table
+    # whose first column sizes to its contents, so a value that reprs to
+    # kilobytes does not just read badly, it drags every other row's layout with
+    # it. Better a truncated answer than a window shaped by one of them.
+    text = str(value)
+    return f"{text[:57]}..." if len(text) > 60 else text
 
 
 def palette_entry_size(preset_id: str, reg: Registry) -> int:

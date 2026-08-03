@@ -711,13 +711,21 @@ class SessionMixin:
 
         Walks the binding to the art: one hop for an ordinary map, two for a
         chained one, whose tiles belong to the map at the end of the chain rather
-        than to the stamps in between. The bound at two is
-        :meth:`_draws_through_tilemap`'s, not a separate limit — a source that
-        draws through a tilemap itself cannot be bound in the first place, so the
-        walk cannot go further than the chain gate already allows.
+        than to the stamps in between.
 
-        None when the binding names nothing, or names something that is not art:
-        an edit with no owner is refused rather than deposited into a guess.
+        **Every hop is gated, not just the first.** The depth rule is checked
+        where a binding is *made* (:meth:`_can_supply_tiles`), and a source can
+        gain a binding of its own afterwards — bind `a` to `b` while `b` is
+        unbound, then bind `b` to `c`, and `a` is suddenly three deep with nothing
+        having re-asked. Walking ungated then found art at the end of a chain the
+        resolution refuses (:meth:`_bound_tilemap` stops at the same gate), so the
+        map drew a coordinate file as pixels and a pen stroke deposited into a
+        real art file the user was not looking at. Re-asking per hop is what keeps
+        this answer, the load, and the bar's note saying one thing.
+
+        None when the binding names nothing, names something that is not art, or
+        reaches it only through a chain too deep to resolve: an edit with no owner
+        is refused rather than deposited into a guess.
         """
         seen: set[int] = set()
         at: Entry | None = entry
@@ -728,7 +736,10 @@ class SessionMixin:
             if at.content_kind is not ContentKind.TILEMAP:
                 return None
             source = at.tile_source
-            at = self._binding_target(source) if source is not None else None
+            target = self._binding_target(source) if source is not None else None
+            if target is None or not self._can_supply_tiles(at, target):
+                return None
+            at = target
         return None
 
     def _entries_bound_to(self, owner: Entry) -> list[Entry]:
@@ -930,6 +941,13 @@ class SessionMixin:
         if bound is None:
             name = source.entry.name if source.entry is not None else "nothing"
             raise KeyError(f"the tiles are bound to {name}, which is not open")
+        if not self._can_supply_tiles(entry, bound):
+            # Refused here as well as at the binding, because a source can gain a
+            # binding of its own after this one was made and nothing re-asks
+            # (:meth:`_tile_bank_owner`). Without it the map reads a file of
+            # *coordinates* through a pixel codec and draws it as art — a picture
+            # the bar is at that moment describing as not resolved.
+            raise KeyError(f"{bound.name} draws through a tilemap itself")
         preset = (
             bound.session.pixel_preset_id
             if bound.session is not None

@@ -108,9 +108,13 @@ OBJ_PAYLOADS = (0x3000, 0xC000)
 # peak at slot 127 and fall away monotonically, with slot 63 at 6% of that — one
 # period of 128, not two of 64 (``scgcad-formats.md`` §8.1).
 OBJ_SUBSPRITES_PER_FRAME = {0x3000: 64, 0xC000: 128}
+# One subsprite record. Named because the frame division is reported as well as
+# read, and a hard-coded "64 records" divisor is what let the info panel go on
+# describing an extended object as 128 frames of 64 after the codec stopped.
+SUBSPRITE_RECORD = 6
 # Each form's whole length, keyed by its payload: 0x100 of header and then the
-# animation table, which is four times the size in the extended form for the four
-# times the frames it names. The write side needs the pair, an object saved to a
+# animation table, which is twice the size in the extended form for the twice the
+# frames it names. The write side needs the pair, an object saved to a
 # path with no file at it having to be *built* at the form its records are in —
 # the ordinary one holds a quarter of an extended object's frames, so writing one
 # into the other is not a shorter file but three quarters of the art gone.
@@ -268,9 +272,8 @@ def _text(raw: bytes) -> str:
 def _live_sequences(data: bytes, at: int, count: int, steps: int) -> int:
     """How many of an animation table's groups hold anything at all.
 
-    The number worth reporting, since a file has room for 16 or 32 and the corpus
-    fills a handful: 502 non-empty groups across 1,341 objects
-    (``scgcad-formats.md`` §8.3).
+    The number worth reporting, since a file has room for 16 or 32 and typically
+    fills a handful (``scgcad-formats.md`` §8.3).
     """
     return sum(1 for sequence in read_sequences(data, at, count, steps) if sequence)
 
@@ -631,8 +634,9 @@ class ObjContainer:
     """Sprite object: subsprite records first, then the header and animation table.
 
     Payload-first like a screen, and the header's *offset* is what says which of
-    the two sizes this is — 0x3000 for an object, 0xC000 for the extended form
-    with four times the frames. Detection matches the signature at either.
+    the two sizes this is — 0x3000 for an object, 0xC000 for the extended form,
+    which holds twice the frames at twice the subsprites each. Detection matches
+    the signature at either.
 
     What follows the header is the animation table: runs of (duration, frame)
     naming frames in the payload. It is preserved and not read — celPix draws
@@ -690,7 +694,7 @@ class ObjContainer:
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         # The form comes from the records being saved, not from the file already
-        # at the path: splicing 128 frames into an ordinary object drops 96 of
+        # at the path: splicing 64 frames into an ordinary object drops 32 of
         # them, and a path with no file at it has no form to offer at all. Where
         # the two agree the whole tail is preserved, animation table included —
         # and that covers the `F` build, whose extra 0x20 bytes ride along
@@ -714,12 +718,14 @@ class ObjContainer:
         swapped = marker.rstrip().endswith("F")
         extended = payload == OBJ_PAYLOADS[1]
         groups = OBJ_SEQUENCES[payload]
+        slots = OBJ_SUBSPRITES_PER_FRAME[payload]
         return (
             *_metadata_fields(data, payload),
             ContainerField(
                 "Form",
                 f"{'extended' if extended else 'ordinary'} - "
-                f"{payload // 0x180} frames of 64 subsprites",
+                f"{payload // (slots * SUBSPRITE_RECORD)} frames"
+                f" of {slots} subsprites",
                 "Which of the two sizes this is shows in *where* the\n"
                 "signature sits, so the records stop there. Found by\n"
                 "signature rather than by file length, so a file with an\n"
@@ -735,7 +741,7 @@ class ObjContainer:
             ),
             ContainerField(
                 "Animation table",
-                f"{format_size(max(0, len(data) - payload - HEADER))}"
+                f"{format_size(groups * OBJ_SEQUENCE_STEPS * 2)}"
                 f" at {payload + HEADER:#06x}, "
                 f"{_live_sequences(data, payload + HEADER, groups, OBJ_SEQUENCE_STEPS)}"
                 f" of {groups} sequences used",
@@ -801,7 +807,8 @@ class ObzContainer:
             ContainerField(
                 "Payload",
                 f"{format_size(OBZ_PAYLOAD)} at 0x000000 - "
-                f"{OBZ_PAYLOAD // 0x180} frames of 64 subsprites",
+                f"{OBZ_PAYLOAD // (64 * SUBSPRITE_RECORD)} frames"
+                f" of 64 subsprites",
                 "The same shape as a sprite object with the header taken\n"
                 "away. The records inside are not an object's records,\n"
                 "which is why this reads through its own cell codec.",

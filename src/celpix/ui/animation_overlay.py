@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core.animation import Sequence, unknown_frames
-from celpix.ui.widgets import Badge, apply_badge, signals_blocked
+from celpix.ui.widgets import Badge, apply_badge, select_combo_data, signals_blocked
 
 # The rate the durations are read at, and the range the spin offers. A duration is
 # the authoring tool's own tick and not a time (``core.animation.Step``), so this
@@ -66,6 +66,11 @@ DEFAULT_ZOOM = 4
 # for one tick instead, which is the shortest thing the format can mean.
 MIN_TICKS = 1
 
+# How long a burst of view refreshes is allowed to coalesce into one recompose of
+# the strip. Long enough to swallow a stroke's worth, short enough that an edit
+# appears to land here at the same time it lands on the canvas.
+REFRESH_DEBOUNCE_MS = 120
+
 
 class AnimationFrame(QWidget):
     """One frame of an already-composed strip, drawn at this window's zoom.
@@ -85,15 +90,23 @@ class AnimationFrame(QWidget):
         # step naming a frame the file does not have has nothing to draw, and
         # drawing frame 0 instead would be a plausible lie.
         self._source = QRect()
+        # Every frame of an object is drawn in one shared bounding box, so this is
+        # *the* frame size rather than the current frame's. Kept so a step naming a
+        # frame the file does not have can draw nothing at the size the others
+        # take: sizing that step to its empty rectangle instead would collapse the
+        # widget to a pixel and snap the scroll geometry once per step.
+        self._frame_size = None
         self._zoom = DEFAULT_ZOOM
         self._pan_active = False
         self._panning = False
         self._pan_last = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-    def set_strip(self, strip: QImage) -> None:
-        """Take the composed sheet every frame is a rectangle of."""
+    def set_strip(self, strip: QImage, frame_size=None) -> None:  # noqa: ANN001 — QSize
+        """Take the composed sheet every frame is a rectangle of, and their size."""
         self._strip = strip
+        self._frame_size = frame_size
+        self._update_size()
         self.update()
 
     def show_frame(self, source: QRect | None) -> None:
@@ -126,20 +139,24 @@ class AnimationFrame(QWidget):
             self.unsetCursor()
 
     def _update_size(self) -> None:
+        """Size to the object's frame box, whatever this step happens to draw."""
+        size = self._frame_size or self._source.size()
         self.setFixedSize(
-            max(1, self._source.width() * self._zoom),
-            max(1, self._source.height() * self._zoom),
+            max(1, size.width() * self._zoom), max(1, size.height() * self._zoom)
         )
 
     # -- painting ------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        painter = QPainter(self)
+        # Guarded before the painter exists rather than after: a painter built and
+        # abandoned is only harmless while CPython's refcounting ends it for us.
         if self._strip.isNull() or self._source.isEmpty():
             return
+        painter = QPainter(self)
         # No smoothing: this is pixel art, and the magnification has to show the
         # pixels rather than average them.
         painter.scale(self._zoom, self._zoom)
         painter.drawImage(QPoint(0, 0), self._strip, self._source)
+        painter.end()
 
     # -- interaction ---------------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
@@ -189,6 +206,15 @@ class AnimationFrame(QWidget):
 class AnimationOverlay(QWidget):
     """Floating player for one sprite object's sequences."""
 
+    # Asked for when the entry underneath has changed and the strip wants
+    # recomposing. A signal rather than a direct call because the composing half
+    # lives on the window (:mod:`celpix.ui.main_window.animation`), and it is
+    # **debounced**: the strip is the object's every frame, untrimmed, and the
+    # window refreshes on things that arrive in bursts — each pixel of a stroke,
+    # each step of a drag. One recompose per burst is imperceptible here and the
+    # difference between a player that is open and one that is in the way.
+    refresh_requested = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Tool)
         self.setWindowTitle("Animation")
@@ -221,13 +247,20 @@ class AnimationOverlay(QWidget):
         )
         self._sequence.currentIndexChanged.connect(self._on_sequence_changed)
 
+        # The three transport buttons take no focus. Space is this window's pan
+        # gesture, and a focused button swallows it to click itself instead — so
+        # the one key the frame most needs would be claimed by whichever button
+        # the user last pressed.
         self._play = QPushButton("Play")
+        self._play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._play.setCheckable(True)
         self._play.toggled.connect(self._on_play_toggled)
         self._prev = QPushButton("<")
+        self._prev.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._prev.setToolTip("Step back one step of the sequence.")
         self._prev.clicked.connect(lambda: self._advance(-1))
         self._next = QPushButton(">")
+        self._next.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._next.setToolTip("Step forward one step of the sequence.")
         self._next.clicked.connect(lambda: self._advance(1))
 
@@ -288,6 +321,11 @@ class AnimationOverlay(QWidget):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(lambda: self._advance(1))
 
+        self._pending = QTimer(self)
+        self._pending.setSingleShot(True)
+        self._pending.setInterval(REFRESH_DEBOUNCE_MS)
+        self._pending.timeout.connect(self.refresh_requested)
+
     # -- presenting ----------------------------------------------------------
     def show_object(
         self,
@@ -306,26 +344,40 @@ class AnimationOverlay(QWidget):
         player has to be able to show what it names.
         """
         self.setWindowTitle(title)
-        self._frame.set_strip(strip)
+        self._frame.set_strip(strip, rects[0].size() if rects else None)
         self._rects = rects
         self._inferred = inferred
         self._frames = len(rects)
-        live = [at for at, sequence in enumerate(sequences) if sequence]
+        # **The same sequences means the same session.** This is called again on
+        # every refresh of the entry underneath — a pixel edit, a palette change,
+        # a zoom — so that the strip follows the art. Rebuilding the picker
+        # unconditionally would snap the combo back to the first sequence and the
+        # step back to 1 each time, which during playback restarts the animation
+        # several times a second. What the user picked survives anything that did
+        # not change what there is to pick.
+        same = sequences == self._sequences and self._sequence.count()
+        keep = self._sequence.currentData() if same else None
         self._sequences = sequences
-        # Only the sequences that hold anything are offered, since a file has room
-        # for 16 or 32 and fills a handful — but each keeps its own number, which
-        # is what the file calls it.
-        # Blocked while it is refilled: the clear emits currentIndexChanged and so
-        # does the first insert, and each would reset the step of a sequence the
-        # user has not chosen yet.
-        with signals_blocked(self._sequence):
-            self._sequence.clear()
-            for at in live:
-                steps = len(sequences[at].steps)
-                self._sequence.addItem(
-                    f"Sequence {at} - {steps} step{'s' if steps != 1 else ''}", at
-                )
-        self._step = 0
+        if not same:
+            # Only the sequences that hold anything are offered, since a file has
+            # room for 16 or 32 and fills a handful — but each keeps its own
+            # number, which is what the file calls it.
+            #
+            # Blocked while it is refilled: the clear emits currentIndexChanged
+            # and so does the first insert, and each would reset the step of a
+            # sequence the user has not chosen yet.
+            with signals_blocked(self._sequence):
+                self._sequence.clear()
+                for at, sequence in enumerate(sequences):
+                    if not sequence:
+                        continue
+                    steps = len(sequence.steps)
+                    self._sequence.addItem(
+                        f"Sequence {at} - {steps} step{'s' if steps != 1 else ''}", at
+                    )
+            self._step = 0
+        elif keep is not None:
+            select_combo_data(self._sequence, keep)
         self._refresh()
         if not self.isVisible():
             if not self._positioned and self.parentWidget() is not None:
@@ -333,13 +385,40 @@ class AnimationOverlay(QWidget):
                 self.move(anchor + QPoint(12, 0))
                 self._positioned = True
             self.show()
+            # The frame takes the focus, not the picker: space is the pan gesture
+            # here, and a focused QComboBox eats it to drop its list open — so
+            # without this the window's one keyboard gesture is unreachable until
+            # the user happens to click the picture.
+            self._frame.setFocus()
+
+    def request_refresh(self) -> None:
+        """Ask for the strip to be recomposed shortly, coalescing a burst into one."""
+        if self.isVisible():
+            self._pending.start()
 
     def hide_overlay(self) -> None:
         """Hide and stop (the entry changed, or it is not an object any more)."""
         self._play.setChecked(False)
         self._timer.stop()
+        self._pending.stop()
         if self.isVisible():
             self.hide()
+
+    def closeEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        """Stop playing when the window is closed from its own frame.
+
+        The one way out of this window that does not go through
+        :meth:`hide_overlay`, and the timer has to hear about it: closed while
+        playing, it would go on firing against the strip it was holding for as
+        long as the app stayed open — and the window-side sync leaves a hidden
+        player alone, so nothing else would ever stop it. The pan mode goes down
+        for the same reason, a space release landing anywhere else being a
+        release this window never sees.
+        """
+        self._play.setChecked(False)
+        self._timer.stop()
+        self._frame.set_pan_mode(False)
+        super().closeEvent(event)
 
     # -- playback ------------------------------------------------------------
     @property

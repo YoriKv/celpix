@@ -1954,7 +1954,7 @@ def test_saving_a_tile_bank_at_a_new_depth_rebuilds_its_container() -> None:
 
 def test_a_sprite_object_is_saved_at_the_form_its_records_are_in() -> None:
     """Which form a file is shows only in where the signature sits, so a save
-    that assumes the ordinary one drops 96 of an extended object's 128 frames."""
+    that assumes the ordinary one drops 32 of an extended object's 64 frames."""
     from celpix.plugins.builtins.scgcad import (
         OBJ_SIZES,
         ObjContainer,

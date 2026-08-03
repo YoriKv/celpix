@@ -103,7 +103,7 @@ Frame = tuple[Subsprite, ...]
 def drawn_frames(frames: list[Frame]) -> list[Frame]:
     """``frames`` up to the last one holding anything, and never fewer than one.
 
-    A file has room for a fixed 32 or 128 frames and the artist rarely filled
+    A file has room for a fixed 32 or 64 frames and the artist rarely filled
     it — 61% of the corpus's frames are empty — so showing every slot would put
     a mostly blank sheet on screen and bury the sprite at the top of it. The
     trailing run is dropped rather than the empty frames squeezed out, because a

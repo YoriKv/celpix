@@ -438,6 +438,20 @@ class SelectionMixin:
         across, down = doc.cell_tiles
         return max(1, across), max(1, down)
 
+    def _grid_hidden(self) -> tuple[tuple[int, int, int, int], ...]:
+        """The undrawn positions of the map on screen, as pixel rectangles.
+
+        Beside :meth:`_grid_tilemap` because it answers for the same document and
+        is wanted in the same places: the live preview composes its own grid and
+        has to paint the map's blank positions over it exactly as the committed
+        render does (:func:`~celpix.pipeline.pipeline.hidden_rects`). Empty for
+        every document with no visibility bit, at the cost of one scan.
+        """
+        doc = self._grid_tilemap()
+        if doc is None:
+            return ()
+        return pipeline.hidden_rects(doc, self._tilemap_columns())
+
     def _bank_tile_at_slot(
         self, slot: int, cells: list[Cell] | None = None
     ) -> tuple[Cell, int] | None:
@@ -458,8 +472,19 @@ class SelectionMixin:
         to write through: what is on screen has the cell's flips applied and its
         palette row folded into the indices, and both have to come off again.
 
-        None where the slot draws nothing — past the last cell, or a cell pointing
-        outside the bank, which renders blank and has no bytes to edit.
+        None where the slot draws nothing — past the last cell, a cell pointing
+        outside the bank, or a position the map does **not draw**, all of which
+        render blank and have no bytes to edit.
+
+        The undrawn position is the one of those three that has a tile behind it
+        and still refuses. What the user is pointing at there is the background,
+        not a picture: the cell resolves and the composer even fills its tile in
+        (``visible`` reaches no tile — :class:`~celpix.core.tilemap.Cell`), but the
+        picture paints over it. Editing through it would write into a tile drawn
+        *elsewhere* on the map, from a spot showing nothing, with the stroke
+        invisible the whole way — the same "no cell under this pixel" that keeps
+        pixel editing off a sprite object entirely (§4, ``_pixel_edit_available``),
+        arrived at per position instead of per document.
 
         ``cells`` lets a caller resolving many slots hoist
         :attr:`~celpix.core.document.Document.laid_out_cells` out of its loop.
@@ -476,6 +501,8 @@ class SelectionMixin:
         if not 0 <= position < len(cells):
             return None
         cell = cells[position]
+        if not cell.visible:
+            return None
         run = doc.cell_tile_indices(cell)
         if not 0 <= ordinal < len(run):
             return None

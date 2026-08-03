@@ -277,9 +277,15 @@ class StampToolMixin:
         if at is None or at in self._stamp_touched:
             return
         self._stamp_touched.add(at)
-        if cells[at].index == tile_id:
+        if cells[at].index == tile_id and cells[at].visible:
             return  # already what it names; nothing to draw and nothing to undo
-        cells[at] = replace(cells[at], index=tile_id)
+        # Stamping **makes the position drawn**. A cell the layout leaves blank
+        # paints the background, so placing a tile there would otherwise write the
+        # entry and show nothing — no feedback, and on a layout that is largely
+        # undrawn (`-CLR-.MAP` is entirely so) every click a silent no-op. It is
+        # also what the authoring tool does: `scr_map_cnv` sets the drawn byte on
+        # every block it registers (``scgcad-formats.md`` §4).
+        cells[at] = replace(cells[at], index=tile_id, visible=True)
         doc.cells = list(cells)
         doc.resolve()
         self._refresh_view()

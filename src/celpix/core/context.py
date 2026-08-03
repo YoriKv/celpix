@@ -252,6 +252,25 @@ HINT_INFO: dict[str, tuple[str, str]] = {
         "counts them rather than giving every frame the same\n"
         "number of slots. Read off the file's own counts.",
     ),
+    KEY_TILEMAP_SUBSPRITES_PER_FRAME: (
+        "Subsprites per frame",
+        "How many subsprite slots one frame holds, where the file\n"
+        "settles it rather than the format preset. The two sizes\n"
+        "of sprite object divide the same payload differently.",
+    ),
+    KEY_TILEMAP_ANIMATIONS: (
+        "Animation sequences",
+        "The order this file says its frames play in, read from\n"
+        "the table past its records. Shown here and in the\n"
+        "animation player; nothing is drawn or written from it.",
+    ),
+    KEY_TILEMAP_ANIMATIONS_INFERRED: (
+        "Animation layout inferred",
+        "Whether the sequences above are a reading of the data\n"
+        "rather than a spec. One format's writer emits its\n"
+        "animation blocks opaquely, so their split is read off\n"
+        "the corpus and shown as a guess, not a fact.",
+    ),
     KEY_PIXEL_PRESET: (
         "Pixel format",
         "The graphics format the container believes its payload\n"

@@ -332,6 +332,7 @@ class MainWindow(
         self._canvas = Canvas()
         self._overlay = DecompressOverlay(self)
         self._animation = AnimationOverlay(self)
+        self._animation.refresh_requested.connect(self._show_animation)
         self._init_sprite_select()
         self._canvas.slots_selected.connect(self._on_slots_selected)
         # After slots_selected, because the two report one press and this is the
@@ -721,6 +722,10 @@ class MainWindow(
         the current view repoints to a neighbour via the workspace."""
         self._workspace.close(entry)
         self._sync_locate_action()
+        # Closing the bank a map is painted through takes its pixels away without
+        # the view moving, so the mode has to be re-asked here as well as on an
+        # entry switch (``session.SessionMixin._drop_unavailable_edit_mode``).
+        self._drop_unavailable_edit_mode()
 
     def _apply_restore_entries(
         self, victims: list[tuple[int, Entry]], was_current: Entry | None

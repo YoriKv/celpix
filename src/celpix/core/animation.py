@@ -7,8 +7,8 @@ is a separate table the authoring tool wrote beside them
 read into a model — what a player steps through, and nothing else: the frames
 themselves are still drawn from the records.
 
-**The table is not a trustworthy account of the file.** Measured over the corpus,
-349 files hold live steps naming a frame past the last drawn one and 7,019 steps
+**The table is not a trustworthy account of the file.** Hundreds of corpus files
+hold live steps naming a frame past the last drawn one, and hundreds of steps
 name a frame the file does not have at all — the tool wrote its terminator and
 left whatever was in the buffer behind it. So two rules hold everywhere here:
 reading **stops at the terminator**, and a step naming a frame that does not
@@ -53,9 +53,8 @@ class Step:
 class Sequence:
     """One group of the table — a run of steps, in the order they play.
 
-    Empty where the file's group is empty, which most of them are: the corpus
-    holds 502 non-empty groups against 3,792 steps, so a file with sixteen slots
-    typically fills a handful.
+    Empty where the file's group is empty, which most of them are: a file has
+    room for sixteen or thirty-two and typically fills a handful.
     """
 
     steps: tuple[Step, ...] = ()

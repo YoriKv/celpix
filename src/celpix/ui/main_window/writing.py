@@ -298,11 +298,36 @@ class WritingMixin:
                     # the write path is where that failure is worth reporting.
                     pass
             self._workspace.set_pixel_revision(parent, owner_revision)
+            self._drop_bound_copies(parent)
             self._files_panel.refresh_entry(parent)
         elif entry.kind is EntryKind.FILE:
             for child in self._workspace.children_of(entry):
                 if child.kind is EntryKind.SLICE and child.doc is not None:
+                    self._drop_bound_copies(child)
                     self._workspace.drop_document(child)
+
+    def _drop_bound_copies(self, owner: Entry) -> None:
+        """Drop the borrowed tiles of every map bound to ``owner``.
+
+        The one thing :meth:`~...session.SessionMixin._resync_tile_bindings` cannot
+        reach: it patches each map's copy with the *same splices*, which is only
+        right while both buffers were decoded through one pathway. Across the
+        slice/parent boundary they were not — a slice reads a window of its
+        parent, so the offsets differ — and the edit arrives at the other side of
+        that boundary as a fold rather than as splices at all.
+
+        So the copies are dropped rather than patched, and re-read from the entry
+        they borrow on the way back in. Without it a map bound to a slice went on
+        drawing the art as it stood before the parent was edited, indefinitely:
+        re-activating it does not reload a document it still has.
+
+        The entry on screen is left alone — its document is the window's live one,
+        and the user is editing the other side of this boundary, so it cannot be
+        the one being dropped.
+        """
+        for bound in self._entries_bound_to(owner):
+            if bound is not self._workspace.current:
+                self._workspace.drop_document(bound)
 
     def _mark_region_saved(self, parent: Entry) -> None:
         """Mark clean everything whose unsaved bytes just went to disk with

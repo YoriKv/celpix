@@ -39,5 +39,11 @@ layout = "sprite"
 # header, and for bytes bound through anything that is not a bank at all.
 palette_row_base = 8
 endian = "big"
+# The ordinary form's division. A container that knows better overrides this per
+# *file*, exactly as it does `endian` above: the two sizes of object carry the
+# same payload and divide it differently - 32 frames of 64 here, 64 of 128 in the
+# extended form - and which one a file is shows in where its signature sits, so
+# the container is what knows (scgcad-formats.md sec 8.1). Editing this in a
+# copied preset therefore only moves the answer for a file with no container.
 subsprites_per_frame = 64
 subsprite_tiles = [1, 2]

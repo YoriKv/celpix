@@ -6,8 +6,9 @@
   and the edit lands in the tile bank it is bound to
 - **Animation player** (View -> Animation): sprite files now play their stored
   animation sequences in a window of their own
-- Added "improved" versions of LZ compression that compress better, the base
-  versions are byte exact
+- **Compression** improved (better compression) versions of LZ compression
+  algorithms alongside their byte exact implementations
+- Lots of fixes
 
 ## v0.4.5 - 2026-07-31
 

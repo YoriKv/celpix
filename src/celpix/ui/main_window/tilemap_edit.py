@@ -536,7 +536,12 @@ class TilemapEditMixin:
             return
         cells = list(doc.cells)
         for index in indices:
-            cells[index] = Cell()
+            # The format's own bits stay: `visible` says whether the *position* is
+            # drawn and `flags` carries what celPix does not model, neither of
+            # which is content this is being asked to clear. Writing a bare `Cell`
+            # made clearing the only way to un-hide a position, and did it while
+            # silently dropping bit 15 of a stamp layout's entry.
+            cells[index] = Cell(visible=cells[index].visible, flags=cells[index].flags)
         if self._apply_cells(cells, text):
             self.statusBar().showMessage(f"Cleared {counted(len(indices), 'cell')}.")
 
@@ -679,7 +684,10 @@ class TilemapEditMixin:
             return
         try:
             data = pipeline.encode_cells(
-                doc.cells or [], doc.tilemap_config.interpret_preset_id, self._registry
+                doc.cells or [],
+                doc.tilemap_config.interpret_preset_id,
+                self._registry,
+                doc.tilemap_ctx,
             )
         except (KeyError, PipelineError):
             return

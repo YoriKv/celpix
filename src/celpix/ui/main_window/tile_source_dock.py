@@ -525,7 +525,7 @@ class TileSourceDockMixin:
 
         A **sprite object** takes the first reading and counts its *subsprites*
         instead — over the frames that are drawn, not over the file's records: an
-        object has room for a fixed 32 or 128 frames and most of them are empty,
+        object has room for a fixed 32 or 64 frames and most of them are empty,
         so counting the records would report every unused one as a user of tile
         ``$0`` (``docs/graphics-formats-reference/scgcad-formats.md`` §8).
         """

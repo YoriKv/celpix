@@ -43,7 +43,7 @@ from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
-from celpix.core import draw
+from celpix.core import ceil_div, draw
 from celpix.core.arrangement import compose_window, split_grid
 from celpix.core.errors import PipelineError
 from celpix.core.tilemap import cell_orientation
@@ -375,7 +375,12 @@ class PixelEditMixin:
         """
         assert self._doc is not None
         if self._doc.is_tilemap:
-            self._canvas.set_image(self._tilemap_grid_image(grid))
+            # With the undrawn positions, not without them. The *committed*
+            # picture has them painted, so passing them is what leaves the
+            # positions this stroke is not touching alone — omitting them is what
+            # changes them, flashing a map's blank cells back to their panel
+            # content for as long as a stroke or a float is up.
+            self._canvas.set_image(self._tilemap_grid_image(grid, self._grid_hidden()))
             return
         self._canvas.set_image(
             render_bridge.render(grid, self._doc.palette, self._palette_base())
@@ -455,12 +460,21 @@ class PixelEditMixin:
                 continue
             cell, index = found
             tile = unapply_orientation(tiles[slot], cell_orientation(cell))
-            shift = self._cell_paint_base(cell, space)
             # Direct colour has no indices for a row to live in, so there is
             # nothing folded in to take back out (the guard `expand_cells` applies
             # going the other way).
-            if shift and tile.bytes_per_pixel == 1:
-                tile = tile.shifted(-shift)
+            #
+            # Reduced into the row rather than offset by *this cell's* row: the
+            # pixels reaching here were painted through the destination cell for a
+            # stroke, but **moved in from another** for a float, a paste or a
+            # marquee flip spanning two rows. Subtracting the destination's base
+            # then went negative and clamped to zero, which blanked every pixel
+            # whose colour sat below it — a paste onto any row past the first
+            # wrote nothing but index 0. Both cases agree under a remainder
+            # (:meth:`~celpix.core.index_grid.IndexGrid.folded`), a painted pixel
+            # already being inside its own row.
+            if self._folds_palette_rows() and tile.bytes_per_pixel == 1:
+                tile = tile.folded(space)
             edits[index] = tile
         return edits
 
@@ -614,7 +628,17 @@ class PixelEditMixin:
             # palette region is not the view's own (see _pinned_palette_base).
             # Sampling has to name the colour under the cursor, or picking inside a
             # pinned region would hand back a colour that is nowhere on screen.
-            base = self._pinned_palette_base(x, y)
+            #
+            # **Nothing to add where the row is already in the value.** On a map
+            # whose cells carry rows, :meth:`_sampled_value` has folded the cell's
+            # row in — that is what makes it equal the composed picture — and
+            # `_pinned_palette_base` answers with that same row, so adding it here
+            # counted it twice: the swatch two rows further on, Subpal dragged to
+            # double the cell's row, and, once the palette is only as long as the
+            # file needs, an index off the end that selects nothing and leaves the
+            # pen at 0. Zero on every other document, where `_cell_paint_base` is
+            # itself zero and this base is the only one applied.
+            base = 0 if self._folds_palette_rows() else self._pinned_palette_base(x, y)
             # select_index moves the active subpalette to the entry it selects, so
             # picking inside a pinned region also makes that row the drawing row —
             # which keeps the pen's stored index (selected - base) equal to the
@@ -711,6 +735,32 @@ class PixelEditMixin:
         self._marquee = QRect(min(ax, x), min(ay, y), abs(x - ax) + 1, abs(y - ay) + 1)
         self._canvas.set_marquee(self._marquee)
 
+    def _paint_window_size(self) -> tuple[int, int]:
+        """How big the paintable picture is, in pixels — the bound both a square
+        marquee and a centred paste clamp to.
+
+        Not ``Cols x Rows`` for a **tilemap**, which is what both used to ask.
+        There Cols counts *cells* rather than tiles, so a map of metatiles came out
+        half its real width, and Rows means nothing at all — a tilemap has no view
+        window and is always drawn entire (``docs/design/tilemap-entry.md`` §8), so
+        a 512-pixel-tall screen was clamped to the 16 rows the spin happened to
+        hold. Derived rather than composed, since a Shift-drag asks this on every
+        mouse move and composing a map is the whole file.
+        """
+        doc = self._doc
+        if doc is None:
+            return (0, 0)
+        grid = self._grid_tilemap()
+        if grid is None:
+            return (
+                self._columns.value() * doc.tile_width,
+                self._view_rows() * doc.tile_height,
+            )
+        across, down = grid.cell_tiles
+        cols = max(1, grid.assembled_columns or self._tilemap_columns())
+        rows = ceil_div(len(grid.laid_out_cells), cols)
+        return (cols * across * doc.tile_width, rows * down * doc.tile_height)
+
     def _square_corner(self, ax: int, ay: int, x: int, y: int) -> tuple[int, int]:
         """Snap the drag corner ``(x, y)`` so the marquee is square (Shift held).
 
@@ -721,8 +771,7 @@ class PixelEditMixin:
         dx, dy = x - ax, y - ay
         side = max(abs(dx), abs(dy))
         if self._doc is not None:
-            win_w = self._columns.value() * self._doc.tile_width
-            win_h = self._view_rows() * self._doc.tile_height
+            win_w, win_h = self._paint_window_size()
             room_x = (win_w - 1 - ax) if dx >= 0 else ax
             room_y = (win_h - 1 - ay) if dy >= 0 else ay
             side = min(side, room_x, room_y)
@@ -1153,8 +1202,7 @@ class PixelEditMixin:
         """
         assert self._doc is not None
         cx, cy = self._viewport_centre_pixel()
-        window_w = self._columns.value() * self._doc.tile_width
-        window_h = self._view_rows() * self._doc.tile_height
+        window_w, window_h = self._paint_window_size()
         return (
             max(0, min(cx - width // 2, window_w - width)),
             max(0, min(cy - height // 2, window_h - height)),

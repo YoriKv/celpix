@@ -250,12 +250,19 @@ def resolve_cell(
         # is a restamp typed past the end of the panel.
         return BLANK if cell.visible else replace(BLANK, visible=False)
     found = source[index]
-    if cell.visible and not carry_rows and not (cell.flip_h or cell.flip_v):
+    if (
+        cell.visible
+        and found.visible
+        and not carry_rows
+        and not (cell.flip_h or cell.flip_v)
+    ):
         # A coordinate-only format has nothing to compose, so the source cell
         # comes back as itself — the same object, which is what keeps a 4096-cell
-        # layout from rebuilding every cell it resolves. A *hidden* referrer has
-        # something to say and takes the slow path, which on the one format that
-        # has the bit is the minority of positions.
+        # layout from rebuilding every cell it resolves. Either cell being hidden
+        # takes the slow path: a hidden *referrer* has something to say, and a
+        # hidden *source* has something that must not be said, since returning it
+        # whole is the one way this function can leak the source's visibility into
+        # the answer — the exact composition the rule above forbids.
         return found
     return replace(
         found,
