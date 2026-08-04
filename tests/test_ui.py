@@ -7325,6 +7325,107 @@ def test_a_screen_assembles_its_four_pages_and_edits_land_on_the_right_cell(
     assert panel._columns.isEnabled()
 
 
+def test_a_binding_change_keeps_the_width_the_map_is_being_read_at(
+    qtbot, tmp_path
+) -> None:
+    """The format's stated width seeds Cols on load, and a binding change is a
+    re-read — so without the view being handed across, nudging Base tile would
+    snap a map back to its format's width every time, discarding the width the
+    user was reading it at.
+
+    Undo goes the same way: it re-reads too, and a revert that also resized the
+    picture would be answering a question the user did not ask."""
+    from celpix.core.tilemap import Cell
+
+    window, entry = _bound_tilemap(
+        qtbot, tmp_path, [Cell(index=1), Cell(index=2)], maker=_pnl_file
+    )
+    assert window._doc.stated_columns == 32  # the panel's own answer, on load
+    assert window._columns.value() == 32
+
+    window._columns.setValue(8)
+    window._tile_base.setValue(0x10)
+    assert window._doc.tile_base_index == 0x10  # the change did land
+    assert window._columns.value() == 8
+
+    window._undo_stack.undo()
+    assert window._doc.tile_base_index == 0
+    assert window._columns.value() == 8
+
+
+def test_a_binding_change_keeps_the_maps_unsaved_cell_edits(qtbot, tmp_path) -> None:
+    """A map's cells live in its document until a save, and a binding change
+    re-reads the entry — so without them being handed to that read, nudging Base
+    tile would put the file's cells back and lose the edit with nothing said.
+
+    The **buffer** goes across rather than the cell list, so a change of cell
+    format reads the edit under the new codec: the same bytes, a different
+    question asked of them."""
+    from celpix.core.tilemap import Cell
+
+    window, entry = _bound_tilemap(
+        qtbot, tmp_path, [Cell(index=1), Cell(index=2)], maker=_pnl_file
+    )
+    window._on_slots_selected(1, 1)
+    window._set_cell_index(7)
+    assert [c.index for c in window._doc.cells[:2]] == [1, 7]
+    assert entry.pixel_dirty
+
+    window._tile_base.setValue(0x10)
+    assert [c.index for c in window._doc.cells[:2]] == [1, 7]
+    assert entry.pixel_dirty  # still the one unsaved edit
+
+    # A cell format switch is a re-read too, and the edited bytes are what it
+    # re-reads: a one-byte codec cuts the same edited word into two cells, so
+    # the number the user typed is still in there - somewhere else, which is
+    # what a different reading of the same bytes means.
+    combo = window._tilemap_preset
+    combo.setCurrentIndex(combo.findData("preset.tilemap.gb-bg"))
+    window._on_tilemap_preset_change(combo.currentIndex())
+    assert 7 in [c.index for c in window._doc.cells[:4]]
+    combo.setCurrentIndex(combo.findData("preset.tilemap.scgcad-panel"))
+    window._on_tilemap_preset_change(combo.currentIndex())
+    assert [c.index for c in window._doc.cells[:2]] == [1, 7]
+
+    # And undoing the edit still reaches the file's own cell, so the step that
+    # was pushed is the one that comes back off.
+    for _ in range(3):  # the two format switches, then the base tile
+        window._undo_stack.undo()
+    window._undo_stack.undo()  # the cell edit
+    assert [c.index for c in window._doc.cells[:2]] == [1, 2]
+    assert not entry.pixel_dirty
+
+
+def test_a_binding_change_keeps_a_palette_the_session_has_not_captured(
+    qtbot, tmp_path
+) -> None:
+    """A session is captured on the way out of an entry, so the palette it holds
+    for the entry on screen is one switch out of date — and the reload a binding
+    change performs carries the colours across by asking it. Set a palette, nudge
+    Base tile without leaving the map, and the colours have to still be there.
+
+    The seed is the other half: it fires only on a map still on the default
+    palette, and reading the same stale answer would let it replace the palette
+    the user had just chosen with the bank's."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import PaletteMode
+
+    window, entry = _bound_tilemap(
+        qtbot, tmp_path, [Cell(index=1), Cell(index=2)], maker=_pnl_file
+    )
+    window._palette_mode_combo.setCurrentIndex(
+        window._palette_mode_combo.findData(PaletteMode.CUSTOM)
+    )
+    window._doc.palette = window._doc.palette.with_color(1, 0xFF010203)
+    assert entry.session.palette_mode is PaletteMode.DEFAULT  # not captured yet
+
+    window._tile_base.setValue(0x10)
+
+    assert window._doc.tile_base_index == 0x10
+    assert window._doc.palette.colors[1] == 0xFF010203
+    assert window._palette_mode is PaletteMode.CUSTOM
+
+
 def test_binding_seeds_the_maps_palette_from_the_entry_it_binds_to(
     qtbot, tmp_path
 ) -> None:

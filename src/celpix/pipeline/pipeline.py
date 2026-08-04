@@ -1438,7 +1438,9 @@ class TilemapData(NamedTuple):
     palette_row_base: int = 0
 
 
-def load_tilemap_data(cfg: PathwayConfig, reg: Registry) -> TilemapData:
+def load_tilemap_data(
+    cfg: PathwayConfig, reg: Registry, live: bytes | None = None
+) -> TilemapData:
     """Run the tilemap pathway forward: Read -> Decompress -> decode to cells.
 
     Stops at a flat list rather than a grid. A tilemap file rarely states its own
@@ -1446,9 +1448,20 @@ def load_tilemap_data(cfg: PathwayConfig, reg: Registry) -> TilemapData:
     to be recovered from the data — so the layout is the view's to choose and
     change without re-reading anything
     (``docs/graphics-formats-reference/scgcad-formats.md`` §4).
+
+    ``live`` decodes an **unsaved** payload in place of the one on disk, for a
+    caller re-reading an entry it has edits for: the cells are the document, and
+    a read that went to the file would take them back out again. The file is
+    still read, because only the container can answer what its header states —
+    the width, the cell and stamp sizes, the byte order — and an edit to the
+    cells has not moved any of that. Spliced on the rule the edit itself follows
+    (:meth:`~celpix.ui.main_window.tilemap_edit.TilemapEditMixin._reencode_cells`),
+    so whatever sits past the last cell stays as the file has it.
     """
     ctx = PipelineContext()
     data = _read_reshape_decompress(cfg, ctx, reg, Pathway.TILEMAP)
+    if live is not None:
+        data = live + data[len(live) :]
     engine, preset = reg.engine_for(cfg.interpret_preset_id)
     cells = _run(
         Stage.INTERPRET_TILEMAP,

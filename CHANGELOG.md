@@ -8,7 +8,7 @@
   animation sequences in a window of their own
 - **Compression** improved (better compression) versions of LZ compression
   algorithms alongside their byte exact implementations
-- Lots of fixes
+- Lots of fixes and cleanups
 
 ## v0.4.5 - 2026-07-31
 

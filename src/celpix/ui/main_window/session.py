@@ -163,19 +163,26 @@ class SessionMixin:
         if self._edit_mode is EditMode.PIXEL and not self._pixel_edit_available():
             self._set_edit_mode(EditMode.TILE)
 
-    def _load_entry(self, entry: Entry, *, quiet: bool = False) -> bool:
+    def _load_entry(
+        self, entry: Entry, *, quiet: bool = False, live: bytes | None = None
+    ) -> bool:
         """Load ``entry``'s document through the pipeline; False on failure.
 
         Runs on first activation and again whenever the cached document was
         invalidated by a save into the same file. A failure is normally reported
         with a modal; ``quiet`` suppresses it so a bulk caller (export over many
         entries) can collect and summarize failures itself instead of stacking
-        one dialog per bad entry."""
+        one dialog per bad entry.
+
+        ``live`` carries a **tilemap**'s unsaved cell bytes into the read that is
+        about to replace them, and means nothing on the pixel path — a pixel
+        entry is never re-read out from under its edits, and a bound map's tiles
+        come from the entry that owns them (:meth:`_live_bound_tiles`)."""
         if entry.session is None:
             entry.session = self._seed_session(entry)
         session = entry.session
         if entry.content_kind is ContentKind.TILEMAP:
-            return self._load_tilemap_entry(entry, quiet=quiet)
+            return self._load_tilemap_entry(entry, quiet=quiet, live=live)
         cfg = self._pixel_config(entry, session.pixel_preset_id)
         # A pending bitmap width re-cuts the codec's tile geometry, so it is an
         # input to this first load rather than something the view applied
@@ -227,7 +234,9 @@ class SessionMixin:
             self._seed_tile_palette_rows(entry, px.ctx.get(KEY_TILE_PALETTE_ROWS, b""))
         return True
 
-    def _load_tilemap_entry(self, entry: Entry, *, quiet: bool = False) -> bool:
+    def _load_tilemap_entry(
+        self, entry: Entry, *, quiet: bool = False, live: bytes | None = None
+    ) -> bool:
         """Load a tilemap entry: its own cells, plus whatever tiles it is bound to.
 
         Two reads rather than one, into the two halves of the same document. The
@@ -240,6 +249,10 @@ class SessionMixin:
         file states, so a map with nowhere to get tiles from is the ordinary
         first moment of one, not a failure: it loads with no tiles and every
         cell draws blank until it is pointed at a source.
+
+        ``live`` is the entry's unsaved cell bytes, decoded in place of the
+        file's where a re-read would otherwise discard them
+        (:func:`~celpix.pipeline.pipeline.load_tilemap_data`).
         """
         session = entry.session
         assert session is not None
@@ -250,7 +263,7 @@ class SessionMixin:
         restored = entry.pending_view is not None
         cfg = self._tilemap_config(entry, self._tilemap_preset_id(entry))
         try:
-            loaded = pipeline.load_tilemap_data(cfg, self._registry)
+            loaded = pipeline.load_tilemap_data(cfg, self._registry, live)
         except PipelineError as exc:
             if not quiet:
                 self._report(exc)

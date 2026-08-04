@@ -783,8 +783,11 @@ class TilemapBarMixin:
         bind pushes and comes back off with it: what lands where is
         :meth:`_apply_tilemap_binding`'s to say, in both directions.
         """
-        session = entry.session
-        if session is None or session.palette_mode is not PaletteMode.DEFAULT:
+        # Asked of the snapshot rather than of the session, which is the same
+        # answer one switch out of date for the entry on screen
+        # (:meth:`_tilemap_binding_state`) - and seeding over a palette the user
+        # has just chosen is exactly what this guard exists to prevent.
+        if entry.session is None or state.palette_mode is not PaletteMode.DEFAULT:
             return state
         # A palette the project restored but the entry has not loaded yet is
         # still the entry's own answer: pending, not absent.
@@ -815,16 +818,32 @@ class TilemapBarMixin:
         the size pair *in force*, which is the format's answer where the entry
         states none, and restoring that number would pin a value the user never
         chose (:meth:`~...session.SessionMixin._size_pair_for`).
+
+        The **palette half comes off the window** where this is the entry on
+        screen. A session is only captured on the way *out* of an entry
+        (:meth:`~...session.SessionMixin._capture_session`), so what it holds for
+        the current one is as old as the last switch — and every reader here is
+        downstream of this snapshot: it is written back to the session by
+        :meth:`_write_tilemap_binding`, from where the reload reads the colours it
+        carries across (:func:`~celpix.project.workspace.palette_source_for`). A
+        map given a palette and then rebound without leaving the entry would
+        otherwise come back on the default one, its dock still naming the palette
+        that was dropped.
         """
         session = entry.session
+        mode = session.palette_mode if session is not None else PaletteMode.DEFAULT
+        preset = session.palette_preset_id if session is not None else ""
+        # Gated on there being a document as well, for the reason the capture is:
+        # an unavailable entry keeps `current` on itself with nothing loaded, and
+        # the widgets are then showing no entry's answer at all.
+        if entry is self._workspace.current and entry.doc is not None:
+            mode, preset = self._palette_mode, self._palette_preset_id()
         return TilemapBindingState(
             tile_source=entry.tile_source,
             preset_id=entry.tilemap_preset_id,
             size_pair=entry.sprite_size_pair,
-            palette_mode=(
-                session.palette_mode if session is not None else PaletteMode.DEFAULT
-            ),
-            palette_preset_id=session.palette_preset_id if session is not None else "",
+            palette_mode=mode,
+            palette_preset_id=preset,
             pending_palette=entry.pending_palette,
         )
 
@@ -915,13 +934,22 @@ class TilemapBarMixin:
         """Re-read ``entry`` under its current binding; False if it could not be.
 
         The document is dropped rather than patched: which bytes there are comes
-        out of Read, and a binding change is a change of *which file* — there is
-        nothing in the old document worth carrying over. Its pixel half is
-        another entry's, and unsaved edits to it live *there* — the map is given
-        that entry's live buffer rather than a re-read of the file
+        out of Read, and a binding change is a change of *which file*. Its pixel
+        half is another entry's, and unsaved edits to it live *there* — the map is
+        given that entry's live buffer rather than a re-read of the file
         (:meth:`~...session.SessionMixin._live_bound_tiles`), so a rebind cannot
         take a pixel edit made through the map back out again
         (``docs/design/tilemap-entry.md`` §8.4).
+
+        **The map's own cells are handed to the read the same way.** They live in
+        this document and nowhere else until a save, so reading the file for them
+        would take an unsaved edit back out — silently, since nothing about a
+        binding change says the cells were going to be re-read at all. What goes
+        across is the encoded buffer rather than the cell list, so a change of
+        *cell format* re-reads the edit under the new codec instead of dropping
+        it: the bytes are the edit, and which format they are read in is the
+        question that gesture is asking (:func:`~celpix.pipeline.pipeline.
+        load_tilemap_data`).
 
         The **palette is the exception**, and has to be handed across explicitly.
         A Custom palette lives in the document and nowhere else, so dropping the
@@ -930,6 +958,15 @@ class TilemapBarMixin:
         slice already carry one, through the entry's pending source. An
         unconsumed pending palette is left alone: it is a seed, or a restore,
         that is already the answer and has not reached a document yet.
+
+        **The view goes across the same way**, and for a reason the palette's
+        does not cover: the width a format states is applied to Cols on load
+        (:meth:`~...rendering.RenderingMixin._apply_tilemap_columns`), which a
+        re-read is one of — so a map read at any width but its format's would
+        snap back to that width every time the base tile moved. Handing the old
+        view over is what says this document has been seen before, and it carries
+        the rest of the axes with it rather than leaving them to be recaptured
+        from the widgets, which only happens for the entry actually on screen.
 
         **A failed read puts the old document back.** Dropping it is how a
         re-read starts, but a drop that is never replaced leaves the entry with
@@ -944,10 +981,24 @@ class TilemapBarMixin:
         if pending is None:
             entry.pending_palette = palette_source_for(entry)
         previous, entry.doc = entry.doc, None
-        if not self._load_entry(entry):
+        pending_view = entry.pending_view
+        # An unconsumed pending view is left alone on the palette's rule above:
+        # it is a restore that has not reached a document yet, and so is already
+        # the newer answer.
+        if pending_view is None and previous is not None:
+            entry.pending_view = previous.view
+        # Only where the entry actually holds an edit: with nothing unsaved the
+        # buffer and the file agree, and reading the file is the plainer answer.
+        live = (
+            previous.tilemap_data
+            if previous is not None and previous.is_tilemap and entry.pixel_dirty
+            else None
+        )
+        if not self._load_entry(entry, live=live):
             # The seed goes back with it: it described the read that did not
             # happen, and the document being restored has its palette already.
             entry.doc, entry.pending_palette = previous, pending
+            entry.pending_view = pending_view
             return False
         self._doc = entry.doc
         # A re-read is where a binding takes effect, so it is where pixel mode can
