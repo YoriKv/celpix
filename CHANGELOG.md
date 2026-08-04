@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.6 - unreleased
+## v0.4.6 - 2026-08-03
 
 - **Pixel editing on a tilemap**: the drawing tools now work on the map itself,
   and the edit lands in the tile bank it is bound to
