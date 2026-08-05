@@ -46,11 +46,6 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-try:
-    import tomllib  # Python 3.11+
-except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
-    import tomli as tomllib
-
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo, check_declared_stage
@@ -316,8 +311,3 @@ def data_lut_from_spec(spec: dict) -> DataLutReshape:
             raise ValueError("params.selector_remap entries must index a table")
         luts = [luts[i] for i in remap]
     return DataLutReshape(spec["id"], spec["name"], luts, bits, unit)
-
-
-def data_lut_from_toml(text: str) -> DataLutReshape:
-    """Parse a data-LUT preset's TOML source into a registrable plugin."""
-    return data_lut_from_spec(tomllib.loads(text))

@@ -36,8 +36,8 @@ from celpix.core.tilemap import VRAM_ROW_STRIDE, tile_run
 # Multiples rather than pixels, because that is what a subsprite is built from: a
 # subsprite is a square of *tiles*, so `(1, 2)` says "one tile, or two by two" and
 # stays true whatever the bound codec's tile size turns out to be. Pixels would
-# have to be divided by it again at every use, and the division is where an
-# assumed 8 used to hide.
+# have to be divided by it again at every use, and each division is a place for
+# an assumed 8 to hide.
 DEFAULT_SUBSPRITE_TILES: tuple[int, int] = (1, 2)
 
 

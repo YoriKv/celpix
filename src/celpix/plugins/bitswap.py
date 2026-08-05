@@ -42,11 +42,6 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-try:
-    import tomllib  # Python 3.11+
-except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
-    import tomli as tomllib
-
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo, check_declared_stage
@@ -199,8 +194,3 @@ def bitswap_from_spec(spec: dict) -> BitswapReshape:
     return BitswapReshape(
         spec["id"], spec["name"], params.get("bits"), bool(params.get("gather", False))
     )
-
-
-def bitswap_from_toml(text: str) -> BitswapReshape:
-    """Parse a bitswap preset's TOML source into a registrable plugin."""
-    return bitswap_from_spec(tomllib.loads(text))

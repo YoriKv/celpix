@@ -1035,8 +1035,8 @@ def _blank_cgx(payload: int) -> bytes:
     Stamped so the file states that variant both ways a real one does — the
     signature's position, and the depth byte behind it — because a bank written
     with neither is not a bank: nothing detects it, and reopening it lands on raw
-    bytes at a guessed depth. That is what a save to a path with no file at it
-    used to produce.
+    bytes at a guessed depth — which is what a save to a path with no file at it
+    would otherwise produce.
 
     The attribute table is zero, and 8bpp has none. Row 0 is a row rather than a
     sentinel (`scgcad-formats.md` §6), so a fresh bank saying every tile is row 0

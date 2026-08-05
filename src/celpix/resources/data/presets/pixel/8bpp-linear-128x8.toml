@@ -2,8 +2,8 @@
 # stride, eight rows to a band. Not 8x8 tiles: a tile's rows would be 128 bytes
 # apart, so reading this as tiles interleaves sixteen of them into each other.
 #
-# This is Tile Layer Pro's `tfRAW8`, whose decode reads data[x*8 + y*128] — the
-# hardcoded 128-byte row stride is where the width comes from.
+# The reading is `data[x*8 + y*128]` — the hardcoded 128-byte row stride is where
+# the width comes from.
 #
 # The band rather than a whole page is what makes it general — stacking bands in
 # the view builds a bitmap of any height, where a fixed page height would only

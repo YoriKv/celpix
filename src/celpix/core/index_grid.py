@@ -108,7 +108,7 @@ class IndexGrid(PixelGrid):
         (:func:`_fold`). Used on the way from a gesture to the bank, where
         subtracting the destination cell's own row is only right for pixels that
         were painted there — not for pixels moved in from a cell of another row,
-        which is where the subtraction used to go negative and clamp to nothing.
+        where a plain subtraction goes negative and clamps to nothing.
         """
         if row_size <= 0 or row_size >= 256:
             return self

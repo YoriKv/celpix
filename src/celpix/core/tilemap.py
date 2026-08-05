@@ -440,7 +440,7 @@ class CellGrid:
         return grid
 
     # -- regions -----------------------------------------------------------
-    def block(self, x: int, y: int, width: int, height: int) -> CellGrid:
+    def region(self, x: int, y: int, width: int, height: int) -> CellGrid:
         """The ``width`` x ``height`` rectangle at ``(x, y)``, clipped to bounds.
 
         Clipped rather than refused so a selection dragged past the edge yields
@@ -454,17 +454,17 @@ class CellGrid:
             out._cells[row * w : (row + 1) * w] = self._cells[start : start + w]
         return out
 
-    def paste(self, x: int, y: int, block: CellGrid) -> None:
-        """Lay ``block`` over this grid at ``(x, y)``, clipped to bounds."""
-        for row in range(block.height):
+    def paste(self, x: int, y: int, patch: CellGrid) -> None:
+        """Lay ``patch`` over this grid at ``(x, y)``, clipped to bounds."""
+        for row in range(patch.height):
             ty = y + row
             if not 0 <= ty < self._height:
                 continue
-            for col in range(block.width):
+            for col in range(patch.width):
                 tx = x + col
                 if 0 <= tx < self._width:
-                    self._cells[ty * self._width + tx] = block.at(
-                        row * block.width + col
+                    self._cells[ty * self._width + tx] = patch.at(
+                        row * patch.width + col
                     )
 
     # -- transforms --------------------------------------------------------

@@ -87,7 +87,7 @@ def test_a_vertical_flip_reverses_rows() -> None:
 def test_block_and_paste_clip_to_bounds() -> None:
     """A selection dragged past the edge yields what is actually there."""
     grid = CellGrid.from_cells(3, 2, [Cell(index=i) for i in range(6)])
-    cut = grid.block(2, 1, 4, 4)
+    cut = grid.region(2, 1, 4, 4)
     assert (cut.width, cut.height) == (1, 1)
     assert cut.get(0, 0).index == 5
     grid.paste(2, 1, CellGrid.from_cells(2, 2, [Cell(index=99)] * 4))

@@ -443,22 +443,22 @@ class TilemapEditMixin:
         width = self._cells_per_row()
         if rect is not None and rect[0] > 0 and rect[1] > 0:
             cols, rows, x0, y0 = rect
-            block = CellGrid(cols, rows)
+            lifted = CellGrid(cols, rows)
             for dy in range(rows):
                 for dx in range(cols):
                     at = doc.cell_at((y0 + dy) * width + (x0 + dx))
                     if 0 <= at < len(doc.cells):
-                        block.set(dx, dy, doc.cells[at])
+                        lifted.set(dx, dy, doc.cells[at])
         else:
             indices = self._selected_cells()
             if not indices:
                 return False
-            block = CellGrid.from_cells(
+            lifted = CellGrid.from_cells(
                 len(indices), 1, [doc.cells[i] for i in indices]
             )
-        self._cell_clipboard = block
+        self._cell_clipboard = lifted
         self._sync_edit_actions()
-        self.statusBar().showMessage(f"Copied {counted(len(block), 'cell')}.")
+        self.statusBar().showMessage(f"Copied {counted(len(lifted), 'cell')}.")
         return True
 
     def _copy_sprite_pixels(self) -> bool:

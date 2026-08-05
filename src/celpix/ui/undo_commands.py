@@ -298,10 +298,10 @@ class TilemapBindingState:
     of them, so a snapshot is three fields where two are unchanged, which is
     cheaper than three command classes and cannot get out of step with itself.
 
-    The palette row base is **not** here, though the bar used to set it: it is a
-    fact about how a named row meets the palette that got loaded, which a tile
-    bank has as much as a map, so it travels on its own
-    (:class:`PaletteRowBaseCommand`).
+    The palette row base is **not** here: it is a fact about how a named row meets
+    the palette that got loaded, which a tile bank has as much as a map, so it
+    travels on its own (:class:`PaletteRowBaseCommand`) and is set from the
+    palette panel rather than this bar.
 
     The three palette fields ride along because **binding seeds a palette**
     (:meth:`~celpix.ui.main_window.tilemap_bar.TilemapBarMixin._seeded_palette`):

@@ -590,7 +590,7 @@ class SessionMixin:
 
     @staticmethod
     def _stamp_tiles(through: Document) -> tuple[int, int]:
-        """How big a block of ``through``'s cells one coordinate into it names.
+        """How many of ``through``'s cells one coordinate into it names.
 
         The source map's own answer, published by its container from its header
         (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_TILES`). ``(1, 1)`` for

@@ -1,7 +1,7 @@
 """`TPL` palette files — a four-byte header that **names its own color format**.
 
-Tile Layer Pro's palette format, and almost alone among palette files in stating
-how its colors are encoded. A raw
+A PC tile-editor palette container, and almost alone among palette files in
+stating how its colors are encoded. A raw
 ``.pal`` records nothing about its own encoding, which is why celPix treats a
 palette format as the user's guess everywhere else (:data:`KEY_PALETTE_ERROR`);
 this one answers the question outright::
@@ -103,7 +103,7 @@ class TplPaletteContainer:
 
     info = PluginInfo(
         id=PLUGIN_ID,
-        name="Tile Layer Pro palette (TPL, format stated in header)",
+        name="TPL palette (format stated in header)",
         stage=Stage.CONTAINER,
         extensions=(".tpl",),
         magic=_MAGIC_PROBES,

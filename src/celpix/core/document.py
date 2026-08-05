@@ -388,9 +388,9 @@ class Document:
         to resolve through.
 
         A **stamped** chain resolves per drawn position rather than per entry
-        (:func:`~celpix.core.tilemap.expand_stamps`): one coordinate names a block
+        (:func:`~celpix.core.tilemap.expand_stamps`): one coordinate names a stamp
         of source cells, so the list that comes back is in drawn order and the
-        entries between two blocks are never read. It needs the referrer's own
+        entries between two stamps are never read. It needs the referrer's own
         width to know where a row ends, so a stamp the file states but a width it
         does not falls back to the plain chain — resolving a grid whose shape is a
         guess would lay a shear on top of one.
@@ -544,7 +544,7 @@ class Document:
     def drawn_cells(self) -> list[Cell]:
         """The cells the view should draw — resolved ones where they exist.
 
-        In **drawn** order on a stamped chain, where one entry covers a block of
+        In **drawn** order on a stamped chain, where one entry covers a stamp of
         positions and the file's order has nothing one-to-one to be in
         (:meth:`resolve`). Everything that names a file cell goes through
         :meth:`cell_at`.
@@ -727,9 +727,9 @@ class Document:
         unchanged so a caller's own bounds check stays the one that decides.
 
         Two steps, in file-order terms: the assembly says which file position a
-        drawn one shows, and a **stamp** then snaps that to the entry whose block
+        drawn one shows, and a **stamp** then snaps that to the entry whose stamp
         contains it (:func:`~celpix.core.tilemap.stamp_origin`) — so an edit
-        anywhere inside a block changes the one entry that block came from, and
+        anywhere inside a stamp changes the one entry that stamp came from, and
         the positions the format never wrote stay unwritten. Composed rather than
         alternated because they answer different halves of the same question; no
         format in hand does both.

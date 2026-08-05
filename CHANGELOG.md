@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.8 - unreleased
+
+- Cleanup pass
+
 ## v0.4.7 - 2026-08-04
 
 - **New formats**: PlayStation TIM textures (image and colour table, all four

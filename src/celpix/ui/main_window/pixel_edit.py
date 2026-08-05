@@ -739,11 +739,11 @@ class PixelEditMixin:
         """How big the paintable picture is, in pixels — the bound both a square
         marquee and a centred paste clamp to.
 
-        Not ``Cols x Rows`` for a **tilemap**, which is what both used to ask.
-        There Cols counts *cells* rather than tiles, so a map of metatiles came out
-        half its real width, and Rows means nothing at all — a tilemap has no view
-        window and is always drawn entire (``docs/design/tilemap-entry.md`` §8), so
-        a 512-pixel-tall screen was clamped to the 16 rows the spin happened to
+        Not ``Cols x Rows`` for a **tilemap**. There Cols counts *cells* rather
+        than tiles, so a map of metatiles would come out half its real width, and
+        Rows means nothing at all — a tilemap has no view window and is always
+        drawn entire (``docs/design/tilemap-entry.md`` §8), so a 512-pixel-tall
+        screen would clamp to whatever rows the spin happened to
         hold. Derived rather than composed, since a Shift-drag asks this on every
         mouse move and composing a map is the whole file.
         """

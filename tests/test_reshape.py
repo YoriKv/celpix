@@ -17,7 +17,7 @@ from celpix.plugins.bitswap import (
     MAX_BITS,
     MAX_PERMUTED_BITS,
     BitswapReshape,
-    bitswap_from_toml,
+    bitswap_from_spec,
 )
 from celpix.plugins.builtins.byte_swap import ByteSwapReshape
 from celpix.plugins.builtins.konami_rle import KonamiNesRle
@@ -316,9 +316,13 @@ def test_bitswap_rejects_bad_tables_and_undersized_regions() -> None:
     with pytest.raises(ValueError):
         _bitswap([])  # no address lines at all
     with pytest.raises(ValueError):
-        bitswap_from_toml(
-            'id = "reshape.x"\nname = "x"\nengine_id = "reshape.wrong"\n'
-            "[params]\nbits = [0]\n"
+        bitswap_from_spec(
+            {
+                "id": "reshape.x",
+                "name": "x",
+                "engine_id": "reshape.wrong",
+                "params": {"bits": [0]},
+            }
         )
     with pytest.raises(ValueError):
         # A region smaller than one block would reshape nothing at all — a

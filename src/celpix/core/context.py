@@ -86,13 +86,13 @@ KEY_TILEMAP_CELL_TILES = "tilemap.cell-tiles"
 # where those bytes have been checked against the corpus.
 KEY_TILEMAP_PALETTE_ROW_BASE = "tilemap.palette-row-base"
 # tuple[int, int]: how many cells one **stamp** covers, for a map whose cells are
-# subdivided into blocks a *referring* map indexes. Not a cell size — the cells
+# subdivided into stamps a *referring* map indexes. Not a cell size — the cells
 # stay one tile each — but the step at which another format's coordinates land in
 # them, which only this file's header knows.
 #
 # A panel is the one format that states it (header 0x69/0x6A, as exponents), and
 # the reader that needs it is the stamp layout bound to it: a layout's entry names
-# the stamp's *top-left* cell and the rest of the block follows from this pair,
+# the stamp's *top-left* cell and the rest of the stamp follows from this pair,
 # with the positions between two entries holding nothing anyone should draw
 # (``docs/graphics-formats-reference/scgcad-formats.md`` §4). Published by the
 # **source** map and read by the referrer, which is why it travels on the context
@@ -235,7 +235,7 @@ HINT_INFO: dict[str, tuple[str, str]] = {
     KEY_TILEMAP_STAMP_TILES: (
         "Stamp size",
         "How many cells one stamp covers, for a map that another\n"
-        "map's coordinates index in blocks. Read by the layout\n"
+        "map's coordinates index in stamps. Read by the layout\n"
         "bound to this one, not by this one.",
     ),
     KEY_TILEMAP_PAGE_ROWS: (

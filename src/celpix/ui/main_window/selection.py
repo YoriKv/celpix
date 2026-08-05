@@ -642,7 +642,7 @@ class SelectionMixin:
     def _rect_tiles_for(
         self, origin_slot: int, cols: int, rows: int
     ) -> tuple[int, ...]:
-        """Absolute tiles of the ``cols`` × ``rows`` cell block at ``origin_slot``.
+        """Absolute tiles of the ``cols`` × ``rows`` cell rectangle at ``origin_slot``.
 
         Cell row-major - reading order on screen, which is the order a copy of a
         rectangle travels in and the order a paste stamps back. Cells that hold

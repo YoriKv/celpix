@@ -26,10 +26,10 @@ A control that would be **meaningless** on this kind is hidden; one that is
 merely unavailable is disabled. The stamp tool is the clear case of the first: a
 tool for placing cells is not a feature switched off on a pixel document, it is
 furniture for a different room. The pixel tools rail is the counter-example that
-shows why the distinction is per *kind* and not per control — it used to be
-hidden on a tilemap, and stopped being once a map's pixels became editable
-through it (``docs/design/tilemap-entry.md`` §8.4); what varies now is whether
-*this* map has a bank to paint into, which no per-kind table can say.
+shows why the distinction is per *kind* and not per control — a map's pixels are
+editable through it (``docs/design/tilemap-entry.md`` §8.4), so it is never
+furniture for another room on a tilemap; what varies is whether *this* map has a
+bank to paint into, which no per-kind table can say.
 
 Two capabilities gate **in place** rather than through this pass, listed in
 :data:`_GATED_IN_PLACE`, and the reason is worth stating because it decides where
