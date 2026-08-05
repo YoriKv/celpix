@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.7 - unreleased
+## v0.4.7 - 2026-08-04
 
 - **New formats**: PlayStation TIM textures (image and colour table, all four
   pixel depths), GBA/NDS BIOS LZ77 compression (read and written), TPL palette
