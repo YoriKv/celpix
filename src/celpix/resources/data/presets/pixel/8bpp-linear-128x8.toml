@@ -1,0 +1,20 @@
+# 8bpp linear as a 128-pixel-wide bitmap band — one byte per pixel, 128-px
+# stride, eight rows to a band. Not 8x8 tiles: a tile's rows would be 128 bytes
+# apart, so reading this as tiles interleaves sixteen of them into each other.
+#
+# This is Tile Layer Pro's `tfRAW8`, whose decode reads data[x*8 + y*128] — the
+# hardcoded 128-byte row stride is where the width comes from.
+#
+# The band rather than a whole page is what makes it general — stacking bands in
+# the view builds a bitmap of any height, where a fixed page height would only
+# read files that are a whole number of pages. Use 8bpp-linear-256x128 for the
+# 256-wide bitmap banks, and plain 8bpp-linear where the data really is tiled.
+# See docs/graphics-formats-reference/implementation-guide.md §2 (chunky).
+id = "preset.pixel.8bpp-linear-128x8"
+name = "8bpp linear bitmap (128 wide)"
+engine_id = "codec.pixel.packed"
+
+[params]
+bpp = 8
+tile_width = 128
+tile_height = 8

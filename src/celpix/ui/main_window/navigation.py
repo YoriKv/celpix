@@ -459,6 +459,14 @@ class NavigationMixin:
             and self._handle_history_mouse(event)
         ):
             return True
+        # A space hold that outlives this window's activation - alt-tab, or the
+        # player window raised over it. The release lands wherever the focus went
+        # and is never seen here, so both surfaces go down now; one left armed
+        # keeps its open hand and eats the next press it gets, which is the first
+        # click of whoever comes back to the window.
+        if et == QEvent.Type.WindowDeactivate and obj is self:
+            self._canvas.set_pan_mode(False)
+            self._tile_source_panel.set_pan_mode(False)
         if (
             et in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
             and self.isActiveWindow()

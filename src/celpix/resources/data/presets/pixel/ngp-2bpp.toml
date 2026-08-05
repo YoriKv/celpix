@@ -1,7 +1,14 @@
-# Neo Geo Pocket 2bpp — pixel 0 in the high 2 bits, byte 0 = left.
+# Neo Geo Pocket 2bpp, **non-swapped** — pixel 0 in the high 2 bits, and byte 0
+# of a row drives its left 4 pixels. The minority reading: Tile Molester's LN02
+# orders the row this way, while YY-CHR and Tile Layer Pro both put the odd byte
+# on the left. Reach for `ngp-2bpp-swapped` first and fall back here if the art
+# comes out with each group of four pixels transposed.
+#
+# The plain id is this one for historical reasons — a preset id is what saved
+# projects store, so neither can be renamed to match which is now preferred.
 # See docs/graphics-formats-reference/implementation-guide.md §2 (packed / linear).
 id = "preset.pixel.ngp-2bpp"
-name = "Neo Geo Pocket 2bpp (8x8)"
+name = "Neo Geo Pocket 2bpp, byte 0 left (8x8)"
 engine_id = "codec.pixel.packed"
 
 [params]

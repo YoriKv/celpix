@@ -28,8 +28,10 @@ from celpix.core.address import format_hex
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_PALETTE_ERROR,
+    KEY_PALETTE_PRESET,
     KEY_SOURCE_OFFSET,
     PipelineContext,
+    hint_info,
 )
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
@@ -70,7 +72,9 @@ from celpix.ui.widgets import (
 # format, so almost any file *can* hold one, and a long list would start claiming
 # files the user meant as pixels. ".col" is the S-CG-CAD palette that ships
 # beside the screen and panel files (``scgcad-formats.md``).
-PALETTE_EXTENSIONS = (".pal", ".col")
+# ".tpl" is the one that carries its own color format in a header rather than
+# leaving it to be guessed (:mod:`celpix.plugins.builtins.tpl_palette`).
+PALETTE_EXTENSIONS = (".pal", ".col", ".tpl")
 
 DEFAULT_SESSION_PALETTE_FORMAT = "preset.palette.rgb888"
 
@@ -272,12 +276,94 @@ class PaletteSourceMixin:
         try:
             loaded = pipeline.load_palette(cfg, self._registry)
         except PipelineError as exc:
-            loaded, cfg = self._error_palette(cfg, exc)
+            # A format the file itself disagrees with is the *likeliest* way to
+            # land here, and it usually fails outright rather than subtly: a
+            # 2-byte-entry palette read at three bytes an entry is not a whole
+            # number of entries. So the stated format gets its chance before the
+            # error palette does, or a file that says what it is would open on a
+            # sentinel telling the user to work out what it is.
+            retried = self._retry_on_stated_format(entry, cfg)
+            if retried is None:
+                loaded, cfg = self._error_palette(cfg, exc)
+            else:
+                loaded, cfg = retried
         except OSError as exc:
             self._alert(f"Cannot read {entry.path}: {exc}", title="celPix - palette")
             return False
+        else:
+            loaded, cfg = self._apply_palette_preset_hint(entry, loaded, cfg)
         entry.doc = Document.palette_only(loaded.palette, cfg, loaded.ctx, loaded.data)
         return True
+
+    def _apply_palette_preset_hint(self, entry: Entry, loaded, cfg):  # noqa: ANN001
+        """Adopt the color format the container read out of the file, if it says.
+
+        The palette-side twin of
+        :meth:`~celpix.ui.main_window.session.SessionMixin._apply_pixel_preset_hint`,
+        and rarer for the reason :data:`KEY_PALETTE_PRESET` gives: a palette file
+        almost never records its own encoding, so the format is normally the
+        user's guess and nothing may overrule it. A ``TPL`` names the format in
+        its header, and there the file is the better authority — read through the
+        wrong one its colors are wrong but never *obviously* so, any bytes being
+        some color.
+
+        **Only where the format is still the import default.** That is what
+        separates a value nobody chose from a deliberate pick: an entry is
+        registered on whatever the dock's Import as… dropdown happens to be on,
+        which is a setting about importing in general and not an answer about
+        this file. Once the format differs from it, someone has said what they
+        want and a stated header does not get to overrule them.
+        """
+        wanted = str(loaded.ctx.get(KEY_PALETTE_PRESET, "") or "")
+        if not wanted or wanted == cfg.interpret_preset_id:
+            return loaded, cfg
+        adopted = self._adopt_stated_format(entry, cfg, wanted)
+        # The header named something this build cannot read, or the format was
+        # someone's own pick. What was already decoded stands - a stated format
+        # is advice, not a reason to throw away a palette that came out fine.
+        return adopted if adopted is not None else (loaded, cfg)
+
+    def _retry_on_stated_format(self, entry: Entry, cfg):  # noqa: ANN001
+        """Re-read ``entry`` in the format its container states, or None.
+
+        Reached only from a decode that already failed, which is why the file is
+        re-read rather than the hint taken off the failed load: a
+        :class:`PipelineError` carries no context, and the container's own
+        publication is exactly what is needed to know whether there is anything
+        better to try. :func:`~celpix.pipeline.pipeline.inspect_container` runs
+        the container stage alone, on a context of its own, and reports a failure
+        instead of raising - so the worst case here is that nothing is stated and
+        the caller falls through to the error palette as before.
+        """
+        report = pipeline.inspect_container(cfg, self._registry)
+        label = hint_info(KEY_PALETTE_PRESET)[0]
+        wanted = next(
+            (row.value for row in report.hints if row.name == label),
+            "",
+        )
+        if not wanted or wanted == cfg.interpret_preset_id:
+            return None
+        return self._adopt_stated_format(entry, cfg, wanted)
+
+    def _adopt_stated_format(self, entry: Entry, cfg, wanted: str):  # noqa: ANN001
+        """Re-read ``entry`` as ``wanted``, or None if that is not ours to do.
+
+        The guard both callers share: **only a format nobody chose gives way.**
+        An entry is registered on whatever the dock's Import as… dropdown happens
+        to be on, which is a setting about importing in general rather than an
+        answer about this file, so matching it means nothing has been decided
+        here yet. Once the two differ, someone has said what they want and a
+        stated header does not get to overrule them.
+        """
+        if cfg.interpret_preset_id != self._palette_import_preset_id():
+            return None
+        adopted = self._file_palette_config(entry.path, 0, wanted, entry.container_id)
+        try:
+            regeared = pipeline.load_palette(adopted, self._registry)
+        except (PipelineError, OSError):
+            return None
+        entry.palette_preset_id = wanted
+        return regeared, adopted
 
     def _preview_palette_file(self, entry: Entry) -> bool:
         """Show a registered ``.pal``'s colors in the dock; False if it won't load.

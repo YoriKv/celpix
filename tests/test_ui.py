@@ -10282,6 +10282,19 @@ def test_space_pans_whichever_surface_the_pointer_is_over(qtbot, tmp_path) -> No
     qtbot.mouseMove(panel, QPoint(4, 4))
     qtbot.keyPress(panel, Qt.Key.Key_Space)
     assert panel._pan_active and not window._canvas._pan_active
+    # The hand is worn by the surface that pans and by nothing else. Which is
+    # what keeps the arming rule honest now that a press decides nothing about
+    # it: the cursor is a property of the widget, and each surface is fixed to
+    # the size of its picture inside a scroll area that does not stretch it - so
+    # the pixels showing an open hand are exactly the pixels a press would pan.
+    # Setting it on the scroll area, or reaching for an application override
+    # cursor, would put a hand over the surround and over every dock.
+    assert panel.cursor().shape() is Qt.CursorShape.OpenHandCursor
+    assert (
+        window._tile_source_scroll.viewport().cursor().shape()
+        is Qt.CursorShape.ArrowCursor
+    )
+    assert window._canvas.cursor().shape() is not Qt.CursorShape.OpenHandCursor
     # An armed pan takes the mouse from the pick, as it does on the canvas.
     qtbot.mousePress(panel, Qt.MouseButton.LeftButton, pos=QPoint(1, 1))
     assert panel.selected_id() is None
@@ -10299,6 +10312,30 @@ def test_space_pans_whichever_surface_the_pointer_is_over(qtbot, tmp_path) -> No
     window._palette_dock.raise_()
     qtbot.mouseMove(panel, QPoint(4, 4))
     assert window._pan_surface() is window._canvas
+
+
+def test_a_held_space_is_let_go_when_the_window_stops_being_active(
+    qtbot, tmp_path
+) -> None:
+    """Alt-tab mid-hold and the release lands in whatever was raised, so the
+    window never sees the key come up. Nothing else would take the arm down: it
+    is put up by a filter that only runs while this window is active, and the
+    surface would sit holding an open hand and swallow the first click of
+    whoever came back to it."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtWidgets import QApplication
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _shown_tile_source(qtbot, tmp_path, [Cell(index=1)])
+    QApplication.setActiveWindow(window)
+    qtbot.mouseMove(window._canvas, QPoint(4, 4))
+    qtbot.keyPress(window._canvas, Qt.Key.Key_Space)
+    assert window._canvas._pan_active
+
+    QApplication.setActiveWindow(None)  # the window loses the keyboard
+    assert not window._canvas._pan_active
+    assert not window._tile_source_panel._pan_active
 
 
 # -- the stamp tool --------------------------------------------------------
@@ -10839,6 +10876,48 @@ def test_the_players_zoom_is_its_own(qtbot, tmp_path) -> None:
     assert player._frame._zoom == player._zoom.value()
 
 
+def test_space_pans_the_player_from_wherever_its_focus_sits(qtbot, tmp_path) -> None:
+    """A key press goes to the focused widget and a hold sends exactly one, so
+    handling space as a key event of the frame left the gesture dead everywhere
+    else in the window - and the Zoom spin, which is where the user is when the
+    frame has just become too big for it, is exactly where they reach for it.
+
+    The picker is the one place it still yields: a QComboBox drops its list open
+    on space, and taking that away would leave the list unopenable by keyboard.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_obj_with_sequence(tmp_path, [(2, 0), (2, 3)])))
+    window._show_animation()
+    player = window._animation
+    # Offscreen, setFocus only lands once the window is active.
+    QApplication.setActiveWindow(player)
+
+    player._zoom.setFocus()  # where using the spin leaves it
+    qtbot.keyPress(player._zoom, Qt.Key.Key_Space)
+    assert player._frame._pan_active
+    assert not window._canvas._pan_active  # and the window behind is not armed
+    qtbot.keyRelease(player._zoom, Qt.Key.Key_Space)
+    assert not player._frame._pan_active
+
+    player._sequence.setFocus()
+    qtbot.keyPress(player._sequence, Qt.Key.Key_Space)
+    assert not player._frame._pan_active
+    qtbot.keyRelease(player._sequence, Qt.Key.Key_Space)
+    player._sequence.hidePopup()  # the list the key just dropped open
+
+    # A hold that outlives the window's activation: the release goes to whatever
+    # was raised over it, so this is the only chance to let go.
+    player._frame.setFocus()
+    qtbot.keyPress(player._frame, Qt.Key.Key_Space)
+    assert player._frame._pan_active
+    QApplication.setActiveWindow(window)
+    assert not player._frame._pan_active
+
+
 def test_a_chain_grown_too_deep_after_binding_owns_no_art(qtbot, tmp_path) -> None:
     """The depth rule is checked where a binding is *made*, and a source can gain
     a binding of its own afterwards: bind a to b while b is unbound, then bind b
@@ -10953,3 +11032,69 @@ def test_moving_pixels_onto_a_higher_palette_row_keeps_them(qtbot, tmp_path) -> 
     edits = window._bank_tiles_from(window._doc, [1], tiles)
     landed = edits[2]
     assert [landed.get(x, 0) for x in range(8)] == source
+
+
+def test_a_palette_file_that_states_its_format_is_read_in_it(qtbot, tmp_path) -> None:
+    """A TPL names its own color format, and that beats the import default.
+
+    Every other palette file leaves the encoding to be guessed, so the dock's
+    Import as... dropdown supplies one. A stated format is a fact instead, and
+    read through the wrong one the colors are wrong but never obviously so - any
+    two bytes decode as some color. The dropdown must land on what the file says.
+    """
+    from celpix.project.workspace import PaletteMode
+    from celpix.ui.widgets import select_combo_data
+
+    # Type 2 = BGR555: red, green, blue, white as 16-bit little-endian entries.
+    pal = tmp_path / "stated.tpl"
+    pal.write_bytes(
+        b"TPL\x02" + bytes([0x1F, 0x00, 0xE0, 0x03, 0x00, 0x7C, 0xFF, 0x7F])
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    # Park the import default somewhere the file disagrees with, so adopting the
+    # header is visible rather than a coincidence.
+    select_combo_data(window._palette_import_preset, "preset.palette.rgb888")
+    assert window._palette_import_preset_id() == "preset.palette.rgb888"
+
+    window._open_palette_data(str(pal))
+    entry = window._workspace.find_palette(str(pal))
+    assert entry is not None
+    assert entry.palette_preset_id == "preset.palette.bgr555"
+    assert window._palette_mode is PaletteMode.FILE
+    # Decoded as BGR555, not as the 3-byte RGB888 the dropdown was sitting on.
+    assert window._palette_panel._colors[:4] == [
+        0xFFFF0000,
+        0xFF00FF00,
+        0xFF0000FF,
+        0xFFFFFFFF,
+    ]
+
+
+def test_a_stated_palette_format_does_not_overrule_a_chosen_one(
+    qtbot, tmp_path
+) -> None:
+    """Only a format nobody chose gives way to the file's header.
+
+    An entry is registered on whatever Import as... happens to be on, which is a
+    setting about importing in general rather than an answer about this file. Once
+    someone has said what they want, a stated header must not undo it.
+    """
+    from celpix.ui.widgets import select_combo_data
+
+    pal = tmp_path / "stated.tpl"
+    pal.write_bytes(
+        b"TPL\x02" + bytes([0x1F, 0x00, 0xE0, 0x03, 0x00, 0x7C, 0xFF, 0x7F])
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    select_combo_data(window._palette_import_preset, "preset.palette.rgb888")
+    window._add_palette_file(str(pal))
+    entry = window._workspace.find_palette(str(pal))
+    assert entry is not None
+    # A deliberate pick, made before the file is ever decoded.
+    entry.palette_preset_id = "preset.palette.rgb444"
+    window._load_palette_entry(entry)
+    assert entry.palette_preset_id == "preset.palette.rgb444"

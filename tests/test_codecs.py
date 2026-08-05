@@ -649,9 +649,10 @@ def test_wide_packed_preset_matches_its_layout(preset_id: str, layout: tuple) ->
 
 # Presets that decode identically on purpose, because the *name* is the point:
 # a reader looking for their hardware should find it without knowing which other
-# machine shares the encoding. Two symmetries generate all of them — reversing
-# both the byte order and the channel order of a direct-color format cancels, and
-# the interleaved-planar 2bpp layout is shared hardware to hardware.
+# machine shares the encoding. Three symmetries generate all of them — reversing
+# both the byte order and the channel order of a direct-color format cancels, the
+# interleaved-planar 2bpp layout is shared hardware to hardware, and a packed
+# depth is only nibble order plus a tile size, which several machines land on.
 _INTENTIONAL_PIXEL_ALIASES = frozenset(
     {
         frozenset({"preset.pixel.dc-abgr8888", "preset.pixel.dc-rgba8888-be"}),
@@ -664,6 +665,10 @@ _INTENTIONAL_PIXEL_ALIASES = frozenset(
         frozenset(
             {"preset.pixel.gb-2bpp", "preset.pixel.snes-2bpp", "preset.pixel.ws-2bpp"}
         ),
+        # The TIM container names the format its header states, and a PlayStation
+        # texture labelled with a handheld's name reads as the wrong file.
+        frozenset({"preset.pixel.gba-4bpp", "preset.pixel.psx-4bpp"}),
+        frozenset({"preset.pixel.8bpp-linear", "preset.pixel.psx-8bpp"}),
     }
 )
 

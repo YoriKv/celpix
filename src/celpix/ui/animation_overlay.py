@@ -30,9 +30,10 @@ Nothing here re-renders, and nothing here reads the model.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -247,10 +248,11 @@ class AnimationOverlay(QWidget):
         )
         self._sequence.currentIndexChanged.connect(self._on_sequence_changed)
 
-        # The three transport buttons take no focus. Space is this window's pan
-        # gesture, and a focused button swallows it to click itself instead — so
-        # the one key the frame most needs would be claimed by whichever button
-        # the user last pressed.
+        # The three transport buttons take no focus, so stepping or starting the
+        # playback leaves it on the frame rather than on the button last pressed.
+        # Space is this window's pan gesture and is claimed window-wide
+        # (:meth:`eventFilter`), so a button that held focus could not click
+        # itself with it anyway — it would just wear a focus ring for nothing.
         self._play = QPushButton("Play")
         self._play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._play.setCheckable(True)
@@ -326,6 +328,13 @@ class AnimationOverlay(QWidget):
         self._pending.setInterval(REFRESH_DEBOUNCE_MS)
         self._pending.timeout.connect(self.refresh_requested)
 
+        # The pan gesture's space key is taken off an application filter rather
+        # than a key event of this window, so it answers wherever focus sits in
+        # here - see eventFilter.
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
     # -- presenting ----------------------------------------------------------
     def show_object(
         self,
@@ -385,10 +394,10 @@ class AnimationOverlay(QWidget):
                 self.move(anchor + QPoint(12, 0))
                 self._positioned = True
             self.show()
-            # The frame takes the focus, not the picker: space is the pan gesture
-            # here, and a focused QComboBox eats it to drop its list open — so
-            # without this the window's one keyboard gesture is unreachable until
-            # the user happens to click the picture.
+            # The frame takes the focus, not the picker, which would otherwise
+            # have it as the first widget of the layout: the picker is a
+            # QComboBox and space drops its list open, and that is the one place
+            # in this window the pan gesture yields (:meth:`eventFilter`).
             self._frame.setFocus()
 
     def request_refresh(self) -> None:
@@ -556,18 +565,40 @@ class AnimationOverlay(QWidget):
         vbar.setValue(vbar.value() - dy)
 
     # -- space arms the pan --------------------------------------------------
-    def keyPressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        # Auto-repeat ignored: holding space fires press over and over, and each
-        # would re-arm a mode that is already on.
-        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
-            self._frame.set_pan_mode(True)
-            event.accept()
-            return
-        super().keyPressEvent(event)
+    def eventFilter(self, obj, event) -> bool:  # noqa: ANN001 — Qt override
+        """Claim the space bar for the pan wherever focus sits in this window.
 
-    def keyReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+        Filtered on the application rather than handled in ``keyPressEvent``,
+        because a key press goes to the focused widget alone and a hold sends
+        exactly one: with focus on the Zoom spin — where magnifying the frame
+        leaves it, and having magnified it is the usual reason to want to pan —
+        the press reached a widget that does nothing with it, and the gesture was
+        dead until the picture happened to get clicked. Taking it here instead is
+        the rule the main window's own space pan follows
+        (:meth:`~celpix.ui.main_window.navigation.NavigationMixin._handle_space_pan`).
+
+        Any widget of *this* window, and nothing outside it: the main window's
+        filter arms its own surfaces off the same key, and only one of the two
+        windows can be the one being typed into. The sequence picker is the
+        exception, a QComboBox dropping its list open on space; the list itself
+        is a window of its own, so an open popup falls outside this test.
+        """
+        et = event.type()
+        if et == QEvent.Type.WindowDeactivate and obj is self:
+            # A hold that outlives the window's activation: the release lands in
+            # whatever was raised over it and is never seen here, which would
+            # leave the frame holding an open hand and eating the next press.
             self._frame.set_pan_mode(False)
-            event.accept()
-            return
-        super().keyReleaseEvent(event)
+        elif (
+            et in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
+            and event.key() == Qt.Key.Key_Space
+            and isinstance(obj, QWidget)
+            and obj.window() is self
+            and not isinstance(obj, QComboBox)
+        ):
+            # Auto-repeat is swallowed rather than acted on: holding space fires
+            # press after press, and each would re-arm a mode already on.
+            if not event.isAutoRepeat():
+                self._frame.set_pan_mode(et == QEvent.Type.KeyPress)
+            return True
+        return super().eventFilter(obj, event)

@@ -1,0 +1,19 @@
+# PlayStation 4bpp — packed nibbles, low nibble = left pixel. What a TIM in
+# pixel mode 0 holds, and what the GPU reads a 4bpp texture page as.
+#
+# Byte-identical in behaviour to gba-4bpp; it ships separately so a TIM names its
+# own format in the picker rather than another console's. Nibble order is the one
+# thing to get right here — read high-nibble-first every pixel pair swaps, which
+# looks like a legible image with its columns shuffled rather than like an error.
+#
+# Not tiled: a TIM is a linear bitmap and its rows run the full image width, so
+# set the view width to the pixel count the container reports. The 8x8 tile is
+# only the grid the canvas walks it in.
+# See docs/graphics-formats-reference/psx-tim-formats.md §2.
+id = "preset.pixel.psx-4bpp"
+name = "PlayStation 4bpp (TIM, 8x8)"
+engine_id = "codec.pixel.packed"
+
+[params]
+bpp = 4
+msb_first = false

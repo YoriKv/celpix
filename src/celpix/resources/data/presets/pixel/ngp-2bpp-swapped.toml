@@ -1,9 +1,18 @@
-# Neo Geo Pocket 2bpp — YY-CHR ordering: the odd row byte drives the left pixels.
+# Neo Geo Pocket 2bpp — the odd row byte drives the left 4 pixels, the even one
+# the right. **This is the reading to reach for**; the id keeps the "-swapped"
+# suffix it was registered under, a preset id being what saved projects store.
+#
+# Two independent implementations order the row this way — YY-CHR's `_2bppNGP`,
+# and Tile Layer Pro's `tfNGPC`, which fills the right half of its scanline from
+# the first byte and the left half from the second. Tile Molester's LN02 is the
+# lone dissent; its non-swapped layout is `ngp-2bpp` beside this file.
+#
 # reverse_bytes is the byte order *along a row*, not endianness within a value
 # (that is byte_order, which the packed codec does not use).
-# See docs/graphics-formats-reference/implementation-guide.md §2 (packed / linear).
+# See docs/graphics-formats-reference/implementation-guide.md §2 (packed / linear)
+# and docs/graphics-formats-reference/tile-layer-pro-formats.md §1.
 id = "preset.pixel.ngp-2bpp-swapped"
-name = "Neo Geo Pocket 2bpp byte-swapped (8x8)"
+name = "Neo Geo Pocket 2bpp (8x8)"
 engine_id = "codec.pixel.packed"
 
 [params]

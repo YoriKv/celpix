@@ -1,0 +1,17 @@
+# PlayStation 8bpp — one byte per pixel, indexing a 256-entry CLUT. What a TIM
+# in pixel mode 1 holds.
+#
+# At 8bpp the field is the whole byte, so the decode is a straight copy and this
+# is the same kernel as 8bpp-linear; it ships separately so a TIM names its own
+# format in the picker rather than a different machine's.
+#
+# Not tiled: a TIM is a linear bitmap and its rows run the full image width, so
+# set the view width to the pixel count the container reports. The 8x8 tile is
+# only the grid the canvas walks it in.
+# See docs/graphics-formats-reference/psx-tim-formats.md §2.
+id = "preset.pixel.psx-8bpp"
+name = "PlayStation 8bpp (TIM, 8x8)"
+engine_id = "codec.pixel.packed"
+
+[params]
+bpp = 8

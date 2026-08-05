@@ -18,6 +18,7 @@ from celpix.core.context import (
     PipelineContext,
 )
 from celpix.plugins.builtins import (
+    gba_lz77,
     konami_rle,
     lz16,
     lz_command,
@@ -26,6 +27,7 @@ from celpix.plugins.builtins import (
     prs,
 )
 from celpix.plugins.builtins._lz import MatchFinder
+from celpix.plugins.builtins.gba_lz77 import GbaLz77Compression
 from celpix.plugins.builtins.konami_rle import KonamiNesRle
 from celpix.plugins.builtins.lz16 import (
     KEY_LZ16_ROWS,
@@ -695,3 +697,121 @@ def test_prs_plugin_records_size_and_completeness() -> None:
     assert plugin.decompress(packed + b"\xff" * 16, ctx) == raw
     assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
     assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+
+
+# -- GBA/NDS BIOS LZ77 ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    # Hand-assembled from the format spec, so they guard the three fields that
+    # fail *silently* when read wrong: the flag byte's MSB-first order and its
+    # set-means-back-reference sense, the length bias of 3, and the displacement
+    # being stored one less than the distance. Read any of them the other way and
+    # a stream still decodes to something of the right length.
+    [
+        # Flag 0x00: eight literals, of which the declared size wants four.
+        ("10040000" + "00" + "41424344", b"ABCD"),
+        # Flag 0x40: literal 'A', then bit 6 set -> a back-reference of b0=b1=0,
+        # i.e. length 3 at displacement field 0, which is distance *1*.
+        ("10040000" + "40" + "41" + "0000", b"AAAA"),
+        # Flag 0x20: 'A', 'B', then b0=0x10 -> length 4, displacement field 1 ->
+        # distance 2. The copy overlaps what it is still writing.
+        ("10060000" + "20" + "4142" + "1001", b"ABABAB"),
+        # b0=0xF0 -> the maximum length of 18, at distance 1.
+        ("10140000" + "20" + "5a5a" + "f000", b"Z" * 20),
+    ],
+)
+def test_gba_lz77_decode_known_vector(stream: str, expected: bytes) -> None:
+    raw = bytes.fromhex(stream)
+    out, consumed, complete = gba_lz77.decompress(raw)
+    assert out == expected
+    assert complete
+    assert consumed == len(raw)
+
+
+def test_gba_lz77_declared_size_cuts_a_match_short() -> None:
+    """The size is the only terminator, and it does not fall on match boundaries.
+
+    A decoder that finishes each back-reference before re-testing the limit
+    overruns here by one byte - the last match is 18 long and only 17 are wanted.
+    """
+    out, _, complete = gba_lz77.decompress(
+        bytes.fromhex("10130000" + "20" + "5a5a" + "f000")
+    )
+    assert out == b"Z" * 19
+    assert complete
+
+
+def test_gba_lz77_reference_before_the_start_is_corrupt() -> None:
+    # Distance 2 with only one byte produced. The reference decoder reads
+    # whatever precedes its buffer; there is no output to defend, so this raises.
+    with pytest.raises(ValueError, match="before the start"):
+        gba_lz77.decompress(bytes.fromhex("10040000" + "40" + "41" + "0001"))
+
+
+def test_gba_lz77_rejects_a_non_lz77_header() -> None:
+    # The high nibble is the BIOS's dispatch; 0x30 is RLE, which this is not.
+    with pytest.raises(ValueError, match="not an LZ77 header"):
+        gba_lz77.decompress(bytes.fromhex("30040000" + "00" + "41424344"))
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"A",
+        b"A" * 40,
+        b"ABABAB" * 50,
+        bytes(1024),
+        bytes(range(256)) * 3,
+        b"HELLO " * 300,
+    ],
+)
+def test_gba_lz77_round_trips_and_stays_vram_safe(data: bytes) -> None:
+    """Every emitted displacement must be at least 1, not 0.
+
+    The BIOS has two entry points and the VRAM-safe one (SWI 0x12) cannot handle
+    a stored displacement of 0. A ROM whose game calls it gets corrupt graphics
+    from a stream that decodes perfectly under SWI 0x11, so the constraint is
+    invisible to a round-trip test - it has to be asserted on the bytes.
+    """
+    stream = gba_lz77.compress(data)
+    out, consumed, complete = gba_lz77.decompress(stream)
+    assert out == data
+    assert complete and consumed == len(stream)
+
+    at = gba_lz77.HEADER_SIZE
+    while at < len(stream):
+        flags = stream[at]
+        at += 1
+        for bit in range(8):
+            if at >= len(stream):
+                break
+            if flags & (0x80 >> bit):
+                disp = ((stream[at] & 0x0F) << 8) | stream[at + 1]
+                assert disp + 1 >= gba_lz77.MIN_DISTANCE
+                at += 2
+            else:
+                at += 1
+
+
+def test_gba_lz77_plugin_records_the_structures_extent() -> None:
+    payload = b"the quick brown fox " * 40
+    stream = gba_lz77.compress(payload)
+    plugin = GbaLz77Compression()
+
+    ctx = PipelineContext()
+    # Trailing bytes stand in for whatever follows the structure in a ROM: the
+    # recorded size must be the stream's own, not the buffer it arrived in.
+    assert plugin.decompress(stream + b"\xff" * 64, ctx) == payload
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(stream)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+
+    # A window that cuts the stream short decodes to a prefix of the real output
+    # rather than raising, which is what a bounded view preview needs.
+    cut = PipelineContext()
+    cut.set(KEY_DECOMPRESS_PARTIAL, True)
+    prefix = plugin.decompress(stream[: len(stream) // 2], cut)
+    assert 0 < len(prefix) < len(payload)
+    assert payload.startswith(prefix)
+    assert cut.get(KEY_DECOMPRESS_COMPLETE) is False

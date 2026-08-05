@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.7 - unreleased
+
+- **New formats**: PlayStation TIM textures (image and colour table, all four
+  pixel depths), GBA/NDS BIOS LZ77 compression (read and written), TPL palette
+  files, PlayStation 4bpp/8bpp tiles, and a 128-wide 8bpp linear bitmap; Neo Geo
+  Pocket 2bpp now defaults to the byte-swapped row order
+- Animation player panning and various fixes
+
 ## v0.4.6 - 2026-08-03
 
 - **Pixel editing on a tilemap**: the drawing tools now work on the map itself,

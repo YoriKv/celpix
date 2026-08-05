@@ -35,6 +35,7 @@ from .containers import (
 )
 from .direct_color_codec import DirectColorCodec
 from .gb_rom import GbRomContainer
+from .gba_lz77 import GbaLz77Compression
 from .indexed_codec import IndexedColorCodec
 from .konami_rle import KonamiFdsRle, KonamiNesRle
 from .linear_codec import LinearBespokeCodec
@@ -64,6 +65,8 @@ from .scgcad import (
 )
 from .split_planes import split_part_plugins
 from .tilemap_codec import TilemapCodec
+from .tim import TimClutContainer, TimContainer
+from .tpl_palette import TplPaletteContainer
 from .ys_spr import SprContainer
 
 if TYPE_CHECKING:
@@ -89,6 +92,9 @@ def register_builtins(reg: Registry) -> None:
         SprContainer(),
         CgxContainer(),
         ColContainer(),
+        TimContainer(),
+        TimClutContainer(),
+        TplPaletteContainer(),
         PassthroughReshape(),
         M7VramReshape(),
         ByteSwapReshape(),
@@ -101,6 +107,7 @@ def register_builtins(reg: Registry) -> None:
         Lz16Compression(),
         Lz16ImprovedCompression(),
         LzssRingCompression(),
+        GbaLz77Compression(),
         PrsCompression(),
         PvrCompression(),
         PackBitsCompression(),

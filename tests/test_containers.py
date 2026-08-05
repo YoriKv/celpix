@@ -1,11 +1,16 @@
-"""Container plugins (iNES / .smd / SNES interleave) and how one is picked."""
+"""Container plugins (iNES / .smd / SNES interleave / TIM) and how one is picked."""
 
 from __future__ import annotations
+
+import struct
 
 import pytest
 
 from celpix.core.address import format_hex
+from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
+    KEY_PALETTE_PRESET,
+    KEY_PIXEL_PRESET,
     KEY_SOURCE_FILES,
     KEY_SOURCE_OFFSET,
     KEY_SOURCE_PATH,
@@ -28,6 +33,7 @@ from celpix.plugins.base import (
     ReadSource,
     WriteTarget,
 )
+from celpix.plugins.builtins import tim, tpl_palette
 from celpix.plugins.builtins.containers import (
     CopierHeaderContainer,
     INesContainer,
@@ -625,3 +631,154 @@ def test_container_report_labels_a_plugins_own_hint_key(tmp_path) -> None:
     named = {f.name: f for f in report.hints}
     assert named["chatty.private-hint"].value == "7"
     assert "chatty.private-hint" in named["chatty.private-hint"].detail
+
+
+# -- PlayStation TIM ---------------------------------------------------------
+
+
+def _tim(pmode: int, units: int, height: int, *, clut_entries: int = 0) -> bytes:
+    """A synthetic TIM whose payloads are byte ramps, so a misread is visible."""
+    head = struct.pack("<II", 0x10, pmode | (0x08 if clut_entries else 0))
+    blocks = b""
+    if clut_entries:
+        clut = struct.pack(
+            f"<{clut_entries}H", *((i * 0x111) & 0x7FFF for i in range(clut_entries))
+        )
+        blocks += struct.pack("<IHHHH", 12 + len(clut), 0, 0, clut_entries, 1) + clut
+    pixels = bytes(range(256)) * ((units * 2 * height + 255) // 256)
+    pixels = pixels[: units * 2 * height]
+    blocks += struct.pack("<IHHHH", 12 + len(pixels), 320, 0, units, height) + pixels
+    return head + blocks
+
+
+@pytest.mark.parametrize(
+    ("pmode", "units", "width"),
+    # The header quotes a row in 16-bit VRAM halfwords, so the pixel count is a
+    # different multiple of it at every depth. Read as a pixel count instead, a
+    # 4bpp image comes out quarter-width and shears - which looks like a picture,
+    # not like an error, and is the whole reason this arithmetic is tested.
+    [(0, 64, 256), (1, 64, 128), (2, 64, 64), (3, 48, 32)],
+)
+def test_tim_row_width_is_halfwords_not_pixels(pmode, units, width) -> None:
+    layout = tim.parse(_tim(pmode, units, 4, clut_entries=16 if pmode == 0 else 0))
+    assert layout.width == width
+    assert layout.pixel_preset == tim.PRESETS[pmode]
+
+
+def test_tim_unwraps_pixels_and_clut_from_the_same_file() -> None:
+    raw = _tim(0, 2, 4, clut_entries=16)
+    pixels, clut = PipelineContext(), PipelineContext()
+
+    image = tim.TimContainer().read(ReadSource(raw), pixels)
+    table = tim.TimClutContainer().read(ReadSource(raw), clut)
+
+    # The two halves are disjoint and neither carries the other's bytes: a CLUT
+    # left in front of the pixels decodes as rows of tiles that are not the
+    # picture, which is why the image read starts past it.
+    assert image == raw[pixels.get(KEY_SOURCE_OFFSET) :][: 2 * 2 * 4]
+    assert table == raw[clut.get(KEY_SOURCE_OFFSET) :][:32]
+    assert clut.get(KEY_SOURCE_OFFSET) < pixels.get(KEY_SOURCE_OFFSET)
+    assert pixels.get(KEY_PIXEL_PRESET) == "preset.pixel.psx-4bpp"
+
+
+def test_tim_without_a_clut_has_no_palette_to_read() -> None:
+    raw = _tim(2, 4, 4)  # 16bpp: colour lives in the pixels
+    with pytest.raises(ValueError, match="no color table"):
+        tim.TimClutContainer().read(ReadSource(raw), PipelineContext())
+
+
+def test_tim_clut_write_keeps_each_entry_semi_transparency_bit() -> None:
+    raw = bytearray(_tim(1, 4, 2, clut_entries=256))
+    layout = tim.parse(bytes(raw))
+    # STP on every odd entry. The colour codec builds an entry from its masks
+    # alone, so a re-encode returns bit 15 clear on all 256 - which would silently
+    # drop a flag the palette model has nowhere to hold.
+    for index in range(1, 256, 2):
+        raw[layout.clut_start + index * 2 + 1] |= 0x80
+    original = bytes(raw)
+
+    ctx = PipelineContext()
+    table = tim.TimClutContainer().read(ReadSource(original), ctx)
+    stripped = bytes(b & 0x7F if i % 2 else b for i, b in enumerate(table))
+    out = tim.TimClutContainer().write(stripped, WriteTarget(original), ctx)
+
+    assert out == original
+
+
+def test_tim_signature_needs_a_valid_pixel_mode_too(tmp_path) -> None:
+    reg = default_registry()
+    good = tmp_path / "tex.tim"
+    good.write_bytes(_tim(0, 2, 4, clut_entries=16))
+    # Detection is per content kind, which is how one file is claimed by two
+    # containers - the pixels and the colours are separately addressable halves.
+    assert detect_container(reg, str(good), kind=ContentKind.PIXELS) == "container.tim"
+    assert (
+        detect_container(reg, str(good), kind=ContentKind.PALETTE)
+        == "container.tim-clut"
+    )
+
+    # The 4-byte magic alone is a word equal to 16, which any file may open with;
+    # the flags word is what makes the signature mean something.
+    bogus = tmp_path / "not.tim"
+    bogus.write_bytes(b"\x10\x00\x00\x00" + b"\xff" * 64)
+    assert detect_container(reg, str(bogus)) == RAW_CONTAINER
+
+
+# -- TPL palette -------------------------------------------------------------
+
+
+def _tpl(kind: int, count: int) -> bytes:
+    entry_size = tpl_palette.FORMATS[kind][1]
+    body = bytes((i * 37 + 11) & 0xFF for i in range(count * entry_size))
+    return b"TPL" + bytes([kind]) + body
+
+
+@pytest.mark.parametrize(("kind", "count"), [(0, 16), (1, 32), (2, 256)])
+def test_tpl_reports_the_format_its_header_states(kind: int, count: int) -> None:
+    """The entry count is the file's length, and the format is a stated fact.
+
+    Every other palette file leaves its encoding to be guessed, so the one that
+    does not is worth reading correctly - a wrong guess is never obviously wrong,
+    any bytes being some color.
+    """
+    raw = _tpl(kind, count)
+    ctx = PipelineContext()
+    assert tpl_palette.TplPaletteContainer().read(ReadSource(raw), ctx) == raw[4:]
+    assert ctx.get(KEY_SOURCE_OFFSET) == tpl_palette.HEADER_SIZE
+    assert ctx.get(KEY_PALETTE_PRESET) == tpl_palette.FORMATS[kind][0]
+    assert tpl_palette.parse(raw) == (kind, count)
+
+
+def test_tpl_write_shortens_the_file_rather_than_leaving_a_tail() -> None:
+    """Nothing records the entry count, so the file's length *is* the count.
+
+    Splicing a shorter palette into the old file would leave the tail of the
+    previous one behind, and the derived count would go on describing it.
+    """
+    raw = _tpl(2, 256)
+    ctx = PipelineContext()
+    container = tpl_palette.TplPaletteContainer()
+    container.read(ReadSource(raw), ctx)
+
+    half = raw[4 : 4 + 128 * 2]
+    out = container.write(half, WriteTarget(raw), ctx)
+    assert out == raw[:4] + half
+    assert tpl_palette.parse(out) == (2, 128)
+
+
+def test_tpl_save_as_copies_the_header_it_cannot_invent() -> None:
+    # The format byte is not derivable from ARGB colors, so a destination that
+    # does not exist yet is written from the file the palette was read out of.
+    raw = _tpl(0, 8)
+    ctx = PipelineContext()
+    container = tpl_palette.TplPaletteContainer()
+    body = container.read(ReadSource(raw), ctx)
+    assert container.write(body, WriteTarget(b""), ctx) == raw
+
+    with pytest.raises(ValueError, match="no file to write into"):
+        container.write(body, WriteTarget(b""), PipelineContext())
+
+
+def test_tpl_rejects_a_format_byte_it_cannot_read() -> None:
+    with pytest.raises(ValueError, match="format byte 7"):
+        tpl_palette.parse(b"TPL\x07" + bytes(16))

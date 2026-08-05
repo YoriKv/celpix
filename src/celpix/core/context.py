@@ -53,6 +53,14 @@ KEY_DECOMPRESS_COMPLETE = "compression.complete"
 # format can be corrected from the dock. Its presence is what marks those colors
 # as ours rather than the file's, and it is why the pathway is read-only.
 KEY_PALETTE_ERROR = "palette.error"
+# str: the palette preset a container believes its entries are in, when the
+# format says. The palette-pathway twin of :data:`KEY_PIXEL_PRESET`, and rarer
+# for a reason — the comment above is the ordinary case, a palette file recording
+# nothing about its own encoding. A `TPL` file is the exception: its header names
+# the format outright, which is worth reporting precisely because every other
+# palette's format is a guess. Advisory like everything here; nothing is obliged
+# to adopt it.
+KEY_PALETTE_PRESET = "palette.preset"
 # What a tilemap container read out of its file's *own* header, for the view to
 # start from. Advisory like everything here: each is a setting the user can then
 # change, and a format that states none of them is simply read without hints.
@@ -288,6 +296,13 @@ HINT_INFO: dict[str, tuple[str, str]] = {
         "The palette row this bank's tiles count their own row 0\n"
         "from, as its header states it. A tilemap bound to the\n"
         "bank counts from here too, unless its own file says.",
+    ),
+    KEY_PALETTE_PRESET: (
+        "Color format",
+        "The color encoding the container read out of the file's\n"
+        "own header. Almost no palette file states one, so where\n"
+        "this appears the format is a fact rather than the usual\n"
+        "guess. It does not change the dock's picker on its own.",
     ),
     KEY_PALETTE_ERROR: (
         "Palette read error",
