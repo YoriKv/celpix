@@ -968,6 +968,33 @@ class TilemapBarMixin:
         the rest of the axes with it rather than leaving them to be recaptured
         from the widgets, which only happens for the entry actually on screen.
 
+        The read itself is :meth:`_reread_tilemap`, because it is also what an
+        entry *off* screen needs when its binding stops reaching anything; this
+        method is that read plus the four lines that put the result on screen.
+        """
+        if not self._reread_tilemap(entry):
+            return False
+        self._doc = entry.doc
+        # A re-read is where a binding takes effect, so it is where pixel mode can
+        # stop being available without the view having moved: unbind a map that is
+        # being painted on and the mode would otherwise stay armed with both
+        # toggles greyed, leaving no way out of it but switching entries.
+        self._drop_unavailable_edit_mode()
+        self._refresh_view()
+        self._refresh_project_modified()
+        return True
+
+    def _reread_tilemap(self, entry: Entry, *, quiet: bool = False) -> bool:
+        """Re-read ``entry``'s document under its current binding; False if not.
+
+        The half of :meth:`_reload_tilemap` that touches only the entry, so a map
+        that is not on screen can be re-read as well — which is what a bank being
+        closed or restored under it needs
+        (:meth:`~...session.SessionMixin._reresolve_bound_art`). ``quiet``
+        suppresses the failure modal for those callers: the gesture was about
+        another entry, and a stack of dialogs about maps the user did not touch
+        is not what a removal should produce.
+
         **A failed read puts the old document back.** Dropping it is how a
         re-read starts, but a drop that is never replaced leaves the entry with
         no document while the window is still showing the one it had: from then
@@ -994,18 +1021,10 @@ class TilemapBarMixin:
             if previous is not None and previous.is_tilemap and entry.pixel_dirty
             else None
         )
-        if not self._load_entry(entry, live=live):
+        if not self._load_entry(entry, quiet=quiet, live=live):
             # The seed goes back with it: it described the read that did not
             # happen, and the document being restored has its palette already.
             entry.doc, entry.pending_palette = previous, pending
             entry.pending_view = pending_view
             return False
-        self._doc = entry.doc
-        # A re-read is where a binding takes effect, so it is where pixel mode can
-        # stop being available without the view having moved: unbind a map that is
-        # being painted on and the mode would otherwise stay armed with both
-        # toggles greyed, leaving no way out of it but switching entries.
-        self._drop_unavailable_edit_mode()
-        self._refresh_view()
-        self._refresh_project_modified()
         return True

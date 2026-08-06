@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
+from celpix.core.capabilities import Capability
 from celpix.core.document import Document, ViewOptions
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.pipeline import inspect_container
@@ -546,7 +547,17 @@ class EntriesMixin:
         """File ▸ New Slice from View: the dialog prefilled to cover the
         current viewport - the structure in view when the compression preview
         found one (its true extent beats the window's), else the visible
-        window's bytes - plus the compression combo."""
+        window's bytes - plus the compression combo.
+
+        Refused where there is no viewport to read, as well as on the action:
+        the files dock builds its own row for this, so a guard on the gesture is
+        what covers both. On a tilemap the prefill was not merely unhelpful, it
+        was measured in another file's units - ``pixel_data`` there is the
+        *bound* entry's tile bytes, so the length came off the tile bank's
+        geometry and was then written into a slice of the map.
+        """
+        if not self._can(Capability.NAVIGATION):
+            return
         src = self._slice_source()
         if src is None:
             return

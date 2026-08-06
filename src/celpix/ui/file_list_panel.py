@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 
 from celpix import resources
 from celpix.core.address import format_hex
-from celpix.core.capabilities import ContentKind
+from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.notices import Notice
 from celpix.plugins.detect import container_label
 from celpix.plugins.registry import Registry
@@ -917,7 +917,10 @@ class FileListPanel(QWidget):
             here.triggered.connect(
                 lambda: self.new_slice_from_view_requested.emit(entry)
             )
-            here.setEnabled(sliceable)
+            # ...and a view to read: an entry shown entire has no window for
+            # this to cover, which is the entry's own answer to give
+            # (the File menu's row is gated on the same capability).
+            here.setEnabled(sliceable and entry.can(Capability.NAVIGATION))
             from_sel = menu.addAction("New Slice &from Selection")
             from_sel.triggered.connect(
                 lambda: self.new_slice_from_selection_requested.emit(entry)

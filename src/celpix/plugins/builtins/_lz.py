@@ -44,9 +44,15 @@ class MatchFinder:
     ``window`` is how far back the scheme can reach — the ring size, the largest
     encodable distance — or ``None`` where any earlier position is addressable, as
     it is for a format whose back-reference is an absolute offset within a bank.
+
+    ``oldest_first`` reverses the walk and disables the cap, for the one caller
+    that has to reproduce another encoder's choice rather than make its own: the
+    byte-exact command-LZ parse breaks ties on the *first* occurrence of a match,
+    so both the newest-first order and the cap — which drops the oldest
+    candidates — would change its output rather than merely its search time.
     """
 
-    __slots__ = ("_cap", "_data", "_index", "_min_match", "_n", "_window")
+    __slots__ = ("_cap", "_data", "_index", "_min_match", "_n", "_oldest", "_window")
 
     def __init__(
         self,
@@ -55,12 +61,14 @@ class MatchFinder:
         min_match: int,
         window: int | None = None,
         max_candidates: int = DEFAULT_CANDIDATES,
+        oldest_first: bool = False,
     ) -> None:
         self._data = data
         self._n = len(data)
         self._min_match = min_match
         self._window = window
         self._cap = max_candidates
+        self._oldest = oldest_first
         self._index: dict[bytes, list[int]] = {}
 
     def add(self, pos: int) -> None:
@@ -75,7 +83,7 @@ class MatchFinder:
             return
         bucket = self._index.setdefault(self._data[pos : pos + self._min_match], [])
         bucket.append(pos)
-        if len(bucket) > self._cap * 2:
+        if not self._oldest and len(bucket) > self._cap * 2:
             del bucket[: -self._cap]
 
     def add_run(self, start: int, end: int) -> None:
@@ -93,12 +101,21 @@ class MatchFinder:
 
         Newest first because a nearer match is never worse — no scheme here pays
         *more* for a shorter distance — so the walk can stop at the first
-        out-of-window candidate rather than filtering the whole chain.
+        out-of-window candidate rather than filtering the whole chain. Under
+        ``oldest_first`` the whole chain is walked in insertion order instead; see
+        the class docstring for why that caller cannot take either shortcut.
         """
         bucket = self._index.get(self._data[pos : pos + self._min_match])
         if not bucket:
             return
         cutoff = -1 if self._window is None else pos - self._window
+        if self._oldest:
+            # No early exit is available walking forwards, so an out-of-window
+            # candidate is skipped rather than terminating the walk.
+            for candidate in bucket:
+                if candidate >= cutoff:
+                    yield candidate
+            return
         for candidate in reversed(bucket[-self._cap :]):
             if candidate < cutoff:
                 return  # the rest are older still — out of reach

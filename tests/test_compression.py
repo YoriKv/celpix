@@ -34,7 +34,7 @@ from celpix.plugins.builtins.lz16 import (
     Lz16Compression,
     Lz16ImprovedCompression,
 )
-from celpix.plugins.builtins.lz_command import Lz1, Lz2
+from celpix.plugins.builtins.lz_command import Lz1, Lz1Improved, Lz2, Lz2Improved
 from celpix.plugins.builtins.lzss_ring import LzssRingCompression
 from celpix.plugins.builtins.packbits import PackBitsCompression
 from celpix.plugins.builtins.prs import PrsCompression
@@ -95,7 +95,8 @@ def test_lz2_overlapping_backref_extends_runs() -> None:
 
 
 @pytest.mark.parametrize("big_endian", [False, True])
-def test_lz_round_trip(big_endian: bool) -> None:
+@pytest.mark.parametrize("pack", [lz_command.compress, lz_command.compress_improved])
+def test_lz_round_trip(pack, big_endian: bool) -> None:
     rng = random.Random(1)
     payloads = [
         b"",
@@ -105,13 +106,119 @@ def test_lz_round_trip(big_endian: bool) -> None:
         bytes(rng.choice(b"\x00\x0f\xf0") for _ in range(1000)),
     ]
     for data in payloads:
-        packed = lz_command.compress(data, big_endian_offsets=big_endian)
+        packed = pack(data, big_endian_offsets=big_endian)
         out, consumed = lz_command.decompress(
             packed + b"\x5a" * 9, big_endian_offsets=big_endian
         )
         assert out == data
         # Trailing garbage is never consumed — the terminator bounds the read.
         assert consumed == len(packed)
+
+
+def _commands(stream: bytes) -> list[tuple[int, int, int]]:
+    """A stream as ``(op, length, offset)`` per command, offset 0 but on a
+    backreference.
+
+    What separates the two parses is which commands they choose, and a round trip
+    is blind to that: both decode to the same bytes whatever they emit. So the
+    byte-exact parse's rules have to be asserted on the command list itself.
+    """
+    out: list[tuple[int, int, int]] = []
+    i = 0
+    while stream[i] != 0xFF:
+        header = stream[i]
+        i += 1
+        if (header & 0xE0) == 0xE0:
+            op = (header << 3) & 0xE0
+            length = (((header & 0x03) << 8) | stream[i]) + 1
+            i += 1
+        else:
+            op = header & 0xE0
+            length = (header & 0x1F) + 1
+        offset = 0
+        if op == 0x00:
+            i += length
+        elif op == 0x40:
+            i += 2
+        elif op == 0x80:
+            offset = (stream[i] << 8) | stream[i + 1]
+            i += 2
+        else:
+            i += 1
+        out.append((op, length, offset))
+    return out
+
+
+def test_lz_original_parse_yields_the_boundary_byte_to_a_fill() -> None:
+    # The pre-emption rule, in the smallest data that shows it: a run is taken
+    # wherever it starts and every other command stops short of it, so this codes
+    # as word=4 + fill=5 rather than the word run eating the fifth 0x00.
+    data = bytes((0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00))
+    packed = lz_command.compress(data, big_endian_offsets=True)
+    assert _commands(packed) == [(0x40, 4, 0), (0x20, 5, 0)]
+    assert lz_command.decompress(packed, big_endian_offsets=True)[0] == data
+
+
+def test_lz_original_increasing_run_never_wraps() -> None:
+    # The decoder wraps mod 256; the original encoder never emitted a run that
+    # needed it, so 0xFE 0xFF 0x00 is a run of 2 and falls through to literals.
+    assert _commands(lz_command.compress(b"\x10\x11\x12", big_endian_offsets=True)) == [
+        (0x60, 3, 0)
+    ]
+    assert _commands(lz_command.compress(b"\xfe\xff\x00", big_endian_offsets=True)) == [
+        (0x00, 3, 0)
+    ]
+
+
+def test_lz_original_backref_stops_where_a_run_starts() -> None:
+    # The headline consequence: a 17-byte match is split into backref/fill/backref
+    # because a fill run begins inside it. The match is not truncated for cost —
+    # the shortest path would take it whole — so nothing but the rule explains it.
+    block = b"\x10\x77\x31\x99\x2a\x5c\x08\xe3" + b"\x00" * 5 + b"\x41\x93\x7d\x22"
+    packed = lz_command.compress(block * 2, big_endian_offsets=True)
+    assert _commands(packed) == [
+        (0x00, 8, 0),  # literal — no run fires on these bytes
+        (0x20, 5, 0),  # fill of five 0x00
+        (0x00, 4, 0),  # literal
+        (0x80, 8, 0),  # backref — stops at the fill starting inside the copy
+        (0x20, 5, 0),
+        (0x80, 4, 13),
+    ]
+    assert lz_command.decompress(packed, big_endian_offsets=True)[0] == block * 2
+
+
+def test_lz_original_backref_ties_take_the_earliest_offset() -> None:
+    # Two candidates match "ABCD" equally at the third occurrence; the original
+    # encoder took the first occurrence, not the nearest — the opposite of what a
+    # newest-first chain walk hands you.
+    block = b"\x10\x77\x31\x99"
+    data = block + b"\x5a" + block + b"\xa5" + block
+    packed = lz_command.compress(data, big_endian_offsets=True)
+    # Both copies point at offset 0; a newest-first walk would give the second
+    # one offset 5.
+    assert [c for c in _commands(packed) if c[0] == 0x80] == [(0x80, 4, 0)] * 2
+
+
+def test_lz_improved_parse_is_smaller_and_the_plugins_pick_their_own() -> None:
+    # The two parses are the only difference between the plugin pairs, and both
+    # write the same format — so either plugin reads either stream.
+    rng = random.Random(7)
+    data = bytes(rng.choice(b"\x00\x0f\xf0") for _ in range(1000))
+    exact = lz_command.compress(data, big_endian_offsets=True)
+    improved = lz_command.compress_improved(data, big_endian_offsets=True)
+    assert len(improved) < len(exact)
+
+    ctx = PipelineContext()
+    assert Lz2().compress(data, ctx) == exact
+    assert Lz2Improved().compress(data, ctx) == improved
+    assert Lz2().decompress(improved, PipelineContext()) == data
+    # LZ1 is the same parse over little-endian offsets, so only its backreference
+    # payloads differ from LZ2's.
+    assert Lz1().compress(data, ctx) != exact
+    assert Lz1().decompress(Lz1().compress(data, ctx), PipelineContext()) == data
+    assert Lz1Improved().compress(data, ctx) == lz_command.compress_improved(
+        data, big_endian_offsets=False
+    )
 
 
 def test_match_finder_seeded_scan_never_loses_to_the_plain_search() -> None:

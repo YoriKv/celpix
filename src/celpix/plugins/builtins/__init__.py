@@ -40,7 +40,7 @@ from .indexed_codec import IndexedColorCodec
 from .konami_rle import KonamiFdsRle, KonamiNesRle
 from .linear_codec import LinearBespokeCodec
 from .lz16 import Lz16Compression, Lz16ImprovedCompression
-from .lz_command import Lz1, Lz2
+from .lz_command import Lz1, Lz1Improved, Lz2, Lz2Improved
 from .lzss_ring import LzssRingCompression
 from .m7_vram import M7VramReshape
 from .n64_rom import N64RomContainer
@@ -103,7 +103,9 @@ def register_builtins(reg: Registry) -> None:
         KonamiNesRle(),
         KonamiFdsRle(),
         Lz1(),
+        Lz1Improved(),
         Lz2(),
+        Lz2Improved(),
         Lz16Compression(),
         Lz16ImprovedCompression(),
         LzssRingCompression(),

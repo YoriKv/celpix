@@ -8146,6 +8146,184 @@ def test_a_tilemap_switches_off_the_controls_it_has_no_capability_for(
     assert not window._import_png_action.isEnabled()
 
 
+def test_a_missing_entry_is_gated_as_the_kind_it_is(qtbot, tmp_path) -> None:
+    """The unavailable state runs the gate too, and it has an entry to gate by.
+
+    It renders nothing, so before it did the pass was the only state that kept
+    the *previous* document's furniture: a missing tilemap wore the pixel format
+    picker and the position bar (an accent rail, greyed but in full colour over a
+    document that has no window), a missing pixel file wore the cell format. The
+    two menu toggles the gate owns outright sit on no toolbar, so they said the
+    wrong thing rather than merely looking inert.
+    """
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    px = _make_snes_file(tmp_path)
+    window._load_pixel(str(px))
+    scr = _scr_file(tmp_path, [Cell(index=1)])
+    window._load_pixel(str(scr))
+    pixels, tilemap = window._workspace.entries
+
+    # A pixel file on screen, then the tilemap's file is gone: gated as a tilemap.
+    window._activate_entry(pixels)
+    scr.unlink()
+    window._activate_entry(tilemap)
+    assert window._tilemap_codec_action.isVisible()
+    assert not window._pixel_codec_action.isVisible()
+    assert not window._compression_action.isVisible()
+    assert window._tile_offset_bar.isHidden()
+    assert window._show_tile_ids_action.isEnabled()
+    assert not window._show_palette_regions_action.isEnabled()
+
+    # ...and the other way round, which is the half a fixed default would miss.
+    px.unlink()
+    window._activate_entry(pixels)
+    assert not window._tilemap_codec_action.isVisible()
+    assert window._pixel_codec_action.isVisible()
+    assert not window._show_tile_ids_action.isEnabled()
+    assert window._show_palette_regions_action.isEnabled()
+
+
+def test_the_navigate_menu_loses_its_window_rows_on_a_tilemap(qtbot, tmp_path) -> None:
+    """The menu is the third surface onto the view window, and the only one that
+    was left behind: the position bar hides and the nav bar is replaced, while
+    every row that moves or resizes the window stayed live and inert.
+
+    The column rows are not window rows - a map's cell width is its own setting,
+    which is why the kind's refusal names the row count and the position.
+    """
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    assert all(action.isEnabled() for action in window._nav_window_actions)
+
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1)])))
+    assert not any(action.isEnabled() for action in window._nav_window_actions)
+    # Columns are still the map's to set, through the same menu.
+    was = window._columns.value()
+    window._adjust_spin(window._columns, 1)
+    assert window._columns.value() == was + 1
+
+
+def test_selecting_a_cell_does_not_hand_back_import_from_png(qtbot, tmp_path) -> None:
+    """``_sync_edit_actions`` runs on every selection change and the gating pass
+    does not, so a veto applied at the end of the last render was handed straight
+    back by the next click on a cell - and the row stayed live until something
+    re-rendered."""
+    from celpix.core.tilemap import Cell
+
+    window, _ = _bound_tilemap(qtbot, tmp_path, [Cell(index=1), Cell(index=2)])
+    assert not window._import_png_action.isEnabled()
+    window._select_tiles(0, 0)
+    assert not window._import_png_action.isEnabled()
+
+
+def test_new_slice_from_view_is_refused_where_there_is_no_view(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A tilemap is shown entire, so there is no window for this to cover - and
+    the prefill it computed was measured in the *bound bank's* bytes and then
+    written into a slice of the map. Both the action and the gesture, because
+    the files dock builds a row of its own for it."""
+    from celpix.core.tilemap import Cell
+
+    window, _ = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)])
+    assert not window._new_slice_from_view_action.isEnabled()
+
+    opened: list = []
+    monkeypatch.setattr(
+        MainWindow,
+        "_create_slice_via_dialog",
+        lambda self, entry, **kw: opened.append(entry),
+        raising=False,
+    )
+    window._new_slice_from_view()
+    assert not opened
+
+    # The pixel entry it borrows from still has one, so this is the kind's answer
+    # and not a document that stopped being sliceable.
+    window._activate_entry(window._workspace.entries[0])
+    assert window._new_slice_from_view_action.isEnabled()
+    window._new_slice_from_view()
+    assert opened == [window._workspace.entries[0]]
+
+
+def test_removing_the_bound_bank_puts_the_edit_mode_toggle_down(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Closing the bank takes a map's pixels away without the view moving, so no
+    render follows to re-ask. ``_drop_unavailable_edit_mode`` only acts when
+    pixel mode was on; from tile mode the toggle was left offering a brush over a
+    map with nothing to deposit into."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from celpix.core.tilemap import Cell
+
+    window, tilemap = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)])
+    assert window._toggle_edit_mode_action.isEnabled()
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+    )
+    window._remove_entry(window._workspace.entries[0])
+    assert window._workspace.current is tilemap
+    assert not window._toggle_edit_mode_action.isEnabled()
+    assert not window._edit_mode_action.isEnabled()
+
+
+def test_removing_the_bound_bank_takes_its_art_off_the_maps(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A map holds a decoded *copy* of its bank, so closing the bank changes
+    nothing about the map until it is read again - it went on drawing art out of
+    a file no longer in the list, where an unresolved binding is supposed to show
+    as no tiles bound. Off screen as well as on: the copy is the map's, not the
+    view's. Undo is the mirror, because the binding held the entry itself and the
+    re-insert makes it resolve again."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window, shown = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)])
+    bank = window._workspace.entries[0]
+    art = bytes(bank.doc.pixel_data)
+    assert art
+
+    # A second map on the same bank, deliberately left off screen.
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=2)])))
+    offscreen = window._workspace.current
+    offscreen.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+    window._reload_tilemap(offscreen)
+    window._activate_entry(shown)
+    assert bytes(window._doc.pixel_data) == art
+    assert bytes(offscreen.doc.pixel_data) == art
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+    )
+    window._remove_entry(bank)
+    assert window._doc.pixel_data == b""
+    assert offscreen.doc.pixel_data == b""
+    # The cells are the map's own and survive the re-read - only the borrowed
+    # half of the document was re-resolved.
+    assert window._doc.cells[0].index == 1
+    assert offscreen.doc.cells[0].index == 2
+
+    window._undo_stack.undo()
+    assert bytes(window._doc.pixel_data) == art
+    assert bytes(offscreen.doc.pixel_data) == art
+    assert window._toggle_edit_mode_action.isEnabled()
+
+
 def test_leaving_a_tilemap_gives_the_pixel_controls_back(qtbot, tmp_path) -> None:
     """The veto has to lift, or one tilemap would disable the tools for the
     rest of the session."""

@@ -23,14 +23,19 @@ The two family members differ only in the backreference offset's byte order:
 plugins parameterise one engine. Encoding details and provenance:
 ``docs/graphics-formats-reference/implementation-guide.md`` §6.
 
-The compressor parses by shortest path — the cheapest encoding of the whole
-remaining structure, not the command that looks best where it stands — over a
-3-byte-prefix index for backreference search. It emits only backreference command
-``100``: the decoder treats 5/6/7 as aliases, and command 7 in long form collides
-with the ``0xFF`` terminator (``111 111 11``), so avoiding them keeps every
-emitted header unambiguous. Any stream that round-trips is valid; matching
-another compressor's exact output is a non-goal, and no known tool reproduces the
-original blobs anyway.
+Any stream that round-trips is valid, so the parse — which command to emit where
+— is a free choice the format does not constrain, and there are two worth making.
+:func:`compress` reproduces the parse the original SNES tooling used: a single
+left-to-right pass in which runs pre-empt every other command, which re-encodes a
+decoded cart structure to its original bytes and so leaves an unedited structure
+byte-identical (and certain to still fit its slot). :func:`compress_improved`
+instead parses by shortest path — the cheapest encoding of the whole remaining
+structure, not the command that looks best where it stands — and gives up
+byte-exactness for ~13% smaller streams.
+
+Both emit only backreference command ``100``: the decoder treats 5/6/7 as
+aliases, and command 7 in long form collides with the ``0xFF`` terminator
+(``111 111 11``), so avoiding them keeps every emitted header unambiguous.
 """
 
 from __future__ import annotations
@@ -59,11 +64,29 @@ _OP_WORD_FILL = 0x40
 _OP_INCREASING = 0x60
 _OP_BACKREF = 0x80
 
-# Compressor tuning: a run or backref shorter than 3 never beats literals, and
+# Shortest-path tuning: a run or backref shorter than 3 never beats literals, and
 # the candidate cap bounds pathological inputs only — deepening it to 256 costs
 # a third more time and buys 0.3%, to 1024 another 60% for 0.1% more.
 _MIN_MATCH = 3
 _MAX_CHAIN = 64
+
+# The original parse's thresholds and caps, every one of them load-bearing for
+# byte-exactness (docs/graphics-formats-reference/snes-lz-compressor-parses.md
+# §1). The caps are not uniform and the reason is not known — a run past its cap
+# is emitted at the cap and re-scanned from there, which is what puts a stray
+# literal between two word runs in the shipped data.
+_ORIG_MIN_FILL = 3
+_ORIG_MIN_WORD = 4
+_ORIG_MIN_INC = 3
+_ORIG_MIN_BACKREF = 4
+_ORIG_MAX_FILL = 1024
+_ORIG_MAX_WORD = 1023
+_ORIG_MAX_INC = 1024
+_ORIG_MAX_BACKREF = 512
+# The one number the shipped data cannot pin down — its longest literal run is
+# 386 bytes, so any cap at or above that agrees with it. The format maximum is
+# the safe reading: too low a cap would split runs the original never split.
+_ORIG_MAX_LITERAL = 1024
 
 # Stands in where a command cannot be written at all; its cost is infinite, so it
 # never reaches the emitter.
@@ -168,6 +191,154 @@ def _emit_header(out: bytearray, op: int, length: int) -> None:
         out.append(encoded & 0xFF)
 
 
+def _original_runs(data: bytes) -> tuple[list[int], list[int], list[int], list[int]]:
+    """Each run command's reach at every position under the original parse's
+    pre-emption rules, plus where the next run of any kind starts.
+
+    Returns ``(fill, word, inc, next_run)``. The first three are the length the
+    command would be *emitted* with at that position — below its minimum it does
+    not fire there — and ``next_run[i]`` is the first position from ``i`` on where
+    some run fires, which is where a backreference has to stop.
+
+    Pre-emption is what the clipping encodes: a fill run is always maximal, a word
+    run yields the boundary byte to a fill starting inside it, and an increasing
+    run yields to either. One backward pass does the lot, since each clip needs
+    only the answers already computed for ``i + 1``.
+    """
+    n = len(data)
+    fill = [1] * n
+    inc_raw = [1] * n
+    word_raw = [1] * n
+    word = [1] * n
+    inc = [1] * n
+    # Length n + 1: position n - 1 asks about n, where no run can start.
+    next_fill = [n] * (n + 1)
+    next_word = [n] * (n + 1)
+    next_run = [n] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        nxt = i + 1
+        if nxt < n:
+            if data[nxt] == data[i]:
+                fill[i] = min(fill[nxt] + 1, _ORIG_MAX_FILL)
+            # No modulo wrap: `data[i] + 1` is 256 at 0xFF and never equals a
+            # byte, so the run stops there. The decoder wraps; the original
+            # encoder never emitted a run that needed it, and those bytes fall
+            # through to literals.
+            if data[nxt] == data[i] + 1:
+                inc_raw[i] = min(inc_raw[nxt] + 1, _ORIG_MAX_INC)
+        # a,b,a,b,… continues exactly when data[i+2] repeats data[i]; the tail
+        # from i+1 is the same shape with the pair swapped, so its length carries.
+        word_raw[i] = (
+            min(word_raw[nxt] + 1, _ORIG_MAX_WORD)
+            if i + 2 < n and data[i + 2] == data[i]
+            else min(2, n - i)
+        )
+        next_fill[i] = i if fill[i] >= _ORIG_MIN_FILL else next_fill[nxt]
+        word[i] = min(word_raw[i], next_fill[nxt] - i)
+        next_word[i] = i if word[i] >= _ORIG_MIN_WORD else next_word[nxt]
+        inc[i] = min(inc_raw[i], next_fill[nxt] - i, next_word[nxt] - i)
+        next_run[i] = (
+            i
+            if fill[i] >= _ORIG_MIN_FILL
+            or word[i] >= _ORIG_MIN_WORD
+            or inc[i] >= _ORIG_MIN_INC
+            else next_run[nxt]
+        )
+    return fill, word, inc, next_run
+
+
+def compress(data: bytes, *, big_endian_offsets: bool) -> bytes:
+    """Encode ``data`` (≤ 64 KB) as one compressed structure, the original parse.
+
+    A single left-to-right pass with no lookahead and no cost comparison: at each
+    position the first command that fires wins — fill, word fill, increasing fill,
+    then the longest backreference — and a byte nothing fires on joins a pending
+    literal run. Runs pre-empt everything (:func:`_original_runs`), which is what
+    makes the parse reproducible at all, and what turns a 22-byte match in the
+    shipped data into backref/word/backref: the match was not truncated for cost,
+    a run began.
+
+    Re-encoding a structure decoded from a Yoshi's Island cart blob reproduces
+    that blob byte for byte — 261 of 261 blobs, 77,145 of 77,145 commands — so an
+    unedited structure saves back unchanged and certainly still fits its slot. The
+    rules were recovered from that one game's data
+    (``docs/graphics-formats-reference/snes-lz-compressor-parses.md`` §1); on a
+    title packed by other tooling this is simply a mediocre compressor, never an
+    invalid one, and :func:`compress_improved` is the ~13%-smaller alternative.
+    """
+    n = len(data)
+    if n > _MAX_OUT:
+        raise ValueError(
+            f"data is {n:#x} bytes; LZ structures cap at {_MAX_OUT:#x} (one 64 KB bank)"
+        )
+    if n == 0:
+        return bytes((_TERMINATOR,))
+
+    fill, word, inc, next_run = _original_runs(data)
+    # Ties go to the *earliest* offset, so the chain is walked oldest-first and
+    # uncapped: unlike the shortest path's search, dropping candidates here would
+    # change which stream comes out, not just how long finding it takes.
+    finder = MatchFinder(
+        data, min_match=_ORIG_MIN_BACKREF, window=None, oldest_first=True
+    )
+
+    out = bytearray()
+    indexed = 0
+    literal_start = -1
+
+    def flush_literals(end: int) -> None:
+        nonlocal literal_start
+        if literal_start < 0:
+            return
+        pos = literal_start
+        while pos < end:
+            length = min(end - pos, _ORIG_MAX_LITERAL)
+            _emit_header(out, _OP_LITERAL, length)
+            out.extend(data[pos : pos + length])
+            pos += length
+        literal_start = -1
+
+    i = 0
+    while i < n:
+        offset = 0
+        if fill[i] >= _ORIG_MIN_FILL:
+            op, length = _OP_FILL, fill[i]
+        elif word[i] >= _ORIG_MIN_WORD:
+            op, length = _OP_WORD_FILL, word[i]
+        elif inc[i] >= _ORIG_MIN_INC:
+            op, length = _OP_INCREASING, inc[i]
+        else:
+            op, length = _OP_BACKREF, 0
+            limit = min(_ORIG_MAX_BACKREF, n - i, next_run[i + 1] - i)
+            if limit >= _ORIG_MIN_BACKREF:
+                # Index everything the parse stepped over, so a match may start
+                # inside an earlier command as it does in the shipped streams.
+                finder.add_run(indexed, i)
+                indexed = i
+                length, offset = finder.longest(i, limit)
+            if length < _ORIG_MIN_BACKREF:
+                if literal_start < 0:
+                    literal_start = i
+                i += 1
+                continue
+
+        flush_literals(i)
+        _emit_header(out, op, length)
+        if op == _OP_FILL or op == _OP_INCREASING:
+            out.append(data[i])
+        elif op == _OP_WORD_FILL:
+            out += data[i : i + 2]
+        elif big_endian_offsets:
+            out += bytes(((offset >> 8) & 0xFF, offset & 0xFF))
+        else:
+            out += bytes((offset & 0xFF, (offset >> 8) & 0xFF))
+        i += length
+
+    flush_literals(n)
+    out.append(_TERMINATOR)
+    return bytes(out)
+
+
 def _run_lengths(data: bytes) -> tuple[list[int], list[int], list[int]]:
     """How far the fill, increasing and alternating patterns reach from each
     position — the three commands whose reach is a property of the bytes alone,
@@ -192,8 +363,8 @@ def _run_lengths(data: bytes) -> tuple[list[int], list[int], list[int]]:
     return fill, inc, alt
 
 
-def compress(data: bytes, *, big_endian_offsets: bool) -> bytes:
-    """Encode ``data`` (≤ 64 KB) as one compressed structure.
+def compress_improved(data: bytes, *, big_endian_offsets: bool) -> bytes:
+    """Encode ``data`` (≤ 64 KB) as one compressed structure, as small as it goes.
 
     The parse is a shortest path, not a greedy walk: ``cost[i]`` is the fewest
     compressed bytes that can encode ``data[i:]``, solved right-to-left, so every
@@ -307,9 +478,14 @@ def compress(data: bytes, *, big_endian_offsets: bool) -> bytes:
 
 
 class _LzBase:
-    """Both directions of one LZ variant; ``_big_endian`` is all that differs."""
+    """Both directions of one LZ variant; ``_big_endian`` is all that differs.
+
+    ``_improved`` picks the parse, which only a save-back can tell apart: both
+    write the same format, so a structure written by either decodes identically.
+    """
 
     _big_endian: bool
+    _improved = False
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
         # Strict first: reaching the terminator means the structure's true end is
@@ -330,7 +506,8 @@ class _LzBase:
         return out
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return compress(data, big_endian_offsets=self._big_endian)
+        pack = compress_improved if self._improved else compress
+        return pack(data, big_endian_offsets=self._big_endian)
 
 
 class Lz1(_LzBase):
@@ -340,10 +517,37 @@ class Lz1(_LzBase):
     )
 
 
+class Lz1Improved(Lz1):
+    """The shortest-path parse over LZ1's little-endian offsets. Whether LZ1
+    titles were packed by the same tooling is unmeasured, so this is the one to
+    reach for wherever the default turns out not to reproduce a blob."""
+
+    _improved = True
+    info = PluginInfo(
+        id="compression.lz1-improved",
+        name="LZ1 improved (Zelda 3)",
+        stage=Stage.COMPRESSION,
+    )
+
+
 class Lz2(_LzBase):
     _big_endian = True
     info = PluginInfo(
         id="compression.lz2",
         name="LZ2 (SMW, Yoshi's Island)",
+        stage=Stage.COMPRESSION,
+    )
+
+
+class Lz2Improved(Lz2):
+    """Same stream, a smaller parse — decoding is identical, so the two are
+    interchangeable on read and only a save-back tells them apart. Worth ~13% on
+    Yoshi's Island data, at the cost of an unedited structure no longer
+    re-saving to its original bytes."""
+
+    _improved = True
+    info = PluginInfo(
+        id="compression.lz2-improved",
+        name="LZ2 improved (SMW, Yoshi's Island)",
         stage=Stage.COMPRESSION,
     )

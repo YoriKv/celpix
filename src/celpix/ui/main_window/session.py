@@ -776,6 +776,60 @@ class SessionMixin:
             and self._tile_bank_owner(other) is owner
         ]
 
+    def _maps_drawing_from(self, owners: list[Entry]) -> list[Entry]:
+        """Every open map whose art comes from one of ``owners``.
+
+        The audience for an owner *arriving or leaving*, where
+        :meth:`_entries_bound_to` is the audience for its bytes changing — same
+        question, asked of several owners because a file is removed with its
+        slices and a map may be bound to any of them.
+
+        The answer has to be taken **before** a removal and **after** a restore:
+        a binding resolves only while the entry it names is open
+        (:meth:`_binding_target`), so at the other end of either there is nothing
+        left to ask.
+        """
+        found: list[Entry] = []
+        for owner in owners:
+            for other in self._entries_bound_to(owner):
+                if not any(other is seen for seen in found):
+                    found.append(other)
+        return found
+
+    def _reresolve_bound_art(self, maps: list[Entry]) -> None:
+        """Re-read ``maps`` against whatever their bindings reach **now**.
+
+        A map holds a decoded *copy* of its bank, so closing that bank — or an
+        undo putting it back — changes nothing about the map until it is read
+        again: it went on drawing art out of a file no longer in the list, and
+        the "no tiles bound" state a map with an unresolved source is supposed to
+        show never arrived (``docs/design/tilemap-entry.md`` §1). That is the
+        arriving-and-leaving twin of :meth:`_resync_tile_bindings`, which patches
+        the same copies when the bytes change underneath them.
+
+        An ordinary re-read, so an unsaved cell edit rides across it and a map
+        bound through a chain resolves its hop exactly as a fresh load would.
+        Quiet, because the gesture was about another entry: a map whose own file
+        has since gone missing must not put a modal in front of a removal.
+
+        Entries closed along with the owner are skipped — nothing is left to
+        redraw them into — and the view is only repainted if one of them is what
+        is on screen, which is the same signal :meth:`_rechain_dependents` gives
+        its caller.
+        """
+        repaint = False
+        for entry in maps:
+            if not any(open_ is entry for open_ in self._workspace.entries):
+                continue
+            if not self._reread_tilemap(entry, quiet=True):
+                continue
+            if entry is self._workspace.current:
+                self._doc = entry.doc
+                repaint = True
+        if repaint:
+            self._drop_unavailable_edit_mode()
+            self._refresh_view()
+
     def _resync_tile_bindings(
         self, owner: Entry, splices: list[tuple[int, bytes]]
     ) -> None:
@@ -1258,6 +1312,15 @@ class SessionMixin:
         self._refresh_tile_source()
         self._refresh_window_title()
         self._sync_nav()
+        # The third state the gating pass has to run from, and the one where it
+        # is least obvious: no render happens here, and unlike the empty state
+        # this one *has* an entry, so its kind is the answer. Without it the bars
+        # kept whatever the last document shown needed — a missing tilemap wore
+        # the pixel format picker and the position bar, a missing pixel file wore
+        # the cell format and the Edit Tiles mode. The greyed toolbars hid most of
+        # that; the two View/Palette menu toggles this pass owns outright
+        # (_GATE_OWNS) are on no toolbar and said the wrong thing outright.
+        self._sync_capabilities()
         self.statusBar().showMessage(
             f"{entry.name}: file not found - use File ▸ Locate missing files."
         )

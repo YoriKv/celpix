@@ -720,12 +720,24 @@ class MainWindow(
     def _apply_close_entry(self, entry: Entry) -> None:
         """Take ``entry`` (and, for a file, its slices) out of the workspace;
         the current view repoints to a neighbour via the workspace."""
+        # Asked before the close, while the bindings still resolve: every map
+        # drawing through this file (or through one of its slices) holds a decoded
+        # copy of the art and would go on showing it.
+        orphaned = self._maps_drawing_from([entry, *self._workspace.children_of(entry)])
         self._workspace.close(entry)
         self._sync_locate_action()
+        self._reresolve_bound_art(orphaned)
         # Closing the bank a map is painted through takes its pixels away without
         # the view moving, so the mode has to be re-asked here as well as on an
         # entry switch (``session.SessionMixin._drop_unavailable_edit_mode``).
         self._drop_unavailable_edit_mode()
+        # And the controls that offer the mode with it. The drop above only acts
+        # when pixel mode was *on*; from tile mode nothing ran, and a close that
+        # leaves the view where it was renders nothing of its own — so Toggle Edit
+        # Mode stayed armed over a map with nothing left to paint into. Still
+        # needed after the re-resolve above: a map whose re-read failed keeps the
+        # document it had, and the binding under it is gone either way.
+        self._sync_edit_actions()
 
     def _apply_restore_entries(
         self, victims: list[tuple[int, Entry]], was_current: Entry | None
@@ -739,6 +751,12 @@ class MainWindow(
         for index, entry in sorted(victims, key=lambda pair: pair[0]):
             self._workspace.insert(entry, index)
         self._sync_locate_action()
+        # The mirror of the close, and it has to be asked *here* rather than
+        # captured over there: the bindings only resolve again now the entries are
+        # back, and it is that resolution which tells a map its art has returned.
+        # Before the activation below, so a map that is about to come on screen is
+        # already drawing the tiles it had rather than a page of placeholders.
+        self._reresolve_bound_art(self._maps_drawing_from([e for _, e in victims]))
         if any(entry is was_current for _, entry in victims):
             self._activate_entry(was_current)
 

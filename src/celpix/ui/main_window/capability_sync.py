@@ -92,6 +92,10 @@ class Gesture(Enum):
 # widgets because they are created by a dozen different mixins in an order this
 # module has no business depending on; a name that does not resolve is skipped,
 # so a control that has not been built yet costs nothing.
+#
+# A name may hold a **tuple** of controls rather than one: a menu group whose
+# rows are gated as a unit and have no individual reason to be named here. The
+# machinery is the same, applied to each of them.
 _GATES: dict[Capability, tuple[str, ...]] = {
     # The two *unpin* gestures and the recolour toggle, and not the third gesture
     # beside them: pinning a row is what a pixel document does with a row it has
@@ -120,8 +124,20 @@ _GATES: dict[Capability, tuple[str, ...]] = {
     # The Cell spin rides on this capability too and gates itself, because it
     # needs the format's word as well (see _GATED_IN_PLACE's note).
     Capability.STAMP: ("_stamp_action", "_toggle_stamp_action"),
-    Capability.NAVIGATION: ("_tile_offset_bar",),
-    Capability.IMPORT_IMAGE: ("_import_png_action",),
+    # Three surfaces onto the same view window, and all three have to go
+    # together. The position bar is the visible one; the Navigate menu's
+    # position and row-count rows are the same movements spelled as menu rows
+    # (their keys are routed by the event filter, which is inert here already);
+    # and New Slice from View carves out whatever that window covers, which is
+    # the third member of the family COMPRESSION_SCAN belongs to — it reads the
+    # window rather than moving it. The menu's *column* rows stay: a map's cell
+    # width is its own live setting, which is why the kind's refusal in
+    # ``capabilities.py`` names the row count and the position and not that.
+    Capability.NAVIGATION: (
+        "_tile_offset_bar",
+        "_nav_window_actions",
+        "_new_slice_from_view_action",
+    ),
     Capability.CLIPBOARD: ("_copy_action", "_cut_action", "_paste_action"),
     # The codecs bar swaps its left half by content kind: a tilemap entry's bytes
     # are cells, so the pixel format and the compression preview say nothing
@@ -150,6 +166,16 @@ _GATES: dict[Capability, tuple[str, ...]] = {
 # gated. A capability sits in exactly one bucket; a control may still weigh more
 # than that bucket says.
 #
+# ``IMPORT_IMAGE`` is here for a reason none of the others share, and it is the
+# one to check a new gate against: its control has an owner that runs **more
+# often than this pass does**. ``_sync_edit_actions`` re-decides Import from PNG
+# on every selection change, and a selection changes without anything being
+# re-rendered — so a veto applied at the tail of the refresh cycle was undone by
+# the next click on a cell, and the row came back live on a tilemap until the
+# following render. Veto-last only holds while every owner runs before this
+# pass; where one does not, the owner has to ask
+# (:meth:`~...selection.SelectionMixin._sync_edit_actions`).
+#
 # ``PALETTE_ROW`` is a two-level condition of the third sort: both kinds declare
 # it, so the table's gate would always be true, while what the two controls
 # underneath it actually need is finer and per-kind — a selection and, on a
@@ -169,6 +195,7 @@ _GATED_IN_PLACE = frozenset(
         Capability.CELL_ROTATE,  # transform._sync_transform_actions
         Capability.PALETTE_ROW,  # palette_regions._sync_pin_actions
         Capability.PIXEL_EDIT,  # selection._pixel_edit_available
+        Capability.IMPORT_IMAGE,  # selection._sync_edit_actions
     }
 )
 
@@ -229,6 +256,9 @@ _GATE_OWNS = frozenset(
     {
         "_show_palette_regions_action",
         "_show_tile_ids_action",
+        # The Navigate menu's window rows: built enabled beside the keys they
+        # document, and no ``_sync_*`` has ever had a reason to touch them.
+        "_nav_window_actions",
         # Hidden groups have to be in here too, or the veto below would leave a
         # group disabled behind its own hiding and it would come back grey.
         "_pixel_codec_action",
@@ -370,14 +400,18 @@ class CapabilitySyncMixin:
         for capability, names in _GATES.items():
             allowed = self._can(capability)
             for name in names:
-                control = getattr(self, name, None)
-                if control is None:
+                found = getattr(self, name, None)
+                if found is None:
                     continue
-                if name in _HIDDEN:
-                    control.setVisible(allowed)
-                if name in _GATE_OWNS:
-                    control.setEnabled(allowed)
-                elif not allowed:
-                    # Never the other branch: see the module docstring on why
-                    # this only ever takes away.
-                    control.setEnabled(False)
+                # A name may hold a group rather than a control (see _GATES);
+                # every member of one is gated the same way, so the tuple is
+                # flattened here rather than spelled out as a dozen names.
+                for control in found if isinstance(found, tuple) else (found,):
+                    if name in _HIDDEN:
+                        control.setVisible(allowed)
+                    if name in _GATE_OWNS:
+                        control.setEnabled(allowed)
+                    elif not allowed:
+                        # Never the other branch: see the module docstring on
+                        # why this only ever takes away.
+                        control.setEnabled(False)

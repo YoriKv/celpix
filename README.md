@@ -63,6 +63,10 @@ tools for accuracy where available.
 - **[Advynia](https://github.com/KarisaAdvynia/Advynia)**
 - **[DreamCompress](https://www.romhacking.net/utilities/1900/)**
 - **[SuperFamiconv](https://github.com/Optiroc/SuperFamiconv)**
+- **[Tile Layer Pro](https://www.romhacking.net/utilities/108/)**
+- **[PSXSDK](https://github.com/nathanhi/psxsdk)**
+- **[hcgcad](https://github.com/LuigiBlood/hcgcad)**
+- **[MAME](https://github.com/mamedev/mame)**
 
 ## AI Use Disclaimer
 

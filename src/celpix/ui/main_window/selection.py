@@ -371,7 +371,13 @@ class SelectionMixin:
             and (self._has_cell_clipboard() if tilemap else clipboard.has_content())
         )
         # An import needs no selection: with none, it lands at the view's start.
-        self._import_png_action.setEnabled(has_doc)
+        # The capability is asked here rather than left to the gating pass
+        # because this method runs on every selection change and that pass does
+        # not — a veto it applied at the end of the last render would be handed
+        # back by the next click on a cell (``capability_sync._GATED_IN_PLACE``).
+        self._import_png_action.setEnabled(
+            has_doc and self._can(Capability.IMPORT_IMAGE)
+        )
         self._select_all_action.setEnabled(has_doc)
 
     # -- tile selection ----------------------------------------------------

@@ -79,44 +79,70 @@ class NavigationMixin:
         Back/Forward lead: they move between *entries* rather than within one, so
         they belong at the head of the menu and are the only actions in it with
         real shortcuts (see :meth:`_add_history_actions`).
+
+        The last field of each row says whether it addresses the **view window** —
+        moving it, or resizing it by rows. Those are what ``NAVIGATION`` gates, so
+        they are collected into :attr:`_nav_window_actions` for the capability
+        pass to switch off on a document that is always shown entire. The column
+        rows are not among them: a map's cell width is a live setting of its own,
+        which is why ``capabilities.py`` refuses a tilemap the row count and the
+        position and says nothing about columns.
         """
         menu = self.menuBar().addMenu("&Navigate")
         self._add_history_actions(menu)
-        groups: tuple[tuple[tuple[str, str, Callable[[], None]], ...], ...] = (
+        groups: tuple[tuple[tuple[str, str, Callable[[], None], bool], ...], ...] = (
             (
-                ("&First page", "Home", self._nav_home),
-                ("&Last page", "End", self._nav_end),
+                ("&First page", "Home", self._nav_home, True),
+                ("&Last page", "End", self._nav_end, True),
             ),
             (
-                ("&Previous byte", "- / Ctrl+Left", lambda: self._nav_bytes(-1)),
-                ("&Next byte", "+ / Ctrl+Right", lambda: self._nav_bytes(1)),
-                ("&Zero byte offset", "0", self._clear_nudge),
-                ("Previous &tile", "Left", lambda: self._nav_tiles(-1)),
-                ("Next til&e", "Right", lambda: self._nav_tiles(1)),
-                ("Row &up", "Up", lambda: self._nav_rows(-self._row_step())),
-                ("Row &down", "Down", lambda: self._nav_rows(self._row_step())),
-                ("Pa&ge up", "PgUp", lambda: self._nav_rows(-self._view_rows())),
-                ("Page do&wn", "PgDown", lambda: self._nav_rows(self._view_rows())),
+                ("&Previous byte", "- / Ctrl+Left", lambda: self._nav_bytes(-1), True),
+                ("&Next byte", "+ / Ctrl+Right", lambda: self._nav_bytes(1), True),
+                ("&Zero byte offset", "0", self._clear_nudge, True),
+                ("Previous &tile", "Left", lambda: self._nav_tiles(-1), True),
+                ("Next til&e", "Right", lambda: self._nav_tiles(1), True),
+                ("Row &up", "Up", lambda: self._nav_rows(-self._row_step()), True),
+                ("Row &down", "Down", lambda: self._nav_rows(self._row_step()), True),
+                ("Pa&ge up", "PgUp", lambda: self._nav_rows(-self._view_rows()), True),
+                (
+                    "Page do&wn",
+                    "PgDown",
+                    lambda: self._nav_rows(self._view_rows()),
+                    True,
+                ),
             ),
             (
                 (
                     "Fewer &columns",
                     "Shift+Left",
                     lambda: self._adjust_spin(self._columns, -1),
+                    False,
                 ),
                 (
                     "&More columns",
                     "Shift+Right",
                     lambda: self._adjust_spin(self._columns, 1),
+                    False,
                 ),
-                ("Fewer &rows", "Shift+Up", lambda: self._adjust_spin(self._rows, -1)),
-                ("More r&ows", "Shift+Down", lambda: self._adjust_spin(self._rows, 1)),
+                (
+                    "Fewer &rows",
+                    "Shift+Up",
+                    lambda: self._adjust_spin(self._rows, -1),
+                    True,
+                ),
+                (
+                    "More r&ows",
+                    "Shift+Down",
+                    lambda: self._adjust_spin(self._rows, 1),
+                    True,
+                ),
             ),
         )
+        window_actions: list[QAction] = []
         for i, group in enumerate(groups):
             if i:
                 menu.addSeparator()
-            for text, key, handler in group:
+            for text, key, handler, addresses_window in group:
                 # The key text goes in the label after a tab, which Qt renders in
                 # the menu's shortcut column. No real shortcut is registered:
                 # these keys are routed by the app-wide event filter
@@ -126,6 +152,9 @@ class NavigationMixin:
                 action = QAction(f"{text}\t{key}", menu)
                 action.triggered.connect(handler)
                 menu.addAction(action)
+                if addresses_window:
+                    window_actions.append(action)
+        self._nav_window_actions = tuple(window_actions)
 
     def _build_navbar(self) -> QWidget:
         """The strip under the canvas: the current position + tile/row step buttons.

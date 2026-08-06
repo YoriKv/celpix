@@ -2,6 +2,12 @@
 
 ## v0.4.8 - unreleased
 
+- **SNES LZ1/LZ2 variants**: the lz1/2 encoder defaults to the byte identical
+  Yoshi's Island encoder. Although each game and even different releases of the
+  same game used different encoder settings so byte identical is only meaningful
+  for YI. The "improved" variants are the more optimized versions that allow for
+  better compression but still decompress accurately. These are closer to what
+  Lunar Compress does.
 - Cleanup pass
 
 ## v0.4.7 - 2026-08-04
