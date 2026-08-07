@@ -2,13 +2,19 @@ name: Release
 
 # Push a version tag (e.g. `v0.1.0`) to build the app for Windows, Linux, and
 # macOS with PyInstaller and publish a GitHub Release with the artifacts:
-#   - celpix-<version>-win.zip       (portable Windows app folder, zipped)
-#   - celpix-<version>-linux.tar.gz  (portable Linux app folder, tarred)
-#   - celpix-<version>-mac-arm64.zip (macOS .app bundle, Apple Silicon)
-#   - celpix-<version>-mac-intel.zip (macOS .app bundle, Intel)
+#   - celpix-win.zip        (portable Windows app folder, zipped)
+#   - celpix-linux.tar.gz   (portable Linux app folder, tarred)
+#   - celpix-mac-arm64.zip  (macOS .app bundle, Apple Silicon)
+#   - celpix-mac-intel.zip  (macOS .app bundle, Intel)
 # The release body is the matching `## v<version>` section of CHANGELOG.md
 # (auto-generated commit notes are appended; if the section is missing, the
 # release falls back to the auto notes alone).
+#
+# The build itself is NOT described here: `packaging/build.py` holds the whole
+# recipe — PyInstaller flags, per-platform icon, the macOS plist stamp, and the
+# archive format — and each runner just calls it. A developer running that same
+# script locally therefore builds exactly what a release ships. Keep build
+# changes in that script, not in this file.
 #
 # Structure mirrors the CI workflow: a per-OS `build` matrix always uploads its
 # artifact to the run; a single `release` job (tag push only) downloads them all
@@ -31,36 +37,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            asset: celpix-win
-            # PowerShell: zip the onedir output folder.
-            package: Compress-Archive -Path dist/celpix/* -DestinationPath dist/celpix-win.zip
-            artifact: dist/celpix-win.zip
-            # Embedded into the .exe and shown in Explorer/taskbar.
-            icon: --icon packaging/celpix.ico
-          - os: ubuntu-latest
-            asset: celpix-linux
-            package: tar -czf dist/celpix-linux.tar.gz -C dist celpix
-            artifact: dist/celpix-linux.tar.gz
-            # Linux has no build-time icon; the app sets its window icon at runtime.
-            icon: ""
-          # Two native macOS builds. uv's Python is single-arch, so PyInstaller
-          # can't emit a universal2 app — instead each architecture builds on
-          # its own runner. macos-latest is Apple Silicon; macos-15-intel is
-          # GitHub's last x86_64 image (hosted until Aug 2027).
-          - os: macos-latest
-            asset: celpix-mac-arm64
-            # --windowed produces celpix.app; zip it (ditto preserves bundle bits).
-            package: ditto -c -k --keepParent dist/celpix.app dist/celpix-mac-arm64.zip
-            artifact: dist/celpix-mac-arm64.zip
-            # Baked into celpix.app's Info.plist and shown in the Dock/Finder.
-            icon: --icon packaging/celpix.icns
-          - os: macos-15-intel
-            asset: celpix-mac-intel
-            package: ditto -c -k --keepParent dist/celpix.app dist/celpix-mac-intel.zip
-            artifact: dist/celpix-mac-intel.zip
-            icon: --icon packaging/celpix.icns
+        # Two native macOS builds. uv's Python is single-arch, so PyInstaller
+        # can't emit a universal2 app — instead each architecture builds on its
+        # own runner. macos-latest is Apple Silicon; macos-15-intel is GitHub's
+        # last x86_64 image (hosted until Aug 2027). build.py tells the two
+        # apart by the machine it is running on and names its archive to match.
+        os: [windows-latest, ubuntu-latest, macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -82,53 +64,25 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen
 
-      # --windowed: no console window on Win/macOS (a no-op on Linux). PySide6's
-      # bundled PyInstaller hooks pull in the Qt plugins automatically.
-      # --collect-data: PyInstaller only follows imports, so the package's data
-      # files (shipped presets, plugin examples under celpix/resources) must be
-      # collected explicitly or the frozen app starts without them.
-      # pyinstaller is pulled in ephemerally with --with so it need not live in
-      # the dev dependency group / uv.lock.
-      - name: Build app
-        run: >
-          uv run --with pyinstaller pyinstaller
-          --name celpix --windowed --noconfirm
-          --collect-data celpix
-          ${{ matrix.icon }}
-          src/celpix/__main__.py
-
-      # PyInstaller stamps LSMinimumSystemVersion from the build Python's own
-      # deployment target (e.g. 11.0 on arm64), but the app's real floor is
-      # Qt's: PySide6 6.10+ wheels are macosx_13_0. Stamp the honest minimum so
-      # older systems get a clear "requires macOS 13" dialog instead of a
-      # launch crash, then re-sign — editing Info.plist invalidates the ad-hoc
-      # signature PyInstaller applied, and arm64 refuses unsigned binaries.
-      - name: Stamp minimum macOS version
-        if: runner.os == 'macOS'
-        run: |
-          PLIST=dist/celpix.app/Contents/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 13.0" "$PLIST" \
-            || /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 13.0" "$PLIST"
-          codesign --force --deep --sign - dist/celpix.app
-
-      # Split by OS: the `shell` key takes no expressions, so we can't pick it with
-      # ${{ runner.os … }}. `if:` does allow the runner context, and only the matching
-      # step runs. Windows packages with PowerShell (Compress-Archive); the rest bash.
-      - name: Package artifact (Windows)
+      # Split by OS only to spell the interpreter the way each runner image
+      # guarantees it (`python` on Windows, `python3` elsewhere); only the
+      # matching step runs. build.py needs nothing but the stdlib and uv.
+      - name: Build app (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: ${{ matrix.package }}
+        run: python packaging\build.py --archive
 
-      - name: Package artifact (Unix)
+      - name: Build app (Unix)
         if: runner.os != 'Windows'
-        shell: bash
-        run: ${{ matrix.package }}
+        run: python3 packaging/build.py --archive
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.artifact }}
+          name: ${{ matrix.os }}
+          path: |
+            dist/celpix-*.zip
+            dist/celpix-*.tar.gz
+          if-no-files-found: error
 
   release:
     # Tag push only: gather all OS builds and publish a single release.

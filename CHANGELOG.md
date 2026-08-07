@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.9 - unreleased
+
+- Local build support: `packaging/build.py`
+
 ## v0.4.8 - 2026-08-06
 
 - **SNES LZ1/LZ2 variants**: the lz1/2 encoder defaults to the byte identical

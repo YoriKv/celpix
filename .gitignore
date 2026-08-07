@@ -36,7 +36,11 @@ venv/
 coverage.xml
 htmlcov/
 
-# --- Packaging / release build outputs (for the future CI pipeline) ---
+# --- Packaging / release build outputs ---
+# `packaging/build.py` — run locally or by the release workflow — leaves the
+# frozen app in dist/ and PyInstaller's scratch in build/, both already covered
+# by the Python section above; the generated spec file lands at the repo root.
+# The installer formats below are ignored pre-emptively; nothing emits them yet.
 *.spec
 *.dmg
 *.app/
