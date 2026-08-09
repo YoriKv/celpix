@@ -751,7 +751,14 @@ class SelectionMixin:
         self._refresh_hex()  # the hex highlight tracks the selection
 
     def _announce_selection(self) -> None:
-        """Status-line summary of what is selected, in the shape it was made."""
+        """Status-line summary of what is selected, in the shape it was made.
+
+        One sentence shape throughout: **what** was selected, **where** it starts,
+        and the total last. The count trails rather than sitting between the two,
+        so the shape and the address read as one phrase instead of being split by
+        a number belonging to neither — and it lands in the same place in every
+        message, which is where the eye goes for it.
+        """
         tiles = self._selection_tiles()
         if not tiles:
             return
@@ -760,6 +767,7 @@ class SelectionMixin:
         if self._grid_tilemap() is not None:
             self._announce_cell_selection()
             return
+        total = counted(len(tiles), "tile")
         if self._doc is not None and self._doc.is_sprite:
             # Counted, and no byte address: a slot here is a square of the *drawn*
             # sheet, and the bytes the tiles came from are the bank's - an offset
@@ -767,25 +775,22 @@ class SelectionMixin:
             if self._rect_size is not None:
                 cols, rows = self._rect_size
                 self.statusBar().showMessage(
-                    f"Selected {cols}×{rows} tiles ({len(tiles)}) of the sheet"
+                    f"Selected {cols}×{rows} tiles of the sheet ({total})"
                 )
             else:
-                self.statusBar().showMessage(
-                    f"Selected {counted(len(tiles), 'tile')} of the sheet"
-                )
+                self.statusBar().showMessage(f"Selected {total} of the sheet")
             return
         at_first = self._format_offset(self._tile_byte_offset(first))
         if self._rect_size is not None:
             cols, rows = self._rect_size
             self.statusBar().showMessage(
-                f"Selected {cols}×{rows} tiles ({len(tiles)}) from {at_first}"
+                f"Selected {cols}×{rows} tiles from {at_first} ({total})"
             )
         elif len(tiles) == 1:
             self.statusBar().showMessage(f"Selected tile {first:,} at {at_first}")
         else:
             self.statusBar().showMessage(
-                f"Selected tiles {first:,}–{tiles[-1]:,} ({len(tiles)} tiles) "
-                f"from {at_first}"
+                f"Selected tiles {first:,}–{tiles[-1]:,} from {at_first} ({total})"
             )
 
     def _announce_cell_selection(self) -> None:
@@ -794,7 +799,10 @@ class SelectionMixin:
         Cells rather than tiles, and no byte address: the selection names
         positions in the *map*, while the bytes the window is over are the tile
         bank it borrows from, so a file offset here would point at somebody
-        else's data (:meth:`_selection_byte_range`).
+        else's data (:meth:`_selection_byte_range`). The grid position takes the
+        address's place in the sentence — where a graphic says which byte the
+        selection starts at, a map says which cell of the picture it starts on,
+        the same "and where is it" the reading wants answered.
 
         The numbers are the cells' positions in the **file**, which is what the hex
         dump beside them highlights and what a save writes. On an assembled screen
@@ -804,16 +812,32 @@ class SelectionMixin:
         cells = self._selected_cells()
         if not cells:
             return
+        at_first = self._cell_position_text(self._selected_positions()[0])
+        total = counted(len(cells), "cell")
         if self._rect_size is not None:
             across, down = self._cell_unit()
             cols, rows = self._rect_size[0] // across, self._rect_size[1] // down
-            self.statusBar().showMessage(f"Selected {cols}×{rows} cells ({len(cells)})")
+            self.statusBar().showMessage(
+                f"Selected {cols}×{rows} cells from {at_first} ({total})"
+            )
         elif len(cells) == 1:
-            self.statusBar().showMessage(f"Selected cell {cells[0]:,}")
+            self.statusBar().showMessage(f"Selected cell {cells[0]:,} at {at_first}")
         else:
             self.statusBar().showMessage(
-                f"Selected cells {min(cells):,}–{max(cells):,} ({len(cells)} cells)"
+                f"Selected cells {min(cells):,}–{max(cells):,} "
+                f"from {at_first} ({total})"
             )
+
+    def _cell_position_text(self, position: int) -> str:
+        """A drawn cell position as its ``(column, row)`` on the map.
+
+        The **drawn** position, not the file index: an assembled screen file
+        interleaves its pages, so the two disagree exactly where a coordinate is
+        most wanted — and it is the picture the user is pointing at. Zero-based,
+        like the cell numbers it sits beside.
+        """
+        columns = self._tilemap_columns()
+        return f"({position % columns}, {position // columns})"
 
     def _clear_selection(self) -> None:
         self._selected_tile = None
@@ -1641,11 +1665,12 @@ class SelectionMixin:
         the eyedropper: a popup here would swallow the sample gesture. Suppressed
         while the rearrange tool is armed for the same reason — the right button
         carries the tile-selection drag there, the left one being busy picking
-        tiles up.
+        tiles up — and while Edit Tiles is armed, where the right button picks
+        the tile a cell names.
         """
         if self._doc is None or self._edit_mode is EditMode.PIXEL:
             return
-        if self._rearranging:
+        if self._rearranging or self._stamping:
             return
         self._sync_edit_actions()
         menu = QMenu(self)

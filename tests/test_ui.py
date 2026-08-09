@@ -8553,6 +8553,41 @@ def test_the_cell_spin_follows_the_selection(qtbot, tmp_path) -> None:
     assert not window._cell_index.isEnabled()
 
 
+def test_a_tilemap_selection_says_where_on_the_map_it_starts(qtbot, tmp_path) -> None:
+    """A map has no byte address to report — the bytes under the view are the
+    tile bank's — so the status line answers "and where is it" with the grid
+    position instead, the slot a graphic fills with its file offset.
+
+    Zero-based ``(column, row)``, read off the width the map is *drawn* at, so
+    re-laying the same cells at a different Cols moves the coordinate with them.
+    """
+    from celpix.core.tilemap import Cell
+
+    window, _ = _bound_tilemap(
+        qtbot, tmp_path, [Cell(index=i) for i in range(12)], maker=_pnl_file
+    )
+    window._columns.setValue(4)
+
+    # A rectangle, the shape a tilemap selects in.
+    window._on_slots_selected(6, 6)
+    assert (
+        window.statusBar().currentMessage() == "Selected 1×1 cells from (2, 1) (1 cell)"
+    )
+
+    # A linear run answers for its first cell, the one an edit anchors on.
+    window._set_linear_selection(6, 7)
+    window._announce_selection()
+    assert "from (2, 1)" in window.statusBar().currentMessage()
+    window._set_linear_selection(6, 6)
+    window._announce_selection()
+    assert window.statusBar().currentMessage() == "Selected cell 6 at (2, 1)"
+
+    # The same cell at a different width is a different position on the picture.
+    window._columns.setValue(3)
+    window._announce_selection()
+    assert window.statusBar().currentMessage() == "Selected cell 6 at (0, 2)"
+
+
 def test_flipping_a_cell_toggles_its_bit_and_moves_no_pixels(qtbot, tmp_path) -> None:
     """The whole reason hardware has the bit: a mirrored tile costs one bit and
     no pixels, so nothing in the tile source is touched."""
@@ -10626,6 +10661,101 @@ def test_right_click_picks_the_tile_the_cell_names(qtbot, tmp_path) -> None:
     window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
     window._on_stamp_finished()
     assert [c.index for c in window._doc.cells[:2]] == [6, 6]
+
+
+def test_the_eyedropper_takes_the_cells_palette_row_with_it(qtbot, tmp_path) -> None:
+    """A tile picked without its row stamps back in whatever colours Subpal was
+    left on — so the pick moves the row the way a left-click selection does.
+
+    Subpal is the drawn row, so what lands is the row the palette grid rings and
+    the tile sheet is read in: the file's number with the entry's base applied.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(
+        qtbot,
+        tmp_path,
+        [Cell(index=1, palette_row=2), Cell(index=6, palette_row=5)],
+    )
+    assert window._doc.cells_carry_palette_rows  # the fixture has rows to take
+    window._row_base.setValue(4)  # a base, so "stored" and "drawn" differ
+    base = window._doc.palette_row_base
+    assert base == 4
+    window._subpalette.setValue(0)
+
+    window._on_stamp_pressed(1, Qt.MouseButton.RightButton)
+    assert window._source_tile_id == 6
+    assert window._subpalette.value() == 5 + base
+    assert f"palette row {5 + base}" in window.statusBar().currentMessage()
+
+    # The neighbouring cell answers with its own, so the row tracks the pick
+    # rather than being set once and left.
+    window._on_stamp_pressed(0, Qt.MouseButton.RightButton)
+    assert window._subpalette.value() == 2 + base
+
+
+def test_a_stamp_lays_down_the_whole_cell_the_eyedropper_took(qtbot, tmp_path) -> None:
+    """ "Put that one here" means the cell, not just its tile number: the row, the
+    flips and the priority the codec carries all travel with the pick.
+
+    A tile picked in the **sheet** has no such record behind it, so that path
+    still sets the index and leaves the target's own attributes alone — and
+    reaching for the sheet after an eyedrop drops the held record rather than
+    stamping a stale one.
+    """
+    from dataclasses import replace
+
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(
+        qtbot,
+        tmp_path,
+        [
+            Cell(index=6, palette_row=5, flip_h=True, flip_v=True, priority=1),
+            Cell(index=1, palette_row=2),
+        ],
+    )
+    # Read the source back off the document: what a stamp can carry is what this
+    # format round-trips, and asserting against a literal would test the codec.
+    source = window._doc.cells[0]
+    assert (source.palette_row, source.flip_h, source.priority) == (5, True, 1)
+
+    window._on_stamp_pressed(0, Qt.MouseButton.RightButton)
+    window._on_stamp_pressed(1, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    assert window._doc.cells[1] == source
+
+    # A sheet pick carries an ID alone, so the target keeps what it has.
+    before = window._doc.cells[1]
+    window._tile_source_panel.select_id(3)
+    window._on_stamp_pressed(1, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    assert window._doc.cells[1] == replace(before, index=3)
+
+
+def test_edit_tiles_suppresses_the_canvas_menu(qtbot, tmp_path, monkeypatch) -> None:
+    """The right button is the tool's eyedropper, so the popup that button
+    normally opens has to stay down — otherwise it lands on top of the pick.
+
+    Asserted at the Python level: reaching ``menu.exec()`` under the offscreen
+    platform would block the run, which is what the guard avoids.
+    """
+    from PySide6.QtCore import QPoint
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(qtbot, tmp_path, [Cell(index=1)])
+
+    def _boom():
+        raise AssertionError("built the context menu with Edit Tiles armed")
+
+    # The guard must return before the menu pulls its first actions.
+    monkeypatch.setattr(window, "_clipboard_actions", _boom)
+    window._show_canvas_menu(QPoint(0, 0))  # returns early: no menu, no raise
 
 
 def test_stamping_with_nothing_held_says_so(qtbot, tmp_path) -> None:

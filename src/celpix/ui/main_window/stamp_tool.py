@@ -10,8 +10,9 @@ already has and for the same reason: it wants both mouse buttons, so it cannot
 share the canvas with the selection drag. While armed, a left press lays the
 panel's picked tile into the cell under the cursor and a left drag keeps laying
 it — a pencil over cells — while a right press picks the tile a cell already
-names, which is the eyedropper. It is offered only on a tilemap, because only a
-tilemap has cells that name tiles (`Capability.STAMP`).
+names *and the palette row it is drawn in*, which is the eyedropper. It is
+offered only on a tilemap, because only a tilemap has cells that name tiles
+(`Capability.STAMP`).
 
 **A stroke is one undoable step.** A drag across forty cells is one gesture and
 has to undo as one, so the drag is previewed on the live document and committed
@@ -20,12 +21,16 @@ the cells as they stood at the press restored underneath it first. That is the
 pixel pen's arrangement (paint into a working copy, commit the stroke) at cell
 scale.
 
-**What a stamp writes is the index and nothing else.** A cell's palette row,
-flips and carried `flags` are its own, and are as likely to be what the user set
-up as what they want overwritten — so pointing a cell somewhere else leaves them
-where they are, exactly as the Cell spin does. On a chained map that makes the
-gesture a restamp, and the attributes then come from the source cell anyway
-(§3.1).
+**What a stamp writes is what the pick carried.** An eyedropped tile brings the
+whole cell it was taken off — palette row, flips, priority, the format's
+uninterpreted `flags` — because the gesture is "put *that* one here", and a copy
+that kept only the tile number lays down a cell the user can see is the wrong
+colour. A tile picked in the **tile source sheet** has no such record behind it:
+a sheet holds tiles, and a tile has no palette row, so only the index lands and
+the target keeps the attributes it had, exactly as the Cell spin does. One rule,
+two pickers, and the difference is what each of them knows
+(:meth:`StampToolMixin._stamp_cell`). On a chained map the referrer's attributes
+are moot either way — they come from the source cell (§3.1).
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
 
 from celpix.core.capabilities import Capability
+from celpix.core.tilemap import Cell
 from celpix.pipeline import pipeline
 from celpix.ui.tools import EditMode
 from celpix.ui.widgets import counted, signals_blocked
@@ -43,6 +49,9 @@ from celpix.ui.widgets import counted, signals_blocked
 STAMP_TIP = (
     "Lay the picked tile into a cell (T)\n"
     "Left click or drag stamps; right click picks a tile\n"
+    "A picked cell carries its palette row and flips, and\n"
+    "stamps them back; a tile picked in the panel sets the\n"
+    "tile alone\n"
     "Pick from the Tile Source panel"
 )
 # Why the tool is off where it looks like it should apply. A format whose cells
@@ -277,33 +286,111 @@ class StampToolMixin:
         if at is None or at in self._stamp_touched:
             return
         self._stamp_touched.add(at)
-        if cells[at].index == tile_id and cells[at].visible:
-            return  # already what it names; nothing to draw and nothing to undo
-        # Stamping **makes the position drawn**. A cell the layout leaves blank
-        # paints the background, so placing a tile there would otherwise write the
-        # entry and show nothing — no feedback, and on a layout that is largely
-        # undrawn (`-CLR-.MAP` is entirely so) every click a silent no-op. It is
-        # also what the authoring tool does: `scr_map_cnv` sets the drawn byte on
-        # every block it registers (``scgcad-formats.md`` §4).
-        cells[at] = replace(cells[at], index=tile_id, visible=True)
+        landing = self._stamp_cell(tile_id, cells[at])
+        if cells[at] == landing:
+            return  # already this exactly; nothing to draw and nothing to undo
+        cells[at] = landing
         doc.cells = list(cells)
         doc.resolve()
         self._refresh_view()
 
-    def _pick_tile_at(self, slot: int) -> None:
-        """The eyedropper: take the tile the cell under ``slot`` already names.
+    def _stamp_cell(self, tile_id: int, over: Cell) -> Cell:
+        """The record a stamp lays into ``over`` — **what the pick carried**.
 
-        The number taken is the cell's own index as the file stores it, before
+        An **eyedropped** tile brings its whole cell: the palette row, the flips,
+        the priority and the uninterpreted ``flags`` the format round-trips. The
+        gesture is "put *that* one here", and a copy that kept only the number
+        would put down a cell the user can see is the wrong colour or facing the
+        wrong way — the attributes are as much what they pointed at as the tile
+        is. Everything the codec reads travels, so a new field a format grows is
+        carried without this method learning its name.
+
+        A tile picked in the **sheet** has no such record behind it — the sheet
+        holds tiles, and a tile has no palette row — so only the index lands and
+        the target keeps its own attributes.
+
+        The guard is against a **stale** record: the held ID is re-validated
+        against the map on every stamp (:meth:`_held_tile_id`) and a rebind can
+        move it, so the cell rides along only while it still describes the tile
+        actually being placed.
+
+        ``visible`` is forced either way, because stamping **makes the position
+        drawn**. A cell the layout leaves blank paints the background, so placing
+        a tile there would otherwise write the entry and show nothing — no
+        feedback, and on a layout that is largely undrawn (`-CLR-.MAP` is
+        entirely so) every click a silent no-op. It is also what the authoring
+        tool does: `scr_map_cnv` sets the drawn byte on every block it registers
+        (``scgcad-formats.md`` §4).
+        """
+        held = self._source_cell
+        if held is not None and held.index == tile_id:
+            return replace(held, visible=True)
+        return replace(over, index=tile_id, visible=True)
+
+    def _pick_tile_at(self, slot: int) -> None:
+        """The eyedropper: take the **whole cell** under ``slot``.
+
+        Three things leave with it, and they are three different mechanisms.
+
+        The **tile number** is the cell's own index as the file stores it, before
         the binding's base tile — the same number the tile source panel is
         addressed in, the Cell spin holds and Show Tile IDs writes over the cell,
         so picking here and looking there cannot disagree.
+
+        The **record** rides beside it, held for the next stamp to lay down whole
+        (:meth:`_stamp_cell`). Nothing on screen reads it; it is what makes the
+        gesture a copy of the cell rather than of its tile number.
+
+        The **row goes into Subpal**, which is the *displayed* half and separate
+        from the row the stamp writes (:meth:`_pick_palette_row_at`). A pick is
+        the tool's way of saying "this one", and the same thing said by a
+        left-click selection in tile mode moves the row everywhere it is read.
         """
         doc = self._doc
         at = self._stamp_cell_at(slot)
         if doc is None or doc.cells is None or at is None:
             return
-        self._set_source_tile(doc.cells[at].index)
-        self.statusBar().showMessage(f"Picked tile ${doc.cells[at].index:X}.")
+        index = doc.cells[at].index
+        self._set_source_tile(index, doc.cells[at])
+        row = self._pick_palette_row_at(slot)
+        picked = f"Picked tile ${index:X}"
+        self.statusBar().showMessage(
+            f"{picked}." if row is None else f"{picked}, palette row {row}."
+        )
+
+    def _pick_palette_row_at(self, slot: int) -> int | None:
+        """Take the picked cell's palette row into Subpal; the row, or None.
+
+        The row **shown**, not the row stamped: what a stamp writes travels in the
+        held record (:meth:`_stamp_cell`) and needs no control to carry it. Subpal
+        is where the row is read from by everything a selection would have moved
+        — the palette grid's outlined block, the colours the tile sheet is drawn
+        in, and the row Set Selection's Palette Row writes into cells
+        (:meth:`~...rendering.RenderingMixin._sync_subpalette`). The tool clears
+        the selection and acts on the cell under the cursor instead, so none of
+        that follows a pick unless the row lands here, and the user is left
+        looking at the tile they picked in whichever row Subpal was on.
+
+        The **drawn** row at the **drawn** position, which is the pair
+        :meth:`~...palette_regions.PaletteRegionsMixin._selection_palette_row`
+        answers with for the same reason: a chained map's own cells are
+        coordinates whose row field is a 0 nobody chose, and the row that reaches
+        the screen is the source cell's.
+
+        Nothing to take where the format gives a cell no row — Subpal there is
+        the *view's* row, which the render obeys, so writing a cell's into it
+        would recolour the map on a gesture that is supposed to sample it.
+        """
+        doc = self._doc
+        if doc is None or not doc.cells_carry_palette_rows:
+            return None
+        cells = doc.laid_out_cells
+        at = slot // doc.tiles_per_cell
+        if not 0 <= at < len(cells):
+            return None
+        row = self._drawn_palette_row(cells[at].palette_row)
+        self._subpalette.setValue(row)
+        return row
 
     def _refuse_stamp(self) -> None:
         """Say why a click laid nothing down, rather than doing nothing silently.

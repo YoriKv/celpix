@@ -13,8 +13,10 @@ Each button is a fixed square showing an icon only. The face comes from a bundle
 monochrome PNG where one exists (pencil, fill bucket, eyedropper) or a shape the
 panel paints for the geometry tools (line/rect/ellipse and their filled variants,
 plus the selection marquee), so those share one size and padding. Both are
-rasterized here and tinted to the palette's text color, so the panel tracks the
-theme and the display's pixel ratio — see :meth:`_rebuild_icons`.
+rasterized here and tinted to the palette's text color — in its enabled *and*
+disabled shades, so the rail visibly goes dead outside pixel mode — which is how
+the panel tracks the theme and the display's pixel ratio; see
+:meth:`_rebuild_icons`.
 """
 
 from __future__ import annotations
@@ -42,6 +44,21 @@ from celpix.ui.widgets import icon_cache_key
 # leaves a little breathing room inside the button's frame and check highlight.
 _BUTTON = 30
 _ICON = 20
+
+
+def _tinted(mask: QPixmap, color, ratio: float) -> QPixmap:
+    """``mask`` recolored to ``color``, preserving its alpha shape.
+
+    A copy per call: the mask is stamped twice (enabled and disabled ink), and
+    SourceIn overwrites the pixels it is composited onto.
+    """
+    pixmap = mask.copy()
+    painter = QPainter(pixmap)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    painter.fillRect(pixmap.rect(), color)
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    return pixmap
 
 
 class ToolsPanel(QWidget):
@@ -121,27 +138,44 @@ class ToolsPanel(QWidget):
         yesterday's color at the wrong size. Guarding on the (palette, ratio) key
         makes the frequent PaletteChange storm on startup a no-op after the first.
         """
-        color = self.palette().color(
-            QPalette.ColorGroup.Active, QPalette.ColorRole.ButtonText
-        )
+        palette = self.palette()
+        color = palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.ButtonText)
+        off = palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText)
         ratio = self.devicePixelRatioF()
         key = icon_cache_key(self)
         if key == self._icon_key:
             return
         self._icon_key = key
         for spec in TOOL_SPECS:
-            self._buttons[spec.tool].setIcon(self._tool_icon(spec, color, ratio))
+            self._buttons[spec.tool].setIcon(self._tool_icon(spec, color, off, ratio))
 
-    def _tool_icon(self, spec: ToolSpec, color, ratio: float) -> QIcon:
-        """The tool's face tinted to ``color``, rasterized at ``ratio``.
+    def _tool_icon(self, spec: ToolSpec, color, disabled, ratio: float) -> QIcon:
+        """The tool's face in the enabled and disabled tints, rasterized at ``ratio``.
 
         Both sources feed one recolor path: an alpha mask (the PNG's own alpha, or
         the shape painted onto a transparent square) is filled with the tint via
         SourceIn. So a bundled icon and a painted primitive land on-theme with the
         same weight. The pixmap carries its device ratio, so it still measures
         ``_ICON`` in layout units.
+
+        **The disabled face is baked, not left to Qt.** The rail is dead outside
+        pixel mode, and the style's automatic disabled pixmap fades a *flat
+        silhouette* by so little that the greyed-out rail still read as live —
+        a toolbox inviting clicks that do nothing. Tinting the same mask with the
+        palette's disabled ButtonText is the fade the rest of the UI uses for a
+        control that is off, so the rail dims with the toolbars beside it.
         """
-        box = round(_ICON * ratio)
+        mask = self._tool_mask(spec, round(_ICON * ratio))
+        icon = QIcon(_tinted(mask, color, ratio))
+        icon.addPixmap(_tinted(mask, disabled, ratio), QIcon.Mode.Disabled)
+        return icon
+
+    def _tool_mask(self, spec: ToolSpec, box: int) -> QPixmap:
+        """The tool's glyph as ink on transparency, ``box`` device pixels square.
+
+        Untinted: only the alpha shape matters, since every tint is stamped
+        through it by :func:`_tinted`.
+        """
         mask = QPixmap(box, box)
         mask.fill(Qt.GlobalColor.transparent)
         painter = QPainter(mask)
@@ -158,12 +192,8 @@ class ToolsPanel(QWidget):
             )
         else:
             self._paint_shape(painter, spec.shape, box)
-        # Recolor whatever was drawn to the tint, preserving its alpha shape.
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        painter.fillRect(mask.rect(), color)
         painter.end()
-        mask.setDevicePixelRatio(ratio)
-        return QIcon(mask)
+        return mask
 
     @staticmethod
     def _paint_shape(painter: QPainter, shape: str, box: int) -> None:

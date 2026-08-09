@@ -3,6 +3,7 @@
 ## v0.4.9 - unreleased
 
 - Local build support: `packaging/build.py`
+- Tile editing fixes
 
 ## v0.4.8 - 2026-08-06
 

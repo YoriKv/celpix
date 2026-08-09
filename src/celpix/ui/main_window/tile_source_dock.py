@@ -86,6 +86,11 @@ class TileSourceDockMixin:
         # the sheet, and because the stamp tool will want it without knowing
         # which widget it came from.
         self._source_tile_id: int | None = None
+        # The whole cell the pick was taken *off*, when it was taken off one —
+        # the stamp tool's eyedropper. None for a pick made in the sheet, which
+        # holds tiles and knows nothing about palette rows or flips. A stamp
+        # writes what the pick carried (:meth:`_set_source_tile`).
+        self._source_cell: Cell | None = None
 
         holder = QScrollArea()
         holder.setWidget(self._tile_source_panel)
@@ -305,11 +310,19 @@ class TileSourceDockMixin:
         )
 
     def _on_tile_source_selected(self, tile_id: int) -> None:
+        # A pick made in the sheet carries an ID and nothing else, so it drops
+        # whatever record an earlier eyedrop left held - but only when it names a
+        # *different* tile. The panel is driven from this side too: every pick is
+        # pushed into it (`_set_source_tile`) and the refresh re-selects the held
+        # ID after a recompose dropped it, both of which come back through here.
+        # Those echoes must not throw away the record they are echoing.
+        if tile_id != self._source_tile_id:
+            self._source_cell = None
         self._source_tile_id = tile_id
         self._refresh_tile_source_details()
         self._sync_set_base_tile()
 
-    def _set_source_tile(self, tile_id: int) -> None:
+    def _set_source_tile(self, tile_id: int, cell: Cell | None = None) -> None:
         """Hold ``tile_id`` as the tile a stamp would place, from anywhere.
 
         The panel is one source of the pick and the stamp tool's eyedropper is
@@ -319,8 +332,15 @@ class TileSourceDockMixin:
         cannot if the panel's own selection is the record of it. Pushing it into
         the panel is a no-op wherever that is the case, and the next refresh
         re-applies it.
+
+        ``cell`` is the record the tile was taken *off* — the eyedropper's, the
+        one path that has one. It is held beside the ID because **a stamp writes
+        what the pick carried**: a tile taken off a cell lays that cell down
+        whole, and one taken off the sheet sets an index and leaves the rest of
+        the target alone (:meth:`~...stamp_tool.StampToolMixin._stamp_cell`).
         """
         self._source_tile_id = tile_id
+        self._source_cell = cell
         self._tile_source_panel.select_id(tile_id)
         self._refresh_tile_source_details()
         self._sync_set_base_tile()

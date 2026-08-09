@@ -142,6 +142,41 @@ def test_marquee_glyph_is_centred_like_the_other_tool_shapes() -> None:
         assert rows == rows[::-1]
 
 
+def test_the_tools_rail_bakes_a_greyed_face_for_when_it_is_dead(qtbot) -> None:
+    """The rail is disabled outside pixel mode, and has to look it.
+
+    Its glyphs are flat silhouettes in one tint, which the style's automatic
+    disabled pixmap barely dims — the greyed rail read as live. So each icon
+    carries its own Disabled face in the palette's disabled ink: same shape,
+    visibly duller ink.
+    """
+    from PySide6.QtGui import QIcon, QPalette
+
+    from celpix.ui.tools import Tool
+    from celpix.ui.tools_panel import ToolsPanel
+
+    panel = ToolsPanel()
+    qtbot.addWidget(panel)
+    icon = panel._buttons[Tool.PENCIL].icon()
+    size = icon.availableSizes()[0]
+    live = icon.pixmap(size, QIcon.Mode.Normal).toImage()
+    dead = icon.pixmap(size, QIcon.Mode.Disabled).toImage()
+
+    expected = panel.palette().color(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText
+    )
+    inked = [
+        (x, y)
+        for y in range(live.height())
+        for x in range(live.width())
+        if live.pixelColor(x, y).alpha() == 255
+    ]
+    assert inked, "the pencil glyph drew nothing"
+    for x, y in inked:
+        assert dead.pixelColor(x, y).alpha() == 255  # the shape is untouched...
+        assert dead.pixelColor(x, y).rgb() == expected.rgb()  # ...only the ink moved
+
+
 def test_preferences_land_in_a_file_named_for_the_app(qtbot, tmp_path) -> None:
     # celPix sets no organization on the QApplication (it would nest the data dir
     # celPix/celPix), and a bare QSettings() with none files everything under a
