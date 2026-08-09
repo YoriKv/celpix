@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.9 - unreleased
+## v0.4.9 - 2026-08-08
 
 - Local build support: `packaging/build.py`
 - Tile editing fixes
