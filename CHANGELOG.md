@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.1 - unreleased
+## v0.5.1 - 2026-08-10
 
 - Big cleanup pass on all code, plugins, and comments
 
