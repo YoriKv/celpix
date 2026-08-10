@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.0 - unreleased
+## v0.5.0 - 2026-08-09
 
 - **Fontmaps**: experimental support for "Fontmaps" which will theoretically be
   a universal string editing system for tile based fonts
