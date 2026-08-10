@@ -88,10 +88,11 @@ class TilemapFormat(Protocol):
     Laying the flat list out as a grid is the host's job — a tilemap file rarely
     states its own width.
 
-    May also define the four optional methods
+    May also define the optional methods
     :class:`~celpix.plugins.base.TilemapCodecPlugin` carries, each minus
     ``params``: ``transform_cell(cell, op)``, ``index_limit()``,
-    ``palette_row_limit()`` and ``has_palette_rows()``. **A format that wants its
+    ``palette_row_limit()``, ``has_palette_rows()`` and
+    ``has_line_flag()``. **A format that wants its
     cells edited has to define ``index_limit``** — the host refuses what a codec
     has not been asked about, so omitting it leaves the cell reference unsettable
     and every flip refused, exactly as it would for a full plugin that stayed
@@ -139,6 +140,7 @@ _OPTIONAL: dict[Stage, dict[str, Any]] = {
         "index_limit": _params_last,
         "palette_row_limit": _params_last,
         "has_palette_rows": _params_last,
+        "has_line_flag": _params_last,
         "size_pair": _params_last,
         "frames": _params_middle,
     },

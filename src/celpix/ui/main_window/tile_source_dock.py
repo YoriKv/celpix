@@ -273,14 +273,12 @@ class TileSourceDockMixin:
         if doc is not None and doc.is_sprite:
             self._set_base_tile_button.setToolTip(
                 "Make the picked tile the one a subsprite holding $0 draws\n"
-                "Shifts every subsprite's tile by the same amount - use it\n"
-                "when the object and its tiles number from different places"
+                "Shifts every subsprite's tile by the same amount"
             )
             return
         self._set_base_tile_button.setToolTip(
             "Make the picked tile the one cell 0 draws\n"
-            "Shifts every cell by the same amount - use it when\n"
-            "the map and its tiles number from different places"
+            "Shifts every cell by the same amount"
         )
 
     def _on_tile_source_selected(self, tile_id: int) -> None:

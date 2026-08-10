@@ -9,8 +9,4 @@ category = "Nintendo"
 [params]
 bytes = 2
 endian = "big"
-index = { shift = 0, bits = 10 }
-palette = { shift = 10, bits = 3 }
-priority = { shift = 13, bits = 1 }
-flip_h = { shift = 14, bits = 1 }
-flip_v = { shift = 15, bits = 1 }
+fields = "vhop ppii iiii iiii"

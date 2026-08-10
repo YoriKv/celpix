@@ -2794,7 +2794,7 @@ def test_a_project_plugins_cell_format_reaches_the_files_list(qtbot, tmp_path) -
         "[params]\n"
         'layout = "text"\n'
         "bytes = 1\n"
-        "index = { shift = 0, bits = 8 }\n",
+        'fields = "iiii iiii"\n',
         encoding="utf-8",
     )
     project = tmp_path / "p.celpix"

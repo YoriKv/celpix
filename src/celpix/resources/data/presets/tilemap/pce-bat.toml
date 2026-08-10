@@ -9,5 +9,4 @@ category = "NEC"
 [params]
 bytes = 2
 endian = "little"
-index = { shift = 0, bits = 12 }
-palette = { shift = 12, bits = 4 }
+fields = "pppp iiii iiii iiii"

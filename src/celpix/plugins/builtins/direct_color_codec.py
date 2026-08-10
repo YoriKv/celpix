@@ -1,8 +1,10 @@
 """Direct-color (truecolor) tile codec — pixels are colors, no palette.
 
-The tile-side analogue of the mask-based color codec: each pixel is
-``bytes_per_pixel`` bytes decoded to ``0xAARRGGBB`` via component masks, read at
-the configured ``byte_order`` (little by default). It decodes to an
+The tile-side analogue of the palette color codec: each pixel is
+``bytes_per_pixel`` bytes decoded to ``0xAARRGGBB`` through the preset's
+``fields`` bit layout, read at the configured ``byte_order`` (little by
+default). ``v`` there is an **intensity** field driving R, G and B together, for
+the textures that store one channel and mean grey. It decodes to an
 :class:`~celpix.core.argb_grid.ArgbGrid`, skipping the palette entirely, and
 shares the mask→ARGB kernel with :mod:`celpix.plugins.builtins.color_codec`
 (``docs/graphics-formats-reference/implementation-guide.md`` §3).
@@ -25,17 +27,19 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins._byteops import or_all
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._fields import bit_width
 from celpix.plugins.builtins._mask import (
     ARGB_BYTE_LAYOUT,
+    GRAY,
+    color_masks,
     decode_tables,
     encode_tables,
-    parse_masks,
 )
 from celpix.plugins.builtins._tile import flatten_tiles, require_whole_tiles
 
 
 class DirectColorCodec:
-    """Truecolor tile codec; component masks come from ``params``."""
+    """Truecolor tile codec; the component layout comes from ``params``."""
 
     info = PluginInfo(
         id="codec.pixel.direct-color",
@@ -46,12 +50,34 @@ class DirectColorCodec:
     TILE = 8
 
     @staticmethod
-    def _config(params: dict[str, Any]) -> tuple[int, str, dict[str, int]]:
-        bpx = int(params["bytes_per_pixel"])
+    def _config(params: dict[str, Any]) -> tuple[int, str, dict[str, tuple[int, ...]]]:
+        text = params.get("fields")
+        if "bytes_per_pixel" in params:
+            bpx = int(params["bytes_per_pixel"])
+        elif isinstance(text, str):
+            # The layout already says how wide a pixel is; one that is not a
+            # whole number of bytes could not be strided over the buffer.
+            width = bit_width(text)
+            if width % 8:
+                raise ValueError(
+                    f"a pixel has to be a whole number of bytes, and the layout "
+                    f"describes {width} bits"
+                )
+            bpx = width // 8
+        else:
+            raise ValueError("a pixel needs a width - give bytes_per_pixel")
         if bpx <= 0:
             raise ValueError("bytes_per_pixel must be positive")
         order = params.get("byte_order", "little")
-        return bpx, order, parse_masks(params["masks"])
+        masks = color_masks(params, bpx * 8)
+        shade = masks.pop(GRAY, None)
+        if shade is not None:
+            # One field driving all three channels: the pixel is grey, so the
+            # round trip is exact for any grey the format can hold. A colour
+            # that is not grey cannot be stored and collapses to the OR of the
+            # three on write, which is what the format leaves us.
+            masks |= {"r": shade, "g": shade, "b": shade}
+        return bpx, order, masks
 
     @classmethod
     def _tile(cls, params: dict[str, Any]) -> tuple[int, int]:

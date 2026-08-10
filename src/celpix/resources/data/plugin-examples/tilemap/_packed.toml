@@ -7,7 +7,7 @@
 # every hardware map stores one cell as a single little- or big-endian integer
 # with the tile number in the low bits and a few attribute bits above it, so this
 # one engine covers the lot — a new map format is normally this file with the
-# shifts changed and no code at all.
+# layout redrawn and no code at all.
 #
 # WHICH ENGINE IS WHICH
 # ---------------------
@@ -23,16 +23,16 @@
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
-#   snes-bg         the layout below, `vhopppcc tttttttt`, with page geometry.
+#   snes-bg         the layout below, `vhop ppii iiii iiii`, with page geometry.
 #   snes-bg-swapped the same fields with the word stored the other way round.
-#   gb-bg           a bare index byte: no attributes, and every field but
-#                   `index` simply left out.
+#   gb-bg           a bare index byte, `iiii iiii`: no attributes, and every
+#                   letter but `i` simply unused.
 #   gba-bg          the same 16-bit shape with 32x32 pages.
 #   text-8bit-flag  a text run whose last character carries the line break —
-#                   `terminator` at bit 7 and a 7-bit index below it.
+#                   `eiii iiii`, the flag above a 7-bit index.
 #   scgcad-panel    a cell that draws a 16x16 metatile (`cell_tiles = [2, 2]`).
 #   scgcad-map      cells naming positions in another map (`indirect`), and the
-#                   one shipped format with a `drawn` bit.
+#                   one shipped format with a `d` bit.
 #   scgcad-std      the plain screen of the same family.
 
 id = "preset.tilemap.example-packed"
@@ -40,46 +40,69 @@ name = "Example packed cell (16-bit)"
 engine_id = "codec.tilemap.packed"
 
 [params]
-# Cell width in bytes. 2 is the common case; a Game Boy map is 1.
-bytes = 2
-
-# "little" or "big" — the order the cell word is stored in, per *format* rather
-# than per family. Two formats from the same tool can disagree.
-endian = "little"
-
-# Where each field sits in the word, as { shift, bits }. A field you leave out
-# does not exist in your format: it decodes as zero and is dropped on write,
-# which is how a plain index-only map is described (see gb-bg).
+# WHERE EACH FIELD SITS: one letter per bit, most significant bit first — the
+# diagram your format's own documentation draws. Whitespace groups it for
+# counting and means nothing; group in nibbles and each group is one hex digit.
+#
+#   i  which tile — the only field a map really needs
+#   p  which palette row the cell draws through
+#   o  priority; carried, never rendered, celPix has no layers
+#   h  flip horizontally          v  flip vertically
+#   d  this position IS drawn; see below
+#   e  this cell ends the line; see below
+#   f  bits celPix has no meaning for; see below
+#   .  a bit no field claims, and one a write leaves clear
 #
 # The layout below is the SNES BG entry, `vhopppcc tttttttt`:
-index = { shift = 0, bits = 10 }     # which tile — the only required field
-palette = { shift = 10, bits = 3 }   # which palette row the cell draws through
-priority = { shift = 13, bits = 1 }  # carried, never rendered: celPix has no layers
-flip_h = { shift = 14, bits = 1 }
-flip_v = { shift = 15, bits = 1 }
+fields = "vhop ppii iiii iiii"
+
+# Every bit gets a letter, which is the point: a bit nobody names is written
+# back as ZERO, and spelling it `.` is you saying so. The layout is checked
+# against the cell width, so a diagram that is too short is a load error rather
+# than a map that quietly loses a bit on the first edit.
+#
+# A letter you never use is a field your format does not have: it decodes as
+# zero and is dropped on write, which is how a plain index-only map is
+# described — `fields = "iiii iiii"`, and see gb-bg.
+
+# Cell width in bytes. Optional — the layout above already says — but worth
+# stating, and the two are checked against each other. 2 is the common case; a
+# Game Boy map is 1.
+bytes = 2
+
+# "little" or "big" — the order the cell's BYTES are stored in, per *format*
+# rather than per family. Two formats from the same tool can disagree. The
+# layout is always the assembled word, high bit first, so the two are
+# independent.
+endian = "little"
 
 # A field need not be contiguous. Hardware that grew a tile number past the room
-# left for it parks the extra bits wherever there was space, so a field may also
-# be a LIST of tables, MOST SIGNIFICANT CHUNK FIRST — write that order down
-# deliberately, it is not inferred from bit position:
-# index = [{ shift = 8, bits = 1 }, { shift = 0, bits = 8 }]
+# left for it parks the extra bits wherever there was space — a Game Boy Color
+# index is bits 0-7 plus bit 8 stranded up in the attribute byte. Nothing needs
+# saying: write it where it is, and the two runs of `i` are one field in the
+# order they are read.
+# fields = "ovh. ippp iiii iiii"
 
-# Set where a position IS drawn. A preset with no `drawn` describes a format
+# `d` is set where a position IS drawn. A layout with no `d` describes a format
 # whose every position is drawn, which is all of them but one — leave it out
 # unless your format really has an enable bit, or every cell reads as hidden.
-# drawn = { shift = 15, bits = 1 }
 
-# For a TEXT format that ends a line by setting a bit on its last character
-# rather than spending a code on a terminator. It is the only field here that
-# changes no pixel: it becomes the newline View > Text shows. Placing it is also
-# what takes the bit OUT of the index — `index = { shift = 0, bits = 7 }` beside
-# a terminator at bit 7 is a one-byte text run whose last character draws the
-# letter the hardware draws rather than a tile past the end of the sheet.
-# terminator = { shift = 7, bits = 1 }
+# `e` is for a TEXT format that ends a line by setting a bit on its last
+# character rather than spending a code on a terminator. It is the only field
+# here that changes no pixel: it becomes the newline View > Text shows. Placing
+# it is also what takes the bit OUT of the index — `fields = "eiii iiii"` is a
+# one-byte text run whose last character draws the letter the hardware draws
+# rather than a tile past the end of the sheet.
 
-# Bits your format has that celPix has no meaning for. Carried through untouched
-# so a write stays byte-exact — name them here rather than letting them fall off.
-# flags = { shift = 14, bits = 2 }
+# `f` is for bits your format has that celPix has no meaning for. Carried
+# through untouched so a write stays byte-exact — name them rather than letting
+# them fall off.
+
+# A format whose own notes spell a field some other way can keep its letters:
+#
+#   [params.legend]
+#   c = "index"   # `c` and `t` in `vhopppcc tttttttt` are both the tile number
+#   t = "index"
 
 # How many tiles one cell draws, [across, down]. Default [1, 1]. Use [2, 2] for a
 # format whose cell *is* a 16x16 metatile — but check first: a map that stores
@@ -104,7 +127,7 @@ flip_v = { shift = 15, bits = 1 }
 # offer maps ahead of tile banks and to drop the Base tile a coordinate cannot use,
 # before anything is bound. Rare; the shipped scgcad-map preset is the only one
 # that needs it. Editing such a map *restamps*: setting a cell's index picks a
-# different cell from the map it draws through, and the `index` field above is what
+# different cell from the map it draws through, and the `i` field above is what
 # bounds how high that can go.
 # indirect = true
 

@@ -162,8 +162,7 @@ class ViewMenuMixin:
         """
         self._animation_action = QAction("&Animation...", self)
         self._animation_action.setToolTip(
-            "Play this sprite object's animation sequences\n"
-            "Its own window, with its own zoom"
+            "Play this sprite object's animation sequences"
         )
         self._animation_action.triggered.connect(self._show_animation)
         self._animation_action.setEnabled(False)
@@ -187,8 +186,7 @@ class ViewMenuMixin:
         """
         self._subsprites_action = QAction("S&ubsprites...", self)
         self._subsprites_action.setToolTip(
-            "Show every subsprite this object is built from\n"
-            "Its own window, with its own width and zoom"
+            "Show every subsprite this object is built from"
         )
         self._subsprites_action.triggered.connect(self._show_subsprites)
         self._subsprites_action.setEnabled(False)
@@ -213,8 +211,7 @@ class ViewMenuMixin:
         """
         self._text_action = QAction("Te&xt...", self)
         self._text_action.setToolTip(
-            "Read and edit this text run as words\n"
-            "Its own window, typed through the font's alphabet"
+            "Read and edit this text run as words,\ntyped through the font's alphabet"
         )
         self._text_action.triggered.connect(self._show_text)
         self._text_action.setEnabled(False)
@@ -234,8 +231,7 @@ class ViewMenuMixin:
         """
         self._font_alphabet_action = QAction("&Font Alphabet...", self)
         self._font_alphabet_action.setToolTip(
-            "Say which character each of this font's tiles draws\n"
-            "Its own window, beside the text it is read against"
+            "Say which character each of this font's tiles draws"
         )
         self._font_alphabet_action.triggered.connect(self._show_font_alphabet)
         self._font_alphabet_action.setEnabled(False)
@@ -260,8 +256,7 @@ class ViewMenuMixin:
         """
         self._entire_file = QAction("&Entire File", self, checkable=True)
         self._entire_file.setToolTip(
-            "Show the whole file at once, ignoring Rows\n"
-            "Every row redecodes on each redraw - slow on big files"
+            "Show the whole file at once, ignoring Rows\nSlow on big files"
         )
         self._entire_file.setChecked(load_bool_setting(ENTIRE_FILE_KEY, False))
         self._entire_file.toggled.connect(self._on_entire_file_change)

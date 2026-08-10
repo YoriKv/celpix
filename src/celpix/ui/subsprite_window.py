@@ -102,10 +102,9 @@ class SubspriteWindow(QWidget):
         self._columns.setValue(DEFAULT_COLUMNS)
         self._columns.setKeyboardTracking(False)
         self._columns.setToolTip(
-            "How many subsprites the sheet is laid out across.\n"
-            "This window's own width, in pieces - the Cols on the\n"
-            "binding bar lays out the frames on the canvas.\n"
-            "Shift+Left/Right steps it while this window is up."
+            "How many subsprites the sheet is laid out across\n"
+            "This window's own width, separate from the canvas\n"
+            "Shift+Left/Right steps it"
         )
         self._columns.valueChanged.connect(lambda _v: self.refresh_requested.emit())
 
@@ -115,10 +114,9 @@ class SubspriteWindow(QWidget):
         self._zoom.setKeyboardTracking(False)
         self._zoom.setSuffix("x")
         self._zoom.setToolTip(
-            "How big each subsprite is drawn here.\n"
-            "This window's own zoom - the main view keeps its own,\n"
-            "and neither follows the other. Ctrl+wheel over the\n"
-            "sheet steps it; hold space and drag to pan."
+            "How big each subsprite is drawn here\n"
+            "This window's own zoom, separate from the main view\n"
+            "Ctrl+wheel over the sheet steps it; space-drag pans"
         )
         self._zoom.valueChanged.connect(self._panel.set_zoom)
         self._panel.set_zoom(DEFAULT_ZOOM)
@@ -132,10 +130,9 @@ class SubspriteWindow(QWidget):
         self._frames.setChecked(True)
         self._frames.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._frames.setToolTip(
-            "Split the sheet across the object's frames.\n"
-            "On, a square is one record and a piece posed in ten\n"
-            "frames is ten squares. Off, a square is one distinct\n"
-            "piece - the object's art with the repetition taken out."
+            "Split the sheet across the object's frames\n"
+            "On, a square is one record; off, a square is one\n"
+            "distinct piece, with the repetition taken out"
         )
         self._frames.toggled.connect(self._on_frames_toggled)
 
@@ -147,13 +144,9 @@ class SubspriteWindow(QWidget):
         # with it anyway — it would just wear a focus ring for nothing.
         self._numbers.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._numbers.setToolTip(
-            "Caption each square with frame:subsprite.\n"
-            "Which frame a piece came from is nowhere in the art,\n"
-            "and it is the number the status line and an animation\n"
-            "step both speak. Dropped anyway when the squares are\n"
-            "too small to hold the text, and unavailable with Frames\n"
-            "off - a square is then several records and has no one\n"
-            "frame to name."
+            "Caption each square with frame:subsprite\n"
+            "Dropped when the squares are too small to hold the\n"
+            "text, and unavailable with Frames off"
         )
         self._numbers.toggled.connect(lambda _on: self._apply_captions())
 

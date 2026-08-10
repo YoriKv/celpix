@@ -80,11 +80,7 @@ _RESHAPE_TIP = (
     "Turns addresses and slice carving off while active"
 )
 
-_FILES_TIP = (
-    "Every file this entry's bytes come from, in this order\n"
-    "Usually one; an arcade board's graphics are often several\n"
-    "ROM chips, and nothing in them says which comes first"
-)
+_FILES_TIP = "Every file this entry's bytes come from, in this order"
 
 # Past this many rows the list scrolls instead of the dialog growing: a board
 # with sixteen graphics ROMs would otherwise run off the bottom of the screen.
@@ -179,10 +175,7 @@ class ContainerDialog(QDialog):
         self._scroll.setToolTip(_FILES_TIP)
 
         self._append = QPushButton("Append File")
-        self._append.setToolTip(
-            "Add another file to the end of the region.\n"
-            "One at a time, so the join order stays yours"
-        )
+        self._append.setToolTip("Add another file to the end of the region")
         self._append.clicked.connect(self._append_file)
         # Sized to its own text, left under the list it adds to: stretched across
         # the dialog it would read as the primary action, which OK is.

@@ -19,8 +19,4 @@ category = "Nintendo"
 [params]
 bytes = 2
 endian = "little"
-index = [{ shift = 11, bits = 1 }, { shift = 0, bits = 8 }]
-palette = { shift = 8, bits = 3 }
-flip_h = { shift = 13, bits = 1 }
-flip_v = { shift = 14, bits = 1 }
-priority = { shift = 15, bits = 1 }
+fields = "ovh. ippp iiii iiii"

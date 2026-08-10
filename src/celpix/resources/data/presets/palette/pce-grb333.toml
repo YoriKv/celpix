@@ -13,8 +13,4 @@ category = "NEC"
 [params]
 bytes_per_entry = 2
 byte_order = "little"
-
-[params.masks]
-r = 0x0038
-g = 0x01C0
-b = 0x0007
+fields = ".... ...g ggrr rbbb"

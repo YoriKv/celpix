@@ -13,25 +13,25 @@
 # codec.palette.mask decodes fixed-size palette entries that store colour as packed
 # bit fields — essentially every hardware palette that isn't a lookup into fixed
 # silicon colours (for those, see _color-indexed.toml). An entry's bytes are
-# assembled into one value by `byte_order`, each channel is masked out of it and
+# assembled into one value by `byte_order`, each channel is sliced out of it and
 # scaled up to 8 bits. A channel narrower than 8 bits is lossy: the *decoded
 # colour* round-trips, the raw bits cannot.
 #
-# It shares its mask arithmetic with codec.pixel.direct-color (_direct-color.toml) —
+# It shares its arithmetic with codec.pixel.direct-color (_direct-color.toml) —
 # the same maths, applied to a palette entry rather than to a pixel.
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
-#   bgr555          2 bytes little-endian, r 0x001F / g 0x03E0 / b 0x7C00 — SNES,
-#                   Game Boy Color, GBA.
-#   genesis-9bpp    2 bytes big-endian, three bits a channel three bits apart
-#                   (0x000E / 0x00E0 / 0x0E00) — the Mega Drive's CRAM.
+#   bgr555          2 bytes little-endian, `.bbb bbgg gggr rrrr` — SNES, Game Boy
+#                   Color, GBA.
+#   genesis-9bpp    2 bytes big-endian, `.... bbb. ggg. rrr.` — three bits a
+#                   channel, three bits apart, the Mega Drive's CRAM.
 #   rgb888          3 bytes, a whole byte a channel, nothing lossy.
-#   rgb555-split-be a channel split into two runs — the list form below.
-#   gb-bgp          bits_per_entry 2, invert, gray — four shades in one register
-#                   byte, counting darkness.
-#   ws-gray         bits_per_entry 4, invert, gray — the same idea a nibble wide.
-#   ngp-gray        invert + gray over a whole-byte entry.
+#   rgb555-split-be `rrrr gggg bbbb rgb.` — each channel in two pieces.
+#   gb-bgp          `kk` with bits_per_entry 2 and invert — four shades in one
+#                   register byte, counting darkness.
+#   ws-gray         `.vvv` with bits_per_entry 4 — the same idea a nibble wide.
+#   ngp-gray        `.... .vvv` over a whole-byte entry.
 
 id = "preset.palette.example-color-mask"
 name = "Example RGB555"
@@ -39,15 +39,48 @@ engine_id = "codec.palette.mask"
 
 [params]
 
-# How many bytes one palette entry occupies. Typically 1, 2, 3 or 4 — enough to
-# hold every mask below. This is what the host uses to size a "load N entries"
-# window, so it has to match the hardware exactly.
+# WHERE THE COMPONENTS SIT: one letter per bit, most significant bit first —
+# the diagram your format's own documentation draws. Whitespace groups it for
+# counting and means nothing; group in nibbles and each group is one hex digit.
+#
+#   r  red      g  green      b  blue      a  alpha
+#   v  one value — a brightness, driving r, g and b together; see below
+#   .  a bit no component claims
+#
+# The layout below is RGB555 in a 16-bit entry, `0RRRRRGG GGGBBBBB`:
+fields = ".rrr rrgg gggb bbbb"
+
+# Every bit gets a letter, which is the point: a bit nobody names is written
+# back as ZERO when a palette is saved, and spelling it `.` is you saying so.
+# The layout is checked against the entry width, so a diagram that is too short
+# is a load error rather than a colour that quietly loses its top bits.
+#
+# A component the format has not got simply never appears — leave `a` out and
+# every entry decodes opaque.
+#
+# A channel SPLIT across the entry — its main run in one place and a stray low
+# bit parked elsewhere, which is how several 68000 arcade boards keep the
+# nibbles byte-aligned — needs nothing said. Write it where it is and the runs
+# are one channel, in the order they are read:
+#
+#   fields = "rrrr gggg bbbb rgb."
+#
+# A format that spells a channel some other way can keep its own letters:
+#
+#   [params.legend]
+#   c = "b"    # `c` in the diagram means blue
+
+# How many bytes one palette entry occupies. Optional — the layout above already
+# says — but worth stating, and the two are checked against each other. This is
+# also what the host uses to size a "load N entries" window.
 bytes_per_entry = 2
 
-# How those bytes are assembled into the value the masks apply to.
+# How those bytes are assembled into the value the layout describes.
 #   "little"  first byte is least significant   (the default)
 #   "big"     first byte is most significant
-# Only meaningful when bytes_per_entry is more than 1.
+# Only meaningful when bytes_per_entry is more than 1. It orders the entry's
+# bytes IN THE FILE; the layout is always the assembled value, high bit first,
+# so the two are independent.
 byte_order = "little"
 
 # For an entry SMALLER than a byte, replace `bytes_per_entry` above with this —
@@ -61,41 +94,18 @@ byte_order = "little"
 
 # Does a field count DARKNESS rather than brightness? The handhelds' greyscales
 # do — 0 is white on all three of them — so the scaled value is flipped end for
-# end after the mask is applied.
+# end after the field is read.
 #   false  0 is black, the usual way round   (the default)
 #   true   0 is white
 invert = false
 
-# Does an entry store ONE shade rather than three channels? Then declare a single
-# mask below and it drives r, g and b together. Writing the same mask three times
-# would say something different and wrong: a pure red would encode through the OR
-# of the three as a colour the format cannot mean. Going the other way an
-# arbitrary colour is reduced by luma, which is what the hardware's own
-# converters do.
-#   false  three (or four) channel masks below   (the default)
-#   true   exactly one mask, the shade's own field
-gray = false
-
-# One bit mask per channel over the assembled entry value. Keys are `r`, `g`, `b`
-# and optionally `a`; omit `a` when the hardware has no alpha and every entry
-# decodes opaque. Each channel scales from however many bits its mask names up to
-# 8, so masks of different widths are fine — the Mega Drive's three bits a
-# channel and a full 8 both work.
+# ONE SHADE rather than three channels? Spell that field `v` and it drives r, g
+# and b together:
 #
-# A channel split across the entry — its main run in one place and a stray low
-# bit parked elsewhere, which is how several 68000 arcade boards keep the nibbles
-# byte-aligned — is written as a list of contiguous chunks, MOST SIGNIFICANT
-# FIRST. Write that order down deliberately; it is not inferred from bit
-# position, because hardware puts the stray bit above the run as often as below:
+#   fields = ".... .vvv"
 #
-#   r = [0xF000, 0x0008]
-#   g = [0x0F00, 0x0004]
-#   b = [0x00F0, 0x0002]
-#
-# Bits no mask names are written back as zero when a palette is saved, so name
-# every bit a channel really uses.
-[params.masks]
-r = 0x7C00
-g = 0x03E0
-b = 0x001F
-# a = 0x8000
+# Naming those bits `r`, `g` and `b` instead is not the same thing, and the
+# notation will not let it be written — a bit carries one letter. That is the
+# point: a pure red would encode through the OR of three components reading one
+# field as a colour the format cannot mean. Going the other way an arbitrary
+# colour is reduced by luma, which is what the hardware's own converters do.

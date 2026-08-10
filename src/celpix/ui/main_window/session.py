@@ -590,12 +590,24 @@ class SessionMixin:
     def _tilemap_flag_break(self, entry: Entry) -> bool:
         """Whether ``entry``'s format ends a line on a bit rather than a code.
 
-        The presence of the codec's ``terminator`` field, asked of the preset for
-        the same reason ``controls`` is: it is the *stream's* punctuation, and the
-        alphabet has to know before a newline can be typed into one
+        Asked of the **codec**, which is the only thing that knows where a cell's
+        bits go: the format's own answer, for the same reason ``controls`` is
+        read off the format — it is the *stream's* punctuation, and the alphabet
+        has to know before a newline can be typed into one
         (:attr:`~celpix.core.font.Alphabet.flag_break`).
+
+        False for a codec that was never asked, the same direction every optional
+        method here defaults: a line break that costs a cell is always writable,
+        where a bit inferred onto a format that has not got one would be written
+        into its bytes.
         """
-        return bool(self._tilemap_declares(entry, "terminator"))
+        try:
+            preset = self._registry.preset(self._tilemap_preset_id(entry))
+            engine = self._registry.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
+        except KeyError:
+            return False
+        ask = getattr(engine, "has_line_flag", None)
+        return bool(ask is not None and ask(preset.params))
 
     def _font_alphabet_for(self, entry: Entry, tiles: _BoundTiles, cell_bytes: int):
         """The lookup ``entry``'s codes read through — its font's, plus its own.

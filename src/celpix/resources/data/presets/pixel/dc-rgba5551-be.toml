@@ -10,9 +10,4 @@ category = "Nintendo"
 [params]
 bytes_per_pixel = 2
 byte_order = "big"
-
-[params.masks]
-a = 0x0001
-r = 0xF800
-g = 0x07C0
-b = 0x003E
+fields = "rrrr rggg ggbb bbba"

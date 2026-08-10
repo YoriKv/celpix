@@ -38,7 +38,7 @@ one whose layout matches your format:
 - `_nibble-planar.toml` — one byte holds four pixels, a bitplane to each nibble
 - `_linear-bespoke.toml` — the 3bpp and 6bpp packings, whose fields straddle bytes
 - `_direct-color.toml` — the pixel carries its own colour, no palette
-- `_color-mask.toml` — a palette entry's channels as bit masks (RGB555, …)
+- `_color-mask.toml` — a palette entry's channels as a bit layout (RGB555, …)
 - `_color-indexed.toml` — palette bytes index a table baked into the hardware
 - `_packed.toml` (in `tilemap/`) — a cell is one packed integer: tile number in
   the low bits, attributes above it (nearly every hardware map)

@@ -1,17 +1,22 @@
-"""Data-driven mask-based color codec — native palette entry ⇄ ARGB.
+"""Data-driven color codec — native palette entry ⇄ ARGB.
 
-A color codec converts one native palette entry to and from ``0xAARRGGBB`` using
-component **masks** (``docs/graphics-formats-reference/implementation-guide.md``
-§4). Each entry is ``bytes_per_entry`` bytes read with ``byte_order`` into an
-integer, then each component is sliced by its contiguous mask and scaled to 8
-bits. As with the planar codec, a new color format — BGR555, RGB888, RGB565, … —
-is a data file.
+A color codec converts one native palette entry to and from ``0xAARRGGBB``
+(``docs/graphics-formats-reference/implementation-guide.md`` §4). Each entry is
+``bytes_per_entry`` bytes read with ``byte_order`` into an integer, then each
+component is sliced out of it and scaled to 8 bits. As with the planar codec, a
+new color format — BGR555, RGB888, RGB565, … — is a data file.
+
+Where the components sit is the preset's ``fields`` **bit layout**: one letter
+per bit, most significant first, the way the format's own notes draw it
+(``0bbbbbgg gggrrrrr``). ``r``, ``g``, ``b`` and ``a`` are the components and
+``.`` a bit no component claims; :mod:`~celpix.plugins.builtins._fields` reads
+it, and ``bytes_per_entry`` is cross-checked against it where both are given.
 
 The round trip is exact: a ``w``-bit field decodes to 8 bits by replicating its
 high bits (``raw << (8-w) | raw >> (2w-8)``) and re-encodes by ``comp >> (8-w)``,
 recovering the original field, and unused bits stay 0.
 
-Two params exist for the handheld grayscale palettes, which are the same kernel
+Three things exist for the handheld grayscale palettes, which are the same kernel
 seen through different-shaped holes:
 
 - ``bits_per_entry`` replaces ``bytes_per_entry`` where an entry is **smaller
@@ -24,15 +29,16 @@ seen through different-shaped holes:
 - ``invert`` marks a format whose fields count **darkness** rather than
   brightness — 0 is white on all three handhelds
   (:func:`~celpix.plugins.builtins._mask._flip`).
-- ``gray`` marks a format that stores **one shade**, not three channels. The
-  preset then declares a single mask and it drives R, G and B together; writing
-  the same mask three times would say the wrong thing, because a pure red would
-  encode through the OR of the three as something the format cannot mean. Going
-  the other way an arbitrary colour is reduced by luma, which is what the
-  hardware's own converters do.
+- ``v`` in the layout is **one shade**, not three channels: it drives R, G and B
+  together. Naming those bits ``r``, ``g`` and ``b`` instead is not the same
+  thing, and the notation will not let it be written — a bit carries one letter.
+  That is the point: a pure red would encode through the OR of three components
+  reading one field as something the format cannot mean. Going the other way an
+  arbitrary colour is reduced by luma, which is what the hardware's own
+  converters do.
 
 Where an entry is a whole number of bytes and holds a colour (every other
-preset) all four params are absent, so the path below is the one it always was.
+preset) none of the three applies, so the path below is the one it always was.
 """
 
 from __future__ import annotations
@@ -44,9 +50,11 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.palette import Palette
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._fields import bit_width
 from celpix.plugins.builtins._mask import (
+    GRAY,
     argb_to_value,
-    parse_masks,
+    color_masks,
     shift_widths,
     value_to_argb,
 )
@@ -95,6 +103,13 @@ class ColorCodec:
                 "give bits_per_entry or bytes_per_entry, not both - "
                 "an entry has one width"
             )
+        if bits is None and "bytes_per_entry" not in params:
+            # The layout already says how wide an entry is, so a preset need not
+            # say it twice; one that does is cross-checked by ``color_masks``.
+            text = params.get("fields")
+            if not isinstance(text, str):
+                raise ValueError("an entry needs a width - give bytes_per_entry")
+            bits = bit_width(text)
         if bits is None:
             size = int(params["bytes_per_entry"])
             if size <= 0:
@@ -122,19 +137,21 @@ class ColorCodec:
                         "sub-byte entry has to tile a byte exactly"
                     )
                 unit_bytes, per_unit = 1, 8 // entry_bits
-        masks = parse_masks(params["masks"])
-        gray = bool(params.get("gray", False))
-        if gray:
+        masks = color_masks(params, entry_bits)
+        shade = masks.pop(GRAY, None)
+        if shade is None and params.get("gray", False):
             if len(masks) != 1:
                 raise ValueError(
-                    f"gray takes exactly one mask - the shade's own field - got "
+                    f"gray takes exactly one field - the shade's own - got "
                     f"{sorted(masks) or 'none'}"
                 )
+            shade = masks.popitem()[1]
+        gray = shade is not None
+        if gray:
             # Fanned out here so decode needs no special case: three components
             # reading one field *is* a grey. Encode grays the colour first, which
             # makes the three writes agree and the OR exact.
-            shade = next(iter(masks.values()))
-            masks = {"r": shade, "g": shade, "b": shade}
+            masks |= {"r": shade, "g": shade, "b": shade}
         return _Config(
             unit_bytes=unit_bytes,
             per_unit=per_unit,

@@ -430,7 +430,7 @@ def test_the_game_boy_palette_register_is_four_shades_in_one_byte() -> None:
 def test_a_grey_format_reduces_a_colour_by_luma() -> None:
     """One field for three channels means a colour has to become a shade.
 
-    Writing the same mask three times instead would put each channel's own value
+    Naming those bits `r`, `g` and `b` instead would put each channel's own value
     through the field and OR the results, which turns a pure red into black on an
     inverted format — so the reduction has to be stated, not fallen into.
     """
@@ -442,7 +442,49 @@ def test_a_grey_format_reduces_a_colour_by_luma() -> None:
     assert engine.decode(raw, params, PipelineContext()).color(0) == 0xFF494949
 
 
-def test_split_mask_palette_gathers_the_stray_low_bits() -> None:
+def test_a_palette_stated_component_by_component_still_reads() -> None:
+    """A user's plugins folder is not ours to rewrite.
+
+    Presets out there give each component its own hex mask, a split channel as an
+    ordered list of chunks, and a shade as one mask plus `gray`. All three keep
+    reading, and have to agree with the layout that says the same thing.
+    """
+    engine, params = _color_engine("preset.palette.rgb555-split-be")
+    per_component = {
+        "bytes_per_entry": 2,
+        "byte_order": "big",
+        "masks": {"r": [0xF000, 0x0008], "g": [0x0F00, 0x0004], "b": [0x00F0, 0x0002]},
+    }
+    raw = b"\xf0\x04"
+    assert engine.decode(raw, per_component, PipelineContext()).color(
+        0
+    ) == engine.decode(raw, params, PipelineContext()).color(0)
+
+    shade_engine, shade_params = _color_engine("preset.palette.ngp-gray")
+    stated = {
+        "bytes_per_entry": 1,
+        "byte_order": "little",
+        "invert": True,
+        "gray": True,
+        "masks": {"r": 0x07},
+    }
+    assert shade_engine.encode(
+        Palette([0xFFFF0000]), stated, PipelineContext()
+    ) == shade_engine.encode(Palette([0xFFFF0000]), shade_params, PipelineContext())
+
+
+def test_a_layout_must_account_for_every_bit_of_its_entry() -> None:
+    """A component the layout does not place is written back as zero, so a bit
+    nobody named loses a channel's precision on the first save. Checking the
+    layout against the entry width turns that into a load error rather than a
+    palette that quietly comes back slightly wrong."""
+    engine, _ = _color_engine("preset.palette.rgb565")
+    short = {"bytes_per_entry": 2, "fields": "rrrr rggg gggb"}
+    with pytest.raises(ValueError, match="describes 12 bits and the format is 16"):
+        engine.decode(b"\x00\x00", short, PipelineContext())
+
+
+def test_split_field_palette_gathers_the_stray_low_bits() -> None:
     """A channel whose low bit sits away from its nibble must read as one field,
     high chunk first. Pinning the *low* bits is the point: drop them and the
     colour is still plausible (off by 1/32), so only an exact vector catches it.
@@ -465,16 +507,16 @@ def test_split_mask_palette_write_back_keeps_every_defined_bit() -> None:
     assert back == bytes(b & (0xFE if i % 2 else 0xFF) for i, b in enumerate(raw))
 
 
-def test_split_mask_direct_color_matches_the_palette_path() -> None:
+def test_split_field_direct_color_matches_the_palette_path() -> None:
     """Direct colour converts through precomputed byte-plane tables rather than
     per value, so it is a second implementation of the same gather. Given the same
-    masks the two must agree pixel for pixel."""
+    layout the two must agree pixel for pixel."""
     palette_engine, palette_params = _color_engine("preset.palette.rgb555-split-be")
     pixel_engine = _REG.plugin(Stage.INTERPRET_PIXEL, "codec.pixel.direct-color")
     params = {
         "bytes_per_pixel": 2,
         "byte_order": "big",
-        "masks": palette_params["masks"],
+        "fields": palette_params["fields"],
         "tile_width": 2,
         "tile_height": 2,
     }

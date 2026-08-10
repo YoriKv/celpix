@@ -9,4 +9,4 @@ category = "Nintendo"
 [params]
 bytes = 1
 endian = "little"
-index = { shift = 0, bits = 8 }
+fields = "iiii iiii"

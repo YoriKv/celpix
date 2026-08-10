@@ -830,6 +830,25 @@ class TilemapCodecPlugin(Plugin, Protocol):
         """
         ...
 
+    def has_line_flag(self, params: dict[str, Any]) -> bool:
+        """Whether this format ends a line on a **bit the cell carries**.
+
+        Optional, and the terminator's half of :meth:`has_palette_rows`: some
+        text formats spend no code on a line break and set a bit on the line's
+        last character instead (``docs/design/fontmap-entry.md`` §4). The
+        alphabet has to know, because it decides whether a typed newline sets a
+        bit on the cell before the caret or writes a cell of its own
+        (:attr:`~celpix.core.font.Alphabet.flag_break`), and it is the
+        **format's** answer rather than the font's — two streams in one game
+        routinely share a font and punctuate differently.
+
+        A plugin that omits this method is taken not to have one, which is the
+        safe direction here: a break that costs a cell is writable in any
+        format, where a bit inferred onto a format without one would be written
+        into bytes that have no room for it.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class Preset:

@@ -12,7 +12,4 @@ category = "SNK"
 [params]
 bytes = 2
 endian = "little"
-index = { shift = 0, bits = 9 }
-palette = { shift = 13, bits = 1 }
-flip_v = { shift = 14, bits = 1 }
-flip_h = { shift = 15, bits = 1 }
+fields = "hvp. ...i iiii iiii"

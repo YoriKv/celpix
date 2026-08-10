@@ -18,8 +18,15 @@ the format, and boards exist that put the stray bit above the run as well as
 below. :func:`gather` / :func:`scatter` are that split-field kernel on its own,
 and a tilemap cell's fields are the same problem once more — a Game Boy Color
 index is bits 0-7 plus bit 8 stranded in the attribute byte — so
-:mod:`~celpix.plugins.builtins.tilemap_codec` reads its own
-``{ shift, bits }`` chunks through them.
+:mod:`~celpix.plugins.builtins.tilemap_codec` places its own fields through
+them too.
+
+A preset states where the components sit as a **bit layout**: the letter-per-bit
+diagram its own documentation draws, ``0BBBBBGGGGGRRRRR`` or
+``RRRRGGGGBBBBRGBx``, read by :mod:`~celpix.plugins.builtins._fields`. That is
+where the split above comes from — the two runs of ``R`` in the second are one
+channel, in the order they are written — and it is what makes the unused bit at
+the bottom of the first a thing the preset says rather than a thing it forgot.
 
 :func:`value_to_argb` / :func:`argb_to_value` are the per-value form a palette
 wants: a handful of entries, one at a time. A direct-color *image* needs the same
@@ -38,12 +45,27 @@ from __future__ import annotations
 from functools import cache
 from typing import Any
 
+from celpix.plugins.builtins._fields import parse_layout, resolve_legend
+
 # Where each component sits in the little-endian ARGB pixel buffer both grids use
 # (bytes B, G, R, A) — the byte plane a table reads or writes.
 ARGB_BYTE_LAYOUT = ("b", "g", "r", "a")
 
 COMPONENTS = ("a", "r", "g", "b")
 _ARGB_SHIFT = {"a": 24, "r": 16, "g": 8, "b": 0}
+
+# The shade field of a format that stores brightness rather than three channels:
+# the handheld greys, and the intensity textures. It is not a component — it
+# *drives* R, G and B together — so it is kept out of COMPONENTS and each codec
+# spends it its own way. Spelt ``v`` because that is what it holds: HSV's
+# **value**, a brightness with neither a hue nor a saturation beside it.
+GRAY = "v"
+
+# Letters a colour layout is written with, and the components they name. The
+# first four are what every note in circulation uses; a preset overrides them
+# where its own hardware documentation spells a channel some other way.
+COLOR_FIELDS = frozenset(COMPONENTS) | {GRAY}
+COLOR_LEGEND = {name: name for name in COLOR_FIELDS}
 
 
 def chunk_shift_width(chunk: int) -> tuple[int, int]:
@@ -149,6 +171,33 @@ def parse_masks(raw_masks: dict[str, Any]) -> dict[str, tuple[int, ...]]:
             seen |= chunk
         masks[comp] = chunks
     return masks
+
+
+def color_masks(params: dict[str, Any], width: int) -> dict[str, tuple[int, ...]]:
+    """Where each component sits, read off the preset's ``fields`` layout.
+
+    ``width`` is how many bits one value really holds — the entry or the pixel,
+    not the unit it is packed into — so a diagram that leaves bits unspoken for
+    fails at load rather than quietly writing them as zero.
+
+    :data:`GRAY` may come back among the components. It is not one, and each
+    codec decides what a single shade means for it: a palette entry reduces a
+    colour to its luma on the way in, where a truecolor pixel carries the field
+    to R, G and B and lets them meet again on the way out.
+    """
+    text = params.get("fields")
+    if isinstance(text, str):
+        legend = resolve_legend(COLOR_LEGEND, params.get("legend"), COLOR_FIELDS)
+        return {
+            name: chunks
+            for name, (chunks, _sw) in parse_layout(text, legend, width).items()
+        }
+    if "masks" in params:
+        return parse_masks(params["masks"])
+    raise ValueError(
+        "the preset does not say where the colour components sit - give "
+        "`fields`, one letter per bit, most significant first"
+    )
 
 
 def shift_widths(

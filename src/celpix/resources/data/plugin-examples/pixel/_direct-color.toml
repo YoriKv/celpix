@@ -6,20 +6,21 @@
 # codec.pixel.direct-color decodes **palette-less** pixels: each one carries its own
 # colour, so there is no index and no palette anywhere in the pipeline. A pixel
 # is a fixed number of bytes, assembled into one value by `byte_order`, and each
-# channel is then a plain bit mask over that value scaled up to 8 bits. A channel
+# channel is then sliced out of that value and scaled up to 8 bits. A channel
 # narrower than 8 bits is therefore lossy: the *decoded colour* round-trips, the
 # raw bits cannot and never could.
 #
-# It shares its mask arithmetic with codec.palette.mask (_color-mask.toml) — the
-# same maths, applied to a pixel rather than to a palette entry.
+# It shares its arithmetic with codec.palette.mask (_color-mask.toml) — the same
+# maths, applied to a pixel rather than to a palette entry.
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
-#   dc-rgb565        bytes_per_pixel 2, little-endian, 5/6/5 masks.
-#   dc-argb8888-be   bytes_per_pixel 4, big-endian, with an `a` mask.
-#   dc-i8            one byte, and r/g/b given the *same* mask, so the value is
-#                    replicated to grey — how the N64 intensity textures read.
-#   dc-snes-direct   the SNES direct-colour mode's BBGGGRRR byte.
+#   dc-rgb565        2 bytes little-endian, `rrrr rggg gggb bbbb`.
+#   dc-argb8888-be   4 bytes big-endian, alpha in the top byte.
+#   dc-i8            one byte, all of it `v` — the value replicated to grey, how
+#                    the N64 intensity textures read.
+#   dc-ia8           `vvvv aaaa` — the same idea with alpha beside it.
+#   dc-snes-direct   the SNES direct-colour mode's byte, `bbgg grrr`.
 
 id = "preset.pixel.example-direct-color"
 name = "Example direct color RGB565"
@@ -27,14 +28,50 @@ engine_id = "codec.pixel.direct-color"
 
 [params]
 
-# How many bytes one pixel occupies. Typically 1, 2, 3 or 4 — enough to hold
-# every mask below. The tile is bytes_per_pixel * width * height bytes.
+# WHERE THE COMPONENTS SIT: one letter per bit, most significant bit first —
+# the diagram your format's own documentation draws. Whitespace groups it for
+# counting and means nothing; group in nibbles and each group is one hex digit.
+#
+#   r  red      g  green      b  blue      a  alpha
+#   v  one value — a brightness, driving r, g and b together
+#   .  a bit no component claims
+#
+# The layout below is RGB565 in a 16-bit pixel, `RRRRRGGG GGGBBBBB`:
+fields = "rrrr rggg gggb bbbb"
+
+# Every bit gets a letter, which is the point: a bit nobody names is written
+# back as ZERO on save, and spelling it `.` is you saying so. The layout is
+# checked against the pixel width, so a diagram that is too short is a load
+# error rather than a colour that quietly loses its top bits.
+#
+# A component the format has not got simply never appears — leave `a` out and
+# every pixel decodes opaque.
+#
+# `v` is for the formats that store ONE value and mean grey: it goes to r, g and
+# b at once, so the round trip is exact for any grey the format can hold. A
+# colour that is not grey cannot be stored by such a format and collapses to the
+# OR of the three on write, which is what the format leaves us.
+#
+# A channel SPLIT across the value — its main run in one place and a stray low
+# bit parked elsewhere — needs nothing said. Write it where it is and the runs
+# are one channel, in the order they are read: `fields = "rrrr gggg bbbb rgb."`.
+#
+# A format that spells a channel some other way can keep its own letters:
+#
+#   [params.legend]
+#   i = "v"    # `i` in the diagram is the intensity
+
+# How many bytes one pixel occupies. Optional — the layout above already says —
+# but worth stating, and the two are checked against each other. The tile is
+# bytes_per_pixel * width * height bytes.
 bytes_per_pixel = 2
 
-# How those bytes are assembled into the value the masks apply to.
+# How those bytes are assembled into the value the layout describes.
 #   "little"  first byte is least significant   (the default)
 #   "big"     first byte is most significant
-# Only meaningful when bytes_per_pixel is more than 1.
+# Only meaningful when bytes_per_pixel is more than 1. It orders the pixel's
+# bytes IN THE FILE; the layout is always the assembled value, high bit first,
+# so the two are independent.
 byte_order = "little"
 
 # Pixel size of one tile; both default to 8. Free, since a pixel here occupies
@@ -42,24 +79,3 @@ byte_order = "little"
 # well as console tiles.
 tile_width = 8
 tile_height = 8
-
-# One bit mask per channel over the assembled pixel value. Keys are `r`, `g`, `b`
-# and optionally `a`; omit `a` for a format with no alpha and every pixel decodes
-# opaque. Each channel is scaled from however many bits its mask names up to 8,
-# so masks of different widths are fine.
-#
-# Giving two channels the *same* mask is deliberate and useful: it replicates one
-# stored value across them, which is how the intensity formats decode to grey.
-#
-# A channel split across the value — its main run in one place and a stray low
-# bit parked elsewhere — is written as a list of contiguous chunks, MOST
-# SIGNIFICANT FIRST, e.g. `r = [0xF000, 0x0008]`. The order is not inferred from
-# bit position, hardware putting the stray bit above the run as often as below.
-#
-# Bits no mask names are written back as zero on save, so name every bit a
-# channel really uses.
-[params.masks]
-r = 0xF800
-g = 0x07E0
-b = 0x001F
-# a = 0x0000

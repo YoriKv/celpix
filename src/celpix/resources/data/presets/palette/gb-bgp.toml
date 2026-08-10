@@ -16,7 +16,4 @@ category = "Nintendo"
 [params]
 bits_per_entry = 2
 invert = true
-gray = true
-
-[params.masks]
-r = 0x03
+fields = "vv"

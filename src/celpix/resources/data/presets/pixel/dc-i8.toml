@@ -1,8 +1,8 @@
 # I8 intensity — one byte per pixel, replicated across R, G and B (N64 texture
-# format I, 8-bit). The three components share one mask deliberately: each is
-# scaled from the same byte, so the pixel is grey and the round trip is exact for
-# any grey value. Editing in a colour that is not grey cannot be stored by the
-# format and collapses to the OR of the channels on write.
+# format I, 8-bit). `v` is what says so: one field drives all three components,
+# each scaled from the same byte, so the pixel is grey and the round trip is
+# exact for any grey value. Editing in a colour that is not grey cannot be stored
+# by the format and collapses to the OR of the channels on write.
 # See docs/graphics-formats-reference/mame-formats.md §4.3.
 id = "preset.pixel.dc-i8"
 name = "N64 I8 (intensity, 8x8)"
@@ -11,8 +11,4 @@ category = "Nintendo"
 
 [params]
 bytes_per_pixel = 1
-
-[params.masks]
-r = 0xFF
-g = 0xFF
-b = 0xFF
+fields = "vvvv vvvv"

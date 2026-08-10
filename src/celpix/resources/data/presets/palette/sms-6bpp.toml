@@ -10,8 +10,4 @@ category = "Sega"
 [params]
 bytes_per_entry = 1
 byte_order = "little"
-
-[params.masks]
-r = 0x03
-g = 0x0C
-b = 0x30
+fields = "..bb ggrr"

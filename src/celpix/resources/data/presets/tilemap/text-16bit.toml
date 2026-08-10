@@ -41,4 +41,4 @@ category = "Text"
 layout = "text"
 bytes = 2
 endian = "little"
-index = { shift = 0, bits = 16 }
+fields = "iiii iiii iiii iiii"

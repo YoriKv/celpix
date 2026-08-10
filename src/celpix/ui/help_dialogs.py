@@ -11,8 +11,10 @@ What no menu holds is appended as static sections, read from the same tables the
 widgets are built from so they stay in sync: the pixel tools' number keys
 (:data:`~celpix.ui.tools.TOOL_SPECS`) and the transform bar's flip/rotate letters
 (:data:`~celpix.ui.tools.TRANSFORM_SPECS`) — those buttons are glyphs on a toolbar
-that swaps with the mode, which is not something a menu row can say. The mouse
-gestures follow, and are the one genuinely hand-maintained part.
+that swaps with the mode, which is not something a menu row can say. The canvas
+gestures, the panel keys and the floating windows' own keys follow, and are the
+genuinely hand-maintained part: a drag, a held modifier and a key that belongs to
+a window with no menu bar of its own have no other place to be written down.
 
 An action whose menu label is rebuilt at runtime — Undo/Redo carry the name of
 the command they would undo — can set a ``guideLabel`` property to pin the text
@@ -45,16 +47,30 @@ AUTHOR = "Epi"
 HOMEPAGE = "https://github.com/YoriKv/celpix"
 
 # Mouse/modifier gestures the canvas answers to. No menu action can express a
-# drag or a held modifier, so these and the panel keys below are the one part of
-# the guide that is genuinely hand-maintained. Zoom is not here: it is a menu
-# action, whose entry already advertises the wheel gesture alongside its keys.
+# drag or a held modifier, so these and the two tables below are the part of the
+# guide that is genuinely hand-maintained. Zoom is not here: it is a menu action,
+# whose entry already advertises the wheel gesture alongside its keys.
+#
+# Ordered by the mode the gesture belongs to, and each row that is not universal
+# names its mode: the same button means four different things across tile mode,
+# pixel editing, Rearrange and Edit Tiles, and which one it is right now is the
+# question this section exists to answer.
 CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
     ("Pan the view", "Hold Space + drag"),
-    ("Pick a color (any tool)", "Right-click"),
+    ("Select a range of tiles", "Drag"),
+    ("Actions for the selection", "Right-click"),
     ("Square selection (Select tool)", "Shift + drag"),
-    ("Select tiles while rearranging", "Right-drag"),
+    ("Select the whole tile (Select tool)", "Double-click"),
+    # One key, two answers, in the order the second only happens without the
+    # first: Esc lands a float if one is in the air and clears the marquee if not.
     ("Set a floating selection down", "Esc"),
-    ("Abandon a rearrange drag", "Esc"),
+    ("Clear the pixel selection", "Esc"),
+    ("Pick a color (while pixel editing)", "Right-click or right-drag"),
+    ("Move tiles (Rearrange)", "Drag"),
+    ("Select tiles (Rearrange)", "Right-drag"),
+    ("Abandon a rearrange drag", "Esc or right-click"),
+    ("Lay the picked tile down (Edit Tiles)", "Click or drag"),
+    ("Pick the tile a cell names (Edit Tiles)", "Right-click"),
     # Not the canvas's own, but a mouse gesture the whole window answers to, and
     # this is where someone looks for one. Its keys are on the Navigate menu.
     ("Back / forward through visited entries", "Mouse 4 / Mouse 5"),
@@ -63,12 +79,36 @@ CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
 # Keys a focused panel claims for itself, which is why they are not on the menu
 # bar: while one has focus the canvas's own editing shortcuts yield to it
 # (``widgets.take_editing_shortcut``), so Ctrl+C means the color under the
-# palette's cursor rather than the tile selection behind the dock.
+# palette's cursor rather than the tile selection behind the dock. The Tile
+# Source rows are the same story told about a key that is *also* bound
+# window-wide: Shift+Left/Right is the view's Cols on the Navigate menu, and the
+# sheet's own width while the sheet is the thing being typed into.
 PANEL_KEYS: tuple[tuple[str, str], ...] = (
     ("Copy / paste a color", "Ctrl+C / Ctrl+V"),
     ("Copy / paste a subpalette", "Ctrl+Shift+C / Ctrl+Shift+V"),
     ("Move the color selection", "Arrow keys"),
+    ("Step the tile pick", "Arrow keys"),
+    ("Tile Source columns", "Shift+Left / Shift+Right"),
+    ("Zoom / pan the tile sheet", "Ctrl + Scroll / Space + drag"),
+    ("Reorder a file", "Shift+Up / Shift+Down"),
     ("Remove a Files entry", "Del"),
+)
+
+# The floating windows — Text, Font Alphabet, Subsprites, Animation. They carry
+# no menu bar of their own, so nothing above can reach them, and the keys are
+# theirs only while the window is the active one: the main window's app-wide
+# filters are all gated on that. Undo names its two windows rather than being
+# written as a universal, because it is one: the Edit menu's Ctrl+Z cannot fire
+# from a separate top-level window, so it reaches the session's single stack
+# (``docs/design/undo-redo.md``) only from the two that claim the key back.
+TOOL_WINDOW_KEYS: tuple[tuple[str, str], ...] = (
+    ("Undo / redo (Text, Font Alphabet)", "Ctrl+Z / Ctrl+Shift+Z"),
+    ("Zoom the sheet", "Ctrl + Scroll"),
+    ("Pan the sheet (Subsprites, Animation)", "Hold Space + drag"),
+    ("Sheet columns (Subsprites)", "Shift+Left / Shift+Right"),
+    ("Edit the row's text (Font Alphabet)", "Enter"),
+    ("Fill the character down (Font Alphabet)", "Ctrl+V"),
+    ("Write the code being typed (Text)", "Ctrl+Return"),
 )
 
 
@@ -153,6 +193,7 @@ def shortcut_sections(window) -> list[tuple[str, list[tuple[str, str]]]]:  # noq
     )
     sections.append(("Canvas", list(CANVAS_GESTURES)))
     sections.append(("Panels (while focused)", list(PANEL_KEYS)))
+    sections.append(("Floating Windows", list(TOOL_WINDOW_KEYS)))
     return sections
 
 

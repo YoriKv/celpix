@@ -6,7 +6,9 @@
 # Big-endian only: the palette lives in 68000 RAM, so it is reached through a
 # save state or a RAM dump, and those are big-endian words.
 #
-# The split masks below list each channel most significant chunk first — see
+# The layout below is that name written out: each channel's two runs are one
+# field, in the order they are read, so the high nibble comes first and the
+# stray low bit second. See
 # docs/graphics-formats-reference/implementation-guide.md §4.
 id = "preset.palette.rgb555-split-be"
 name = "RGB555 split low bits (15-bit, big-endian)"
@@ -16,8 +18,4 @@ category = "Generic"
 [params]
 bytes_per_entry = 2
 byte_order = "big"
-
-[params.masks]
-r = [0xF000, 0x0008]
-g = [0x0F00, 0x0004]
-b = [0x00F0, 0x0002]
+fields = "rrrr gggg bbbb rgb."

@@ -9,10 +9,6 @@ category = "Sega"
 [params]
 bytes = 2
 endian = "little"
-index = { shift = 0, bits = 9 }
-flip_h = { shift = 9, bits = 1 }
-flip_v = { shift = 10, bits = 1 }
-palette = { shift = 11, bits = 1 }
-priority = { shift = 12, bits = 1 }
+fields = "...o pvhi iiii iiii"
 # No page geometry: the visible name table is 32 columns by 24 or 28 rows
 # depending on the display mode, so a cell count does not name one shape.

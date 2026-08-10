@@ -13,8 +13,4 @@ category = "Generic"
 [params]
 bytes_per_entry = 2
 byte_order = "little"
-
-[params.masks]
-r = 0x0070
-g = 0x0700
-b = 0x0007
+fields = ".... .ggg .rrr .bbb"

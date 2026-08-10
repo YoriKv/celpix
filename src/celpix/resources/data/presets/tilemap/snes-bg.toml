@@ -9,11 +9,7 @@ category = "Nintendo"
 [params]
 bytes = 2
 endian = "little"
-index = { shift = 0, bits = 10 }
-palette = { shift = 10, bits = 3 }
-priority = { shift = 13, bits = 1 }
-flip_h = { shift = 14, bits = 1 }
-flip_v = { shift = 15, bits = 1 }
+fields = "vhop ppii iiii iiii"
 # The console cuts a background into 32x32 screens and lays the pieces
 # horizontally-then-vertically, so the four BG sizes are 1, 2 or 4 of them:
 # 32x32, 64x32 / 32x64, and 64x64 (snes-hardware-notes.md §5). That is a

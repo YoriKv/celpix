@@ -215,6 +215,78 @@ def test_a_terminator_bit_leaves_the_index_and_rides_beside_it() -> None:
     assert codec.encode([flagged], bare, ctx) == b"\x52"
 
 
+def test_a_layout_must_account_for_every_bit_of_its_cell() -> None:
+    """The guarantee the notation exists for.
+
+    A field the engine does not place is written back as zero, so a bit nobody
+    named is a byte-exactness bug that reading the preset would never show. The
+    layout is therefore the width: one that has lost a nibble is not a cell at
+    all, and a `bytes` beside it has to agree rather than win.
+    """
+    codec = TilemapCodec()
+    with pytest.raises(ValueError, match="whole number of bytes"):
+        codec.bytes_per_cell({"fields": "pppi iiii iiii"})
+    assert codec.bytes_per_cell({"fields": "iiii iiii"}) == 1
+    with pytest.raises(ValueError, match="1-byte cell and bytes says 2"):
+        codec.bytes_per_cell({"bytes": 2, "fields": "iiii iiii"})
+
+
+def test_a_layout_takes_the_letters_its_own_notes_use() -> None:
+    """`vhopppcc tttttttt` is how the SNES entry is written down, and `c` and `t`
+    are both the tile number. A preset keeps those mnemonics through its own
+    legend, and the two chunks stay one field in the order they are read."""
+    registry = default_registry()
+    codec, ctx = TilemapCodec(), PipelineContext()
+    params = {
+        "bytes": 2,
+        "endian": "little",
+        "fields": "vhopppcc tttttttt",
+        "legend": {"c": "index", "t": "index", "p": "palette", "o": "priority"},
+    }
+    assert codec.decode(b"\x34\x9c", params, ctx) == codec.decode(
+        b"\x34\x9c", _params(registry, SNES_BG), ctx
+    )
+    with pytest.raises(ValueError, match="'z' names no field"):
+        codec.decode(b"\x00\x00", {"fields": "zzzz zzzz"}, ctx)
+    with pytest.raises(ValueError, match="not a field here"):
+        codec.decode(b"\x00\x00", {"fields": "iiii iiii", "legend": {"i": "tile"}}, ctx)
+
+
+def test_a_cell_stated_field_by_field_still_reads() -> None:
+    """A user's plugins folder is not ours to rewrite.
+
+    Presets out there place each field on its own, so the engine keeps reading
+    them — including a split index as an ordered chunk list, which is the one
+    shape whose meaning is not recoverable if it stops being understood.
+    """
+    registry = default_registry()
+    codec, ctx = TilemapCodec(), PipelineContext()
+    per_field = {
+        "bytes": 2,
+        "endian": "little",
+        "index": [{"shift": 11, "bits": 1}, {"shift": 0, "bits": 8}],
+        "palette": {"shift": 8, "bits": 3},
+        "flip_h": {"shift": 13, "bits": 1},
+        "flip_v": {"shift": 14, "bits": 1},
+        "priority": {"shift": 15, "bits": 1},
+    }
+    raw = b"\xa5\x2d"
+    assert codec.decode(raw, per_field, ctx) == codec.decode(
+        raw, _params(registry, "preset.tilemap.gbc-bg"), ctx
+    )
+    assert codec.encode(codec.decode(raw, per_field, ctx), per_field, ctx) == raw
+
+
+def test_the_terminator_is_the_codecs_answer_not_the_presets() -> None:
+    """The alphabet needs it before a newline can be typed, and only the codec
+    knows where a cell's bits go — asking the params by name would be a second
+    place for the layout to be stated, and one that could disagree."""
+    registry = default_registry()
+    codec = TilemapCodec()
+    assert codec.has_line_flag(_params(registry, "preset.tilemap.text-8bit-flag"))
+    assert not codec.has_line_flag(_params(registry, "preset.tilemap.text-8bit"))
+
+
 def test_a_trailing_partial_cell_is_dropped() -> None:
     """Unlike a partial tile, which still draws as something, half a cell has no
     meaningful index and would render as a spurious tile 0."""

@@ -1,8 +1,8 @@
 # Neo Geo Pocket (mono) — one byte per shade, three bits of it used, counting
 # *darkness*: 0 is white and 7 is black, which is what `invert` says.
 #
-# One grey level rather than three channels, so one mask drives all of R, G
-# and B (`gray`). See
+# One grey level rather than three channels, which is what `v` in the layout
+# says: the one field drives all of R, G and B. See
 # docs/graphics-formats-reference/tile-converter-formats.md §3.3.
 id = "preset.palette.ngp-gray"
 name = "Neo Geo Pocket mono (3-bit grey)"
@@ -13,7 +13,4 @@ category = "SNK"
 bytes_per_entry = 1
 byte_order = "little"
 invert = true
-gray = true
-
-[params.masks]
-r = 0x07
+fields = ".... .vvv"

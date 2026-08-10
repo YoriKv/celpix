@@ -244,9 +244,7 @@ class InterpretationMixin:
         self._tilemap_preset = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._tilemap_preset.setToolTip(
             "How a cell's bytes are read: field layout and byte order\n"
-            "Formats from one tool can disagree about the order\n"
-            "[T] grid map · [S] sprite map · [F] fontmap — the layout\n"
-            "the format declares, which decides what the entry can do"
+            "[T] grid map · [S] sprite map · [F] fontmap"
         )
         self._tilemap_preset.activated.connect(self._on_tilemap_preset_change)
         self._tilemap_codec_action = codecs.addWidget(
@@ -380,10 +378,10 @@ class InterpretationMixin:
         # reach of a sheet nobody has typed a letter into yet.
         self._use_as_font = QCheckBox("Use as Font")
         self._use_as_font.setToolTip(
-            "These tiles are letters, so a fontmap bound to this\n"
-            "sheet reads its codes as words\n"
-            "What they spell is typed up in View > Font Alphabet\n"
-            "Unticking keeps the table, it just stops it being read"
+            "Treat these tiles as letters, so a fontmap bound to\n"
+            "this sheet reads its codes as words\n"
+            "What they spell is typed in View > Font Alphabet\n"
+            "Unticking keeps the table, but stops it being read"
         )
         self._use_as_font.toggled.connect(self._on_use_as_font_change)
         view.addWidget(self._use_as_font)

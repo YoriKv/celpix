@@ -83,7 +83,9 @@ def _read(workspace, registry, name: str) -> tuple[str, bool]:
         ),
         registry,
     )
-    params = registry.preset(entry.tilemap_preset_id).params
+    preset = registry.preset(entry.tilemap_preset_id)
+    params = preset.params
+    engine = registry.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
     alphabet = pipeline.load_font_alphabet(
         font.font_chars,
         font.font_codes,
@@ -91,7 +93,7 @@ def _read(workspace, registry, name: str) -> tuple[str, bool]:
         controls=params.get("controls", ()),
         code_digits=2,
         base=font.font_base,
-        flag_break=bool(params.get("terminator")),
+        flag_break=engine.has_line_flag(params),
     )
     codes = [cell.index for cell in loaded.cells]
     ends = [cell.ends_line for cell in loaded.cells]

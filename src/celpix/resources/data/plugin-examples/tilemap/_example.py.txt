@@ -9,9 +9,16 @@ one directly, for cell layouts the packed engine's parameters cannot express, an
 appears in the tilemap format picker like any preset. Try a preset first: see
 _packed.toml, which covers any format whose cell is one packed integer.
 
-Reach for code when the cell is *not* one integer — fields split across
-non-adjacent bytes, a value that has to be computed rather than masked out, or a
-run-length scheme where one stored cell yields several.
+Reach for code when the cell is *not* one integer — a value that has to be
+computed rather than read out of a field, a run-length scheme where one stored
+cell yields several, or records that are not all the same length.
+
+**The format below is none of those, and that is deliberate**: it is the smallest
+thing that exercises every method. Worth knowing before you copy it, though, that
+the packed engine reads this very format as ``bytes = 3`` beside
+``fields = "ffff ffii ..op ppvh iiii iiii"``, byte for byte and both directions —
+a tile number split across two bytes is a preset, not a reason to write code.
+What follows is the *mechanics*, for a format that really does need them.
 
 decode and encode must be buffer-relative and stateless — they walk whatever
 bytes they are given, with no notion of where the buffer sits in the file.
@@ -25,12 +32,16 @@ write back, so a field your format *has* and your decode ignores is zeroed on th
 next save — silently, and for the whole file. The four this format has no bit for
 are named below anyway, so nothing is dropped by omission.
 
-**Then say what a cell can do.** Four optional methods, each reached with
+**Then say what a cell can do.** Five optional methods, each reached with
 ``getattr`` so leaving one out is a real answer rather than a crash: silence
 means "do not infer this for me". That makes ``index_limit`` the one to write
 first — **a format that omits it cannot have its cells pointed at a tile at
 all**. The Cell spin and the Edit Tiles tool simply refuse, with no error to read,
 because the host will not guess how wide a field it was never told about is.
+
+Four of the five are below. The fifth, ``has_line_flag``, is left out for exactly
+the reason the protocol exists: this format ends no line on a bit, and silence
+says so.
 """
 
 from celpix.core.tilemap import Cell, CellOp
@@ -77,7 +88,9 @@ class SplitCell:
                     # from a format's own drawn/enable bit, and `ends_line` from
                     # the bit a *text* format sets on the last character of a
                     # line — that one reaches no pixel, only the newline
-                    # View > Text shows after it.
+                    # View > Text shows after it. A format that sets it wants
+                    # `has_line_flag` too, or the text window will read those
+                    # breaks and refuse to let one be typed.
                 )
             )
         return cells

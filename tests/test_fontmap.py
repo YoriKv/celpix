@@ -279,7 +279,7 @@ def test_the_streams_control_codes_come_from_its_own_cell_format(
             params={
                 "layout": "text",
                 "bytes": 1,
-                "index": {"shift": 0, "bits": 8},
+                "fields": "iiii iiii",
                 # No `role` on the second: a cell format's controls are commands
                 # unless they say otherwise, which is what keeps every line from
                 # carrying the only thing it could be.

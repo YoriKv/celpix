@@ -14,7 +14,7 @@ category = "Nintendo"
 [params]
 bytes = 1
 endian = "little"
-index = { shift = 0, bits = 8 }
+fields = "iiii iiii"
 # Mode 7's map is always the full 128x128, which a bare 16 KiB payload has no
 # other way to say. A GBA affine map is smaller and square, so it falls outside
 # the count and keeps a width the user owns.

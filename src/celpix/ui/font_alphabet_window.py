@@ -306,9 +306,7 @@ class FontAlphabetWindow(QWidget):
 
         self._start_from = QPushButton("Start from...")
         self._start_from.setToolTip(
-            "Fill the run with a common arrangement, as a first draft\n"
-            "Both are guesses at the shape; the origin is still yours\n"
-            "to dial afterwards"
+            "Fill the run with a common arrangement, as a first draft"
         )
         menu = QMenu(self._start_from)
         for name, base, chars in TEMPLATES:
@@ -340,8 +338,7 @@ class FontAlphabetWindow(QWidget):
         self._shift_up = QPushButton("Shift up")
         self._shift_up.setToolTip(
             "Move every character one tile earlier\n"
-            "For a run pasted one tile too late; the character\n"
-            "on the first tile falls off"
+            "The character on the first tile falls off"
         )
         self._shift_up.clicked.connect(lambda: self._shift(-1))
         row.addWidget(self._shift_up)
@@ -349,8 +346,7 @@ class FontAlphabetWindow(QWidget):
         self._shift_down = QPushButton("Shift down")
         self._shift_down.setToolTip(
             "Move every character one tile later\n"
-            "For a run pasted one tile too early; the first tile\n"
-            "is left spelling nothing"
+            "The first tile is left spelling nothing"
         )
         self._shift_down.clicked.connect(lambda: self._shift(1))
         row.addWidget(self._shift_down)
@@ -358,24 +354,21 @@ class FontAlphabetWindow(QWidget):
 
         self._copy = QPushButton("Copy alphabet")
         self._copy.setToolTip(
-            "Put the table on the clipboard, one 20=A line per\n"
-            "code - the form a font table is kept in\n"
+            "Put the table on the clipboard, one 20=A line per code\n"
             "Selected rows only, or from the selected row to the\n"
             "end when one is picked\n"
-            "Unlike Ctrl+C in the table, which copies cells"
+            "Ctrl+C in the table copies cells instead"
         )
         self._copy.clicked.connect(self._copy_alphabet)
         row.addWidget(self._copy)
 
         self._paste = QPushButton("Paste alphabet")
         self._paste.setToolTip(
-            "Replace the table from the clipboard: 20=A lines as\n"
-            "Copy alphabet writes them, or a plain string of\n"
-            "characters, one per code\n"
+            "Replace the table from the clipboard: 20=A lines, or\n"
+            "a plain string of characters, one per code\n"
             "Into the selected rows only, or from the selected row\n"
             "to the end when one is picked\n"
-            "Unlike Ctrl+V in the table, which fills characters\n"
-            "down from the selected row"
+            "Ctrl+V in the table fills characters down instead"
         )
         self._paste.clicked.connect(self._paste_alphabet)
         row.addWidget(self._paste)
@@ -534,9 +527,8 @@ class FontAlphabetWindow(QWidget):
                 f"${code:02X} spells nothing.",
                 Badge(
                     "no text",
-                    "A line break or a control reads as its name,\n"
-                    "so write one in the Text column first - the\n"
-                    "string then holds it as [name].",
+                    "A line break or a control reads as its name.\n"
+                    "Write one in the Text column first.",
                     warning=True,
                 ),
             )
@@ -626,9 +618,8 @@ class FontAlphabetWindow(QWidget):
             f"{landed} filled in",
             Badge(
                 f"{lost} dropped",
-                "The paste ran past the last tile of the sheet.\n"
-                "A code no tile draws would be a glyph nobody\n"
-                "can see, so those characters were not written.",
+                "The paste ran past the last tile of the sheet,\n"
+                "so those characters were not written.",
                 warning=True,
             )
             if lost
@@ -806,9 +797,8 @@ class FontAlphabetWindow(QWidget):
             f"{landed} codes pasted.",
             Badge(
                 f"{dropped} dropped",
-                "The paste ran past the last row of the selection.\n"
-                "A code no row names would be a glyph nobody\n"
-                "can see, so those characters were not written."
+                "The paste ran past the last row of the selection,\n"
+                "so those characters were not written."
                 if lost
                 else "Those codes fall outside the selected rows,\n"
                 "so they were not written.",

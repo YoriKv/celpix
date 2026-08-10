@@ -106,9 +106,9 @@ class SliceDialog(QDialog):
 
         self._reshape = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._reshape.setToolTip(
-            "Undo a region-scoped byte reordering on load\n"
-            "(a plane-per-chip split, an interleave). Applies to\n"
-            "the whole region, before any decompression"
+            "Undo a byte reordering on load: a plane-per-chip\n"
+            "split, an interleave\n"
+            "Applies to the whole region, before decompression"
         )
         fill_stage_combo(self._reshape, registry.plugins(Stage.RESHAPE), reshape_id)
 
@@ -122,14 +122,9 @@ class SliceDialog(QDialog):
         self._slot_fill.setToolTip(
             "What fills the end of the region when re-packing\n"
             "produces fewer bytes than it replaces:\n"
-            "• Keep Bytes - write only what was packed, leaving\n"
-            "  the old stream's tail standing. Touches nothing\n"
-            "  the region may not really own\n"
-            "• Fill w/ $FF - how erased ROM reads, and obvious\n"
-            "  as spare room in a hex dump\n"
-            "• Fill w/ $00 - for images padded with zeroes\n"
-            "Nothing reads these bytes either way: the codec\n"
-            "stops at the end of its own stream."
+            "• Keep Bytes - leave the old stream's tail standing\n"
+            "• Fill w/ $FF - how erased ROM reads\n"
+            "• Fill w/ $00 - for images padded with zeroes"
         )
         for label, data in (
             ("Keep Bytes", SlotFill.KEEP),

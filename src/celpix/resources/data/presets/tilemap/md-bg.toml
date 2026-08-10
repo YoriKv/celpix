@@ -9,11 +9,7 @@ category = "Sega"
 [params]
 bytes = 2
 endian = "big"
-index = { shift = 0, bits = 11 }
-flip_h = { shift = 11, bits = 1 }
-flip_v = { shift = 12, bits = 1 }
-palette = { shift = 13, bits = 2 }
-priority = { shift = 15, bits = 1 }
+fields = "oppv hiii iiii iiii"
 # No page geometry: a Mega Drive plane is one contiguous run at a size the VDP
 # registers pick (32/64/128 wide), not a set of fixed screens laid out into a
 # picture, so the width is the user's.

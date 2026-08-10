@@ -206,12 +206,10 @@ class CompressionMixin:
                 self._structure_extent = (self._byte_position(), consumed)
             badge = Badge(
                 "end of view window",
-                "This scheme is a plain stream with no end marker, so it\n"
-                "decodes exactly as far as the view window reaches and\n"
-                "no further - the picture is a prefix, not a structure.\n"
-                "To Slice bounds the slice at that same point; widen the\n"
-                "window for more, or set the true length from whatever\n"
-                "container recorded it.",
+                "This scheme has no end marker, so it decodes as far\n"
+                "as the view window reaches and no further.\n"
+                "To Slice bounds the slice at that same point; widen\n"
+                "the window for more, or set the true length.",
             )
         rows16 = ctx.get(KEY_LZ16_ROWS)
         if rows16 is not None:

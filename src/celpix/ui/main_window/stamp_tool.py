@@ -49,10 +49,8 @@ from celpix.ui.widgets import counted, signals_blocked
 STAMP_TIP = (
     "Lay the picked tile into a cell (T)\n"
     "Left click or drag stamps; right click picks a tile\n"
-    "A picked cell carries its palette row and flips, and\n"
-    "stamps them back; a tile picked in the tile source\n"
-    "panel sets the tile alone\n"
-    "Pick from the Tile Source panel"
+    "A picked cell carries its palette row and flips; a tile\n"
+    "picked in the Tile Source panel sets the tile alone"
 )
 # Why the tool is off where it looks like it should apply. A format whose cells
 # have no index field has nothing for a stamp to set - the same answer that hides

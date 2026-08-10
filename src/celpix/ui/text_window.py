@@ -176,11 +176,9 @@ class TextWindow(QWidget):
 
         self._wrap = QCheckBox("Wrap")
         self._wrap.setToolTip(
-            "Fold long lines to the window's width.\n"
-            "Off, a line is a line of the file - it ends where\n"
-            "the string's own line-break code says it does, and\n"
-            "nowhere else. On is easier to read a long string in\n"
-            "and hides which breaks are in the bytes."
+            "Fold long lines to the window's width\n"
+            "Off, a line ends where the string's own line-break\n"
+            "code says it does, and nowhere else"
         )
         self._wrap.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._wrap.setChecked(load_bool_setting(WORD_WRAP_KEY, False))
@@ -193,14 +191,12 @@ class TextWindow(QWidget):
         # one of them.
         self._insert_mode = QCheckBox("Insert")
         self._insert_mode.setToolTip(
-            "Type into the string instead of over it.\n"
+            "Type into the string instead of over it\n"
             "Off, a key replaces the character it lands on and\n"
             "Backspace blanks one to a space, so the text always\n"
-            "costs the cells its region has. On is an ordinary\n"
-            "text field: the string grows and shrinks, and a run\n"
-            "longer than its region cannot be written at all.\n"
-            "Always starts off: it is a mode to reach for, not one\n"
-            "to be left in by a session you have forgotten."
+            "costs the cells its region has\n"
+            "On, a run longer than its region cannot be written\n"
+            "Always starts off"
         )
         self._insert_mode.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 

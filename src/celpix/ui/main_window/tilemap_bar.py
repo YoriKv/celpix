@@ -194,8 +194,7 @@ class TilemapBarMixin:
         row.addWidget(self._size_pair_label)
         tip = (
             "The two sizes a subsprite's size bit picks between,\n"
-            "each a square that many tiles on a side\n"
-            "No file records the pair - it was a hardware register"
+            "each a square that many tiles on a side"
         )
         self._size_small = value_spin(1, 8, 1, self._on_size_pair_change)
         self._size_small_label = add_labelled(row, "Sm ", self._size_small, tip)
@@ -216,8 +215,7 @@ class TilemapBarMixin:
         self._all_frames = QCheckBox("All Frames")
         self._all_frames.setToolTip(
             "Show every frame slot the file has room for\n"
-            "Off stops after the last frame that draws something -\n"
-            "a file holds 32 or 64 and most are empty"
+            "Off stops after the last frame that draws something"
         )
         self._all_frames.toggled.connect(self._on_all_frames_change)
         row.addWidget(self._all_frames)
@@ -237,8 +235,6 @@ class TilemapBarMixin:
         self._transparent_zero_box = QCheckBox("Transparent 0")
         self._transparent_zero_box.setToolTip(
             "Draw palette index 0 as nothing, the way the console does\n"
-            "A blank cell names a real tile whose pixels are all 0 -\n"
-            "opaque, a backdrop covers half a screen in one flat colour\n"
             "Off leaves index 0 an ordinary colour, to see and to edit"
         )
         self._transparent_zero_box.toggled.connect(self._on_transparent_zero_change)

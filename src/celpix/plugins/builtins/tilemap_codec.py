@@ -12,33 +12,48 @@ engine covers all of them, so a new tilemap format is a preset rather than code
 
 Params:
 
-- ``bytes`` — cell width in bytes (default 2).
-- ``endian`` — ``"little"`` or ``"big"`` (default little). Per *format*, not per
-  family: SCR and PNL come from one authoring tool and disagree.
-- ``index`` / ``palette`` / ``priority`` / ``flip_h`` / ``flip_v`` — each an
-  ``{ shift, bits }`` table naming where that field sits in the word. A field
-  omitted from the preset does not exist in the format: it decodes as zero and
-  is dropped on encode, which is how a plain index-only map is described.
+- ``fields`` — the cell's **bit layout**: one letter per bit, most significant
+  first, the way the format's own notes draw it. The SNES entry above is
+  ``vhop ppii iiii iiii``; whitespace groups it for counting and means nothing.
+  Read by :mod:`~celpix.plugins.builtins._fields`, which is also where the
+  letters and a preset's own ``legend`` are explained.
+
+  - ``i`` the tile number, or the coordinate an ``indirect`` map names
+  - ``p`` palette row
+  - ``o`` priority — carried, never rendered: celPix has no layers
+  - ``h`` / ``v`` horizontal and vertical flip
+  - ``d`` drawn, set where the position IS drawn (see :data:`_FIELDS`)
+  - ``e`` ends the line, for the text formats described below
+  - ``f`` bits the format has and celPix has no meaning for, carried through
+    untouched so a write stays byte-exact (:class:`Cell`)
+  - ``.`` a bit no field claims, and one a write leaves clear
+
+  A letter the layout never uses is a field the format does not have: it decodes
+  as zero and is dropped on encode, which is how a plain index-only map
+  (``iiii iiii``) is described.
 
   **A field need not be contiguous.** Hardware that grew a tile number past the
   room left for it parks the extra bits wherever there was space: a Game Boy
   Color map entry holds bits 0-7 of the index in its first byte and bit 8 alone
-  up in the attribute byte, and the WonderSwan does the same with bit 9. So a
-  field may also be a **list** of ``{ shift, bits }`` tables, **most significant
-  chunk first** — the same convention, and the same kernel, the colour masks
-  already use for split channels
-  (:mod:`~celpix.plugins.builtins._mask`). A single table is the one-chunk case.
-- ``terminator`` — the same table again, for a **text** format that ends a line
-  by setting a bit on its last character rather than by spending a code on a
-  terminator (``docs/graphics-formats-reference/text-formats.md`` §4.4). It is
-  the only field here that changes no pixel: it lands on
+  up in the attribute byte, and the WonderSwan does the same with bit 9. Written
+  ``ovh. ippp iiii iiii`` the two runs of ``i`` are one field, in the order they
+  are read — the same split the colour masks take, through the same kernel
+  (:mod:`~celpix.plugins.builtins._mask`).
+
+  ``e`` is for a **text** format that ends a line by setting a bit on its last
+  character rather than by spending a code on a terminator
+  (``docs/graphics-formats-reference/text-formats.md`` §4.4). It is the only
+  field here that changes no pixel: it lands on
   :attr:`~celpix.core.tilemap.Cell.ends_line`, which the fontmap reading turns
   into a newline. Placing it is also what takes the bit **out of the index**, so
-  ``index = { shift = 0, bits = 7 }`` beside a ``terminator`` at bit 7 is a
-  one-byte text run whose last character draws the letter the hardware draws
-  rather than a tile past the end of the sheet.
-- ``flags`` — the same, for bits the format has and celPix has no meaning for.
-  Carried through untouched so a write stays byte-exact; see :class:`Cell`.
+  ``eiii iiii`` is a one-byte text run whose last character draws the letter the
+  hardware draws rather than a tile past the end of the sheet.
+- ``bytes`` — cell width in bytes. Optional: the layout already states it, and a
+  preset giving both is cross-checked.
+- ``endian`` — ``"little"`` or ``"big"`` (default little). Per *format*, not per
+  family: SCR and PNL come from one authoring tool and disagree. It orders the
+  cell's **bytes in the file**; the layout is always the word itself, high bit
+  first, so the two are independent.
 - ``cell_tiles`` — ``[across, down]``, how many tiles one cell covers
   (default ``[1, 1]``; a panel cell is ``[2, 2]``).
 - ``page_columns`` / ``page_rows`` / ``page_counts`` — the page geometry a
@@ -68,6 +83,12 @@ from celpix.core.context import (
 from celpix.core.errors import Stage
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._fields import (
+    Field,
+    bit_width,
+    parse_layout,
+    resolve_legend,
+)
 from celpix.plugins.builtins._mask import gather, scatter
 
 TILEMAP_ENGINE = "codec.tilemap.packed"
@@ -99,19 +120,38 @@ _MIRRORS = {
 }
 
 
-# One field's placement in the word: the chunk masks it occupies and their
-# (shift, width) pairs, both most-significant chunk first — the argument pair
-# ``_mask.gather`` / ``_mask.scatter`` take.
-_Field = tuple[tuple[int, ...], tuple[tuple[int, int], ...]]
+# One field's placement in the word — the chunk masks and (shift, width) pairs
+# ``_mask.gather`` / ``_mask.scatter`` take (:mod:`~celpix.plugins.builtins._fields`).
+_Field = Field
+
+# Which letter of a cell layout names which field. Overridable per preset, so a
+# layout can keep the mnemonics of the note it was copied from.
+_LEGEND = {
+    "i": "index",
+    "p": "palette",
+    "o": "priority",
+    "h": "flip_h",
+    "v": "flip_v",
+    "d": "drawn",
+    "e": "terminator",
+    "f": "flags",
+}
+
+
+def _placements(params: dict[str, Any]) -> dict[str, _Field] | None:
+    """Everything the preset's ``fields`` layout places, or None where it has none."""
+    text = params.get("fields")
+    if not isinstance(text, str):
+        return None
+    legend = resolve_legend(_LEGEND, params.get("legend"), frozenset(_FIELDS))
+    return parse_layout(text, legend, _cell_bytes(params) * 8)
 
 
 def _field(params: dict[str, Any], name: str) -> _Field | None:
-    """Field ``name``'s chunks, or None when the format lacks it.
-
-    One ``{ shift, bits }`` table or a list of them, most significant first. A
-    chunk with no bits contributes nothing, and a field left with no chunks at
-    all is a field the format does not have.
-    """
+    """Field ``name``'s chunks, or None when the format lacks it."""
+    placed = _placements(params)
+    if placed is not None:
+        return placed.get(name)
     spec = params.get(name)
     if not spec:
         return None
@@ -146,7 +186,28 @@ def _layout(params: dict[str, Any]) -> dict[str, _Field | None]:
 
 
 def _cell_bytes(params: dict[str, Any]) -> int:
-    size = int(params.get("bytes", 2))
+    """How wide one cell is — the layout's own answer where it has one.
+
+    ``bytes`` stays accepted so a preset can state the width plainly, but the
+    layout is what decides it: a cell whose two statements disagree is a preset
+    to fix rather than one to guess at.
+    """
+    stated = None if params.get("bytes") is None else int(params["bytes"])
+    text = params.get("fields")
+    if isinstance(text, str):
+        width = bit_width(text)
+        if width % 8:
+            raise ValueError(
+                f"a cell has to be a whole number of bytes, and the layout "
+                f"describes {width} bits"
+            )
+        size = width // 8
+        if stated is not None and stated != size:
+            raise ValueError(
+                f"the layout describes a {size}-byte cell and bytes says {stated}"
+            )
+    else:
+        size = stated if stated is not None else 2
     if size < 1:
         raise ValueError(f"cell size must be at least one byte, got {size}")
     return size
@@ -291,6 +352,18 @@ class TilemapCodec:
         places no ``palette``.
         """
         return _limit(_field(params, "palette"))
+
+    def has_line_flag(self, params: dict[str, Any]) -> bool:
+        """Whether the format ends a line on a **bit** rather than on a code.
+
+        :meth:`has_palette_rows` for the terminator: the layout already says, so
+        the answer comes off the one table rather than a second that could
+        disagree. The alphabet has to know before a newline can be typed into
+        such a stream (:attr:`~celpix.core.font.Alphabet.flag_break`), and it
+        has to know from the *format*, since this is the stream's punctuation
+        and not the font's (``docs/design/fontmap-entry.md`` §4).
+        """
+        return _field(params, "terminator") is not None
 
     def has_palette_rows(self, params: dict[str, Any]) -> bool:
         """Whether the preset places a palette field — the field table answers.

@@ -201,9 +201,8 @@ class FontAlphabetMixin:
         if not font.use_as_font:
             return summary, Badge(
                 "not a font",
-                "This entry is not ticked Use as Font, so its\n"
-                "table is not read. Tick it beside the tile size\n"
-                "to put these letters into the text.",
+                "This entry is not ticked Use as Font, so its table\n"
+                "is not read. Tick it beside the tile size.",
                 warning=True,
             )
         return summary, None

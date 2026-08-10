@@ -1,6 +1,6 @@
 # IA8 intensity + alpha — one byte per pixel, 4 bits of grey then 4 of alpha
 # (N64 texture format IA, 8-bit). R/G/B share the intensity nibble; see dc-i8 on
-# why that shared mask is intended.
+# what `v` means and why it is intended.
 # See docs/graphics-formats-reference/mame-formats.md §4.3.
 id = "preset.pixel.dc-ia8"
 name = "N64 IA8 (intensity+alpha, 8x8)"
@@ -9,9 +9,4 @@ category = "Nintendo"
 
 [params]
 bytes_per_pixel = 1
-
-[params.masks]
-a = 0x0F
-r = 0xF0
-g = 0xF0
-b = 0xF0
+fields = "vvvv aaaa"

@@ -9,10 +9,7 @@ category = "Nintendo"
 [params]
 bytes = 2
 endian = "little"
-index = { shift = 0, bits = 10 }
-flip_h = { shift = 10, bits = 1 }
-flip_v = { shift = 11, bits = 1 }
-palette = { shift = 12, bits = 4 }
+fields = "pppp vhii iiii iiii"
 # Same screen-block scheme the SNES uses, and stated for the same reason: the
 # console cuts a background into 32x32 blocks and lays them out
 # horizontally-then-vertically, so the four text-BG sizes are 1, 2 or 4 of them.

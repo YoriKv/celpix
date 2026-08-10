@@ -9,8 +9,4 @@ category = "Generic"
 [params]
 bytes_per_entry = 2
 byte_order = "big"
-
-[params.masks]
-r = 0x001F
-g = 0x03E0
-b = 0x7C00
+fields = ".bbb bbgg gggr rrrr"

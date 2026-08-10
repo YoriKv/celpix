@@ -1,4 +1,4 @@
-# ABGR8888 — one byte per component, file bytes A,B,G,R (the RGBA8888 masks
+# ABGR8888 — one byte per component, file bytes A,B,G,R (the RGBA8888 layout
 # assembled big-endian; the byte sequence is the name, so no endian qualifier —
 # docs/design/plugin-system.md §2). The id keeps its historic spelling: ids are
 # stable, project files reference them.
@@ -11,9 +11,4 @@ category = "Generic"
 [params]
 bytes_per_entry = 4
 byte_order = "big"
-
-[params.masks]
-a = 0xFF000000
-r = 0x000000FF
-g = 0x0000FF00
-b = 0x00FF0000
+fields = "aaaa aaaa bbbb bbbb gggg gggg rrrr rrrr"

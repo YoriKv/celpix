@@ -19,9 +19,12 @@ celPix is built on Python + Qt (PySide6) and runs on Windows, macOS, and Linux.
 - **Containers & Reshaping** - support for appending multiple files together and then a variety of byte "reshaping" plugins such as merging split ROM chips, deinterleaving, reversing bit order, etc
 - **Editing** - full set of editing tools with undo/redo, copy/paste/etc internally
   and to external editors.
-- **Tilemaps** - still experimental, but adding to and improving this functionality.
-- **Fontmaps** - also experimental: read and edit a ROM's text as words, by
-  reading a tilemap of character codes through the font it draws from.
+- **Tilemaps** - full set of tools for working with tilemaps and a plugin format to
+  define how tile data is parsed. Uses a provided pixel source as a list of tiles
+  that it indexes into.
+- **Spritemaps** - a subtype of tilemaps that is used for rendering sprites and animations.
+- **Fontmaps** - a subtype of tilemaps that reads and edits a ROM's strings,
+  rendering them using a font bitmap for preview.
 - **Import & export** - PNG import/export supporting both indexed and RGB.
 - **Files, slices, and bookmarks** - edit multiple files at once, create bookmarks
   to quickly jump to different offsets and settings, create slices to work on

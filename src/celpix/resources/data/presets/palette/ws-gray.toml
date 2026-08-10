@@ -3,8 +3,8 @@
 # holds one whole palette, low nibble first.
 #
 # Stated as 4 bits rather than 3 because the nibble is the *slot*: the fourth bit
-# is padding the format leaves, not part of the shade, so the mask is what says
-# how much of the slot is real.
+# is padding the format leaves, not part of the shade, which is why the layout
+# spends a `.` on it rather than a fourth `v`.
 # See docs/graphics-formats-reference/tile-converter-formats.md §3.3.
 id = "preset.palette.ws-gray"
 name = "WonderSwan mono palette (4 x 3-bit grey)"
@@ -14,7 +14,4 @@ category = "Bandai"
 [params]
 bits_per_entry = 4
 invert = true
-gray = true
-
-[params.masks]
-r = 0x07
+fields = ".vvv"

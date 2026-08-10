@@ -210,9 +210,8 @@ class AnimationOverlay(QWidget):
 
         self._sequence = QComboBox()
         self._sequence.setToolTip(
-            "Which of the file's animation sequences to play.\n"
-            "A sequence is a run of (duration, frame) steps; the\n"
-            "file has room for 16 or 32 and usually fills a few."
+            "Which of the file's animation sequences to play\n"
+            "A sequence is a run of (duration, frame) steps"
         )
         self._sequence.currentIndexChanged.connect(self._on_sequence_changed)
 
@@ -227,11 +226,11 @@ class AnimationOverlay(QWidget):
         self._play.toggled.connect(self._on_play_toggled)
         self._prev = QPushButton("<")
         self._prev.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._prev.setToolTip("Step back one step of the sequence.")
+        self._prev.setToolTip("Step back one step of the sequence")
         self._prev.clicked.connect(lambda: self._advance(-1))
         self._next = QPushButton(">")
         self._next.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._next.setToolTip("Step forward one step of the sequence.")
+        self._next.setToolTip("Step forward one step of the sequence")
         self._next.clicked.connect(lambda: self._advance(1))
 
         self._rate = QSpinBox()
@@ -240,10 +239,9 @@ class AnimationOverlay(QWidget):
         self._rate.setKeyboardTracking(False)
         self._rate.setSuffix(" Hz")
         self._rate.setToolTip(
-            "How many ticks pass per second.\n"
-            "A step's duration is counted in the authoring tool's\n"
-            "own ticks, and nothing in the files says what one was\n"
-            "worth; 60 reads them as console frames."
+            "How many ticks pass per second\n"
+            "A step's duration is counted in ticks; 60 reads\n"
+            "them as console frames"
         )
         self._rate.valueChanged.connect(self._on_rate_changed)
 
@@ -253,10 +251,9 @@ class AnimationOverlay(QWidget):
         self._zoom.setKeyboardTracking(False)
         self._zoom.setSuffix("x")
         self._zoom.setToolTip(
-            "How big the frame is drawn here.\n"
-            "This window's own zoom - the main view keeps its own,\n"
-            "and neither follows the other. Ctrl+wheel over the\n"
-            "frame steps it; hold space and drag to pan."
+            "How big the frame is drawn here\n"
+            "This window's own zoom, separate from the main view\n"
+            "Ctrl+wheel over the frame steps it; space-drag pans"
         )
         self._zoom.valueChanged.connect(self._frame.set_zoom)
 
@@ -486,10 +483,8 @@ class AnimationOverlay(QWidget):
             parts.append(
                 Badge(
                     "inferred",
-                    "How this file stores its animation is read off the\n"
-                    "data, not off the tool that wrote it: the two blocks\n"
-                    "are opaque byte arrays to the writer, and which holds\n"
-                    "frames and which durations comes from the corpus.",
+                    "Which block holds frames and which durations is\n"
+                    "read off the data, not declared by the file.",
                 )
             )
         missing = unknown_frames((sequence,), self._frames)
@@ -498,9 +493,7 @@ class AnimationOverlay(QWidget):
                 Badge(
                     f"{missing} missing frame{'s' if missing != 1 else ''}",
                     "This sequence names frames the file does not hold.\n"
-                    "The table carries whatever was in the tool's buffer\n"
-                    "past its terminator, so a step can name a frame that\n"
-                    "was never drawn. Those steps show as blank.",
+                    "Those steps show as blank.",
                     warning=True,
                 )
             )

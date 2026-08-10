@@ -153,7 +153,9 @@ class NavigationMixin:
             ),
             (
                 ("&Previous byte", "- / Ctrl+Left", lambda: self._nav_bytes(-1), True),
-                ("&Next byte", "+ / Ctrl+Right", lambda: self._nav_bytes(1), True),
+                # "=" is advertised beside "+": on most layouts + is Shift+=, and
+                # the bare key is what makes -/= a pair the fingers can hold.
+                ("&Next byte", "+ = / Ctrl+Right", lambda: self._nav_bytes(1), True),
                 ("&Zero byte offset", "0", self._clear_nudge, True),
                 ("Previous &tile", "Left", lambda: self._nav_tiles(-1), True),
                 ("Next til&e", "Right", lambda: self._nav_tiles(1), True),

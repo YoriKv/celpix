@@ -8,8 +8,4 @@ category = "Direct color"
 [params]
 bytes_per_pixel = 2
 byte_order = "big"
-
-[params.masks]
-r = 0x001F
-g = 0x07E0
-b = 0xF800
+fields = "bbbb bggg gggr rrrr"

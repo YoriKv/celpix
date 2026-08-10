@@ -5,7 +5,8 @@
 # semi-transparency flag rather than spare. It decodes identically — the flag is
 # not color — and the TIM container carries it over on save, since an ARGB
 # palette has nowhere to keep it (docs/graphics-formats-reference/psx-tim-formats.md).
-# Component masks are hex integers; omit a component (e.g. alpha) to leave it out.
+# The layout is one letter per bit, high bit first; a component the format has
+# not got (alpha here) simply never appears in it.
 # See docs/graphics-formats-reference/implementation-guide.md §4.
 id = "preset.palette.bgr555"
 name = "BGR555 (SNES/GBC/GBA/PSX)"
@@ -15,8 +16,4 @@ category = "Generic"
 [params]
 bytes_per_entry = 2
 byte_order = "little"
-
-[params.masks]
-r = 0x001F
-g = 0x03E0
-b = 0x7C00
+fields = ".bbb bbgg gggr rrrr"

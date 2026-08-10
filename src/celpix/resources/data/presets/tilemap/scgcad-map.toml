@@ -32,6 +32,4 @@ endian = "big"
 # One entry names one panel *cell*, and a panel cell is one 8x8 tile — the Y
 # field spans 0-511, the panel's full cell height, not a count of 16x16 units.
 # A resolved layout takes its cell size from the panel it draws through anyway.
-index = { shift = 0, bits = 14 }
-drawn = { shift = 14, bits = 1 }
-flags = { shift = 15, bits = 1 }
+fields = "fdii iiii iiii iiii"

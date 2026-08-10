@@ -15,7 +15,4 @@ category = "Bandai"
 [params]
 bytes = 2
 endian = "little"
-index = [{ shift = 13, bits = 1 }, { shift = 0, bits = 9 }]
-palette = { shift = 9, bits = 4 }
-flip_h = { shift = 14, bits = 1 }
-flip_v = { shift = 15, bits = 1 }
+fields = "vhip pppi iiii iiii"

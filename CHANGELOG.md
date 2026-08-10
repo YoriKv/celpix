@@ -4,7 +4,10 @@
 
 - **Subsprites window** (View -> Subsprites): separate window for displaying
   the subsprites of a sprite map
+- **Bit layouts in presets**: any plugin config or preset that requires decoding
+  bits can now specify how via a bit layout (ex: `vhop ppii iiii iiii`)
 - Lots of fontmap and tilemap fixes
+- Tooltips and shortcuts cleaned up and updated
 
 ## v0.5.2 - 2026-08-10
 

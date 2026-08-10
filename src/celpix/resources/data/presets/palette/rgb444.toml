@@ -14,8 +14,4 @@ category = "Bandai"
 [params]
 bytes_per_entry = 2
 byte_order = "little"
-
-[params.masks]
-r = 0x0F00
-g = 0x00F0
-b = 0x000F
+fields = ".... rrrr gggg bbbb"
