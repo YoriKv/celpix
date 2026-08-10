@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.2 - unreleased
+## v0.5.2 - 2026-08-10
 
 - Improved fontmap support, new alphabet editor build into the UI
 
