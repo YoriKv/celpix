@@ -1318,6 +1318,8 @@ class SessionMixin:
         self._overlay.hide_overlay()
         self._animation.hide_overlay()
         self._animation_action.setEnabled(False)
+        self._subsprites.hide_overlay()
+        self._subsprites_action.setEnabled(False)
         self._text.hide_overlay()
         self._text_action.setEnabled(False)
         self._font_alphabet.hide_overlay()

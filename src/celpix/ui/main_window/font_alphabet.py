@@ -235,18 +235,17 @@ class FontAlphabetMixin:
         after: FontAlphabetState = (font.use_as_font, base, chars, tuple(codes))
         if after == before:
             return
-        # A fresh gesture ends the run before it starts a step of its own, so a
-        # paste can never merge into the word typed just before it.
+        # ``fresh`` **opens** a run rather than opting out of one, so the first
+        # row of a word merges with the rest of it. Every edit carries a number
+        # and only edits sharing it merge, which is what keeps two gestures apart
+        # without keeping the halves of one gesture apart: a paste reports fresh
+        # on both sides (the window ends the run before and after it), so it
+        # takes a number of its own and nothing can join it.
         if fresh:
             self._font_alphabet_run += 1
         self._push_command(
             FontAlphabetCommand(
-                self,
-                font,
-                label,
-                before,
-                after,
-                run=None if fresh else self._font_alphabet_run,
+                self, font, label, before, after, run=self._font_alphabet_run
             )
         )
 

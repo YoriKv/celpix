@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.3 - unreleased
+
+- **Subsprites window** (View -> Subsprites): separate window for displaying
+  the subsprites of a sprite map
+- Lots of fontmap and tilemap fixes
+
 ## v0.5.2 - 2026-08-10
 
 - Improved fontmap support, new alphabet editor build into the UI

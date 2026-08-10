@@ -875,7 +875,7 @@ class SelectionMixin:
             else:
                 self.statusBar().showMessage(f"Selected {total} of the sheet")
             return
-        at_first = self._format_offset(self._tile_byte_offset(first))
+        at_first = self._format_offset(self._tile_address(first))
         if self._rect_size is not None:
             cols, rows = self._rect_size
             self.statusBar().showMessage(

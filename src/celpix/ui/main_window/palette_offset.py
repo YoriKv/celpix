@@ -68,11 +68,16 @@ class PaletteOffsetMixin:
     """
 
     def _initial_palette_offset(self) -> int:
-        """Where Offset mode starts: the selected tile, else the window top-left
-        - the same byte numbers the offset box and status bar already show."""
+        """Where Offset mode starts: the selected tile, else the window top-left.
+
+        In the coordinates a palette offset is written in - the owner's, which for
+        a slice is its parent's, because an Offset palette deliberately reaches
+        outside the slice's own window. So this is not the number the offset box
+        shows while a slice is on screen; that one counts from the slice.
+        """
         assert self._doc is not None
         # No stamp here, so no on-screen snap - this only reads a byte offset.
-        return self._tile_byte_offset(self._anchor_tile())
+        return self._tile_anchor_offset(self._anchor_tile())
 
     def _palette_offset_text(self) -> str:
         """The palette offset field's text provider; safe with no document."""
@@ -200,13 +205,12 @@ class PaletteOffsetMixin:
         shared answer behind both the read window
         (:meth:`_offset_palette_source`) and the step buttons' clamp.
 
-        ``base`` mirrors what the *address display* uses for the owner, because
-        a palette offset is one of the numbers on screen: under an active
-        reshape the display falls back to 0-based buffer positions
-        (``_display_base``), so the base is 0; under a permuting container the
-        display keeps the recorded start (those are the ROM's real addresses —
-        an ``.smd`` body begins past its copier header), so the base is that
-        start.
+        ``base`` mirrors the owner's own anchor (``_anchor_base``), because a
+        palette offset is written in the owner's coordinates: under an active
+        reshape those are 0-based buffer positions, so the base is 0; under a
+        permuting container they keep the recorded start (those are the ROM's real
+        addresses — an ``.smd`` body begins past its copier header), so the base is
+        that start.
         """
         owner = self._palette_offset_owner(entry)
         view = self._reordered_view(owner) if owner is not None else None
@@ -420,7 +424,11 @@ class PaletteOffsetMixin:
         )
 
     def _load_palette_from_selection(self) -> None:
-        """Palette ▸ Load from Selection: Offset mode at the selected tile."""
+        """Palette ▸ Load from Selection: Offset mode at the selected tile.
+
+        The tile's *anchor* offset, since that is what an Offset palette stores
+        (:meth:`_initial_palette_offset`).
+        """
         if self._doc is None or self._selected_tile is None:
             return
-        self._load_palette_at_offset(self._tile_byte_offset(self._selected_tile))
+        self._load_palette_at_offset(self._tile_anchor_offset(self._selected_tile))

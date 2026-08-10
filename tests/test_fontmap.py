@@ -4,6 +4,7 @@ writes them."""
 from __future__ import annotations
 
 from celpix.core.font import HOLE, TEMPLATES, Glyph, GlyphRole
+from celpix.ui.font_alphabet_window import COL_CODE, COL_ROLE, COL_TEXT
 from celpix.ui.main_window import MainWindow
 from uihelpers import _make_snes_file
 
@@ -831,6 +832,31 @@ def test_pasting_starts_at_the_selected_row_and_stops_at_the_last_tile(
     assert "dropped" in editor._badge.text()
 
 
+def test_enter_opens_the_text_cell_of_the_selected_row(qtbot, tmp_path) -> None:
+    """Click a tile, press Enter, type the letter.
+
+    Qt's own edit key is F2, which nobody reaches for on a row they just picked
+    off the sheet - and the row's Text is the cell it exists to answer whatever
+    column the cursor happens to be in.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QAbstractItemView
+
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="")
+    window._refresh_view()
+    editor = window._font_alphabet
+    editor._table.selectRow(2)
+
+    qtbot.keyClick(editor._table, Qt.Key.Key_Return)
+
+    assert editor._table.state() is QAbstractItemView.State.EditingState
+    assert (editor._table.currentRow(), editor._table.currentColumn()) == (2, COL_TEXT)
+    # Escape reaches the open editor and not the table, which is the other half
+    # of the rule: the key only opens an editor while there is none.
+    qtbot.keyClick(editor._table.focusWidget(), Qt.Key.Key_Escape)
+    assert editor._table.state() is QAbstractItemView.State.NoState
+
+
 def test_the_use_as_font_tick_is_one_undoable_declaration(qtbot, tmp_path) -> None:
     """It gates the table without taking it away.
 
@@ -969,3 +995,202 @@ def test_ctrl_z_takes_back_the_draft_before_it_reaches_the_stack(
     # is still one more Ctrl+Z away.
     assert window._text.body == "CAB[$F0]"
     assert [cell.index for cell in window._doc.cells] == [2, 0, 1, 0xF0]
+
+
+def test_a_run_of_rows_typed_in_the_editor_is_one_undo_step(qtbot, tmp_path) -> None:
+    """Each row settles as it is left, so the sheet and the string follow the
+    caret — but a word typed into six rows is one thing the user did."""
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="")
+    window._refresh_view()
+    steps = window._undo_stack.count()
+
+    # fresh only on the first, which is what a run of typing reports.
+    window._on_font_alphabet_edited(0, "A", (), True, "edit font alphabet")
+    window._on_font_alphabet_edited(0, "AB", (), False, "edit font alphabet")
+    window._on_font_alphabet_edited(0, "ABC", (), False, "edit font alphabet")
+
+    assert bank.font_chars == "ABC"
+    assert window._undo_stack.count() == steps + 1  # one step, not three
+    window._undo_stack.undo()
+    assert bank.font_chars == ""
+
+
+def test_ctrl_z_in_the_alphabet_window_reaches_the_session_stack(
+    qtbot, tmp_path
+) -> None:
+    """The floating window answers the key itself, and has to.
+
+    Qt keeps the main window's Undo action alive while a `Qt.Tool` window is
+    active, so a second binding here is a tie - and a tie fires neither, which is
+    an editor whose Ctrl+Z does nothing until the user clicks off it.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
+    window.show()
+    window._refresh_view()
+    editor = window._font_alphabet
+    # Shown and active, the way an action's WindowShortcut is judged (the
+    # offscreen platform ignores activateWindow()).
+    editor.show()
+    QApplication.setActiveWindow(editor)
+    editor._table.setFocus()
+
+    editor._table.item(1, COL_TEXT).setText("Z")
+    assert bank.font_chars == "AZCDE"
+
+    qtbot.keyClick(editor._table, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert bank.font_chars == "ABCDE"
+    qtbot.keyClick(editor._table, Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier)
+    assert bank.font_chars == "AZCDE"
+
+
+def test_a_role_pick_is_its_own_step_and_needs_a_name_to_land(qtbot, tmp_path) -> None:
+    """A role is a pick from a list, not a keystroke: it ends the run either side.
+
+    And it needs something to be the role of - what a non-text code reads as is
+    its *name*, so a role on a row that spells nothing is put back rather than
+    silently dropped on the next redraw.
+    """
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
+    window._refresh_view()
+    editor = window._font_alphabet
+    table = editor._table
+
+    table.item(1, COL_TEXT).setText("Z")
+    # What the role delegate does when its combo closes.
+    table.item(1, COL_ROLE).setText("control")
+    assert bank.font_codes == (Glyph(1, "Z", GlyphRole.CONTROL),)
+
+    # Its own step: the letter typed a moment earlier stays put.
+    window._undo_stack.undo()
+    assert (bank.font_chars, bank.font_codes) == ("AZCDE", ())
+
+    steps = window._undo_stack.count()
+    table.item(6, COL_ROLE).setText("line break")  # a row past the run
+    assert window._undo_stack.count() == steps
+    assert table.item(6, COL_ROLE).text() == "text"
+    assert "no text" in editor._badge.text()
+
+
+def test_shift_moves_the_characters_and_not_the_codes(qtbot, tmp_path) -> None:
+    """The correction a run pasted one tile out needs, and not the Base code spin
+    one reading over: that moves which codes the run occupies and leaves every
+    character on the tile it was typed against."""
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABC")
+    window._refresh_view()
+    editor = window._font_alphabet
+
+    editor._shift(1)
+    # A hole opens at the first tile and the origin has not moved.
+    assert (bank.font_chars, bank.font_base) == (f"{HOLE}ABC", 0)
+
+    editor._shift(-1)
+    assert (bank.font_chars, bank.font_base) == ("ABC", 0)
+
+    # Shifting up past the start drops the character that falls off the top —
+    # a run and a ring are not the same thing.
+    editor._shift(-1)
+    assert bank.font_chars == "BC"
+
+
+def test_copy_and_paste_alphabet_carry_the_whole_table(qtbot, tmp_path) -> None:
+    """The `20=A` form a font table is kept in everywhere outside celPix, so what
+    comes out pastes into a disassembly and back.
+
+    **Replaces** where the table's own Ctrl+V fills down: a table arriving from
+    somewhere else is the whole answer, and leaving the old one underneath would
+    merge two fonts into a third that is neither.
+    """
+    from PySide6.QtGui import QGuiApplication
+
+    window, bank, _entry = _fontmap(
+        qtbot,
+        tmp_path,
+        [2, 0, 1],
+        chars="ABC",
+        named=(Glyph(0xFE, "line-break", GlyphRole.BREAK),),
+    )
+    window._refresh_view()
+    editor = window._font_alphabet
+
+    editor._copy_alphabet()
+    copied = QGuiApplication.clipboard().text()
+    # Characters as themselves, a command in the bracketed form the same parser
+    # reads back.
+    assert "00=A" in copied and "FE=[line-break]" in copied
+
+    QGuiApplication.clipboard().setText("00=X\n01=Y\n")
+    editor._paste_alphabet()
+
+    # The whole table, not a merge: the old run and its named code are both gone.
+    assert bank.font_chars == "XY"
+    assert bank.font_codes == ()
+    window._undo_stack.undo()
+    assert bank.font_chars == "ABC"
+
+
+def test_pasting_a_plain_string_spells_the_codes_from_the_selected_row(
+    qtbot, tmp_path
+) -> None:
+    """The other form a font is quoted in: a row of letters, one per code.
+
+    It states no codes of its own, so the selection says where it starts - and
+    the paste still replaces to the end of the span, which is what tells it apart
+    from the table's own fill-down Ctrl+V.
+    """
+    from PySide6.QtGui import QGuiApplication
+
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
+    window._refresh_view()
+    editor = window._font_alphabet
+
+    QGuiApplication.clipboard().setText("xy")
+    editor._table.selectRow(2)
+    editor._paste_alphabet()
+
+    # Landed on the third and fourth codes; the fifth was inside the span and so
+    # came out blank, and the two before the selection never moved.
+    assert bank.font_chars == "ABxy"
+
+
+def test_the_clipboard_buttons_act_on_the_picked_rows(qtbot, tmp_path) -> None:
+    """Several rows picked is those rows and nothing else, both ways.
+
+    Non-contiguous on purpose: the span is the rows the user pointed at, not the
+    stretch between the first and the last.
+    """
+    from PySide6.QtCore import QItemSelection, QItemSelectionModel
+    from PySide6.QtGui import QGuiApplication
+
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
+    window._refresh_view()
+    editor = window._font_alphabet
+    picked = editor._table.selectionModel()
+    model = editor._table.model()
+    picked.clearSelection()
+    for row in (1, 3):
+        # The whole row spelled out rather than the Rows flag, which is the same
+        # selection: a ctrl+click is what this stands in for.
+        picked.select(
+            QItemSelection(model.index(row, COL_CODE), model.index(row, COL_ROLE)),
+            QItemSelectionModel.SelectionFlag.Select,
+        )
+
+    # The pick survives being pushed at the sheet: the tile it marks must not
+    # come back as a one-row selection.
+    assert [index.row() for index in picked.selectedRows()] == [1, 3]
+    editor._copy_alphabet()
+    assert QGuiApplication.clipboard().text() == "01=B\n03=D\n"
+
+    QGuiApplication.clipboard().setText("xy")
+    editor._paste_alphabet()
+    assert bank.font_chars == "AxCyE"
+
+    # A table whose codes all fall outside the picked rows is aimed at the wrong
+    # place, so it writes nothing rather than clearing them.
+    QGuiApplication.clipboard().setText("00=Z\n")
+    editor._paste_alphabet()
+    assert bank.font_chars == "AxCyE"
+    assert "outside" in editor._badge.text()

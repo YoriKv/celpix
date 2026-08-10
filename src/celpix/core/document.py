@@ -937,15 +937,20 @@ class Document:
             )
 
     @property
-    def display_base(self) -> int:
+    def anchor_base(self) -> int:
         """The file byte this document's position 0 corresponds to.
 
-        Raw sources (no decompressor, no reshape) show source-file-absolute
-        addresses — past whatever a container skipped, or the slice offset for a
-        raw slice — so ROM bank addresses stay meaningful wherever the bytes came
-        from. A decompressed stream has no linear mapping back to file offsets,
-        and a reshaped one is a byte permutation of its region, so both show their
-        own 0-based positions instead of lying with file addresses.
+        The coordinates an offset is *written down* in: what a slice offset, a
+        pinned palette region and a jump-to-source all mean. Raw sources (no
+        decompressor, no reshape) anchor source-file-absolute — past whatever a
+        container skipped, or the slice offset for a raw slice. A decompressed
+        stream has no linear mapping back to file offsets, and a reshaped one is a
+        byte permutation of its region, so under either the base is 0 and those
+        offsets are positions in the reordered buffer instead.
+
+        Not what the address box shows: that is a display policy on top of this
+        (:meth:`~celpix.ui.main_window.navigation.NavigationMixin._address_base`),
+        and a slice counts from its own first byte there.
 
         The base comes from what Read *recorded* rather than from the config's
         requested offset, because only the container knows where it actually
@@ -961,15 +966,14 @@ class Document:
         return self.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
 
     @property
-    def tilemap_display_base(self) -> int:
-        """:attr:`display_base` for the other half of a tilemap document.
+    def tilemap_anchor_base(self) -> int:
+        """:attr:`anchor_base` for the other half of a tilemap document.
 
         A tilemap entry holds two files at once — its cells, and the tiles it is
-        bound to — and they start in different places. The addresses beside its
-        **cells** (the hex dump) are the entry's own file, past whatever its
-        container skipped: a screen's payload begins at 0, a stamp layout's past
-        its header. Same rule as above, asked of the tilemap pathway; 0 for a
-        document that has no cells to address.
+        bound to — and they start in different places. Its **cells** are anchored
+        in the entry's own file, past whatever its container skipped: a screen's
+        payload begins at 0, a stamp layout's past its header. Same rule as above,
+        asked of the tilemap pathway; 0 for a document that has no cells.
         """
         cfg = self.tilemap_config
         if cfg is None or not cfg.reads_raw_bytes:

@@ -102,6 +102,10 @@ class TileSourceDockMixin:
         holder.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         holder.setWidgetResizable(False)
         self._tile_source_scroll = holder
+        # The backing beside a short sheet zooms too: a bank read at 1x fills a
+        # sliver of the dock, and the pointer is out on the grey exactly when the
+        # user wants it bigger.
+        self._tile_source_panel.claim_background(holder)
 
         # Cols and Zoom, the two questions a sheet of tiles raises that the
         # document cannot answer: how wide to read it, and how big. Both are the
@@ -121,7 +125,9 @@ class TileSourceDockMixin:
             header,
             "Cols",
             self._tile_source_columns,
-            "Tiles across the sheet\nHow the bank is read, not how it is stored",
+            "Tiles across the sheet\n"
+            "How the bank is read, not how it is stored\n"
+            "Shift+Left/Right steps it while the sheet has focus",
         )
         add_labelled(
             header,

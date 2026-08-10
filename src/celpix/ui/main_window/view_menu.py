@@ -104,6 +104,7 @@ class ViewMenuMixin:
         self._build_zoom_actions(menu)
         menu.addSeparator()
         self._build_animation_action(menu)
+        self._build_subsprites_action(menu)
         self._build_text_action(menu)
         self._build_font_alphabet_action(menu)
         menu.addSeparator()
@@ -167,6 +168,31 @@ class ViewMenuMixin:
         self._animation_action.triggered.connect(self._show_animation)
         self._animation_action.setEnabled(False)
         view_menu.addAction(self._animation_action)
+
+    def _build_subsprites_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
+        """View ▸ Subsprites - show what this sprite map is built from.
+
+        Directly after Animation, because the two are the second readings a
+        sprite map has: the player shows the object's motion, this shows its
+        parts. A frame is a heap of overlapping pieces and the front ones cover
+        the back ones, so what the file *holds* is not recoverable from the
+        canvas by looking (``docs/design/tilemap-entry.md`` §6).
+
+        Enabled far more widely than its neighbour, and that is the point: the
+        player wants a sequence with a step in it, where every sprite map is made
+        of records (:meth:`~...subsprites.SubspritesMixin._subsprites_available`).
+
+        Mnemonic "u": "S" belongs to Grid Style and "b" to Block Grid, so the
+        word's second letter is what is left.
+        """
+        self._subsprites_action = QAction("S&ubsprites...", self)
+        self._subsprites_action.setToolTip(
+            "Show every subsprite this object is built from\n"
+            "Its own window, with its own width and zoom"
+        )
+        self._subsprites_action.triggered.connect(self._show_subsprites)
+        self._subsprites_action.setEnabled(False)
+        view_menu.addAction(self._subsprites_action)
 
     def _build_text_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Text - open the string this fontmap holds, as words.

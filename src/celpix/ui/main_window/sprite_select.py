@@ -13,8 +13,9 @@ So the answer is resolved from the pixel instead: the canvas reports the **pixel
 a tile-mode press landed on
 (``Canvas.pixel_picked``), :func:`~celpix.pipeline.pipeline.subsprite_at` runs
 the render backwards to find which subsprite draws it, and the pick is held here
-for the two things that want it — the outline on the canvas, and the ring in the
-tile source panel over the tile that subsprite names.
+for the three things that want it — the outline on the canvas, the ring in the
+tile source panel over the tile that subsprite names, and the square on the sheet
+of records where one is open (:mod:`celpix.ui.main_window.subsprites`).
 
 **A press on the same tile again picks the next one down.** One answer per press
 would leave most of an object unreachable: subsprites overlap by design, and the
@@ -121,6 +122,10 @@ class SpriteSelectMixin:
         # same answer read the other way: which row the picked record draws in.
         self._sync_tile_source_marker()
         self._sync_marked_palette_row()
+        # And the third ring, where the sheet of records is open: the same pick,
+        # shown as which of the object's pieces it is
+        # (:mod:`celpix.ui.main_window.subsprites`).
+        self._sync_subsprite_square()
         self._announce_subsprite()
 
     def _picked_subsprite_record(self) -> Subsprite | None:
@@ -149,6 +154,9 @@ class SpriteSelectMixin:
         ):
             self._picked_subsprite = None
         self._sync_subsprite_outline()
+        # Before the sheet is recomposed, not after: that is debounced, and a
+        # ring left on a record that is gone is a ring on a different piece.
+        self._sync_subsprite_square()
 
     # -- what reads it -------------------------------------------------------
     def _subsprite_rect(self) -> QRect | None:

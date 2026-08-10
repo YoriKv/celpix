@@ -360,7 +360,9 @@ def test_switching_cell_format_redraws_the_rows_layout_marker(qtbot, tmp_path) -
     otherwise kept the grid glyph until the project was next opened."""
     from celpix.core.tilemap import Cell
 
-    window, _bank, entry = _bound_screen(qtbot, tmp_path, [Cell(index=1), Cell(index=2)])
+    window, _bank, entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=1), Cell(index=2)]
+    )
     panel = window._files_panel
     item = panel._items[entry]
     assert "Fontmap" not in item.toolTip(0)
@@ -413,6 +415,178 @@ def test_all_frames_is_a_sprite_maps_own_switch_and_grows_the_sheet(
     # The choice belongs to the entry, like the rearrangement and the row base.
     window._activate_entry(obj)
     assert window._all_frames.isChecked() and window._sprite_sheet().frames == 32
+
+
+def test_the_subsprite_sheet_opens_where_the_player_will_not_and_follows_the_pick(
+    qtbot, tmp_path
+) -> None:
+    """The two second readings a sprite map has, and what tells them apart.
+
+    The player wants a sequence with a step in it and most files have none; every
+    sprite map is made of records, so this opens on all of them. What it shows is
+    one square per record in frame order — the parts, where the canvas shows the
+    object they assemble to — and the canvas is what points at one: the sheet
+    rings the picked record and picks nothing itself.
+    """
+    from PySide6.QtCore import QPoint, Qt
+
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    # The third part draws the same tile as the first, somewhere else: one record
+    # of two, and one piece of one, which is the whole of what Frames decides.
+    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1), (24, 5, 2), (8, 0, 1)])))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    entry.doc = None  # re-read through the new binding
+    window._activate_entry(window._workspace.entries[0])
+    window._activate_entry(entry)
+
+    assert not window._animation_action.isEnabled()  # no sequence holds a step
+    assert window._subsprites_action.isEnabled()
+
+    window._show_subsprites()
+    sheet, panel = window._subsprites, window._subsprites._panel
+    assert sheet.isVisible()
+    # One square per record — not one per frame, and not one per distinct piece.
+    assert panel._records == [(0, 0), (0, 1), (0, 2)]
+
+    # The second part, at x=24 y=5: the pick the canvas resolves from the pixel
+    # is the one the sheet rings.
+    canvas = window._canvas
+    zoom = canvas._zoom
+    qtbot.mouseClick(
+        canvas, Qt.MouseButton.LeftButton, pos=QPoint(int(26 * zoom), int(7 * zoom))
+    )
+    assert window._picked_subsprite == (0, 1)
+    assert panel._marked == (0, 1)
+
+    # Frames off is the inventory: the repeat collapses onto the record it first
+    # appeared in, and the captions go with it - a square is several records now
+    # and has no one frame to name, so the box that writes them greys out.
+    sheet._frames.setChecked(False)
+    assert panel._records == [(0, 0), (0, 1)]
+    assert not sheet._numbers.isEnabled() and not panel._captions
+
+    # A pick on the *other* occurrence still rings the square its art is in,
+    # which is the only reading of the ring that survives the collapse.
+    qtbot.mouseClick(
+        canvas, Qt.MouseButton.LeftButton, pos=QPoint(int(10 * zoom), int(2 * zoom))
+    )
+    assert window._picked_subsprite == (0, 2)
+    assert panel._marked == (0, 0)
+
+    # ...and back on it is its own square again, captions and all.
+    sheet._frames.setChecked(True)
+    assert panel._marked == (0, 2)
+    assert sheet._numbers.isEnabled() and panel._captions
+
+    # And an entry with no subsprites closes it: the window holds its own copy of
+    # the sheet, so one left open would show pieces of a file nowhere on screen.
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    assert not window._subsprites.isVisible()
+    assert not window._subsprites_action.isEnabled()
+
+
+def test_the_subsprite_sheet_takes_the_cols_keys_and_zooms_over_its_backing(
+    qtbot, monkeypatch
+) -> None:
+    """Two gestures aimed at the window rather than at the picture in it.
+
+    Shift+arrow is the main window's Cols key; while this window is the one
+    being typed into it lays *this* sheet out, the two never firing together.
+    And Ctrl+wheel answers over the empty backing as well as over the squares -
+    a short object laid 8 across leaves most of the window grey, which is
+    exactly where the pointer is when the pieces want to be bigger.
+
+    Driven on the window alone: it is handed a composed sheet and reads no
+    model, so nothing here needs a document behind it.
+    """
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QImage, QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    from celpix.ui.subsprite_window import SubspriteWindow
+
+    sheet = SubspriteWindow()
+    qtbot.addWidget(sheet)
+    sheet.show_sheet(
+        QImage(16, 8, QImage.Format.Format_ARGB32),
+        [(0, 0), (0, 1)],
+        [(0, 0, 8, 8), (8, 0, 8, 8)],
+        (8, 8),
+        "Subsprites",
+    )
+    columns = sheet._columns.value()
+
+    qtbot.keyClick(sheet._panel, Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier)
+    assert sheet._columns.value() == columns + 1
+    qtbot.keyClick(sheet._panel, Qt.Key.Key_Left, Qt.KeyboardModifier.ShiftModifier)
+    assert sheet._columns.value() == columns
+
+    # ...but not while a spin box has it: there Shift+arrow is selecting the
+    # digits of the number being typed, which is why the sheet takes the focus
+    # when the window opens.
+    monkeypatch.setattr(
+        QApplication, "focusWidget", staticmethod(lambda: sheet._columns)
+    )
+    qtbot.keyClick(sheet._panel, Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier)
+    assert sheet._columns.value() == columns
+    monkeypatch.undo()
+
+    zoom = sheet._zoom.value()
+    panel = sheet._panel
+    beyond = QPointF(panel.width() + 20, panel.height() + 20)
+    QApplication.sendEvent(
+        sheet._scroll.viewport(),
+        QWheelEvent(
+            beyond,
+            beyond,
+            QPoint(0, 0),
+            QPoint(0, 120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.ControlModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        ),
+    )
+    assert sheet._zoom.value() == zoom + 1 and panel._zoom == zoom + 1
+
+
+def test_the_subsprite_ring_goes_round_the_piece_and_not_its_square(qtbot) -> None:
+    """What the ring on the sheet is round, on an object that mixes sizes.
+
+    A square is the largest subsprite of the object and a smaller piece is
+    centred in one, so the square and the record are two different rectangles -
+    and a ring on the square would claim the gutter around a small piece is part
+    of it. The composed sheet says where each record's art landed and this scales
+    that by the zoom, which is also what keeps the ring on the pixel lattice the
+    art is drawn on rather than half a pixel off it.
+    """
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QImage
+
+    from celpix.ui.subsprite_panel import SubspritePanel
+
+    panel = SubspritePanel()
+    qtbot.addWidget(panel)
+    panel.set_zoom(3)
+    # Two 16x16 squares side by side: a full-size piece, then an 8x8 one centred.
+    panel.set_sheet(
+        QImage(32, 16, QImage.Format.Format_ARGB32),
+        [(0, 0), (0, 1)],
+        [(0, 0, 16, 16), (20, 4, 8, 8)],
+        (16, 16),
+        2,
+    )
+    assert panel._piece_rect(0) == QRect(0, 0, 48, 48) == panel._cell_rect(0)
+    assert panel._piece_rect(1) == QRect(60, 12, 24, 24)
+    assert panel._cell_rect(1) == QRect(48, 0, 48, 48)  # the square it sits in
 
 
 def test_copying_a_rectangle_of_a_sprite_sheet_lifts_the_pixels_it_draws(
@@ -2010,6 +2184,31 @@ def test_a_tilemap_hides_the_position_bar_and_disables_the_row_count(
     assert not window._tile_offset_bar.isHidden()
     assert window._tile_offset_bar.isEnabled()
     assert "always shown whole" not in window._rows.toolTip()
+
+
+def test_cols_says_what_it_counts_on_each_kind_of_document(qtbot, tmp_path) -> None:
+    """A column is a tile, a map cell or a whole frame depending on what is open,
+    and the number itself cannot say which. The sprite object is the reading that
+    matters most: its Cols lays out the strip of *frames*, so a tip promising
+    tiles per row describes the one thing it does not do."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    assert window._columns.toolTip() == "Tiles per row"
+
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    assert window._columns.toolTip().startswith("Cells per row")
+
+    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
+    assert window._columns.toolTip().startswith("Frames per row")
+    # The caption answers the same hover, being half the control's target.
+    assert window._columns_label.toolTip() == window._columns.toolTip()
+
+    # Back on pixels, and it counts tiles again.
+    window._activate_entry(window._workspace.entries[0])
+    assert window._columns.toolTip() == "Tiles per row"
 
 
 def test_a_tilemap_can_draw_from_a_slice(qtbot, tmp_path, monkeypatch) -> None:

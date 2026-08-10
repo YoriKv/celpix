@@ -472,7 +472,7 @@ class Entry:
     # maps restating it would be ten copies to keep in step. A map re-pointed at
     # another font picks up that font's answer with nothing else to change.
     #
-    # **Use as Font** on the arrangement bar. The declaration, and the gate: an
+    # **Use as Font** on the view bar. The declaration, and the gate: an
     # unticked entry's table is not read at all. Declared rather than inferred
     # from the table being non-empty, for the reason `layout = "text"` on the map
     # is — it has to answer before there is a table to look at, and it is what

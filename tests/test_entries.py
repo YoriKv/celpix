@@ -198,7 +198,7 @@ def test_entry_history_walks_the_visit_trail(qtbot, tmp_path) -> None:
     assert not window._forward_action.isEnabled()
 
 
-def test_slice_entry_views_bounded_region_with_absolute_addresses(
+def test_slice_entry_views_bounded_region_with_view_relative_addresses(
     qtbot, tmp_path
 ) -> None:
     px = _make_snes_file(tmp_path)  # 8 tiles of 32 bytes
@@ -209,10 +209,12 @@ def test_slice_entry_views_bounded_region_with_absolute_addresses(
     entry = window._workspace.add_slice(str(px), "gfx", 64, 64)  # tiles 2..3
     window._activate_entry(entry)
     assert window._doc.tile_count == 2
-    # A raw slice displays parent-file-absolute addresses, so its first tile
-    # reads as the slice offset. It has no container of its own — it reads
-    # through its parent's coordinates — so nothing was skipped in front of it.
-    assert window._offset_text() == "0x000040"
+    # A slice's addresses count from its own first byte, so the top of the view
+    # reads 0 however far into the parent the region sits — while the offset it
+    # is anchored at (what a palette offset or a jump-to-source speaks in) stays
+    # the parent's.
+    assert window._offset_text() == "0x000000"
+    assert window._anchor_base() == 64
     assert not window._change_container_action.isEnabled()
     assert window._write_action.isEnabled()
     # Slices never nest: a slice on screen offers no slice-creation actions.
@@ -230,7 +232,39 @@ def test_slice_entry_views_bounded_region_with_absolute_addresses(
     assert window._new_slice_from_view_action.isEnabled()
 
 
-def test_entry_rename_inline_editor_commits_and_cancels(qtbot, tmp_path) -> None:
+def test_slice_addresses_read_view_relative_while_offsets_stay_anchored(
+    qtbot, tmp_path
+) -> None:
+    """A typed address moves within the slice; the numbers written down don't.
+
+    The two coordinate spaces meet on a slice, and the regression to fear is one
+    leaking into the other: a jump interpreted as a parent offset would land two
+    regions away, and a palette offset taken from the box would read the top of
+    the file instead of the bytes beside the graphics.
+    """
+    px = _make_snes_file(tmp_path)  # 8 tiles of 32 bytes
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    entry = window._workspace.add_slice(str(px), "gfx", 64, 64)  # tiles 2..3
+    window._activate_entry(entry)
+    window._columns.setValue(1)  # one tile a page, so the second is scrolled to
+    window._rows.setValue(1)
+
+    window._address_edit.setText("0x20")  # the *slice's* second tile
+    window._address_edit.commit()
+    assert window._offset == 1
+    assert window._offset_text() == "0x000020"
+    # That same tile is anchored at parent byte 0x60, which is what an Offset
+    # palette stores - it reaches outside the slice by design.
+    assert window._initial_palette_offset() == 0x60
+    # Jump to Source hands over the child's stored offset, in those coordinates:
+    # landing on it from the parent must reach the region, not byte 0x40 of it.
+    window._activate_entry(window._workspace.entries[0])
+    window._columns.setValue(1)
+    window._rows.setValue(1)
+    window._land_on_byte(entry.slice_offset)
+    assert window._offset == 2
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QLineEdit
 
@@ -531,7 +565,7 @@ def test_slice_carved_from_a_reshaped_view_reads_what_was_on_screen(
 
     joined = SplitPartsReshape(2).reshape(data, PipelineContext())
     assert bytes(window._doc.pixel_data) == joined
-    assert window._display_base() == 0  # positions are the buffer's, not the file's
+    assert window._anchor_base() == 0  # positions are the buffer's, not the file's
 
     window._columns.setValue(4)
     window._rows.setValue(2)  # a page of 8 SNES tiles = 256 bytes
@@ -1073,10 +1107,12 @@ def test_edit_slice_updates_coordinates_and_reloads(
     )
     window._edit_slice(entry)
     assert (entry.name, entry.slice_offset, entry.slice_length) == ("bigger", 32, 96)
-    # The on-screen slice re-read the new region immediately.
+    # The on-screen slice re-read the new region immediately - the view still
+    # opens on its own byte 0, but it is anchored at the new offset now.
     assert window._doc is entry.doc
     assert window._doc.tile_count == 3
-    assert window._offset_text() == "0x000020"
+    assert window._anchor_base() == 32
+    assert window._offset_text() == "0x000000"
 
 
 def test_edit_slice_keeps_the_view_across_the_re_read(
@@ -2732,3 +2768,79 @@ def test_a_new_slice_can_be_carved_out_as_a_tilemap(qtbot, tmp_path) -> None:
         params.reshape_id,
         ContentKind.TILEMAP,
     )
+
+
+def test_a_project_plugins_cell_format_reaches_the_files_list(qtbot, tmp_path) -> None:
+    """A row's layout icon comes off a preset the *project* supplies.
+
+    Opening a project **replaces** the window's registry rather than adding to
+    one, and the files panel is the only widget holding a reference of its own —
+    so it has to be handed the new object. Left on the one it was built with, it
+    looks every row's cell format up in a registry that has never heard of the
+    project's own ``plugins/`` folder, reports no layout, and draws the plain
+    grid icon on a fontmap and a sprite map alike. Only the *shipped* formats
+    looked right, which is what made it read as one entry being misconfigured.
+    """
+    from celpix.plugins.discovery import load_user_plugins, project_plugin_dir
+    from celpix.plugins.registry import default_registry
+
+    px = _make_snes_file(tmp_path)
+    plugins = tmp_path / "plugins" / "tilemap"
+    plugins.mkdir(parents=True)
+    (plugins / "words.toml").write_text(
+        'id = "preset.tilemap.project-text"\n'
+        'name = "Project text run"\n'
+        'engine_id = "codec.tilemap.packed"\n'
+        "[params]\n"
+        'layout = "text"\n'
+        "bytes = 1\n"
+        "index = { shift = 0, bits = 8 }\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "p.celpix"
+    project.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "current": 0,
+                "entries": [
+                    {"kind": "file", "name": "art", "path": str(px)},
+                    {
+                        "kind": "slice",
+                        "name": "words",
+                        "path": str(px),
+                        "slice_offset": 0,
+                        "slice_length": 8,
+                        "compression_id": "compression.none",
+                        "content_kind": "tilemap",
+                        "tilemap_preset_id": "preset.tilemap.project-text",
+                        "tile_source": {"mode": "entry", "entry_index": 0},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def reload_plugins(project_path=None):
+        # A *fresh* registry every time, exactly as the app builds one — which is
+        # the whole of what the panel could be left behind by.
+        registry = default_registry()
+        folder = project_plugin_dir(project_path)
+        issues = load_user_plugins(
+            registry, [folder] if folder else [], project_dir=folder
+        )
+        return registry, issues
+
+    registry, issues = reload_plugins()
+    window = MainWindow(registry=registry, reload_plugins=reload_plugins)
+    qtbot.addWidget(window)
+    window._load_project(str(project))
+
+    entry = next(e for e in window._workspace.entries if e.name == "words")
+    assert "Fontmap" in window._files_panel._items[entry].toolTip(0)
+
+    # And it lets go again: closing the project drops those plugins, so the row
+    # falls back to the plain grid rather than naming a format nothing provides.
+    window._new_project()
+    assert issues == []

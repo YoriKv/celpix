@@ -1056,6 +1056,101 @@ def test_ctrl_wheel_zooms_the_sheet_and_a_plain_wheel_is_left_to_scroll(
     assert window._tile_source_zoom.value() == 2
     assert not plain.isAccepted()
 
+    # The backing beside the sheet answers the same gesture: a short bank leaves
+    # most of the dock empty, and a zoom that only works over the tiles reads as
+    # a broken wheel rather than as a missed target. The anchor is clamped into
+    # the sheet, since a point out on the grey is not a content pixel to hold
+    # still.
+    from PySide6.QtWidgets import QApplication
+
+    viewport = window._tile_source_scroll.viewport()
+    beyond = QPointF(panel.width() + 20, panel.height() + 20)
+    backing = QWheelEvent(
+        beyond,
+        beyond,
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.ControlModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(viewport, backing)
+    assert window._tile_source_zoom.value() == 3
+
+
+def test_the_cols_keys_widen_the_sheet_while_it_holds_the_focus(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Shift+arrow is bound app-wide for the view's width, and the sheet is a
+    second grid with a width of its own - so working in the sheet has to point
+    the keys at the spin that lays *it* out, or they re-lay the picture the user
+    is not looking at.
+
+    focusWidget is monkeypatched because real focus delivery is
+    environment-dependent."""
+    from PySide6.QtWidgets import QApplication
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _shown_tile_source(qtbot, tmp_path, [Cell(index=1)])
+    view_cols = window._columns.value()
+    sheet_cols = window._tile_source_columns.value()
+
+    monkeypatch.setattr(
+        QApplication, "focusWidget", staticmethod(lambda: window._tile_source_panel)
+    )
+    window._adjust_columns(1)
+    assert window._tile_source_columns.value() == sheet_cols + 1
+    assert window._columns.value() == view_cols
+
+    # Anywhere else, including the canvas, and the keys mean the view's width.
+    monkeypatch.setattr(
+        QApplication, "focusWidget", staticmethod(lambda: window._canvas)
+    )
+    window._adjust_columns(-1)
+    assert window._columns.value() == view_cols - 1
+    assert window._tile_source_columns.value() == sheet_cols + 1
+
+
+def test_clicking_the_backing_puts_the_focus_on_the_sheet(qtbot, tmp_path) -> None:
+    """The grey around a short sheet is the sheet as far as a user is concerned.
+
+    Qt hands the focus to the scroll area on a press out there, which left the
+    keys addressed to the sheet - its width, its pick - pointed at the view
+    instead, the same miss the wheel zoom used to have.
+    """
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _shown_tile_source(qtbot, tmp_path, [Cell(index=1)])
+    panel = window._tile_source_panel
+    viewport = window._tile_source_scroll.viewport()
+    QApplication.setActiveWindow(window)
+    window._canvas.setFocus()
+
+    beyond = QPointF(panel.width() + 20, panel.height() + 20)
+    press = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        beyond,
+        QPointF(viewport.mapToGlobal(QPoint(0, 0))) + beyond,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    QApplication.sendEvent(viewport, press)
+
+    assert QApplication.focusWidget() is panel
+    # Which is the whole point: the Cols keys now lay out the sheet.
+    sheet_cols = window._tile_source_columns.value()
+    view_cols = window._columns.value()
+    window._adjust_columns(1)
+    assert window._tile_source_columns.value() == sheet_cols + 1
+    assert window._columns.value() == view_cols
+
 
 def test_space_pans_whichever_surface_the_pointer_is_over(qtbot, tmp_path) -> None:
     """The key is filtered app-wide, so one place has to decide which surface it
@@ -1885,6 +1980,31 @@ def test_the_players_zoom_is_its_own(qtbot, tmp_path) -> None:
     player._zoom.setValue(player._zoom.value() + 3)
     assert window._zoom.value() == before
     assert player._frame._zoom == player._zoom.value()
+
+    # And Ctrl+wheel out on the backing steps that same spin: a frame is one
+    # object in a window sized to be looked at, so most of what is on screen is
+    # the surround the gesture would otherwise be dead over.
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    level = player._zoom.value()
+    beyond = QPointF(player._frame.width() + 20, player._frame.height() + 20)
+    QApplication.sendEvent(
+        player._scroll.viewport(),
+        QWheelEvent(
+            beyond,
+            beyond,
+            QPoint(0, 0),
+            QPoint(0, -120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.ControlModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        ),
+    )
+    assert player._zoom.value() == level - 1
+    assert window._zoom.value() == before
 
 
 def test_space_pans_the_player_from_wherever_its_focus_sits(qtbot, tmp_path) -> None:

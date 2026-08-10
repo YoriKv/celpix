@@ -100,18 +100,23 @@ def mirrors_x(cells: list[Cell], params: dict[str, Any]) -> bool:
 
 
 # The three geometry fields ride in ``Cell.flags``, packed in file order so the
-# encode is a straight read back: y, size, x and the mirror byte, one byte each
-# except an X that is two.
+# encode is a straight read back: y, size, x and the mirror byte.
+#
+# **X gets sixteen bits whatever the record spends on it**, sign-extended into
+# them at decode time. A field only as wide as the narrow variant would silently
+# fold the signed-word variant's offsets into a byte — and that variant is
+# precisely what a reader is told to try when a run comes out scattered, so the
+# fix would look like a second misreading.
 def _y_of(cell: Cell) -> int:
-    return _signed(cell.flags >> 24 & 0xFF, 1)
+    return _signed(cell.flags >> 32 & 0xFF, 1)
 
 
 def _size_of(cell: Cell) -> int:
-    return cell.flags >> 16 & 0xFF
+    return cell.flags >> 24 & 0xFF
 
 
 def _x_of(cell: Cell) -> int:
-    return _signed(cell.flags >> 8 & 0xFF, 1)
+    return _signed(cell.flags >> 8 & 0xFFFF, 2)
 
 
 def _mirror_of(cell: Cell) -> int:
@@ -156,9 +161,9 @@ class MdSpriteCodec:
                     flip_h=bool(word & _FLIP_H),
                     flip_v=bool(word & _FLIP_V),
                     flags=(
-                        record[0] << 24
-                        | record[1] << 16
-                        | (x & 0xFF) << 8
+                        record[0] << 32
+                        | record[1] << 24
+                        | (x & 0xFFFF) << 8
                         | (record[-1] if mirror else 0)
                     ),
                 )
@@ -185,8 +190,8 @@ class MdSpriteCodec:
                 | (_PRIORITY if cell.priority else 0)
             )
             flags = cell.flags
+            out.append(flags >> 32 & 0xFF)
             out.append(flags >> 24 & 0xFF)
-            out.append(flags >> 16 & 0xFF)
             out += word.to_bytes(2, order)
             out += (_x_of(cell) & ((1 << (x_bytes * 8)) - 1)).to_bytes(x_bytes, "big")
             if mirror:

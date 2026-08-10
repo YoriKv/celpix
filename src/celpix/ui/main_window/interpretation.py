@@ -97,6 +97,14 @@ SUBPAL_CELLS_TIP = (
 # left free because an assembly *is* a width: any other column count cuts the
 # pages at the wrong place and shears the picture.
 COLS_TIP = "Tiles per row"
+# What a column *is* differs by document, and the number cannot say so itself.
+# A tilemap is laid out in the unit it is drawn in — a cell, which may be a
+# metatile of several tiles — and a sprite object in whole frames: its Cols lays
+# out the strip of frames the canvas shows
+# (:func:`~celpix.pipeline.render.sprite_sheet`), while the pieces inside a frame
+# sit at the offsets the file gives them whatever the strip is doing.
+COLS_CELLS_TIP = "Cells per row\nA cell may be a metatile of several tiles"
+COLS_FRAMES_TIP = "Frames per row\nLays out the strip of frames, not the tiles in one"
 # Says what has taken Cols over. There is no control to point at — a paged file
 # states its own layout — so this names the *file* as the authority rather than
 # sending the user looking for a picker along some other row.
@@ -303,30 +311,6 @@ class InterpretationMixin:
             self._tile_size.fontMetrics().horizontalAdvance("64\u00d764")
         )
 
-        # Whether these tiles are *letters* — the declaration a fontmap bound to
-        # this sheet reads its codes through (``docs/design/fontmap-entry.md``).
-        #
-        # Beside the tile size and not on the fontmap's own bar because it is a
-        # fact about the **art**: it is settled when the sheet is drawn, and
-        # every string in the game that uses the sheet is bound by it. It reads
-        # as one thought with the readout it follows — what one of these tiles
-        # *is* — where on the arrangement row it would have sat among controls
-        # that all say how the bytes are grouped.
-        #
-        # A declaration and not an inference from the table being filled in, for
-        # the reason `layout = "text"` on the map is one: it has to answer before
-        # there is a table to look at, and it is what puts the editor within
-        # reach of a sheet nobody has typed a letter into yet.
-        self._use_as_font = QCheckBox("Use as Font")
-        self._use_as_font.setToolTip(
-            "These tiles are letters, so a fontmap bound to this\n"
-            "sheet reads its codes as words\n"
-            "What they spell is typed up in View > Font Alphabet\n"
-            "Unticking keeps the table, it just stops it being read"
-        )
-        self._use_as_font.toggled.connect(self._on_use_as_font_change)
-        view.addWidget(self._use_as_font)
-
         # Ranged well past a screenful of 8-px tiles because a bitmap width
         # derives this: a 4096-px bitmap of 8-px tiles is 512 columns.
         self._columns = value_spin(1, 512, 16, self._on_view_change)
@@ -377,6 +361,32 @@ class InterpretationMixin:
             self._subpalette,
             SUBPAL_TIP,
         )
+
+        # Whether these tiles are *letters* — the declaration a fontmap bound to
+        # this sheet reads its codes through (``docs/design/fontmap-entry.md``).
+        #
+        # On this row and not on the fontmap's own bar because it is a fact about
+        # the **art**: it is settled when the sheet is drawn, and every string in
+        # the game that uses the sheet is bound by it. Last on the row and past
+        # the spins, because it is the only control here that is not a view
+        # setting — everything to its left changes what the canvas shows without
+        # touching the file, and this one is a property of the entry. It is also
+        # the only one that comes and goes (:meth:`_sync_use_as_font`), so a
+        # position at the end is the one that does not shuffle its neighbours.
+        #
+        # A declaration and not an inference from the table being filled in, for
+        # the reason `layout = "text"` on the map is one: it has to answer before
+        # there is a table to look at, and it is what puts the editor within
+        # reach of a sheet nobody has typed a letter into yet.
+        self._use_as_font = QCheckBox("Use as Font")
+        self._use_as_font.setToolTip(
+            "These tiles are letters, so a fontmap bound to this\n"
+            "sheet reads its codes as words\n"
+            "What they spell is typed up in View > Font Alphabet\n"
+            "Unticking keeps the table, it just stops it being read"
+        )
+        self._use_as_font.toggled.connect(self._on_use_as_font_change)
+        view.addWidget(self._use_as_font)
 
         # The Selection Shape picker (what a canvas drag selects) lives on the
         # canvas transform toolbar - see :mod:`celpix.ui.main_window.transform` -
@@ -1105,6 +1115,12 @@ class InterpretationMixin:
         if self._reload_plugins is None:
             return
         self._registry, self._plugin_issues = self._reload_plugins(project_path)
+        # The one widget that keeps a reference of its own rather than reading
+        # the window's live: its rows name each entry's container and which of
+        # the three tilemap layouts it holds, both off the registry, and this is
+        # a *different object* from the one it was built with. Left behind, every
+        # row whose format the project itself provides reads as having none.
+        self._files_panel.set_registry(self._registry)
         self._repopulate_presets()
         self._alert_plugin_issues()
 

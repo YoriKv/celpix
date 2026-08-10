@@ -112,6 +112,7 @@ from celpix.ui.main_window.selection import (
 from celpix.ui.main_window.session import SessionMixin
 from celpix.ui.main_window.sprite_select import SpriteSelectMixin
 from celpix.ui.main_window.stamp_tool import StampToolMixin
+from celpix.ui.main_window.subsprites import SubspritesMixin
 from celpix.ui.main_window.text import TextMixin
 from celpix.ui.main_window.tile_bytes import TileBytesMixin
 from celpix.ui.main_window.tile_source_dock import TileSourceDockMixin
@@ -121,6 +122,7 @@ from celpix.ui.main_window.transfer import TransferMixin
 from celpix.ui.main_window.transform import TransformMixin
 from celpix.ui.main_window.view_menu import ViewMenuMixin
 from celpix.ui.main_window.writing import WritingMixin
+from celpix.ui.subsprite_window import SubspriteWindow
 from celpix.ui.text_window import TextWindow
 from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
@@ -149,6 +151,7 @@ MAIN_WINDOW_LAYOUT_KEY = "layout/main-window"
 class MainWindow(
     NavigationMixin,
     AnimationMixin,
+    SubspritesMixin,
     TextMixin,
     FontAlphabetMixin,
     HistoryMixin,
@@ -336,6 +339,11 @@ class MainWindow(
         self._overlay = DecompressOverlay(self)
         self._animation = AnimationOverlay(self)
         self._animation.refresh_requested.connect(self._show_animation)
+        # The player's neighbour: the same file read as its parts rather than as
+        # its motion. Its own Cols and Zoom, so a change to either asks for the
+        # sheet to be composed again through the same path a refresh takes.
+        self._subsprites = SubspriteWindow(self)
+        self._subsprites.refresh_requested.connect(self._show_subsprites)
         self._text = TextWindow(self)
         # Which run of typing the next text edit belongs to, so consecutive
         # keystrokes merge into one undo step (``main_window/text.py``).

@@ -32,9 +32,12 @@ are the layout of wherever the string was copied from, not glyphs.
 *Shift down* move the characters one tile along, which is the correction a paste
 that started one tile out needs and is **not** the Base code spin one reading
 over — that moves which codes the run occupies and leaves every character on the
-tile it was typed against. *Copy alphabet* / *Paste alphabet* carry the whole
-table in the ``20=A`` form a font table is kept in everywhere else, where the
-table's own Ctrl+V fills characters down from a row.
+tile it was typed against. *Copy alphabet* / *Paste alphabet* carry the table in
+the ``20=A`` form a font table is kept in everywhere else — and the paste also
+takes a plain string of characters, one per code, since that is the other form a
+font is quoted in. Both act on the **selection**: the picked rows when there are
+several, that row to the end when there is one. The table's own Ctrl+V is the
+different gesture, filling characters down from a row without clearing anything.
 
 **Presentation only.** The window holds a working copy of the three values that
 make up a font alphabet — the origin, the run and the named codes — and emits
@@ -45,8 +48,8 @@ encodes anything and owns no undo history of its own
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QGuiApplication, QImage, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QPoint, Qt, Signal
+from PySide6.QtGui import QGuiApplication, QImage, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -98,18 +101,69 @@ class _RoleDelegate(QStyledItemDelegate):
     them is a window that takes a second to open.
     """
 
-    def createEditor(self, parent, option, index):  # noqa: ANN001, ANN201, N802
+    def createEditor(self, parent, option, index) -> QComboBox:  # noqa: ANN001, N802
         editor = QComboBox(parent)
         for role, label in ROLE_LABELS:
             editor.addItem(label, role.value)
         return editor
 
-    def setEditorData(self, editor, index):  # noqa: ANN001, N802
+    def setEditorData(self, editor: QComboBox, index) -> None:  # noqa: ANN001, N802
         at = editor.findText(index.data() or "text")
         editor.setCurrentIndex(max(0, at))
 
-    def setModelData(self, editor, model, index):  # noqa: ANN001, N802
+    def setModelData(self, editor: QComboBox, model, index) -> None:  # noqa: ANN001, N802
         model.setData(index, editor.currentText())
+
+
+def _claim_override(event: QEvent) -> bool:
+    """Take a ``ShortcutOverride`` for a key this window answers itself.
+
+    A `Qt.Tool` window is a top-level of its own, but Qt keeps the **parent's**
+    window shortcuts alive while it is active — that is what lets the menu bar's
+    keys work from a floating window. So Ctrl+Z here is claimed by two things at
+    once, the main window's Undo action and whatever this window binds, and Qt's
+    answer to a tie is to fire *neither*: the key does nothing at all until the
+    user clicks back onto the main window.
+
+    Accepting the override is the way out. It says the focused widget wants the
+    key as an ordinary keystroke, so no shortcut runs anywhere and the press
+    arrives at :meth:`FontAlphabetWindow.keyPressEvent` to be answered once. A
+    live cell editor still wins: `QLineEdit` accepts the override first, which is
+    why Ctrl+Z inside a half-typed cell is still that cell's own undo.
+    """
+    return isinstance(event, QKeyEvent) and any(
+        event.matches(keys)
+        for keys in (
+            QKeySequence.StandardKey.Undo,
+            QKeySequence.StandardKey.Redo,
+            QKeySequence.StandardKey.Paste,
+        )
+    )
+
+
+class _AlphabetTable(QTableWidget):
+    """The table, with Enter as a second spelling of double-clicking Text.
+
+    Qt's own edit key is F2 (``EditKeyPressed``), which nobody reaches for on a
+    row they have just picked off the sheet: the gesture here is click a tile,
+    press Enter, type the letter. Enter always opens the **Text** cell whatever
+    column the cursor is in, since that is the one a row exists to answer — the
+    code is fixed by the tile and the role is the exception.
+
+    Only the closed table sees this key. Once the editor is open it is a child
+    widget with the focus, so Enter reaches the delegate and commits, and typing
+    never toggles the editor off and on.
+    """
+
+    def keyPressEvent(self, event) -> None:  # noqa: ANN001 — QKeyEvent
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            item = self.item(self.currentRow(), COL_TEXT)
+            if item is not None:
+                self.setCurrentItem(item)
+                self.editItem(item)
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
 
 class FontAlphabetWindow(QWidget):
@@ -120,8 +174,8 @@ class FontAlphabetWindow(QWidget):
     edited = Signal(int, str, tuple, bool, str)
     #: A tile was picked, by its ID, so the canvas and the dock can follow.
     tile_selected = Signal(int)
-    #: Ctrl+Z / Ctrl+Y arrived here rather than at the main window, because a
-    #: `Qt.Tool` window is the active one and window-context shortcuts follow it.
+    #: Ctrl+Z / Ctrl+Y arrived here rather than at the main window, because this
+    #: window is the active one and answers the key itself (:func:`_claim_override`).
     undo_requested = Signal()
     redo_requested = Signal()
     #: The user shut the window from its own frame. Distinct from being hidden
@@ -152,7 +206,7 @@ class FontAlphabetWindow(QWidget):
         scroller.setWidget(self._sheet)
         scroller.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._table = QTableWidget(0, 3)
+        self._table = _AlphabetTable(0, 3)
         self._table.setHorizontalHeaderLabels(["Code", "Text", "Role"])
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -193,14 +247,39 @@ class FontAlphabetWindow(QWidget):
         # shared rule, :mod:`celpix.ui.decompress_overlay`).
         self._positioned = self._layout_memory.restore()
 
-        paste = QShortcut(QKeySequence.StandardKey.Paste, self._table)
-        paste.activated.connect(self._fill_down)
-        for keys, signal in (
-            (QKeySequence.StandardKey.Undo, self.undo_requested),
-            (QKeySequence.StandardKey.Redo, self.redo_requested),
-        ):
-            shortcut = QShortcut(keys, self)
-            shortcut.activated.connect(signal.emit)
+    # -- the keys this window answers itself -------------------------------
+    def event(self, event) -> bool:  # noqa: ANN001 — QEvent
+        """Claim Ctrl+Z / Ctrl+Y / Ctrl+V off the main window's actions.
+
+        The override arrives here after the focused widget has passed on it, so
+        an open cell editor keeps its own undo and paste and only the window's
+        own keys are taken. Why an override rather than a `QShortcut`:
+        :func:`_claim_override`.
+        """
+        if event.type() == QEvent.Type.ShortcutOverride and _claim_override(event):
+            event.accept()
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: ANN001 — QKeyEvent
+        """Answer the three claimed keys, once the widgets under them have not.
+
+        Undo and redo are the session's, not this window's: it owns no history,
+        so they are passed up and land on the one stack every edit shares
+        (``docs/design/undo-redo.md``). Paste is the table's fill-down, and it is
+        answered here rather than on the table so that it works from the sheet
+        and the buttons too — the row it starts at is the selected one either way.
+        """
+        if event.matches(QKeySequence.StandardKey.Undo):
+            self.undo_requested.emit()
+        elif event.matches(QKeySequence.StandardKey.Redo):
+            self.redo_requested.emit()
+        elif event.matches(QKeySequence.StandardKey.Paste):
+            self._fill_down()
+        else:
+            super().keyPressEvent(event)
+            return
+        event.accept()
 
     def _build_header(self) -> QHBoxLayout:
         """The origin, and the way to fill a table without typing it."""
@@ -279,8 +358,10 @@ class FontAlphabetWindow(QWidget):
 
         self._copy = QPushButton("Copy alphabet")
         self._copy.setToolTip(
-            "Put the whole table on the clipboard, one 20=A line\n"
-            "per code - the form a font table is kept in\n"
+            "Put the table on the clipboard, one 20=A line per\n"
+            "code - the form a font table is kept in\n"
+            "Selected rows only, or from the selected row to the\n"
+            "end when one is picked\n"
             "Unlike Ctrl+C in the table, which copies cells"
         )
         self._copy.clicked.connect(self._copy_alphabet)
@@ -288,8 +369,11 @@ class FontAlphabetWindow(QWidget):
 
         self._paste = QPushButton("Paste alphabet")
         self._paste.setToolTip(
-            "Replace the whole table from 20=A lines on the\n"
-            "clipboard, as Copy alphabet writes them\n"
+            "Replace the table from the clipboard: 20=A lines as\n"
+            "Copy alphabet writes them, or a plain string of\n"
+            "characters, one per code\n"
+            "Into the selected rows only, or from the selected row\n"
+            "to the end when one is picked\n"
             "Unlike Ctrl+V in the table, which fills characters\n"
             "down from the selected row"
         )
@@ -401,9 +485,10 @@ class FontAlphabetWindow(QWidget):
                 name = self._table.item(row, COL_CODE)
                 if name is None or name.data(Qt.ItemDataRole.UserRole) != code:
                     name = QTableWidgetItem(f"${code:02X}")
-                    name.setFlags(
-                        Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-                    )
+                    # Everything a cell ordinarily is, minus typing into it: the
+                    # code is the tile's position and the only way to move it is
+                    # the Base code spin.
+                    name.setFlags(name.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     name.setData(Qt.ItemDataRole.UserRole, code)
                     self._table.setItem(row, COL_CODE, name)
                 _put(self._table, row, COL_TEXT, text)
@@ -419,7 +504,18 @@ class FontAlphabetWindow(QWidget):
 
     # -- editing -----------------------------------------------------------
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
-        """One cell typed: settle it into the run or into the named codes."""
+        """One cell typed or picked: settle it into the run or the named codes.
+
+        **A role is its own step**, where a run of typing down the Text column is
+        one. It is a pick from a list rather than a keystroke, and it says
+        something different about the code than the letters around it did — so it
+        ends the run on both sides, the rule a paste and a template follow.
+
+        **A role needs something to be the role of.** What a non-text code reads
+        as is its *name*, and a glyph with no text is not a thing the model can
+        hold at all — so the pick is put back and the row says what it wants
+        first, rather than being silently dropped on the next redraw.
+        """
         if self._syncing:
             return
         row = item.row()
@@ -431,8 +527,28 @@ class FontAlphabetWindow(QWidget):
         role_item = self._table.item(row, COL_ROLE)
         text = text_item.text() if text_item else ""
         role = _role_of(role_item.text() if role_item else "")
+        picked = item.column() == COL_ROLE
+        if picked and not text:
+            self._rebuild()
+            self.set_status(
+                f"${code:02X} spells nothing.",
+                Badge(
+                    "no text",
+                    "A line break or a control reads as its name,\n"
+                    "so write one in the Text column first - the\n"
+                    "string then holds it as [name].",
+                    warning=True,
+                ),
+            )
+            return
         self._write(code, text, role)
-        self._emit("edit font alphabet")
+        if picked:
+            self._fresh = True
+        self._emit(
+            f"set ${code:02X} to {_label_of(role)}" if picked else "edit font alphabet"
+        )
+        if picked:
+            self._fresh = True
 
     def _write(self, code: int, text: str, role: GlyphRole) -> None:
         """Land one code's answer in whichever half of the storage holds it.
@@ -559,62 +675,148 @@ class FontAlphabetWindow(QWidget):
         self._emit("shift the run down" if by > 0 else "shift the run up")
         self._fresh = True
 
+    def _span(self) -> tuple[list[int], bool]:
+        """Which codes the two clipboard buttons act on, and whether that is all.
+
+        The table is long and the answer is usually a stretch of it, so the
+        selection scopes both: **several rows picked** is exactly those rows and
+        nothing else, and **one row** — or none — is that row to the end, which
+        is what makes "the whole table" still the ordinary case rather than a
+        separate mode.
+
+        The second value says whether the far end is closed. An open span still
+        takes a pasted code the sheet does not number, since a code past the
+        tiles is the kind that gets named; a closed one is the user pointing at
+        rows, and a code outside them is not one of the rows they pointed at.
+        """
+        rows = self._rows()
+        picked = sorted(
+            index.row() for index in self._table.selectionModel().selectedRows()
+        )
+        if len(picked) > 1:
+            return [rows[at] for at in picked if at < len(rows)], True
+        return rows[picked[0] if picked else 0 :], False
+
     def _copy_alphabet(self) -> None:
-        """Put the whole table on the clipboard as ``20=A`` lines.
+        """Put the table on the clipboard as ``20=A`` lines, the selection's part.
 
         The form a font table is kept in everywhere outside celPix
         (``docs/graphics-formats-reference/text-formats.md`` §3.3), so what comes
         out of here pastes into a disassembly and back again. Named codes are
         written in the bracketed form the same parser reads.
+
+        Codes that say nothing are left out rather than written as blanks: what
+        a run has not reached is not a glyph spelling the empty string.
         """
         merged = self._merged()
+        codes, _bounded = self._span()
         lines = []
-        for code in sorted(merged):
+        for code in sorted(code for code in codes if code in merged):
             glyph = merged[code]
             spelling = glyph.text if glyph.spells else f"[{glyph.text}]"
-            lines.append(f"{code:02X}={spelling}")
-        QGuiApplication.clipboard().setText("\n".join(lines) + "\n")
+            lines.append(f"{code:02X}={spelling}\n")
+        QGuiApplication.clipboard().setText("".join(lines))
         self.set_status(f"{len(lines)} codes copied.")
 
     def _paste_alphabet(self) -> None:
-        """Replace the whole table from ``20=A`` lines on the clipboard.
+        """Replace the selection's codes from either form on the clipboard.
 
-        **Replaces**, where the table's own Ctrl+V fills down: this is a table
-        arriving from somewhere else and it is the whole answer, so leaving the
-        old one underneath would merge two fonts into a third that is neither.
+        **Two forms, told apart by whether the first reads.** ``20=A`` lines
+        state their own codes, so they land where they say and the origin is left
+        alone — moving it would answer a question the table just answered. A
+        plain **string of characters** states none, so it lands one character per
+        code down the span, which is the form a font is quoted in when it is
+        quoted at all: a row of letters read off the sheet.
 
-        The codes are read as they are written, so what lands is the run this
-        sheet already numbers plus named codes for anything outside it — and the
-        origin is left alone, because the pasted codes are absolute and moving
-        them would be answering a question the table just answered.
+        **Replaces**, where the table's own Ctrl+V fills down: a table arriving
+        from somewhere else is the whole answer for the codes it covers, so the
+        span is cleared first and leftover codes inside it come out blank. The
+        span is the selection (:meth:`_span`), which is what keeps that from
+        meaning the whole font every time.
+
+        A paste that lands nothing changes nothing — a table whose codes all fall
+        outside the picked rows is a paste aimed at the wrong place, and wiping
+        the rows would be the one reading of it nobody wants.
         """
-        glyphs = parse_table(QGuiApplication.clipboard().text())
-        if not glyphs:
+        typed = QGuiApplication.clipboard().text()
+        glyphs = parse_table(typed)
+        chars = [] if glyphs else [c for c in typed if c not in "\r\n\t"]
+        if not glyphs and not chars:
             self.set_status(
                 "Nothing to paste.",
                 Badge(
-                    "no table",
-                    "The clipboard holds no 20=A lines. Copy alphabet\n"
-                    "writes them in the form this reads.",
+                    "empty",
+                    "The clipboard holds neither 20=A lines nor\n"
+                    "characters to spell the codes with.",
                     warning=True,
                 ),
             )
             return
-        span = range(self._base, self._base + len(self._ids))
-        run = [HOLE] * len(self._ids)
-        named: list[Glyph] = []
-        for glyph in glyphs:
-            if glyph.code in span and glyph.spells and len(glyph.text) == 1:
-                run[glyph.code - self._base] = glyph.text
+        codes, bounded = self._span()
+        span = set(codes)
+        # Everything outside the span is kept exactly as it stands; inside it the
+        # old answers go before the new ones land, which is what makes this a
+        # replace and not a merge.
+        run = list(self._chars.ljust(len(self._ids), HOLE))
+        for code in span:
+            at = code - self._base
+            if 0 <= at < len(run):
+                run[at] = HOLE
+        named = [glyph for glyph in self._codes if glyph.code not in span]
+
+        def place(code: int, text: str, role: GlyphRole = GlyphRole.TEXT) -> None:
+            at = code - self._base
+            if role is GlyphRole.TEXT and len(text) == 1 and 0 <= at < len(self._ids):
+                run[at] = text
             else:
-                named.append(glyph)
+                named.append(Glyph(code, text, role))
+
+        landed = 0
+        if glyphs:
+            rows = set(self._rows())
+            for glyph in glyphs:
+                if glyph.code in span or (not bounded and glyph.code not in rows):
+                    place(glyph.code, glyph.text, glyph.role)
+                    landed += 1
+            lost, outside = 0, len(glyphs) - landed
+        else:
+            for code, char in zip(codes, chars):
+                place(code, char)
+                landed += 1
+            lost, outside = len(chars) - landed, 0
+        if not landed:
+            self.set_status(
+                "Nothing pasted.",
+                Badge(
+                    "outside",
+                    "Every code on the clipboard falls outside the\n"
+                    "selected rows, so none of them was written.",
+                    warning=True,
+                ),
+            )
+            return
         self._chars = "".join(run).rstrip(HOLE)
         self._codes = tuple(sorted(named, key=lambda g: g.code))
         self._fresh = True
         self._rebuild()
-        self._emit(f"paste {len(glyphs)} codes")
+        self._emit(f"paste {landed} code{'s' if landed != 1 else ''}")
         self._fresh = True
-        self.set_status(f"{len(glyphs)} codes pasted.")
+        dropped = lost or outside
+        self.set_status(
+            f"{landed} codes pasted.",
+            Badge(
+                f"{dropped} dropped",
+                "The paste ran past the last row of the selection.\n"
+                "A code no row names would be a glyph nobody\n"
+                "can see, so those characters were not written."
+                if lost
+                else "Those codes fall outside the selected rows,\n"
+                "so they were not written.",
+                warning=True,
+            )
+            if dropped
+            else None,
+        )
 
     def _on_base_changed(self, value: int) -> None:
         """Slide the run along the code space — its own step per settled value.
@@ -637,7 +839,12 @@ class FontAlphabetWindow(QWidget):
 
     # -- the two readings following each other -----------------------------
     def _on_tile_selected(self, tile_id: int) -> None:
-        if tile_id in self._ids:
+        # Only a pick made **on the sheet** moves the table. The sheet reports a
+        # selection it was handed the same way it reports a click, so following
+        # this one back would answer a row selection with `selectRow` — which
+        # takes a stretch of picked rows down to the one that pushed the tile,
+        # and the clipboard buttons read that stretch (:meth:`_span`).
+        if not self._syncing and tile_id in self._ids:
             self._select_row(self._ids.index(tile_id))
         self.tile_selected.emit(tile_id)
 
@@ -647,13 +854,19 @@ class FontAlphabetWindow(QWidget):
             return
         row = rows[0].row()
         if row < len(self._ids):
-            self._sheet.select_id(self._ids[row])
+            self._syncing = True
+            try:
+                self._sheet.select_id(self._ids[row])
+            finally:
+                self._syncing = False
 
     def _select_row(self, row: int) -> None:
         self._syncing = True
         try:
             self._table.selectRow(row)
-            self._table.scrollToItem(self._table.item(row, COL_TEXT))
+            item = self._table.item(row, COL_TEXT)
+            if item is not None:
+                self._table.scrollToItem(item)
         finally:
             self._syncing = False
 

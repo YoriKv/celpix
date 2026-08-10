@@ -151,7 +151,7 @@ class PathwayConfig:
         permuting container moved the bytes, the parent's coordinates are its
         reordered buffer — and that is exactly what a slice of it reads
         (``workspace._parent_view_bytes``) *and* what the view displays
-        (``_display_base`` falls back to 0-based positions there), so the two
+        (``_anchor_base`` falls back to 0-based positions there), so the two
         agree and a carved region is the one that was on screen.
 
         Decompression is the one stage that breaks it. A decompressed stream is

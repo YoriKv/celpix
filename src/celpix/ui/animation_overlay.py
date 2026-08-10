@@ -203,6 +203,10 @@ class AnimationOverlay(QWidget):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
         )
         self._scroll.setWidgetResizable(False)
+        # A frame is small and the window is not, so most of what is on screen is
+        # backing — and a zoom gesture that only answers over the sprite itself
+        # would be aimed at the wrong half of the window most of the time.
+        self._frame.claim_background(self._scroll)
 
         self._sequence = QComboBox()
         self._sequence.setToolTip(

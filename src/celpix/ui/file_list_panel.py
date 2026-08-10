@@ -422,6 +422,27 @@ class FileListPanel(QWidget):
         selection-based context-menu action)."""
         self._has_selection = active
 
+    def set_registry(self, registry: Registry | None) -> None:
+        """Point the panel at a rebuilt registry, and re-render what reads it.
+
+        Opening or closing a project **replaces** the window's registry rather
+        than adding to one (``_load_project_plugins``), so a panel holding the
+        object it was constructed with is holding the one from before the
+        project. Everything the rows take from it then falls back: a map whose
+        cell format lives in the project's own ``plugins/`` folder is looked up
+        in a registry that has never heard of it, and
+        :meth:`_tilemap_layout` reports no layout — so a fontmap and a sprite map
+        both draw the plain grid icon, and only the shipped formats look right.
+
+        Every row is re-rendered rather than only the tilemaps, because the same
+        registry names a file's container in its label and tooltip. Both
+        directions matter: opening a project has to pick its formats up, and
+        closing one has to let them go again.
+        """
+        self._registry = registry
+        for entry, item in self._items.items():
+            self._refresh_item(entry, item)
+
     def refresh_entry(self, entry: Entry) -> None:
         """Re-render one entry's label (dirty marker, backfilled length, …) and
         re-sort it if an edit moved its offset."""

@@ -796,9 +796,13 @@ class FontAlphabetCommand(_InPlaceCommand):
     ``run`` merges a **run of typing** down the table into one step, the rule
     :class:`TilemapCellsCommand` follows for typing into the text window. Each
     cell settles as it is left, so the sheet and the string follow the caret —
-    but a word typed into six rows is one thing the user did. A paste, a
-    template, the origin moving or the window closing ends the run, and each of
-    those arrives with ``run=None``, which never merges.
+    but a word typed into six rows is one thing the user did.
+
+    Every alphabet edit carries a number and only edits sharing one merge, unlike
+    the cell command's ``None`` for "never". The difference is that here the
+    editor says where a run *starts*: a paste, a template, a shift or the origin
+    moving reports fresh on both sides, so it takes a number nothing else has and
+    joins neither the word before it nor the one after.
     """
 
     def __init__(

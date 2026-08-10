@@ -1013,34 +1013,216 @@ def sprite_image(
     source = tile_bank(doc, reg)
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
     rows = doc.palette_row_wrap(space)
-    # A subsprite's own tiles step by the *tile* size, the codec's and not an
-    # assumed 8: a subsprite states its size in tiles for exactly this reason, and
-    # a literal here would put the second half of every multi-tile one 8px from
-    # the first whatever the tiles behind it measure.
-    step_x, step_y = max(1, doc.tile_width), max(1, doc.tile_height)
     for at, frame in enumerate(frames):
         ox = (at % across) * width - left
         oy = (at // across) * height - top
         for sub in reversed(frame):
-            wide, _tall = sub.size()
-            for slot, index in enumerate(sub.tile_indices()):
-                index += doc.tile_base_index
-                if not 0 <= index < len(source):
-                    continue
-                tile = source[index]
-                if sub.flip_h:
-                    tile = transform.flip_horizontal(tile)
-                if sub.flip_v:
-                    tile = transform.flip_vertical(tile)
-                _blit(
-                    image,
-                    tile,
-                    ox + sub.x + (slot % wide) * step_x,
-                    oy + sub.y + (slot // wide) * step_y,
-                    drawn_palette_row(sub.palette_row, doc.palette_row_base, rows)
-                    * space,
-                )
+            _draw_subsprite(
+                image, source, sub, ox + sub.x, oy + sub.y, doc, space, rows
+            )
     return image, sheet
+
+
+def _draw_subsprite(
+    image: IndexGrid,
+    source: list[IndexGrid],
+    sub: Subsprite,
+    x: int,
+    y: int,
+    doc: Document,
+    space: int,
+    rows: int,
+) -> None:
+    """Blit one subsprite's tiles with its top-left corner at ``(x, y)``.
+
+    The step both sprite sheets are built out of — the frame strip
+    (:func:`sprite_image`) and the sheet of records (:func:`subsprite_sheet`) —
+    and shared rather than written twice because a piece has to look the same in
+    both: the same tile walk, the same pair of flips, the same palette row folded
+    in the same way. Two copies of this is how a record ends up drawn in one row
+    over there and another over here.
+
+    A subsprite's own tiles step by the *tile* size, the codec's and not an
+    assumed 8: a subsprite states its size in tiles for exactly this reason, and
+    a literal here would put the second half of every multi-tile one 8px from the
+    first whatever the tiles behind it measure.
+
+    The row bias is settled once per piece rather than per tile — every tile of a
+    subsprite draws through the record's one row.
+    """
+    wide, _tall = sub.size()
+    step_x, step_y = max(1, doc.tile_width), max(1, doc.tile_height)
+    bias = drawn_palette_row(sub.palette_row, doc.palette_row_base, rows) * space
+    for slot, index in enumerate(sub.tile_indices()):
+        index += doc.tile_base_index
+        if not 0 <= index < len(source):
+            continue
+        tile = source[index]
+        if sub.flip_h:
+            tile = transform.flip_horizontal(tile)
+        if sub.flip_v:
+            tile = transform.flip_vertical(tile)
+        _blit(
+            image,
+            tile,
+            x + (slot % wide) * step_x,
+            y + (slot // wide) * step_y,
+            bias,
+        )
+
+
+def subsprite_key(sub: Subsprite) -> tuple:
+    """What makes two records the same **piece**: everything that draws it.
+
+    Deliberately every input :func:`_draw_subsprite` reads and nothing else, so
+    "same key" and "same pixels" are the same statement rather than two rules
+    that could drift — the tiles it draws in the order it draws them, the shape
+    they are laid out in, the two mirrors applied to each, and the row they are
+    coloured through. What is left out is the whole of what a key is *for*:
+    ``x`` and ``y`` say where the piece sits in its frame, and the sheet of
+    unique pieces is exactly the reading that has thrown placement away.
+
+    :attr:`~celpix.core.sprite.Subsprite.priority` and
+    :attr:`~celpix.core.sprite.Subsprite.group` are left out for a different
+    reason — they are carried so a save can put them back, and neither reaches
+    the renderer, so two records differing only in one of them would be two
+    squares a user could not tell apart.
+    """
+    return (
+        tuple(sub.tile_indices()),
+        sub.size(),
+        sub.palette_row,
+        sub.flip_h,
+        sub.flip_v,
+    )
+
+
+class SubspriteSheet(NamedTuple):
+    """A sprite map's records drawn one to a square, and which record each is.
+
+    The four travel together for :class:`TileSheet`'s reason: a click, a ring or
+    a caption resolves to a *slot*, and a slot means nothing without the list
+    saying which record sits there. ``records`` holds ``(frame, subsprite)``
+    pairs — both indices into what is **drawn**
+    (:attr:`~celpix.core.document.Document.shown_frames`), which is the numbering
+    the canvas's own pick uses, so a pick and a square can be compared directly.
+
+    Unique-piece sheets hold **one record per square all the same**: the first
+    occurrence, standing for the rest. A square is still a thing in the file, so
+    a caller with a pick in its hand asks :func:`subsprite_key` which square that
+    pick's art is in rather than looking the pick itself up.
+
+    ``cell`` is one square's size in pixels: the largest subsprite in the object,
+    in whole tiles. See :func:`subsprite_sheet` for why they are all that size.
+
+    ``boxes`` is where each record's own art landed — ``(x, y, w, h)`` in sheet
+    pixels, one per slot. It is the square only for the pieces that *are* the
+    largest; on an object that mixes sizes a smaller piece sits centred in a box
+    of its own, and a ring drawn on the square would claim the gutter around it
+    is part of the record. Given rather than recomputed by the viewer, so the
+    outline and the blit cannot disagree about where a piece is.
+    """
+
+    grid: IndexGrid
+    records: list[tuple[int, int]]
+    cell: tuple[int, int]
+    boxes: list[tuple[int, int, int, int]]
+
+
+def subsprite_sheet(
+    doc: Document, reg: Registry, columns: int, *, by_frame: bool = True
+) -> SubspriteSheet:
+    """Every subsprite of a sprite map, one to a square, in frame order.
+
+    The frame strip (:func:`sprite_image`) draws the object; this draws its
+    *parts*. A frame is a heap of overlapping pieces at signed offsets and the
+    front ones hide the back ones, so what a file is **made of** is not
+    recoverable from the strip by looking — which is the same gap the tile source
+    panel fills for a tilemap's cells, one level along
+    (``docs/design/tilemap-entry.md`` §8).
+
+    **Two readings, and ``by_frame`` picks which.** They answer two different
+    questions about the same file, which is why neither is a mode of the other:
+
+    - ``by_frame`` (the default) is **one square per record**, repeats included.
+      The frames of an object reuse the same piece over and over and each
+      occurrence is its own record in its own frame, so this is the file's own
+      listing — what it holds, in the order it holds it, with the frame a square
+      belongs to still recoverable from it.
+    - Off, it is **one square per distinct piece** (:func:`subsprite_key`), in
+      the order they first appear. An object is typically a handful of pieces
+      posed over dozens of frames, so the listing above says the same few things
+      over and over; this is the *inventory* — how much art there actually is,
+      which is the question the frame-by-frame reading buries.
+
+    Either way a square holds a real record. Under the second reading it is the
+    **first** occurrence, standing for the others rather than replacing them:
+    what is dropped is the repetition, not the fact that a square is a thing in
+    the file.
+
+    **Every square is the same size — the largest subsprite in the object.** A
+    lattice needs one cell size and an object mixes them (a size *bit* picks one
+    of two, and a format that states rectangles mixes more), so the choice is
+    which size to lay out in. The largest is the only one that never clips: a
+    grid of the smaller would cut every large piece to a quarter of itself.
+    Smaller pieces are **centred** in their square, so each reads as the one
+    object it is rather than as the corner of a bigger one — centred by pixel and
+    not rounded to a whole tile, since the gap around a 1x1 piece in a 2x2 square
+    is one tile and rounding half of it away would put the piece straight back in
+    the corner, which is the reading being avoided.
+
+    An odd gap therefore lands the piece one pixel off centre rather than on a
+    half pixel: the inset is floored, and a viewer magnifying the sheet by a
+    whole number keeps every piece — and the ring on its ``boxes`` entry —
+    on the pixel lattice the art is drawn on.
+
+    ``columns`` is in squares, and every number here is derived from the object,
+    so the sheet is bounded like the strip is (:func:`_check_sprite_extent`):
+    point a subsprite cell format at bytes that are not it and the record count,
+    not just the offsets, is whatever the bytes divide into.
+    """
+    frames = doc.shown_frames
+    records = [
+        (at, index) for at, frame in enumerate(frames) for index in range(len(frame))
+    ]
+    if not by_frame:
+        seen: set[tuple] = set()
+        unique = []
+        for at, index in records:
+            key = subsprite_key(frames[at][index])
+            if key not in seen:
+                seen.add(key)
+                unique.append((at, index))
+        records = unique
+    tile_w, tile_h = max(1, doc.tile_width), max(1, doc.tile_height)
+    across = down = 1
+    for at, index in records:
+        wide, tall = frames[at][index].size()
+        across, down = max(across, wide), max(down, tall)
+    cell_w, cell_h = across * tile_w, down * tile_h
+    columns = max(1, columns)
+    # Never zero rows: an object with no records at all still needs a sheet to
+    # draw nothing on, the same answer :func:`~celpix.core.sprite.frame_bounds`
+    # gives an object with no subsprites.
+    rows_of_cells = max(1, ceil_div(len(records), columns))
+    _check_sprite_extent(
+        columns * cell_w * rows_of_cells * cell_h,
+        f"a {columns * cell_w}x{rows_of_cells * cell_h} pixel subsprite sheet",
+    )
+    image = IndexGrid(columns * cell_w, rows_of_cells * cell_h)
+    source = tile_bank(doc, reg)
+    space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
+    rows = doc.palette_row_wrap(space)
+    boxes: list[tuple[int, int, int, int]] = []
+    for slot, (at, index) in enumerate(records):
+        sub = frames[at][index]
+        wide, tall = sub.size()
+        box_w, box_h = wide * tile_w, tall * tile_h
+        x = (slot % columns) * cell_w + (cell_w - box_w) // 2
+        y = (slot // columns) * cell_h + (cell_h - box_h) // 2
+        boxes.append((x, y, box_w, box_h))
+        _draw_subsprite(image, source, sub, x, y, doc, space, rows)
+    return SubspriteSheet(image, records, (cell_w, cell_h), boxes)
 
 
 @dataclass(frozen=True)

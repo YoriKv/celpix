@@ -624,7 +624,9 @@ class PanZoomSurface:
 
     Two hooks: :meth:`_pan_cursor` for a surface with cursors of its own beyond
     the hand, and :meth:`_has_content` for the "nothing to zoom" guard, which is
-    a different emptiness in each of them.
+    a different emptiness in each of them. A surface that wants the empty backing
+    around it to zoom as well says so once, with
+    :meth:`claim_background`.
     """
 
     # Declared by the concrete widget (a Signal only registers on a QObject
@@ -726,16 +728,83 @@ class PanZoomSurface:
         if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             event.ignore()  # let the scroll area scroll as usual
             return
+        self._report_zoom(event, event.position())
+        event.accept()
+
+    def _report_zoom(self, event, pos: QPointF) -> bool:  # noqa: ANN001 — QWheelEvent
+        """Turn one Ctrl+wheel into a zoom step at ``pos`` (this widget's coords).
+
+        False where there was nothing to report — an empty surface, or a wheel
+        whose delta rounds to no notch at all. The event is swallowed either way
+        by the caller: a Ctrl+wheel is a zoom the moment it is aimed here, and
+        letting the leftovers fall through would scroll the view instead.
+        """
         if not self._has_content():
-            return
+            return False
         dy = event.angleDelta().y()
         if dy == 0:
-            return
+            return False
         # One step per 120-unit notch, but at least one so a high-resolution
         # wheel sending small deltas still zooms.
         steps = int(dy / 120) or (1 if dy > 0 else -1)
-        self.zoom_requested.emit(steps, event.position())
-        event.accept()
+        self.zoom_requested.emit(steps, pos)
+        return True
+
+    def claim_background(self, scroll: QScrollArea) -> None:
+        """Count the backing around this surface in ``scroll`` as part of it.
+
+        A surface is sized to its content, so anything smaller than its scroll
+        area leaves a band of empty viewport around it — and that band is exactly
+        where the pointer is when the picture is small enough to want zooming
+        *in* on. Without this the gesture answers over the art and does nothing
+        an inch to its right, which reads as the wheel zoom being broken rather
+        than as a target having been missed. The **grey is the surface** as far
+        as a user is concerned, so a Ctrl+wheel out there zooms and a click out
+        there focuses — which is what puts the keys that address this sheet
+        (Shift+Left/Right for its width, the arrows for its pick) on it.
+
+        Filtered on the viewport rather than handled by a QScrollArea subclass so
+        the whole gesture stays one class: the events land on the viewport (the
+        surface is its child), and the filter gets them before the scroll area
+        turns them into a scroll or takes the focus for itself.
+        """
+        scroll.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: ANN001 — Qt override
+        """The backing's Ctrl+wheel and click, answered as the surface's own.
+
+        The wheel's position is mapped into this widget and **clamped to it**, so
+        a zoom started out on the backing anchors on the nearest content pixel
+        rather than on a coordinate outside the picture — the anchoring
+        arithmetic reads ``pos`` as content pixels times the zoom
+        (:func:`zoom_anchored`), and a point past the edge would ask it to hold
+        still something that is not there. A plain wheel is left alone and
+        scrolls as usual.
+
+        A **press** takes the focus and is then left to travel on. Qt has already
+        handed focus to the scroll area by the time this runs — it is given
+        before the press is delivered — so this is the surface taking it back,
+        and it is what a click on the grey has to do for the keys addressed to
+        this sheet to reach it. Not consumed: the press is still the scroll
+        area's to do whatever else it does with.
+        """
+        if isinstance(obj, QWidget) and event.type() == QEvent.Type.MouseButtonPress:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+        elif (
+            event.type() == QEvent.Type.Wheel
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            and isinstance(obj, QWidget)
+        ):
+            local = self.mapFrom(obj, event.position().toPoint())
+            self._report_zoom(
+                event,
+                QPointF(
+                    min(max(local.x(), 0), max(0, self.width() - 1)),
+                    min(max(local.y(), 0), max(0, self.height() - 1)),
+                ),
+            )
+            return True
+        return super().eventFilter(obj, event)
 
 
 def confirm_destructive(

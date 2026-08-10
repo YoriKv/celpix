@@ -1420,7 +1420,7 @@ def test_format_switch_refloors_buffer_backed_offset_palette_in_place(qtbot, tmp
     # Reshaped: the display shows 0-based buffer positions, and a palette
     # offset is one of those numbers - the container's skip is already inside
     # the buffer, not something the offset re-adds.
-    assert window._display_base() == 0
+    assert window._anchor_base() == 0
     assert window._load_palette_at_offset(32)
     assert window._doc.palette.color(0) == 0xFFFFFFFF
 
@@ -1453,7 +1453,7 @@ def test_offset_palette_lands_on_the_offset_shown_past_a_header(qtbot, tmp_path)
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(nes))
-    assert window._display_base() == chr_start
+    assert window._anchor_base() == chr_start
 
     assert window._load_palette_at_offset(chr_start + 32)
     doc = window._doc

@@ -54,6 +54,7 @@ from celpix.core.address import (
     parse_hex,
 )
 from celpix.core.capabilities import Capability
+from celpix.project.workspace import EntryKind
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.undo_commands import (
     OffsetMoveCommand,
@@ -170,13 +171,13 @@ class NavigationMixin:
                 (
                     "Fewer &columns",
                     "Shift+Left",
-                    lambda: self._adjust_spin(self._columns, -1),
+                    lambda: self._adjust_columns(-1),
                     False,
                 ),
                 (
                     "&More columns",
                     "Shift+Right",
-                    lambda: self._adjust_spin(self._columns, 1),
+                    lambda: self._adjust_columns(1),
                     False,
                 ),
                 (
@@ -478,8 +479,8 @@ class NavigationMixin:
             (Qt.Key.Key_0, *no_mod): self._clear_nudge,
             (Qt.Key.Key_Up, *shift): lambda: self._adjust_spin(self._rows, -1),
             (Qt.Key.Key_Down, *shift): lambda: self._adjust_spin(self._rows, 1),
-            (Qt.Key.Key_Left, *shift): lambda: self._adjust_spin(self._columns, -1),
-            (Qt.Key.Key_Right, *shift): lambda: self._adjust_spin(self._columns, 1),
+            (Qt.Key.Key_Left, *shift): lambda: self._adjust_columns(-1),
+            (Qt.Key.Key_Right, *shift): lambda: self._adjust_columns(1),
         }
         self._build_key_controls()
 
@@ -740,6 +741,30 @@ class NavigationMixin:
         handler()
         return True
 
+    def _adjust_columns(self, delta: int) -> None:
+        """Widen or narrow whichever sheet the Cols keys are addressing.
+
+        The view's own width normally — and the **tile source sheet's** while
+        that panel holds the focus. The sheet is a second grid of tiles with a
+        width of its own, laid out by a spin up in the dock's header; a user
+        working in the sheet who reaches for Shift+arrow means that width, and
+        moving the canvas's instead re-lays the picture they were not looking at.
+
+        Focus, not the pointer that picks the surface for a space-drag
+        (:meth:`_pan_surface`): a drag happens where the cursor is, a key press
+        where the user is typing. The sheet takes focus on a click, so having
+        worked in it is what says so — a click on the grey around it included,
+        since that band is the sheet as far as a user is concerned
+        (:meth:`~celpix.ui.widgets.PanZoomSurface.claim_background`).
+        """
+        panel = self._tile_source_panel
+        spin = (
+            self._tile_source_columns
+            if QApplication.focusWidget() is panel
+            else self._columns
+        )
+        self._adjust_spin(spin, delta)
+
     @staticmethod
     def _adjust_spin(spin: QSpinBox, delta: int) -> None:
         # setValue clamps to the spinbox range and fires valueChanged, which
@@ -977,16 +1002,17 @@ class NavigationMixin:
         else:
             self._refresh_offset_display()
 
-    def _display_base(self) -> int:
-        """The file byte the view's position 0 corresponds to - display policy.
+    def _anchor_base(self) -> int:
+        """The file byte the view's position 0 corresponds to - the coordinates an
+        offset is *written down* in (slice offsets, Offset-mode palette addresses,
+        jump-to-source), not the ones the address box shows.
 
-        Raw sources (no decompressor, no reshape) show source-file-absolute
-        addresses: past whatever a container skipped for a whole file, the slice
-        offset for a raw slice - so ROM bank addresses stay meaningful wherever
-        the bytes came from. A decompressed stream has no linear mapping back to
-        file offsets, and a reshaped one is a byte permutation of its region, so
-        both show their own 0-based positions instead of lying with file
-        addresses.
+        Raw sources (no decompressor, no reshape) anchor source-file-absolute:
+        past whatever a container skipped for a whole file, the slice offset for a
+        raw slice. A decompressed stream has no linear mapping back to file
+        offsets, and a reshaped one is a byte permutation of its region, so under
+        either the base is 0 and those offsets are positions in the reordered
+        buffer.
 
         The base comes from what Read *recorded* rather than from the config's
         requested offset, because only the container knows where it actually began:
@@ -994,12 +1020,45 @@ class NavigationMixin:
         past the iNES header and the PRG banks) and the host never asked for it.
         """
         assert self._doc is not None
-        return self._doc.display_base
+        return self._doc.anchor_base
 
-    def _tile_byte_offset(self, tile: int) -> int:
-        """The displayed byte offset of ``tile`` on the current (nudged) grid."""
+    def _addresses_are_view_relative(self) -> bool:
+        """Whether the address surfaces count from the view's own first byte.
+
+        True for a **slice**: it is a window the user drew on another entry, and
+        what they want to read off it is a position *within it* - "which byte of
+        this font", not where the font sits in the ROM. That parent address is
+        already on the entry itself (its tooltip, and Jump to Source), and reading
+        it off the box was actively misleading next to a reshaped sibling of the
+        same region, which had to fall back to 0-based anyway.
+
+        False for a whole file, whose addresses stay the file's, so a container's
+        skipped header and any ROM bank format still name real cartridge bytes.
+        """
+        entry = self._workspace.current
+        return entry is not None and entry.kind is EntryKind.SLICE
+
+    def _address_base(self) -> int:
+        """What the address surfaces (box, hex dump, status text) count from."""
+        return 0 if self._addresses_are_view_relative() else self._anchor_base()
+
+    def _tilemap_address_base(self) -> int:
+        """:meth:`_address_base` for a tilemap document's own cells."""
         assert self._doc is not None
-        return self._display_base() + self._nudge + tile * self._doc.bytes_per_tile
+        if self._addresses_are_view_relative():
+            return 0
+        return self._doc.tilemap_anchor_base
+
+    def _tile_anchor_offset(self, tile: int) -> int:
+        """``tile``'s byte offset on the current (nudged) grid, in the coordinates
+        an offset is written down in (:meth:`_anchor_base`)."""
+        assert self._doc is not None
+        return self._anchor_base() + self._nudge + tile * self._doc.bytes_per_tile
+
+    def _tile_address(self, tile: int) -> int:
+        """``tile``'s byte offset on the current (nudged) grid, as displayed."""
+        assert self._doc is not None
+        return self._address_base() + self._nudge + tile * self._doc.bytes_per_tile
 
     def _offset_text(self) -> str:
         """The current byte offset rendered in the chosen address format.
@@ -1009,10 +1068,10 @@ class NavigationMixin:
         """
         if self._doc is None:
             return ""
-        return self._format_offset(self._tile_byte_offset(self._offset))
+        return self._format_offset(self._tile_address(self._offset))
 
     def _jump_to_address(self, byte_off: int) -> None:
-        """Jump to a file byte offset - the offset box's commit handler.
+        """Jump to an address the box shows - its commit handler.
 
         Byte-exact: a sub-tile address sets the byte nudge, so typing any offset
         lands the grid on it. The box re-renders itself from :meth:`_offset_text`
@@ -1021,7 +1080,7 @@ class NavigationMixin:
         """
         if self._doc is None:
             return
-        self._set_byte_position(byte_off - self._display_base())
+        self._set_byte_position(byte_off - self._address_base())
 
     def _sync_nav(self) -> None:
         """Mirror the current position into the address box and the tile-offset
@@ -1058,12 +1117,15 @@ class NavigationMixin:
     def _land_on_byte(self, file_offset: int) -> None:
         """Move the view origin to an absolute file byte, without pushing an undo.
 
-        Same byte→tile/nudge split as :meth:`_set_byte_position`, but it applies
-        the position directly: a jump-to-source is navigation, not an edit.
+        Takes an offset as it was *written down* (:meth:`_anchor_base`), not as
+        the box shows it: its caller is Jump to Source, handing over a child's
+        stored ``slice_offset``. Same byte→tile/nudge split as
+        :meth:`_set_byte_position`, but it applies the position directly - a
+        jump-to-source is navigation, not an edit.
         """
         if self._doc is None:
             return
-        pos = file_offset - self._display_base()
+        pos = file_offset - self._anchor_base()
         offset, nudge = self._doc.clamp_byte_position(
             pos, self._columns.value(), self._view_rows()
         )

@@ -604,18 +604,21 @@ class EntriesMixin:
     def _slice_prefill_offset(self, position: int | None = None) -> int:
         """A view position in the coordinates a slice offset is written in.
 
-        The same numbers the offset box shows, which is what a slice addresses:
-        past whatever the container skipped for a whole file, 0-based in the
-        reordered buffer under a reshape. Taking the *config's* requested offset
-        instead would prefill a headered file's slices short by its header - the
-        config never names the start the container worked out for itself.
+        The parent's own coordinates (:meth:`_anchor_base`), which is what a slice
+        addresses: past whatever the container skipped for a whole file, 0-based in
+        the reordered buffer under a reshape. Deliberately *not* the number the
+        offset box shows while a slice is on screen - that counts from the slice's
+        own first byte, while a slice carved here is anchored in the file the
+        parent lineage reads. Taking the *config's* requested offset instead would
+        prefill a headered file's slices short by its header - the config never
+        names the start the container worked out for itself.
 
         ``position`` defaults to the grid's current byte position; the selection
         and structure gestures pass their own document-relative start.
         """
         assert self._doc is not None
         at = self._byte_position() if position is None else position
-        return self._display_base() + at
+        return self._anchor_base() + at
 
     def _slice_source(self) -> tuple[Entry, Document] | None:
         """The current entry + document if a slice can be carved from the view.

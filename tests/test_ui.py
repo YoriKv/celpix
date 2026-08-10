@@ -501,7 +501,7 @@ def test_copier_header_is_detected_and_skipped(qtbot, tmp_path) -> None:
     assert window._workspace.current.container_id == "container.copier-header"
     assert bytes(window._doc.pixel_data) == body
     # Offsets stay file-absolute, so ROM addresses still mean what they say.
-    assert window._display_base() == 512
+    assert window._anchor_base() == 512
     assert window._offset_text() == "0x000200"
 
 

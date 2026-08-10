@@ -35,6 +35,8 @@ from celpix.ui import render_bridge
 from celpix.ui.hex_view_panel import BYTES_PER_ROW
 from celpix.ui.main_window.interpretation import (
     COLS_ASSEMBLED_TIP,
+    COLS_CELLS_TIP,
+    COLS_FRAMES_TIP,
     COLS_TIP,
     SUBPAL_CELLS_TIP,
     SUBPAL_TIP,
@@ -311,13 +313,29 @@ class RenderingMixin:
                 self._columns.setValue(width)
 
     def _label_columns(self, *, locked: bool) -> None:
-        """Say what Cols is, or what has taken it over — caption included.
+        """Say what Cols counts, or what has taken it over — caption included.
+
+        Three readings, because a column is a different thing in each: a tile on
+        a pixel document, a **cell** on a tilemap — which may be a metatile of
+        several tiles — and a whole **frame** on a sprite object, whose Cols lays
+        out the strip the canvas shows rather than anything inside a frame. One
+        wording over all three is wrong on two of them, and wrong in the way a
+        user cannot check: the number does not say what it counts.
 
         The caption is half the control's hover target
         (:func:`~celpix.ui.widgets.add_labelled`), so a live-looking label over a
         dead input is exactly where "why can't I type here" lands.
         """
-        tip = COLS_ASSEMBLED_TIP if locked else COLS_TIP
+        doc = self._doc
+        if locked:
+            # Only a paged grid map gets here — a sprite object is never paged
+            # (:attr:`~celpix.core.document.Document.pages`) — so the locked
+            # wording speaks cells and needs no reading of its own.
+            tip = COLS_ASSEMBLED_TIP
+        elif doc is None or not doc.is_tilemap:
+            tip = COLS_TIP
+        else:
+            tip = COLS_FRAMES_TIP if doc.is_sprite else COLS_CELLS_TIP
         self._columns.setToolTip(tip)
         self._columns_label.setToolTip(tip)
         self._columns_label.setEnabled(self._columns.isEnabled())
@@ -750,6 +768,11 @@ class RenderingMixin:
         # the entry underneath them changes.
         self._animation_action.setEnabled(self._animation_available())
         self._sync_animation()
+        # Beside the player, and gated on the same entry for the same reason -
+        # what differs is only how wide the gate is, since every sprite map has
+        # subsprites where few have sequences.
+        self._subsprites_action.setEnabled(self._subsprites_available())
+        self._sync_subsprites()
         self._text_action.setEnabled(self._text_available())
         self._sync_text()
         # The third of the tool windows, and the tick that declares one. The
@@ -854,7 +877,7 @@ class RenderingMixin:
         span = max(window, 16 * BYTES_PER_ROW)
         span = min(span, 256 * BYTES_PER_ROW)
         region_end = min(len(data), row_start + BYTES_PER_ROW + span)
-        base = self._display_base()
+        base = self._address_base()
         self._hex_panel.show_bytes(
             data,
             row_start,
@@ -887,7 +910,7 @@ class RenderingMixin:
         row_start = (origin // BYTES_PER_ROW) * BYTES_PER_ROW
         span = min(max(len(data), 16 * BYTES_PER_ROW), 256 * BYTES_PER_ROW)
         region_end = min(len(data), row_start + BYTES_PER_ROW + span)
-        base = doc.tilemap_display_base
+        base = self._tilemap_address_base()
         self._hex_panel.show_bytes(
             data,
             row_start,

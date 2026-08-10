@@ -1011,6 +1011,81 @@ def test_a_pixel_lists_every_subsprite_under_it_in_the_order_a_click_takes_them(
     assert at(200, 2) == []  # off the sheet: nothing to cycle through
 
 
+def test_the_subsprite_sheet_squares_every_record_off_against_the_largest() -> None:
+    """The sheet of parts, where `sprite_image` draws the object they assemble to.
+
+    Three things it has to get right and the strip does not. A square is one
+    *record*, so a frame's own numbering survives the flattening — an empty frame
+    contributes nothing and the frames after it keep their numbers. Every square
+    is the largest subsprite in the object, since one lattice cannot be two
+    sizes, and a smaller piece is centred in its square rather than left in the
+    corner of one. And a piece is drawn at its square, not at its own offset:
+    what the sheet shows is what the file holds, not where the frame puts it.
+    """
+    from celpix.core.sprite import Subsprite
+    from celpix.pipeline.pipeline import subsprite_sheet
+
+    # 4bpp planar: tile 0 blank, tile 1 index 15 throughout.
+    bank = bytes(32) + bytes([0xFF]) * 32
+    small = Subsprite(x=0, y=0, index=1)
+    # Far off to the right in its frame, and two tiles square: neither fact may
+    # reach the sheet as anything but the square's size.
+    big = Subsprite(x=40, y=0, index=1, across=2, down=2)
+    doc = _sprite_doc([], [(small, big), (), (small,)], bank=bank)
+    sheet = subsprite_sheet(doc, default_registry(), columns=2)
+
+    # The middle frame holds nothing and takes no square; frame 2 is still 2.
+    assert sheet.records == [(0, 0), (0, 1), (2, 0)]
+    assert sheet.cell == (16, 16)  # the large piece, in pixels
+    assert (sheet.grid.width, sheet.grid.height) == (32, 32)  # 2 across, 2 down
+
+    # The 1x1 piece is centred in its 16x16 square, so its corner is the square's
+    # and the gutter around it is background rather than art.
+    assert sheet.grid.get(4, 4) == 15
+    assert sheet.grid.get(0, 0) == 0
+    # Which is what `boxes` says, per record: where the art landed rather than
+    # which square it landed in, so a ring on one is round the piece and not
+    # round the gutter. Whole pixels throughout - the inset is floored, so a
+    # piece never sits half a pixel over the lattice it is drawn on.
+    assert sheet.boxes == [(4, 4, 8, 8), (16, 0, 16, 16), (4, 20, 8, 8)]
+    # The large one fills its own square, at the square — not at its x of 40.
+    assert sheet.grid.get(16, 0) == 15
+    # And frame 2's piece is on the second row, at the same inset.
+    assert sheet.grid.get(4, 20) == 15
+
+
+def test_the_subsprite_sheet_can_collapse_the_repeats_to_the_art_behind_them() -> None:
+    """The sheet's other reading: the object's inventory rather than its listing.
+
+    An object is a handful of pieces posed over dozens of frames, so one square
+    per record says the same few things over and over. What makes two records one
+    piece is everything the blit is told — the tiles, the shape, the mirrors, the
+    row — and nothing about *placement*, which is exactly what this reading has
+    thrown away. Two records that a symmetric tile happens to make look alike are
+    still two squares: the key is what the renderer was told, not what came out,
+    and comparing pixels would merge records the file keeps apart.
+    """
+    from celpix.core.sprite import Subsprite
+    from celpix.pipeline.pipeline import subsprite_sheet
+
+    bank = bytes(32) + bytes([0xFF]) * 32
+    piece = Subsprite(x=0, y=0, index=1)
+    moved = Subsprite(x=16, y=8, index=1)  # the same piece, posed elsewhere
+    mirrored = Subsprite(x=0, y=0, index=1, flip_h=True)  # a different instruction
+    recoloured = Subsprite(x=0, y=0, index=1, palette_row=2)
+    doc = _sprite_doc([], [(piece, moved), (mirrored, piece), (recoloured,)], bank=bank)
+    registry = default_registry()
+
+    assert len(subsprite_sheet(doc, registry, 8).records) == 5  # the listing
+    # Three distinct pieces, each standing at the record it first appeared in —
+    # so a square is still a thing in the file, not a synthesised average of one.
+    assert subsprite_sheet(doc, registry, 8, by_frame=False).records == [
+        (0, 0),
+        (1, 0),
+        (2, 0),
+    ]
+
+
 def test_a_sprite_object_is_view_only() -> None:
     """A canvas position resolves to a *subsprite* through an overlap order rather
     than to a cell through a grid, so what an edit would change is not settled
@@ -1102,6 +1177,33 @@ def test_a_mega_drive_run_says_when_its_mirror_offsets_disagree() -> None:
     assert not mirrors_x(wrong, params)
     codec.frames(wrong, params, ctx)
     assert any("mirror" in note.summary for note in notices(ctx))
+
+
+def test_a_mega_drive_word_x_keeps_offsets_a_byte_could_not_hold() -> None:
+    """The whole point of the signed-word variant is the offsets past a byte, and
+    it is the variant a reader is sent to when a run comes out scattered — so an X
+    field only as wide as the other member's would fold ``+200`` to ``-56`` and
+    look like a second misreading.
+    """
+    from celpix.plugins.builtins.md_sprite import MdSpriteCodec
+
+    codec = MdSpriteCodec()
+    params = _params(default_registry(), "preset.tilemap.md-sprite") | {
+        "x_bytes": 2,
+        "mirror_x": False,
+    }
+    ctx = PipelineContext()
+    raw = bytes((0xF8, 0)) + (1).to_bytes(2, "big") + (200).to_bytes(2, "big")
+
+    (cell,) = codec.decode(raw, params, ctx)
+    (sub,) = codec.frames([cell], params, ctx)[0]
+    assert (sub.x, sub.y) == (200, -8)
+    assert codec.encode([cell], params, ctx) == raw
+
+    back = bytes((0, 0)) + (1).to_bytes(2, "big") + (-200 & 0xFFFF).to_bytes(2, "big")
+    (cell,) = codec.decode(back, params, ctx)
+    assert codec.frames([cell], params, ctx)[0][0].x == -200
+    assert codec.encode([cell], params, ctx) == back
 
 
 def test_a_transfer_record_puts_every_field_somewhere_else() -> None:
