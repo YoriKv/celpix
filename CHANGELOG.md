@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.3 - unreleased
+## v0.5.3 - 2026-08-10
 
 - **Subsprites window** (View -> Subsprites): separate window for displaying
   the subsprites of a sprite map
