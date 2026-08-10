@@ -1,7 +1,7 @@
 """The app-wide light/dark appearance, in one palette applied in one place.
 
 celPix themes through **QPalette**, not a stylesheet: every widget in the app
-already draws from palette roles (the panels' glyphs are tinted from Text and
+already draws from palette roles (the panels' icons are tinted from Text and
 Highlight, the file-position rail derives its accent from Highlight, the hex
 view shades its cursor from it), so handing the application a different palette
 re-colors the whole UI without a per-widget rule anywhere. The only literals
@@ -65,7 +65,7 @@ _DARK_SURFACE = QColor(0x35, 0x35, 0x35)
 # - Highlight: Qt's derived navy is nearly the surface color, so a selected row
 #   would barely show. A saturated blue is legible against both the surface and
 #   the dark Base, and keeps the accent the file-position rail and the panel
-#   glyphs pick up.
+#   icons pick up.
 # - ToolTip*: Qt keeps the light desktop's pale yellow, the one surface that
 #   would still flash white.
 # - PlaceholderText: derived as full-strength Text, which makes a hint look like
@@ -144,7 +144,7 @@ def apply_theme(theme: Theme) -> None:
     event loop rather than inside ``setPalette``, and installing a style in
     between re-polishes every widget against the palette it already has: the
     queued PaletteChange is then considered satisfied and never delivered. The
-    panels that bake a palette color into a pixmap (every tinted glyph in the
+    panels that bake a palette color into a pixmap (every tinted icon in the
     app) listen for exactly that event, so in the other order they would keep
     yesterday's colors until something else invalidated them.
 

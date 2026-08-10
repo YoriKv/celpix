@@ -7,7 +7,7 @@ carries no row count, so the decoder must be told how many tile rows to produce
 and consumes bits until it has.
 
 Stream shape (full details and provenance in
-``docs/graphics-formats-reference/implementation-guide.md`` §6):
+``docs/graphics-formats-reference/implementation-guide.md`` §7):
 
 - **Header** — 4 bytes = 8 nibbles. The first 7 seed the predictor table
   ``pred[0..6]`` with 4-bit colors; the 8th primes the LSB-first bit stream.
@@ -48,7 +48,9 @@ from celpix.core.context import (
     PipelineContext,
 )
 from celpix.core.errors import Stage
+from celpix.plugins._byteops import or_all
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._bits import bit_expansion, bit_packing
 
 # int: LZ16 tile-row count for decode, when known. Recorded back after a
 # successful probe so later stages (and a future UI) can see what was used.
@@ -58,6 +60,11 @@ ROW_PIXELS = 128
 TILES_PER_ROW = 16
 BYTES_PER_TILE = 32
 BYTES_PER_TILE_ROW = TILES_PER_ROW * BYTES_PER_TILE  # 512
+
+# Where each bitplane's byte for one tile row sits inside a tile: SNES 4bpp is two
+# interleaved plane-pairs, the low pair at the tile's start and the high pair 16
+# bytes on, so a tile row's four bytes are at y*2 plus these.
+_PLANE_OFFSET = (0, 1, 16, 17)
 
 # Probe ceiling: 64 tile rows = 32 KB of 4bpp tiles, comfortably past any
 # structure the format is used for.
@@ -206,51 +213,54 @@ def _decode_pixel_rows(
 
 
 def _pixels_to_tiles(pixels: bytearray, tile_rows: int) -> bytes:
-    """Transpose row-major 128-wide pixels into SNES 4bpp planar tiles."""
+    """Transpose row-major 128-wide pixels into SNES 4bpp planar tiles.
+
+    Plane at a time across a whole tile row, not pixel by pixel: one 256-byte
+    ``translate`` table per pixel column packs that column in all 16 tiles at once
+    and the four planes OR together (:mod:`~celpix.plugins.builtins._bits`) — the
+    same kernel the planar pixel codec runs on this layout, and the same reason,
+    a per-pixel Python loop costing a few hundred nanoseconds a pixel.
+    """
     out = bytearray(tile_rows * BYTES_PER_TILE_ROW)
-    for tile in range(TILES_PER_ROW * tile_rows):
-        col = tile & 0xF
-        t_row = tile >> 4
+    for t_row in range(tile_rows):
+        slab = bytearray(BYTES_PER_TILE_ROW)
         for y in range(8):
-            d = tile * BYTES_PER_TILE + y * 2
-            s = col * 8 + (t_row * 8 + y) * ROW_PIXELS
-            b0 = b1 = b2 = b3 = 0
-            for k in range(8):
-                px = pixels[s + k]
-                shift = 7 - k
-                b0 |= (px & 1) << shift
-                b1 |= ((px >> 1) & 1) << shift
-                b2 |= ((px >> 2) & 1) << shift
-                b3 |= ((px >> 3) & 1) << shift
-            out[d] = b0
-            out[d + 1] = b1
-            out[d + 16] = b2
-            out[d + 17] = b3
+            start = (t_row * 8 + y) * ROW_PIXELS
+            row = bytes(pixels[start : start + ROW_PIXELS])
+            for plane in range(4):
+                # One byte per tile: this group's eight columns OR-ed together.
+                slab[y * 2 + _PLANE_OFFSET[plane] :: BYTES_PER_TILE] = or_all(
+                    [row[x::8].translate(bit_packing(plane, x)) for x in range(8)]
+                )
+        out[t_row * BYTES_PER_TILE_ROW : (t_row + 1) * BYTES_PER_TILE_ROW] = slab
     return bytes(out)
 
 
 def _tiles_to_pixels(tiles: bytes) -> bytearray:
-    """Inverse transpose: SNES 4bpp planar tiles -> row-major pixels."""
+    """Inverse transpose: SNES 4bpp planar tiles -> row-major pixels.
+
+    The other direction of the same kernel: one lookup per plane expands that
+    plane's byte in all 16 tiles into the eight pixels its bits land in, and the
+    four results OR together. Tiles come back in column order across the row,
+    which is already the pixel order a 128-wide row wants.
+    """
     tile_rows = len(tiles) // BYTES_PER_TILE_ROW
     pixels = bytearray(ROW_PIXELS * tile_rows * 8)
-    for tile in range(TILES_PER_ROW * tile_rows):
-        col = tile & 0xF
-        t_row = tile >> 4
+    for t_row in range(tile_rows):
+        slab = tiles[t_row * BYTES_PER_TILE_ROW : (t_row + 1) * BYTES_PER_TILE_ROW]
         for y in range(8):
-            d = tile * BYTES_PER_TILE + y * 2
-            s = col * 8 + (t_row * 8 + y) * ROW_PIXELS
-            b0 = tiles[d]
-            b1 = tiles[d + 1]
-            b2 = tiles[d + 16]
-            b3 = tiles[d + 17]
-            for k in range(8):
-                shift = 7 - k
-                pixels[s + k] = (
-                    ((b0 >> shift) & 1)
-                    | (((b1 >> shift) & 1) << 1)
-                    | (((b2 >> shift) & 1) << 2)
-                    | (((b3 >> shift) & 1) << 3)
-                )
+            start = (t_row * 8 + y) * ROW_PIXELS
+            pixels[start : start + ROW_PIXELS] = or_all(
+                [
+                    b"".join(
+                        map(
+                            bit_expansion(plane).__getitem__,
+                            slab[y * 2 + _PLANE_OFFSET[plane] :: BYTES_PER_TILE],
+                        )
+                    )
+                    for plane in range(4)
+                ]
+            )
     return pixels
 
 

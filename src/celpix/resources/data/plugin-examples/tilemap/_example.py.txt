@@ -17,18 +17,36 @@ decode and encode must be buffer-relative and stateless — they walk whatever
 bytes they are given, with no notion of where the buffer sits in the file.
 Laying the flat list out as a grid is celPix's job: a tilemap file rarely records
 its own width, so the view has to be able to try one.
+
+**A Cell has eight fields, and every one of them is yours to fill or to leave.**
+``index``, ``palette_row``, ``priority``, ``flip_h``, ``flip_v``, ``visible``,
+``ends_line``, ``flags``. What a field defaults to on decode is what encode will
+write back, so a field your format *has* and your decode ignores is zeroed on the
+next save — silently, and for the whole file. The four this format has no bit for
+are named below anyway, so nothing is dropped by omission.
+
+**Then say what a cell can do.** Four optional methods, each reached with
+``getattr`` so leaving one out is a real answer rather than a crash: silence
+means "do not infer this for me". That makes ``index_limit`` the one to write
+first — **a format that omits it cannot have its cells pointed at a tile at
+all**. The Cell spin and the Edit Tiles tool simply refuse, with no error to read,
+because the host will not guess how wide a field it was never told about is.
 """
 
-from celpix.core.tilemap import Cell
+from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins import FormatInfo
+
+_INDEX_BITS = 10  # the tile number's width, split 8 + 2 across bytes 0 and 2
+_PALETTE_BITS = 3
 
 
 class SplitCell:
     """A 3-byte cell whose tile number straddles two non-adjacent bytes.
 
     byte 0  tile number, low 8 bits
-    byte 1  attributes: bit 0 h-flip, bit 1 v-flip, bits 2-4 palette row
-    byte 2  tile number, high 2 bits (the rest of the byte unused)
+    byte 1  attributes: bit 0 h-flip, bit 1 v-flip, bits 2-4 palette row,
+            bit 5 priority (bits 6-7 unused)
+    byte 2  tile number, high 2 bits; bits 2-7 are the format's own
     """
 
     # The id doubles as the picker entry's stable identity; the name is shown.
@@ -44,11 +62,22 @@ class SplitCell:
                 Cell(
                     index=low | ((high & 0x03) << 8),
                     palette_row=(attr >> 2) & 0x07,
+                    # Carried, never rendered: celPix draws no layers, but a bit
+                    # dropped here is a bit gone from the file on the next save,
+                    # and nearly every hardware BG format has this one.
+                    priority=(attr >> 5) & 0x01,
                     flip_h=bool(attr & 0x01),
                     flip_v=bool(attr & 0x02),
-                    # Bits the format has and celPix has no meaning for: carry
+                    # Bits the format has that celPix has no meaning for: carry
                     # them, or a save would quietly zero them.
                     flags=high >> 2,
+                    # `visible` and `ends_line` are the two fields this format
+                    # has no bit for, so they are left at their defaults: every
+                    # position is drawn, and nothing ends a line. Set `visible`
+                    # from a format's own drawn/enable bit, and `ends_line` from
+                    # the bit a *text* format sets on the last character of a
+                    # line — that one reaches no pixel, only the newline
+                    # View > Text shows after it.
                 )
             )
         return cells
@@ -64,7 +93,8 @@ class SplitCell:
         for cell in cells:
             index = cell.index & 0x3FF
             attr = (
-                (cell.palette_row & 0x07) << 2
+                (cell.priority & 0x01) << 5
+                | (cell.palette_row & 0x07) << 2
                 | (0x02 if cell.flip_v else 0)
                 | (0x01 if cell.flip_h else 0)
             )
@@ -82,6 +112,47 @@ class SplitCell:
         # 16x16 block as four adjacent cells is (1, 1), and claiming (2, 2) draws
         # every block four times over.
         return (1, 1)
+
+    # ---- optional, and the difference between a readable map and an editable one
+
+    def index_limit(self):
+        """The highest tile number a cell can hold — **write this one**.
+
+        Without it nothing can point a cell at a tile: the host refuses what a
+        codec has not been asked about rather than inferring a field width and
+        masking the user's number down to something else on save. Return None for
+        a format whose cells genuinely have no index.
+        """
+        return (1 << _INDEX_BITS) - 1
+
+    def palette_row_limit(self):
+        """The same for the colour field, and it is what lets a row be *assigned*
+        to a selection. None where a format has nowhere to put one."""
+        return (1 << _PALETTE_BITS) - 1
+
+    def has_palette_rows(self):
+        """Whether the format gives a cell a row at all — about *reading*, where
+        the safe default is the opposite way round: omit this and celPix assumes
+        rows, so a format that carries them is not shifted by a view-wide row on
+        top. Return False for a bare tile number, and the subpalette control
+        supplies the colours instead."""
+        return True
+
+    def transform_cell(self, cell, op):
+        """``cell`` as ``op`` leaves it, or None where this format cannot say it.
+
+        Only the codec knows which bits mean a flip, so the tool names the
+        operation and asks. **None is the whole refusal protocol** — the host
+        probes with a blank cell first and tells the user once, rather than
+        setting a bit that encode then drops on save. Omit the method and every
+        transform is refused, which is the safe direction; the rotations are
+        refused here because the record has no bit for one.
+        """
+        if op is CellOp.FLIP_H:
+            return cell.flipped_h()
+        if op is CellOp.FLIP_V:
+            return cell.flipped_v()
+        return None
 
 
 def register(registry):

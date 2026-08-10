@@ -40,7 +40,7 @@ from celpix.ui.widgets import icon_cache_key
 # The rail follows TOOL_SPECS order, which is also the 1..9 key order — so a
 # button's position in the column is its number key. Reorder there, not here.
 
-# The square button and the glyph drawn inside it, in logical pixels. The icon
+# The square button and the icon drawn inside it, in logical pixels. The icon
 # leaves a little breathing room inside the button's frame and check highlight.
 _BUTTON = 30
 _ICON = 20
@@ -117,7 +117,7 @@ class ToolsPanel(QWidget):
         # Both bakes are invalidated from outside: a theme switch swaps the
         # palette out from under the tint, and a move to a differently scaled
         # display invalidates the resolution. The second one matters more than
-        # it looks: the glyphs are laid out on exact integer pixels (the
+        # it looks: the icons are laid out on exact integer pixels (the
         # marquee's ants especially), so a pixmap baked at the wrong ratio is
         # *smooth-scaled* by Qt to fit - blurring the dashes and drifting them
         # off the centre they were placed on. The panel is built before the
@@ -131,7 +131,7 @@ class ToolsPanel(QWidget):
             self._rebuild_icons()
 
     def _rebuild_icons(self) -> None:
-        """(Re)bake every tool glyph against the current palette and pixel ratio.
+        """(Re)bake every tool icon against the current palette and pixel ratio.
 
         The tint and resolution are baked into each pixmap, so a plain cache kept
         across a theme switch or a drag to a differently scaled monitor would show
@@ -171,7 +171,7 @@ class ToolsPanel(QWidget):
         return icon
 
     def _tool_mask(self, spec: ToolSpec, box: int) -> QPixmap:
-        """The tool's glyph as ink on transparency, ``box`` device pixels square.
+        """The tool's mark as ink on transparency, ``box`` device pixels square.
 
         Untinted: only the alpha shape matters, since every tint is stamped
         through it by :func:`_tinted`.
@@ -217,7 +217,7 @@ class ToolsPanel(QWidget):
         # variants fill. Insetting by exactly half - in float, which is the whole
         # point: `stroke // 2` is right only for even widths and leaves an odd
         # one half a pixel proud, which rasterizes as one extra pixel on one side
-        # and reads as a glyph that has slid down and right. Inset properly, the
+        # and reads as a shape that has slid down and right. Inset properly, the
         # ink lands on `rect` at every stroke width and every display scale.
         half = stroke / 2
         path = QRectF(
@@ -234,11 +234,11 @@ class ToolsPanel(QWidget):
             # a solid one. It carries the same stroke width as the rest of the
             # set, though - a lighter one rasterized to a single pixel at 100%
             # scaling next to everything else's two, and the rail read as if this
-            # glyph had faded.
+            # icon had faded.
             # The ants are laid out and filled by hand rather than stroked with a
             # dashed pen. A dashed drawRect runs one phase around the whole
             # perimeter: it ends mid-pattern, so whichever corners it lands on are
-            # left bare and the glyph reads lopsided even though its bounding box
+            # left bare and the mark reads lopsided even though its bounding box
             # is centred. Fractional dash lengths then rasterize to uneven runs on
             # top of that. Integer dashes placed per edge avoid both.
             thin = stroke

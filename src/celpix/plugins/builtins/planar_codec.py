@@ -37,12 +37,11 @@ from typing import Any
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
+from celpix.plugins._byteops import or_all, or_bytes
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._bits import (
     bit_expansion,
     bit_packing,
-    or_all,
-    or_bytes,
 )
 from celpix.plugins.builtins._tile import (
     flatten_tiles,

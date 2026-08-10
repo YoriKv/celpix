@@ -37,15 +37,14 @@ original blob is a non-goal; round-tripping is the contract.
 
 from __future__ import annotations
 
-from celpix.core.context import (
-    KEY_COMPRESSED_SIZE,
-    KEY_DECOMPRESS_COMPLETE,
-    KEY_DECOMPRESS_PARTIAL,
-    PipelineContext,
-)
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
-from celpix.plugins.builtins._lz import MatchFinder
+from celpix.plugins.base import PartialDecompression, PluginInfo
+from celpix.plugins.builtins._lz import (
+    FlagGroup,
+    MatchFinder,
+    copy_from,
+    parse_greedy,
+)
 
 RING_SIZE = 4096
 # Where the ring's write cursor sits before the first output byte. Equivalent to
@@ -111,11 +110,7 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
             # the one in the last RING_SIZE bytes congruent to it modulo the ring.
             base = produced - RING_SIZE
             start = RING_SIZE + base + ((ring_pos - RING_START - base) % RING_SIZE)
-            if start + length <= len(win):  # no self-overlap - copy in one go
-                win += win[start : start + length]
-            else:
-                for k in range(length):
-                    win.append(win[start + k])
+            copy_from(win, start, length)
             produced += length
 
     out = bytes(win[RING_SIZE:])
@@ -140,46 +135,26 @@ def compress(data: bytes) -> bytes:
         data, min_match=MIN_MATCH, window=RING_SIZE, max_candidates=_MAX_CANDIDATES
     )
 
-    def best_match(pos: int) -> tuple[int, int]:
-        """The longest match reaching ``pos``, as ``(length, candidate)``."""
-        return finder.longest(pos, min(MAX_MATCH, n - pos))
-
     out = bytearray(n.to_bytes(4, "little"))
-    pos = 0
-    while pos < n:
-        flags_at = len(out)
-        out.append(0)
-        flags = 0
-
-        for bit in range(8):
-            if pos >= n:
-                break
-            length, candidate = best_match(pos)
-            finder.add(pos)  # index it before any lookahead reads it
-            if MIN_MATCH <= length < MAX_MATCH and pos + 1 < n:
-                # One-step lazy deferral: if the next position starts a strictly
-                # longer match, the literal here buys more than this match does.
-                next_len, _ = best_match(pos + 1)
-                if next_len > length:
-                    length = 0
-
-            if length >= MIN_MATCH:
-                ring_pos = (RING_START + candidate) & 0xFFF
-                out.append(ring_pos & 0xFF)
-                out.append(((ring_pos >> 4) & 0xF0) | (length - MIN_MATCH))
-                finder.add_run(pos + 1, pos + length)
-                pos += length
-            else:
-                flags |= 1 << bit
-                out.append(data[pos])
-                pos += 1
-
-        out[flags_at] = flags
+    # LSB first, and a set bit is the *literal* — both the opposite way round from
+    # the BIOS LZ77 next door (:mod:`~celpix.plugins.builtins.gba_lz77`).
+    group = FlagGroup(out, msb_first=False, set_means_match=False)
+    for pos, length, candidate in parse_greedy(
+        data, finder, min_match=MIN_MATCH, max_match=MAX_MATCH
+    ):
+        group.select(length > 0)
+        if length:
+            ring_pos = (RING_START + candidate) & 0xFFF
+            out.append(ring_pos & 0xFF)
+            out.append(((ring_pos >> 4) & 0xF0) | (length - MIN_MATCH))
+        else:
+            out.append(data[pos])
+    group.finish()
 
     return bytes(out)
 
 
-class LzssRingCompression:
+class LzssRingCompression(PartialDecompression):
     info = PluginInfo(
         id="compression.lzss-ring",
         name="LZSS (4 KiB ring, size-prefixed)",
@@ -190,13 +165,5 @@ class LzssRingCompression:
         category="Generic",
     )
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        out, consumed, complete = decompress(
-            data, partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL))
-        )
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
-        return out
-
-    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return compress(data)
+    _decode = staticmethod(decompress)
+    _encode = staticmethod(compress)

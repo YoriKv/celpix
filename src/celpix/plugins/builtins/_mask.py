@@ -166,7 +166,7 @@ def _flip(raw: int, width: int, invert: bool) -> int:
     A grayscale LCD stores *how dark* a shade is, not how bright: 0 is white on a
     Game Boy, a WonderSwan and a Neo Geo Pocket alike. That is one xor away from
     an ordinary brightness field, so those palettes stay data
-    (``docs/graphics-formats-reference/superfamiconv-formats.md`` §3.3) instead of
+    (``docs/graphics-formats-reference/tile-converter-formats.md`` §3.3) instead of
     each needing its own engine. Its own inverse, so the round trip is unaffected.
     """
     return raw ^ ((1 << width) - 1) if invert else raw

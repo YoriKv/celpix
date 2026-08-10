@@ -39,7 +39,7 @@ bar, and a key never means one thing in tile mode and another in pixel mode
 :data:`~celpix.ui.tools.TRANSFORM_SPECS`, which the F1 guide reads too.
 
 Each button decodes the selection's enclosing run, transforms it, and re-encodes
-through :meth:`~celpix.ui.main_window.selection.SelectionMixin._apply_tile_edit`,
+through :meth:`~celpix.ui.main_window.tile_bytes.TileBytesMixin._apply_tile_edit`,
 which pushes one :class:`~celpix.ui.undo_commands.PixelEditCommand` — so a
 transform is a single Ctrl+Z step, exactly like a paste.
 
@@ -72,6 +72,7 @@ from celpix.ui.main_window.selection import SELECTION_SHAPE_KEY, SelectionShape
 from celpix.ui.tools import TRANSFORM_SPECS, EditMode, TransformSpec
 from celpix.ui.widgets import (
     CompactComboBox,
+    add_labelled,
     counted,
     load_enum_setting,
     select_combo_data,
@@ -350,10 +351,12 @@ class TransformMixin:
 
         An expanding spacer pushes them hard right, away from the transform
         groups, so they read as switches for the editing surface rather than more
-        transform buttons. The rearrange pair leads and Pixel Mode ends the bar:
-        all three are exclusive modes over the same canvas (arming the tool leaves
-        pixel mode — see rearrange.py), and the pair is the one that changes what
-        the transform groups beside them mean.
+        transform buttons. The rearrange tool's button leads, Edit Tiles sits
+        beside it, and Pixel Mode ends the bar — exclusive modes over the same
+        canvas, so arming one leaves whichever was armed (``rearrange.py``). Only
+        the tool's *button* is here: its other half is an Edit menu row, and the
+        view toggle is menu-only. The rearrange tool is the one that changes what
+        the transform groups beside it mean.
         """
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -406,11 +409,9 @@ class TransformMixin:
         self._selection_shape.currentIndexChanged.connect(
             self._on_selection_shape_change
         )
-        shape_label = QLabel("Selection: ")
-        shape_label.setToolTip(self._selection_shape.toolTip())
-        shape_label.setBuddy(self._selection_shape)
-        bar.addWidget(shape_label)
-        bar.addWidget(self._selection_shape)
+        add_labelled(
+            bar, "Selection: ", self._selection_shape, self._selection_shape.toolTip()
+        )
 
     @staticmethod
     def _group_caption(bar: QToolBar, text: str, tip: str):
@@ -598,7 +599,7 @@ class TransformMixin:
         if self._doc is None or self._selected_tile is None:
             return None
         layout = self._view_layout()
-        cx, cy = layout.slot_to_cell(self._selected_tile - self._offset)
+        cx, cy = layout.slot_to_pos(self._selected_tile - self._offset)
         across, down = self._cell_unit()
         if len(self._selection_tiles()) <= across * down:
             # Match BlockLayout's block sizing (columns clamps block width).
@@ -659,7 +660,7 @@ class TransformMixin:
                 if dest_tile is None:
                     continue
                 sx, sy = op.cell_src(dx, dy, cols, rows)
-                placements.append((dest_tile, layout.cell_to_slot(x0 + sx, y0 + sy)))
+                placements.append((dest_tile, layout.pos_to_slot(x0 + sx, y0 + sy)))
         if not placements:
             return
         first, last = min(t for t, _ in placements), max(t for t, _ in placements)

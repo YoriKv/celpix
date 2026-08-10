@@ -17,12 +17,20 @@ It drives the Qt-free pipeline through the plugin registry and never interprets
 bytes itself; all decode/encode goes through ``pipeline``.
 
 This module is the **shell**: it builds that surface and holds what belongs to no
-single one of it — the widgets and docks themselves, the menu bar, the undo stack
-every mixin pushes onto, the open project's dirty tracking, and the one modal
-errors reach the user through. The work each surface does lives in its own mixin
-beside it (see the package docstring); the two closest to this file are
+single one of it — the widgets and docks themselves, the undo stack every mixin
+pushes onto, the open project's dirty tracking, and the one modal errors reach
+the user through. The work each surface does lives in its own mixin beside it
+(see the package docstring); the two closest to this file are
 :mod:`~celpix.ui.main_window.session`, which swaps entries in and out, and
 :mod:`~celpix.ui.main_window.rendering`, which turns the current one into pixels.
+
+The menu bar is assembled here, and the rows are written wherever the gesture
+behind them lives: File, Panels and Help are in this file, because what they name
+is the shell itself — the project, the docks, the app. Edit is
+:mod:`~celpix.ui.main_window.selection`'s, View is
+:mod:`~celpix.ui.main_window.view_menu`'s, Navigate
+:mod:`~celpix.ui.main_window.navigation`'s and Palette the palette dock's. A menu
+is a way into a surface, not a surface of its own.
 """
 
 from __future__ import annotations
@@ -34,7 +42,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import (
     QAction,
-    QActionGroup,
     QDesktopServices,
     QKeySequence,
     QPalette,
@@ -44,7 +51,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
-    QFileDialog,
     QHBoxLayout,
     QMainWindow,
     QMessageBox,
@@ -55,15 +61,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix.core.capabilities import Capability, ContentKind
-from celpix.core.document import Document, GridMode
+from celpix.core.document import Document
 from celpix.core.errors import PipelineError, Stage
 from celpix.core.palette import Palette
-from celpix.plugins.detect import (
-    content_kind_for,
-    detect_container,
-    tilemap_preset_for,
-)
 from celpix.plugins.discovery import PluginLoadIssue
 from celpix.plugins.registry import Registry, default_registry
 from celpix.project import projectfile
@@ -76,7 +76,7 @@ from celpix.project.workspace import (
     data_missing,
 )
 from celpix.ui.animation_overlay import AnimationOverlay
-from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas, GridStyle
+from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas
 from celpix.ui.color_editor import ColorEditorDialog
 from celpix.ui.decompress_overlay import DecompressOverlay
 from celpix.ui.file_list_panel import FileListPanel
@@ -84,23 +84,23 @@ from celpix.ui.help_dialogs import AboutDialog, ShortcutGuide, shortcut_sections
 from celpix.ui.hex_view_panel import HexViewPanel
 from celpix.ui.main_window.animation import AnimationMixin
 from celpix.ui.main_window.capability_sync import CapabilitySyncMixin
+from celpix.ui.main_window.clipboard_ops import ClipboardOpsMixin
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
 from celpix.ui.main_window.entries import EntriesMixin
 from celpix.ui.main_window.history import HistoryMixin
 from celpix.ui.main_window.interpretation import (
-    ROWS_LOCKED_TIP,
-    ROWS_TIP,
-    ROWS_WHOLE_TIP,
     InterpretationMixin,
 )
 from celpix.ui.main_window.navigation import NavigationMixin
 from celpix.ui.main_window.palette_dock import PaletteDockMixin
+from celpix.ui.main_window.palette_offset import PaletteOffsetMixin
 from celpix.ui.main_window.palette_regions import PaletteRegionsMixin
 from celpix.ui.main_window.palette_source import (
     DEFAULT_SESSION_PALETTE_FORMAT,
     PaletteSourceMixin,
 )
+from celpix.ui.main_window.palette_transfer import PaletteTransferMixin
 from celpix.ui.main_window.pixel_edit import PixelEditMixin
 from celpix.ui.main_window.rearrange import RearrangeMixin
 from celpix.ui.main_window.rendering import RenderingMixin
@@ -111,25 +111,23 @@ from celpix.ui.main_window.session import SessionMixin
 from celpix.ui.main_window.sprite_select import SpriteSelectMixin
 from celpix.ui.main_window.stamp_tool import StampToolMixin
 from celpix.ui.main_window.text import TextMixin
+from celpix.ui.main_window.tile_bytes import TileBytesMixin
 from celpix.ui.main_window.tile_source_dock import TileSourceDockMixin
 from celpix.ui.main_window.tilemap_bar import TilemapBarMixin
 from celpix.ui.main_window.tilemap_edit import TilemapEditMixin
 from celpix.ui.main_window.transfer import TransferMixin
 from celpix.ui.main_window.transform import TransformMixin
+from celpix.ui.main_window.view_menu import ViewMenuMixin
 from celpix.ui.main_window.writing import WritingMixin
 from celpix.ui.text_window import TextWindow
-from celpix.ui.theme import THEME_KEY, Theme, apply_theme
 from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
-    AddEntryCommand,
     MoveEntryCommand,
     RenameEntryCommand,
 )
 from celpix.ui.widgets import (
-    load_bool_setting,
-    load_enum_setting,
-    save_bool_setting,
-    save_enum_setting,
+    counted,
+    make_action,
 )
 from celpix.ui.window_layout import WindowLayout
 
@@ -140,20 +138,6 @@ from celpix.ui.window_layout import WindowLayout
 # the window knows which project is open, the app knows where plugins live.
 ReloadPlugins = Callable[["str | None"], "tuple[Registry, list[PluginLoadIssue]]"]
 
-# QSettings keys for the grid. All four parts of it are **local preferences**,
-# not project state: how you want to look at pixels is a property of the person
-# looking, and carrying it in the .celpix would mean opening someone else's
-# project rearranged your view.
-GRID_STYLE_KEY = "view/grid_style"
-GRID_SHOWN_KEY = "view/grid_shown"
-GRID_SCALE_KEY = "view/grid_scale"
-BLOCK_GRID_KEY = "view/block_grid"
-# View ▸ Entire File, a local preference for the same reason: how much of a file
-# you want in front of you belongs to the person looking, not to the project.
-ENTIRE_FILE_KEY = "view/entire_file"
-# View ▸ Show Tile IDs, likewise: an annotation you turn on to read a map and off
-# again to look at it, which is about the reader and not about the map.
-TILE_IDS_KEY = "view/tile_ids"
 # Where the window's size, position and panel arrangement are stored. Its own
 # group rather than `view/`: what is under it is Qt's own opaque state and not a
 # preference anyone would edit by hand (celpix.ui.window_layout).
@@ -167,9 +151,13 @@ class MainWindow(
     HistoryMixin,
     InterpretationMixin,
     PaletteSourceMixin,
+    PaletteOffsetMixin,
+    PaletteTransferMixin,
     PaletteDockMixin,
     ColorEditingMixin,
     SelectionMixin,
+    ClipboardOpsMixin,
+    TileBytesMixin,
     TransformMixin,
     PixelEditMixin,
     RearrangeMixin,
@@ -182,6 +170,7 @@ class MainWindow(
     SpriteSelectMixin,
     CapabilitySyncMixin,
     RenderingMixin,
+    ViewMenuMixin,
     EntriesMixin,
     WritingMixin,
     TransferMixin,
@@ -845,137 +834,152 @@ class MainWindow(
         # Edit File Container/Ctrl+E, Quit/Ctrl+Q).
         file_menu = self.menuBar().addMenu("&File")
 
-        open_pixel = QAction("Open &pixel data…", self)
-        open_pixel.triggered.connect(self._open_pixel)
-        file_menu.addAction(open_pixel)
-
-        open_palette_data = QAction("Open palette &data…", self)
-        open_palette_data.setToolTip("Add a palette file to the Palettes list")
-        open_palette_data.triggered.connect(self._prompt_add_palette_file)
-        file_menu.addAction(open_palette_data)
-
-        # Mnemonic "t": "d" is the palette row's and "p" the pixel row's.
-        open_tilemap = QAction("Open &tilemap data…", self)
-        open_tilemap.setToolTip(
-            "Read a file as a map of tile indices\n"
-            "Bind it to its tiles in the bar under the canvas"
+        make_action(self, "Open &pixel data…", self._open_pixel, menu=file_menu)
+        make_action(
+            self,
+            "Open palette &data…",
+            self._prompt_add_palette_file,
+            menu=file_menu,
+            tip="Add a palette file to the Palettes list",
         )
-        open_tilemap.triggered.connect(self._open_tilemap)
-        file_menu.addAction(open_tilemap)
+        # Mnemonic "t": "d" is the palette row's and "p" the pixel row's.
+        make_action(
+            self,
+            "Open &tilemap data…",
+            self._open_tilemap,
+            menu=file_menu,
+            tip="Read a file as a map of tile indices\n"
+            "Bind it to its tiles in the bar under the canvas",
+        )
 
         file_menu.addSeparator()
 
-        new_project = QAction("New Pro&ject", self)
-        new_project.setToolTip("Close everything and start a fresh session")
-        new_project.setShortcut(QKeySequence.StandardKey.New)  # Ctrl+N
-        new_project.triggered.connect(self._new_project)
-        file_menu.addAction(new_project)
-
-        open_project = QAction("&Open Project…", self)
-        open_project.setToolTip("Open a .celpix project")
-        open_project.setShortcut(QKeySequence.StandardKey.Open)  # Ctrl+O
-        open_project.triggered.connect(self._open_project)
-        file_menu.addAction(open_project)
+        make_action(
+            self,
+            "New Pro&ject",
+            self._new_project,
+            menu=file_menu,
+            tip="Close everything and start a fresh session",
+            shortcut=QKeySequence.StandardKey.New,  # Ctrl+N
+        )
+        make_action(
+            self,
+            "&Open Project…",
+            self._open_project,
+            menu=file_menu,
+            tip="Open a .celpix project",
+            shortcut=QKeySequence.StandardKey.Open,  # Ctrl+O
+        )
 
         self._build_recent_menu(file_menu)
 
-        save_project = QAction("&Save Project", self)
-        save_project.setToolTip(
-            "Save the session to a .celpix project\nReferences, not bytes"
+        make_action(
+            self,
+            "&Save Project",
+            self._save_project,
+            menu=file_menu,
+            tip="Save the session to a .celpix project\nReferences, not bytes",
+            shortcut=QKeySequence.StandardKey.Save,  # Ctrl+S
         )
-        save_project.setShortcut(QKeySequence.StandardKey.Save)  # Ctrl+S
-        save_project.triggered.connect(self._save_project)
-        file_menu.addAction(save_project)
-
-        save_project_as = QAction("Save Project &As…", self)
-        save_project_as.setShortcut(QKeySequence.StandardKey.SaveAs)  # Ctrl+Shift+S
-        save_project_as.triggered.connect(self._save_project_as)
-        file_menu.addAction(save_project_as)
-
-        self._locate_missing_action = QAction("Locate &missing files…", self)
-        self._locate_missing_action.setToolTip("Re-point entries whose file has moved")
-        self._locate_missing_action.triggered.connect(
-            lambda: self._relocate_missing(prompt_summary=False)
+        make_action(
+            self,
+            "Save Project &As…",
+            self._save_project_as,
+            menu=file_menu,
+            shortcut=QKeySequence.StandardKey.SaveAs,  # Ctrl+Shift+S
         )
-        self._locate_missing_action.setEnabled(False)  # armed by missing files
-        file_menu.addAction(self._locate_missing_action)
+        self._locate_missing_action = make_action(
+            self,
+            "Locate &missing files…",
+            lambda: self._relocate_missing(prompt_summary=False),
+            menu=file_menu,
+            tip="Re-point entries whose file has moved",
+            enabled=False,  # armed by missing files
+        )
 
         file_menu.addSeparator()
 
-        self._new_slice_action = QAction("&New Slice…", self)
-        self._new_slice_action.setToolTip("Mark a region of this file as its own entry")
-        self._new_slice_action.triggered.connect(self._new_slice_current)
-        self._new_slice_action.setEnabled(False)
-        file_menu.addAction(self._new_slice_action)
-
-        self._new_slice_from_view_action = QAction("New Slice from &View", self)
-        self._new_slice_from_view_action.setToolTip(
-            "New slice covering the current view"
+        # The four "carve something out of here" rows, each armed by what the
+        # current entry can give it (:meth:`_sync_entry_actions`).
+        self._new_slice_action = make_action(
+            self,
+            "&New Slice…",
+            self._new_slice_current,
+            menu=file_menu,
+            tip="Mark a region of this file as its own entry",
+            enabled=False,
         )
-        self._new_slice_from_view_action.triggered.connect(self._new_slice_from_view)
-        self._new_slice_from_view_action.setEnabled(False)
-        file_menu.addAction(self._new_slice_from_view_action)
-
-        self._new_slice_from_selection_action = QAction(
-            "New Slice &from Selection", self
+        self._new_slice_from_view_action = make_action(
+            self,
+            "New Slice from &View",
+            self._new_slice_from_view,
+            menu=file_menu,
+            tip="New slice covering the current view",
+            enabled=False,
         )
-        self._new_slice_from_selection_action.setToolTip(
-            "New slice covering the selected tile range"
+        self._new_slice_from_selection_action = make_action(
+            self,
+            "New Slice &from Selection",
+            self._new_slice_from_selection,
+            menu=file_menu,
+            tip="New slice covering the selected tile range",
+            enabled=False,
         )
-        self._new_slice_from_selection_action.triggered.connect(
-            self._new_slice_from_selection
+        self._new_bookmark_action = make_action(
+            self,
+            "New &Bookmark",
+            self._new_bookmark_current,
+            menu=file_menu,
+            tip="Bookmark this position and its settings",
+            shortcut=QKeySequence("Ctrl+B"),
+            enabled=False,
         )
-        self._new_slice_from_selection_action.setEnabled(False)
-        file_menu.addAction(self._new_slice_from_selection_action)
 
-        self._new_bookmark_action = QAction("New &Bookmark", self)
-        self._new_bookmark_action.setToolTip("Bookmark this position and its settings")
-        self._new_bookmark_action.setShortcut(QKeySequence("Ctrl+B"))
-        self._new_bookmark_action.triggered.connect(self._new_bookmark_current)
-        self._new_bookmark_action.setEnabled(False)
-        file_menu.addAction(self._new_bookmark_action)
-
-        self._change_container_action = QAction("&Edit File Container…", self)
-        self._change_container_action.setToolTip(
-            "Change how this file is unwrapped before decoding:\n"
-            "a header to skip, an interleave to undo, or none at all"
+        self._change_container_action = make_action(
+            self,
+            "&Edit File Container…",
+            self._change_container_current,
+            menu=file_menu,
+            tip="Change how this file is unwrapped before decoding:\n"
+            "a header to skip, an interleave to undo, or none at all",
+            shortcut=QKeySequence("Ctrl+E"),
+            enabled=False,
         )
-        self._change_container_action.setShortcut(QKeySequence("Ctrl+E"))
-        self._change_container_action.triggered.connect(self._change_container_current)
-        self._change_container_action.setEnabled(False)
-        file_menu.addAction(self._change_container_action)
-
         # Mnemonic "i": beside the container it reports on, since the two answer
         # the same question from opposite ends — what is this file being read as,
         # and what did that reading make of it.
-        self._container_info_action = QAction("Container &Info…", self)
-        self._container_info_action.setToolTip(
-            "What this file's container read out of it:\n"
-            "the header fields it used, and what it passed on"
+        self._container_info_action = make_action(
+            self,
+            "Container &Info…",
+            self._container_info_current,
+            menu=file_menu,
+            tip="What this file's container read out of it:\n"
+            "the header fields it used, and what it passed on",
+            enabled=False,
         )
-        self._container_info_action.triggered.connect(self._container_info_current)
-        self._container_info_action.setEnabled(False)
-        file_menu.addAction(self._container_info_action)
 
         file_menu.addSeparator()
 
-        self._write_action = QAction("&Write", self)
-        self._write_action.setToolTip(
-            "Write this file or slice back to disk, with the\n"
+        self._write_action = make_action(
+            self,
+            "&Write",
+            self._write_current,
+            menu=file_menu,
+            tip="Write this file or slice back to disk, with the\n"
             "palette file it shows and, on a map, the tiles\n"
-            "it borrows if they have been painted on"
+            "it borrows if they have been painted on",
+            shortcut=QKeySequence("Ctrl+W"),
+            enabled=False,
         )
-        self._write_action.setShortcut(QKeySequence("Ctrl+W"))
-        self._write_action.triggered.connect(self._write_current)
-        self._write_action.setEnabled(False)
-        file_menu.addAction(self._write_action)
-
-        self._write_all_action = QAction("Write A&ll", self)
-        self._write_all_action.setToolTip("Write all unsaved files and slices")
-        self._write_all_action.setShortcut(QKeySequence("Ctrl+Shift+W"))
-        self._write_all_action.triggered.connect(self._write_all)
-        self._write_all_action.setEnabled(False)  # armed by dirty entries
-        file_menu.addAction(self._write_all_action)
+        self._write_all_action = make_action(
+            self,
+            "Write A&ll",
+            self._write_all,
+            menu=file_menu,
+            tip="Write all unsaved files and slices",
+            shortcut=QKeySequence("Ctrl+Shift+W"),
+            enabled=False,  # armed by dirty entries
+        )
 
         file_menu.addSeparator()
 
@@ -983,31 +987,38 @@ class MainWindow(
 
         file_menu.addSeparator()
 
-        open_plugins = QAction("Open plu&gins folder…", self)
-        open_plugins.setToolTip("Drop .toml presets or .py plugins here")
-        open_plugins.triggered.connect(self._open_plugins_folder)
-        open_plugins.setEnabled(self._plugin_dir is not None)
-        file_menu.addAction(open_plugins)
-
-        refresh = QAction("&Refresh plugins", self)
-        refresh.setShortcut(QKeySequence.StandardKey.Refresh)  # F5
-        refresh.setToolTip(
-            "Reload plugins - yours and the open project's -\nand re-run "
-            "on the open file"
+        make_action(
+            self,
+            "Open plu&gins folder…",
+            self._open_plugins_folder,
+            menu=file_menu,
+            tip="Drop .toml presets or .py plugins here",
+            enabled=self._plugin_dir is not None,
         )
-        refresh.triggered.connect(self._refresh_plugins)
-        refresh.setEnabled(self._reload_plugins is not None)
-        file_menu.addAction(refresh)
+        make_action(
+            self,
+            "&Refresh plugins",
+            self._refresh_plugins,
+            menu=file_menu,
+            tip="Reload plugins - yours and the open project's -\nand re-run "
+            "on the open file",
+            shortcut=QKeySequence.StandardKey.Refresh,  # F5
+            enabled=self._reload_plugins is not None,
+        )
 
         file_menu.addSeparator()
 
-        quit_action = QAction("&Quit", self)
-        # Spelled out rather than StandardKey.Quit: on X11 that role resolves to
-        # the bare "Exit" media key, which most keyboards don't have. Ctrl+Q is
-        # what the menu should promise, and Qt maps Ctrl to Cmd on macOS.
-        quit_action.setShortcut(QKeySequence("Ctrl+Q"))
-        quit_action.triggered.connect(self.close)
-        file_menu.addAction(quit_action)
+        make_action(
+            self,
+            "&Quit",
+            self.close,
+            menu=file_menu,
+            # Spelled out rather than StandardKey.Quit: on X11 that role resolves
+            # to the bare "Exit" media key, which most keyboards don't have.
+            # Ctrl+Q is what the menu should promise, and Qt maps Ctrl to Cmd on
+            # macOS.
+            shortcut=QKeySequence("Ctrl+Q"),
+        )
 
         self._build_edit_menu()
         self._build_view_menu()
@@ -1038,403 +1049,6 @@ class MainWindow(
 
     def _show_about(self) -> None:
         AboutDialog(self).exec()
-
-    def _build_view_menu(self) -> None:
-        """View ▸ display toggles that change how the pixels are drawn (as
-        opposed to Navigate, which moves the window): the grid level, the
-        app-wide grid style, how much of the file is shown and how big, and the
-        app's own light/dark look."""
-        menu = self.menuBar().addMenu("&View")
-        self._build_grid_action(menu)
-        self._build_grid_style_menu(menu)
-        # With the grid because it is the same kind of thing: an annotation laid
-        # over the art in the grid's own colour, not part of the picture.
-        self._build_tile_ids_action(menu)
-        menu.addSeparator()
-        # Grouped with the zoom: both answer "how much of this am I looking at,
-        # and how large" - Entire File sizes the window, zoom sizes the pixels.
-        self._build_entire_file_action(menu)
-        self._build_zoom_actions(menu)
-        menu.addSeparator()
-        self._build_animation_action(menu)
-        self._build_text_action(menu)
-        menu.addSeparator()
-        self._build_theme_menu(menu)
-
-    def _build_tile_ids_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
-        """View ▸ Show Tile IDs — number each tilemap cell with the tile it names.
-
-        The question a tilemap view cannot otherwise answer. A cell's picture is
-        the tile's, so nothing on screen says *which* tile it is, and that number
-        is what you carry to the Base tile spin, to a hex editor, or to a bank
-        listing. Drawn in hex with the ``$`` the tilemap controls use.
-
-        A toggle rather than always-on: a number over every cell of a 32x32 screen
-        is a lot of ink for something wanted in bursts. Gated to tilemaps by
-        ``CELL_LABELS`` — a pixel tile has no name to show, only a position, which
-        the position bar already gives (``docs/design/tilemap-entry.md`` §8).
-
-        No shortcut, for the reason Entire File has none: every bare letter near
-        the view is already navigation.
-
-        Mnemonic "D": "T" belongs to Theme and "G"/"B"/"S" to the three grid
-        entries this sits with.
-        """
-        self._show_tile_ids_action = QAction("Show Tile I&Ds", self, checkable=True)
-        self._show_tile_ids_action.setToolTip(
-            "Number each cell with the tile it names, in hex\n"
-            "The file's own number, before Base tile is applied"
-        )
-        self._show_tile_ids = load_bool_setting(TILE_IDS_KEY, False)
-        self._show_tile_ids_action.setChecked(self._show_tile_ids)
-        self._show_tile_ids_action.toggled.connect(self._on_show_tile_ids_change)
-        view_menu.addAction(self._show_tile_ids_action)
-
-    def _on_show_tile_ids_change(self, on: bool) -> None:
-        save_bool_setting(TILE_IDS_KEY, on)
-        self._show_tile_ids = on
-        if self._doc is not None:
-            self._refresh_view()
-
-    def _build_animation_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
-        """View ▸ Animation - open the player for this object's sequences.
-
-        A command rather than a checkable toggle, and the one thing that makes it
-        different from the docks in Panels: the window it opens is a `Qt.Tool`
-        that the user closes from its own frame, so a checkbox here would be a
-        second answer to a question the window itself already holds.
-
-        Enabled only where there is something to play, which is sharper than the
-        content kind (:meth:`~...animation.AnimationMixin._animation_available`):
-        every sprite object has a table and most of its sequences are empty.
-
-        Mnemonic "A": free among the View entries, and the word's own first
-        letter.
-        """
-        self._animation_action = QAction("&Animation...", self)
-        self._animation_action.setToolTip(
-            "Play this sprite object's animation sequences\n"
-            "Its own window, with its own zoom"
-        )
-        self._animation_action.triggered.connect(self._show_animation)
-        self._animation_action.setEnabled(False)
-        view_menu.addAction(self._animation_action)
-
-    def _build_text_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
-        """View ▸ Text - open the string this fontmap holds, as words.
-
-        Beside Animation because it is the same kind of thing: a `Qt.Tool` window
-        holding a second reading of the entry on screen, closed from its own
-        frame rather than by a checkbox here.
-
-        Enabled on the **declaration** and not on the alphabet, unlike its
-        neighbour: a sprite object with no sequences has nothing to play, but a
-        fontmap with no font bound has something to say - that its codes mean
-        nothing yet, and where to fix it
-        (:meth:`~...text.TextMixin._text_available`).
-
-        Mnemonic "x": Theme has the word's own first letter and Entire File its
-        second, so the third is what is left - and it is the letter of the word
-        that stands out.
-        """
-        self._text_action = QAction("Te&xt...", self)
-        self._text_action.setToolTip(
-            "Read and edit this text run as words\n"
-            "Its own window, typed through the font's alphabet"
-        )
-        self._text_action.triggered.connect(self._show_text)
-        self._text_action.setEnabled(False)
-        view_menu.addAction(self._text_action)
-
-    def _build_entire_file_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
-        """View ▸ Entire File - drop the row window and show all of it at once.
-
-        A file is normally viewed through a fixed window of Rows tile-rows that
-        the offset pages through (``docs/design/overview.md`` §4). This takes the
-        height off that setting: whenever Rows would cut the file short the window
-        grows to every row the data fills, which leaves the offset nowhere to move
-        and puts the file on screen in one piece. A file already shorter than Rows
-        is unaffected - it was never being limited.
-
-        Rows is locked while this is on (:meth:`_sync_entire_file`) rather than
-        overwritten, so the number the user chose is still there, and still
-        theirs, when the toggle goes off.
-
-        No shortcut: it is a mode you settle into per file, not something worth a
-        key, and every bare letter near the view is already navigation.
-        """
-        self._entire_file = QAction("&Entire File", self, checkable=True)
-        self._entire_file.setToolTip(
-            "Show the whole file at once, ignoring Rows\n"
-            "Every row redecodes on each redraw - slow on big files"
-        )
-        self._entire_file.setChecked(load_bool_setting(ENTIRE_FILE_KEY, False))
-        self._entire_file.toggled.connect(self._on_entire_file_change)
-        view_menu.addAction(self._entire_file)
-
-    def _on_entire_file_change(self) -> None:
-        """Persist the toggle, lock/release Rows, and re-render at the new height.
-
-        Leaving the mode takes the window back down to Rows, which would strand
-        it at the file's start - so it re-anchors on whatever tile the user
-        picked out of the full view (:meth:`_snap_offset_to_selection`).
-        """
-        save_bool_setting(ENTIRE_FILE_KEY, self._entire_file.isChecked())
-        self._sync_entire_file()
-        if not self._entire_file.isChecked():
-            self._snap_offset_to_selection()
-        self._on_view_change()
-
-    def _sync_entire_file(self) -> None:
-        """Lock the Rows control (and its caption) to match the toggle.
-
-        Also called once during construction, because the menus are built before
-        the toolbar: the action is restored from settings before the spin it
-        governs exists, so the lock can only be applied afterwards.
-
-        The caption goes with the spin - it is half the control's hover target
-        (:func:`~celpix.ui.widgets.add_labelled`), so a live-looking label over a
-        dead input is exactly where the "why can't I type here" lands.
-        """
-        # Two ways to have no row count to set. View > Entire File is the
-        # temporary one; a tilemap is the permanent one — it is always shown
-        # entire, so a window height is not a setting it has. Asking the
-        # capability table keeps that second rule stated once
-        # (``docs/design/tilemap-entry.md`` §4) instead of here.
-        windowed = self._can(Capability.NAVIGATION)
-        entire = self._entire_file.isChecked()
-        usable = windowed and not entire
-        self._rows.setEnabled(usable)
-        self._rows_label.setEnabled(usable)
-        tip = ROWS_TIP if usable else (ROWS_LOCKED_TIP if windowed else ROWS_WHOLE_TIP)
-        self._rows.setToolTip(tip)
-        self._rows_label.setToolTip(tip)
-
-    def _build_theme_menu(self, view_menu) -> None:  # noqa: ANN001 - QMenu
-        """View ▸ Theme - the app's light/dark appearance.
-
-        Under View because it *is* a view setting, but below the separator with
-        the rest: everything above changes how the pixels are drawn, this changes
-        the frame around them. The canvas itself looks the same in both themes by
-        design - its backing gray, the grid and the selection outline are fixed
-        colors so the art reads identically whichever theme is on.
-
-        A local preference like the grid's, applied to the running application
-        the moment it is chosen (:func:`~celpix.ui.theme.apply_theme`).
-        """
-        submenu = view_menu.addMenu("&Theme")
-        current = load_enum_setting(THEME_KEY, Theme.LIGHT)
-        group = QActionGroup(self)  # exclusive: one theme checked at a time
-        self._theme_group = group
-        for value, text in ((Theme.LIGHT, "&Light"), (Theme.DARK, "&Dark")):
-            action = QAction(text, self, checkable=True)
-            action.setData(value)
-            action.setChecked(value is current)
-            group.addAction(action)
-            submenu.addAction(action)
-        group.triggered.connect(self._on_theme_change)
-
-    def _on_theme_change(self, action: QAction) -> None:
-        """Persist the chosen theme and put it on immediately.
-
-        Reconstructed through ``Theme(...)`` because an action's data makes a
-        round trip through QVariant, which hands a str-valued enum back as the
-        bare string.
-        """
-        theme = Theme(action.data())
-        save_enum_setting(THEME_KEY, theme)
-        apply_theme(theme)
-        # Qt re-polishes every widget against the new palette, which covers the
-        # whole window bar two kinds of thing. The file-position rail is a
-        # *stylesheet*, and its accent was written into that string as a literal
-        # when the bar was built; only regenerating it re-reads the palette.
-        self._tile_offset_bar.setStyleSheet(self._tile_offset_bar_style())
-        # And the painted icons are pixmaps baked in the old text color - a
-        # re-polish repaints the button around them, not the art inside.
-        self._rebake_icons()
-
-    def _rebake_icons(self) -> None:
-        """Re-paint the window's own painted icons against the live palette.
-
-        The two buttons whose art is a pixmap this window painted rather than a
-        glyph the style draws: the codec filter's funnel and the tilemap bar's
-        jump. Called on a theme switch rather than from a ``changeEvent`` like the
-        panels that own their own icons - Qt sends a burst of PaletteChange during
-        construction, before these widgets exist, and a window-level handler would
-        have to guard against its own half-built state.
-        """
-        self._bake_pixel_filter_icon()
-        self._bake_binding_jump_icon()
-
-    def _build_grid_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
-        """View ▸ Grid - the on/off switch, over everything Grid Style configures.
-
-        A plain checkable action: what the grid *is* — its scale, its structure,
-        its line style — is one menu down, so this stays the single question
-        worth a key. Display-only shortcut, like Palette ▸ Load from Selection:
-        the bare "G" is routed by the app-wide event filter (_handle_nav_key),
-        which yields to focused text inputs - a live shortcut here would steal it
-        from them.
-        """
-        self._grid = QAction("&Grid", self, checkable=True)
-        self._grid.setToolTip("Overlay a grid (zoom >= 2)")
-        self._grid.setChecked(load_bool_setting(GRID_SHOWN_KEY, False))
-        self._grid.toggled.connect(self._on_grid_change)
-        self._grid.setShortcut(QKeySequence("G"))
-        self._grid.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
-        view_menu.addAction(self._grid)
-
-    def _grid_mode(self) -> GridMode:
-        """The checked grid scale.
-
-        Through ``parse`` because an action's data makes a round trip through
-        QVariant, which hands a str-valued enum back as the bare string.
-        """
-        checked = self._grid_mode_group.checkedAction()
-        return GridMode.parse(checked.data() if checked else None, GridMode.TILE)
-
-    def _on_grid_change(self) -> None:
-        """Persist the menu's grid as a local preference, and redraw with it.
-
-        The canvas is told directly rather than only through the view refresh,
-        because the grid can be changed with no entry open at all - the refresh
-        below does nothing then.
-        """
-        show, mode, block_grid = self._grid_settings()
-        save_bool_setting(GRID_SHOWN_KEY, show)
-        save_enum_setting(GRID_SCALE_KEY, mode)
-        save_bool_setting(BLOCK_GRID_KEY, block_grid)
-        self._canvas.set_grid(show, mode, block_grid)
-        self._on_view_change()
-
-    def _grid_settings(self) -> tuple[bool, GridMode, bool]:
-        """The grid as the menu has it, in the order every canvas takes it."""
-        return self._grid.isChecked(), self._grid_mode(), self._block_grid.isChecked()
-
-    def _build_zoom_actions(self, view_menu) -> None:  # noqa: ANN001 - QMenu
-        """View ▸ Zoom In / Zoom Out - the keyboard route to the zoom spin.
-
-        Real shortcuts (not the event-filter kind the bare-key nav uses): the
-        bare +/- are already the byte nudge, so zoom takes the platform's standard
-        Ctrl combos, which nothing routes through the nav map. Ctrl+= joins Zoom
-        In because the standard Ctrl++ needs Shift on most layouts.
-
-        The wheel gesture is what the entries advertise, written into the label
-        after a tab (the Navigate menu's idiom) because no QKeySequence can
-        express a scroll direction. Qt renders that tab text *instead* of the
-        registered shortcut, so the Ctrl combos still fire - they just aren't the
-        thing in the shortcut column, and the tooltip names them so they stay
-        discoverable.
-        """
-        zoom_in = QAction("Zoom &In\tCtrl + Scroll Up", self)
-        sequences = QKeySequence.keyBindings(QKeySequence.StandardKey.ZoomIn)
-        sequences.append(QKeySequence("Ctrl+="))
-        zoom_in.setShortcuts(sequences)
-        zoom_in.setToolTip("Zoom in (Ctrl++)")
-        zoom_in.triggered.connect(lambda: self._zoom_steps(1))
-        view_menu.addAction(zoom_in)
-        zoom_out = QAction("Zoom &Out\tCtrl + Scroll Down", self)
-        zoom_out.setShortcut(QKeySequence.StandardKey.ZoomOut)
-        zoom_out.setToolTip("Zoom out (Ctrl+-)")
-        zoom_out.triggered.connect(lambda: self._zoom_steps(-1))
-        view_menu.addAction(zoom_out)
-
-    def _build_grid_style_menu(self, view_menu) -> None:  # noqa: ANN001 - QMenu
-        """View ▸ Grid Style - everything about the grid except whether it shows.
-
-        Three sections, because they answer three different questions and two of
-        them are radio groups that would otherwise run together: **Style** is the
-        line itself (the YY-CHR set, Point/Dot/Dash/Line), **Scale** is what the
-        fine lines count, **Blocks** is what the strong ones do. Shift+G cycles
-        the style, on the same event-filter routing as the bare G that switches
-        the whole grid on.
-
-        All of it is a local preference in QSettings, remembered across launches
-        and shared by every project (see the keys above).
-        """
-        submenu = view_menu.addMenu("Grid &Style\tShift+G")
-
-        submenu.addSection("Style")
-        style = load_enum_setting(GRID_STYLE_KEY, GridStyle.LINE)
-        self._apply_grid_style(style)
-        group = QActionGroup(self)  # exclusive: one style checked at a time
-        self._grid_style_group = group
-        for value, text in (
-            (GridStyle.POINT, "&Point"),
-            (GridStyle.DOT, "&Dot"),
-            (GridStyle.DASH, "D&ash"),
-            (GridStyle.LINE, "&Line"),
-        ):
-            action = QAction(text, self, checkable=True)
-            action.setData(value)
-            action.setChecked(value is style)
-            group.addAction(action)
-            submenu.addAction(action)
-        group.triggered.connect(self._on_grid_style_change)
-
-        submenu.addSection("Scale")
-        scale = load_enum_setting(GRID_SCALE_KEY, GridMode.TILE)
-        scales = QActionGroup(self)  # exclusive: one scale checked at a time
-        self._grid_mode_group = scales
-        self._grid_actions: dict[GridMode, QAction] = {}
-        for value, text, tip in (
-            (GridMode.TILE, "&Tile", "Grey lines on every tile, blue every\n8 tiles"),
-            (
-                GridMode.PIXEL,
-                "Pi&xel",
-                "Grey lines on every pixel, blue on every tile\n(needs a high zoom)",
-            ),
-        ):
-            action = QAction(text, self, checkable=True)
-            action.setData(value)
-            action.setChecked(value is scale)
-            action.setToolTip(tip)
-            scales.addAction(action)
-            submenu.addAction(action)
-            self._grid_actions[value] = action
-        scales.triggered.connect(self._on_grid_change)
-
-        submenu.addSection("Blocks")
-        # Not part of either group: it re-scales the strong level rather than
-        # being a scale of its own, so it is on or off beside any of them.
-        self._block_grid = QAction("&Block Grid", self, checkable=True)
-        self._block_grid.setToolTip(
-            "Put the blue lines on the arrangement's Block W×H\n"
-            "instead of the default 8-tile square"
-        )
-        self._block_grid.setChecked(load_bool_setting(BLOCK_GRID_KEY, False))
-        self._block_grid.toggled.connect(self._on_grid_change)
-        submenu.addAction(self._block_grid)
-        # Every part is on the canvas before the first render, since the menu is
-        # built from the stored preferences rather than the canvas's defaults.
-        self._canvas.set_grid(*self._grid_settings())
-
-    def _on_grid_style_change(self, action: QAction) -> None:
-        style = action.data()
-        save_enum_setting(GRID_STYLE_KEY, style)
-        self._apply_grid_style(style)
-
-    def _apply_grid_style(self, style: GridStyle) -> None:
-        """Show ``style`` on every canvas - the main one and the preview overlay.
-
-        The style is app-wide, so the decompression preview has to follow it too:
-        the whole point of that window is to look like the view would with the
-        bytes unpacked.
-        """
-        self._canvas.set_grid_style(style)
-        self._overlay.set_grid_style(style)
-
-    def _cycle_grid_style(self) -> None:
-        """Shift+G: step the app-wide grid style on, in the menu's own order."""
-        actions = self._grid_style_group.actions()
-        checked = self._grid_style_group.checkedAction()
-        following = (
-            actions[(actions.index(checked) + 1) % len(actions)]
-            if checked
-            else actions[0]
-        )
-        following.setChecked(True)
-        self._on_grid_style_change(following)
 
     def _build_panels_menu(self) -> None:
         """Panels ▸ show/hide the dockable panels (Files, Palette, Tile Source,
@@ -1475,100 +1089,6 @@ class MainWindow(
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(self._plugin_dir))
         self._alert_plugin_issues()
-
-    # -- actions -----------------------------------------------------------
-    def _open_pixel(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open pixel data")
-        if path:
-            self._load_pixel(path, content_kind=ContentKind.PIXELS)
-
-    def _open_tilemap(self) -> None:
-        """File ▸ Open tilemap data — read any file as a map of tile indices.
-
-        The tilemap twin of Open pixel data, and forcing in the same way: a file
-        whose signature says nothing (a region of a ROM, a raw dump) has no way
-        to be recognised as a map, so asking for one is how it is said. A file
-        that *is* a known tilemap format opens the same either way.
-        """
-        path, _ = QFileDialog.getOpenFileName(self, "Open tilemap data")
-        if path:
-            self._load_pixel(path, content_kind=ContentKind.TILEMAP)
-
-    def _open_as_chosen(self, path: str) -> None:
-        """Ask what ``path`` holds, then open it that way — the Ctrl-drop gesture.
-
-        Detection is a guess from a signature and a suffix, and it is silent
-        about being one. Holding Ctrl is how the user says they know better,
-        without having to find the matching menu entry for a file they are
-        already dropping.
-        """
-        kind = self._ask_content_kind(path)
-        if kind is None:
-            return
-        if kind is ContentKind.PALETTE:
-            self._open_palette_data(path)
-        else:
-            self._load_pixel(path, content_kind=kind)
-
-    def _ask_content_kind(self, path: str) -> ContentKind | None:
-        """Which of the three readings to open ``path`` as, or None if cancelled."""
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle("celPix - open as")
-        box.setText(f"Open {Path(path).name} as:")
-        box.setInformativeText(
-            "Pixels are tile graphics, a palette is colors, and a tilemap is\n"
-            "indices into tiles that live somewhere else."
-        )
-        role = QMessageBox.ButtonRole.ActionRole
-        buttons = {
-            box.addButton("&Pixels", role): ContentKind.PIXELS,
-            box.addButton("Pa&lette", role): ContentKind.PALETTE,
-            box.addButton("&Tilemap", role): ContentKind.TILEMAP,
-        }
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
-        return buttons.get(box.clickedButton())
-
-    def _load_pixel(
-        self, path: str, *, content_kind: ContentKind | None = None
-    ) -> None:
-        """Open ``path`` as a workspace entry and switch the view to it.
-
-        The shared entry point for both File ▸ Open and drag-and-drop, so a
-        dropped file behaves exactly like an opened one. A file that is
-        already open activates its existing entry - identity is the path -
-        so only a genuinely new entry becomes an undoable step.
-
-        The container is picked here, once, from the file's name and leading
-        bytes: it is a property of the file, so detecting it at open time means
-        every later load reads through the same one, and the answer is on the
-        entry where the user can see and change it.
-
-        ``content_kind`` overrides what the container implies, for the gestures
-        that *say* what a file is — File ▸ Open pixel/tilemap data, and the
-        open-as prompt. Detection can only recognise a format it knows, so a raw
-        region of a ROM has no way to announce itself as a map; asking is how
-        that is said. ``None`` keeps the container's own answer.
-        """
-        existing = self._workspace.find_file(path)
-        if existing is not None:
-            self._activate_entry(existing)
-            return
-        container_id = detect_container(self._registry, path)
-        # Follows from the container, which was itself chosen from the file's
-        # signature — so a screen or panel file opens into the Tilemaps section
-        # without being asked about — unless the caller said otherwise.
-        detected = content_kind_for(self._registry, container_id)
-        entry = Entry(
-            name=Path(path).name,
-            kind=EntryKind.FILE,
-            path=path,
-            container_id=container_id,
-            content_kind=content_kind or detected,
-            tilemap_preset_id=tilemap_preset_for(self._registry, container_id) or None,
-        )
-        self._push_command(AddEntryCommand(self, entry, f"open {entry.name}"))
 
     # -- reaching the user ------------------------------------------------------
     def _alert(self, message: str, *, title: str = "celPix", detail: str = "") -> None:
@@ -1634,13 +1154,34 @@ class MainWindow(
         )
 
     def _alert_plugin_issues(self) -> None:
-        """Modal listing plugins that failed to load - shown at startup and
-        after a refresh, and reachable again from File ▸ Open plugins folder."""
-        if not self._plugin_issues:
+        """Say what in the plugins folder did not load - at startup, after a
+        refresh, and again from File ▸ Open plugins folder.
+
+        Two surfaces, because there are two kinds of "did not load". A plugin
+        that **broke** is news: the user meant it to run, it doesn't, and a modal
+        is the only thing they reliably read. A plugin they **declined** at the
+        trust prompt did what they asked, and it declines again on every launch
+        and every F5 for as long as the answer stands - so a modal there is the
+        app arguing with a decision, once per start, forever. That one gets the
+        status bar, which says the same thing to anyone who wonders where their
+        plugin went and nothing to anyone who doesn't.
+
+        Declined files still appear in a failure modal's details when there is
+        one to show: the list is "what is not running", and leaving them out of
+        it is how a user hunts a plugin that is sitting right there.
+        """
+        failed = [i for i in self._plugin_issues if not i.declined]
+        declined = [i for i in self._plugin_issues if i.declined]
+        if not failed:
+            if declined:
+                self.statusBar().showMessage(
+                    f"{counted(len(declined), 'code plugin')} not run - the trust "
+                    "prompt was declined. File ▸ Refresh plugins asks again."
+                )
             return
-        detail = "\n".join(f"• {i.path}: {i.message}" for i in self._plugin_issues)
+        detail = "\n".join(f"• {i.path}: {i.message}" for i in [*failed, *declined])
         self._alert(
-            f"{len(self._plugin_issues)} plugin(s) failed to load. The rest of "
+            f"{counted(len(failed), 'plugin')} failed to load. The rest of "
             "the app works normally; see the details, or File ▸ Open plugins "
             "folder.",
             title="celPix - plugin load issues",

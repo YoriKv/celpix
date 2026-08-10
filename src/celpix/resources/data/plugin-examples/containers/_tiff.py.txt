@@ -91,7 +91,9 @@ def _entry(raw: bytes, order: str, at: int) -> tuple[int, list[int]]:
     # The last four bytes are the value itself when it fits, and a pointer to it
     # when it doesn't — the piece of TIFF that catches everybody out.
     field = at + 8
-    start = field if size * count <= 4 else int.from_bytes(raw[field : field + 4], order)
+    start = (
+        field if size * count <= 4 else int.from_bytes(raw[field : field + 4], order)
+    )
     return tag, [
         int.from_bytes(raw[start + i * size : start + (i + 1) * size], order)
         for i in range(count)
@@ -253,7 +255,9 @@ class TiffContainer:
         return (
             ContainerField(
                 "Byte order",
-                "little-endian (II)" if source.data[:4] == _LITTLE else "big-endian (MM)",
+                "little-endian (II)"
+                if source.data[:4] == _LITTLE
+                else "big-endian (MM)",
                 "Set by the first two bytes and applied to every number\n"
                 "in the file, including the directory this container\n"
                 "walks to find the image.",

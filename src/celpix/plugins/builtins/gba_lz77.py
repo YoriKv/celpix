@@ -64,15 +64,14 @@ heuristic are in
 
 from __future__ import annotations
 
-from celpix.core.context import (
-    KEY_COMPRESSED_SIZE,
-    KEY_DECOMPRESS_COMPLETE,
-    KEY_DECOMPRESS_PARTIAL,
-    PipelineContext,
-)
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
-from celpix.plugins.builtins._lz import MatchFinder
+from celpix.plugins.base import PartialDecompression, PluginInfo
+from celpix.plugins.builtins._lz import (
+    FlagGroup,
+    MatchFinder,
+    copy_from,
+    parse_greedy,
+)
 
 HEADER_SIZE = 4
 # The type nibble the BIOS dispatches on. The low nibble is reserved and ignored
@@ -156,11 +155,7 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
             # Clamped to what is still wanted: the size is the only terminator,
             # so the final match is routinely cut off part way through.
             length = min((b0 >> 4) + MIN_MATCH, target - len(out))
-            if start + length <= len(out):  # no self-overlap - copy in one go
-                out += out[start : start + length]
-            else:
-                for k in range(length):
-                    out.append(out[start + k])
+            copy_from(out, start, length)
 
     complete = len(out) == target
     if not complete and not partial:
@@ -183,66 +178,33 @@ def compress(data: bytes) -> bytes:
     finder = MatchFinder(
         data, min_match=MIN_MATCH, window=MAX_DISTANCE, max_candidates=_MAX_CANDIDATES
     )
-
-    def best_match(pos: int) -> tuple[int, int]:
-        """The longest match reaching ``pos``, as ``(length, candidate)``.
-
-        Scored here rather than through :meth:`MatchFinder.longest` because this
-        scheme cannot use every distance that method would offer: the nearest
-        candidate is the first one walked, and taking it would emit the
-        displacement the VRAM-safe BIOS call rejects.
-        """
-        limit = min(MAX_MATCH, n - pos)
-        if limit < MIN_MATCH:
-            return 0, -1
-        best_len, best_at = 0, -1
-        for candidate in finder.candidates(pos):
-            if pos - candidate < MIN_DISTANCE:
-                continue
-            length = finder.match_length(pos, candidate, limit)
-            if length > best_len:
-                best_len, best_at = length, candidate
-                if best_len == limit:
-                    break  # nothing later in the chain can beat a full-length match
-        return best_len, best_at
-
     out = bytearray([LZ77_TYPE])
     out += n.to_bytes(3, "little")
-    pos = 0
-    while pos < n:
-        flags_at = len(out)
-        out.append(0)
-        flags = 0
-
-        for bit in range(8):
-            if pos >= n:
-                break
-            length, candidate = best_match(pos)
-            finder.add(pos)  # index it before any lookahead reads it
-            if MIN_MATCH <= length < MAX_MATCH and pos + 1 < n:
-                # One-step lazy deferral: if the next position starts a strictly
-                # longer match, the literal here buys more than this match does.
-                next_len, _ = best_match(pos + 1)
-                if next_len > length:
-                    length = 0
-
-            if length >= MIN_MATCH:
-                disp = pos - candidate - 1  # stored one less than the distance
-                out.append(((length - MIN_MATCH) << 4) | (disp >> 8))
-                out.append(disp & 0xFF)
-                flags |= 0x80 >> bit  # MSB first; a set bit is the back-reference
-                finder.add_run(pos + 1, pos + length)
-                pos += length
-            else:
-                out.append(data[pos])
-                pos += 1
-
-        out[flags_at] = flags
+    # MSB first, and a set bit is the back-reference — both the opposite way round
+    # from the ring LZSS next door (see the module docstring).
+    group = FlagGroup(out, msb_first=True, set_means_match=True)
+    for pos, length, candidate in parse_greedy(
+        data,
+        finder,
+        min_match=MIN_MATCH,
+        max_match=MAX_MATCH,
+        # Never the nearest distance the index offers: distance 1 is the stored
+        # displacement the VRAM-safe BIOS call rejects (see MIN_DISTANCE).
+        min_distance=MIN_DISTANCE,
+    ):
+        group.select(length > 0)
+        if length:
+            disp = pos - candidate - 1  # stored one less than the distance
+            out.append(((length - MIN_MATCH) << 4) | (disp >> 8))
+            out.append(disp & 0xFF)
+        else:
+            out.append(data[pos])
+    group.finish()
 
     return bytes(out)
 
 
-class GbaLz77Compression:
+class GbaLz77Compression(PartialDecompression):
     info = PluginInfo(
         id="compression.gba-lz77",
         name="GBA/NDS BIOS LZ77 (SWI 0x11/0x12)",
@@ -253,13 +215,5 @@ class GbaLz77Compression:
         category="Nintendo",
     )
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        out, consumed, complete = decompress(
-            data, partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL))
-        )
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
-        return out
-
-    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return compress(data)
+    _decode = staticmethod(decompress)
+    _encode = staticmethod(compress)

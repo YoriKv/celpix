@@ -5,7 +5,7 @@
 # In a VRAM dump these bytes are not contiguous — Mode 7 interleaves the map into
 # the even addresses and the tile pixels into the odd ones — so run the Mode 7
 # VRAM reshape first and read the second half here
-# (docs/graphics-formats-reference/superfamiconv-formats.md §5).
+# (docs/graphics-formats-reference/tile-converter-formats.md §5).
 id = "preset.tilemap.snes-mode7"
 name = "SNES Mode 7 map (8-bit, also GBA affine)"
 engine_id = "codec.tilemap.packed"

@@ -340,6 +340,62 @@ def test_pixel_bpp_covers_code_formats() -> None:
     assert pipeline.pixel_bpp("format.pixel.t", reg) == 2
 
 
+def test_a_code_format_carries_its_optional_codec_methods() -> None:
+    """Presence forwards, absence stays absent — and both halves are load-bearing.
+
+    The host reaches every optional method with ``getattr`` on the *engine*, so a
+    format that writes one has to reach it: without ``index_limit`` the cell spin
+    and the Edit Tiles tool are dead, and a packed palette is read one entry per
+    unit. Declaring them on the engine class instead would break the other half,
+    because silence is how a codec refuses to have its index field guessed at.
+    """
+    from celpix.plugins import FormatInfo
+    from celpix.plugins.formats import adapt_format
+
+    class _Bare:
+        info = FormatInfo(id="format.tilemap.bare", name="bare")
+
+        def decode(self, data, ctx): ...
+        def encode(self, cells, ctx): ...
+        def bytes_per_cell(self):
+            return 2
+
+        def cell_tiles(self):
+            return (1, 1)
+
+    class _Rich(_Bare):
+        info = FormatInfo(id="format.tilemap.rich", name="rich")
+
+        def index_limit(self):
+            return 1023
+
+        def has_palette_rows(self):
+            return False
+
+    bare, _ = adapt_format(_Bare(), Stage.INTERPRET_TILEMAP)
+    rich, _ = adapt_format(_Rich(), Stage.INTERPRET_TILEMAP)
+    assert not hasattr(bare, "index_limit")
+    assert rich.index_limit({}) == 1023  # the params a format has no use for
+    assert rich.has_palette_rows({}) is False
+
+    class _Packed:
+        info = FormatInfo(id="format.palette.packed", name="packed")
+
+        def decode(self, data, ctx): ...
+        def encode(self, palette, ctx): ...
+        def bytes_per_entry(self):
+            return 1
+
+        def entries_per_unit(self):
+            return 4
+
+    reg = default_registry()
+    engine, preset = adapt_format(_Packed(), Stage.INTERPRET_PALETTE)
+    reg.register(engine)
+    reg.register_preset(preset)
+    assert pipeline.palette_entries_per_unit("format.palette.packed", reg) == 4
+
+
 def test_missing_source_file_hard_stops(tmp_path) -> None:
     reg = default_registry()
     pixel_cfg = PathwayConfig(
@@ -791,3 +847,22 @@ def test_palette_window_sizing_survives_packed_entries(
     assert pipeline.palette_read_bytes(1, preset_id, reg) == unit_bytes
     assert pipeline.palette_entry_capacity(unit_bytes - 1, preset_id, reg) == 0
     assert pipeline.palette_read_bytes(0, preset_id, reg) == 0
+
+
+def test_a_pipeline_error_names_the_plugin_without_disturbing_the_sub_label() -> None:
+    """Which plugin failed is what a user with three codecs installed needs.
+
+    The ``[pathway/stage:action]`` sub-label is documented and read by eye, so the
+    plugin's id goes ahead of the message rather than inside the bracket; a
+    failure that belongs to no one plugin reads exactly as it did before.
+    """
+    from celpix.core.errors import Pathway
+
+    named = PipelineError(
+        Stage.INTERPRET_PIXEL, Pathway.PIXEL, "data length 16 != 64", plugin="snes-4bpp"
+    )
+    assert str(named) == "[pixel/interpret-pixel] snes-4bpp: data length 16 != 64"
+    assert named.plugin == "snes-4bpp"
+
+    anonymous = PipelineError(Stage.CONTAINER, Pathway.PIXEL, "no header", "write")
+    assert str(anonymous) == "[pixel/container:write] no header"

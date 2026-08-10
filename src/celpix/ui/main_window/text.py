@@ -59,7 +59,7 @@ class TextMixin:
         needs explaining.
         """
         doc = self._doc
-        return bool(doc is not None and doc.is_font)
+        return bool(doc is not None and doc.is_fontmap)
 
     def _show_text(self) -> None:
         """View ▸ Text — open the window, and mean it.
@@ -223,7 +223,7 @@ class TextMixin:
         status bar, and the window keeps showing what the user has.
         """
         doc = self._doc
-        if doc is None or not doc.is_font or doc.alphabet is None:
+        if doc is None or not doc.is_fontmap or doc.alphabet is None:
             return
         if fresh:
             self._text_run += 1
@@ -289,7 +289,7 @@ class TextMixin:
         on every arrow key.
         """
         doc = self._doc
-        if doc is None or not doc.is_font or not doc.cells:
+        if doc is None or not doc.is_fontmap or not doc.cells:
             return
         start, stop = doc.text.span_of(offset, offset)
         self._select_tiles(start, min(stop, len(doc.cells)) - 1)

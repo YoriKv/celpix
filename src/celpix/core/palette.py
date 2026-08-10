@@ -161,7 +161,7 @@ class Palette:
         Growing a palette (Custom-from-default expands to
         :data:`FULL_PALETTE_COUNT`) keeps the existing colors and fills the new
         entries from the same deterministic generator :meth:`default` uses, so
-        the added rows are distinguishable rather than a block of black.
+        the added rows are distinguishable rather than a run of black.
         """
         if count <= len(self._colors):
             return Palette(self._colors[:count])

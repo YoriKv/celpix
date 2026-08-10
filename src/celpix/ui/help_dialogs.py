@@ -53,7 +53,7 @@ CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
     ("Pick a color (any tool)", "Right-click"),
     ("Square selection (Select tool)", "Shift + drag"),
     ("Select tiles while rearranging", "Right-drag"),
-    ("Stamp a floating selection", "Esc"),
+    ("Set a floating selection down", "Esc"),
     ("Abandon a rearrange drag", "Esc"),
     # Not the canvas's own, but a mouse gesture the whole window answers to, and
     # this is where someone looks for one. Its keys are on the Navigate menu.
@@ -157,7 +157,7 @@ def shortcut_sections(window) -> list[tuple[str, list[tuple[str, str]]]]:  # noq
 
 
 def _section_widget(title: str, entries: list[tuple[str, str]]) -> QWidget:
-    """One titled two-column block: names on the left, keys on the right."""
+    """One titled two-column section: names on the left, keys on the right."""
     box = QWidget()
     layout = QVBoxLayout(box)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -270,7 +270,7 @@ class AboutDialog(QDialog):
         )
         icon.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # One rich-text block rather than a stack of labels: it keeps the links
+        # One rich-text label rather than a stack of them: it keeps the links
         # clickable and the whole thing selectable for a bug report.
         text = QLabel(
             f"<h2 style='margin-bottom:2px'>celPix {__version__}</h2>"

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.1 - unreleased
+
+- Big cleanup pass on all code, plugins, and comments
+
 ## v0.5.0 - 2026-08-09
 
 - **Fontmaps**: experimental support for "Fontmaps" which will theoretically be

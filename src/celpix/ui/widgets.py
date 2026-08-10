@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
@@ -27,6 +27,8 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
     QColor,
     QDesktopServices,
     QIcon,
@@ -45,14 +47,17 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from celpix import APP_NAME
+from celpix.core import ceil_div
 
 _EnumT = TypeVar("_EnumT", bound=Enum)
 
@@ -266,20 +271,20 @@ def icon_cache_key(widget: QWidget) -> tuple[int, float]:
 
     Both arrive as a ``changeEvent`` storm — Qt sends a burst of PaletteChange on
     startup and again on every theme switch — so every panel that rasterizes its
-    own glyphs guards the re-bake on this rather than re-doing it per event.
+    own icons guards the re-bake on this rather than re-doing it per event.
     """
     return (widget.palette().cacheKey(), widget.devicePixelRatioF())
 
 
-def tinted_glyph(source: QImage, color: QColor, box: QSize, ratio: float) -> QPixmap:
+def tinted_icon(source: QImage, color: QColor, box: QSize, ratio: float) -> QPixmap:
     """``source`` recolored to ``color``, fitted and centred in a ``box`` square.
 
-    The bundled glyphs ship as solid silhouettes cropped to their opaque bounds;
+    The bundled icons ship as solid silhouettes cropped to their opaque bounds;
     SourceIn keeps only the alpha and stamps the tint through, so one piece of
     art tracks the theme in light and dark. Rasterized at ``ratio`` and stamped
     with it, so a scaled display gets crisp edges rather than a stretched 1x
     bitmap, and the pixmap still measures ``box`` in layout units. Centred
-    because a glyph is rarely square.
+    because the art is rarely square.
     """
     tinted = source.convertToFormat(QImage.Format.Format_ARGB32)
     tinting = QPainter(tinted)
@@ -469,7 +474,7 @@ class CommittingLineEdit(QLineEdit):
 
 
 def funnel_icon(color: QColor, size: int = 16, ratio: float = 1.0) -> QIcon:
-    """A funnel/filter glyph filled with ``color`` — the app's "filter a list" mark.
+    """A funnel/filter icon filled with ``color`` — the app's "filter a list" mark.
 
     Painted rather than bundled so it inherits the current theme's text color and
     stays crisp at any device-pixel ratio; Qt derives the disabled (greyed) form
@@ -594,6 +599,377 @@ class ZoomSpinBox(QDoubleSpinBox):
 
     def stepBy(self, steps: int) -> None:
         self.setValue(zoom_level_after(self.value(), steps))
+
+
+class PanZoomSurface:
+    """Space-drag panning and Ctrl+wheel zooming, for a widget in a scroll area.
+
+    The three surfaces that magnify pixel art inside a scroll area — the canvas,
+    the tile source sheet, the animation frame — all offer the same two gestures,
+    and a user who learns one on any of them expects it on the others. What they
+    do *with* the gestures differs (each reports to a different controller over
+    its own signals), but the mechanics are identical down to the reason for
+    every line, so they live here rather than being kept in step by hand.
+
+    The state is one armed flag and one dragging flag, deliberately apart:
+    ``_pan_active`` is the space bar held — a pan is *armed*, and the open hand
+    says so — while ``_panning`` is a drag actually under way. Disarming has to
+    end a drag in progress, because the key can come up mid-drag.
+
+    Mixed in **before** the Qt base (``class Canvas(PanZoomSurface, QWidget)``).
+    The three mouse handlers are helpers returning "I took this event" rather
+    than Qt overrides, because each surface has its own gesture stack to weave
+    the pan into (and pan wins over all of it — see the call sites); only
+    :meth:`wheelEvent` is complete enough to be the override itself.
+
+    Two hooks: :meth:`_pan_cursor` for a surface with cursors of its own beyond
+    the hand, and :meth:`_has_content` for the "nothing to zoom" guard, which is
+    a different emptiness in each of them.
+    """
+
+    # Declared by the concrete widget (a Signal only registers on a QObject
+    # subclass), and named here so the helpers below read as the whole gesture:
+    # ``pan_requested(dx, dy)`` in device pixels, ``zoom_requested(steps, pos)``
+    # with the cursor in the widget's own coordinates.
+    pan_requested: Signal
+    zoom_requested: Signal
+
+    _pan_active = False
+    _panning = False
+    _pan_last = QPointF()
+
+    def set_pan_mode(self, on: bool) -> None:
+        """Arm/disarm space-drag panning (the window drives this off the space key).
+
+        Arming shows the open hand; disarming ends any pan drag in progress, the
+        space key being free to come up mid-drag. Panning is modal over the
+        mouse — while armed a press pans instead of selecting or painting.
+        """
+        if self._pan_active == on:
+            return
+        self._pan_active = on
+        if not on:
+            self._panning = False
+        self._apply_cursor()
+
+    def _pan_cursor(self) -> Qt.CursorShape | None:
+        """The cursor when no pan is armed — ``None`` for the widget's own.
+
+        Overridden by a surface that is modal in more ways than this one: the
+        canvas arms tools that each want their own pointer.
+        """
+        return None
+
+    def _has_content(self) -> bool:
+        """Whether there is anything on show to zoom. Overridden per surface —
+        each holds its picture in a different attribute."""
+        return True
+
+    def _apply_cursor(self) -> None:
+        """Set the cursor for the current mode: closed hand while panning, open
+        while a pan is merely armed, and the surface's own otherwise."""
+        if self._panning:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif self._pan_active:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        else:
+            shape = self._pan_cursor()
+            if shape is None:
+                self.unsetCursor()
+            else:
+                self.setCursor(shape)
+
+    def _pan_press(self, event) -> bool:  # noqa: ANN001 — Qt event
+        """Begin a pan drag if one is armed; True when the press was taken.
+
+        Called first in every surface's ``mousePressEvent``, so an armed pan wins
+        over selecting, painting and picking alike.
+        """
+        if not (self._pan_active and event.button() == Qt.MouseButton.LeftButton):
+            return False
+        self._panning = True
+        self._pan_last = event.globalPosition()
+        self._apply_cursor()
+        event.accept()
+        return True
+
+    def _pan_move(self, event) -> bool:  # noqa: ANN001 — Qt event
+        """Report the drag's delta if a pan is under way; True when taken."""
+        if not self._panning:
+            return False
+        # Global position, not widget-local: the widget shifts under the cursor
+        # as the view scrolls, which would feed back into a widget-local delta.
+        pos = event.globalPosition()
+        delta = pos - self._pan_last
+        self._pan_last = pos
+        self.pan_requested.emit(round(delta.x()), round(delta.y()))
+        event.accept()
+        return True
+
+    def _pan_release(self, event) -> bool:  # noqa: ANN001 — Qt event
+        """End a pan drag; True when the release was taken."""
+        if not (self._panning and event.button() == Qt.MouseButton.LeftButton):
+            return False
+        self._panning = False
+        self._apply_cursor()  # back to the open hand (space may still be held)
+        event.accept()
+        return True
+
+    def wheelEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        """**Ctrl**+wheel zooms; a plain wheel falls through to the scroll area.
+
+        Reports a signed step per notch and the cursor position, leaving the
+        range and the cursor-anchoring to the controller: the level is a
+        control's value, not this widget's. Only a zooming wheel is swallowed,
+        so an unmodified one still scrolls the area that owns us.
+        """
+        if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            event.ignore()  # let the scroll area scroll as usual
+            return
+        if not self._has_content():
+            return
+        dy = event.angleDelta().y()
+        if dy == 0:
+            return
+        # One step per 120-unit notch, but at least one so a high-resolution
+        # wheel sending small deltas still zooms.
+        steps = int(dy / 120) or (1 if dy > 0 else -1)
+        self.zoom_requested.emit(steps, event.position())
+        event.accept()
+
+
+def confirm_destructive(
+    parent: QWidget,
+    title: str,
+    text: str,
+    safe_label: str,
+    proceed_label: str,
+    safe: Callable[[], bool],
+    *,
+    default_safe: bool = False,
+) -> bool:
+    """Ask before discarding unsaved work; True when the caller may go ahead.
+
+    Every "this throws away edits" gate in the app asks the same three-way
+    question, and the middle answer is why it is not a Yes/No: deal with the work
+    first (``safe_label`` — Write, Save Project), go ahead without dealing with it
+    (``proceed_label``), or call the whole action off. Only the wording differs
+    between them, because what is lost differs — a project save keeps edited
+    bytes in memory, quitting drops them.
+
+    ``safe`` performs the safe action **and reports whether it actually resolved
+    the work**. That return is the part a hand-rolled copy of this gets wrong: a
+    write that failed, or a save whose own nested gate was cancelled, leaves the
+    work exactly as unsaved as before, so the caller must not proceed past it
+    either. ``default_safe`` puts the focus ring on that button, for the paths
+    where Enter hit blind should take the least-lossy answer.
+    """
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    accept = box.addButton(safe_label, QMessageBox.ButtonRole.AcceptRole)
+    box.addButton(proceed_label, QMessageBox.ButtonRole.DestructiveRole)
+    cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+    if default_safe:
+        box.setDefaultButton(accept)
+    box.exec()
+    if box.clickedButton() is cancel:
+        return False
+    return safe() if box.clickedButton() is accept else True
+
+
+def grid_slot_at(
+    x_px: float,
+    y_px: float,
+    cell: tuple[int, int],
+    columns: int,
+    count: int,
+    *,
+    clamp: bool = False,
+) -> int | None:
+    """Which slot of a ``columns``-wide lattice of ``cell``-sized boxes a point is in.
+
+    The two grids of addressable squares — the palette's swatches and the tile
+    source sheet — ask this the same way and would answer it differently if each
+    kept its own arithmetic; a *slot* is the position in the panel's own list,
+    which is what both of them then look a colour or a tile ID up by.
+
+    ``clamp`` picks the reading. Off, a point past the last column or past the
+    end reads as ``None``: a click on the empty tail of a short final row landed
+    on nothing. On, it snaps to the nearest slot instead, which is what a **drag**
+    wants — running off an edge should keep the selection following the pointer
+    rather than dropping it. ``None`` then means only that there is nothing on
+    show at all.
+    """
+    cell_w, cell_h = cell
+    col, row = int(x_px) // cell_w, int(y_px) // cell_h
+    if not clamp:
+        slot = row * columns + col
+        return slot if 0 <= col < columns and 0 <= slot < count else None
+    if count <= 0:
+        return None
+    col = min(max(col, 0), columns - 1)
+    row = min(max(row, 0), ceil_div(count, columns) - 1)
+    # Past the last entry (the empty tail of a short final row) lands on the
+    # last entry — dragging off the end selects the end.
+    return min(row * columns + col, count - 1)
+
+
+def pan_scroll_area(scroll: QScrollArea, dx: int, dy: int) -> None:
+    """Shift ``scroll`` by a space-drag delta (device pixels).
+
+    The bars clamp to the content, so a pan can never push the picture off
+    screen, and is a no-op while the view already fits the viewport — which is
+    the whole of the policy, hence one function for all three surfaces.
+    """
+    hbar = scroll.horizontalScrollBar()
+    vbar = scroll.verticalScrollBar()
+    hbar.setValue(hbar.value() - dx)
+    vbar.setValue(vbar.value() - dy)
+
+
+def zoom_anchored(scroll: QScrollArea, spin, new: float, pos) -> None:  # noqa: ANN001
+    """Move ``spin`` to ``new``, keeping the content pixel under ``pos`` still.
+
+    Driving the *spin* rather than the view is what keeps the readout, the
+    keyboard and the wheel one value, and re-renders through the normal path.
+    Without the two scroll-bar writes afterwards a zoom appears to slide the art
+    out from beneath the pointer: ``pos`` is in the widget's own coordinates,
+    which are content pixels times the old zoom, so the pixel under the cursor
+    divides out and putting it back is arithmetic the bars then clamp.
+
+    A no-op when the level does not actually change (an end of the range).
+    """
+    old = spin.value()
+    if new == old:
+        return
+    hbar = scroll.horizontalScrollBar()
+    vbar = scroll.verticalScrollBar()
+    # The cursor's spot in the viewport, and the content pixel it sits on now.
+    view_x, view_y = pos.x() - hbar.value(), pos.y() - vbar.value()
+    img_x, img_y = pos.x() / old, pos.y() / old
+    spin.setValue(new)  # re-renders and resizes the view synchronously
+    hbar.setValue(round(img_x * new - view_x))
+    vbar.setValue(round(img_y * new - view_y))
+
+
+def value_spin(low: int, high: int, value: int, on_change) -> QSpinBox:  # noqa: ANN001
+    """A plain integer spin that commits on finish rather than per keystroke.
+
+    The view settings are all spins of this shape, and the keyboard tracking is
+    the part worth having in one place: with it left on, typing a multi-digit
+    value re-renders (and re-clamps) once per character, so "16" passes through
+    "1" first.
+    """
+    spin = QSpinBox()
+    spin.setRange(low, high)
+    spin.setValue(value)
+    spin.setKeyboardTracking(False)
+    spin.valueChanged.connect(on_change)
+    return spin
+
+
+def hex_spin(low: int, high: int, tip: str, value: int = 0) -> QSpinBox:
+    """A ``$``-prefixed hex spin — the toolbars' one way of showing an address.
+
+    A spin rather than a free-text field so these numbers clamp and step like
+    the rest of the bar, and hex because that is how every one of them is
+    written down elsewhere: a bank layout, a tile index in a map, a code in a
+    character table. The tooltip is suffixed rather than each caller remembering
+    to say so, since a box showing ``$20`` for thirty-two is only unambiguous
+    once the reader knows which base it is in.
+    """
+    spin = QSpinBox()
+    spin.setRange(low, high)
+    spin.setValue(value)
+    spin.setDisplayIntegerBase(16)
+    spin.setPrefix("$")
+    spin.setKeyboardTracking(False)
+    spin.setToolTip(f"{tip} (hex)")
+    return spin
+
+
+def make_action(
+    owner: QWidget,
+    text: str,
+    slot: Callable | None = None,
+    *,
+    menu=None,  # noqa: ANN001 — QMenu
+    tip: str = "",
+    shortcut=None,  # noqa: ANN001 — QKeySequence | StandardKey | str
+    context: Qt.ShortcutContext | None = None,
+    enabled: bool = True,
+    checkable: bool = False,
+    checked: bool = False,
+) -> QAction:
+    """One menu/toolbar action, built in the order the pieces have to go in.
+
+    Spelling an action out longhand is five or six statements that are the same
+    everywhere, and the two that are *not* interchangeable are exactly the ones
+    a hand-written block gets wrong: a checkable action's initial state must be
+    set **before** its handler is connected, or building the menu fires the
+    handler; and ``slot`` goes on ``toggled`` for a checkable action and on
+    ``triggered`` for the rest, since a switch's handler wants the new state and
+    a command's wants nothing.
+
+    ``context`` is for a **display-only** shortcut — one set for the label it
+    puts in the menu and the F1 guide, then given
+    ``Qt.ShortcutContext.WidgetShortcut`` so it never actually fires, because
+    the working binding is somewhere else (the app-wide key filter, or a panel's
+    own handling). ``menu`` adds the finished action where it belongs, for the
+    common case that it has exactly one home.
+    """
+    action = QAction(text, owner)
+    if tip:
+        action.setToolTip(tip)
+    if shortcut is not None:
+        action.setShortcut(shortcut)
+    if context is not None:
+        action.setShortcutContext(context)
+    if checkable:
+        action.setCheckable(True)
+        action.setChecked(checked)
+    if slot is not None:
+        (action.toggled if checkable else action.triggered).connect(slot)
+    action.setEnabled(enabled)
+    if menu is not None:
+        menu.addAction(action)
+    return action
+
+
+def add_enum_action_group(
+    owner: QWidget,
+    menu,  # noqa: ANN001 — QMenu
+    entries: Iterable[tuple[object, str, str]],
+    current: object,
+    on_triggered: Callable,
+) -> tuple[QActionGroup, dict[object, QAction]]:
+    """A radio group of checkable actions over an enum, built from a table.
+
+    Every "pick exactly one" menu section is the same six lines around a table
+    of ``(value, label, tooltip)`` — an empty tooltip where the label says it
+    all — with the enum member on each action's ``data`` so the handler reads
+    the choice back off the group rather than off a captured variable. The group
+    is what makes the set exclusive; it is returned because the handlers ask it
+    which action is checked, along with the actions by value for the callers
+    that later enable or re-check one.
+
+    ``current`` is compared by identity: these are enum members, and a value
+    that is not among ``entries`` simply leaves the group unchecked rather than
+    raising — a preference written by an older or newer build is not a reason to
+    fail to open a menu.
+    """
+    group = QActionGroup(owner)  # exclusive: one action checked at a time
+    actions: dict[object, QAction] = {}
+    for value, label, tip in entries:
+        action = make_action(
+            owner, label, menu=menu, tip=tip, checkable=True, checked=value is current
+        )
+        action.setData(value)
+        group.addAction(action)
+        actions[value] = action
+    group.triggered.connect(on_triggered)
+    return group, actions
 
 
 def source_icon(color: QColor, size: int = 16, ratio: float = 1.0) -> QIcon:

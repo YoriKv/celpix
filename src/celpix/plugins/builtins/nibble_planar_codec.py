@@ -40,11 +40,11 @@ from typing import Any
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
+from celpix.plugins._byteops import or_all
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._bits import (
     nibble_plane_expansion,
     nibble_plane_packing,
-    or_all,
 )
 from celpix.plugins.builtins._tile import (
     flatten_tiles,

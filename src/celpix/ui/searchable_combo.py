@@ -302,14 +302,29 @@ class SearchableComboBox(CompactComboBox):
         view, model, popup = self._list, self._popup_model, self._popup
         if view is None or model is None or popup is None:
             return
+        # The edge to anchor to, read before anything can move the frame — see
+        # the activate() below, which does exactly that.
+        bottom = popup.geometry().bottom()
         rows = model.rowCount()
         unit = view.sizeHintForRow(0) if rows else view.fontMetrics().height() + 4
         shown = max(1, min(rows, MAX_VISIBLE_ROWS))
         view.setFixedHeight(shown * unit + 2 * view.frameWidth())
-        bottom = popup.geometry().bottom()
-        popup.resize(popup.width(), popup.sizeHint().height())
-        if self._flipped_above:
-            popup.move(popup.x(), bottom - popup.height() + 1)
+        # The popup is a top-level, so its layout pins the window's *minimum*
+        # size to the layout's own — but only when the layout next activates,
+        # which is otherwise a posted event away. Left until then, the geometry
+        # below is clamped to the previous, taller list's minimum: the frame
+        # keeps its height and the layout spreads the search field and the
+        # shrunken list through the excess, so a search that matched nothing
+        # reads as a lone field adrift in an empty panel.
+        layout = popup.layout()
+        if layout is not None:
+            layout.activate()
+        # One setGeometry rather than a resize and a move, using the height we
+        # asked for rather than one read back: raising a window's minimum resizes
+        # it there and then, so by this point the frame may already have grown.
+        height = popup.sizeHint().height()
+        y = bottom - height + 1 if self._flipped_above else popup.y()
+        popup.setGeometry(popup.x(), y, popup.width(), height)
 
     def _place_popup(self) -> None:
         """Size the popup to its content and put it under (or over) the combo."""

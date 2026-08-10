@@ -63,15 +63,14 @@ Format detail and provenance are in
 
 from __future__ import annotations
 
-from celpix.core.context import (
-    KEY_COMPRESSED_SIZE,
-    KEY_DECOMPRESS_COMPLETE,
-    KEY_DECOMPRESS_PARTIAL,
-    PipelineContext,
-)
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
-from celpix.plugins.builtins._lz import MatchFinder
+from celpix.plugins.base import PartialDecompression, PluginInfo
+from celpix.plugins.builtins._lz import (
+    FlagGroup,
+    MatchFinder,
+    copy_from,
+    parse_greedy,
+)
 
 SIZE_BYTES_16 = 2
 SIZE_BYTES_24 = 3
@@ -149,11 +148,7 @@ def decompress(
                     f"back-reference at output byte {len(out):,} reaches "
                     f"{-start} bytes before the start of the data"
                 )
-            if start + length <= len(out):  # no self-overlap - copy in one go
-                out += out[start : start + length]
-            else:
-                for k in range(length):
-                    out.append(out[start + k])
+            copy_from(out, start, length)
 
     if len(out) > target:
         # Not a match to clip: the format lands on the declared size exactly, so
@@ -186,85 +181,38 @@ def compress(data: bytes, *, size_bytes: int) -> bytes:
     finder = MatchFinder(
         data, min_match=MIN_MATCH, window=MAX_DISTANCE, max_candidates=_MAX_CANDIDATES
     )
-
-    def best_match(pos: int) -> tuple[int, int]:
-        """The longest match reaching ``pos``, as ``(length, candidate)``.
-
-        Scored here rather than through :meth:`MatchFinder.longest` because this
-        scheme cannot use every distance that method would offer: candidates are
-        walked nearest first, and the nearest two are closer than the biased
-        distance field can name.
-        """
-        room = min(MAX_MATCH, n - pos)
-        if room < MIN_MATCH:
-            return 0, -1
-        best_len, best_at = 0, -1
-        for candidate in finder.candidates(pos):
-            if pos - candidate < MIN_DISTANCE:
-                continue
-            if best_len and not finder.can_reach(pos, candidate, best_len + 1):
-                continue  # cannot beat the best so far, so never measure it
-            length = finder.match_length(pos, candidate, room)
-            if length > best_len:
-                best_len, best_at = length, candidate
-                if best_len == room:
-                    break  # nothing later in the chain can beat a full-length match
-        return best_len, best_at
-
-    pos = 0
-    while pos < n:
-        tokens_at = len(out)
-        out.append(0)
-        tokens = 0
-
-        for bit in range(8):
-            if pos >= n:
-                break
-            length, candidate = best_match(pos)
-            finder.add(pos)  # index it before any lookahead reads it
-            if MIN_MATCH <= length < MAX_MATCH and pos + 1 < n:
-                # One-step lazy deferral: if the next position starts a strictly
-                # longer match, the literal here buys more than this match does.
-                next_len, _ = best_match(pos + 1)
-                if next_len > length:
-                    length = 0
-
-            if length >= MIN_MATCH:
-                info = ((pos - candidate - MIN_DISTANCE) << 4) | (length - MIN_MATCH)
-                out.append(info >> 8)
-                out.append(info & 0xFF)
-                tokens |= 0x80 >> bit  # MSB first; a set bit is the back-reference
-                finder.add_run(pos + 1, pos + length)
-                pos += length
-            else:
-                out.append(data[pos])
-                pos += 1
-
-        # Unused selectors in the final group stay clear, which is the same thing
-        # the reference encoder's left-shift to MSB alignment leaves behind — the
-        # decoder stops on the declared size before it reads them either way.
-        out[tokens_at] = tokens
+    tokens = FlagGroup(out, msb_first=True, set_means_match=True)
+    for pos, length, candidate in parse_greedy(
+        data,
+        finder,
+        min_match=MIN_MATCH,
+        max_match=MAX_MATCH,
+        # Never the nearest two distances the index offers: the biased distance
+        # field cannot name them at all (see MIN_DISTANCE).
+        min_distance=MIN_DISTANCE,
+    ):
+        tokens.select(length > 0)
+        if length:
+            info = ((pos - candidate - MIN_DISTANCE) << 4) | (length - MIN_MATCH)
+            out.append(info >> 8)
+            out.append(info & 0xFF)
+        else:
+            out.append(data[pos])
+    tokens.finish()
 
     return bytes(out)
 
 
-class _SlzBase:
+class _SlzBase(PartialDecompression):
     """Both directions of one SLZ variant; the size prefix's width is all that
     differs, and it is what caps the payload the variant can carry."""
 
     _size_bytes: int
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        out, consumed, complete = decompress(
-            data,
-            size_bytes=self._size_bytes,
-            partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL)),
-        )
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
-        return out
+    def _decode(self, data: bytes, *, partial: bool) -> tuple[bytes, int, bool]:
+        return decompress(data, size_bytes=self._size_bytes, partial=partial)
 
-    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
+    def _encode(self, data: bytes) -> bytes:
         return compress(data, size_bytes=self._size_bytes)
 
 

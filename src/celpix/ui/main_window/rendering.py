@@ -243,7 +243,7 @@ class RenderingMixin:
     def _apply_tilemap_columns(self, entry, *, restored: bool) -> None:  # noqa: ANN001
         """Set Cols to the width ``entry``'s format states, if it states one.
 
-        A screen and a panel are 32 cells across and a stamp layout 128; the file
+        A screen and a PNL panel are 32 cells across and a stamp layout 128; the file
         knows, and a wrong guess **shears** the picture into diagonal stripes
         rather than failing, which is the worst way to be wrong. Applied on load
         only, and skipped when a project ``restored`` a width of its own, so it is
@@ -473,7 +473,7 @@ class RenderingMixin:
         cell **starts** at, like :meth:`_tile_id_labels`' numbers.
         """
         doc = self._doc
-        if doc is None or not doc.is_font:
+        if doc is None or not doc.is_fontmap:
             return frozenset()
         alphabet = doc.alphabet
         per_cell = doc.tiles_per_cell

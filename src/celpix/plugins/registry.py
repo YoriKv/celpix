@@ -13,6 +13,8 @@ without any caller knowing a rename happened.
 
 from __future__ import annotations
 
+from typing import TypeVar, overload
+
 from celpix.core.errors import Stage
 from celpix.plugins.aliases import current_id
 from celpix.plugins.base import (
@@ -22,6 +24,8 @@ from celpix.plugins.base import (
     Preset,
     writes_back,
 )
+
+P = TypeVar("P", bound=Plugin)
 
 
 class Registry:
@@ -50,7 +54,31 @@ class Registry:
             raise ValueError(f"duplicate plugin id for {stage.value}: {plugin.info.id}")
         bucket[plugin.info.id] = plugin
 
-    def plugin(self, stage: Stage, plugin_id: str) -> Plugin:
+    @overload
+    def plugin(self, stage: Stage, plugin_id: str) -> Plugin: ...
+
+    @overload
+    def plugin(self, stage: Stage, plugin_id: str, kind: type[P]) -> P: ...
+
+    def plugin(
+        self, stage: Stage, plugin_id: str, kind: type[Plugin] | None = None
+    ) -> Plugin:
+        """The plugin registered at ``stage`` under ``plugin_id``.
+
+        ``kind`` names the stage's protocol — :class:`ContainerPlugin` and the
+        rest — so the caller gets back something that declares the methods it is
+        about to call, rather than a bare :class:`Plugin` that declares none.
+        Like :meth:`engine_for`'s, it is a **typing assertion, unread at
+        runtime**: `STAGE_METHODS` already shape-checked the plugin against
+        exactly that protocol before it reached this bucket
+        (:func:`~celpix.plugins.base.missing_methods`).
+
+        Deriving it from ``stage`` instead would be the nicer call, and it does
+        not survive the tooling: a ``Literal[Stage.X]`` overload per stage is not
+        discriminated on enum members, so every lookup silently resolves to the
+        first overload and is checked against the wrong protocol. Naming it is
+        the version that is actually right.
+        """
         bucket = self._plugins[stage]
         # The live id first, so a plugin that has taken a retired name wins over
         # the alias — a user's own plugin is entitled to any id it likes, and
@@ -145,13 +173,30 @@ class Registry:
         registered = self.presets(stage)
         return registered[0].id if registered else preset_id
 
-    def engine_for(self, preset_id: str) -> tuple[Plugin, Preset]:
+    @overload
+    def engine_for(self, preset_id: str) -> tuple[Plugin, Preset]: ...
+
+    @overload
+    def engine_for(self, preset_id: str, kind: type[P]) -> tuple[P, Preset]: ...
+
+    def engine_for(
+        self, preset_id: str, kind: type[Plugin] | None = None
+    ) -> tuple[Plugin, Preset]:
         """The interpret engine a preset resolves to, plus the preset itself.
 
         A preset names its own interpret stage and an ``engine_id`` within it, so
         this is the single place that hop is made — no caller has to respell
         ``plugin(Stage.INTERPRET_*, preset.engine_id)`` or know which interpret
         stage a preset belongs to.
+
+        ``kind`` is that convenience's one cost. The stage arrives *inside* the
+        preset, so unlike :meth:`plugin` nothing in the call says which protocol
+        comes back, and the caller is left holding a bare :class:`Plugin`. Naming
+        the protocol restores that — it is a **typing assertion and nothing
+        else**, unread at runtime, because the guarantee behind it was already
+        made at registration: a preset's ``engine_id`` resolves within the
+        preset's own stage, and a plugin only reaches that stage's bucket by
+        passing the stage's shape check.
         """
         preset = self.preset(preset_id)
         return self.plugin(preset.stage, preset.engine_id), preset

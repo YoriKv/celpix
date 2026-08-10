@@ -1,10 +1,12 @@
-"""The open-entries list: projects, slices, bookmarks, containers.
+"""The open-entries list: files, projects, slices, bookmarks, containers.
 
 Everything that creates, re-points or navigates between the entries in the files
-dock. A **slice** is an offset+length region of a parent file that acts as its
-own document; a **bookmark** is a position plus a snapshot of the settings at
-creation time, with no document of its own. Neither ever nests - both anchor to
-a whole file.
+dock. It starts at the plainest of them - opening a file at all, which is one
+entry appended to the workspace and the view switched onto it, and the single
+funnel behind File ▸ Open, a dropped file and the open-as prompt. A **slice** is
+an offset+length region of a parent file that acts as its own document; a
+**bookmark** is a position plus a snapshot of the settings at creation time, with
+no document of its own. Neither ever nests - both anchor to a whole file.
 
 The jumps share one body (:meth:`_jump_into_parent`): they differ only in which
 snapshot they install on the parent before re-reading it.
@@ -36,6 +38,11 @@ from celpix.core.document import Document, ViewOptions
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.pipeline import inspect_container
 from celpix.plugins.base import NO_COMPRESSION, FileRef
+from celpix.plugins.detect import (
+    content_kind_for,
+    detect_container,
+    tilemap_preset_for,
+)
 from celpix.project import projectfile
 from celpix.project.workspace import (
     Entry,
@@ -65,6 +72,7 @@ from celpix.ui.undo_commands import (
 from celpix.ui.widgets import (
     ask_save_path,
     clear_recent_projects,
+    confirm_destructive,
     forget_recent_project,
     load_recent_projects,
     remember_recent_project,
@@ -73,13 +81,107 @@ from celpix.ui.widgets import (
 
 
 class EntriesMixin:
-    """Projects, slices, bookmarks, and the file lists behind them.
+    """Opening files, and the projects, slices and bookmarks over them.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a
     standalone object: it reads and writes the window's own widgets and its
     single live ``_doc``. See the module docstring for what it owns, and the
     package docstring for why these are mixins.
     """
+
+    # -- opening a file ------------------------------------------------------
+    def _open_pixel(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Open pixel data")
+        if path:
+            self._load_pixel(path, content_kind=ContentKind.PIXELS)
+
+    def _open_tilemap(self) -> None:
+        """File ▸ Open tilemap data — read any file as a map of tile indices.
+
+        The tilemap twin of Open pixel data, and forcing in the same way: a file
+        whose signature says nothing (a region of a ROM, a raw dump) has no way
+        to be recognised as a map, so asking for one is how it is said. A file
+        that *is* a known tilemap format opens the same either way.
+        """
+        path, _ = QFileDialog.getOpenFileName(self, "Open tilemap data")
+        if path:
+            self._load_pixel(path, content_kind=ContentKind.TILEMAP)
+
+    def _open_as_chosen(self, path: str) -> None:
+        """Ask what ``path`` holds, then open it that way — the Ctrl-drop gesture.
+
+        Detection is a guess from a signature and a suffix, and it is silent
+        about being one. Holding Ctrl is how the user says they know better,
+        without having to find the matching menu entry for a file they are
+        already dropping.
+        """
+        kind = self._ask_content_kind(path)
+        if kind is None:
+            return
+        if kind is ContentKind.PALETTE:
+            self._open_palette_data(path)
+        else:
+            self._load_pixel(path, content_kind=kind)
+
+    def _ask_content_kind(self, path: str) -> ContentKind | None:
+        """Which of the three readings to open ``path`` as, or None if cancelled."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("celPix - open as")
+        box.setText(f"Open {Path(path).name} as:")
+        box.setInformativeText(
+            "Pixels are tile graphics, a palette is colors, and a tilemap is\n"
+            "indices into tiles that live somewhere else."
+        )
+        role = QMessageBox.ButtonRole.ActionRole
+        buttons = {
+            box.addButton("&Pixels", role): ContentKind.PIXELS,
+            box.addButton("Pa&lette", role): ContentKind.PALETTE,
+            box.addButton("&Tilemap", role): ContentKind.TILEMAP,
+        }
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        return buttons.get(box.clickedButton())
+
+    def _load_pixel(
+        self, path: str, *, content_kind: ContentKind | None = None
+    ) -> None:
+        """Open ``path`` as a workspace entry and switch the view to it.
+
+        The shared entry point for both File ▸ Open and drag-and-drop, so a
+        dropped file behaves exactly like an opened one. A file that is
+        already open activates its existing entry - identity is the path -
+        so only a genuinely new entry becomes an undoable step.
+
+        The container is picked here, once, from the file's name and leading
+        bytes: it is a property of the file, so detecting it at open time means
+        every later load reads through the same one, and the answer is on the
+        entry where the user can see and change it.
+
+        ``content_kind`` overrides what the container implies, for the gestures
+        that *say* what a file is — File ▸ Open pixel/tilemap data, and the
+        open-as prompt. Detection can only recognise a format it knows, so a raw
+        region of a ROM has no way to announce itself as a map; asking is how
+        that is said. ``None`` keeps the container's own answer.
+        """
+        existing = self._workspace.find_file(path)
+        if existing is not None:
+            self._activate_entry(existing)
+            return
+        container_id = detect_container(self._registry, path)
+        # Follows from the container, which was itself chosen from the file's
+        # signature — so a screen or panel file opens into the Tilemaps section
+        # without being asked about — unless the caller said otherwise.
+        detected = content_kind_for(self._registry, container_id)
+        entry = Entry(
+            name=Path(path).name,
+            kind=EntryKind.FILE,
+            path=path,
+            container_id=container_id,
+            content_kind=content_kind or detected,
+            tilemap_preset_id=tilemap_preset_for(self._registry, container_id) or None,
+        )
+        self._push_command(AddEntryCommand(self, entry, f"open {entry.name}"))
 
     # -- projects ------------------------------------------------------------
     _PROJECT_FILTER = "celPix project (*.celpix)"
@@ -426,24 +528,22 @@ class EntriesMixin:
         if not self._project_is_dirty():
             return True
         assert self._project_path is not None  # implied by _project_is_dirty
-        box = QMessageBox(self)
-        box.setWindowTitle("celPix - unsaved project")
-        box.setText(
-            f"{action} discards unsaved changes to "
-            f"{Path(self._project_path).name}. Save the project first?"
-        )
-        save = box.addButton("Save Project", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
-        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
-        if box.clickedButton() is cancel:
-            return False
-        if box.clickedButton() is save:
+
+        def save() -> bool:
             self._save_project()
             # A save that failed (or that its own dirty-files gate cancelled)
             # left the project dirty - don't proceed past it.
             return not self._project_is_dirty()
-        return True
+
+        return confirm_destructive(
+            self,
+            "celPix - unsaved project",
+            f"{action} discards unsaved changes to "
+            f"{Path(self._project_path).name}. Save the project first?",
+            "Save Project",
+            "Discard",
+            save,
+        )
 
     # -- slice creation ------------------------------------------------------
     def _seed_slice_from_parent(self, slice_entry: Entry) -> None:
@@ -913,25 +1013,23 @@ class EntriesMixin:
         if not dirty:
             return True
         names = ", ".join(e.name for e in dirty)
-        box = QMessageBox(self)
-        box.setWindowTitle("celPix - unsaved changes")
-        box.setText(
-            f"{names} {'have' if len(dirty) > 1 else 'has'} unsaved edits. "
-            "Applying this re-reads the bytes and discards them. Write them first?"
-        )
-        write = box.addButton("Write", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
-        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(write)  # least-lossy choice when Enter is hit blind
-        box.exec()
-        if box.clickedButton() is cancel:
-            return False
-        if box.clickedButton() is write:
+
+        def write() -> bool:
             for entry in dirty:
                 self._write_entry_checked(entry)
             # A failed write must not proceed — its edits would go with the re-read.
             return not any(e.pixel_dirty for e in dirty)
-        return True
+
+        return confirm_destructive(
+            self,
+            "celPix - unsaved changes",
+            f"{names} {'have' if len(dirty) > 1 else 'has'} unsaved edits. "
+            "Applying this re-reads the bytes and discards them. Write them first?",
+            "Write",
+            "Discard",
+            write,
+            default_safe=True,  # least-lossy choice when Enter is hit blind
+        )
 
     def _jump_to_slice_source(self, slice_entry: Entry) -> None:
         """Files dock ▸ Jump to Source: show a slice's bytes in its parent file.

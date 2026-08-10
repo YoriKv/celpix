@@ -13,12 +13,15 @@ celPix is built on Python + Qt (PySide6) and runs on Windows, macOS, and Linux.
 
 - **Supported formats** - a wide variety of pixel and palette formats, covering
   the full set of formats supported by existing tools (YY-CHR, etc).
-- **Compression** - SNES LZ1/LZ2/LZ16, Konami RLE and PackBits, with a decompressed preview
-  overlay and support for editing decompressed pixel data.
+- **Compression** - SNES LZ1/LZ2/LZ16, Konami RLE, PackBits, LZSS, GBA/NDS BIOS
+  LZ77, Sega's Nemesis/Enigma/Kosinski, SLZ16/SLZ24, PRS and PowerVR, with a
+  decompressed preview overlay and support for editing decompressed pixel data.
 - **Containers & Reshaping** - support for appending multiple files together and then a variety of byte "reshaping" plugins such as merging split ROM chips, deinterleaving, reversing bit order, etc
 - **Editing** - full set of editing tools with undo/redo, copy/paste/etc internally
   and to external editors.
 - **Tilemaps** - still experimental, but adding to and improving this functionality.
+- **Fontmaps** - also experimental: read and edit a ROM's text as words, by
+  reading a tilemap of character codes through the font it draws from.
 - **Import & export** - PNG import/export supporting both indexed and RGB.
 - **Files, slices, and bookmarks** - edit multiple files at once, create bookmarks
   to quickly jump to different offsets and settings, create slices to work on
@@ -57,7 +60,7 @@ or used from these projects directly. Codecs were tested against these other
 tools for accuracy where available.
 
 - **[YY-CHR](https://www.romhacking.net/utilities/119/)**
-- **[Tile Mole_](https://github.com/toruzz/TileMolester)**
+- **[Tile Molester](https://github.com/toruzz/TileMolester)**
 - **[MushROMs](https://github.com/bonimy/MushROMs)**
 - **[CrystalTile2](https://www.romhacking.net/utilities/818/)**
 - **[Advynia](https://github.com/KarisaAdvynia/Advynia)**

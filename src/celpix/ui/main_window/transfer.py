@@ -19,7 +19,6 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import (
-    QAction,
     QDragEnterEvent,
     QDropEvent,
     QImage,
@@ -40,7 +39,7 @@ from celpix.project.workspace import (
 )
 from celpix.ui import clipboard, export
 from celpix.ui.main_window.palette_source import PALETTE_EXTENSIONS
-from celpix.ui.widgets import ask_save_path, counted
+from celpix.ui.widgets import ask_save_path, counted, make_action
 
 
 class TransferMixin:
@@ -65,37 +64,37 @@ class TransferMixin:
         """
         export_menu = file_menu.addMenu("E&xport")
 
-        self._export_png_action = QAction("Export as &PNG…", self)
-        self._export_png_action.setToolTip(
-            "Export as an indexed PNG\nIndex 0 is transparent"
+        self._export_png_action = make_action(
+            self,
+            "Export as &PNG…",
+            lambda: self._export_png(self._workspace.current),
+            menu=export_menu,
+            tip="Export as an indexed PNG\nIndex 0 is transparent",
         )
-        self._export_png_action.triggered.connect(
-            lambda: self._export_png(self._workspace.current)
+        self._export_raw_action = make_action(
+            self,
+            "Export &Raw…",
+            lambda: self._export_raw(self._workspace.current),
+            menu=export_menu,
+            tip="Export decoded bytes as a raw binary",
         )
-        export_menu.addAction(self._export_png_action)
-
-        self._export_raw_action = QAction("Export &Raw…", self)
-        self._export_raw_action.setToolTip("Export decoded bytes as a raw binary")
-        self._export_raw_action.triggered.connect(
-            lambda: self._export_raw(self._workspace.current)
-        )
-        export_menu.addAction(self._export_raw_action)
 
         export_menu.addSeparator()
 
-        self._export_slices_action = QAction("Export File's &Slices as PNGs…", self)
-        self._export_slices_action.setToolTip("Export each slice of this file as a PNG")
-        self._export_slices_action.triggered.connect(
-            lambda: self._export_file_slices(self._workspace.current)
+        self._export_slices_action = make_action(
+            self,
+            "Export File's &Slices as PNGs…",
+            lambda: self._export_file_slices(self._workspace.current),
+            menu=export_menu,
+            tip="Export each slice of this file as a PNG",
         )
-        export_menu.addAction(self._export_slices_action)
-
-        self._export_all_action = QAction("Export &All as PNGs…", self)
-        self._export_all_action.setToolTip(
-            "Export every slice and unsliced file as a PNG"
+        self._export_all_action = make_action(
+            self,
+            "Export &All as PNGs…",
+            self._export_project,
+            menu=export_menu,
+            tip="Export every slice and unsliced file as a PNG",
         )
-        self._export_all_action.triggered.connect(self._export_project)
-        export_menu.addAction(self._export_all_action)
 
         # Enabled state tracks the current entry and the list, both of which move
         # without a menu rebuild - recompute it whenever the File menu opens.
@@ -367,7 +366,7 @@ class TransferMixin:
         path = self._choose_import_png()
         if path is None:
             return
-        self._import_png_at(self._stamp_anchor(), path)
+        self._import_png_at(self._paste_anchor(), path)
 
     def _import_dropped_png(self, path: str) -> None:
         """A PNG dropped on the window, imported where the canvas menu would.
@@ -383,7 +382,7 @@ class TransferMixin:
                 "the graphic on screen, not added to the list."
             )
             return
-        self._import_png_at(self._stamp_anchor(), path)
+        self._import_png_at(self._paste_anchor(), path)
 
     def _choose_import_png(self) -> str | None:
         """Ask for the image to import; None if the dialog was cancelled."""
@@ -444,7 +443,7 @@ class TransferMixin:
         if not incoming.tiles:
             self.statusBar().showMessage(f"{Path(path).name} has no pixels to import.")
             return
-        written = self._stamp_block(anchor, incoming, "import image")
+        written = self._paste_pixel_rect(anchor, incoming, "import image")
         if not written:
             self.statusBar().showMessage("Nothing imported - no room at this offset.")
             return

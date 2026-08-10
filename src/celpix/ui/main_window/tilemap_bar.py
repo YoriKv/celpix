@@ -62,7 +62,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -88,8 +87,11 @@ from celpix.ui.undo_commands import (
     TilemapBindingState,
 )
 from celpix.ui.widgets import (
+    add_labelled,
+    hex_spin,
     signals_blocked,
     source_icon,
+    value_spin,
 )
 
 # What the "Tiles" combo holds besides the open entries. Distinct objects rather
@@ -98,7 +100,7 @@ _NONE = object()
 _FROM_FILE = object()
 
 # The tag the cell-format picker puts in front of each entry, keyed by the layout
-# its preset declares — the same three the Files list draws a glyph for
+# its preset declares — the same three the Files list draws an icon for
 # (:meth:`~celpix.ui.file_list_panel.FileListPanel._entry_marker`), and read the
 # same way: the *format's* answer, available before anything is loaded or bound.
 # A single bracketed letter rather than the word, because it prefixes a name that
@@ -169,7 +171,7 @@ class TilemapBarMixin:
         # Signed, because the useful direction for a slice is the negative one:
         # a map numbering from 0x100 bound to a slice that starts there needs
         # cell 0x100 to draw tile 0 (:class:`TileSource`).
-        self._tile_base = self._tilemap_hex_spin(
+        self._tile_base = hex_spin(
             -0xFFFF,
             0xFFFF,
             "Shifts every cell: cell N draws source tile base + N\n"
@@ -197,24 +199,17 @@ class TilemapBarMixin:
             "each a square that many tiles on a side\n"
             "No file records the pair - it was a hardware register"
         )
-        self._size_small_label = QLabel("Sm ")
-        self._size_small_label.setToolTip(tip)
-        row.addWidget(self._size_small_label)
-        self._size_small = self._spin(1, 8, 1, self._on_size_pair_change)
-        self._size_small.setToolTip(tip)
-        row.addWidget(self._size_small)
-        self._size_large_label = QLabel(" Lg ")
-        self._size_large_label.setToolTip(tip)
-        row.addWidget(self._size_large_label)
-        self._size_large = self._spin(1, 8, 2, self._on_size_pair_change)
-        self._size_large.setToolTip(tip)
-        row.addWidget(self._size_large)
+        self._size_small = value_spin(1, 8, 1, self._on_size_pair_change)
+        self._size_small_label = add_labelled(row, "Sm ", self._size_small, tip)
+        self._size_large = value_spin(1, 8, 2, self._on_size_pair_change)
+        self._size_large_label = add_labelled(row, " Lg ", self._size_large, tip)
 
         # Beside the pair because it is the other half of "what is on this
         # sheet", and sprite-only for the same reason: only a sprite map has
         # frame *slots* it may not have filled. A file has room for a fixed 32 or
-        # 128 of them and most are empty, so the strip stops after the last one
-        # holding a drawn subsprite; this shows the rest.
+        # 64 of them and most are empty, so the strip stops after the last one
+        # holding a drawn subsprite; this shows the rest. (128 is the *subsprites*
+        # per frame in the extended form, not a frame count — ``scgcad.py``.)
         #
         # Not undoable, unlike everything else on this bar. Those set project
         # state the file does not record - a binding, a size pair - and this only
@@ -274,7 +269,7 @@ class TilemapBarMixin:
         # glyph too high.
         self._alphabet_base_label = QLabel(" Base code ")
         row.addWidget(self._alphabet_base_label)
-        self._alphabet_base = self._tilemap_hex_spin(
+        self._alphabet_base = hex_spin(
             -0xFFFF,
             0xFFFF,
             "Added to every code in the alphabet, shifting what the\n"
@@ -315,7 +310,7 @@ class TilemapBarMixin:
         # sets (View > Show Tile IDs).
         self._cell_index_label = QLabel("Cell ")
         row.addWidget(self._cell_index_label)
-        self._cell_index = self._tilemap_hex_spin(
+        self._cell_index = hex_spin(
             0,
             0xFFFF,
             "The tile the selected cells name - set it to point\n"
@@ -340,17 +335,6 @@ class TilemapBarMixin:
         offset_row.addWidget(self._tile_binding_note)
         offset_row.addStretch(1)
         return bar
-
-    def _tilemap_hex_spin(self, low: int, high: int, tip: str) -> QSpinBox:
-        """A hex spin matching the navigation bar's, so the two bars read alike
-        where they show the same kind of number."""
-        spin = QSpinBox()
-        spin.setRange(low, high)
-        spin.setDisplayIntegerBase(16)
-        spin.setPrefix("$")
-        spin.setKeyboardTracking(False)
-        spin.setToolTip(f"{tip} (hex)")
-        return spin
 
     # -- the swap ------------------------------------------------------------
     def _sync_tilemap_bar(self) -> None:
@@ -538,15 +522,15 @@ class TilemapBarMixin:
         answer without either having stored it.
         """
         entry = self._workspace.current
-        font = entry is not None and self._tilemap_is_font(entry)
+        fontmap = entry is not None and self._tilemap_is_fontmap(entry)
         for widget in (
             self._alphabet_label,
             self._alphabet,
             self._alphabet_base_label,
             self._alphabet_base,
         ):
-            widget.setVisible(font)
-        if not font:
+            widget.setVisible(fontmap)
+        if not fontmap:
             return
         bound = self._binding_target(entry.tile_source) if entry.tile_source else None
         self._alphabet.setEnabled(bound is not None)
@@ -590,9 +574,9 @@ class TilemapBarMixin:
         """Slide the bound font's alphabet along the code space — one step.
 
         Its own command per settled value rather than per tick: ``keyboardTracking``
-        is off on this spin (:meth:`_tilemap_hex_spin`), so holding the arrow key
-        reports once at the end and the undo stack gets the gesture instead of
-        the path it took.
+        is off on this spin (:func:`~celpix.ui.widgets.hex_spin`), so holding the
+        arrow key reports once at the end and the undo stack gets the gesture
+        instead of the path it took.
         """
         self._push_alphabet(lambda bound: (bound.alphabet_preset_id, value))
 
@@ -630,7 +614,7 @@ class TilemapBarMixin:
         font.alphabet_base = base
         for entry in self._workspace.entries:
             doc = entry.doc
-            if doc is None or not doc.is_font:
+            if doc is None or not doc.is_fontmap:
                 continue
             if self._binding_target(entry.tile_source) is not font:
                 continue
@@ -883,12 +867,12 @@ class TilemapBarMixin:
         half to take back; a second closes it.
 
         The prompt names what this entry is most likely after — a stamp layout
-        wants a panel, and asking it for "tiles" would name the thing its
+        wants a PNL panel, and asking it for "tiles" would name the thing its
         coordinates cannot read. Only the wording follows the format, though: what
         the dialog *accepts* is whatever a binding accepts (``_can_supply_tiles``).
         """
         title = (
-            "Panel for this stamp layout"
+            "PNL panel for this stamp layout"
             if self._tilemap_is_indirect(entry)
             else "Tiles for this tilemap"
         )

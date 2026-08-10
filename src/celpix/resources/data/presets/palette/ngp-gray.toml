@@ -3,7 +3,7 @@
 #
 # One grey level rather than three channels, so one mask drives all of R, G
 # and B (`gray`). See
-# docs/graphics-formats-reference/superfamiconv-formats.md §3.3.
+# docs/graphics-formats-reference/tile-converter-formats.md §3.3.
 id = "preset.palette.ngp-gray"
 name = "Neo Geo Pocket mono (3-bit grey)"
 engine_id = "codec.palette.mask"

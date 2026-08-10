@@ -47,6 +47,7 @@ display-only and reached with ``getattr``, so leaving it out costs nothing. See
 ``_tiff.py`` for a worked one.
 """
 
+from celpix.core.capabilities import ContentKind
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins import (
@@ -67,15 +68,22 @@ class ExampleContainer:
         stage=Stage.CONTAINER,
         # Detection is declarative: describe the file, never inspect it. This is
         # what lets the container claim its own files instead of being picked by
-        # hand. See _tiff.py for extensions/size_modulo/min_size too.
+        # hand. `extensions` is the other half of it — see _tiff.py, which claims
+        # .tif/.tiff by name as well as by both of its byte orders. `size_modulo`
+        # and `min_size` are a third: they never make a match, only narrow one an
+        # extension or a magic already made.
         magic=((0, _MAGIC),),
         # The tag the Files list shows beside a filename: "art.bin (Example)".
         short_name="Example",
-        # What kind of entry this frames. The default is graphics — pixels and
-        # tilemaps — which is what nearly every wrapper is, so it is left off
-        # here. Set `content_kinds=(ContentKind.PALETTE,)` for a container that
-        # frames a palette file, so a palette is never offered a ROM wrapper or
-        # the reverse. Detection and the container picker both read it.
+        # What kind of entry this frames — detection and the container picker
+        # both read it, so a palette is never offered a ROM wrapper or the
+        # reverse. The pair below *is* the default (graphics: pixels and
+        # tilemaps), which is what nearly every wrapper is; it is spelled out
+        # because the line most people actually want is the other one,
+        # `content_kinds=(ContentKind.PALETTE,)`, for a container framing a
+        # palette file. ContentKind comes from celpix.core.capabilities, which is
+        # the import at the top of this file to keep.
+        content_kinds=(ContentKind.PIXELS, ContentKind.TILEMAP),
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

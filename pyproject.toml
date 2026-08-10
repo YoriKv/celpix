@@ -62,6 +62,9 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Applied by tests/conftest.py from each module's own source, not written on the
+# tests by hand — so `-m "not qt"` cannot fall behind a suite being added or split.
+markers = ["qt: needs a QApplication (run the model layer alone with -m 'not qt')"]
 # Qt tests must never try to open a real window in CI. `offscreen` is forced
 # via tests/conftest.py before Qt is imported; this is a belt-and-suspenders.
 addopts = "-ra"

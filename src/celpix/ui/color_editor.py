@@ -44,7 +44,7 @@ from celpix.ui.widgets import (
     CommittingLineEdit,
     icon_cache_key,
     signals_blocked,
-    tinted_glyph,
+    tinted_icon,
 )
 
 # Channel order as edited, most significant first — the same order the hex
@@ -56,9 +56,9 @@ _CHANNEL_NAMES = {"A": "Alpha", "R": "Red", "G": "Green", "B": "Blue"}
 
 
 def _eyedropper_pixmap(color: QColor, size: int, ratio: float) -> QPixmap:
-    """The bundled eyedropper glyph, recolored to ``color`` at device resolution."""
+    """The bundled eyedropper icon, recolored to ``color`` at device resolution."""
     source = QImage.fromData(resources.read_bytes("icons", "eyedropper.png"))
-    return tinted_glyph(source, color, QSize(size, size), ratio)
+    return tinted_icon(source, color, QSize(size, size), ratio)
 
 
 def parse_hex_color(text: str) -> int | None:
@@ -233,7 +233,7 @@ class ColorEditor(QWidget):
         self._pick.setIconSize(QSize(16, 16))
 
     def changeEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        # The eyedropper glyph is a pixmap baked in the old palette's color at
+        # The eyedropper icon is a pixmap baked in the old palette's color at
         # the old resolution; a theme switch or a move to a differently scaled
         # display has to re-render it. Guarded on the key rather than the event,
         # because Qt sends a burst of PaletteChange on startup alone.

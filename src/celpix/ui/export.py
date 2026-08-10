@@ -9,7 +9,8 @@ other tools.
 The PNG is a genuine **indexed** (color-type-3) image: the render bridge builds
 a ``Format_Indexed8`` QImage whose color table is exactly the active subpalette,
 and Qt's PNG writer turns that into a palette PNG — so an exported sheet opens in
-Aseprite as an indexed sprite with the palette and index identity intact. Colors
+a sprite editor as an indexed image, with the palette and index identity intact.
+Colors
 keep the codec's own alpha; index 0 is exported opaque like any other entry (its
 color is preserved, not forced transparent) — see ``docs/design/export.md``.
 
@@ -98,7 +99,7 @@ def _tilemap_image(doc: Document, registry: Registry, columns: int) -> QImage:
     carries one table.
 
     Where the **format** has no palette row to give, the map indexes a single
-    block of the palette like a pixel document and the view's subpalette row says
+    range of the palette like a pixel document and the view's subpalette row says
     which — the same fallback the canvas takes, so the file still matches the
     screen (``rendering.RenderingMixin._render_tilemap``).
     """
@@ -165,7 +166,8 @@ def document_image(doc: Document, registry: Registry) -> QImage:
         )
     base = view.subpalette_row * index_space
     # Exactly one entry per index the format can produce, in celPix order — no
-    # minimizing (Aseprite would otherwise renumber unused leading colors). Every
+    # minimizing, which editors do on load and which would renumber unused
+    # leading colors. Every
     # entry keeps the codec's own alpha; index 0 is *not* forced transparent, so a
     # meaningful color 0 exports as the opaque color it is.
     table = [doc.palette.color(base + i) for i in range(index_space)]

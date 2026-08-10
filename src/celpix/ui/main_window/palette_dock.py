@@ -48,8 +48,10 @@ from celpix.ui.undo_commands import PaletteRowBaseCommand
 from celpix.ui.widgets import (
     CommittingLineEdit,
     CompactComboBox,
+    add_labelled,
     select_combo_data,
     signals_blocked,
+    value_spin,
 )
 
 # Floor for the header's mode-specific slot (file name, or offset field plus
@@ -65,6 +67,24 @@ _SOURCE_SLOT_MIN_WIDTH = 58
 _ROW_GAP = 4
 # Horizontal inset for each row, matching the swatch grid's own left edge.
 _ROW_MARGIN = 4
+
+
+def _dock_row(*widgets: QWidget) -> QHBoxLayout:
+    """One row of the dock's column: the shared inset, then a trailing stretch.
+
+    Every row here is a short run of controls pinned to the left edge, and the
+    inset is what lines them up with the swatch grid below (:data:`_ROW_MARGIN`).
+    Passing the widgets is the whole of the common case; a row that has a caption
+    to add through :func:`~celpix.ui.widgets.add_labelled` takes none and adds its
+    own stretch last, since a stretch has to stay the final item.
+    """
+    row = QHBoxLayout()
+    row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
+    for widget in widgets:
+        row.addWidget(widget)
+    if widgets:
+        row.addStretch(1)
+    return row
 
 
 class PaletteDockMixin:
@@ -171,10 +191,6 @@ class PaletteDockMixin:
         self._palette_preset.setToolTip("How palette bytes decode to colors")
         self._palette_preset.currentIndexChanged.connect(self._reload_palette)
         self._palette_preset.hide()
-        self._palette_format_label = QLabel("Format:")
-        self._palette_format_label.setToolTip(self._palette_preset.toolTip())
-        self._palette_format_label.setBuddy(self._palette_preset)
-        self._palette_format_label.hide()
 
         # The per-mode widgets share one slot whose *minimum* width is fixed and
         # mode-independent. Without it the header's minimum jumps by ~110px when
@@ -194,11 +210,7 @@ class PaletteDockMixin:
         source_row.addStretch(1)
         source_slot.setMinimumWidth(_SOURCE_SLOT_MIN_WIDTH)
 
-        header = QHBoxLayout()
-        header.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
-        header.addWidget(self._palette_mode_combo)
-        header.addWidget(source_slot)
-        header.addStretch(1)
+        header = _dock_row(self._palette_mode_combo, source_slot)
 
         # Custom only: snap the stored ARGB colors onto the values the selected
         # format can hold. A Custom palette keeps colors verbatim, so this is the
@@ -210,10 +222,11 @@ class PaletteDockMixin:
         self._quantize_palette_action.clicked.connect(self._quantize_custom_palette)
         self._quantize_palette_action.hide()
 
-        format_row = QHBoxLayout()
-        format_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
-        format_row.addWidget(self._palette_format_label)
-        format_row.addWidget(self._palette_preset)
+        format_row = _dock_row()
+        self._palette_format_label = add_labelled(
+            format_row, "Format:", self._palette_preset, self._palette_preset.toolTip()
+        )
+        self._palette_format_label.hide()
         format_row.addStretch(1)
 
         # Where a *named* row - a cell's, a subsprite's, a pinned region's -
@@ -222,31 +235,23 @@ class PaletteDockMixin:
         # file numbers its rows from wherever its own palette sat in CGRAM, and
         # this is the distance between there and here. Decimal, and signed, since
         # the loaded palette is as often the upper half as the whole of it.
-        self._row_base_label = QLabel("Base (Offset) Palette Row:")
-        self._row_base = self._spin(-255, 255, 0, self._on_row_base_change)
-        tip = (
+        self._row_base = value_spin(-255, 255, 0, self._on_row_base_change)
+        row_base_row = _dock_row()
+        self._row_base_label = add_labelled(
+            row_base_row,
+            "Base (Offset) Palette Row:",
+            self._row_base,
             "Which palette row a named row 0 draws through\n"
             "A map's cells, a sprite's parts and a bank's pinned\n"
             "rows all count from here; the file says where it can\n"
             "Palette > Wrap Palette Rows decides what happens\n"
-            "to a row this pushes off the end"
+            "to a row this pushes off the end",
         )
-        self._row_base.setToolTip(tip)
-        self._row_base_label.setToolTip(tip)
-        self._row_base_label.setBuddy(self._row_base)
-
-        row_base_row = QHBoxLayout()
-        row_base_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
-        row_base_row.addWidget(self._row_base_label)
-        row_base_row.addWidget(self._row_base)
         row_base_row.addStretch(1)
 
         # Its own row under Format: it acts *on* the picked format rather than
         # being part of choosing it, and only Custom shows it at all.
-        quantize_row = QHBoxLayout()
-        quantize_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
-        quantize_row.addWidget(self._quantize_palette_action)
-        quantize_row.addStretch(1)
+        quantize_row = _dock_row(self._quantize_palette_action)
 
         # Details readout for the panel's selected color. Selectable text so
         # values can be copied out.
@@ -291,23 +296,19 @@ class PaletteDockMixin:
             "How the next palette file opened is read\n"
             "The Format row re-reads the one on screen"
         )
-        self._palette_import_label = QLabel("Import as:")
-        self._palette_import_label.setToolTip(self._palette_import_preset.toolTip())
-        self._palette_import_label.setBuddy(self._palette_import_preset)
-
         # A row each: the two are opposite directions through the same file
         # format, and sharing a line left neither enough width at the dock's
         # natural size.
-        import_row = QHBoxLayout()
-        import_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
-        import_row.addWidget(self._palette_import_label)
-        import_row.addWidget(self._palette_import_preset)
+        import_row = _dock_row()
+        self._palette_import_label = add_labelled(
+            import_row,
+            "Import as:",
+            self._palette_import_preset,
+            self._palette_import_preset.toolTip(),
+        )
         import_row.addStretch(1)
 
-        export_row = QHBoxLayout()
-        export_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
-        export_row.addWidget(self._export_palette_action)
-        export_row.addStretch(1)
+        export_row = _dock_row(self._export_palette_action)
 
         container = QWidget()
         column = QVBoxLayout(container)

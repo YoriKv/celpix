@@ -48,6 +48,7 @@ from functools import lru_cache
 
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
+from celpix.plugins._byteops import or_all
 from celpix.plugins.base import PluginInfo, check_declared_stage
 
 DATA_LUT_ENGINE = "reshape.data-lut"
@@ -88,19 +89,6 @@ def _invert(lut: list[int]) -> list[int]:
     for value, mapped in enumerate(lut):
         out[mapped] = value
     return out
-
-
-def _or_all(parts: list[bytes]) -> bytes:
-    """Byte-wise OR of equal-length buffers, via one big-integer OR.
-
-    The codec kernels' trick (:func:`~celpix.plugins.builtins._bits.or_bytes`): an
-    arbitrary-precision OR is a word-at-a-time loop in C, where the obvious
-    comprehension would be a Python call per byte.
-    """
-    merged = 0
-    for part in parts:
-        merged |= int.from_bytes(part, "big")
-    return merged.to_bytes(len(parts[0]), "big")
 
 
 def _compile(lut: list[int], unit: int) -> tuple[tuple[bytes, ...], ...]:
@@ -191,7 +179,7 @@ class DataLutReshape:
         sources = [data[src::unit] for src in range(unit)]
         out = bytearray(len(data))
         for dst in range(unit):
-            out[dst::unit] = _or_all(
+            out[dst::unit] = or_all(
                 [sources[src].translate(tables[src][dst]) for src in range(unit)]
             )
         return bytes(out)

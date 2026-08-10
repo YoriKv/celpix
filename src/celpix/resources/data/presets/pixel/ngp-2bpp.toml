@@ -1,7 +1,7 @@
 # Neo Geo Pocket 2bpp, **non-swapped** — pixel 0 in the high 2 bits, and byte 0
 # of a row drives its left 4 pixels. This is the minority reading — one editor in
-# hand orders the row this way, against two (YY-CHR among them) that put the odd
-# byte on the left. Reach for `ngp-2bpp-swapped` first and fall back here if the
+# hand orders the row this way, against two others that put the odd byte on the
+# left. Reach for `ngp-2bpp-swapped` first and fall back here if the
 # art comes out with each group of four pixels transposed.
 #
 # The plain id is this one for historical reasons — a preset id is what saved

@@ -213,11 +213,12 @@ def flood_fill(
 def copy_rect(
     dst: Grid, dx: int, dy: int, src: Grid, sx: int, sy: int, w: int, h: int
 ) -> None:
-    """Copy a ``w × h`` block from ``src`` at ``(sx, sy)`` to ``dst`` at ``(dx, dy)``.
+    """Copy a ``w × h`` rectangle from ``src`` at ``(sx, sy)`` to ``dst`` at
+    ``(dx, dy)``.
 
     Clipped against both grids, then copied a whole row at a time — a lifted
     selection can be the entire window, and every rearrange or marquee drag
-    re-lifts and re-stamps it as the cursor moves, so the per-row slice store
+    re-lifts and re-places it as the cursor moves, so the per-row slice store
     rather than a per-pixel loop is what keeps a drag smooth.
     """
     left = max(0, -dx, -sx)
@@ -236,9 +237,9 @@ def copy_rect(
 
 
 def extract_region(grid: Grid, x: int, y: int, w: int, h: int) -> Grid:
-    """Copy the ``w × h`` block at ``(x, y)`` into a fresh grid of the same kind.
+    """Copy the ``w × h`` rectangle at ``(x, y)`` into a fresh grid of the same kind.
 
-    Pixels of the block that fall outside ``grid`` come back as 0 (the empty
+    Pixels of the rectangle that fall outside ``grid`` come back as 0 (the empty
     default), so a marquee dragged partly off the edge still lifts a full-size
     rectangle. The source is left untouched — the floating selection owns the
     copy.
@@ -249,7 +250,7 @@ def extract_region(grid: Grid, x: int, y: int, w: int, h: int) -> Grid:
 
 
 def clear_region(grid: Grid, x: int, y: int, w: int, h: int) -> None:
-    """Zero the ``w × h`` block at ``(x, y)``, clipped to ``grid``.
+    """Zero the ``w × h`` rectangle at ``(x, y)``, clipped to ``grid``.
 
     Zero is empty for both grid kinds — index 0, and transparent black — so
     lifting a selection out of the picture is a blit from a fresh grid rather
@@ -262,6 +263,6 @@ def clear_region(grid: Grid, x: int, y: int, w: int, h: int) -> None:
 def blit_region(dst: Grid, src: Grid, x: int, y: int) -> None:
     """Paste ``src`` into ``dst`` at ``(x, y)``, clipped to ``dst``'s bounds.
 
-    In place — how a floating selection stamps down.
+    In place — how a floating selection is laid down.
     """
     copy_rect(dst, x, y, src, 0, 0, src.width, src.height)

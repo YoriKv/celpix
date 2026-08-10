@@ -2,7 +2,7 @@
 
 Run-length-encoded NES/FDS CHR used by many Konami titles. It decompresses to
 ordinary NES 2bpp, which the pixel codec then interprets
-(``docs/graphics-formats-reference/implementation-guide.md`` §6), so these are
+(``docs/graphics-formats-reference/implementation-guide.md`` §7), so these are
 Compression-stage plugins rather than codec variants — pair either with the NES
 2bpp pixel preset.
 
@@ -45,6 +45,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._rle import pack_runs
 
 # Largest byte count one fill or literal control byte can safely encode. 0x7F and
 # 0xFF are reserved in the Contra reading (address change, terminator) and
@@ -116,40 +117,17 @@ def compress(data: bytes) -> bytes:
     Contra and FDS readings.
     """
     out = bytearray()
-    literals = bytearray()
-
-    def flush_literals() -> None:
-        start = 0
-        while start < len(literals):
-            take = min(len(literals) - start, _MAX_CHUNK)
-            out.append(0x80 | take)
-            out.extend(literals[start : start + take])
-            start += take
-        literals.clear()
-
-    i, n = 0, len(data)
-    while i < n:
-        value = data[i]
-        run = 1
-        while i + run < n and data[i + run] == value:
-            run += 1
-
-        if run >= _MIN_FILL_RUN:
-            flush_literals()
-            remaining = run
-            while remaining >= _MIN_FILL_RUN:
-                take = min(remaining, _MAX_CHUNK)
-                out.append(take)
-                out.append(value)
-                remaining -= take
-            # A 1- or 2-byte tail can't earn a fill of its own; ship it literal.
-            literals += bytes([value]) * remaining
-            i += run
-        else:
-            literals.append(value)
-            i += 1
-
-    flush_literals()
+    pack_runs(
+        data,
+        out,
+        literal_header=lambda count: 0x80 | count,
+        run_header=lambda count: count,
+        max_packet=_MAX_CHUNK,
+        min_run=_MIN_FILL_RUN,
+        # A 1- or 2-byte tail always ships literal, never as a fill of its own:
+        # one form per byte, at the cost of the byte PackBits takes back next door.
+        spill_pair_as_run=False,
+    )
     out.append(0xFF)
     return bytes(out)
 

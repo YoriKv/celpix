@@ -13,6 +13,7 @@ from celpix.core.context import (
     PipelineContext,
 )
 from celpix.core.errors import Stage
+from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins import discovery
 from celpix.plugins.base import ReadSource, WriteTarget
 from celpix.plugins.bitswap import BitswapReshape
@@ -521,7 +522,13 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
             )
         else:
             assert again == data
-    assert pixel_round_trips("format.pixel.example-4x4", {})  # code format
+    # The code format too. It is sub-8bpp, so its grid holds four indices per
+    # stored byte — the unpack the example exists to show, and the one thing a
+    # code pixel format gets wrong by handing IndexGrid the raw slice.
+    assert pixel_round_trips("format.pixel.example-2bpp", {})
+    packed2 = reg.plugin(Stage.INTERPRET_PIXEL, "format.pixel.example-2bpp")
+    tile = packed2.decode(bytes(16), {}, ctx)[0]
+    assert (tile.width, tile.height, len(tile.data)) == (8, 8, 64)
 
     palette_examples = toml_examples("palette", Stage.INTERPRET_PALETTE)
     assert {p.engine_id for p in palette_examples} == {
@@ -564,8 +571,23 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     # The code format too: a cell whose fields straddle bytes is exactly what the
     # engines cannot express, so its round trip is the one most worth checking.
     split = reg.plugin(Stage.INTERPRET_TILEMAP, "format.tilemap.example-split")
-    raw = bytes([0x34, 0x1D, 0x02, 0xFF, 0x00, 0x03])
-    assert split.encode(split.decode(raw, {}, ctx), {}, ctx) == raw
+    raw = bytes([0x34, 0x3D, 0x0E, 0xFF, 0x00, 0x03])
+    cells = split.decode(raw, {}, ctx)
+    # Named field by field, not just round-tripped: a field the example forgets
+    # to read decodes as its default and encodes back as that default, so the
+    # round trip still passes while the file loses the bits on the next save.
+    assert (cells[0].index, cells[0].palette_row, cells[0].priority) == (0x234, 7, 1)
+    assert (cells[0].flip_h, cells[0].flip_v, cells[0].flags) == (True, False, 3)
+    assert split.encode(cells, {}, ctx) == raw
+    # Its optional methods have to reach the *engine* surface, params and all —
+    # that forwarding is what makes an example's cells editable at all. A format
+    # whose index_limit never arrives leaves the cell reference unsettable and
+    # every flip refused, with nothing shown to say why.
+    assert split.index_limit({}) == 0x3FF
+    assert split.palette_row_limit({}) == 0x07
+    assert split.has_palette_rows({}) is True
+    assert split.transform_cell(Cell(index=1), CellOp.FLIP_H, {}).flip_h is True
+    assert split.transform_cell(Cell(index=1), CellOp.ROTATE_CW, {}) is None
     # NES-custom code format (no companion .pal, so its baked master palette is
     # used): index bytes whose colors are unique in that table, so nearest-color
     # encode maps each straight back to the index it came from.
@@ -721,11 +743,27 @@ def test_example_presets_name_shipped_presets_that_exist(tmp_path) -> None:
             if line.startswith("#   ") and not line.startswith("#     "):
                 first = body.split()[0]
                 if not first.startswith("-"):
-                    named.setdefault(path.name, set()).add(first)
+                    # Keyed by path, not name: pixel/ and tilemap/ both carry a
+                    # _packed.toml, and merging their two lists would report a
+                    # failure against the wrong file.
+                    named.setdefault(path.relative_to(tmp_path).as_posix(), set()).add(
+                        first
+                    )
 
-    # The parse has to actually find something, or this test passes by finding
-    # nothing to check the day the comment format changes.
-    assert len(named) >= 5, named
+    # Every example in the three format folders has to carry a parsed block, or
+    # one that quietly stops writing the list opts out of this check instead of
+    # being caught by it — which is also what guards the parse itself against the
+    # day the comment format changes. The other two folders are out because their
+    # block is prose rather than a list: `reshape/` ships no preset built on
+    # either engine (the shipped tables are plugins in their own right), and
+    # `alphabet/`'s one engine reads a table rather than heading a tier.
+    expected = {
+        path.relative_to(tmp_path).as_posix()
+        for folder in ("palette", "pixel", "tilemap")
+        for path in (tmp_path / folder).glob("_*.toml")
+    }
+    assert set(named) == expected
+
     missing = {
         name: sorted(found - known) for name, found in named.items() if found - known
     }

@@ -2,18 +2,31 @@
 #
 # Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
 #
-# The third tilemap engine, and a near-twin of _object.toml: frames of subsprites
-# at signed pixel offsets, same as that one. What differs is the *record* — its
-# fields are spread across single bytes rather than packed into the console's
-# own sprite attribute word, its character number is 12 bits rather than 9, and
-# it stores X before Y where the other stores Y first.
+# A sprite engine: frames of subsprites at signed pixel offsets rather than cells
+# in rows.
 #
-# There is nothing to configure about that layout: it is fixed in the engine,
-# because it is one format's record rather than a family of them. If your format
-# is shaped like a sprite but lays its record out differently again, the engine
-# to copy is this one's code, not this file.
+# There is nothing to configure about the record layout: it is fixed in the
+# engine, because it is one format's record rather than a family of them. If your
+# format is shaped like a sprite but lays its record out differently again, the
+# engine to copy is this one's code, not this file.
 #
-# Built on `codec.tilemap.scgcad-obz`, as is the shipped scgcad-obz preset.
+# WHICH ENGINE IS WHICH
+# ---------------------
+# **This is the byte-per-field engine**: the record spreads its fields across
+# single bytes rather than packing them into a sprite attribute word, its
+# character number is 12 bits rather than 9, and it stores X before Y. Three more
+# engines here read sprite records, differing only in the record:
+#
+#   _object.toml     a packed sprite word; a size *bit* picks one of two sizes
+#   _md-sprite.toml  a size *nibble* stating a rectangle, tiles down columns
+#   _ys-spr.toml     frames of different lengths, counted by the container
+#
+# Anything laid out in rows wants the grid engine, _packed.toml.
+#
+# SHIPPED PRESETS BUILT ON IT
+# ---------------------------
+#   scgcad-obz      the format this engine exists for, and the only one shipped
+#                   on it.
 
 id = "preset.tilemap.example-obz"
 name = "Example transfer object subsprite"

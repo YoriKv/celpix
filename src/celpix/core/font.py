@@ -265,16 +265,6 @@ class Alphabet:
         return self._glyphs
 
     @property
-    def empty(self) -> bool:
-        """Whether nothing is mapped, i.e. the whole stream reads as hex.
-
-        The state a fontmap bound to a font with no alphabet is in, and the one
-        the text window says out loud rather than showing a wall of ``[$xx]``
-        with no explanation.
-        """
-        return not self._glyphs
-
-    @property
     def commands(self) -> tuple[Glyph, ...]:
         """The glyphs that punctuate rather than spell — the insert row's list.
 

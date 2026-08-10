@@ -53,16 +53,10 @@ Format detail and provenance are in
 
 from __future__ import annotations
 
-from celpix.core.context import (
-    KEY_COMPRESSED_SIZE,
-    KEY_DECOMPRESS_COMPLETE,
-    KEY_DECOMPRESS_PARTIAL,
-    PipelineContext,
-)
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
+from celpix.plugins.base import PartialDecompression, PluginInfo
 
-from ._lz import MatchFinder
+from ._lz import MatchFinder, copy_back
 
 DESC_BYTES = 2
 DESC_BITS = DESC_BYTES * 8
@@ -182,8 +176,7 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
                     f"match reaches {distance:,} bytes back "
                     f"into {len(out):,} bytes of output"
                 )
-            for _ in range(length):
-                out.append(out[-distance])
+            copy_back(out, distance, length)
     except _Truncated:
         if not partial:
             raise _fail(f"source ended after {len(out):,} bytes") from None
@@ -333,7 +326,7 @@ def compress(data: bytes) -> bytes:
     return writer.finish()
 
 
-class KosinskiCompression:
+class KosinskiCompression(PartialDecompression):
     info = PluginInfo(
         id="compression.kosinski",
         name="Kosinski (Mega Drive LZSS)",
@@ -343,13 +336,5 @@ class KosinskiCompression:
         category="Sega",
     )
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        out, consumed, complete = decompress(
-            data, partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL))
-        )
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
-        return out
-
-    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return compress(data)
+    _decode = staticmethod(decompress)
+    _encode = staticmethod(compress)

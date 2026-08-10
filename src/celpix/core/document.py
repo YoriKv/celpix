@@ -438,9 +438,9 @@ class Document:
         The container's width hint read straight off the context
         (:data:`~celpix.core.context.KEY_TILEMAP_COLUMNS`). Distinct from the
         view's Cols, which the user owns and which this only seeds: a stamped
-        resolution has to snap positions to blocks, and it can only do that
+        resolution has to snap positions to stamps, and it can only do that
         against a width the *file* fixes — snapping against a width the user was
-        free to change would move every block the moment they changed it.
+        free to change would move every stamp the moment they changed it.
         """
         return int(self.tilemap_ctx.get(KEY_TILEMAP_COLUMNS, 0) or 0)
 
@@ -467,7 +467,7 @@ class Document:
         return self.sprite_frames is not None
 
     @property
-    def is_font(self) -> bool:
+    def is_fontmap(self) -> bool:
         """Whether these cells are character codes — a **fontmap**.
 
         The two named tilemap variants sit at opposite ends of how much they
@@ -502,7 +502,7 @@ class Document:
         from celpix.core.font import Alphabet as _Alphabet
         from celpix.core.font import Text as _Text
 
-        if not self.is_font:
+        if not self.is_fontmap:
             return _Text("", ())
         alphabet = self.alphabet or _Alphabet(code_digits=max(1, self.cell_bytes * 2))
         cells = self.cells or []
@@ -693,7 +693,7 @@ class Document:
         """The assembly the **format** states, or 0 where it states none.
 
         A screen file is the case this exists for: its four quadrants are one
-        64x64 tilemap and the editor's own loader says which corner each block
+        64x64 tilemap and the editor's own loader says which corner each quadrant
         goes in, so the layout is structural rather than something to read off
         the picture (:data:`~celpix.core.context.KEY_TILEMAP_PAGES_ACROSS`).
         Checked against the pages actually present, so a file read under a cell

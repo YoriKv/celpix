@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSpinBox,
     QToolBar,
     QWidget,
 )
@@ -57,6 +56,7 @@ from celpix.ui.widgets import (
     funnel_icon,
     select_combo_data,
     signals_blocked,
+    value_spin,
 )
 
 # The Rows control's tooltip, in its two states: it is the window height until
@@ -68,7 +68,7 @@ ROWS_LOCKED_TIP = "Tile rows shown\nLocked by View > Entire File"
 # setting being held — there is no window to set the height of.
 ROWS_WHOLE_TIP = "Tile rows shown\nA tilemap is always shown whole"
 
-# The Subpal control's tooltip, in its two states. It picks the block of palette
+# The Subpal control's tooltip, in its two states. It picks the range of palette
 # entries the picture indexes into — except on a tilemap whose cells name a row
 # each, where the file has already answered and a second answer would shift a map
 # that is in the right colours (see MainWindow._sync_subpalette).
@@ -80,7 +80,7 @@ TILE_SIZE_CELL_TIP = (
     "Size of one map cell in pixels\nSelections and edits work a cell at a time"
 )
 
-SUBPAL_TIP = "Which block of palette entries tiles index into"
+SUBPAL_TIP = "Which range of palette entries tiles index into"
 # On a tilemap whose cells carry rows the spin does not recolour anything - the
 # file has answered that, and a view-wide row on top would shift a map already in
 # its authored colours. It is still the row being *pointed at*: the palette grid
@@ -305,7 +305,7 @@ class InterpretationMixin:
 
         # Ranged well past a screenful of 8-px tiles because a bitmap width
         # derives this: a 4096-px bitmap of 8-px tiles is 512 columns.
-        self._columns = self._spin(1, 512, 16, self._on_view_change)
+        self._columns = value_spin(1, 512, 16, self._on_view_change)
         # The caption is kept for the same reason Rows' and Subpal's are: an
         # assembled tilemap locks the pair and has to say what locked it
         # (:meth:`~...rendering.RenderingMixin._settle_tilemap_assembly`).
@@ -320,7 +320,7 @@ class InterpretationMixin:
         # How many tile-rows the window shows - the "render N rows" view setting.
         # Kept on self with its caption because View > Entire File locks the pair
         # (see MainWindow._sync_entire_file), which retooltips and greys both.
-        self._rows = self._spin(1, 256, 16, self._on_view_change)
+        self._rows = value_spin(1, 256, 16, self._on_view_change)
         self._rows_label = add_labelled(view, "Rows:", self._rows, ROWS_TIP)
         # Cols maxes at 2 digits, rows at 3, so their hints differ - pin both
         # to the rows hint so the pair reads as a matched set.
@@ -341,7 +341,7 @@ class InterpretationMixin:
 
         # Range 255: enough rows for a 512-entry palette under a 2-color (1bpp)
         # index space; the view refresh clamps to the loaded palette anyway.
-        self._subpalette = self._spin(0, 255, 0, self._on_view_change)
+        self._subpalette = value_spin(0, 255, 0, self._on_view_change)
         # The caption is kept because _sync_subpalette retooltips the pair
         # together on a tilemap whose cells carry their own rows, where the spin
         # picks a row to *assign* rather than one to draw through - and a label
@@ -377,8 +377,8 @@ class InterpretationMixin:
         self._pattern.currentIndexChanged.connect(self._on_pattern_change)
         add_labelled(arrange, "Pattern:", self._pattern, self._pattern.toolTip())
 
-        self._block_cols = self._spin(1, 64, 1, self._on_view_change)
-        self._block_rows = self._spin(1, 256, 1, self._on_view_change)
+        self._block_cols = value_spin(1, 64, 1, self._on_view_change)
+        self._block_rows = value_spin(1, 256, 1, self._on_view_change)
         # Narrower than the three digits Cols and Rows are pinned to: a block is a
         # handful of tiles \u2014 every shipped arrangement is 1 or 2 a side \u2014 so
         # sizing these to their *range* reserved a Rows-wide box for a "2".
@@ -436,7 +436,7 @@ class InterpretationMixin:
         # width, which an 8-px tile can't do for (say) 306. Deliberately outside
         # _arrangement_controls: a Pattern preset picks the arrangement, not the
         # width of one particular asset, so it stays editable under a preset.
-        self._bitmap_width = self._spin(0, 8192, 0, self._recut_tile_geometry)
+        self._bitmap_width = value_spin(0, 8192, 0, self._recut_tile_geometry)
         self._bitmap_width.setSuffix(" px")
         add_labelled(
             arrange,
@@ -642,17 +642,6 @@ class InterpretationMixin:
         if self._doc is None:
             return True
         return self._on_pixel_preset_change()
-
-    @staticmethod
-    def _spin(low: int, high: int, value: int, on_change) -> QSpinBox:
-        spin = QSpinBox()
-        spin.setRange(low, high)
-        spin.setValue(value)
-        # Commit on Enter / focus-out / stepping, not on every keystroke, so typing
-        # a multi-digit value doesn't re-render (and re-clamp) for each character.
-        spin.setKeyboardTracking(False)
-        spin.valueChanged.connect(on_change)
-        return spin
 
     # -- current selections ------------------------------------------------
     def _pixel_preset_id(self) -> str:

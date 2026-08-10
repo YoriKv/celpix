@@ -30,7 +30,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -40,7 +39,13 @@ from celpix.pipeline import pipeline
 from celpix.project.workspace import TileSource
 from celpix.ui import render_bridge
 from celpix.ui.tile_source_panel import TileSourcePanel
-from celpix.ui.widgets import counted
+from celpix.ui.widgets import (
+    add_labelled,
+    counted,
+    pan_scroll_area,
+    value_spin,
+    zoom_anchored,
+)
 
 # The dock's rows carry no vertical margin of their own, and its inset matches
 # the palette dock's - the two share a tab bar, so a row that sat on a different
@@ -102,39 +107,28 @@ class TileSourceDockMixin:
         # document cannot answer: how wide to read it, and how big. Both are the
         # reader's, not the file's, so neither is project state - they are the
         # panel's own view of a bank that has no natural width.
-        self._tile_source_columns = QSpinBox()
-        self._tile_source_columns.setRange(1, 64)
-        self._tile_source_columns.setValue(_DEFAULT_COLUMNS)
-        self._tile_source_columns.setKeyboardTracking(False)
-        self._tile_source_columns.setToolTip(
-            "Tiles across the sheet\nHow the bank is read, not how it is stored"
+        self._tile_source_columns = value_spin(
+            1, 64, _DEFAULT_COLUMNS, lambda _value: self._refresh_tile_source()
         )
-        self._tile_source_columns.valueChanged.connect(
-            lambda _value: self._refresh_tile_source()
+        self._tile_source_zoom = value_spin(
+            1, 8, _DEFAULT_ZOOM, self._on_tile_source_zoom
         )
-        columns_label = QLabel("Cols")
-        columns_label.setToolTip(self._tile_source_columns.toolTip())
-        columns_label.setBuddy(self._tile_source_columns)
-
-        self._tile_source_zoom = QSpinBox()
-        self._tile_source_zoom.setRange(1, 8)
-        self._tile_source_zoom.setValue(_DEFAULT_ZOOM)
-        self._tile_source_zoom.setKeyboardTracking(False)
         self._tile_source_zoom.setSuffix("x")
-        self._tile_source_zoom.setToolTip(
-            "Magnification of the sheet\nCtrl+wheel over the tiles does the same"
-        )
-        self._tile_source_zoom.valueChanged.connect(self._on_tile_source_zoom)
-        zoom_label = QLabel("Zoom")
-        zoom_label.setToolTip(self._tile_source_zoom.toolTip())
-        zoom_label.setBuddy(self._tile_source_zoom)
 
         header = QHBoxLayout()
         header.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
-        header.addWidget(columns_label)
-        header.addWidget(self._tile_source_columns)
-        header.addWidget(zoom_label)
-        header.addWidget(self._tile_source_zoom)
+        add_labelled(
+            header,
+            "Cols",
+            self._tile_source_columns,
+            "Tiles across the sheet\nHow the bank is read, not how it is stored",
+        )
+        add_labelled(
+            header,
+            "Zoom",
+            self._tile_source_zoom,
+            "Magnification of the sheet\nCtrl+wheel over the tiles does the same",
+        )
         header.addStretch(1)
 
         # Details for the picked tile, and the note that stands in for them when
@@ -191,40 +185,14 @@ class TileSourceDockMixin:
         The canvas's wheel zoom (``NavigationMixin._on_zoom_requested``) with its
         one simplification: these levels are whole magnifications a spin steps
         through, so a notch is a step rather than a walk along an uneven list.
-        Driving the spin rather than the panel is what keeps the readout, the
-        keyboard and the wheel one value.
-
-        ``pos`` is the cursor on the panel, which is already in sheet pixels
-        times the zoom — so the sheet pixel under it divides out, and putting it
-        back is the same two scroll-bar writes the canvas makes.
         """
-        old = self._tile_source_zoom.value()
-        new = min(
-            max(old + steps, self._tile_source_zoom.minimum()),
-            self._tile_source_zoom.maximum(),
-        )
-        if new == old:
-            return
-        hbar = self._tile_source_scroll.horizontalScrollBar()
-        vbar = self._tile_source_scroll.verticalScrollBar()
-        view_x = pos.x() - hbar.value()
-        view_y = pos.y() - vbar.value()
-        img_x, img_y = pos.x() / old, pos.y() / old
-        self._tile_source_zoom.setValue(new)  # resizes the panel synchronously
-        hbar.setValue(round(img_x * new - view_x))
-        vbar.setValue(round(img_y * new - view_y))
+        spin = self._tile_source_zoom
+        new = min(max(spin.value() + steps, spin.minimum()), spin.maximum())
+        zoom_anchored(self._tile_source_scroll, spin, new, pos)
 
     def _pan_tile_source(self, dx: int, dy: int) -> None:
-        """Shift the sheet's scroll view by a space-drag delta (device pixels).
-
-        The bars clamp to the content, so a pan cannot push the sheet off screen
-        and is a no-op while it already fits — the canvas's ``_pan_view``, over
-        this dock's own scroll area.
-        """
-        hbar = self._tile_source_scroll.horizontalScrollBar()
-        vbar = self._tile_source_scroll.verticalScrollBar()
-        hbar.setValue(hbar.value() - dx)
-        vbar.setValue(vbar.value() - dy)
+        """Shift the sheet's scroll view by a space-drag delta (device pixels)."""
+        pan_scroll_area(self._tile_source_scroll, dx, dy)
 
     # -- set base tile -------------------------------------------------------
     def _can_set_base_tile(self) -> bool:
@@ -442,8 +410,8 @@ class TileSourceDockMixin:
             image = render_bridge.render(
                 sheet.grid, doc.palette, row * self._index_space()
             )
-        # The stamp, not the cell: where a source states a block size an ID names
-        # the whole block, so the click target has to be the whole block too.
+        # The stamp, not the cell: where a source states a stamp size an ID names
+        # the whole stamp, so the click target has to be the whole stamp too.
         across, down = doc.stamp_tiles
         self._tile_source_panel.set_zoom(self._tile_source_zoom.value())
         self._tile_source_panel.set_sheet(
@@ -625,7 +593,7 @@ class TileSourceDockMixin:
         stamp = resolve_cell(
             Cell(index=tile_id), chain.source, carry_rows=chain.carry_rows
         )
-        # The corner cell's own attributes, which is what a block's other cells
+        # The corner cell's own attributes, which is what a stamp's other cells
         # each have their own of - so the size is stated and the rest is left to
         # the picture rather than listed cell by cell.
         across, down = doc.stamp_cells

@@ -21,7 +21,7 @@ Two unit sizes cover the shipped variants:
   tile byte ``k + N * y``, the ``{ base = k, stride = N }`` rule the shipped
   ``snes-2bpp`` / ``3bpp-planar`` / ``sms-4bpp`` / ``5bpp``…``8bpp-planar``
   presets already carry. It is independent of tile geometry, so one plugin serves
-  an 8×8 2bpp character set and a 16×16 4bpp sprite alike. The same interleave is
+  an 8×8 2bpp tile set and a 16×16 4bpp sprite alike. The same interleave is
   MAME's ``ROM_LOAD16_BYTE`` / ``32_BYTE`` / ``64_BYTE`` chip pairing, one *byte
   lane* per chip rather than one plane; the transform cannot tell the two readings
   apart, and neither changes it.
@@ -41,7 +41,7 @@ of a ``ROM_LOAD32_WORD`` pair looks like a palette problem.
 are exactly the graphics region; a region plus a trailing chunk of something else
 misaligns every part after the first. That mirrors the hardware description, where
 the split is a fraction of the region rather than an absolute offset
-(``docs/graphics-formats-reference/mame-formats.md`` §1.1). A tail beyond a whole
+(``docs/graphics-formats-reference/mame-formats.md`` §2). A tail beyond a whole
 number of unit-aligned parts passes through untouched, so an odd length degrades
 to "the last few bytes are not interpreted" instead of shearing the image.
 """

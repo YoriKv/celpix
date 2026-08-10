@@ -68,14 +68,33 @@ class PipelineError(Exception):
     "the container failed **while saving**", so the message keeps it:
     ``[pixel/container:write] …``. Empty for a stage where there is nothing to
     disambiguate.
+
+    ``plugin`` names **which** plugin or preset was running, and is what turns a
+    report into something a user can act on: a stage says what kind of work
+    failed, not whose code was doing it, so ``[pixel/interpret-pixel] data length
+    16 != 64`` leaves someone with three codecs installed no way to tell which one
+    to look at — and no way at all to tell a plugin of their own from a built-in.
+    Rendered ahead of the message rather than inside the bracket, so the
+    ``[pathway/stage:action]`` sub-label documented in
+    ``docs/design/plugin-system.md`` stays exactly what it was:
+    ``[pixel/interpret-pixel] snes-4bpp: data length 16 != 64``. Empty where the
+    failure is not any one plugin's.
     """
 
     def __init__(
-        self, stage: Stage, pathway: Pathway, message: str, action: str = ""
+        self,
+        stage: Stage,
+        pathway: Pathway,
+        message: str,
+        action: str = "",
+        *,
+        plugin: str = "",
     ) -> None:
         self.stage = stage
         self.pathway = pathway
         self.action = action
+        self.plugin = plugin
         self.message = message
         label = f"{stage.value}:{action}" if action else stage.value
-        super().__init__(f"[{pathway.value}/{label}] {message}")
+        detail = f"{plugin}: {message}" if plugin else message
+        super().__init__(f"[{pathway.value}/{label}] {detail}")

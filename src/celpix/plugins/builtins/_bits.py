@@ -28,33 +28,6 @@ from __future__ import annotations
 from functools import cache
 
 
-def or_bytes(a: bytes, b: bytes) -> bytes:
-    """Byte-wise OR of two equal-length buffers.
-
-    Via ``int``: an arbitrary-precision OR is one word-at-a-time loop in C where
-    the obvious comprehension would be a Python call per byte. Big-endian both
-    ways, so byte *i* of the result is byte *i* of each input OR-ed — the
-    conversion is a formality, not a reading of the bytes as a number.
-    """
-    n = len(a)
-    return (int.from_bytes(a, "big") | int.from_bytes(b, "big")).to_bytes(n, "big")
-
-
-def or_all(buffers: list[bytes]) -> bytes:
-    """OR a list of equal-length buffers together (empty list → ``b""``).
-
-    What callers OR together varies — bitplanes, the per-pixel field contributions
-    inside one packed byte, the component bytes of an ARGB pixel — so this is
-    about buffers rather than any one of them.
-    """
-    if not buffers:
-        return b""
-    merged = buffers[0]
-    for buffer in buffers[1:]:
-        merged = or_bytes(merged, buffer)
-    return merged
-
-
 @cache
 def bit_expansion(plane: int) -> tuple[bytes, ...]:
     """One plane byte → the eight pixels it contributes bit ``plane`` to.

@@ -59,7 +59,7 @@ the right way round for a feature whose job is "colour what I am looking at".
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QKeySequence
 
 from celpix.core.arrangement import tile_first_pixel, tile_pixel_spans
 from celpix.core.paletteregions import PaletteRegions
@@ -68,7 +68,12 @@ from celpix.core.tilemap import Cell
 from celpix.pipeline.pipeline import drawn_palette_row
 from celpix.ui.main_window.capability_sync import Gesture
 from celpix.ui.undo_commands import PaletteRegionsCommand
-from celpix.ui.widgets import counted, load_bool_setting, save_bool_setting
+from celpix.ui.widgets import (
+    counted,
+    load_bool_setting,
+    make_action,
+    save_bool_setting,
+)
 
 # QSettings keys for the two "show me the pins" toggles. Local preferences rather
 # than project state, for the reason the grid's are (``window.py``): what the pins
@@ -184,19 +189,16 @@ class PaletteRegionsMixin:
         """
         # Mnemonic "h": "S" is Pin Selection's and "P" Palette from Selection's,
         # both of which share this menu.
-        self._show_palette_regions_action = QAction("S&how Pinned Palette Colors", self)
-        self._show_palette_regions_action.setCheckable(True)
-        self._show_palette_regions_action.setChecked(self._show_palette_regions)
-        self._show_palette_regions_action.setShortcut(QKeySequence("Shift+P"))
-        self._show_palette_regions_action.setShortcutContext(
-            Qt.ShortcutContext.WidgetShortcut
-        )
-        self._show_palette_regions_action.setToolTip(
-            "Draw pinned regions through their own rows (Shift+P)\n"
-            "Off draws the whole view in one subpalette"
-        )
-        self._show_palette_regions_action.toggled.connect(
-            self._set_show_palette_regions
+        self._show_palette_regions_action = make_action(
+            self,
+            "S&how Pinned Palette Colors",
+            self._set_show_palette_regions,
+            tip="Draw pinned regions through their own rows (Shift+P)\n"
+            "Off draws the whole view in one subpalette",
+            shortcut=QKeySequence("Shift+P"),
+            context=Qt.ShortcutContext.WidgetShortcut,
+            checkable=True,
+            checked=self._show_palette_regions,
         )
         # The rows, as a separate switch from the colors. Seeing a tile drawn
         # through row 5 does not tell you it *is* row 5 — several rows often
@@ -208,15 +210,16 @@ class PaletteRegionsMixin:
         # tilemap is the cells' own (`rendering._palette_row_labels`). The
         # recolour toggle above it stays about the pins alone — a map is drawn
         # through its cells' rows whether or not anything is switched on.
-        self._show_palette_rows_action = QAction("Show Palette &Rows", self)
-        self._show_palette_rows_action.setCheckable(True)
-        self._show_palette_rows_action.setChecked(self._show_palette_rows)
-        self._show_palette_rows_action.setToolTip(
-            "Number each tile with the subpalette row it names\n"
+        self._show_palette_rows_action = make_action(
+            self,
+            "Show Palette &Rows",
+            self._set_show_palette_rows,
+            tip="Number each tile with the subpalette row it names\n"
             "A pinned row on a pixel view, a cell's own on a tilemap\n"
-            "Drawn in the grid's own color, in the tile's bottom-left"
+            "Drawn in the grid's own color, in the tile's bottom-left",
+            checkable=True,
+            checked=self._show_palette_rows,
         )
-        self._show_palette_rows_action.toggled.connect(self._set_show_palette_rows)
         # The third switch, and the one that is not about the pins alone: it says
         # how the palette row **base** behaves at the ends of the palette, which a
         # map's cells and a sprite's parts obey as much as a pinned row does. It
@@ -224,15 +227,16 @@ class PaletteRegionsMixin:
         # reading what is loaded, remembered app-wide and written to no project.
         #
         # Mnemonic "W": free in this menu, where "S", "P", "h" and "l" are taken.
-        self._wrap_palette_rows_action = QAction("&Wrap Palette Rows", self)
-        self._wrap_palette_rows_action.setCheckable(True)
-        self._wrap_palette_rows_action.setChecked(self._wrap_palette_rows)
-        self._wrap_palette_rows_action.setToolTip(
-            "Let Base Palette Row carry a row off one end of the\n"
+        self._wrap_palette_rows_action = make_action(
+            self,
+            "&Wrap Palette Rows",
+            self._set_wrap_palette_rows,
+            tip="Let Base Palette Row carry a row off one end of the\n"
             "palette and back on at the other\n"
-            "Off, a row pushed below the first stops there"
+            "Off, a row pushed below the first stops there",
+            checkable=True,
+            checked=self._wrap_palette_rows,
         )
-        self._wrap_palette_rows_action.toggled.connect(self._set_wrap_palette_rows)
 
     def _build_pin_actions(self) -> None:
         """The pin gestures, shared by the transform bar and two menus.
@@ -248,32 +252,29 @@ class PaletteRegionsMixin:
         """
         # Mnemonic "S": "P" belongs to Palette from Selection beside it, and "N"
         # to New Slice, which shares the canvas menu with both.
-        self._pin_palette_action = QAction("Pin &Selection to Subpalette", self)
+        self._pin_palette_action = make_action(
+            self,
+            "Pin &Selection to Subpalette",
+            self._pin_selection,
+            tip="Render the selected tiles through the current\n"
+            "Subpal row, whatever the view is set to",
+        )
         self._pin_palette_action.setIconText("Pin")
-        self._pin_palette_action.setToolTip(
-            "Render the selected tiles through the current\n"
-            "Subpal row, whatever the view is set to"
+        self._unpin_palette_action = make_action(
+            self,
+            "&Unpin Selection",
+            self._unpin_selection,
+            tip="Return the selected tiles to the view's own subpalette",
         )
-        self._pin_palette_action.triggered.connect(self._pin_selection)
-        self._unpin_palette_action = QAction("&Unpin Selection", self)
         self._unpin_palette_action.setIconText("Unpin")
-        self._unpin_palette_action.setToolTip(
-            "Return the selected tiles to the view's own subpalette"
-        )
-        self._unpin_palette_action.triggered.connect(self._unpin_selection)
         # Mnemonic "l": "a" is Paste's in the canvas menu these three also sit in.
-        self._unpin_all_action = QAction("Unpin A&ll", self)
-        self._unpin_all_action.setToolTip(
-            "Drop every pinned region, returning the whole\n"
-            "picture to the view's own subpalette"
+        self._unpin_all_action = make_action(
+            self,
+            "Unpin A&ll",
+            self._unpin_all,
+            tip="Drop every pinned region, returning the whole\n"
+            "picture to the view's own subpalette",
         )
-        self._unpin_all_action.triggered.connect(self._unpin_all)
-
-    def _toggle_show_palette_regions(self) -> None:
-        """The menu row's own route to the toggle ``Shift+P`` presses directly
-        (:class:`~...navigation.KeyControl`)."""
-        if self._show_palette_regions_action.isEnabled():
-            self._show_palette_regions_action.toggle()
 
     def _set_show_palette_rows(self, on: bool) -> None:
         save_bool_setting(SHOW_PALETTE_ROWS_KEY, on)

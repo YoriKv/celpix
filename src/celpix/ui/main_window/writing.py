@@ -27,12 +27,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QMessageBox
-
 from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.core.errors import PipelineError
 from celpix.pipeline import pipeline
 from celpix.project.workspace import Entry, EntryKind
+from celpix.ui.widgets import confirm_destructive
 
 
 def _and_list(names: list[str]) -> str:
@@ -78,22 +77,21 @@ class WritingMixin:
         if not dirty:
             return True
         names = ", ".join(e.name for e in dirty)
-        box = QMessageBox(self)
-        box.setWindowTitle("celPix - unsaved changes")
-        box.setText(f"{consequence} ({names}). Write them to disk first?")
-        write = box.addButton(write_label, QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(skip_label, QMessageBox.ButtonRole.DestructiveRole)
-        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
-        if default_write:
-            box.setDefaultButton(write)
-        box.exec()
-        if box.clickedButton() is cancel:
-            return False
-        if box.clickedButton() is write:
+
+        def write() -> bool:
             self._write_all()
             # A write that failed left its entry dirty - don't proceed past it.
             return not self._workspace.dirty_entries()
-        return True
+
+        return confirm_destructive(
+            self,
+            "celPix - unsaved changes",
+            f"{consequence} ({names}). Write them to disk first?",
+            write_label,
+            skip_label,
+            write,
+            default_safe=default_write,
+        )
 
     def _write_current(self) -> None:
         """File ▸ Write: what is on screen — its own file, its tiles, its palette.
@@ -379,7 +377,7 @@ class WritingMixin:
           (:meth:`~...session.SessionMixin._load_bound_tiles`), the one deliberate
           exception to ``entry_view_bytes`` being the single funnel.
         - **An Offset palette** resolving against its owner's buffer
-          (:meth:`~...palette_source.PaletteSourceMixin._reordered_view`).
+          (:meth:`~...palette_offset.PaletteOffsetMixin._reordered_view`).
         - **Showing** the file, and **writing** anything in its region, both of
           which folded before and still do.
 

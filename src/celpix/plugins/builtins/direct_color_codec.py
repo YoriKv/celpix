@@ -23,8 +23,8 @@ from typing import Any
 from celpix.core.argb_grid import ArgbGrid
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
+from celpix.plugins._byteops import or_all
 from celpix.plugins.base import PluginInfo
-from celpix.plugins.builtins._bits import or_all
 from celpix.plugins.builtins._mask import (
     ARGB_BYTE_LAYOUT,
     decode_tables,

@@ -4,7 +4,7 @@
 # Not the same layout as `grb333`, which spaces the same three components a
 # nibble apart. Both are "9-bit GRB" and they are not interchangeable — the
 # console packs, the tile editor pads. See
-# docs/graphics-formats-reference/superfamiconv-formats.md §3.3.
+# docs/graphics-formats-reference/tile-converter-formats.md §3.3.
 id = "preset.palette.pce-grb333"
 name = "GRB333 (9-bit packed, PC Engine VCE)"
 engine_id = "codec.palette.mask"

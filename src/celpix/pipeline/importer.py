@@ -13,9 +13,9 @@ pipeline never asks:
 2. **Where do the tiles start and stop?** The image is one rectangle; the model
    is a linear stream of fixed-size tiles. It is cut on the tile grid in screen
    reading order (row-major), because an image is *pixels* — it says what the
-   canvas should look like, not which storage slots to fill. The caller stamps
-   each cut tile at its canvas cell and lets the view's arrangement decide
-   which stored tile that cell is, exactly as if the user had painted the
+   canvas should look like, not which storage slots to fill. The caller places
+   each cut tile at its canvas slot and lets the view's arrangement decide
+   which stored tile that slot is, exactly as if the user had painted the
    pixels by hand — so a blocked view (a 2×2 tile block, an 8×16 sprite) shows
    the image as pasted.
 

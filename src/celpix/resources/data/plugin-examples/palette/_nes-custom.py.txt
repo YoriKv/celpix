@@ -37,7 +37,7 @@ _DEFAULT_MASTER = [
     0xB1BE00, 0x76DA00, 0x48E823, 0x32E17F, 0x38C9EC, 0x454545, 0x000000, 0x000000,
     0xFFFFFF, 0xB9DAFF, 0xD0CBFF, 0xEABFFF, 0xFEBAFF, 0xFFBCE5, 0xFFC6B8, 0xF6D594,
     0xDFE482, 0xC6F087, 0xB2F6A1, 0xA8F3CA, 0xAAE9F7, 0xB0B0B0, 0x000000, 0x000000,
-]
+]  # fmt: skip
 
 _MASTER_COLORS = 64  # NES master palette size; 512-entry (emphasis) .pal files
 _PAL_BYTES = _MASTER_COLORS * 3  # are read as their base 64 only.
@@ -53,8 +53,10 @@ def _load_master_palette():
         return list(_DEFAULT_MASTER)
     if len(raw) < _PAL_BYTES:  # truncated/not a .pal — don't half-apply it
         return list(_DEFAULT_MASTER)
-    return [(raw[i * 3] << 16) | (raw[i * 3 + 1] << 8) | raw[i * 3 + 2]
-            for i in range(_MASTER_COLORS)]
+    return [
+        (raw[i * 3] << 16) | (raw[i * 3 + 1] << 8) | raw[i * 3 + 2]
+        for i in range(_MASTER_COLORS)
+    ]
 
 
 class NesCustomPalette:
@@ -80,8 +82,11 @@ class NesCustomPalette:
         r, g, b = (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF
         best_i, best_d = 0, None
         for i, c in enumerate(self._table):
-            d = (abs(r - ((c >> 16) & 0xFF)) + abs(g - ((c >> 8) & 0xFF))
-                 + abs(b - (c & 0xFF)))
+            d = (
+                abs(r - ((c >> 16) & 0xFF))
+                + abs(g - ((c >> 8) & 0xFF))
+                + abs(b - (c & 0xFF))
+            )
             if best_d is None or d < best_d:
                 best_i, best_d = i, d
         return best_i

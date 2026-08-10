@@ -28,6 +28,10 @@
 #                   (0x000E / 0x00E0 / 0x0E00) — the Mega Drive's CRAM.
 #   rgb888          3 bytes, a whole byte a channel, nothing lossy.
 #   rgb555-split-be a channel split into two runs — the list form below.
+#   gb-bgp          bits_per_entry 2, invert, gray — four shades in one register
+#                   byte, counting darkness.
+#   ws-gray         bits_per_entry 4, invert, gray — the same idea a nibble wide.
+#   ngp-gray        invert + gray over a whole-byte entry.
 
 id = "preset.palette.example-color-mask"
 name = "Example RGB555"
@@ -45,6 +49,32 @@ bytes_per_entry = 2
 #   "big"     first byte is most significant
 # Only meaningful when bytes_per_entry is more than 1.
 byte_order = "little"
+
+# For an entry SMALLER than a byte, replace `bytes_per_entry` above with this —
+# the two are mutually exclusive and giving both is refused. A handheld's shade
+# register is four two-bit entries in one byte, or four nibbles in two; it is a
+# register rather than an array, so nothing on disk is one entry wide to point
+# at. Sub-byte entries fill each unit from the LOW bits up, which is the order
+# both handheld families use. A value of 8 or more is `bytes_per_entry` spelt in
+# bits; anything else must divide 8.
+# bits_per_entry = 2
+
+# Does a field count DARKNESS rather than brightness? The handhelds' greyscales
+# do — 0 is white on all three of them — so the scaled value is flipped end for
+# end after the mask is applied.
+#   false  0 is black, the usual way round   (the default)
+#   true   0 is white
+invert = false
+
+# Does an entry store ONE shade rather than three channels? Then declare a single
+# mask below and it drives r, g and b together. Writing the same mask three times
+# would say something different and wrong: a pure red would encode through the OR
+# of the three as a colour the format cannot mean. Going the other way an
+# arbitrary colour is reduced by luma, which is what the hardware's own
+# converters do.
+#   false  three (or four) channel masks below   (the default)
+#   true   exactly one mask, the shade's own field
+gray = false
 
 # One bit mask per channel over the assembled entry value. Keys are `r`, `g`, `b`
 # and optionally `a`; omit `a` when the hardware has no alpha and every entry

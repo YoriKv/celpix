@@ -62,7 +62,10 @@ from celpix.ui.widgets import (
     CommittingLineEdit,
     CompactComboBox,
     add_labelled,
+    hex_spin,
+    pan_scroll_area,
     signals_blocked,
+    zoom_anchored,
     zoom_level_after,
 )
 
@@ -236,19 +239,18 @@ class NavigationMixin:
         rows.addLayout(step_row)
 
         # Bank settings - created before the dropdown whose handler fills them.
-        # Hex spin boxes (not line edits) so they clamp and step like the rest of
-        # the toolbar; disabled while the flat-hex format needs none of them.
-        self._bank_size = self._hex_spin(0x1, 0x1000000, 0x8000, "Bank size in bytes")
-        self._bank_addr = self._hex_spin(
-            0x0, 0xFFFFFF, 0x8000, "Address of a bank's first byte"
+        self._bank_size = hex_spin(0x1, 0x1000000, "Bank size in bytes", 0x8000)
+        self._bank_addr = hex_spin(
+            0x0, 0xFFFFFF, "Address of a bank's first byte", 0x8000
         )
-        self._bank_first = self._hex_spin(
-            0x0, 0xFF, 0x00, "Bank of the file's first byte"
-        )
+        self._bank_first = hex_spin(0x0, 0xFF, "Bank of the file's first byte")
         # The bank anchor is the setting users actually retune (mirror
         # conventions), so give it room beyond its two-digit size hint.
         self._bank_first.setFixedWidth(int(self._bank_first.sizeHint().width() * 1.4))
         self._bank_spins = (self._bank_size, self._bank_addr, self._bank_first)
+        for spin in self._bank_spins:
+            spin.setEnabled(False)  # the default format (flat hex) has none of them
+            spin.valueChanged.connect(self._on_bank_setting_change)
 
         # Kept on self: its tooltip names the live address format, so it is
         # re-set alongside the box's in _refresh_offset_display.
@@ -371,19 +373,6 @@ class NavigationMixin:
         step_row.addWidget(self._nudge_info)
         step_row.addStretch(1)
         return bar
-
-    def _hex_spin(self, low: int, high: int, value: int, tip: str) -> QSpinBox:
-        """A bank-setting spin box: hex display, commit-on-finish, $-prefixed."""
-        spin = QSpinBox()
-        spin.setRange(low, high)
-        spin.setValue(value)
-        spin.setDisplayIntegerBase(16)
-        spin.setPrefix("$")
-        spin.setKeyboardTracking(False)
-        spin.setEnabled(False)  # the default format (flat hex) has no bank settings
-        spin.setToolTip(f"{tip} (hex)")
-        spin.valueChanged.connect(self._on_bank_setting_change)
-        return spin
 
     def _tile_offset_bar_style(self) -> str:
         """Accent-colored QSS for the file-position bar.
@@ -650,43 +639,20 @@ class NavigationMixin:
         return self._canvas
 
     def _pan_view(self, dx: int, dy: int) -> None:
-        """Shift the scroll view by a space-drag delta (device pixels).
+        """Shift the scroll view by a space-drag delta (device pixels)."""
+        pan_scroll_area(self._scroll, dx, dy)
 
-        The scroll bars clamp to the content, so a pan can never push the image off
-        screen; when the view already fits the viewport their range is empty and
-        this is a no-op.
-        """
-        hbar = self._scroll.horizontalScrollBar()
-        vbar = self._scroll.verticalScrollBar()
-        hbar.setValue(hbar.value() - dx)
-        vbar.setValue(vbar.value() - dy)
-
-    def _on_zoom_requested(self, steps: int, pos) -> None:
+    def _on_zoom_requested(self, steps: int, pos) -> None:  # noqa: ANN001 — QPointF
         """Wheel-zoom the canvas, keeping the pixel under the cursor stationary.
 
-        Drives the zoom spin (so the change persists per entry and re-renders
-        through the normal view path), then shifts the scroll bars so the image
-        pixel that was under the cursor lands back under it — otherwise a zoom
-        would appear to slide the art out from beneath the pointer. ``pos`` is the
-        cursor in the canvas's device coordinates.
+        ``pos`` is the cursor in the canvas's device coordinates. One wheel notch
+        is one *level*, not one multiplier: the levels are not evenly spaced (0.5
+        sits under 1), so the list is what a step walks — the only thing this
+        view's zoom does differently from the docks' and the player's.
         """
-        old = self._zoom.value()
-        # One wheel notch is one *level*, not one multiplier: the levels are not
-        # evenly spaced (0.5 sits under 1), so the list is what a step walks.
-        new = zoom_level_after(old, steps)
-        if new == old:
-            return
-        hbar = self._scroll.horizontalScrollBar()
-        vbar = self._scroll.verticalScrollBar()
-        # The cursor's spot in the viewport, and the image pixel it sits on now.
-        view_x = pos.x() - hbar.value()
-        view_y = pos.y() - vbar.value()
-        img_x, img_y = pos.x() / old, pos.y() / old
-        self._zoom.setValue(new)  # re-renders and resizes the canvas synchronously
-        # Put that same pixel back under the cursor; the scroll bars clamp so the
-        # image can't be pushed off screen (a no-op when the view already fits).
-        hbar.setValue(round(img_x * new - view_x))
-        vbar.setValue(round(img_y * new - view_y))
+        zoom_anchored(
+            self._scroll, self._zoom, zoom_level_after(self._zoom.value(), steps), pos
+        )
 
     def _zoom_steps(self, steps: int) -> None:
         """Zoom from the View menu or its shortcut, anchored on the viewport centre.

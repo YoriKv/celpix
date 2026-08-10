@@ -12,6 +12,36 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# What makes a suite a Qt suite. Any one of these in a module's source means its
+# tests need a QApplication: the import itself, the fixture that supplies one, or
+# the window every UI suite drives.
+_QT_MARKERS = ("PySide6", "qtbot", "MainWindow")
+
+
+def pytest_collection_modifyitems(items):
+    """Mark every test whose module needs Qt, so the model layer can run alone.
+
+    ``-m "not qt"`` is then the whole of the fast loop — a few seconds over the
+    Qt-free suites against a minute and a half for everything — and the two halves
+    cannot drift apart, because neither is a list anyone maintains.
+
+    **Detected rather than declared**, and that is the point: a list of Qt suites
+    written down somewhere goes stale the moment one is added, renamed or split,
+    and then quietly runs less than whoever is reading it believes. The source is
+    the only description of a suite that cannot fall behind it.
+    """
+    seen: dict[str, bool] = {}
+    for item in items:
+        path = str(item.path)
+        if path not in seen:
+            try:
+                text = item.path.read_text(encoding="utf-8")
+            except OSError:  # a generated or in-memory module: assume it is not Qt's
+                text = ""
+            seen[path] = any(marker in text for marker in _QT_MARKERS)
+        if seen[path]:
+            item.add_marker(pytest.mark.qt)
+
 
 @pytest.fixture(autouse=True)
 def captured_alerts(monkeypatch):

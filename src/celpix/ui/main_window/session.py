@@ -297,8 +297,8 @@ class SessionMixin:
                 # document derives it, so an edit can re-derive it the same way.
                 #
                 # The stamp size and the source's width come off the *source's*
-                # context, which is the only place either is stated: a panel's
-                # header says how big a block its callers index in, and a layout's
+                # context, which is the only place either is stated: a PNL panel's
+                # header says how big a stamp its callers index in, and a layout's
                 # own file has no idea (`docs/design/tilemap-entry.md` §3.1).
                 chain=CellChain(
                     through.cells or [],
@@ -379,7 +379,7 @@ class SessionMixin:
             sprite_frames=loaded.frames,
             sprite_size_pair=self._size_pair_for(entry, loaded.size_pair),
             cells_carry_palette_rows=loaded.palette_rows,
-            text_layout=self._tilemap_is_font(entry),
+            text_layout=self._tilemap_is_fontmap(entry),
             alphabet=self._alphabet_for(entry, tiles, loaded.cell_bytes),
         )
         self._apply_restored_state(entry)
@@ -574,7 +574,7 @@ class SessionMixin:
             return None
         return preset.params.get(name)
 
-    def _tilemap_is_font(self, entry: Entry) -> bool:
+    def _tilemap_is_fontmap(self, entry: Entry) -> bool:
         """Whether ``entry``'s **format** says its cells are character codes.
 
         A *fontmap* is the tilemap variant whose cells index a font rather than
@@ -613,7 +613,7 @@ class SessionMixin:
         measure and not the font's: the same sheet may be indexed at either
         width, and a code shown at the wrong one does not type back.
         """
-        if not self._tilemap_is_font(entry):
+        if not self._tilemap_is_fontmap(entry):
             return None
         bound = self._binding_target(entry.tile_source) if entry.tile_source else None
         controls = self._tilemap_declares(entry, "controls") or ()
@@ -687,7 +687,7 @@ class SessionMixin:
         Chaining itself is generic and gated on depth (:meth:`_bound_tilemap`), so
         this never decides what a map may draw through; it decides how the bar
         reads while nothing is bound yet. A stamp layout with no source is still a
-        stamp layout, and should be offered panels first and no Base tile rather
+        stamp layout, and should be offered PNL panels first and no Base tile rather
         than being described as a map that merely has not picked its art.
         """
         return bool(self._tilemap_declares(entry, "indirect"))
@@ -837,7 +837,7 @@ class SessionMixin:
         The audience for a change to those bytes: each of them holds a decoded
         copy, so an edit made on any one of them — or on ``owner`` itself — has to
         reach the rest or two views of one bank drift apart
-        (:meth:`~celpix.ui.main_window.selection.SelectionMixin._apply_pixel_bytes`).
+        (:meth:`~celpix.ui.main_window.tile_bytes.TileBytesMixin._apply_pixel_bytes`).
 
         Resolved through :meth:`_tile_bank_owner`, so a chained map counts as
         drawing from the bank at the end of its chain — which is where its own
@@ -1168,7 +1168,7 @@ class SessionMixin:
             preview_compression_id=self._compression_id(),
             selected_tile=self._selected_tile,
             selected_last=self._selected_last,
-            selection_cells=self._rect_size,
+            selection_slots=self._rect_size,
         )
 
     def _restore_session(self, entry: Entry) -> None:
@@ -1252,12 +1252,12 @@ class SessionMixin:
         # A stored rectangle is re-resolved against the view that was restored
         # with it, so it comes back covering the same cells it was drawn over.
         self._rect_size, self._rect_tiles = None, ()
-        if session.selected_tile is not None and session.selection_cells is not None:
+        if session.selected_tile is not None and session.selection_slots is not None:
             tiles = self._rect_tiles_for(
-                session.selected_tile - self._offset, *session.selection_cells
+                session.selected_tile - self._offset, *session.selection_slots
             )
             if tiles:
-                self._rect_size, self._rect_tiles = session.selection_cells, tiles
+                self._rect_size, self._rect_tiles = session.selection_slots, tiles
                 self._selected_last = max(tiles)
         self._sync_selection_actions()
         self._set_palette_mode(session.palette_mode)  # also arms Write
@@ -1329,7 +1329,7 @@ class SessionMixin:
         self._set_file_actions_enabled(False)
 
     def _set_document_ui_enabled(self, enabled: bool) -> None:
-        """Grey out (or restore) the document-editing surfaces as a block.
+        """Grey out (or restore) the document-editing surfaces in one go.
 
         A missing (unavailable) entry has no document to drive, so its codec,
         arrangement and view toolbars and the palette dock are disabled until a

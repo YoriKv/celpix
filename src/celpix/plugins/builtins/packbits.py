@@ -51,6 +51,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._rle import pack_runs
 
 # Output bytes one packet can carry, literal or run.
 _MAX_PACKET = 128
@@ -101,46 +102,24 @@ def decompress(data: bytes) -> tuple[bytes, int]:
 
 
 def compress(data: bytes) -> bytes:
-    """Encode raw bytes as a PackBits stream."""
+    """Encode raw bytes as a PackBits stream.
+
+    The control byte is a *signed* count: a literal packet states one less than
+    the bytes that follow it, and a run states its length as ``257 - count``, which
+    is that count's negation read back as an unsigned byte.
+    """
     out = bytearray()
-    literals = bytearray()
-
-    def flush_literals() -> None:
-        start = 0
-        while start < len(literals):
-            take = min(len(literals) - start, _MAX_PACKET)
-            out.append(take - 1)
-            out.extend(literals[start : start + take])
-            start += take
-        literals.clear()
-
-    def emit_run(value: int, count: int) -> None:
-        out.append(257 - count)
-        out.append(value)
-
-    i, n = 0, len(data)
-    while i < n:
-        value = data[i]
-        run = 1
-        while i + run < n and data[i + run] == value:
-            run += 1
-        i += run
-
-        if run >= _MIN_RUN:
-            flush_literals()
-            while run >= _MIN_RUN:
-                take = min(run, _MAX_PACKET)
-                emit_run(value, take)
-                run -= take
-        # 0-2 bytes may remain, either a short run or a long one's tail. With a
-        # literal packet already open they ride along at one byte each; with none
-        # open, opening one to hold 2 bytes costs 3 where a run costs 2.
-        if run == 2 and not literals:
-            emit_run(value, 2)
-        else:
-            literals += bytes([value]) * run
-
-    flush_literals()
+    pack_runs(
+        data,
+        out,
+        literal_header=lambda count: count - 1,
+        run_header=lambda count: 257 - count,
+        max_packet=_MAX_PACKET,
+        min_run=_MIN_RUN,
+        # A lone pair with no literal packet open is cheaper as a run; see
+        # _MIN_RUN, and :func:`~celpix.plugins.builtins._rle.pack_runs`.
+        spill_pair_as_run=True,
+    )
     return bytes(out)
 
 

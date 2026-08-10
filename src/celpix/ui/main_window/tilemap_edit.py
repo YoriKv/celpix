@@ -8,11 +8,12 @@ exactly this — so the control is one and the behaviour resolves here
 
 Two rules the pixel side does not need:
 
-- **A block flip is two operations.** Reversing the cells' order mirrors the
-  layout while leaving each tile facing its original way; toggling each cell's
-  bit mirrors every tile in place. A mirrored picture needs both, which is why
-  :meth:`~TilemapEditMixin._transform_cell_block` does the permutation *and* the
-  toggle, exactly as :meth:`~celpix.core.tilemap.CellGrid.flipped_h` does.
+- **Flipping a cell selection is two operations.** Reversing the cells' order
+  mirrors the layout while leaving each tile facing its original way; toggling
+  each cell's bit mirrors every tile in place. A mirrored picture needs both,
+  which is why :meth:`~TilemapEditMixin._transform_cell_selection` does the
+  permutation *and* the toggle, exactly as
+  :meth:`~celpix.core.tilemap.CellGrid.flipped_h` does.
 - **The clipboard stays inside celPix.** Cells are indices into a tile source
   that the receiving program knows nothing about — pasted into another editor
   they would be meaningless numbers, and pasted back from one they could name
@@ -61,9 +62,9 @@ class TilemapEditMixin:
     def _selected_cells(self) -> list[int]:
         """The cell indices the selection covers, in order and without repeats.
 
-        The canvas selects *tiles*, and a cell may be several of them (a panel
-        cell is a 2x2 metatile), so a selection can name the same cell four
-        times. Cells are emitted in order with their tiles consecutive
+        The canvas selects *tiles*, and a cell may be several of them (a PNL
+        panel's cell is a 2x2 metatile), so a selection can name the same cell
+        four times. Cells are emitted in order with their tiles consecutive
         (:func:`~celpix.pipeline.pipeline.tilemap_tiles`), which is what makes
         the slot-to-cell step a division rather than a layout question.
 
@@ -79,7 +80,7 @@ class TilemapEditMixin:
         both have to go. A cell drawn as several tiles is one already, which
         :meth:`_selected_positions` handles. A **stamped** map adds the other
         direction: several drawn positions share one entry, so a selection over a
-        block would otherwise name it once per position — and an operation that
+        stamp would otherwise name it once per position — and an operation that
         *toggles* rather than sets would cancel itself out on the second visit.
         """
         doc = self._doc
@@ -117,10 +118,10 @@ class TilemapEditMixin:
     def _cell_rect(self) -> tuple[int, int, int, int] | None:
         """The selected rectangle in **cell** coordinates, or None.
 
-        The block geometry arrives in canvas **slots**, which are tiles
+        The selected rectangle arrives in canvas **slots**, which are tiles
         (:meth:`~...transform.TransformMixin._block_geometry`); a metatile map
-        divides down to its own cell grid. A rectangle narrower than one cell has
-        no block to flip, so it comes back None rather than as an empty one.
+        divides down to its own cell grid. A rectangle narrower than one cell
+        holds no cell to flip, so it comes back None rather than as an empty one.
         """
         doc = self._doc
         geom = self._block_geometry()
@@ -261,9 +262,9 @@ class TilemapEditMixin:
 
         It answers **this file's** format, which is what makes it the right test
         for a chained map: a stamp layout's word is a coordinate with no palette
-        field, so the row a position draws through is the *panel's* and the panel
-        is where it can be changed (``docs/design/tilemap-entry.md`` §3.1). The
-        drawn row and the writable row are two different questions there, and
+        field, so the row a position draws through is the *PNL panel's*, and that
+        panel is where it can be changed (``docs/design/tilemap-entry.md`` §3.1).
+        The drawn row and the writable row are two different questions there, and
         only this one is about bytes this entry owns.
 
         None too on a sprite object, whose records this path cannot reach at all
@@ -381,13 +382,13 @@ class TilemapEditMixin:
         if self._apply_cells(cells, f"{op.verb} cells"):
             self.statusBar().showMessage(f"{op.past} {counted(len(indices), 'cell')}.")
 
-    def _transform_cell_block(self, op) -> None:  # noqa: ANN001 — a TransformOp
-        """Transform the selected block: reorder the cells **and** transform each.
+    def _transform_cell_selection(self, op) -> None:  # noqa: ANN001 — a TransformOp
+        """Transform the selected rectangle: reorder the cells **and** transform each.
 
-        ``op.cell_src`` gives the permutation, shared with the pixel block path
-        so the two cannot disagree about direction; the per-cell half goes
-        through the format, and a format that cannot do it stops the whole block
-        rather than leaving it reordered but unturned.
+        ``op.cell_src`` gives the permutation, shared with the pixel side's
+        rectangle transform so the two cannot disagree about direction; the
+        per-cell half goes through the format, and a format that cannot do it
+        stops the whole selection rather than leaving it reordered but unturned.
         """
         doc = self._doc
         rect = self._cell_rect()
@@ -407,17 +408,17 @@ class TilemapEditMixin:
         for dy in range(rows):
             for dx in range(cols):
                 sx, sy = op.cell_src(dx, dy, cols, rows)
-                # Both ends through the document, because the block is a rectangle
-                # of the *picture* and the cells it holds need not be a run of the
-                # file: on an assembled screen a block spanning two pages moves
-                # cells between them, which is what the user drew over.
+                # Both ends through the document, because the selection is a
+                # rectangle of the *picture* and the cells it holds need not be a
+                # run of the file: on an assembled screen a selection spanning two
+                # pages moves cells between them, which is what the user drew over.
                 dest = doc.cell_at((y0 + dy) * width + (x0 + dx))
                 src = doc.cell_at((y0 + sy) * width + (x0 + sx))
                 if 0 <= dest < len(cells) and 0 <= src < len(original):
                     cells[dest] = apply(original[src])
                     moved += 1
-        if moved and self._apply_cells(cells, f"{op.verb} cell block"):
-            self.statusBar().showMessage(f"{op.past} the {cols}x{rows} cell block.")
+        if moved and self._apply_cells(cells, f"{op.verb} cell selection"):
+            self.statusBar().showMessage(f"{op.past} the {cols}x{rows} cell selection.")
 
     # -- the in-app clipboard ------------------------------------------------
     def _copy_cells(self) -> bool:
@@ -546,14 +547,14 @@ class TilemapEditMixin:
             self.statusBar().showMessage(f"Cleared {counted(len(indices), 'cell')}.")
 
     def _paste_cells(self) -> None:
-        """Stamp the buffer over the map from the selection's first cell.
+        """Lay the buffer over the map from the selection's first cell.
 
         Overwrite and clipped, never inserting: the map's extent is the file's,
         so a paste replaces exactly as many cells as there is room for.
         """
         doc = self._doc
-        block = getattr(self, "_cell_clipboard", None)
-        if doc is None or doc.cells is None or block is None or not len(block):
+        copied = getattr(self, "_cell_clipboard", None)
+        if doc is None or doc.cells is None or copied is None or not len(copied):
             self.statusBar().showMessage("No cells copied yet.")
             return
         # The anchor is where the selection is *drawn*, not which cell of the file
@@ -565,25 +566,25 @@ class TilemapEditMixin:
         x0, y0 = start % width, start // width
         cells = list(doc.cells)
         written = 0
-        for dy in range(block.height):
-            for dx in range(block.width):
+        for dy in range(copied.height):
+            for dx in range(copied.width):
                 x, y = x0 + dx, y0 + dy
                 at = doc.cell_at(y * width + x)
                 if x < width and 0 <= at < len(cells):
-                    cells[at] = block.get(dx, dy)
+                    cells[at] = copied.get(dx, dy)
                     written += 1
         if not written:
             self.statusBar().showMessage("Nothing pasted - no room here.")
             return
         if self._apply_cells(cells, "paste cells"):
-            clipped = len(block) - written
+            clipped = len(copied) - written
             note = f" ({clipped} clipped)" if clipped else ""
             self.statusBar().showMessage(f"Pasted {counted(written, 'cell')}{note}.")
 
     def _has_cell_clipboard(self) -> bool:
         """Whether a cell paste would have anything to put down."""
-        block = getattr(self, "_cell_clipboard", None)
-        return block is not None and len(block) > 0
+        copied = getattr(self, "_cell_clipboard", None)
+        return copied is not None and len(copied) > 0
 
     # -- committing ----------------------------------------------------------
     def _apply_cells(

@@ -28,10 +28,10 @@ def test_plain_layout_is_row_major_both_directions() -> None:
     layout = BlockLayout(columns=4)
     assert layout.is_plain
     for slot in range(12):
-        assert layout.slot_to_cell(slot) == (slot % 4, slot // 4)
+        assert layout.slot_to_pos(slot) == (slot % 4, slot // 4)
     for tx in range(4):
         for ty in range(3):
-            assert layout.cell_to_slot(tx, ty) == ty * 4 + tx
+            assert layout.pos_to_slot(tx, ty) == ty * 4 + tx
 
 
 def test_slot_and_cell_are_inverses_for_every_block_order() -> None:
@@ -41,20 +41,20 @@ def test_slot_and_cell_are_inverses_for_every_block_order() -> None:
         )
         seen: set[tuple[int, int]] = set()
         for slot in range(24):  # 6 wide × 4 tall = 24 cells, one block-row is 12
-            cell = layout.slot_to_cell(slot)
+            cell = layout.slot_to_pos(slot)
             assert cell not in seen  # the mapping is a bijection over the cells
             seen.add(cell)
-            assert layout.cell_to_slot(*cell) == slot
+            assert layout.pos_to_slot(*cell) == slot
 
 
 def test_sequential_block_stacks_consecutive_tiles_vertically() -> None:
     # NES/GB 8×16: a 1×2 block, filled block-by-block, stacks tile i (top) over
     # tile i+1 (bottom); the next sprite lands in the next column.
     layout = BlockLayout(columns=4, block_rows=2)
-    assert layout.slot_to_cell(0) == (0, 0)  # sprite 0 top
-    assert layout.slot_to_cell(1) == (0, 1)  # sprite 0 bottom
-    assert layout.slot_to_cell(2) == (1, 0)  # sprite 1 top
-    assert layout.slot_to_cell(3) == (1, 1)  # sprite 1 bottom
+    assert layout.slot_to_pos(0) == (0, 0)  # sprite 0 top
+    assert layout.slot_to_pos(1) == (0, 1)  # sprite 0 bottom
+    assert layout.slot_to_pos(2) == (1, 0)  # sprite 1 top
+    assert layout.slot_to_pos(3) == (1, 1)  # sprite 1 bottom
 
 
 def test_column_order_stacks_genesis_sprite_tiles() -> None:
@@ -62,10 +62,10 @@ def test_column_order_stacks_genesis_sprite_tiles() -> None:
     # vertically then horizontally"): a 2×2 sprite is tiles TL, BL, TR, BR — down
     # the first column, then the next — not the row-major TL, TR, BL, BR.
     layout = BlockLayout(columns=2, block_columns=2, block_rows=2, block_order="column")
-    assert layout.slot_to_cell(0) == (0, 0)  # TL
-    assert layout.slot_to_cell(1) == (0, 1)  # BL — down before across
-    assert layout.slot_to_cell(2) == (1, 0)  # TR
-    assert layout.slot_to_cell(3) == (1, 1)  # BR
+    assert layout.slot_to_pos(0) == (0, 0)  # TL
+    assert layout.slot_to_pos(1) == (0, 1)  # BL — down before across
+    assert layout.slot_to_pos(2) == (1, 0)  # TR
+    assert layout.slot_to_pos(3) == (1, 1)  # BR
 
 
 def test_row_interleave_lays_all_tops_then_all_bottoms() -> None:
@@ -73,13 +73,13 @@ def test_row_interleave_lays_all_tops_then_all_bottoms() -> None:
     # of bottoms. With a 1×2 block over 4 columns, tiles 0..3 are the top row and
     # tiles 4..7 the bottom row.
     layout = BlockLayout(columns=4, block_rows=2, block_order="row-interleave")
-    assert [layout.slot_to_cell(s) for s in range(4)] == [
+    assert [layout.slot_to_pos(s) for s in range(4)] == [
         (0, 0),
         (1, 0),
         (2, 0),
         (3, 0),
     ]
-    assert [layout.slot_to_cell(s) for s in range(4, 8)] == [
+    assert [layout.slot_to_pos(s) for s in range(4, 8)] == [
         (0, 1),
         (1, 1),
         (2, 1),
@@ -91,8 +91,8 @@ def test_partial_width_block_column_has_no_slot() -> None:
     # 5 columns with 2-wide blocks: two whole blocks fill x0..3; the last column
     # (x=4) is past the last whole block, so no tile maps there.
     layout = BlockLayout(columns=5, block_columns=2)
-    assert layout.cell_to_slot(4, 0) is None
-    assert layout.cell_to_slot(3, 0) is not None
+    assert layout.pos_to_slot(4, 0) is None
+    assert layout.pos_to_slot(3, 0) is not None
 
 
 def test_compose_window_places_tiles_by_block_layout() -> None:

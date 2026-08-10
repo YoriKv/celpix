@@ -7,7 +7,7 @@
 # byte, and editing any one of them rewrites that byte
 # (docs/design/palette-editing.md). The Game Boy Color's own palettes are not
 # this — they are ordinary BGR555 colour, so use `bgr555` for those.
-# See docs/graphics-formats-reference/superfamiconv-formats.md §3.3.
+# See docs/graphics-formats-reference/tile-converter-formats.md §3.3.
 id = "preset.palette.gb-bgp"
 name = "Game Boy palette register (4 x 2-bit grey)"
 engine_id = "codec.palette.mask"

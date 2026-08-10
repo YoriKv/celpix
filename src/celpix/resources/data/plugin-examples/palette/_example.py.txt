@@ -26,6 +26,13 @@ class Gray4:
         colors = []
         for b in data:
             v = (b >> 4) * 17  # 0..15 -> 0..255
+            # Opaque alpha, and not as a formality: celPix decides whether to
+            # offer an alpha input by round-tripping a transparent colour
+            # through this format and seeing whether it survives. A format with
+            # no alpha field must therefore decode one *back* as 0xFF — leave
+            # the byte at 0 and the colour editor offers a slider whose value
+            # this format has nowhere to store, so every edit through it is lost
+            # on save. Only set alpha from real bits.
             colors.append(0xFF000000 | (v << 16) | (v << 8) | v)
         return Palette(colors)
 
@@ -34,9 +41,16 @@ class Gray4:
         return bytes(((c >> 16) & 0xF0) for c in palette.colors)
 
     def bytes_per_entry(self):
-        # How many bytes one entry occupies — celPix uses this to size palette
-        # reads (e.g. "load 256 entries from here").
+        # How many bytes one **read unit** occupies — celPix uses this to size
+        # palette reads (e.g. "load 256 entries from here").
         return 1
+
+    # entries_per_unit() is optional and assumed to be 1: define it for a format
+    # that packs several entries into one unit, the way a handheld's shade
+    # register holds four two-bit shades in a byte. Without it such a format is
+    # read one entry per unit, so a window sized for 16 entries covers four.
+    # def entries_per_unit(self):
+    #     return 4
 
 
 def register(registry):

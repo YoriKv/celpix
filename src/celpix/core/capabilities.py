@@ -8,12 +8,12 @@ each other and from the entry's *bounding* (whole file, slice, bookmark — see
 - :class:`Capability` — one thing the editor can do to a document. A content kind
   declares the set it supports, and a control declares the one it needs.
 
-Before this existed, every control decided for itself whether it applied, inside
-whichever ``_sync_*`` method owned it. That works while there is one kind of
-document; with two, the answer for any given control is spread across a dozen
-methods and the set a tilemap supports is knowable only by reading all of them.
-:data:`CAPABILITIES` is that answer written down once
-(``docs/design/tilemap-entry.md`` §4).
+:data:`CAPABILITIES` is the whole answer, written down once
+(``docs/design/tilemap-entry.md`` §4), rather than left to each control to decide
+for itself inside whichever ``_sync_*`` method owns it. Per-control answers work
+while there is one kind of document; with three, what any given control applies
+to is spread across a dozen methods and the set a tilemap supports is knowable
+only by reading all of them.
 
 A capability is a tag on the *control*, not an implementation. Several controls
 exist on more than one content kind and mean different things on each — flipping
@@ -70,8 +70,8 @@ class Capability(Enum):
     PALETTE_ROW = auto()  # give the selection a named subpalette row of its own
     TILE_SELECT = auto()  # select a tile or a rectangle of them
     CLIPBOARD = auto()  # copy / cut / paste
-    CELL_FLIP = auto()  # mirror a tile or a block of them
-    CELL_ROTATE = auto()  # quarter-turn a tile or a block of them
+    CELL_FLIP = auto()  # mirror a tile or a selection of them
+    CELL_ROTATE = auto()  # quarter-turn a tile or a selection of them
     EXPORT_IMAGE = auto()  # render out to PNG
     IMPORT_IMAGE = auto()  # bring an image in (paste, Import from PNG)
 
@@ -142,7 +142,7 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # already names its own palette row, so pinning a row over a span would be a
     # second, conflicting answer to a question the file has already answered —
     # which is why PALETTE_ROW is here instead, the same gesture landing in the
-    # cells the file already answers with (`docs/design/palette-editing.md` §4).
+    # cells the file already answers with (`docs/design/palette-editing.md` §3).
     # TILE_REARRANGE: a rearrangement is display state precisely because it moves
     # no bytes, and moving a cell *is* the byte edit. IMPORT_IMAGE: bringing a
     # picture in would mean matching it against the bound tiles, which is a
@@ -165,7 +165,7 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # TILE_ARRANGEMENT is the last of the six, and the plainest: the Pattern picker
     # and the block/order/2D axes beneath it say how a *linear run of bytes* is
     # cut into tiles and grouped on screen. A tilemap places nothing linearly —
-    # the picture is its cells over a bank, and the block that groups them is the
+    # the picture is its cells over a bank, and what groups its tiles is the
     # cell itself (:meth:`~...selection.SelectionMixin._view_layout`), which the
     # map states rather than the toolbar. Every axis on that bar reads as 1x1 on a
     # map however it is set, so the row is furniture for a different room.

@@ -122,11 +122,20 @@ ALPHABET_TABLE_SUFFIXES = (".tbl", ".txt")
 
 @dataclass(frozen=True)
 class PluginLoadIssue:
-    """One plugin file that failed to load. Collected, never raised, so one bad
-    file can't stop the app or the other plugins from starting."""
+    """One plugin file that did not load. Collected, never raised, so one bad
+    file can't stop the app or the other plugins from starting.
+
+    ``declined`` separates **a choice from a breakage**: a code plugin the user
+    refused at the trust prompt did exactly what they asked, and reporting it as
+    a failure would put a "plugins failed to load" modal in front of them at
+    every launch for as long as they keep saying no. It is still an issue —
+    something in the folder is not running, and that is worth being able to see —
+    so it is collected here and told apart at the point it is shown, not dropped.
+    """
 
     path: str
     message: str
+    declined: bool = False
 
 
 def preset_from_spec(spec: dict, stage: Stage) -> Preset:
@@ -172,11 +181,11 @@ class SourceRegistry:
 
     Wrapped around the real registry for the length of one plugin root's scan, so
     a preset, a code plugin and a code *format* out of that folder are all
-    stamped by one rule rather than each loader remembering to. Reads pass
+    labelled by one rule rather than each loader remembering to. Reads pass
     straight through — a plugin inspecting what exists is asking about the
     registry, not about where it came from.
 
-    Stamping the plugin means writing over its ``info``, which for a class
+    Labelling the plugin means writing over its ``info``, which for a class
     attribute shadows it per instance; a plugin that refuses the write (``
     __slots__``, a read-only descriptor) is registered as it is rather than
     dropped, since the heading is presentation and the format is the point.
@@ -641,7 +650,12 @@ def _load_module(
 
     if not _is_approved(path, digest_bytes(source), trust, confirm):
         issues.append(
-            PluginLoadIssue(str(path), "skipped: code plugin not approved by user")
+            PluginLoadIssue(
+                str(path),
+                "not approved to run: the trust prompt for this code plugin was "
+                "declined",
+                declined=True,
+            )
         )
         return
 

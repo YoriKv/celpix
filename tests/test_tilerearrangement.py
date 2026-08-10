@@ -244,7 +244,7 @@ def test_the_armed_tool_shows_rearranged_tiles_whatever_the_setting_says(
     back to what the user asked for."""
     window = _window(qtbot, tmp_path)
     window._set_tile_rearrangement(TileRearrangement().swap(1, 40))
-    window._toggle_show_rearranged()  # Shift+R
+    window._show_rearranged_action.trigger()  # Shift+R
     assert not window._show_rearranged
     assert window._active_tile_rearrangement().is_identity()
 
@@ -254,8 +254,8 @@ def test_the_armed_tool_shows_rearranged_tiles_whatever_the_setting_says(
     assert not window._show_rearranged  # the setting is untouched
 
     # Turning it off while armed is not a way to disarm: the override still holds.
-    window._toggle_show_rearranged()
-    window._toggle_show_rearranged()
+    window._show_rearranged_action.trigger()
+    window._show_rearranged_action.trigger()
     assert window._rearranging and window._active_tile_rearrangement().actual(1) == 40
 
     window._toggle_rearranging()
@@ -654,11 +654,13 @@ def test_a_real_drag_rearranges(qtbot, tmp_path) -> None:
     zoom, tile = window._zoom.value(), 8
 
     def send(kind, cell, button, buttons):
+        pos = QPointF((cell * tile + 4) * zoom, 4 * zoom)
         QApplication.sendEvent(
             canvas,
             QMouseEvent(
                 kind,
-                QPointF((cell * tile + 4) * zoom, 4 * zoom),
+                pos,
+                canvas.mapToGlobal(pos),
                 button,
                 buttons,
                 Qt.KeyboardModifier.NoModifier,
@@ -726,11 +728,13 @@ def test_a_right_drag_selects_tiles_while_rearranging(qtbot, tmp_path) -> None:
     right = Qt.MouseButton.RightButton
 
     def send(kind, cell, button, buttons):
+        pos = QPointF((cell * tile + 4) * zoom, 4 * zoom)
         QApplication.sendEvent(
             canvas,
             QMouseEvent(
                 kind,
-                QPointF((cell * tile + 4) * zoom, 4 * zoom),
+                pos,
+                canvas.mapToGlobal(pos),
                 button,
                 buttons,
                 Qt.KeyboardModifier.NoModifier,

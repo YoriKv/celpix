@@ -160,6 +160,40 @@ def test_arrow_keys_step_over_the_headings(qtbot) -> None:
     combo._close_popup()
 
 
+def test_the_popup_follows_the_height_of_what_the_search_left(qtbot) -> None:
+    # The popup is a top-level, so its layout pins the *window's* minimum height
+    # and only when it activates. Left stale, the frame cannot shrink: a search
+    # that matched nothing keeps the full list's height and its field ends up
+    # adrift in an empty panel.
+    combo = _combo(qtbot)
+    combo.showPopup()
+    full = combo._popup.height()
+
+    combo._rebuild("nothing here")
+    empty = combo._popup.height()
+    combo._rebuild("")
+
+    assert empty < full
+    assert combo._popup.height() == full
+    combo._close_popup()
+
+
+def test_a_popup_that_opened_above_the_combo_keeps_its_bottom_edge(qtbot) -> None:
+    # Near the bottom of the screen the popup opens *over* the combo, so every
+    # resize has to grow away from the control rather than slide across it.
+    combo = _combo(qtbot)
+    combo.showPopup()
+    combo._flipped_above = True
+    bottom = combo._popup.geometry().bottom()
+
+    combo._rebuild("nothing here")
+    assert combo._popup.geometry().bottom() == bottom
+    combo._rebuild("")
+    assert combo._popup.geometry().bottom() == bottom
+
+    combo._close_popup()
+
+
 def test_a_short_flat_picker_keeps_qts_own_popup(qtbot) -> None:
     # A search field over three items costs a row of space and buys nothing.
     combo = SearchableComboBox(160)

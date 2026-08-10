@@ -28,10 +28,10 @@ i.e. ``j = bitswap<N>(i, *bits)``. The load direction *scatters* —
 descramble form; a driver written the other way round (``dst[i] =
 src[bitswap(i)]``) sets ``gather = true`` rather than hand-inverting its table.
 
-The table defines a ``2**N``-byte block and the region is permuted block-wise, so
-a table for one chip pair serves a region of several. A tail short of a block
+The table defines a ``2**N``-byte span and the region is permuted span by span,
+so a table for one chip pair serves a region of several. A tail short of a span
 passes through untouched, as with the split-plane joins; a region smaller than
-one block raises, since nothing at all would be transformed.
+one span raises, since nothing at all would be transformed.
 
 Two separate bounds apply: :data:`MAX_BITS` caps how far the table *spans*, and
 :data:`MAX_PERMUTED_BITS` how many of those lines actually *move*. Only the
@@ -48,7 +48,7 @@ from celpix.plugins.base import PluginInfo, check_declared_stage
 
 BITSWAP_ENGINE = "reshape.bitswap"
 
-# The largest table accepted: 2^24 = 16 MiB blocks, which covers the widest
+# The largest table accepted: 2^24 = 16 MiB spans, which covers the widest
 # swaps in the MAME corpus (PGM's sprite ROMs and Dynax's graphics both use
 # bitswap<24>).
 MAX_BITS = 24
@@ -78,11 +78,11 @@ def _identity_low(src_of: tuple[int, ...]) -> int:
 
 @lru_cache(maxsize=32)
 def _chunk_plan(src_of: tuple[int, ...]) -> tuple[int, tuple[int, ...]]:
-    """``(chunk_size, destination chunk per source chunk)`` for one block.
+    """``(chunk_size, destination chunk per source chunk)`` for one span.
 
     ``src_of`` is lsb-indexed: output bit *k* comes from input bit ``src_of[k]``.
     Every low bit mapping to itself grows the chunk — bytes whose indices differ
-    only in identity bits move together — so the per-block loop runs ``2^(N-low)``
+    only in identity bits move together — so the per-span loop runs ``2^(N-low)``
     slice copies instead of ``2^N`` byte moves, which is what makes the
     pure-Python loop fast enough on real tables.
 
@@ -101,21 +101,21 @@ def _chunk_plan(src_of: tuple[int, ...]) -> tuple[int, tuple[int, ...]]:
 
 
 def _permute(data: bytes, src_of: tuple[int, ...]) -> bytes:
-    """Scatter every whole block of ``data`` through the table; keep the tail."""
+    """Scatter every whole span of ``data`` through the table; keep the tail."""
     if not data:
         return data
-    block = 1 << len(src_of)
-    whole = (len(data) // block) * block
+    span = 1 << len(src_of)
+    whole = (len(data) // span) * span
     if not whole:
         raise ValueError(
             f"region ({len(data):#x} bytes) is smaller than this table's "
-            f"{block:#x}-byte block, so nothing would be reshaped - the table "
+            f"{span:#x}-byte span, so nothing would be reshaped - the table "
             "and the region disagree about the hardware"
         )
     chunk, dst = _chunk_plan(src_of)
     out = bytearray(len(data))
     out[whole:] = data[whole:]
-    for base in range(0, whole, block):
+    for base in range(0, whole, span):
         for s, d in enumerate(dst):
             src_at = base + s * chunk
             dst_at = base + d * chunk

@@ -2,16 +2,32 @@
 #
 # Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
 #
-# The other tilemap engine, and the odd one out: its cells are not laid out in
-# rows. Each record carries a *signed pixel offset* from an object's origin, so
-# what the view draws is frames of freely placed subsprites rather than a grid —
-# a sprite sheet, one frame after another.
+# A sprite engine: its cells are not laid out in rows. Each record carries a
+# *signed pixel offset* from an object's origin, so what the view draws is frames
+# of freely placed subsprites rather than a grid — a sprite sheet, one frame
+# after another.
 #
 # Reach for this only if your format is shaped the same way: fixed-size subsprite
-# records, a fixed number of them per frame, each with its own x/y. Anything laid
-# out in rows wants _packed.toml instead.
+# records, a fixed number of them per frame, each with its own x/y.
 #
-# Built on `codec.tilemap.scgcad-object`, as is the shipped scgcad-object preset.
+# WHICH ENGINE IS WHICH
+# ---------------------
+# **This is the packed-sprite-word engine**: the record is the console's own
+# sprite attribute word, and a size *bit* in it picks one of two square sizes.
+# Three more engines here read sprite records, differing only in the record:
+#
+#   _obz.toml        one field per byte, a wider character number, X first
+#   _md-sprite.toml  a size *nibble* stating a rectangle, tiles down columns
+#   _ys-spr.toml     frames of different lengths, counted by the container
+#
+# Anything laid out in rows wants the grid engine, _packed.toml.
+#
+# SHIPPED PRESETS BUILT ON IT
+# ---------------------------
+#   scgcad-object   the format this engine exists for, and the only one shipped
+#                   on it — the record is one game family's, not a family of
+#                   formats, so there is nothing to parameterise but the two
+#                   values below.
 
 id = "preset.tilemap.example-object"
 name = "Example sprite object subsprite"

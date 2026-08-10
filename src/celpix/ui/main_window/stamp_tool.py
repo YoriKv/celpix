@@ -7,11 +7,11 @@ looking, and this puts a chosen tile into the cell under the cursor.
 
 Edit Tiles is a **modal tool over tile mode**, the shape the rearrange tool
 already has and for the same reason: it wants both mouse buttons, so it cannot
-share the canvas with the selection drag. While armed, a left press lays the
-panel's picked tile into the cell under the cursor and a left drag keeps laying
-it — a pencil over cells — while a right press picks the tile a cell already
-names *and the palette row it is drawn in*, which is the eyedropper. It is
-offered only on a tilemap, because only a tilemap has cells that name tiles
+share the canvas with the selection drag. While armed, a left press lays the tile
+source panel's picked tile into the cell under the cursor and a left drag keeps
+laying it — a pencil over cells — while a right press picks the tile a cell
+already names *and the palette row it is drawn in*, which is the eyedropper. It
+is offered only on a tilemap, because only a tilemap has cells that name tiles
 (`Capability.STAMP`).
 
 **A stroke is one undoable step.** A drag across forty cells is one gesture and
@@ -50,8 +50,8 @@ STAMP_TIP = (
     "Lay the picked tile into a cell (T)\n"
     "Left click or drag stamps; right click picks a tile\n"
     "A picked cell carries its palette row and flips, and\n"
-    "stamps them back; a tile picked in the panel sets the\n"
-    "tile alone\n"
+    "stamps them back; a tile picked in the tile source\n"
+    "panel sets the tile alone\n"
     "Pick from the Tile Source panel"
 )
 # Why the tool is off where it looks like it should apply. A format whose cells
@@ -210,7 +210,7 @@ class StampToolMixin:
         """The tile a stamp would place, or ``None`` with nothing usable held.
 
         Validated against the IDs this map can actually reach rather than trusted
-        from the panel, because the panel only composes while its tab is showing
+        from the tile source panel, which only composes while its tab is showing
         — so the pick has to survive being made against one document and used
         against another. :func:`~celpix.pipeline.pipeline.tile_source_span`
         answers that without composing anything.
@@ -218,7 +218,8 @@ class StampToolMixin:
         The **span**, not the sheet's own narrower run: an ID picked off a cell
         by the eyedropper is whatever that cell holds, and a map is free to hold
         one that starts a unit halfway through another. Refusing to place a tile
-        the map already draws would be the panel's layout overruling the file.
+        the map already draws would be the tile source panel's layout overruling
+        the file.
         """
         doc = self._doc
         held = self._source_tile_id

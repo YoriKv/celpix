@@ -21,7 +21,7 @@ Commands (``length`` output bytes each):
 The two family members differ only in the backreference offset's byte order:
 **LZ1 is little-endian, LZ2 big-endian**. Everything else is shared, so both
 plugins parameterise one engine. Encoding details and provenance:
-``docs/graphics-formats-reference/implementation-guide.md`` §6.
+``docs/graphics-formats-reference/implementation-guide.md`` §7.
 
 Any stream that round-trips is valid, so the parse — which command to emit where
 — is a free choice the format does not constrain, and there are two worth making.
@@ -48,7 +48,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
-from celpix.plugins.builtins._lz import MatchFinder
+from celpix.plugins.builtins._lz import MatchFinder, copy_from
 
 # One HiROM bank — the conventional cap on an uncompressed structure, and the
 # reach of the absolute 16-bit backreference offset.
@@ -176,10 +176,9 @@ def decompress(
                 raise _fail(
                     f"backreference into unwritten output ({off:#x} >= {len(out):#x})"
                 )
-            # Byte-at-a-time so an overlapping copy re-reads bytes this command
-            # just produced — the format's run-extension idiom.
-            for k in range(length):
-                out.append(out[off + k])
+            # Overlap-aware: a copy reaching past `len(out)` re-reads bytes this
+            # command just produced, which is the format's run-extension idiom.
+            copy_from(out, off, length)
 
 
 def _emit_header(out: bytearray, op: int, length: int) -> None:

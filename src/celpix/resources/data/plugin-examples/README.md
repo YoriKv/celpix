@@ -15,7 +15,7 @@ them up — no reinstall, no editing the app.
 | `containers/` | an on-disk wrapper — a header to skip, an interleave to undo |
 | `alphabet/` | what a font's tiles spell, so a text run reads as words |
 
-Files starting with `_` are ignored. Every `_example.*` here is a working
+Files starting with `_` are ignored. Every `_`-prefixed file here is a working
 reference: **copy one, drop the underscore, and edit it.** Press <kbd>F5</kbd> in
 celPix to reload the folder.
 
@@ -48,9 +48,11 @@ one whose layout matches your format:
 - `_packed.toml` (in `tilemap/`) — a cell is one packed integer: tile number in
   the low bits, attributes above it (nearly every hardware map)
 - `_object.toml` — parts carrying signed pixel offsets, drawn as frames rather
-  than laid out in rows
+  than laid out in rows, a size *bit* picking one of two square sizes
 - `_obz.toml` — the same shape with each field in its own byte instead of packed
   into a sprite attribute word
+- `_md-sprite.toml` — the same again where a record *states* its part's
+  rectangle instead of choosing between two squares
 - `_ys-spr.toml` — the same again where frames are *different lengths*, the count
   coming from the container rather than the record
 
@@ -77,9 +79,18 @@ copy — it is set for you, and a value you write is replaced.
 
 **`.py` plugins are code**, for anything the engines cannot express. They run with
 the app's privileges, so celPix asks before loading one the first time and
-remembers your answer; changing the file asks again. A plugin file defines a class
-and a `register(registry)` function — see the `_example.py` in each folder, and
-`containers/_tiff.py` for a full real-world format.
+remembers your answer; changing the file asks again.
+
+A code file defines one class and one registration function, and there are two
+shapes of it. The three interpret stages — `pixel/`, `palette/`, `tilemap/` —
+write a **format**: a `FormatInfo` (an id and a name), that stage's decode/encode
+pair, and `registry.register_format(...)`. It lands in that stage's format picker
+beside the presets, with no preset to author. Every other stage writes a
+**plugin**: a `PluginInfo` that names the stage as well, the stage's own pair of
+methods, and `registry.register(...)`.
+
+Every folder but `alphabet/` carries an `_example.py` of the right shape for it,
+and `containers/_tiff.py` is a full real-world format.
 
 ## Plugins that travel with a project
 
@@ -98,7 +109,7 @@ plugin came with the project.
 
 ## Writing one
 
-Each `_example.py` documents its stage in full. In short:
+Each `_example.py` documents its own stage in full. In short:
 
 - A plugin carries **both directions**, load and save, on one object.
 - The save half is **optional**: ship it and the data can be written back, leave

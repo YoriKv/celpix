@@ -39,15 +39,9 @@ non-goal; round-tripping is the contract.
 
 from __future__ import annotations
 
-from celpix.core.context import (
-    KEY_COMPRESSED_SIZE,
-    KEY_DECOMPRESS_COMPLETE,
-    KEY_DECOMPRESS_PARTIAL,
-    PipelineContext,
-)
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
-from celpix.plugins.builtins._lz import MatchFinder
+from celpix.plugins.base import PartialDecompression, PluginInfo
+from celpix.plugins.builtins._lz import MatchFinder, copy_back
 
 SHORT_MAX_DISTANCE = 256
 SHORT_MAX_LENGTH = 5
@@ -125,15 +119,15 @@ class _BitWriter:
 
 
 def _copy(out: bytearray, distance: int, length: int, what: str) -> None:
-    """Append ``length`` bytes from ``distance`` back, allowing self-overlap."""
-    start = len(out) - distance
-    if start < 0:
+    """:func:`copy_back` with the reach-before-the-output check PRS words itself.
+
+    ``what`` names the op that asked — short or long — which the message needs and
+    the copy does not: the two are the same copy once decoded, so the reader that
+    just read one is the only place that can still say which overreached.
+    """
+    if distance > len(out):
         raise _fail(f"{what} copy reaches before the start of the output")
-    if distance >= length:  # no overlap - one slice
-        out += out[start : start + length]
-    else:  # the source repeats with period `distance`: the format's RLE
-        for k in range(length):
-            out.append(out[start + k])
+    copy_back(out, distance, length)
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
@@ -274,7 +268,7 @@ def compress(data: bytes) -> bytes:
     return bytes(writer.out)
 
 
-class PrsCompression:
+class PrsCompression(PartialDecompression):
     info = PluginInfo(
         id="compression.prs",
         name="PRS (Sega LZ + RLE)",
@@ -282,13 +276,5 @@ class PrsCompression:
         category="Sega",
     )
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        out, consumed, complete = decompress(
-            data, partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL))
-        )
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
-        return out
-
-    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return compress(data)
+    _decode = staticmethod(decompress)
+    _encode = staticmethod(compress)

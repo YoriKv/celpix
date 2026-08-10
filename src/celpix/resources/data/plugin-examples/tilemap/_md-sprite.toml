@@ -2,17 +2,29 @@
 #
 # Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
 #
-# The second sprite-object engine, and the one to reach for when a record names a
-# **rectangle** rather than picking between two squares. Its size byte is the Mega
-# Drive VDP's own nibble, so one record covers anything from one tile to a 4x4
-# block, and the record's tiles run *down each column* before starting the next.
-# Neither of those can be spelled as parameters for _packed.toml, which is why
-# this is its own engine.
+# A sprite engine: frames of parts at signed pixel offsets rather than cells in
+# rows.
 #
-# Anything laid out in rows wants _packed.toml; a record holding a size *bit*
-# against a pair the file never states wants _object.toml.
+# WHICH ENGINE IS WHICH
+# ---------------------
+# **This is the stated-rectangle engine**, the one to reach for when a record
+# names a **rectangle** rather than picking between two squares. Its size byte is
+# the Mega Drive VDP's own nibble, so one record covers anything from one tile to
+# a 4x4 block, and the record's tiles run *down each column* before starting the
+# next. Neither of those can be spelled as parameters for the grid engine, which
+# is why this is its own. Three more engines here read sprite records, differing
+# only in the record:
 #
-# Built on `codec.tilemap.md-sprite`, as is the shipped md-sprite preset.
+#   _object.toml     a packed sprite word; a size *bit* picks one of two sizes
+#   _obz.toml        one field per byte, a wider character number, X first
+#   _ys-spr.toml     frames of different lengths, counted by the container
+#
+# Anything laid out in rows wants the grid engine, _packed.toml.
+#
+# SHIPPED PRESETS BUILT ON IT
+# ---------------------------
+#   md-sprite       the Mega Drive sprite list this engine exists for, and the
+#                   only one shipped on it.
 
 id = "preset.tilemap.example-md-sprite"
 name = "Example rectangular sprite object"

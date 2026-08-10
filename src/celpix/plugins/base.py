@@ -17,7 +17,13 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from celpix.core.capabilities import ContentKind
-from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
+from celpix.core.context import (
+    KEY_COMPRESSED_SIZE,
+    KEY_DECOMPRESS_COMPLETE,
+    KEY_DECOMPRESS_PARTIAL,
+    KEY_SOURCE_OFFSET,
+    PipelineContext,
+)
 from celpix.core.errors import Stage
 from celpix.core.font import Glyph
 from celpix.core.index_grid import IndexGrid
@@ -82,7 +88,7 @@ STAGE_DEFAULT_PRESET: dict[Stage, str] = {
 # whitelist.
 #
 # The two **source** headings lead, and are the one pair a format does not choose
-# for itself: discovery stamps them on everything it loads out of a plugin folder
+# for itself: discovery applies them to everything it loads out of a plugin folder
 # (:func:`~celpix.plugins.discovery.load_directory`), overriding whatever the file
 # said. Anything you dropped in yourself is a handful of entries among a hundred
 # shipped ones, and burying them under a vendor heading is exactly the "scroll
@@ -407,15 +413,15 @@ class PluginInfo:
     holds.
 
     ``preserves_offsets`` is **Container-only**: does a byte's position survive
-    the read? A container that only *skips* — a header, a copier block — leaves
-    every remaining byte where it was, so a view position is still a file offset
-    once the recorded start is added back. One that **reorders** (``.smd``'s
-    odd/even split, an interleaved SNES image, an N64 byte-order normalisation)
-    makes its output a different address space from the file, so a position in one
-    names nothing in the other. An Offset palette resolves against the container's
-    *output* either way, but only a position-preserving container can also write
-    an edit back through a plain file offset (``docs/design/palette-editing.md``
-    §2).
+    the read? A container that only *skips* — a header, a copier's 512-byte
+    prefix — leaves every remaining byte where it was, so a view position is
+    still a file offset once the recorded start is added back. One that
+    **reorders** (``.smd``'s odd/even split, an interleaved SNES image, an N64
+    byte-order normalisation) makes its output a different address space from the
+    file, so a position in one names nothing in the other. An Offset palette
+    resolves against the container's *output* either way, but only a
+    position-preserving container can also write an edit back through a plain
+    file offset (``docs/design/palette-editing.md`` §2).
 
     ``category`` is the heading a picker files this plugin under
     (:data:`CATEGORIES`) — presentation only, and empty means "no heading".
@@ -579,6 +585,50 @@ class CompressionPlugin(Plugin, Protocol):
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes: ...
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes: ...
+
+
+class PartialDecompression:
+    """Both :class:`CompressionPlugin` methods, over a decoder that finds its end.
+
+    A scheme whose decoder can report **where the structure ended** owes the
+    pipeline two facts on every read, and they are the same few lines whatever the
+    scheme is: take the partial flag off the context, decode, then publish the
+    compressed size and whether the structure completed.
+
+    Publishing both is a contract rather than a convenience.
+    :data:`~celpix.core.context.KEY_COMPRESSED_SIZE` is what a save-back measures
+    its slot against and what the structure scan reads;
+    :data:`~celpix.core.context.KEY_DECOMPRESS_COMPLETE` is what stops a slice
+    created without a length from backfilling its extent from a decode that merely
+    ran out of buffer. A scheme with **no end to find** — PackBits, LZ16 — states
+    that for itself instead and does not use this.
+
+    A subclass supplies :meth:`_decode` and :meth:`_encode`: ``staticmethod`` where
+    the module functions take the data alone, an ordinary method where the variant
+    has a parameter to bind (the size-prefix width of an SLZ framing, say).
+    ``_encode`` is optional on the same rule as ``compress`` itself — a scheme that
+    can be read but not written leaves it unset, and the class then has to leave
+    ``compress`` off too, since shipping the method *is* the declaration that a
+    save-back works.
+    """
+
+    def _decode(self, data: bytes, *, partial: bool) -> tuple[bytes, int, bool]:
+        """``(output, consumed, complete)`` for one structure at ``data[0]``."""
+        raise NotImplementedError
+
+    def _encode(self, data: bytes) -> bytes:
+        raise NotImplementedError
+
+    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        out, consumed, complete = self._decode(
+            data, partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL))
+        )
+        ctx.set(KEY_COMPRESSED_SIZE, consumed)
+        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
+        return out
+
+    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        return self._encode(data)
 
 
 def writes_back(plugin: Plugin, stage: Stage) -> bool:
@@ -758,7 +808,7 @@ class TilemapCodecPlugin(Plugin, Protocol):
         :meth:`encode` into a cell nobody asked for. It is what lets the host
         *assign* a row to a selection — the tilemap reading of the pin gesture,
         which stores the row where the file already keeps it instead of in the
-        project (``docs/design/palette-editing.md`` §4).
+        project (``docs/design/palette-editing.md`` §3).
 
         Distinct from :meth:`has_palette_rows`, which is about **reading**: that
         one is taken as True when a plugin stays quiet, because a format carrying

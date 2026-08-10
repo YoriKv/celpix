@@ -10,4 +10,12 @@ why.
 :mod:`~celpix.pipeline.pipeline` runs the stages in both directions, and
 :mod:`~celpix.pipeline.importer` fits external pixels (a paste, a PNG) to a
 document's format on the way in.
+
+Three modules answer what is asked *around* a run rather than by one, and
+:mod:`~celpix.pipeline.pipeline` re-exports all three so a caller has a single
+import: :mod:`~celpix.pipeline.render` lays decoded data out as a picture,
+:mod:`~celpix.pipeline.inspection` reports what one container made of one file, and
+:mod:`~celpix.pipeline.metrics` puts scalar questions to a resolved codec. Their
+shared machinery — running one stage, acquiring a source, resolving tile
+geometry — is :mod:`~celpix.pipeline._stage`.
 """

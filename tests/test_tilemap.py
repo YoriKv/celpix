@@ -172,7 +172,7 @@ def test_a_split_index_survives_both_of_its_chunks(
     wherever there was space, so the field is a *list* of chunks. Getting the
     chunk order backwards still round-trips within celPix — it is only wrong
     against the console — hence the pinned bytes, which are what
-    SuperFamiconv's own packer emits (``superfamiconv-formats.md`` §4).
+    SuperFamiconv's own packer emits (``tile-converter-formats.md`` §4).
     """
     registry = default_registry()
     codec, params, ctx = TilemapCodec(), _params(registry, preset_id), PipelineContext()

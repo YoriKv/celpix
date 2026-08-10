@@ -70,9 +70,6 @@ class PaletteRegion:
         """One past the last pixel — the half-open bound every walk here uses."""
         return self.start + self.length
 
-    def holds(self, pixel: int) -> bool:
-        return self.start <= pixel < self.end
-
 
 @dataclass(frozen=True)
 class PaletteRegions:

@@ -51,7 +51,7 @@ from PySide6.QtWidgets import QWidget
 from celpix.core.arrangement import BlockLayout
 from celpix.core.document import GridMode
 from celpix.ui.tools import EditMode
-from celpix.ui.widgets import ZOOM_LEVELS, paint_selection_outline
+from celpix.ui.widgets import ZOOM_LEVELS, PanZoomSurface, paint_selection_outline
 
 # The neutral surround/backing behind the rendered pixels: a fixed mid-gray (not a
 # theme color) so it never biases how the art's colors read. The scroll viewport
@@ -61,7 +61,8 @@ CANVAS_BACKGROUND = QColor(0x80, 0x80, 0x80)
 
 
 class GridStyle(Enum):
-    """How the grid is drawn (the YY-CHR style set). ``value`` is the stable
+    """How the grid is drawn — the four conventional line styles. ``value`` is
+    the stable
     string persisted in app settings.
 
     Orthogonal to :class:`~celpix.core.document.GridMode`, which says what the
@@ -106,7 +107,7 @@ GRID_FADE_PX = 32
 # The pixel level has no cell size to measure (its cell *is* the zoom), so it
 # fades on the zoom directly: invisible at 2x, full at this zoom and beyond.
 GRID_PIXEL_FULL_ZOOM = 16
-# The tile grid's coarse step, in tiles — YY-CHR's 8×8 block convention, and what
+# The tile grid's coarse step, in tiles — the conventional 8×8, and what
 # Workspace.block_grid replaces with the arrangement's own block size.
 GRID_COARSE_TILES = 8
 
@@ -214,7 +215,7 @@ class _GridPattern:
         self.left = left
 
 
-class Canvas(QWidget):
+class Canvas(PanZoomSurface, QWidget):
     # (anchor slot, current slot) — emitted on press and whenever a drag
     # reaches another slot. The anchor stays the pressed slot, so the window
     # can grow/shrink the range live; a plain click emits (slot, slot).
@@ -357,13 +358,6 @@ class Canvas(QWidget):
         # they are painted as background rather than drawn (None = the whole image
         # is data).
         self._filled_tiles: int | None = None
-        # Space-drag panning (both modes): ``_pan_active`` is space held (a pan is
-        # armed, hand cursor shown); ``_panning`` is a pan drag in progress, with
-        # ``_pan_last`` the last global mouse position the delta is measured from.
-        # Panning takes over the mouse from selecting/painting while armed.
-        self._pan_active = False
-        self._panning = False
-        self._pan_last = QPointF()
         # Paint preview: the pen color a drawing tool would lay down, shown as a
         # single pixel under the pointer so the target is visible at any zoom (the
         # cursor hotspot alone doesn't say *which* pixel). ``None`` while no
@@ -596,37 +590,21 @@ class Canvas(QWidget):
         self._float_image = None
         self._drop_slots = frozenset()
 
-    def set_pan_mode(self, on: bool) -> None:
-        """Arm/disarm space-drag panning (the window drives this off the space key).
-
-        Arming shows the hand cursor; disarming ends any pan drag in progress (the
-        space key can come up mid-drag). Panning is modal over the mouse — while
-        armed a press pans instead of selecting or painting.
-        """
-        if self._pan_active == on:
-            return
-        self._pan_active = on
-        if not on:
-            self._panning = False
-        self._apply_cursor()
-
-    def _apply_cursor(self) -> None:
-        """Set the cursor for the current mode: hand while panning, cross on the
-        paint/eyedrop surface, default otherwise."""
-        if self._panning:
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
-        elif self._pan_active:
-            self.setCursor(Qt.CursorShape.OpenHandCursor)
-        elif self._rearranging:
-            self.setCursor(Qt.CursorShape.SizeAllCursor)
-        elif self._stamping:
+    def _pan_cursor(self) -> Qt.CursorShape | None:
+        """The cursor with no pan armed: cross on the paint/eyedrop surface, the
+        move arrows while a tile is carried, the widget's own otherwise."""
+        if self._rearranging:
+            return Qt.CursorShape.SizeAllCursor
+        if self._stamping:
             # The cross the paint surface uses: a stamp is a pencil over cells,
             # and what it needs marked is which cell the pointer is on.
-            self.setCursor(Qt.CursorShape.CrossCursor)
-        elif self._edit_mode is EditMode.PIXEL or self._eyedropper:
-            self.setCursor(Qt.CursorShape.CrossCursor)
-        else:
-            self.unsetCursor()
+            return Qt.CursorShape.CrossCursor
+        if self._edit_mode is EditMode.PIXEL or self._eyedropper:
+            return Qt.CursorShape.CrossCursor
+        return None
+
+    def _has_content(self) -> bool:
+        return not self._image.isNull()
 
     def set_paint_preview(self, color: QColor | None) -> None:
         """Arm the one-pixel paint preview in ``color`` (``None`` disarms it).
@@ -679,7 +657,7 @@ class Canvas(QWidget):
 
         The lifted pixels the user is dragging, painted (nearest-neighbour, at
         the current zoom) over the base image with a selection outline, so the
-        float reads as hovering above the canvas until it is stamped down.
+        float reads as hovering above the canvas until it is set down.
         """
         self._float_image = None if (image is None or image.isNull()) else image
         self._float_pos = (x, y)
@@ -734,18 +712,14 @@ class Canvas(QWidget):
         pixel = self._pixel_at(pos, clamp)
         if pixel is None:
             return None
-        return self._layout().cell_to_slot(
+        return self._layout().pos_to_slot(
             pixel[0] // self._tile_w, pixel[1] // self._tile_h
         )
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         # Space-drag panning is modal: while armed a left press grabs the view and
         # neither selects nor paints. Checked first so it wins over every gesture.
-        if self._pan_active and event.button() == Qt.MouseButton.LeftButton:
-            self._panning = True
-            self._pan_last = event.globalPosition()
-            self._apply_cursor()
-            event.accept()
+        if self._pan_press(event):
             return
         # The color-editor eyedropper (armed from outside) samples a rendered
         # ARGB in either mode and swallows the press — it must reach the canvas
@@ -819,15 +793,7 @@ class Canvas(QWidget):
         super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if self._panning:
-            # Move the view by the mouse delta. Global position, not widget-local:
-            # the widget shifts under the cursor as the view scrolls, which would
-            # feed back into a widget-local delta.
-            pos = event.globalPosition()
-            delta = pos - self._pan_last
-            self._pan_last = pos
-            self.pan_requested.emit(round(delta.x()), round(delta.y()))
-            event.accept()
+        if self._pan_move(event):
             return
         self._track_hover(event.position())
         if self._rearranging:
@@ -853,10 +819,7 @@ class Canvas(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if self._panning and event.button() == Qt.MouseButton.LeftButton:
-            self._panning = False
-            self._apply_cursor()  # back to the open hand (space may still be held)
-            event.accept()
+        if self._pan_release(event):
             return
         if self._rearranging:
             self._rearrange_release(event)
@@ -873,28 +836,6 @@ class Canvas(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_anchor = self._drag_slot = None
         super().mouseReleaseEvent(event)
-
-    def wheelEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        """**Ctrl**+wheel zooms (both modes); a plain wheel scrolls the view.
-
-        Reports a signed step per notch and the cursor position, leaving the zoom
-        range and the cursor-anchoring to the window; only a zooming wheel is
-        swallowed, so an unmodified one falls through to the scroll area that owns
-        us. With no image there is nothing to zoom.
-        """
-        if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-            event.ignore()  # let the scroll area scroll as usual
-            return
-        if self._image.isNull():
-            return
-        dy = event.angleDelta().y()
-        if dy == 0:
-            return
-        # One step per 120-unit notch, but at least one so a high-resolution wheel
-        # sending small deltas still zooms.
-        steps = int(dy / 120) or (1 if dy > 0 else -1)
-        self.zoom_requested.emit(steps, event.position())
-        event.accept()
 
     def _rearrange_press(self, event) -> None:  # noqa: ANN001 — Qt event
         """Pick a tile up (left), or start selecting tiles (right).
@@ -967,8 +908,8 @@ class Canvas(QWidget):
         Both are reported as one signal carrying the button, because they are
         one gesture on one target and splitting them would let the two disagree
         about which cell that is. Only the left one opens a drag: picking is a
-        discrete act, and sweeping it would spray the panel with every tile
-        crossed — the reading the palette grid's eyedropper already takes.
+        discrete act, and sweeping it would spray the tile source panel with every
+        tile crossed — the reading the palette grid's eyedropper already takes.
         """
         slot = self._slot_at(event.position())
         if slot is None:
@@ -1050,8 +991,8 @@ class Canvas(QWidget):
         )
         self.update()
 
-    def _cell_rect(self, tile_x: int, tile_y: int) -> QRect:
-        """The device-coord rect of one canvas cell."""
+    def _slot_rect(self, tile_x: int, tile_y: int) -> QRect:
+        """The device-coord rect of one canvas slot."""
         z = self._zoom
         return QRect(
             round(tile_x * self._tile_w * z),
@@ -1095,14 +1036,14 @@ class Canvas(QWidget):
         for tile_y in range(rows):
             start = None
             for tile_x in range(cols + 1):  # one past the end flushes the last run
-                slot = None if tile_x == cols else layout.cell_to_slot(tile_x, tile_y)
+                slot = None if tile_x == cols else layout.pos_to_slot(tile_x, tile_y)
                 backing = tile_x < cols and (slot is None or slot >= filled)
                 if backing:
                     if start is None:
                         start = tile_x
                     continue
                 if start is not None:
-                    rect = self._cell_rect(start, tile_y)
+                    rect = self._slot_rect(start, tile_y)
                     rect.setWidth(rect.width() * (tile_x - start))
                     region = region.united(QRegion(rect))
                     start = None
@@ -1231,12 +1172,12 @@ class Canvas(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         cols, rows = self._columns(), self._rows()
         for slot in self._drop_slots:
-            tile_x, tile_y = layout.slot_to_cell(slot)
+            tile_x, tile_y = layout.slot_to_pos(slot)
             if 0 <= tile_x < cols and 0 <= tile_y < rows:
                 # A pen straddles the path, so inset by half its width to keep
                 # the whole outline inside the cell it marks.
                 inset = DROP_TARGET_WIDTH // 2
-                rect = self._cell_rect(tile_x, tile_y).adjusted(
+                rect = self._slot_rect(tile_x, tile_y).adjusted(
                     inset, inset, -inset - 1, -inset - 1
                 )
                 if rect.intersects(exposed):
@@ -1429,22 +1370,22 @@ class Canvas(QWidget):
         if style is GridStyle.POINT:
             # Corner dots never fall on the image's first row or column, so this
             # style needs no edge strips.
-            pattern = _GridPattern(key, self._grid_cell(z, width, height, levels))
+            pattern = _GridPattern(key, self._grid_square(z, width, height, levels))
         else:
             pattern = _GridPattern(
                 key,
-                self._grid_cell(z, width, height, levels),
-                self._grid_cell(z, width, height, levels, only="vertical").copy(
+                self._grid_square(z, width, height, levels),
+                self._grid_square(z, width, height, levels, only="vertical").copy(
                     0, 0, width, 1
                 ),
-                self._grid_cell(z, width, height, levels, only="horizontal").copy(
+                self._grid_square(z, width, height, levels, only="horizontal").copy(
                     0, 0, 1, height
                 ),
             )
         self._grid_pattern = pattern
         return pattern
 
-    def _grid_cell(
+    def _grid_square(
         self,
         z: int,
         width: int,
@@ -1467,11 +1408,12 @@ class Canvas(QWidget):
             painter.end()
             return pixmap
         pen_style = _GRID_PEN_STYLES[self._grid_style]
-        # The cell's own origin is the coarse boundary; the steps inside it are the
-        # fine ones. Fine first, so a crossing reads coarse — and from 0 rather than
-        # the first step inside, because a coarse boundary is a fine boundary too
-        # and the fine line under it is what gives the coarse line its brightness.
-        # The last level *is* the cell, so it needs only its origin line.
+        # The square's own origin is the coarse boundary; the steps inside it are
+        # the fine ones. Fine first, so a crossing reads coarse — and from 0 rather
+        # than the first step inside, because a coarse boundary is a fine boundary
+        # too and the fine line under it is what gives the coarse line its
+        # brightness. The last level *is* the square, so it needs only its origin
+        # line.
         drawn = [
             (color, (range(0, width, step[0] * z), range(0, height, step[1] * z)))
             for step, color in levels[:-1]
@@ -1523,10 +1465,10 @@ class Canvas(QWidget):
         for slot, row in enumerate(rows):
             if row is None:
                 continue  # this slot names no row; row 0 named is still a row
-            tile_x, tile_y = layout.slot_to_cell(slot)
+            tile_x, tile_y = layout.slot_to_pos(slot)
             if not (0 <= tile_x < cols and 0 <= tile_y < canvas_rows):
                 continue
-            rect = self._cell_rect(tile_x, tile_y)
+            rect = self._slot_rect(tile_x, tile_y)
             if not exposed.intersects(rect):
                 continue
             painter.drawText(
@@ -1576,10 +1518,10 @@ class Canvas(QWidget):
         for slot, value in enumerate(ids):
             if value is None:
                 continue
-            tile_x, tile_y = layout.slot_to_cell(slot)
+            tile_x, tile_y = layout.slot_to_pos(slot)
             if not (0 <= tile_x < cols and 0 <= tile_y < canvas_rows):
                 continue
-            rect = self._cell_rect(tile_x, tile_y)
+            rect = self._slot_rect(tile_x, tile_y)
             rect.setWidth(round(cell_w))
             rect.setHeight(round(cell_h))
             if not exposed.intersects(rect):
@@ -1615,13 +1557,13 @@ class Canvas(QWidget):
         layout = self._layout()
         cols, rows = self._columns(), self._rows()
         for slot in self._line_ends:
-            tile_x, tile_y = layout.slot_to_cell(slot)
+            tile_x, tile_y = layout.slot_to_pos(slot)
             if not (0 <= tile_x < cols and 0 <= tile_y < rows):
                 continue
-            cell = self._cell_rect(tile_x, tile_y)
+            rect = self._slot_rect(tile_x, tile_y)
             bar = QRect(
-                round(cell.x() + cell_w) - width,
-                cell.y(),
+                round(rect.x() + cell_w) - width,
+                rect.y(),
                 width,
                 round(cell_h),
             )
@@ -1642,12 +1584,12 @@ class Canvas(QWidget):
         # rectangle the user never picked.
         cells_by_row: dict[int, list[int]] = {}
         for slot in self._selected_slots:
-            tile_x, tile_y = layout.slot_to_cell(slot)
+            tile_x, tile_y = layout.slot_to_pos(slot)
             if 0 <= tile_x < cols and 0 <= tile_y < rows:
                 cells_by_row.setdefault(tile_y, []).append(tile_x)
-        block = self._solid_rect(cells_by_row) if self._selection_as_rect else None
-        if block is not None:
-            x0, y0, width, height = block
+        solid = self._solid_rect(cells_by_row) if self._selection_as_rect else None
+        if solid is not None:
+            x0, y0, width, height = solid
             rect = QRect(
                 round(x0 * self._tile_w * z),
                 round(y0 * self._tile_h * z),

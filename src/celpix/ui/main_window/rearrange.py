@@ -9,7 +9,7 @@ positions (:class:`~celpix.core.tilerearrangement.TileRearrangement`) held in
 the tile's real home.
 
 That last part costs nothing here. Every read of tiles already goes through
-:meth:`~celpix.ui.main_window.selection.SelectionMixin._decode_run` and every
+:meth:`~celpix.ui.main_window.tile_bytes.TileBytesMixin._decode_run` and every
 write through ``_apply_tile_edit``, and those two resolve it — so painting,
 the clipboard and the transforms all act on the tiles the user sees without
 knowing this module exists. What is left for the controller is the gesture, the
@@ -90,10 +90,11 @@ REARRANGE_TILEMAP_TIP = (
 class RearrangeDrag:
     """A rearrange gesture in flight.
 
-    ``cells`` are the canvas cells being carried and ``grab`` the one the cursor
-    took hold of, so the drop can be pinned by the same cell the user pressed —
+    ``positions`` are the canvas positions being carried and ``grab`` the one the
+    cursor
+    took hold of, so the drop can be pinned by the same slot the user pressed —
     a block picked up by its corner lands by that corner. ``offset`` places the
-    float relative to the cursor's cell so it keeps the grip it was picked up
+    float relative to the cursor's slot so it keeps the grip it was picked up
     with.
 
     ``source`` is the composed window grid captured at press, kept so a transform
@@ -104,7 +105,7 @@ class RearrangeDrag:
     """
 
     grab: tuple[int, int]
-    cells: tuple[tuple[int, int], ...]
+    positions: tuple[tuple[int, int], ...]
     offset: tuple[int, int]  # image pixels from the hovered cell's top-left
     source: object  # the window grid at press — an IndexGrid or ArgbGrid
     orient: int = TILE_ORIENT_NONE
@@ -257,12 +258,6 @@ class RearrangeMixin:
         if self._rearrange_action.isEnabled():
             self._rearrange_action.toggle()
 
-    def _toggle_show_rearranged(self) -> None:
-        """The view toggle's Edit ▸ row, which is also the action ``Shift+R``
-        presses — so this is only the menu's own route to it."""
-        if self._show_rearranged_action.isEnabled():
-            self._show_rearranged_action.toggle()
-
     def _set_rearranging(self, on: bool) -> None:
         """Arm/disarm the tool, which is a **tile-mode** tool.
 
@@ -377,25 +372,25 @@ class RearrangeMixin:
             return
         self._cancel_rearrange_drag()
         layout = self._view_layout()
-        grab = layout.slot_to_cell(slot)
-        cells = self._carried_cells(grab)
+        grab = layout.slot_to_pos(slot)
+        carried = self._carried_positions(grab)
         source = self._window_grid()
-        if not cells or source is None:
+        if not carried or source is None:
             return
         # The float keeps the grip it was picked up with: its top-left sits this
         # far from the hovered cell's, so a block dragged by its middle doesn't
         # jump to align its corner with the cursor.
         tw, th = self._pixel_tile_size()
-        left = min(cx for cx, _ in cells)
-        top = min(cy for _, cy in cells)
+        left = min(cx for cx, _ in carried)
+        top = min(cy for _, cy in carried)
         self._rearrange_drag = RearrangeDrag(
-            grab, cells, ((left - grab[0]) * tw, (top - grab[1]) * th), source
+            grab, carried, ((left - grab[0]) * tw, (top - grab[1]) * th), source
         )
         self._show_rearrange_drag(grab)
 
     def _on_rearrange_moved(self, slot: int) -> None:
         if self._rearrange_drag is not None:
-            self._show_rearrange_drag(self._view_layout().slot_to_cell(slot))
+            self._show_rearrange_drag(self._view_layout().slot_to_pos(slot))
 
     def _on_rearrange_dropped(self, slot: int) -> None:
         """Commit the move and any pending orientation under the cursor, as one step.
@@ -410,7 +405,7 @@ class RearrangeMixin:
         entry = self._workspace.current
         if drag is None or self._doc is None or entry is None:
             return
-        over = self._view_layout().slot_to_cell(slot)
+        over = self._view_layout().slot_to_pos(slot)
         moves = self._drop_moves(drag, over)
         new_map = self._dragged_map(drag, moves)
         self._cancel_rearrange_drag()
@@ -443,11 +438,11 @@ class RearrangeMixin:
         is left where it is rather than pointed at nothing.
         """
         dx, dy = over[0] - drag.grab[0], over[1] - drag.grab[1]
-        cells = [(cx + dx, cy + dy) for cx, cy in drag.cells]
-        x0, y0 = min(c[0] for c in cells), min(c[1] for c in cells)
-        cols = max(c[0] for c in cells) - x0 + 1
-        rows = max(c[1] for c in cells) - y0 + 1
-        origin = self._view_layout().cell_to_slot(x0, y0)
+        moved = [(cx + dx, cy + dy) for cx, cy in drag.positions]
+        x0, y0 = min(c[0] for c in moved), min(c[1] for c in moved)
+        cols = max(c[0] for c in moved) - x0 + 1
+        rows = max(c[1] for c in moved) - y0 + 1
+        origin = self._view_layout().pos_to_slot(x0, y0)
         if origin is None:
             return
         tiles = self._rect_tiles_for(origin, cols, rows)
@@ -480,7 +475,7 @@ class RearrangeMixin:
     def _carried_tiles(self, drag: RearrangeDrag) -> list[int]:
         """The **actual** tile indices under the carried cells, for orienting."""
         layout = self._view_layout()
-        shown = (self._cell_tile(layout, *cell) for cell in drag.cells)
+        shown = (self._cell_tile(layout, *pos) for pos in drag.positions)
         return [self._tile_rearrangement.actual(v) for v in shown if v is not None]
 
     @staticmethod
@@ -508,7 +503,7 @@ class RearrangeMixin:
 
     @classmethod
     def _drop_label(cls, drag: RearrangeDrag, moves: list) -> str:
-        what = cls._orient_object(len(moves) or len(drag.cells))
+        what = cls._orient_object(len(moves) or len(drag.positions))
         verb = cls._orient_verb(drag.orient)
         if not moves:
             return f"{verb} {what}"
@@ -656,9 +651,9 @@ class RearrangeMixin:
         self._refresh_view()
         targets = [
             slot
-            for cx, cy in drag.cells
+            for cx, cy in drag.positions
             if (
-                slot := layout.cell_to_slot(
+                slot := layout.pos_to_slot(
                     cx + over[0] - drag.grab[0], cy + over[1] - drag.grab[1]
                 )
             )
@@ -674,12 +669,12 @@ class RearrangeMixin:
         self._rearrange_hover = over
 
     # -- what a gesture resolves to ----------------------------------------
-    def _carried_cells(self, grab: tuple[int, int]) -> tuple[tuple[int, int], ...]:
-        """The cells a press on ``grab`` picks up.
+    def _carried_positions(self, grab: tuple[int, int]) -> tuple[tuple[int, int], ...]:
+        """The canvas positions a press on ``grab`` picks up.
 
         The whole selection when the press lands inside a multi-tile one — the
         block was picked out precisely so it could be moved as a block — and the
-        single cell otherwise. Cells whose tile is past the end of the file are
+        single slot otherwise. Slots whose tile is past the end of the file are
         dropped: there is nothing there to rearrange.
         """
         layout = self._view_layout()
@@ -689,15 +684,15 @@ class RearrangeMixin:
         selected = set(self._selection_tiles())
         if len(selected) < 2 or grabbed not in selected:
             return (grab,)
-        cells = tuple(
-            cell
-            for cell in self._window_cells()
-            if self._cell_tile(layout, *cell) in selected
+        carried = tuple(
+            pos
+            for pos in self._window_cells()
+            if self._cell_tile(layout, *pos) in selected
         )
-        return cells or (grab,)
+        return carried or (grab,)
 
     def _window_cells(self) -> list[tuple[int, int]]:
-        """Every cell of the visible window, row by row."""
+        """Every slot of the visible window, row by row."""
         return [
             (cx, cy)
             for cy in range(self._view_rows())
@@ -725,7 +720,7 @@ class RearrangeMixin:
             return []
         layout = self._view_layout()
         moves = []
-        for cx, cy in drag.cells:
+        for cx, cy in drag.positions:
             source = self._cell_tile(layout, cx, cy)
             target = self._cell_tile(layout, cx + dx, cy + dy)
             if source is None or target is None:
@@ -756,11 +751,11 @@ class RearrangeMixin:
         assert self._doc is not None
         grid = drag.source
         tw, th = self._pixel_tile_size()
-        cells = drag.cells
-        left, top = min(c[0] for c in cells), min(c[1] for c in cells)
-        right, bottom = max(c[0] for c in cells), max(c[1] for c in cells)
+        carried = drag.positions
+        left, top = min(c[0] for c in carried), min(c[1] for c in carried)
+        right, bottom = max(c[0] for c in carried), max(c[1] for c in carried)
         out = type(grid)((right - left + 1) * tw, (bottom - top + 1) * th)
-        for cx, cy in cells:
+        for cx, cy in carried:
             tile = extract_region(grid, cx * tw, cy * th, tw, th)
             tile = apply_orientation(tile, drag.orient)
             blit_region(out, tile, (cx - left) * tw, (cy - top) * th)

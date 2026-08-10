@@ -16,8 +16,18 @@ engine_id = "alphabet.table"
 first = 0x00
 chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,'!?-"
 
+# THE TABLE INLINE, for a mapping small enough to keep in this file - and the
+# form a table pasted from somewhere else already arrives in. One `20=A` line per
+# glyph, exactly as a `.tbl` file writes them, read by the same `order` below.
+# lines = """
+# 20=A
+# 21=B
+# 3C=th
+# """
+
 # THE TABLE FILE, if you keep the mapping beside this preset. Must be a file in
-# this same folder. `order` is how its lines read:
+# this same folder. What a font with a few hundred glyphs wants, and what keeps a
+# hand-maintained table diffable. `order` is how its lines read:
 #   "code-first" (the default)  20=A
 #   "text-first"                A=20
 # Never guessed - both sides of `20=A` are valid hex, so a wrong guess would

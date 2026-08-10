@@ -1,7 +1,7 @@
 # Master System CRAM — 6-bit, one byte per entry, two bits per component:
 # 00BBGGRR. The Game Gear is *not* this: it widened the same idea to 12 bits in
 # two bytes, which is `bgr444`.
-# See docs/graphics-formats-reference/superfamiconv-formats.md §3.3.
+# See docs/graphics-formats-reference/tile-converter-formats.md §3.3.
 id = "preset.palette.sms-6bpp"
 name = "BGR222 (6-bit, Master System CRAM)"
 engine_id = "codec.palette.mask"

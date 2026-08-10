@@ -9,7 +9,7 @@ claim, and the corpus they were verified against are in
 
 What makes these containers rather than codecs is that each one **frames** its
 payload: it has to be cut out of the file, and everything around it — header,
-trailer, a panel's second table — has to come back unchanged on write. The
+trailer, a PNL panel's second table — has to come back unchanged on write. The
 payload is then read by the ordinary codec for what it holds, which is why the
 two cell byte orders in this family cost a preset each rather than a plugin each.
 
@@ -34,10 +34,10 @@ Four things a reader has to get right and would not guess:
   in rows (:mod:`celpix.core.sprite`).
 
 The trailing regions are preserved verbatim rather than regenerated, and they are
-not padding. A screen's 0x200 trailer and a panel's 0x8000 second table are both
-**visibility tables** — a per-cell "draw this / don't", which cannot be derived
-from the tile data and would be destroyed by regenerating it. celPix has no
-per-cell visibility to map them onto yet, so they ride through untouched
+not padding. A screen's 0x200 trailer and a PNL panel's 0x8000 second table are
+both **visibility tables** — a per-cell "draw this / don't", which cannot be
+derived from the tile data and would be destroyed by regenerating it. celPix has
+no per-cell visibility to map them onto yet, so they ride through untouched
 (``scgcad-formats.md`` §2.1, §3.2).
 """
 
@@ -83,14 +83,12 @@ HEADER = 0x100  # every member's metadata block is this long
 SCR_SIZE = 0x2300
 SCR_PAYLOAD = 0x2000  # four 32x32 screens of 0x800 each
 SCR_HEADER_AT = 0x2000
-SCR_SCREEN = 0x800
 
 PNL_SIZE = 0x10100
 PNL_TABLE = 0x8000  # tile table; an equal-sized registration table follows it
 
 MAP_SIZE = 0x2100
 MAP_PAYLOAD = 0x2000  # 0x1000 entries, laid out 64 wide
-MAP_WIDTH = 64
 
 COL_SIZE = 0x400
 COL_PAYLOAD = 0x200  # 256 BGR555 entries; the metadata block follows them
@@ -141,8 +139,8 @@ OBZ_SEQUENCES = 16
 OBZ_SEQUENCE_STEPS = 64
 OBZ_TABLE = (OBZ_SEQUENCES, OBZ_SEQUENCE_STEPS)  # the pair both readers take
 
-# A converted screen: the low byte of each of a screen's four blocks, laid out
-# 2x2 into one 64x64 grid of bare character numbers. Headerless and fixed-size.
+# A converted screen: the low byte of each of a screen's four quadrants, laid out
+# 2x2 into one 64x64 grid of bare tile numbers. Headerless and fixed-size.
 STD_SIZE = 0x1000
 STD_COLUMNS = 64
 # How many frames the strip puts on a row to start with. A sprite object has no
@@ -180,7 +178,7 @@ SCR_TILE_SIZE = 0x42  # screen cell size = 8 * (value + 1): 0 is 8x8, 1 is 16x16
 PNL_STAMP_EXPONENTS = (0x69, 0x6A)  # log2 of the stamp's width and height, in cells
 # The tool's own size menu offers 1 to 32 cells, so the exponent it stores is 0-5.
 # Anything wider is a corrupt byte and reads as no stamp at all: a panel divided
-# into blocks bigger than itself has no division a layout could index.
+# into stamps bigger than itself has no division a layout could index.
 PNL_STAMP_MAX_EXPONENT = 5
 
 # The word at screen +0x47 / panel +0x67 is deliberately NOT read. It reads like
@@ -189,7 +187,7 @@ PNL_STAMP_MAX_EXPONENT = 5
 # end of a 1024-tile bank. Neither candidate meaning survives the corpus — as a
 # "clear character number" it matches the screen's actual background character
 # 24% of the time, and its byte order is not even consistent between files
-# (`scgcad-formats.md` §2, "Unresolved"). The one independent implementation of
+# (`scgcad-formats.md` §2, "Header fields"). The one independent implementation of
 # these formats adds it to nothing either. A tile base is the user's to set.
 
 # Where a screen and a panel each state the palette base their cells count from.
@@ -241,13 +239,13 @@ def _row_base(col_half: int, col_cell: int, bpp: int) -> int:
 
 PANEL_COLUMNS = 32  # a panel is 32 cells wide; its 0x4000 cells make 512 rows
 # A stamp layout is 64 x 64 tile positions, which is a screen's shape and not a
-# coincidence: a layout is *generated* from a screen, one entry per block of it.
+# coincidence: a layout is *generated* from a screen, one entry per stamp of it.
 # The editor's own renderer and its converter both index the entry table at row
 # stride 64 (`scgcad-formats.md` §4), so the 0x1000 entries are 64 wide.
 MAP_COLUMNS = 64
 SCREEN_COLUMNS = 32  # one 32x32 quadrant — four of them make up a screen file
 SCREEN_ROWS = 32  # and this is what makes each one a *page* rather than a band
-# Two across, two down: a screen is one 64x64 tilemap in four quadrant blocks,
+# Two across, two down: a screen is one 64x64 tilemap in four quadrants,
 # which is the editor's own `load_scr` (`scgcad-asset-pipeline.md` §2.7) and not
 # an arrangement to be picked between.
 SCREEN_PAGES_ACROSS = 2
@@ -323,11 +321,11 @@ def _payload(source: ReadSource, ctx: PipelineContext, start: int, size: int) ->
 class ScrContainer:
     """Screen file: payload first, 0x100 header at 0x2000, 0x200 clear codes.
 
-    The four 0x800 blocks are handed on as one buffer, with their shape and their
+    The four 0x800 quadrants are handed on as one buffer, with their shape and their
     **assembly** published (``KEY_TILEMAP_PAGE_ROWS``, ``KEY_TILEMAP_PAGES_ACROSS``).
     A screen is not four screens that might go together somehow: it is **one
     64x64 tilemap stored as four quadrants**, and the editor's own loader says so
-    — ``load_scr`` writes the four blocks into a single array at row stride 64,
+    — ``load_scr`` writes the four quadrants into a single array at row stride 64,
     offsets 0, 0x80, 0x2000, 0x2080, which is top-left, top-right, bottom-left,
     bottom-right (``scgcad-asset-pipeline.md`` §2.7).
 
@@ -401,8 +399,8 @@ class ScrContainer:
             ContainerField(
                 "Payload",
                 f"{format_size(SCR_PAYLOAD)} at 0x000000 - four 32x32 quadrants",
-                "One 64x64 tilemap stored as four quadrant blocks. They\n"
-                "come out as one buffer with their shape and their 2x2\n"
+                "One 64x64 tilemap stored as four quadrants. They come\n"
+                "out as one buffer with their shape and their 2x2\n"
                 "layout published, so the view assembles them as the\n"
                 "editor that wrote them did.",
             ),
@@ -461,9 +459,10 @@ class PnlContainer:
 
     Only the tile table is the payload. The second table is the panel allocator's
     bookkeeping — bit 15 of each word is the "this cell belongs to a registered
-    panel" flag the tool sets as it hands blocks out — and it doubles as the
-    editor's own draw test: a cell whose bit is clear renders as background, in
-    the panel view and through a stamp layout alike (``scgcad-formats.md`` §3.2).
+    panel" flag the tool sets as it hands those rectangles out — and it doubles
+    as the editor's own draw test: a cell whose bit is clear renders as
+    background, in the panel view and through a stamp layout alike
+    (``scgcad-formats.md`` §3.2).
     That it marks only 8% of populated cells is the point rather than a puzzle,
     the rest of the 16,384-cell grid being unregistered scratch.
 
@@ -473,8 +472,8 @@ class PnlContainer:
     what it read.
 
     What the container *does* read is the stamp size at 0x69/0x6A, which is not
-    about this file's own cells at all — it is the block size a bound stamp layout
-    indexes in (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_TILES`).
+    about this file's own cells at all — it is how many of them one stamp of a
+    bound layout covers (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_TILES`).
     """
 
     info = PluginInfo(
@@ -547,10 +546,10 @@ class PnlContainer:
                 "Stamp size",
                 f"{across}x{down} cells at "
                 f"{PNL_STAMP_EXPONENTS[0]:#04x}/{PNL_STAMP_EXPONENTS[1]:#04x}",
-                "How big a block one stamp-layout coordinate names, as\n"
-                "two exponents. Published for a layout bound to this\n"
-                "panel; it is not this file's own cell size, which is one\n"
-                "8x8 tile per word whatever the header suggests.",
+                "How many cells one stamp covers, as two exponents.\n"
+                "Published for a stamp layout bound to this panel; it is\n"
+                "not this file's own cell size, which is one 8x8 tile per\n"
+                "word whatever the header suggests.",
             ),
             ContainerField(
                 "Cell size byte",
@@ -574,10 +573,10 @@ class MapContainer:
     table out; the two-level resolution belongs to the tile binding.
 
     The 0x1000 entries are **64 x 64 tile positions**, a screen's shape, because a
-    layout is generated from a screen one block at a time. How big a block is comes
-    from the panel rather than from here, and it is why most of these entries are
-    not read: at the commonest 2x2 the tool writes one entry in four and leaves the
-    other three at whatever the file already held.
+    layout is generated from a screen one stamp at a time. How many cells a stamp
+    covers comes from the panel rather than from here, and it is why most of these
+    entries are not read: at the commonest 2x2 the tool writes one entry in four
+    and leaves the other three at whatever the file already held.
     """
 
     info = PluginInfo(
@@ -626,9 +625,10 @@ class MapContainer:
             ContainerField(
                 "Stamp size",
                 "the panel's, not this file's",
-                "One entry names a block, and how big a block is comes\n"
-                "from the panel this layout is bound to. Until it is\n"
-                "bound, an entry reads as the single cell it names.",
+                "One entry names a stamp of cells, and how many cells\n"
+                "that covers comes from the panel this layout is bound\n"
+                "to. Until it is bound, an entry reads as the single\n"
+                "cell it names.",
             ),
         )
 
@@ -642,9 +642,12 @@ class ObjContainer:
     the signature at either.
 
     What follows the header is the animation table: runs of (duration, frame)
-    naming frames in the payload. It is preserved and not read — celPix draws
-    the frames themselves, laid out in file order, and playing them is a
-    different feature (``tilemap-entry.md`` §9).
+    naming frames in the payload. It is **read on the way in and preserved
+    opaquely on the way out** — the sequences are published for the animation
+    player (:data:`~celpix.core.context.KEY_TILEMAP_ANIMATIONS`), while a save
+    writes the original bytes back untouched. Reading is therefore free to be
+    wrong in a way writing is not: nothing downstream can make a save depend on
+    it. The view itself draws the frames in file order regardless.
 
     The one thing here that is a *reading* rather than a cut: the build marker
     decides the attribute word's byte order, so it is published for the codec
@@ -831,11 +834,11 @@ class ObzContainer:
 
 
 class StdContainer:
-    """Converted screen: 0x1000 bytes, 64x64 bare character numbers, no header.
+    """Converted screen: 0x1000 bytes, 64x64 bare tile numbers, no header.
 
     Not something the authoring tool writes — a 1992 converter made it out of a
     screen, keeping the **low byte** of each cell and dropping the high one, then
-    laid the screen's four blocks out 2x2 (``scgcad-formats.md`` §10). So it
+    laid the screen's four quadrants out 2x2 (``scgcad-formats.md`` §10). So it
     holds a screen's shape with its attributes gone, which is why it reads
     through a plain index-only cell rather than the screen's.
 
@@ -880,7 +883,7 @@ class StdContainer:
             ContainerField(
                 "Payload",
                 f"{format_size(STD_SIZE)} - the whole file, {STD_COLUMNS} wide",
-                "Bare character numbers, the screen's four blocks laid\n"
+                "Bare tile numbers, the screen's four quadrants laid\n"
                 "out 2x2. The width is fixed by the format and published\n"
                 "as such - 4 KiB of bytes would not suggest it.",
             ),

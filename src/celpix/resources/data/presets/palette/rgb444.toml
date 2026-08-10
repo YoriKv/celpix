@@ -5,7 +5,7 @@
 # (Neo Geo Pocket Color, and much arcade hardware). Two handhelds one generation
 # apart disagreeing about nibble order is exactly the kind of thing that renders
 # as a red/blue swap rather than as garbage, so the pair is worth having.
-# See docs/graphics-formats-reference/superfamiconv-formats.md §3.3.
+# See docs/graphics-formats-reference/tile-converter-formats.md §3.3.
 id = "preset.palette.rgb444"
 name = "RGB444 (12-bit, WonderSwan Color)"
 engine_id = "codec.palette.mask"

@@ -2,9 +2,13 @@
 #
 # Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
 #
-# The fourth tilemap engine, and the odd one among the three sprite records:
-# frames of subsprites at signed pixel offsets like the other two, but its frames
-# are **different lengths**. There is no drawn bit — a record that is present is
+# A sprite engine: frames of subsprites at signed pixel offsets rather than cells
+# in rows.
+#
+# WHICH ENGINE IS WHICH
+# ---------------------
+# **This is the counted-frame engine**, the only one whose frames are
+# **different lengths**. There is no drawn bit — a record that is present is
 # drawn — and how many each frame holds is a count byte the *container* reads out
 # ahead of the records and states on the context. So there is no
 # `subsprites_per_frame` below: nothing here could say where a frame ends.
@@ -14,12 +18,23 @@
 # feature — if your format frames its subsprites some fixed way, the presets to
 # copy are _object.toml and _obz.toml.
 #
+# Three more engines here read sprite records, differing only in the record:
+#
+#   _object.toml     a packed sprite word; a size *bit* picks one of two sizes
+#   _obz.toml        one field per byte, a wider character number, X first
+#   _md-sprite.toml  a size *nibble* stating a rectangle, tiles down columns
+#
+# Anything laid out in rows wants the grid engine, _packed.toml.
+#
 # There is nothing to configure about the record layout either: 8 bytes, X and Y
 # as signed 16-bit pairs, a 16-bit character number, then the console's attribute
 # byte and the size bit. It is one format's record rather than a family of them,
 # so the engine's code is what to copy if yours differs.
 #
-# Built on `codec.tilemap.ys-spr`, as is the shipped ys-spr preset.
+# SHIPPED PRESETS BUILT ON IT
+# ---------------------------
+#   ys-spr          the sprite-pattern format this engine exists for, and the
+#                   only one shipped on it.
 
 id = "preset.tilemap.example-ys-spr"
 name = "Example sprite pattern subsprite"

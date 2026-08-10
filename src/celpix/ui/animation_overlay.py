@@ -46,7 +46,15 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core.animation import Sequence, unknown_frames
-from celpix.ui.widgets import Badge, apply_badge, select_combo_data, signals_blocked
+from celpix.ui.widgets import (
+    Badge,
+    PanZoomSurface,
+    apply_badge,
+    pan_scroll_area,
+    select_combo_data,
+    signals_blocked,
+    zoom_anchored,
+)
 from celpix.ui.window_layout import WindowLayout
 
 # The rate the durations are read at, and the range the spin offers. A duration is
@@ -74,7 +82,7 @@ MIN_TICKS = 1
 REFRESH_DEBOUNCE_MS = 120
 
 
-class AnimationFrame(QWidget):
+class AnimationFrame(PanZoomSurface, QWidget):
     """One frame of an already-composed strip, drawn at this window's zoom.
 
     Owns no zoom or scroll state of its own — both are reported and applied by
@@ -99,9 +107,6 @@ class AnimationFrame(QWidget):
         # widget to a pixel and snap the scroll geometry once per step.
         self._frame_size = None
         self._zoom = DEFAULT_ZOOM
-        self._pan_active = False
-        self._panning = False
-        self._pan_last = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def set_strip(self, strip: QImage, frame_size=None) -> None:  # noqa: ANN001 — QSize
@@ -123,22 +128,8 @@ class AnimationFrame(QWidget):
             self._update_size()
             self.update()
 
-    def set_pan_mode(self, on: bool) -> None:
-        """Arm/disarm space-drag panning (the window drives this off the space key)."""
-        if self._pan_active == on:
-            return
-        self._pan_active = on
-        if not on:
-            self._panning = False
-        self._apply_cursor()
-
-    def _apply_cursor(self) -> None:
-        if self._panning:
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
-        elif self._pan_active:
-            self.setCursor(Qt.CursorShape.OpenHandCursor)
-        else:
-            self.unsetCursor()
+    def _has_content(self) -> bool:
+        return not self._strip.isNull()
 
     def _update_size(self) -> None:
         """Size to the object's frame box, whatever this step happens to draw."""
@@ -162,47 +153,19 @@ class AnimationFrame(QWidget):
 
     # -- interaction ---------------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if self._pan_active and event.button() == Qt.MouseButton.LeftButton:
-            self._panning = True
-            self._pan_last = event.globalPosition()
-            self._apply_cursor()
-            event.accept()
+        if self._pan_press(event):
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if not self._panning:
-            super().mouseMoveEvent(event)
+        if self._pan_move(event):
             return
-        # Global position, not widget-local: the widget shifts under the cursor as
-        # the view scrolls, which would feed back into the delta.
-        pos = event.globalPosition()
-        delta = pos - self._pan_last
-        self._pan_last = pos
-        self.pan_requested.emit(round(delta.x()), round(delta.y()))
-        event.accept()
+        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if self._panning and event.button() == Qt.MouseButton.LeftButton:
-            self._panning = False
-            self._apply_cursor()  # back to the open hand (space may still be held)
-            event.accept()
+        if self._pan_release(event):
             return
         super().mouseReleaseEvent(event)
-
-    def wheelEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        """**Ctrl**+wheel zooms; a plain wheel falls through to the scroll area."""
-        if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-            event.ignore()
-            return
-        dy = event.angleDelta().y()
-        if dy == 0 or self._strip.isNull():
-            return
-        # One step per 120-unit notch, but at least one so a high-resolution wheel
-        # sending small deltas still zooms.
-        steps = int(dy / 120) or (1 if dy > 0 else -1)
-        self.zoom_requested.emit(steps, event.position())
-        event.accept()
 
 
 class AnimationOverlay(QWidget):
@@ -549,28 +512,17 @@ class AnimationOverlay(QWidget):
     def _on_wheel_zoom(self, steps: int, pos) -> None:  # noqa: ANN001 — QPointF
         """Ctrl+wheel over the frame, anchored on the pixel under the cursor.
 
-        The tile source dock's wheel zoom over this window's own scroll area:
-        ``pos`` is already in frame pixels times the zoom, so the pixel under the
-        cursor divides out and putting it back is two scroll-bar writes.
+        The tile source dock's wheel zoom over this window's own scroll area,
+        with its levels: whole magnifications the spin steps through, so a notch
+        is one step of it.
         """
-        old = self._zoom.value()
-        new = min(max(old + steps, self._zoom.minimum()), self._zoom.maximum())
-        if new == old:
-            return
-        hbar = self._scroll.horizontalScrollBar()
-        vbar = self._scroll.verticalScrollBar()
-        view_x, view_y = pos.x() - hbar.value(), pos.y() - vbar.value()
-        img_x, img_y = pos.x() / old, pos.y() / old
-        self._zoom.setValue(new)  # resizes the frame synchronously
-        hbar.setValue(round(img_x * new - view_x))
-        vbar.setValue(round(img_y * new - view_y))
+        spin = self._zoom
+        new = min(max(spin.value() + steps, spin.minimum()), spin.maximum())
+        zoom_anchored(self._scroll, spin, new, pos)
 
     def _pan(self, dx: int, dy: int) -> None:
         """Shift the scroll view by a space-drag delta (device pixels)."""
-        hbar = self._scroll.horizontalScrollBar()
-        vbar = self._scroll.verticalScrollBar()
-        hbar.setValue(hbar.value() - dx)
-        vbar.setValue(vbar.value() - dy)
+        pan_scroll_area(self._scroll, dx, dy)
 
     # -- space arms the pan --------------------------------------------------
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001 — Qt override

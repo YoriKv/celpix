@@ -316,7 +316,7 @@ _BEHAVIOURS: dict[ContentKind, dict[Gesture, str]] = {
         Gesture.CLEAR: "_clear_cells",
         Gesture.PASTE: "_paste_cells",
         Gesture.TRANSFORM_TILES: "_transform_cells",
-        Gesture.TRANSFORM_BLOCK: "_transform_cell_block",
+        Gesture.TRANSFORM_BLOCK: "_transform_cell_selection",
         Gesture.ASSIGN_PALETTE_ROW: "_assign_cell_palette_row",
     },
 }

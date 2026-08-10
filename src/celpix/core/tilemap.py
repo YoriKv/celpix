@@ -234,10 +234,10 @@ def resolve_cell(
 
     ``at`` overrides which source position is read while leaving the referring
     cell's own attributes in force. That is what a **stamp** needs: one entry
-    names a whole block, and the positions inside it read neighbouring source
-    cells off the one coordinate (:func:`expand_stamps`). A parameter rather than
-    a rebuilt ``Cell`` because a restamp re-resolves every position in the map
-    and the copies would be the bulk of the work.
+    names a whole stamp of cells, and the positions inside it read neighbouring
+    source cells off the one coordinate (:func:`expand_stamps`). A parameter
+    rather than a rebuilt ``Cell`` because a restamp re-resolves every position
+    in the map and the copies would be the bulk of the work.
 
     Composed rather than dropped because the referring format may carry
     attributes of its own, and discarding them would draw a picture neither file
@@ -345,7 +345,7 @@ def expand_stamps(
     Each makes a 2x2 unit out of four tiles and they are otherwise nothing alike:
 
     - A **hardware metatile** is one cell whose single index names four
-      *characters*, stepped by the VRAM row (:data:`VRAM_ROW_STRIDE`) and sharing
+      *tiles*, stepped by the VRAM row (:data:`VRAM_ROW_STRIDE`) and sharing
       that one cell's palette row and flips. One set of attributes, four tiles.
     - A **stamp** is one coordinate naming four *cells* of another map, stepped by
       that map's row, each carrying its own tile, row, priority and flips. Four
@@ -605,8 +605,9 @@ def page_order(
 ) -> tuple[int, ...]:
     """Which cell each drawn position shows, for a ``pages_across`` assembly.
 
-    A **page is a block** and the assembly is a row of blocks, which is exactly
-    what :class:`~celpix.core.arrangement.BlockLayout` already maps — so the
+    A page is the unit handed to :class:`~celpix.core.arrangement.BlockLayout`
+    here — a rectangle of *cells* rather than of tiles — and the assembly is a
+    row of those, which is exactly what that class already maps — so the
     placement is that class's, asked at cell scale instead of tile scale, and the
     one thing this adds is inverting it: the composer wants "position *p* draws
     cell *n*" where the layout answers "cell *n* is drawn at (x, y)".
@@ -627,6 +628,6 @@ def page_order(
     layout = BlockLayout(width, page_columns, page_rows)
     order = [0] * count
     for position in range(count):
-        x, y = layout.slot_to_cell(position)
+        x, y = layout.slot_to_pos(position)
         order[y * width + x] = position
     return tuple(order)

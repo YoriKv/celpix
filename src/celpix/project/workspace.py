@@ -231,18 +231,19 @@ class TileSource:
     the two number their tiles from different places, without rewriting either.
 
     It is **not** a format field. The header word that looks like one in a screen
-    and a panel is not a base index — celPix reads it from no format, and neither
+    and a PNL panel is not a base index — celPix reads it from no format, and neither
     does the one independent implementation
-    (``docs/graphics-formats-reference/scgcad-formats.md`` §2, "Unresolved").
+    (``docs/graphics-formats-reference/scgcad-formats.md`` §2, "Header fields":
+    read as a base index the corpus rules it out immediately).
     What makes it earn its place is the binding: the art a map draws from is
     routinely a *slice* of something bigger, and a slice's tiles start at 0
     however the map numbers them.
 
     Both directions are used, which is why it is signed. **Positive** when the
     bank sits partway into the bound entry — a map numbering from 0 against a
-    whole ROM whose characters begin at tile 0x2000. **Negative** when the map
+    whole ROM whose art begins at tile 0x2000. **Negative** when the map
     numbers from partway into a bank the slice starts at — a screen using
-    characters 0x100-0x1EE bound to a slice holding exactly those, where cell
+    tiles 0x100-0x1EE bound to a slice holding exactly those, where cell
     0x100 must draw the slice's tile 0. A cell that lands outside the source
     renders blank, so a wrong base is visible rather than corrupting anything.
     """
@@ -302,13 +303,13 @@ class EntrySession:
     preview_compression_id: str = NO_COMPRESSION
     # The selection. ``selected_tile`` is the anchor (and what single-selection
     # consumers read); ``selected_last`` >= it bounds a range, None when the
-    # selection is a single tile (or absent). ``selection_cells`` is set only for
-    # a *rectangle* selection — its (columns, rows) extent in canvas cells, which
+    # selection is a single tile (or absent). ``selection_slots`` is set only for
+    # a *rectangle* selection — its (columns, rows) extent in canvas slots, which
     # together with the anchor and the restored view geometry re-derives exactly
     # which tiles it covered.
     selected_tile: int | None = None
     selected_last: int | None = None
-    selection_cells: tuple[int, int] | None = None
+    selection_slots: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         # PaletteMode is str-valued so it persists as itself, which makes a bare
@@ -381,13 +382,13 @@ class Entry:
     # container and decompressor. Unlike ``container_id`` this lives on **both
     # FILE and SLICE** entries: a reshape is a property of the region, and a
     # region is either a whole file (a joined ROM pair) or a slice of one (a
-    # plane-split block inside a larger ROM) — the slice's bounded window *is*
+    # plane-split range inside a larger ROM) — the slice's bounded window *is*
     # the region its reshape applies to, so no coordinates are invalidated.
     reshape_id: str = NO_RESHAPE
     # The container this file is read and written through, picked by signature
     # when the file is opened and changeable afterwards. FILE and PALETTE: a
     # palette file can be framed too — an authoring tool's palette routinely puts
-    # its own metadata after the colours, and read whole that block decodes as
+    # its own metadata after the colours, and read whole that tail decodes as
     # more colours. Which containers either may use is the container's own
     # declaration (``PluginInfo.content_kinds``), so the two lists stay disjoint.
     # Not a slice, though: a slice is a byte range of its *parent* and carries no
@@ -421,7 +422,7 @@ class Entry:
     # (docs/design/palette-editing.md §2).
     #
     # Each pathway holds a *revision token* rather than a flag: an edit command
-    # stamps a fresh token when it applies and puts the previous one back when
+    # records a fresh token when it applies and puts the previous one back when
     # it undoes, and a write records the token it saved. "Dirty" is then simply
     # "the live token isn't the saved one", which goes clean again when an undo
     # walks back to the saved state — and stays dirty when it walks back *past*
@@ -842,12 +843,12 @@ class Workspace:
 
         The file takes its slices and bookmarks with it. They are matched by path
         rather than position, so the list *could* leave them behind — but a parent
-        has to precede its children for the panel to nest them (that is the order
-        a project reload replays), so the whole block moves as one.
+        has to precede its children for the project panel to nest them (that is
+        the order a project reload replays), so the whole group moves as one.
 
         Positioned relative to the file that will *follow* it, not the neighbour
         it swaps with: a neighbour's own children sit somewhere after it, so
-        inserting after the last of them would jump the block past whatever file
+        inserting after the last of them would jump the group past whatever file
         came next.
         """
         if not self.can_move_file(entry, delta):
@@ -855,11 +856,11 @@ class Workspace:
         files = [e for e in self.entries if e.kind is EntryKind.FILE]
         index = files.index(entry) + delta
         follower = files[index] if delta < 0 else next(iter(files[index + 1 :]), None)
-        block = [entry, *self.children_of(entry)]
-        for member in block:
+        group = [entry, *self.children_of(entry)]
+        for member in group:
             self.entries.remove(member)
         at = self.entries.index(follower) if follower is not None else len(self.entries)
-        self.entries[at:at] = block
+        self.entries[at:at] = group
         return True
 
     def close(self, entry: Entry) -> list[Entry]:
@@ -932,12 +933,12 @@ class Workspace:
         return self._revision
 
     def set_pixel_revision(self, entry: Entry, revision: int) -> None:
-        """Stamp the entry's data pathway with ``revision`` (an edit applying,
+        """Record ``revision`` on the entry's data pathway (an edit applying,
         or an undo putting the previous token back)."""
         self._set_revision(entry, "pixel_revision", revision)
 
     def set_palette_revision(self, entry: Entry, revision: int) -> None:
-        """Stamp the entry's *palette* pathway, leaving its data alone."""
+        """Record one on the entry's *palette* pathway, leaving its data alone."""
         self._set_revision(entry, "palette_revision", revision)
 
     def mark_saved(

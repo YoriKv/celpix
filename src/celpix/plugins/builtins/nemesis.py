@@ -66,14 +66,8 @@ Format detail and the ROM-scanning notes are in
 
 from __future__ import annotations
 
-from celpix.core.context import (
-    KEY_COMPRESSED_SIZE,
-    KEY_DECOMPRESS_COMPLETE,
-    KEY_DECOMPRESS_PARTIAL,
-    PipelineContext,
-)
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
+from celpix.plugins.base import PartialDecompression, PluginInfo
 
 HEADER_SIZE = 2
 XOR_FLAG = 0x8000
@@ -695,7 +689,7 @@ def compress(data: bytes) -> bytes:
     )
 
 
-class NemesisCompression:
+class NemesisCompression(PartialDecompression):
     info = PluginInfo(
         id="compression.nemesis",
         name="Nemesis (Mega Drive tile Huffman)",
@@ -706,13 +700,5 @@ class NemesisCompression:
         category="Sega",
     )
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        out, consumed, complete = decompress(
-            data, partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL))
-        )
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
-        return out
-
-    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return compress(data)
+    _decode = staticmethod(decompress)
+    _encode = staticmethod(compress)

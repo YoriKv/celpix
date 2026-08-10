@@ -112,7 +112,7 @@ KEY_TILEMAP_PAGE_ROWS = "tilemap.page-rows"
 # int: how many pages across, for a format whose assembly is **structural** rather
 # than a reading. Published beside the page height above, and answering the
 # question that one raises: a screen's four quadrants are one 64x64 tilemap and
-# the editor's own loader says so outright — `load_scr` writes the four blocks
+# the editor's own loader says so outright — `load_scr` writes the four quadrants
 # into a single array at row stride 64
 # (``docs/graphics-formats-reference/scgcad-asset-pipeline.md`` §2.7).
 #

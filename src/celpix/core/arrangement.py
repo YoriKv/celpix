@@ -94,7 +94,8 @@ ARRANGEMENT_PRESETS: tuple[ArrangementPreset, ...] = (
         block_rows=2,
         block_order="row-interleave",
     ),
-    # 2×2 tile blocks read row-major (YY-CHR's x16y16): 16×16 units of four 8×8
+    # 2×2 tile blocks read row-major, commonly labelled x16y16: 16×16 units of
+    # four 8×8
     # tiles. A *view* grouping, which is why it is a block and not a metatile —
     # it asserts nothing about any cell format (docs/design/terminology.md).
     ArrangementPreset(
@@ -134,7 +135,7 @@ def arrangement_preset_for(
 
 @dataclass(frozen=True)
 class BlockLayout:
-    """Maps a window's linear tile slots to canvas cell positions, and back.
+    """Maps a window's linear tile slots to canvas positions, and back.
 
     The canvas is ``columns`` tiles wide. Tiles group into blocks of
     ``block_columns`` × ``block_rows`` tiles; blocks tile the canvas
@@ -189,23 +190,21 @@ class BlockLayout:
         return self._blocks_per_row * self._bc * self._br
 
     @cached_property
-    def block_row_cells(self) -> tuple[tuple[int, int], ...]:
-        """:meth:`slot_to_cell` for one block row — the whole mapping, tiled.
+    def block_row_positions(self) -> tuple[tuple[int, int], ...]:
+        """:meth:`slot_to_pos` for one block row — the whole mapping, tiled.
 
         The placement repeats with period :attr:`slots_per_block_row`, shifted
-        down by ``block_rows`` each time: the cell *column* depends only on the
+        down by ``block_rows`` each time: the position's *column* depends only on the
         slot's position within its block row, and the row differs by a constant.
-        So a composer that would otherwise call :meth:`slot_to_cell` per slot can
+        So a composer that would otherwise call :meth:`slot_to_pos` per slot can
         resolve one period and index it, which is what makes laying out a large
         block-arranged window (a metatile map is thousands of slots) cost the
         period rather than the window.
         """
-        return tuple(
-            self.slot_to_cell(slot) for slot in range(self.slots_per_block_row)
-        )
+        return tuple(self.slot_to_pos(slot) for slot in range(self.slots_per_block_row))
 
-    def slot_to_cell(self, slot: int) -> tuple[int, int]:
-        """The ``(tile_x, tile_y)`` canvas cell a linear slot lands in."""
+    def slot_to_pos(self, slot: int) -> tuple[int, int]:
+        """The ``(tile_x, tile_y)`` canvas position a linear slot lands in."""
         if self.is_plain:  # every term below collapses; skip the block arithmetic
             cols = self._blocks_per_row  # 1×1 blocks: one per column, clamped ≥ 1
             return slot % cols, slot // cols
@@ -223,8 +222,8 @@ class BlockLayout:
                 inner_y, inner_x = divmod(within, bc)
         return block_x * bc + inner_x, blockrow * br + inner_y
 
-    def cell_to_slot(self, tile_x: int, tile_y: int) -> int | None:
-        """The linear slot at cell ``(tile_x, tile_y)`` — ``None`` if no tile
+    def pos_to_slot(self, tile_x: int, tile_y: int) -> int | None:
+        """The linear slot at position ``(tile_x, tile_y)`` — ``None`` if no tile
         maps there (a partial-width block column past the last whole block)."""
         if self.is_plain:
             cols = self._blocks_per_row
@@ -282,13 +281,13 @@ def compose_window(
         # answering that once per cell is far cheaper than the alternative — a
         # slice assignment per tile per pixel row, which is what placing tiles
         # one at a time costs.
-        datas = _in_cell_order(datas, layout, cols, rows, first_tile, blank)
+        datas = _in_pos_order(datas, layout, cols, rows, first_tile, blank)
         first_tile = 0
     _compose_plain(image.data, datas, cols, rows, th, row_bytes, first_tile, blank)
     return image
 
 
-def _in_cell_order(
+def _in_pos_order(
     datas: list,
     layout: BlockLayout,
     cols: int,
@@ -296,19 +295,19 @@ def _in_cell_order(
     first_tile: int,
     blank: bytes,
 ) -> list:
-    """``datas`` reordered from linear slots into row-major canvas cells.
+    """``datas`` reordered from linear slots into row-major canvas positions.
 
     Undoes a :class:`BlockLayout`'s placement into the plain order
     :func:`_compose_plain` blits, filling a cell no slot reaches with ``blank``:
     a partial-width block column, or a window running past the last tile.
 
-    The mapping is read off :attr:`BlockLayout.block_row_cells` rather than
+    The mapping is read off :attr:`BlockLayout.block_row_positions` rather than
     asked per slot, since it repeats every block row (see there).
     """
     count = len(datas)
     period = layout.slots_per_block_row
-    pattern = layout.block_row_cells
-    height = max(1, layout.block_rows)  # the clamp slot_to_cell applies
+    pattern = layout.block_row_positions
+    height = max(1, layout.block_rows)  # the clamp slot_to_pos applies
     out = [blank] * (cols * rows)
     for slot in range(cols * rows):
         index = first_tile + slot
@@ -399,8 +398,8 @@ def split_grid(
 
     That padding is a placeholder, not data: :func:`split_coverage` says how much
     of each tile the image actually reached, so an importer can leave the rest of
-    an edge tile as whatever the file already holds instead of stamping the pad
-    over pixels it has no colors for.
+    an edge tile as whatever the file already holds instead of laying the pad
+    down over pixels it has no colors for.
 
     This is how external pixels (a pasted or imported image) become tiles: the
     importer quantizes the whole image once, then splits it here.
@@ -410,8 +409,10 @@ def split_grid(
     src_stride = grid.width * bpx
     row_bytes = tile_width * bpx
     tiles = []
-    cells = _split_cells(grid.width, grid.height, tile_width, tile_height, layout)
-    for base_x, base_y, cover_w, cover_h in cells:
+    positions = _split_positions(
+        grid.width, grid.height, tile_width, tile_height, layout
+    )
+    for base_x, base_y, cover_w, cover_h in positions:
         tile = type(grid)(tile_width, tile_height)
         tiles.append(tile)
         if not (cover_w and cover_h):
@@ -441,13 +442,15 @@ def split_coverage(
     right/bottom edge of an image that isn't a whole number of tiles, and
     ``(0, 0)`` for a block-layout gap slot the image never reached. Everything
     outside that rectangle is padding :func:`split_grid` invented, which a write
-    back into a file must not stamp over real pixels.
+    back into a file must not lay down over real pixels.
     """
-    cells = _split_cells(grid_width, grid_height, tile_width, tile_height, layout)
-    return [(w, h) for _base_x, _base_y, w, h in cells]
+    positions = _split_positions(
+        grid_width, grid_height, tile_width, tile_height, layout
+    )
+    return [(w, h) for _base_x, _base_y, w, h in positions]
 
 
-def _split_cells(
+def _split_positions(
     grid_width: int,
     grid_height: int,
     tile_width: int,
@@ -466,19 +469,19 @@ def _split_cells(
     rows = max(1, ceil_div(grid_height, tile_height))
     if layout is None:
         layout = BlockLayout(cols)
-    cells = []
+    positions = []
     for slot in range(cols * rows):
-        tile_x, tile_y = layout.slot_to_cell(slot)
+        tile_x, tile_y = layout.slot_to_pos(slot)
         if tile_x >= cols or tile_y >= rows:
-            cells.append((0, 0, 0, 0))
+            positions.append((0, 0, 0, 0))
             continue
         base_x, base_y = tile_x * tile_width, tile_y * tile_height
         width = max(0, min(tile_width, grid_width - base_x))
         height = max(0, min(tile_height, grid_height - base_y))
         if not (width and height):
             width = height = 0
-        cells.append((base_x, base_y, width, height))
-    return cells
+        positions.append((base_x, base_y, width, height))
+    return positions
 
 
 def bitmap_tile_size(bitmap_width: int, tile_width: int) -> int:

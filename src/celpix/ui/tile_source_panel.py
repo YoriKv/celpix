@@ -54,7 +54,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from PySide6.QtCore import QPointF, QRect, Qt, Signal
+from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
@@ -64,7 +64,12 @@ from celpix.ui.canvas import (
     GRID_COARSE_ALPHA,
     GRID_STRUCTURE_COLOR,
 )
-from celpix.ui.widgets import ShortcutIsland, paint_selection_outline
+from celpix.ui.widgets import (
+    PanZoomSurface,
+    ShortcutIsland,
+    grid_slot_at,
+    paint_selection_outline,
+)
 
 # How many tiles apart the lattice sits, both ways. A **fixed** step, unlike the
 # canvas's configurable grid: this is not marking tile boundaries — the tiles are
@@ -75,7 +80,7 @@ from celpix.ui.widgets import ShortcutIsland, paint_selection_outline
 GRID_STEP_TILES = 16
 
 
-class TileSourcePanel(ShortcutIsland, QWidget):
+class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
     tile_selected = Signal(int)  # the ID of the newly selected tile
     zoom_requested = Signal(int, object)  # steps, QPointF cursor pos (widget)
     pan_requested = Signal(int, int)  # dx, dy
@@ -89,13 +94,6 @@ class TileSourcePanel(ShortcutIsland, QWidget):
         self._zoom = 2
         self._selected: int | None = None
         self._marked: int | None = None
-        # Space-drag panning, the canvas's split exactly: ``_pan_active`` is space
-        # held (armed, hand shown), ``_panning`` a drag in progress measured from
-        # ``_pan_last``. Modal over the mouse — while armed a press pans instead
-        # of picking, or a scrub across the sheet would fight the drag.
-        self._pan_active = False
-        self._panning = False
-        self._pan_last = QPointF()
         # ClickFocus, the canvas and palette grid's idiom: clicking a tile also
         # arms the arrow-key stepping below.
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
@@ -135,28 +133,8 @@ class TileSourcePanel(ShortcutIsland, QWidget):
             self._zoom = max(1, zoom)
             self._update_size()
 
-    def set_pan_mode(self, on: bool) -> None:
-        """Arm/disarm space-drag panning (the window drives this off the space key).
-
-        Disarming ends a drag in progress, since the key can come up mid-drag —
-        the canvas's rule, and the reason both keep the armed flag and the
-        dragging flag apart.
-        """
-        if self._pan_active == on:
-            return
-        self._pan_active = on
-        if not on:
-            self._panning = False
-        self._apply_cursor()
-
-    def _apply_cursor(self) -> None:
-        """Hand while panning, the widget's own otherwise."""
-        if self._panning:
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
-        elif self._pan_active:
-            self.setCursor(Qt.CursorShape.OpenHandCursor)
-        else:
-            self.unsetCursor()
+    def _has_content(self) -> bool:
+        return not self._sheet.isNull()
 
     def set_marked_id(self, tile_id: int | None) -> None:
         """Ring the tile the canvas's selected cell names, or clear the ring."""
@@ -197,31 +175,23 @@ class TileSourcePanel(ShortcutIsland, QWidget):
         )
         self.update()
 
-    def _id_at(self, x_px: float, y_px: float) -> int | None:
-        """The ID under a widget position, or None past the last tile."""
-        cw, ch = self._cell_px
-        col = int(x_px) // (cw * self._zoom)
-        row = int(y_px) // (ch * self._zoom)
-        slot = row * self._columns + col
-        if 0 <= col < self._columns and 0 <= slot < len(self._ids):
-            return self._ids[slot]
-        return None
+    def _id_at(self, x_px: float, y_px: float, *, clamp: bool = False) -> int | None:
+        """The ID under a widget position — or, ``clamp``ed, the nearest one.
 
-    def _id_near(self, x_px: float, y_px: float) -> int | None:
-        """The ID nearest a widget position, clamped into the sheet.
-
-        A drag that runs off an edge — or past the last, partly filled row —
-        snaps to the closest tile so the selection keeps following the pointer,
-        the same scrub the palette grid does. ``None`` only when nothing is on
-        show.
+        The clamped reading is what a drag wants, so scrubbing off an edge (or
+        past the last, partly filled row) keeps the pick following the pointer.
+        ``None`` for a click on nothing, or with the sheet empty.
         """
-        if not self._ids:
-            return None
-        cw, ch = self._cell_px
-        col = min(max(int(x_px) // (cw * self._zoom), 0), self._columns - 1)
-        row = min(max(int(y_px) // (ch * self._zoom), 0), self._rows() - 1)
-        slot = min(row * self._columns + col, len(self._ids) - 1)
-        return self._ids[slot]
+        cell_w, cell_h = self._cell_px
+        slot = grid_slot_at(
+            x_px,
+            y_px,
+            (cell_w * self._zoom, cell_h * self._zoom),
+            self._columns,
+            len(self._ids),
+            clamp=clamp,
+        )
+        return None if slot is None else self._ids[slot]
 
     def _cell_rect(self, slot: int) -> QRect:
         """Where the ``slot``-th entry sits — the grid geometry, in one place.
@@ -241,11 +211,7 @@ class TileSourcePanel(ShortcutIsland, QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         # Checked first, so an armed pan wins over the pick the same way it wins
         # over selecting and painting on the canvas.
-        if self._pan_active and event.button() == Qt.MouseButton.LeftButton:
-            self._panning = True
-            self._pan_last = event.globalPosition()
-            self._apply_cursor()
-            event.accept()
+        if self._pan_press(event):
             return
         if event.button() == Qt.MouseButton.LeftButton:
             tile_id = self._id_at(event.position().x(), event.position().y())
@@ -255,51 +221,20 @@ class TileSourcePanel(ShortcutIsland, QWidget):
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         """Drag to scrub the pick across the sheet, edges included."""
-        if self._panning:
-            # Global position, not widget-local: the widget shifts under the
-            # cursor as the view scrolls, which would feed back into the delta.
-            pos = event.globalPosition()
-            delta = pos - self._pan_last
-            self._pan_last = pos
-            self.pan_requested.emit(round(delta.x()), round(delta.y()))
-            event.accept()
+        if self._pan_move(event):
             return
         if not event.buttons() & Qt.MouseButton.LeftButton:
             super().mouseMoveEvent(event)
             return
-        tile_id = self._id_near(event.position().x(), event.position().y())
+        tile_id = self._id_at(event.position().x(), event.position().y(), clamp=True)
         if tile_id is not None:
             self._select(tile_id)
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if self._panning and event.button() == Qt.MouseButton.LeftButton:
-            self._panning = False
-            self._apply_cursor()  # back to the open hand (space may still be held)
-            event.accept()
+        if self._pan_release(event):
             return
         super().mouseReleaseEvent(event)
-
-    def wheelEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        """**Ctrl**+wheel zooms; a plain wheel falls through to the scroll area.
-
-        Reports a signed step per notch and the cursor position, leaving the
-        range and the cursor-anchoring to the dock — the canvas's division, and
-        for its reason: the level is a control's value, not this widget's.
-        """
-        if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-            event.ignore()  # let the scroll area scroll as usual
-            return
-        if self._sheet.isNull():
-            return
-        dy = event.angleDelta().y()
-        if dy == 0:
-            return
-        # One step per 120-unit notch, but at least one so a high-resolution
-        # wheel sending small deltas still zooms.
-        steps = int(dy / 120) or (1 if dy > 0 else -1)
-        self.zoom_requested.emit(steps, event.position())
-        event.accept()
 
     def keyPressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         """Arrows step the pick — Left/Right by one square (crossing display

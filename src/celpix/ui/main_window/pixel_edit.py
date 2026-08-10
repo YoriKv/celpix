@@ -6,8 +6,9 @@ undoable edit — plus the floating pixel selection and pixel clipboard
 (:mod:`~celpix.ui.main_window.pixel_edit` continues into the selection/transform
 dispatch those files carry). It is a slice of
 :class:`~celpix.ui.main_window.window.MainWindow`, so it reaches the window's
-live ``_doc`` and reuses :class:`~celpix.ui.main_window.selection.SelectionMixin`'s
-decode/encode helpers through ``self`` rather than re-deriving them.
+live ``_doc`` and reuses
+:class:`~celpix.ui.main_window.tile_bytes.TileBytesMixin`'s decode/encode helpers
+through ``self`` rather than re-deriving them.
 
 **The round-trip.** Every pixel edit rides the same path (see the module for the
 compositor's inverse, :func:`~celpix.core.arrangement.split_grid`)::
@@ -433,7 +434,7 @@ class PixelEditMixin:
             # With the undrawn positions, not without them. The *committed*
             # picture has them painted, so passing them is what leaves the
             # positions this stroke is not touching alone — omitting them is what
-            # changes them, flashing a map's blank cells back to their panel
+            # changes them, flashing a map's blank cells back to their PNL panel
             # content for as long as a stroke or a float is up.
             self._canvas.set_image(self._tilemap_grid_image(grid, self._grid_hidden()))
             return
@@ -561,7 +562,7 @@ class PixelEditMixin:
         be stored the way the file holds the tile, or the mirror bakes itself in
         and the art comes apart the moment the same tile is drawn unflipped
         somewhere else. This is the tilemap's twin of the ``unapply_orientation``
-        a rearranged view does (:meth:`~...selection.SelectionMixin._actual_runs`).
+        a rearranged view does (:meth:`~...tile_bytes.TileBytesMixin._actual_runs`).
 
         A dict rather than a run, because a map's slots are not its file's tiles:
         the picture is a **many-to-one** scatter of the bank, so one gesture can
@@ -613,7 +614,7 @@ class PixelEditMixin:
         if self._doc is None:
             return
         spec = SPEC_BY_TOOL[self._tool]
-        # Right-click is the eyedropper on every tool (the YY-CHR idiom).
+        # Right-click is the eyedropper on every tool, as tile editors do.
         if button == Qt.MouseButton.RightButton or spec.gesture is Gesture.SAMPLE:
             self._eyedrop_at(x, y)
             return
@@ -1413,7 +1414,7 @@ class PixelEditMixin:
     def _pixel_key(self, key, shift: bool, ctrl: bool) -> bool:
         """Pixel-mode bare-key shortcuts routed from the nav event filter.
 
-        Number keys 1–9 pick a tool; Escape stamps a live float, else drops the
+        Number keys 1–9 pick a tool; Escape commits a live float, else drops the
         marquee. Returns True when it consumed the key. Inert outside pixel mode
         or with modifiers, so tile-mode navigation is untouched.
 

@@ -62,7 +62,13 @@ class PixelFormat(Protocol):
 
 @runtime_checkable
 class PaletteFormat(Protocol):
-    """A palette interpretation implemented directly: bytes ⇄ a palette."""
+    """A palette interpretation implemented directly: bytes ⇄ a palette.
+
+    May also define ``entries_per_unit()`` — the same optional method
+    :class:`~celpix.plugins.base.ColorCodecPlugin` carries, minus ``params``. A
+    format that packs several entries into one read unit (a handheld shade
+    register) has to declare it or be read one entry per unit.
+    """
 
     info: FormatInfo
 
@@ -82,9 +88,15 @@ class TilemapFormat(Protocol):
     Laying the flat list out as a grid is the host's job — a tilemap file rarely
     states its own width.
 
-    ``transform_cell`` is deliberately absent. It is optional on the full plugin
-    surface too (the host reaches it with ``getattr``), and a format that omits it
-    simply leaves flips to the generic path.
+    May also define the four optional methods
+    :class:`~celpix.plugins.base.TilemapCodecPlugin` carries, each minus
+    ``params``: ``transform_cell(cell, op)``, ``index_limit()``,
+    ``palette_row_limit()`` and ``has_palette_rows()``. **A format that wants its
+    cells edited has to define ``index_limit``** — the host refuses what a codec
+    has not been asked about, so omitting it leaves the cell reference unsettable
+    and every flip refused, exactly as it would for a full plugin that stayed
+    quiet (see each method on :class:`~celpix.plugins.base.TilemapCodecPlugin`
+    for why silence is the safe direction).
     """
 
     info: FormatInfo
@@ -96,6 +108,59 @@ class TilemapFormat(Protocol):
     def bytes_per_cell(self) -> int: ...
 
     def cell_tiles(self) -> tuple[int, int]: ...
+
+
+def _params_last(impl: Any) -> Any:
+    """A format's method on a codec surface that passes ``params`` last."""
+
+    def call(*args: Any) -> Any:
+        return impl(*args[:-1])
+
+    return call
+
+
+def _params_middle(impl: Any) -> Any:
+    """The same for ``frames``, whose ``params`` sits between cells and context."""
+
+    def call(cells: Any, params: dict[str, Any], ctx: PipelineContext) -> Any:
+        return impl(cells, ctx)
+
+    return call
+
+
+# The optional codec methods, per stage, and where each puts ``params``. A format
+# writes the same method without it — a format *is* its own parameterisation — so
+# adapting one is dropping that argument from wherever the surface carries it.
+_OPTIONAL: dict[Stage, dict[str, Any]] = {
+    Stage.INTERPRET_PIXEL: {},
+    Stage.INTERPRET_PALETTE: {"entries_per_unit": _params_last},
+    Stage.INTERPRET_TILEMAP: {
+        "transform_cell": _params_last,
+        "index_limit": _params_last,
+        "palette_row_limit": _params_last,
+        "has_palette_rows": _params_last,
+        "size_pair": _params_last,
+        "frames": _params_middle,
+    },
+}
+
+
+def _forward_optional(engine: Any, fmt: Any, stage: Stage) -> None:
+    """Bind the optional methods ``fmt`` defines onto ``engine``, and no others.
+
+    The host reaches every optional method with ``getattr``/``hasattr`` on the
+    **engine** — a flip asks ``transform_cell``, the cell spin asks
+    ``index_limit``, a packed palette asks ``entries_per_unit``. Declaring them on
+    the class would make the engine answer for a format that never wrote one, and
+    each of those absences is load-bearing: silence is how a codec says "do not
+    infer where my index field is" (see
+    :class:`~celpix.plugins.base.TilemapCodecPlugin`). Binding per instance keeps
+    absence meaning absence in both directions.
+    """
+    for name, adapt in _OPTIONAL[stage].items():
+        impl = getattr(fmt, name, None)
+        if callable(impl):
+            setattr(engine, name, adapt(impl))
 
 
 class _PixelFormatEngine:
@@ -187,6 +252,7 @@ def adapt_format(fmt: Any, stage: Stage) -> tuple[Any, Preset]:
             f"formats exist only for interpret stages, not {stage.value}"
         ) from None
     engine = engine_cls(fmt)
+    _forward_optional(engine, fmt, stage)
     preset = Preset(
         id=fmt.info.id,
         name=fmt.info.name,

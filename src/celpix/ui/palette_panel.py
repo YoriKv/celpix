@@ -46,7 +46,11 @@ from PySide6.QtWidgets import QWidget
 from celpix.core import ceil_div
 from celpix.core.palette import FULL_PALETTE_COUNT
 from celpix.ui.canvas import GRID_STRUCTURE_COLOR
-from celpix.ui.widgets import ShortcutIsland, paint_selection_outline
+from celpix.ui.widgets import (
+    ShortcutIsland,
+    grid_slot_at,
+    paint_selection_outline,
+)
 
 SWATCH_SIZE = 14  # logical px per swatch; Qt scales logical painting on HiDPI
 SWATCH_COLUMNS = 16
@@ -100,31 +104,23 @@ class PalettePanel(ShortcutIsland, QWidget):
         else:
             self.unsetCursor()
 
-    def _index_at(self, x_px: float, y_px: float) -> int | None:
-        """The entry index under a widget position, or None past the colors."""
-        x = int(x_px) // SWATCH_SIZE
-        y = int(y_px) // SWATCH_SIZE
-        index = y * SWATCH_COLUMNS + x
-        if 0 <= x < SWATCH_COLUMNS and 0 <= index < len(self._colors):
-            return index
-        return None
+    def _grid_slot(
+        self, x_px: float, y_px: float, *, clamp: bool = False
+    ) -> int | None:
+        """The entry index under (or, clamped, nearest) a widget position.
 
-    def _index_near(self, x_px: float, y_px: float) -> int | None:
-        """The entry index nearest a widget position, clamped into the grid.
-
-        Unlike :meth:`_index_at` a miss never reads as None: a drag that runs off
-        an edge — or past the last, partly filled row — snaps to the closest
-        swatch so the selection keeps following the pointer. ``None`` only when
-        there are no colors at all.
+        A swatch's index *is* its slot in the grid, the palette being one
+        unbroken run — unlike the tile source sheet, whose slots and IDs part
+        company.
         """
-        if not self._colors:
-            return None
-        col = min(max(int(x_px) // SWATCH_SIZE, 0), SWATCH_COLUMNS - 1)
-        rows = ceil_div(len(self._colors), SWATCH_COLUMNS)
-        row = min(max(int(y_px) // SWATCH_SIZE, 0), rows - 1)
-        # Past the last color (the empty tail of a short final row) lands on the
-        # last color — dragging off the end selects the end.
-        return min(row * SWATCH_COLUMNS + col, len(self._colors) - 1)
+        return grid_slot_at(
+            x_px,
+            y_px,
+            (SWATCH_SIZE, SWATCH_SIZE),
+            SWATCH_COLUMNS,
+            len(self._colors),
+            clamp=clamp,
+        )
 
     def set_colors(self, colors: list[int]) -> None:
         # Called on every view refresh, including pure navigation where the
@@ -203,7 +199,7 @@ class PalettePanel(ShortcutIsland, QWidget):
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         if event.button() == Qt.MouseButton.LeftButton:
-            index = self._index_at(event.position().x(), event.position().y())
+            index = self._grid_slot(event.position().x(), event.position().y())
             if index is not None:
                 if self._eyedropper:
                     self.color_picked.emit(self._colors[index])
@@ -215,7 +211,7 @@ class PalettePanel(ShortcutIsland, QWidget):
             # Move the selection (and the active subpalette with it) onto the
             # right-clicked swatch, so the menu that follows acts on it — the
             # file-manager rule the canvas uses. An already-selected swatch stays.
-            index = self._index_at(event.position().x(), event.position().y())
+            index = self._grid_slot(event.position().x(), event.position().y())
             if index is not None and index != self._selected:
                 self._select(index)
                 self.subpalette_row_selected.emit(index // self._count)
@@ -233,7 +229,7 @@ class PalettePanel(ShortcutIsland, QWidget):
         if self._eyedropper or not held:
             super().mouseMoveEvent(event)
             return
-        index = self._index_near(event.position().x(), event.position().y())
+        index = self._grid_slot(event.position().x(), event.position().y(), clamp=True)
         if index is not None and index != self._selected:
             self._select(index)
             self.subpalette_row_selected.emit(index // self._count)
@@ -243,7 +239,7 @@ class PalettePanel(ShortcutIsland, QWidget):
         """Double-click opens the color editor on that entry — the established
         idiom for a swatch grid (``docs/design-reference/palette-workflow.md``)."""
         if event.button() == Qt.MouseButton.LeftButton and not self._eyedropper:
-            index = self._index_at(event.position().x(), event.position().y())
+            index = self._grid_slot(event.position().x(), event.position().y())
             if index is not None:
                 # The press already selected it; the editor reads the selection.
                 self.edit_requested.emit(index)
