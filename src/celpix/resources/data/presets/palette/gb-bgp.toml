@@ -11,6 +11,7 @@
 id = "preset.palette.gb-bgp"
 name = "Game Boy palette register (4 x 2-bit grey)"
 engine_id = "codec.palette.mask"
+category = "Nintendo"
 
 [params]
 bits_per_entry = 2

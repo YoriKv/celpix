@@ -16,9 +16,62 @@ the workspace entries it is rebuilt from rather than the config itself
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE, RAW_CONTAINER, FileRef
+
+
+class SlotFill(str, Enum):
+    """What becomes of a bounded slot's tail when a write comes up short.
+
+    A recompressor rarely reproduces the packing the original build used, so a
+    re-encoded blob routinely lands smaller than the one it replaces and leaves
+    room at the end of the slot the new stream never reaches. Every scheme here
+    is self-delimiting, so nothing *reads* those bytes whichever way this goes —
+    what it decides is what a person looking at the file finds there.
+
+    - ``KEEP`` writes only what was produced, leaving the previous stream's tail
+      standing. The most conservative answer, and the only one that cannot
+      destroy data a slot's bounds wrongly claimed: a length measured to the next
+      known offset can take in an alignment pad or a neighbour's header, and
+      those bytes are only ours to overwrite if the bounds were right.
+    - ``FF`` is the erased state of EPROM and flash, so it is what unwritten
+      cartridge space physically reads as, and a run of it is unmistakable in a
+      hex dump where a run of ``00`` is not.
+    - ``ZERO`` for the images whose own padding is ``00`` — matching what
+      surrounds the slot is worth more than either constant's pedigree.
+
+    ``value`` is the string the project file stores, str-valued for the same
+    reason :class:`~celpix.core.capabilities.ContentKind` is: the on-disk schema
+    is a name rather than an ordinal that reordering this enum would change.
+    """
+
+    KEEP = "keep"
+    FF = "ff"
+    ZERO = "zero"
+
+    @classmethod
+    def parse(cls, value: object) -> SlotFill:
+        """``value`` as a fill, falling back to the default for anything else.
+
+        Tolerant like the rest of the project reader: a newer celPix's answer, or
+        a hand-edited typo, pads the way an unstated one does rather than failing
+        the entry.
+        """
+        try:
+            return cls(value)
+        except ValueError:
+            return DEFAULT_SLOT_FILL
+
+    @property
+    def filler(self) -> bytes:
+        """The byte to pad with, or empty for "leave the tail alone"."""
+        return _FILLER_BYTES[self]
+
+
+DEFAULT_SLOT_FILL = SlotFill.FF
+_FILLER_BYTES = {SlotFill.KEEP: b"", SlotFill.FF: b"\xff", SlotFill.ZERO: b"\x00"}
 
 
 @dataclass
@@ -45,6 +98,12 @@ class PathwayConfig:
     compression_id: str = NO_COMPRESSION
     dest: FileRef | None = None
     write_enabled: bool = True
+    # What to do with the room a short compressed result leaves at the end of a
+    # bounded slot (:class:`SlotFill`). Only a *compressed* pathway can come up
+    # short — everywhere else the result is the length of the buffer it was read
+    # from — so this is read only there, and the slice dialog offers it only
+    # there too.
+    slot_fill: SlotFill = DEFAULT_SLOT_FILL
     # Set when this pathway's encoded bytes belong *inside* another entry's
     # region rather than at a file position of their own — every **slice**, whose
     # parent owns the region's bytes (``docs/design/slices-and-parents.md``).

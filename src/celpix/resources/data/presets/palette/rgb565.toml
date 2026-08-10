@@ -3,6 +3,7 @@
 id = "preset.palette.rgb565"
 name = "RGB565"
 engine_id = "codec.palette.mask"
+category = "Generic"
 
 [params]
 bytes_per_entry = 2

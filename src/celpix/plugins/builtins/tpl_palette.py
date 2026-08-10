@@ -109,6 +109,7 @@ class TplPaletteContainer:
         magic=_MAGIC_PROBES,
         short_name="TPL",
         content_kinds=(ContentKind.PALETTE,),
+        category="Authoring tools",
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

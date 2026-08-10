@@ -21,6 +21,7 @@
 id = "preset.tilemap.scgcad-map"
 name = "Stamp layout entry (panel coordinate)"
 engine_id = "codec.tilemap.packed"
+category = "Authoring tools"
 
 [params]
 # The cells are coordinates into a panel, not tile references: the host reads

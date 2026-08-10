@@ -123,6 +123,20 @@ DROP_TARGET_COLOR = QColor(0x40, 0xC0, 0xFF)
 DROP_REFUSED_COLOR = QColor(0xFF, 0x50, 0x50)
 DROP_TARGET_WIDTH = 2
 
+# Where a fontmap's line ends (:meth:`Canvas.set_line_ends`). Amber for the same
+# reason the structural grid is blue: it has to be separable at a glance from
+# both levels of the lattice and from the art, and on a fontmap the coarse level
+# is already a blue line at every cell boundary — a marker in that colour would
+# be a lattice line among lattice lines. Opaque and solid, because unlike the
+# grid this is *content*: it says where a string breaks, which nothing else on
+# the picture does.
+LINE_END_COLOR = QColor(0xFF, 0xA5, 0x28)
+LINE_END_WIDTH = 2
+# Below this many device pixels across, a cell has no room for a bar that is not
+# most of it. The marker thins to a hairline rather than disappearing: the line
+# structure is still the thing being read at that size.
+LINE_END_MIN_CELL = 8
+
 
 def _tile_id_text(value: int) -> str:
     """A cell's tile number as the tilemap controls spell one: ``$1c4``.
@@ -280,6 +294,9 @@ class Canvas(QWidget):
         # off (:meth:`set_tile_ids`). Only a cell's first slot carries a number,
         # so a metatile is labelled once.
         self._tile_ids: list[int | None] | None = None
+        # A fontmap's line ends, by the slot each one's cell starts at
+        # (:meth:`set_line_ends`). Empty for every other kind of document.
+        self._line_ends: frozenset[int] = frozenset()
         self._tile_w = 8
         self._tile_h = 8
         # Arrangement placement (block grouping / order). 1×1 is plain row-major,
@@ -427,6 +444,22 @@ class Canvas(QWidget):
         which the position bar already says.
         """
         self._tile_ids = ids
+        self.update()
+
+    def set_line_ends(self, slots: frozenset[int]) -> None:
+        """Mark the cells a fontmap's lines end on, or clear the marks.
+
+        Indexed by the **slot the cell starts at**, like :meth:`set_tile_ids`'
+        numbers, and drawn down that cell's trailing edge — where the line stops.
+
+        A fontmap's line structure is content: the cart's own strings end where
+        these say, and the canvas otherwise draws a run of glyphs with nothing to
+        show for it. That is why this has no switch of its own, unlike the two
+        label overlays: it is never on where there is nothing to say, and where
+        there is, it is the picture's only account of the thing the entry exists
+        to edit.
+        """
+        self._line_ends = slots
         self.update()
 
     def set_grid_style(self, style: GridStyle) -> None:
@@ -1115,6 +1148,9 @@ class Canvas(QWidget):
             # and the fractional level is excluded by the gate above - a grid over
             # half-size pixels would be denser than the art.
             self._draw_grid(painter, int(z), exposed)
+        # Over the lattice and under the labels: it is read as structure, and a
+        # cell that carries both a number and a line end must not hide either.
+        self._paint_line_ends(painter, exposed)
         self._paint_palette_rows(painter, exposed)
         self._paint_tile_ids(painter, exposed)
         self._paint_selection(painter, exposed)
@@ -1553,6 +1589,45 @@ class Canvas(QWidget):
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                 _tile_id_text(value),
             )
+
+    def _paint_line_ends(self, painter: QPainter, exposed: QRect) -> None:
+        """Rule the trailing edge of every cell a fontmap's line ends on.
+
+        Inside the cell rather than on the boundary between it and the next, for
+        two reasons that point the same way. A line that ends in the **last
+        column** — which is every line of a fixed-width message box — would
+        otherwise fall on the canvas's own edge and be half of it or none of it;
+        and the mark belongs to *that* cell, since it is that character carrying
+        the terminator bit or being the break code. Drawn inside, it reads as the
+        stop it is and is always fully on screen.
+
+        Filled rather than stroked: a rectangle blits, where a translucent
+        one-pixel line is the slow path Qt's raster engine takes
+        (:data:`GRID_PATTERN_MAX`'s comment) — and a text region is thousands of
+        cells with a mark on every eighteenth.
+        """
+        if not self._line_ends:
+            return
+        z = self._zoom
+        cell_w = self._tile_w * z * max(1, self._block_cols)
+        cell_h = self._tile_h * z * max(1, self._block_rows)
+        width = LINE_END_WIDTH if cell_w >= LINE_END_MIN_CELL else 1
+        layout = self._layout()
+        cols, rows = self._columns(), self._rows()
+        for slot in self._line_ends:
+            tile_x, tile_y = layout.slot_to_cell(slot)
+            if not (0 <= tile_x < cols and 0 <= tile_y < rows):
+                continue
+            cell = self._cell_rect(tile_x, tile_y)
+            bar = QRect(
+                round(cell.x() + cell_w) - width,
+                cell.y(),
+                width,
+                round(cell_h),
+            )
+            if not exposed.intersects(bar):
+                continue
+            painter.fillRect(bar, LINE_END_COLOR)
 
     def _paint_selection(self, painter: QPainter, exposed: QRect) -> None:
         if not self._selected_slots:

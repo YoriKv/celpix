@@ -513,7 +513,10 @@ class _LzBase:
 class Lz1(_LzBase):
     _big_endian = False
     info = PluginInfo(
-        id="compression.lz1", name="LZ1 (Zelda 3)", stage=Stage.COMPRESSION
+        id="compression.lz1",
+        name="LZ1 (Zelda 3)",
+        stage=Stage.COMPRESSION,
+        category="Nintendo",
     )
 
 
@@ -527,6 +530,7 @@ class Lz1Improved(Lz1):
         id="compression.lz1-improved",
         name="LZ1 improved (Zelda 3)",
         stage=Stage.COMPRESSION,
+        category="Nintendo",
     )
 
 
@@ -536,6 +540,7 @@ class Lz2(_LzBase):
         id="compression.lz2",
         name="LZ2 (SMW, Yoshi's Island)",
         stage=Stage.COMPRESSION,
+        category="Nintendo",
     )
 
 
@@ -550,4 +555,5 @@ class Lz2Improved(Lz2):
         id="compression.lz2-improved",
         name="LZ2 improved (SMW, Yoshi's Island)",
         stage=Stage.COMPRESSION,
+        category="Nintendo",
     )

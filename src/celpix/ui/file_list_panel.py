@@ -510,19 +510,20 @@ class FileListPanel(QWidget):
             full = container_label(self._registry, entry.container_id, short=False)
             if full:
                 tip += f"\nContainer {full}"
+        marker, what = self._entry_marker(entry)
+        # Always set, empty included: a row keeps whatever icon it was last given,
+        # so a kind that no longer wears one has to say so rather than leaving the
+        # previous glyph behind it.
+        item.setIcon(0, marker)
+        if what:
+            tip += f"\n{what}"
         if entry.kind is EntryKind.SLICE:
-            # A picture glyph marks a slice as its own little graphic, telling it
-            # apart from the ribbon-marked bookmarks it sits among.
-            item.setIcon(0, self._picture_icon())
             tip += f"\nOffset {format_hex(entry.slice_offset)}\nLength " + (
                 format_hex(entry.slice_length)
                 if entry.slice_length is not None
                 else "to be discovered"
             )
         elif entry.kind is EntryKind.BOOKMARK:
-            # The ribbon icon is what tells a bookmark from its slice siblings
-            # in the list; the tooltip spells it out.
-            item.setIcon(0, self._ribbon_icon())
             tip += (
                 f"\nBookmark at {format_hex(entry.slice_offset)}\nDouble-click to jump"
             )
@@ -650,10 +651,63 @@ class FileListPanel(QWidget):
         """The bookmark marker: a flag glyph in the theme's accent color."""
         return self._icon("bookmark.png", role=QPalette.ColorRole.Highlight)
 
-    def _picture_icon(self) -> QIcon:
-        """The slice marker: a framed-picture glyph in the theme's text
-        color — the universal "this is a graphic" symbol."""
-        return self._icon("slice.png", role=QPalette.ColorRole.Text)
+    def _entry_marker(self, entry: Entry) -> tuple[QIcon, str]:
+        """The glyph a row wears, and what the tooltip calls what it holds.
+
+        Keyed on the entry's **content kind** first and its bounding second,
+        because that is the order the glyphs answer in. A **map wears the glyph of
+        its layout whatever it is a window onto** — a whole file as much as a
+        slice of a ROM — since which of the three layouts it holds settles what
+        the entry can even do: a sprite map is placed by coordinate rather than
+        laid into a grid, and a fontmap's cells read as words. The section header
+        says *tilemap*; only the row can say *which*. Gating this on
+        ``EntryKind.SLICE`` left every map opened as its own file — which is most
+        of them — with no glyph at all.
+
+        The maps share one motif and differ in how its cells sit: an even
+        lattice, the same cells loose at free offsets and sizes, and the lattice's
+        columns fused into lines of text. Three slight variants read as a family;
+        the tooltip carries the name, since a glyph that subtle is a reminder
+        rather than an introduction.
+
+        The two exceptions come first and last. A **bookmark** keeps the ribbon
+        even on a map: it marks a position rather than content, and the ribbon is
+        what tells it from the slices it sits among. A **pixel slice** is its own
+        little graphic, and the framed-picture glyph is the universal symbol for
+        that — while a pixel *file* wears none, its name and its section being the
+        whole of what there is to say.
+
+        The variant is the **format's** declaration, exactly as the window's
+        ``_tilemap_is_sprite`` / ``_tilemap_is_font`` read it: a row has to draw
+        before its entry is loaded, and a map with nothing bound yet is still an
+        object, or still a string.
+        """
+        if entry.kind is EntryKind.BOOKMARK:
+            return self._ribbon_icon(), ""
+        if entry.content_kind is ContentKind.TILEMAP:
+            glyph, what = {
+                "sprite": ("spritemap.png", "Sprite map"),
+                "text": ("fontmap.png", "Fontmap"),
+            }.get(self._tilemap_layout(entry), ("tilemap.png", "Tilemap"))
+            return self._icon(glyph, role=QPalette.ColorRole.Text), what
+        if entry.kind is EntryKind.SLICE:
+            return self._icon("slice.png", role=QPalette.ColorRole.Text), ""
+        return QIcon(), ""
+
+    def _tilemap_layout(self, entry: Entry) -> str:
+        """What ``entry``'s cell format calls its layout — ``""`` for a plain grid.
+
+        Empty for a format this build hasn't got, and for the panel built with no
+        registry at all: an unrecognised map is still a map, and the grid glyph is
+        the honest thing to draw for one.
+        """
+        if self._registry is None or not entry.tilemap_preset_id:
+            return ""
+        try:
+            preset = self._registry.preset(entry.tilemap_preset_id)
+        except KeyError:
+            return ""
+        return str(preset.params.get("layout") or "")
 
     def _missing_glyph(self) -> QIcon:
         """A question mark: this entry's file is unaccounted for, and the fix is

@@ -20,6 +20,7 @@
 id = "preset.tilemap.ys-spr"
 name = "Yoshi's Island sprite pattern subsprite (SPR)"
 engine_id = "codec.tilemap.ys-spr"
+category = "Nintendo"
 
 [params]
 # A **sprite map**: the tilemap variant whose cells are freely-placed subsprites

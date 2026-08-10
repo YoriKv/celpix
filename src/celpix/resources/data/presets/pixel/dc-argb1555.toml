@@ -3,6 +3,7 @@
 id = "preset.pixel.dc-argb1555"
 name = "Direct ARGB1555 (8x8)"
 engine_id = "codec.pixel.direct-color"
+category = "Direct color"
 
 [params]
 bytes_per_pixel = 2

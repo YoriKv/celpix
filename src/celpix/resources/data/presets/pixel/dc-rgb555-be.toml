@@ -4,6 +4,7 @@
 id = "preset.pixel.dc-rgb555-be"
 name = "Direct RGB555 (8x8, big-endian)"
 engine_id = "codec.pixel.direct-color"
+category = "Direct color"
 
 [params]
 bytes_per_pixel = 2

@@ -7,6 +7,7 @@
 id = "preset.pixel.dc-i8"
 name = "N64 I8 (intensity, 8x8)"
 engine_id = "codec.pixel.direct-color"
+category = "Nintendo"
 
 [params]
 bytes_per_pixel = 1

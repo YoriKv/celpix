@@ -35,7 +35,6 @@ from os.path import basename, dirname
 from typing import NamedTuple
 
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -59,7 +58,13 @@ from celpix.plugins.detect import (
     detect_container,
 )
 from celpix.plugins.registry import Registry
-from celpix.ui.widgets import fill_stage_combo, select_combo_data
+from celpix.ui.searchable_combo import (
+    SearchableComboBox,
+    fill_grouped,
+    fill_stage_combo,
+    info_rows,
+)
+from celpix.ui.widgets import PRESET_COMBO_WIDTH
 
 __all__ = ["ContainerDialog", "ContainerEdit"]
 
@@ -138,20 +143,19 @@ class ContainerDialog(QDialog):
         self._rows: list[_FileRow] = []
         self.setWindowTitle(f"Edit File Container - {basename(self._paths[0])}")
 
-        self._container = QComboBox()
+        self._container = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._container.setToolTip(_TIP)
         # Kept unadorned so the "(detected)" marker can be re-applied to a
         # different entry when the first file changes.
         # Only the containers that frame this kind of entry: offering a palette
         # the wrappers that unwrap ROMs would be inviting a choice that cannot
         # come out well, and the two sets do not overlap.
-        self._names = {info.id: info.name for info in containers_for(registry, kind)}
-        for plugin_id, name in self._names.items():
-            self._container.addItem(name, plugin_id)
+        offered = containers_for(registry, kind)
+        self._names = {info.id: info.name for info in offered}
         self._detected = ""
-        select_combo_data(self._container, container_id)
+        fill_grouped(self._container, info_rows(offered), container_id)
 
-        self._reshape = QComboBox()
+        self._reshape = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._reshape.setToolTip(_RESHAPE_TIP)
         fill_stage_combo(self._reshape, registry.plugins(Stage.RESHAPE), reshape_id)
 
@@ -338,6 +342,8 @@ class ContainerDialog(QDialog):
             return
         self._detected = detected
         for index in range(self._container.count()):
+            if self._container.is_heading(index):
+                continue
             plugin_id = self._container.itemData(index)
             name = self._names[plugin_id]
             self._container.setItemText(

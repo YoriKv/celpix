@@ -131,7 +131,12 @@ class BitswapReshape:
     """
 
     def __init__(
-        self, plugin_id: str, name: str, bits: object, gather: bool = False
+        self,
+        plugin_id: str,
+        name: str,
+        bits: object,
+        gather: bool = False,
+        category: str = "",
     ) -> None:
         if not isinstance(bits, (list, tuple)) or not all(
             isinstance(b, int) and not isinstance(b, bool) for b in bits
@@ -163,7 +168,9 @@ class BitswapReshape:
             forward, backward = backward, forward
         self._forward = forward
         self._backward = backward
-        self.info = PluginInfo(id=plugin_id, name=name, stage=Stage.RESHAPE)
+        self.info = PluginInfo(
+            id=plugin_id, name=name, stage=Stage.RESHAPE, category=category
+        )
 
     def reshape(self, data: bytes, ctx: PipelineContext) -> bytes:
         return _permute(data, self._forward)
@@ -192,5 +199,9 @@ def bitswap_from_spec(spec: dict) -> BitswapReshape:
     if not isinstance(params, dict):
         raise ValueError("params must be a table")
     return BitswapReshape(
-        spec["id"], spec["name"], params.get("bits"), bool(params.get("gather", False))
+        spec["id"],
+        spec["name"],
+        params.get("bits"),
+        bool(params.get("gather", False)),
+        spec.get("category", ""),
     )

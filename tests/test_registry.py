@@ -106,3 +106,28 @@ def test_current_id_survives_a_cycle() -> None:
         assert current_id("a") in ("a", "b")  # terminates, whichever it lands on
     finally:
         aliases.RENAMED = original
+
+
+def test_a_missing_preset_falls_back_to_the_stage_default() -> None:
+    """A stored preset id outlives the preset — an uninstalled plugin, an
+    untrusted one, a project's own folder that has since been closed. Interpret
+    has no pass-through to degrade to, so the stand-in is a real format."""
+    reg = default_registry()
+    assert reg.resolve_preset(Stage.INTERPRET_TILEMAP, "preset.tilemap.gone") == (
+        "preset.tilemap.snes-bg"
+    )
+    assert reg.resolve_preset(Stage.INTERPRET_PIXEL, "preset.pixel.gone") == (
+        "preset.pixel.snes-4bpp"
+    )
+    # A registered id — and one reached through the rename table — is left alone.
+    assert reg.resolve_preset(Stage.INTERPRET_PALETTE, "preset.palette.bgr555") == (
+        "preset.palette.bgr555"
+    )
+    assert reg.resolve_preset(
+        Stage.INTERPRET_PALETTE, "preset.palette.r5g5b5-split-be"
+    ) == ("preset.palette.r5g5b5-split-be")
+    # ALPHABET has no default: substituting a table would spell the same codes as
+    # different letters, so the miss comes back unchanged for the caller to clear.
+    assert reg.resolve_preset(Stage.ALPHABET, "preset.alphabet.gone") == (
+        "preset.alphabet.gone"
+    )

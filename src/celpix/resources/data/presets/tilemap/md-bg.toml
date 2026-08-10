@@ -4,6 +4,7 @@
 id = "preset.tilemap.md-bg"
 name = "Mega Drive nametable (16-bit)"
 engine_id = "codec.tilemap.packed"
+category = "Sega"
 
 [params]
 bytes = 2

@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-from celpix.core.capabilities import Capability
+from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.document import Document, ViewOptions
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.pipeline import inspect_container
@@ -47,6 +47,7 @@ from celpix.project.workspace import (
     palette_source_for,
     path_is_palette_only,
     relocate_path,
+    repair_presets,
     retarget_files,
     slice_of,
 )
@@ -105,6 +106,10 @@ class EntriesMixin:
         ):
             return
         self._workspace.hidden_pixel_presets = set()
+        # The previous project's own plugins go with it - they were part of that
+        # project, not of the app (:meth:`_load_project_plugins`).
+        if self._project_path is not None:
+            self._load_project_plugins(None)
         # -> _on_current_entry_changed(None) -> _show_empty: the canvas, the
         # palette dock and every document-bound action land on the idle state.
         self._workspace.replace([], None)
@@ -207,6 +212,15 @@ class EntriesMixin:
                 "understands; saving will rewrite it, dropping the rest.",
                 title="celPix - project",
             )
+        # The project's own plugins first of all: an entry may be saved against a
+        # format that only the project's plugins/ folder provides, and the
+        # replace below decodes the restored entry straight away.
+        self._load_project_plugins(path)
+        # Now that the registry is final, point the restored entries at formats it
+        # actually has — before the replace, which shows the current entry and
+        # decodes it. An entry naming a format this build hasn't got would
+        # otherwise fail its first decode with nothing on screen to say why.
+        self._alert_missing_presets(repair_presets(loaded.entries, self._registry))
         # Seed the pixel-format filter before the replace: showing the restored
         # current entry rebuilds the dropdown, which must already read the
         # project's filter. A rebuild also happens explicitly below for a project
@@ -657,8 +671,13 @@ class EntriesMixin:
             length=entry.slice_length,
             compression_id=entry.compression_id,
             reshape_id=entry.reshape_id,
+            slot_fill=entry.slot_fill,
             name=entry.name,
             title="Edit Slice",
+            # Carried in and back out untouched: an edit re-points a live entry's
+            # coordinates, and re-reading it as another kind of thing would take
+            # its binding and its section in the Files list with it.
+            content_kind=entry.content_kind,
         )
         if params is None:
             return
@@ -668,6 +687,8 @@ class EntriesMixin:
             entry.slice_length,
             entry.compression_id,
             entry.reshape_id,
+            entry.content_kind,
+            entry.slot_fill,
         )
         if params == before:
             return  # OK'd unchanged - nothing happened, nothing to undo
@@ -682,6 +703,7 @@ class EntriesMixin:
         entry.slice_length = params.length
         entry.compression_id = params.compression_id
         entry.reshape_id = params.reshape_id
+        entry.slot_fill = params.slot_fill
         # How the region is *read* and *laid out* belongs to the entry, not to
         # the coordinates: re-pointing changes which bytes arrive, not the
         # format or arrangement they arrive in. The session snapshot only
@@ -918,10 +940,13 @@ class EntriesMixin:
         from its parent): it reconfigures the *parent* with the *slice's* own
         pixel and palette settings and lands the view on the slice's offset, so
         the slice's tiles appear at their real position in the whole file. The
-        parent is opened first if it was closed. The slice's decompression is
-        deliberately *not* applied - the parent reads raw, so a raw slice shows
-        exactly its own tiles at their true file address (a decompressed slice
-        still lands on the right offset, over the packed source bytes).
+        parent is opened first if it was closed.
+
+        A compressed slice arrives with its codec in the *preview* combo, not in
+        the parent's own read: the main view always shows raw bytes, so the
+        packed structure is what sits at that address, and the decompression
+        preview overlay is where those bytes become the slice's tiles again. A
+        raw slice leaves the combo at none, which is its ``compression_id``.
         """
         if slice_entry.kind is not EntryKind.SLICE:
             return
@@ -949,6 +974,11 @@ class EntriesMixin:
                 pixel_preset_id=src.pixel_preset_id,
                 palette_preset_id=src.palette_preset_id,
                 palette_mode=src.palette_mode,
+                # How the slice's bytes are read, not what its own combo was
+                # showing: a decompressed slice previews as none (there is
+                # nothing left to unpack), and it is the codec that unpacked it
+                # that makes the packed bytes at this address readable.
+                preview_compression_id=slice_entry.compression_id,
             ),
             view=(
                 replace(prior_view, tile_offset=0, byte_nudge=0)
@@ -1087,22 +1117,36 @@ class EntriesMixin:
         """Files dock ▸ Use as Palette: set the current view's palette to an
         offset palette read at the bookmark's offset.
 
-        The bookmark's offset is absolute in its parent file, so the parent
-        must be the shown document for the read to hit the right bytes - it is
-        opened/activated if needed (navigation, like a jump), but the view
-        position is left where it is; only the palette changes. The offset is
-        handed to the same Offset-mode load a typed palette offset uses, so it
-        is undoable and persists as an offset palette exactly like one.
+        The palette lands on whatever is on screen as long as it is anchored to
+        the bookmark's file - a **slice** of it included, because a slice's
+        Offset palette is addressed in its parent's coordinates too and reaches
+        outside its own window by design (``docs/design/palette-editing.md``
+        §2). So bookmarking where a palette sits and then colouring a slice with
+        it costs no round trip through the parent. Only a view onto some *other*
+        file has to navigate there first, or the offset would name the wrong
+        bytes; even then the view position is left where it is, and only the
+        palette changes. The offset is handed to the same Offset-mode load a
+        typed palette offset uses, so it is undoable and persists as an offset
+        palette exactly like one.
         """
         if bookmark.kind is not EntryKind.BOOKMARK:
             return
-        parent = self._workspace.find_file(bookmark.path)
-        if parent is None:
-            parent = self._workspace.open_file(bookmark.path)
-        if self._workspace.current is not parent:
-            self._activate_entry(parent)
-        if self._workspace.current is not parent or self._doc is None:
-            return  # vanished file / bad codec - leave the view untouched
+        current = self._workspace.current
+        anchored = (
+            current is not None
+            and current.kind in (EntryKind.FILE, EntryKind.SLICE)
+            and current.path == bookmark.path
+        )
+        if not anchored:
+            parent = self._workspace.find_file(bookmark.path)
+            if parent is None:
+                parent = self._workspace.open_file(bookmark.path)
+            if self._workspace.current is not parent:
+                self._activate_entry(parent)
+            if self._workspace.current is not parent:
+                return  # vanished file / bad codec - leave the view untouched
+        if self._doc is None:
+            return
         # A bookmark's offset is already in the parent's coordinates, which is
         # what an Offset palette addresses - hand it over as it stands.
         self._load_palette_at_offset(bookmark.slice_offset)
@@ -1118,6 +1162,12 @@ class EntriesMixin:
         # The parent's whole file list, both to bound the dialog's offsets (a
         # region spread over several chips is addressed as the concatenation)
         # and so the slice inherits the list its offsets are relative to.
+        #
+        # The **Content** row is offered wherever the parent's own answer could be
+        # wrong, which is both graphic readings and neither of the other two: a
+        # palette file's kind comes from its ``EntryKind`` rather than a choice
+        # (:meth:`~celpix.project.workspace.Entry.__post_init__`), so there is
+        # nothing to pick.
         params = SliceDialog.get_slice(
             self,
             self._registry,
@@ -1125,6 +1175,9 @@ class EntriesMixin:
             offset=offset,
             length=length,
             compression_id=compression_id,
+            content_kind=parent.content_kind,
+            choose_content=parent.content_kind
+            in (ContentKind.PIXELS, ContentKind.TILEMAP),
         )
         if params is None:
             return
@@ -1136,6 +1189,10 @@ class EntriesMixin:
             params.compression_id,
             reshape_id=params.reshape_id,
         )
+        # ``slice_of`` carried the parent's kind down; the dialog's answer is the
+        # user's word over it, and is the parent's own value when unchanged.
+        entry.content_kind = params.content_kind
+        entry.slot_fill = params.slot_fill
         self._seed_slice_from_parent(entry)
         self._push_command(AddEntryCommand(self, entry, f'new slice "{entry.name}"'))
 

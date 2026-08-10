@@ -16,6 +16,11 @@ the render backwards to find which subsprite draws it, and the pick is held here
 for the two things that want it — the outline on the canvas, and the ring in the
 tile source panel over the tile that subsprite names.
 
+**A press on the same tile again picks the next one down.** One answer per press
+would leave most of an object unreachable: subsprites overlap by design, and the
+front-most one hides whole records behind it, so the stack is cycled rather than
+resolved once (:meth:`~SpriteSelectMixin._cycled_pick`).
+
 **It sits beside the tile selection rather than replacing it.** A press on a
 sprite still selects the sheet tile under it, because that selection is what Copy
 lifts and what the palette-row readouts count; the pick says which *record* drew
@@ -53,6 +58,11 @@ class SpriteSelectMixin:
         # file's own numbering, the shown frames being a prefix of it
         # (:func:`~celpix.core.sprite.drawn_frames`).
         self._picked_subsprite: tuple[int, int] | None = None
+        # The sheet tile the last press landed in, and how many subsprites it
+        # had under it — what makes the *next* press a cycle rather than a
+        # fresh pick (:meth:`_cycled_pick`).
+        self._pick_tile: tuple[int, int] | None = None
+        self._pick_depth: int = 0
 
     def _connect_sprite_canvas(self) -> None:
         """Wire the canvas's pixel report (called once the canvas exists)."""
@@ -69,13 +79,42 @@ class SpriteSelectMixin:
         doc = self._doc
         if doc is None or not doc.is_sprite:
             return
-        self._set_picked_subsprite(
-            pipeline.subsprite_at(doc, self._registry, self._tilemap_columns(), x, y)
+        order = pipeline.subsprites_at(
+            doc, self._registry, self._tilemap_columns(), x, y
         )
+        tile = (x // max(1, doc.tile_width), y // max(1, doc.tile_height))
+        pick = self._cycled_pick(order, tile)
+        self._pick_tile, self._pick_depth = tile, len(order)
+        self._set_picked_subsprite(pick)
+
+    def _cycled_pick(
+        self, order: list[tuple[int, int]], tile: tuple[int, int]
+    ) -> tuple[int, int] | None:
+        """Which of ``order`` this press takes: the front one, or the next one.
+
+        Overlap is the normal case on a sprite object and the front-most piece
+        hides the rest, so one press per subsprite is not enough to reach them —
+        pressing the same tile again steps down the stack instead of re-picking
+        what is already picked, and wraps back to the top. The **tile** is the
+        anchor rather than the pixel because the press it has to recognise is the
+        user clicking the same spot again, which is never the same pixel twice;
+        pressing anywhere else starts over at the front, so the first answer on a
+        piece is always the one the eye picks out.
+        """
+        held = self._picked_subsprite
+        if not order:
+            return None
+        if held is not None and tile == self._pick_tile and held in order:
+            return order[(order.index(held) + 1) % len(order)]
+        return order[0]
 
     def _set_picked_subsprite(self, pick: tuple[int, int] | None) -> None:
         """Hold ``pick``, and converge everything that reads it."""
         self._picked_subsprite = pick
+        if pick is None:
+            # Nothing picked is nothing to cycle: a press that found no piece,
+            # and the document being closed, both land here.
+            self._pick_tile, self._pick_depth = None, 0
         self._sync_subsprite_outline()
         # The tile source panel's ring marks what the canvas is pointing at, and
         # on a sprite object this is what that is. The palette grid's ring is the
@@ -130,12 +169,12 @@ class SpriteSelectMixin:
             return None
         at = pick[0]
         left, top, width, height = sheet.box
-        pair = doc.sprite_size_pair
+        wide, tall = sub.pixels(doc.tile_width, doc.tile_height)
         return QRect(
             (at % sheet.across) * width - left + sub.x,
             (at // sheet.across) * height - top + sub.y,
-            sub.pixels(pair, doc.tile_width),
-            sub.pixels(pair, doc.tile_height),
+            wide,
+            tall,
         )
 
     def _sync_subsprite_outline(self) -> None:
@@ -149,14 +188,19 @@ class SpriteSelectMixin:
         object bound with a base tile draws tile ``$10`` for a record holding
         ``$00``, and it is the bank number that a hex editor or the tile source
         panel's readout agrees with.
+
+        It also says when there is more under the cursor than the one piece.
+        Cycling is the one thing here a user cannot see: the outline moving is
+        the only evidence a second press does anything, and that reads as a
+        mis-hit unless something said the stack was there.
         """
         doc, pick = self._doc, self._picked_subsprite
         sub = self._picked_subsprite_record()
         if doc is None or pick is None or sub is None:
             return
-        side = sub.tiles(doc.sprite_size_pair)
+        across, down = sub.size()
         parts = [
-            f"{side}x{side} tiles",
+            f"{across}x{down} tiles",
             f"tile ${sub.index + doc.tile_base_index:X}",
             f"row {sub.palette_row}",
         ]
@@ -164,7 +208,12 @@ class SpriteSelectMixin:
             parts.append("H-flip")
         if sub.flip_v:
             parts.append("V-flip")
+        cycle = (
+            f" - click again for the next of {self._pick_depth} here"
+            if self._pick_depth > 1
+            else ""
+        )
         self.statusBar().showMessage(
             f"Frame {pick[0]}, subsprite {pick[1]} of "
-            f"{len(doc.shown_frames[pick[0]])} - {', '.join(parts)}"
+            f"{len(doc.shown_frames[pick[0]])} - {', '.join(parts)}{cycle}"
         )

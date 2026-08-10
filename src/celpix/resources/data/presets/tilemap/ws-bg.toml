@@ -10,6 +10,7 @@
 id = "preset.tilemap.ws-bg"
 name = "WonderSwan screen map (16-bit)"
 engine_id = "codec.tilemap.packed"
+category = "Bandai"
 
 [params]
 bytes = 2

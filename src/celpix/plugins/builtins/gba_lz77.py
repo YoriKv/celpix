@@ -250,6 +250,7 @@ class GbaLz77Compression:
         # The body has no end marker, but the 24-bit size field in the header
         # bounds it, so a decode does know where the structure ends.
         self_delimiting=True,
+        category="Nintendo",
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:

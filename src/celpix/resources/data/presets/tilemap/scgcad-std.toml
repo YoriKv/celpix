@@ -8,6 +8,7 @@
 id = "preset.tilemap.scgcad-std"
 name = "Converted screen cell (8-bit, index only)"
 engine_id = "codec.tilemap.packed"
+category = "Authoring tools"
 
 [params]
 bytes = 1

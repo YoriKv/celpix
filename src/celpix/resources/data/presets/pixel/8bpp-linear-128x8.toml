@@ -13,6 +13,7 @@
 id = "preset.pixel.8bpp-linear-128x8"
 name = "8bpp linear bitmap (128 wide)"
 engine_id = "codec.pixel.packed"
+category = "Generic linear"
 
 [params]
 bpp = 8

@@ -38,12 +38,12 @@ from celpix.core.context import (
     PipelineContext,
 )
 from celpix.core.document import CellChain, Document
-from celpix.core.errors import PipelineError
+from celpix.core.errors import PipelineError, Stage
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
 from celpix.core.tilemap import VRAM_ROW_STRIDE, Cell
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_COMPRESSION, FileRef
+from celpix.plugins.base import NO_COMPRESSION, STAGE_DEFAULT_PRESET, FileRef
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -60,8 +60,8 @@ from celpix.ui.widgets import select_combo_data, signals_blocked
 # What a tilemap entry falls back to when nothing else named a cell codec — a
 # container normally supplies one (``detect.tilemap_preset_for``), so this is
 # for a tilemap that was carved out by hand rather than detected.
-_DEFAULT_TILEMAP_PRESET = "preset.tilemap.snes-bg"
-_DEFAULT_PIXEL_PRESET = "preset.pixel.snes-4bpp"
+_DEFAULT_TILEMAP_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_TILEMAP]
+_DEFAULT_PIXEL_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
 
 
 class _BoundTiles(NamedTuple):
@@ -95,6 +95,13 @@ class SessionMixin:
         # Pixels floating over the entry being left belong to it, so they come
         # down before the view moves on rather than hovering over a stranger.
         self._commit_float()
+        # And its region settles on the way out, after that landing: leaving an
+        # entry is where editing it stops, so the fold it owes is paid at a
+        # moment nothing is waiting on rather than carried into whatever the user
+        # does next (``docs/design/slices-and-parents.md`` §2). Every reader
+        # settles for itself regardless — this only decides *when* the cost lands,
+        # and a region owing nothing costs a set test.
+        self._settle_region(self._workspace.current)
         if data_missing(entry):
             # The file moved: make it current anyway, but show the disabled
             # unavailable state (no _load_entry, so no pipeline-error alert -
@@ -372,6 +379,8 @@ class SessionMixin:
             sprite_frames=loaded.frames,
             sprite_size_pair=self._size_pair_for(entry, loaded.size_pair),
             cells_carry_palette_rows=loaded.palette_rows,
+            text_layout=self._tilemap_is_font(entry),
+            alphabet=self._alphabet_for(entry, tiles, loaded.cell_bytes),
         )
         self._apply_restored_state(entry)
         self._apply_tilemap_columns(entry, restored=restored)
@@ -565,6 +574,59 @@ class SessionMixin:
             return None
         return preset.params.get(name)
 
+    def _tilemap_is_font(self, entry: Entry) -> bool:
+        """Whether ``entry``'s **format** says its cells are character codes.
+
+        A *fontmap* is the tilemap variant whose cells index a font rather than
+        an arbitrary tile bank, so they can be read as words
+        (``docs/design/fontmap-entry.md``). Declared rather than inferred, for
+        the reason every one of these is: it has to answer before anything is
+        loaded or bound, and a string with no font picked is still a string —
+        which is precisely when the user wants the text window, to be told the
+        codes mean nothing yet.
+        """
+        return self._tilemap_declares(entry, "layout") == "text"
+
+    def _tilemap_flag_break(self, entry: Entry) -> bool:
+        """Whether ``entry``'s format ends a line on a bit rather than a code.
+
+        The presence of the codec's ``terminator`` field, asked of the preset for
+        the same reason ``controls`` is: it is the *stream's* punctuation, and the
+        alphabet has to know before a newline can be typed into one
+        (:attr:`~celpix.core.font.Alphabet.flag_break`).
+        """
+        return bool(self._tilemap_declares(entry, "terminator"))
+
+    def _alphabet_for(self, entry: Entry, tiles: _BoundTiles, cell_bytes: int):
+        """The lookup ``entry``'s codes read through — its font's, plus its own.
+
+        The two halves meet here because this is the only place that holds both:
+        the **font** is whatever ``entry`` is bound to, and its alphabet is a
+        property of that entry (:attr:`~celpix.project.workspace.Entry.
+        alphabet_preset_id`, and its origin :attr:`~celpix.project.workspace.
+        Entry.alphabet_base` beside it); the **controls** are on ``entry``'s own
+        cell format. Neither knows about the other, and nothing downstream should
+        have to ask twice (:func:`~celpix.pipeline.pipeline.load_alphabet`).
+
+        ``cell_bytes`` sets how wide an unmapped code prints, so a one-byte
+        stream says ``[$1F]`` and a two-byte one ``[$FFFE]``. It is the stream's
+        measure and not the font's: the same sheet may be indexed at either
+        width, and a code shown at the wrong one does not type back.
+        """
+        if not self._tilemap_is_font(entry):
+            return None
+        bound = self._binding_target(entry.tile_source) if entry.tile_source else None
+        controls = self._tilemap_declares(entry, "controls") or ()
+        return pipeline.load_alphabet(
+            bound.alphabet_preset_id if bound is not None else None,
+            self._registry,
+            tiles.ctx,
+            controls=controls,
+            code_digits=max(1, cell_bytes) * 2,
+            base=bound.alphabet_base if bound is not None else 0,
+            flag_break=self._tilemap_flag_break(entry),
+        )
+
     def _tilemap_is_sprite(self, entry: Entry) -> bool:
         """Whether ``entry``'s **format** says its cells are subsprites.
 
@@ -576,6 +638,20 @@ class SessionMixin:
         the control it needs.
         """
         return self._tilemap_declares(entry, "layout") == "sprite"
+
+    def _tilemap_states_subsprite_size(self, entry: Entry) -> bool:
+        """Whether ``entry``'s **format** gives each subsprite its own rectangle.
+
+        The sprite records split two ways on this. Most hold a size *bit* picking
+        between two squares the file never records, so the pair is a setting the
+        user supplies (:data:`~celpix.core.sprite.DEFAULT_SUBSPRITE_TILES`); a
+        Mega Drive record holds the console's own size nibble and states a
+        rectangle outright, so there is nothing to resolve and no pair to offer.
+
+        Declared rather than inferred, on the rule every one of these follows: it
+        has to answer before anything is loaded or bound.
+        """
+        return self._tilemap_declares(entry, "subsprite_size") == "stated"
 
     def _tilemap_columns_hint(self, entry: Entry) -> int:
         """The width the entry's format states, or 0 when it states none.
@@ -892,6 +968,10 @@ class SessionMixin:
         source = entry.tile_source
         if source is None or not source.is_bound:
             return self._no_tiles()
+        # The bank's own region settles first: its bytes are what this read is
+        # about to take, and a slice of it may owe them
+        # (:meth:`~...writing.WritingMixin._settle_region`).
+        self._settle_region(source.entry)
         try:
             cfg = self._tile_source_config(entry, source)
         except (PipelineError, KeyError) as exc:
@@ -992,6 +1072,9 @@ class SessionMixin:
             container_id=entry.container_id,
             reshape_id=entry.reshape_id,
             compression_id=entry.compression_id,
+            # A map's cells are this entry's own data, so a compressed one meets
+            # the same slot with the same room to spare as a pixel slice does.
+            slot_fill=entry.slot_fill,
         )
 
     def _tile_source_config(self, entry: Entry, source: TileSource) -> PathwayConfig:
@@ -1228,6 +1311,8 @@ class SessionMixin:
         self._overlay.hide_overlay()
         self._animation.hide_overlay()
         self._animation_action.setEnabled(False)
+        self._text.hide_overlay()
+        self._text_action.setEnabled(False)
         self._hex_panel.clear()
         # No document, no palette source - blank the dock's per-mode widgets
         # (the mode member itself is left alone: it still mirrors the entry's

@@ -255,6 +255,7 @@ class TimContainer:
         magic=_MAGIC_PROBES,
         short_name="TIM",
         content_kinds=(ContentKind.PIXELS,),
+        category="Sony",
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
@@ -342,6 +343,7 @@ class TimClutContainer:
         magic=_MAGIC_PROBES,
         short_name="TIM CLUT",
         content_kinds=(ContentKind.PALETTE,),
+        category="Sony",
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

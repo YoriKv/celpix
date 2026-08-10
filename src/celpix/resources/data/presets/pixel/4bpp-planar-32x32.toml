@@ -4,6 +4,7 @@
 id = "preset.pixel.4bpp-planar-32x32"
 name = "4bpp planar, interleaved (32x32)"
 engine_id = "codec.pixel.planar"
+category = "Generic planar"
 
 [params]
 bpp = 4

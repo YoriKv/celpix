@@ -3,6 +3,7 @@
 id = "preset.palette.msx-indexed"
 name = "MSX (16-color indexed)"
 engine_id = "codec.palette.indexed"
+category = "Indexed"
 
 [params]
 colors = [

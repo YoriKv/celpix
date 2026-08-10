@@ -20,11 +20,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
 
 from celpix import resources
 from celpix.plugins.discovery import (
-    INTERPRET_FOLDER_STAGE,
+    PRESET_FOLDER_STAGE,
     RESHAPE_ENGINES,
     preset_from_toml,
 )
 
+from .alphabet_table import AlphabetTable
 from .byte_swap import ByteSwapReshape
 from .color_codec import ColorCodec
 from .containers import (
@@ -34,16 +35,20 @@ from .containers import (
     SnesInterleavedContainer,
 )
 from .direct_color_codec import DirectColorCodec
+from .enigma import EnigmaCompression
 from .gb_rom import GbRomContainer
 from .gba_lz77 import GbaLz77Compression
 from .indexed_codec import IndexedColorCodec
 from .konami_rle import KonamiFdsRle, KonamiNesRle
+from .kosinski import KosinskiCompression
 from .linear_codec import LinearBespokeCodec
 from .lz16 import Lz16Compression, Lz16ImprovedCompression
 from .lz_command import Lz1, Lz1Improved, Lz2, Lz2Improved
 from .lzss_ring import LzssRingCompression
 from .m7_vram import M7VramReshape
+from .md_sprite import MdSpriteCodec
 from .n64_rom import N64RomContainer
+from .nemesis import NemesisCompression
 from .nibble_planar_codec import NibblePlanarCodec
 from .object_codec import ObjectCodec, ObzCodec, SprCodec
 from .packbits import PackBitsCompression
@@ -63,6 +68,7 @@ from .scgcad import (
     ScrContainer,
     StdContainer,
 )
+from .slz import Slz16Compression, Slz24Compression
 from .split_planes import split_part_plugins
 from .tilemap_codec import TilemapCodec
 from .tim import TimClutContainer, TimContainer
@@ -110,6 +116,11 @@ def register_builtins(reg: Registry) -> None:
         Lz16ImprovedCompression(),
         LzssRingCompression(),
         GbaLz77Compression(),
+        NemesisCompression(),
+        EnigmaCompression(),
+        KosinskiCompression(),
+        Slz16Compression(),
+        Slz24Compression(),
         PrsCompression(),
         PvrCompression(),
         PackBitsCompression(),
@@ -121,9 +132,11 @@ def register_builtins(reg: Registry) -> None:
         ColorCodec(),
         IndexedColorCodec(),
         TilemapCodec(),
+        AlphabetTable(),
         ObjectCodec(),
         ObzCodec(),
         SprCodec(),
+        MdSpriteCodec(),
     ):
         reg.register(plugin)
 
@@ -163,10 +176,10 @@ def _shipped_presets() -> tuple[Preset, ...]:
     values.
     """
     # The shipped tree mirrors the user plugin layout: the folder name gives the
-    # stage (the shared INTERPRET_FOLDER_STAGE map), so preset TOMLs carry none.
+    # stage (the shared PRESET_FOLDER_STAGE map), so preset TOMLs carry none.
     return tuple(
         preset_from_toml(text, stage)
-        for subdir, stage in INTERPRET_FOLDER_STAGE.items()
+        for subdir, stage in PRESET_FOLDER_STAGE.items()
         for text in _read_preset_dir(subdir)
     )
 

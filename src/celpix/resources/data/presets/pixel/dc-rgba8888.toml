@@ -3,6 +3,7 @@
 id = "preset.pixel.dc-rgba8888"
 name = "Direct RGBA8888 (8x8)"
 engine_id = "codec.pixel.direct-color"
+category = "Direct color"
 
 [params]
 bytes_per_pixel = 4

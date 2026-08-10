@@ -345,6 +345,52 @@ class TileSourceDockMixin:
         self._refresh_tile_source_details()
         self._sync_set_base_tile()
 
+    def _point_source_at_pixel(self, x: int, y: int) -> None:
+        """Pick the tile canvas pixel ``(x, y)`` was drawn from, if a cell drew it.
+
+        The pixel eyedropper's other half. A right-click on a tilemap in pixel
+        mode asks "what is this?", and the colour is only one of the two answers
+        that has somewhere to go: the pixel came out of a particular tile of the
+        bound bank, placed by a particular cell, and this dock is where that tile
+        is looked at. So the pick lands here as well as in the palette grid — the
+        same pair of answers the stamp tool's eyedropper leaves behind
+        (:meth:`~...stamp_tool.StampToolMixin._pick_tile_at`), from the mode where
+        the question is about a pixel rather than a cell.
+
+        The ID is the cell's own, before the binding's base tile, because that is
+        what the sheet is addressed in — which is why a **grid map** is asked for
+        the cell of ``Document.cells`` under the slot rather than for the
+        laid-out one the pixel resolved through: a chained map's sheet holds the
+        stamps its own cells name, not the tiles those resolve to. A **sprite
+        object** has no slots to divide, so its piece is the answer, exactly as
+        the ring the canvas selection puts on the sheet reads it.
+
+        The record travels with the ID on a grid map, so a stamp made after the
+        pick lays the cell down whole: the gesture is the same "this one" in
+        either mode, and it should mean the same thing in both.
+
+        Silent where nothing was drawn — a blank position, a cell pointing
+        outside the bank, or a pixel document, which has no cells at all.
+        """
+        doc = self._doc
+        if doc is None or not doc.is_tilemap:
+            return
+        if doc.is_sprite:
+            found = self._bank_pixel_at(x, y)
+            if found is not None:
+                self._set_source_tile(found[0].index)
+            return
+        slot = self._slot_at_pixel(x, y)
+        at = None if slot is None else self._stamp_cell_at(slot)
+        if at is None or doc.cells is None:
+            return
+        # Through the bank lookup rather than off the cell alone, so a position
+        # that draws nothing picks nothing: the two have to agree about what is
+        # on screen, since the colour the same click sampled came from there.
+        if self._bank_tile_at_slot(slot) is None:
+            return
+        self._set_source_tile(doc.cells[at].index, doc.cells[at])
+
     # -- the refresh ---------------------------------------------------------
     def _refresh_tile_source(self) -> None:
         """Put the bound source's tiles into the sheet, or say why there are none.
@@ -547,7 +593,12 @@ class TileSourceDockMixin:
         instead — over the frames that are drawn, not over the file's records: an
         object has room for a fixed 32 or 64 frames and most of them are empty,
         so counting the records would report every unused one as a user of tile
-        ``$0`` (``docs/graphics-formats-reference/scgcad-formats.md`` §8).
+        ``$0`` (``docs/graphics-formats-reference/scgcad-formats.md`` §8). A
+        subsprite is a *rectangle* of tiles, so it counts as a user of every tile
+        it draws and not only the one its record names — the corner tile is what
+        the record holds, but a 2x2 piece is four tiles on screen and each of them
+        would otherwise report one user too few
+        (:meth:`~celpix.core.sprite.Subsprite.tile_indices`).
         """
         doc = self._doc
         if doc is None:
@@ -558,7 +609,7 @@ class TileSourceDockMixin:
                     1
                     for frame in doc.shown_frames
                     for sub in frame
-                    if sub.index == tile_id
+                    if tile_id in sub.tile_indices()
                 ),
                 "subsprite",
             )

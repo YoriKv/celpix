@@ -67,6 +67,9 @@ tools for accuracy where available.
 - **[PSXSDK](https://github.com/nathanhi/psxsdk)**
 - **[hcgcad](https://github.com/LuigiBlood/hcgcad)**
 - **[MAME](https://github.com/mamedev/mame)**
+- **[mdcomp](https://github.com/flamewing/mdcomp)**
+- **[Beehive](https://github.com/BigEvilCorporation/Beehive)**
+- **[mdtools](https://github.com/sikthehedgehog/mdtools)**
 
 ## AI Use Disclaimer
 

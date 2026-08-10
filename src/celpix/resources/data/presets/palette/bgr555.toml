@@ -10,6 +10,7 @@
 id = "preset.palette.bgr555"
 name = "BGR555 (SNES/GBC/GBA/PSX)"
 engine_id = "codec.palette.mask"
+category = "Generic"
 
 [params]
 bytes_per_entry = 2

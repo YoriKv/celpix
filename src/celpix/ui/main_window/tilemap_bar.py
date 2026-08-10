@@ -33,12 +33,21 @@ itself bound to. One hop, gated on depth rather than on format
 :meth:`~...session.SessionMixin._can_supply_tiles` and nothing here decides it
 twice.
 
-Every control on the bar is **one undoable step**. They all set the same kind of
-thing — project state the file does not record — so they share one snapshot type
-and one apply, and a gesture, an undo and a redo settle a binding by the same
-route (:class:`~celpix.ui.undo_commands.TilemapBindingState`,
-:meth:`~TilemapBarMixin._apply_tilemap_binding`). Each of them changes what the
-document *is*, so landing one always drops it and reads the entry again.
+Every control on the bar that sets **project state the file does not record** is
+one undoable step, and the binding, the base and the size pair share one snapshot
+type and one apply — so a gesture, an undo and a redo settle a binding by the
+same route (:class:`~celpix.ui.undo_commands.TilemapBindingState`,
+:meth:`~TilemapBarMixin._apply_tilemap_binding`). Each of those changes what the
+document *is*, so landing one drops it and reads the entry again.
+
+Some of the controls sit outside that. **All Frames** and **Transparent 0** say
+how much of an already-decoded document to show, which is the reading Show
+Rearranged Tiles gets: a view toggle, no undo step and no re-read. **Alphabet**
+and **Base code** are undoable — they are project state — but still no re-read,
+and they are the ones whose value belongs to a *different entry*: a fontmap's
+letters, and where they start, are the font's
+(:meth:`~TilemapBarMixin._sync_alphabet`). Those two settle one pair together,
+since picking an alphabet returns its origin to zero.
 """
 
 from __future__ import annotations
@@ -60,6 +69,7 @@ from PySide6.QtWidgets import (
 
 from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.errors import Stage
+from celpix.pipeline import pipeline
 from celpix.project.workspace import (
     Entry,
     PaletteMode,
@@ -67,13 +77,40 @@ from celpix.project.workspace import (
     TileSource,
     palette_source_for,
 )
-from celpix.ui.undo_commands import TilemapBindingCommand, TilemapBindingState
-from celpix.ui.widgets import CompactComboBox, signals_blocked, source_icon
+from celpix.ui.searchable_combo import (
+    SearchableComboBox,
+    fill_grouped,
+    preset_rows,
+)
+from celpix.ui.undo_commands import (
+    AlphabetCommand,
+    TilemapBindingCommand,
+    TilemapBindingState,
+)
+from celpix.ui.widgets import (
+    signals_blocked,
+    source_icon,
+)
 
 # What the "Tiles" combo holds besides the open entries. Distinct objects rather
 # than strings so an entry named "From file..." cannot collide with the action.
 _NONE = object()
 _FROM_FILE = object()
+
+# The tag the cell-format picker puts in front of each entry, keyed by the layout
+# its preset declares — the same three the Files list draws a glyph for
+# (:meth:`~celpix.ui.file_list_panel.FileListPanel._entry_marker`), and read the
+# same way: the *format's* answer, available before anything is loaded or bound.
+# A single bracketed letter rather than the word, because it prefixes a name that
+# already fills the picker and its job is to be scanned down a column, not read.
+# A plain grid map is the default, so it is what an unlisted layout gets.
+_LAYOUT_TAG = {"sprite": "[S]", "text": "[F]"}
+_GRID_TAG = "[T]"
+
+
+def _codec_label(preset) -> str:  # noqa: ANN001 — a Preset, imported for typing only
+    """A cell format's picker text: its layout tag, then its name."""
+    return f"{_LAYOUT_TAG.get(preset.params.get('layout'), _GRID_TAG)} {preset.name}"
 
 
 class TilemapBarMixin:
@@ -99,7 +136,7 @@ class TilemapBarMixin:
         # Wider than the mode pickers because it holds *file names*, which have no
         # bound at all — and a stated width is what stops it resizing the bar
         # every time the user opens an entry with a longer name than the last.
-        self._tile_binding = CompactComboBox(160)
+        self._tile_binding = SearchableComboBox(160)
         self._tile_binding.setToolTip(
             "Which open entry supplies this map's tiles\n"
             "Its edits follow through live\n"
@@ -191,6 +228,62 @@ class TilemapBarMixin:
         )
         self._all_frames.toggled.connect(self._on_all_frames_change)
         row.addWidget(self._all_frames)
+
+        # A **fontmap**'s one piece of state no file records: what its font's
+        # tiles spell (``docs/design/fontmap-entry.md`` §3). Fontmap-only and
+        # hidden elsewhere, the rule this whole bar follows - an ordinary tilemap
+        # indexes arbitrary art, and asking which letter tile 5 is would be a
+        # question about nothing.
+        #
+        # It sits here, on the *map*, and writes to the entry the Tiles combo
+        # names - the one control on this bar whose value belongs to another
+        # entry. That is deliberate on both counts: the fact is the **font's**,
+        # since the tile-to-letter mapping is decided when the sheet is drawn and
+        # binds every string that uses it, but the only place it can be *judged*
+        # is against a string. Picking it on the font sheet itself would mean
+        # setting it where the effect is invisible. The caption says whose it is.
+        self._alphabet_label = QLabel(" Alphabet ")
+        row.addWidget(self._alphabet_label)
+        self._alphabet = SearchableComboBox(150)
+        self._alphabet.setToolTip(
+            "What this font's tiles spell, for reading the run as text\n"
+            "Belongs to the entry supplying the tiles, so every string\n"
+            "drawn through that font shares it\n"
+            "View > Text is where the answer shows"
+        )
+        self._alphabet.activated.connect(self._on_alphabet_change)
+        row.addWidget(self._alphabet)
+
+        # Where that alphabet starts. The picker says which characters the font
+        # spells and in what order - which the sheet itself shows, so it is
+        # usually right first try - and this says which code the run begins at,
+        # which nothing shows: it lives in the game's code, not in the art
+        # (``docs/graphics-formats-reference/text-formats.md`` §3.2). Two
+        # independent unknowns, so two controls, and this is the one the user
+        # dials while watching the text window rather than picks.
+        #
+        # Named for **Base tile** at the other end of this bar, because it is the
+        # same gesture one reading over: that one shifts what a cell *draws*,
+        # this one shifts what it *says*, and the symptom of getting either wrong
+        # is identical - right word shapes, consistently wrong letters. Which of
+        # the two is off is answered by where the wrongness is, so both tooltips
+        # name the other.
+        #
+        # Signed, like Base tile and for the mirror of its reason: a table
+        # written from a sheet that starts partway into the run numbers every
+        # glyph too high.
+        self._alphabet_base_label = QLabel(" Base code ")
+        row.addWidget(self._alphabet_base_label)
+        self._alphabet_base = self._tilemap_hex_spin(
+            -0xFFFF,
+            0xFFFF,
+            "Added to every code in the alphabet, shifting what the\n"
+            "text says without touching what the cells draw\n"
+            "Dial it when the text reads as near-words; when the\n"
+            "picture does instead, it is Base tile that is off",
+        )
+        self._alphabet_base.valueChanged.connect(self._on_alphabet_base_change)
+        row.addWidget(self._alphabet_base)
 
         # How these formats say "empty". Index 0 of a BG palette row is the
         # console's transparent colour, so a blank cell is not a special tile
@@ -314,6 +407,7 @@ class TilemapBarMixin:
         self._sync_binding_jump(source)
         self._sync_size_pair()
         self._sync_all_frames()
+        self._sync_alphabet()
         self._sync_transparent_zero()
         self._sync_cell_index()
         self._tile_binding_note.setText(self._binding_note(entry, source))
@@ -356,9 +450,18 @@ class TilemapBarMixin:
         binding yet still offers it — the pair says how its own records are read,
         which is true before it has any art to read them against. The value comes
         off the document, which carries the pair in force.
+
+        Gone entirely on a format whose records **state** each piece's rectangle
+        (:meth:`~...session.SessionMixin._tilemap_states_subsprite_size`): the pair
+        exists to resolve a size *bit* against, and a control that resolves nothing
+        would be a spin that redraws the same picture.
         """
         entry = self._workspace.current
-        sprite = entry is not None and self._tilemap_is_sprite(entry)
+        sprite = (
+            entry is not None
+            and self._tilemap_is_sprite(entry)
+            and not self._tilemap_states_subsprite_size(entry)
+        )
         for widget in (
             self._size_pair_label,
             self._size_small_label,
@@ -419,6 +522,132 @@ class TilemapBarMixin:
             return
         with signals_blocked(self._all_frames):
             self._all_frames.setChecked(self._show_all_frames)
+
+    def _sync_alphabet(self) -> None:
+        """Fill and show the alphabet controls, on a fontmap and nowhere else.
+
+        Gated on the **format**'s declaration like the two sprite controls above,
+        and disabled — rather than hidden — while nothing is bound: a fontmap
+        with no font is the ordinary first moment of one, and the box greyed
+        beside a full Tiles combo is what says which of the two to set first.
+        Base code follows the picker one step further and is disabled until an
+        alphabet is chosen too, since shifting nothing is nothing.
+
+        Both values are read off the **bound entry**, not off this one, because
+        that is where they live. So two fontmaps sharing a font show the same
+        answer without either having stored it.
+        """
+        entry = self._workspace.current
+        font = entry is not None and self._tilemap_is_font(entry)
+        for widget in (
+            self._alphabet_label,
+            self._alphabet,
+            self._alphabet_base_label,
+            self._alphabet_base,
+        ):
+            widget.setVisible(font)
+        if not font:
+            return
+        bound = self._binding_target(entry.tile_source) if entry.tile_source else None
+        self._alphabet.setEnabled(bound is not None)
+        self._alphabet_base.setEnabled(
+            bound is not None and bool(bound.alphabet_preset_id)
+        )
+        with signals_blocked(self._alphabet):
+            # "None" is a real choice here, not an absent selection — a font with
+            # no alphabet is the normal state — so it leads the list as an
+            # uncategorised row, above whatever groups the presets bring.
+            fill_grouped(
+                self._alphabet,
+                [
+                    ("", "None", None),
+                    *preset_rows(self._registry.presets(Stage.ALPHABET)),
+                ],
+                bound.alphabet_preset_id if bound is not None else None,
+            )
+        with signals_blocked(self._alphabet_base):
+            self._alphabet_base.setValue(
+                bound.alphabet_base if bound is not None else 0
+            )
+
+    def _on_alphabet_change(self, _index: int) -> None:
+        """Point the bound font at a different alphabet — one undoable step.
+
+        Unlike everything else on this bar it does **not** re-read the entry. An
+        alphabet is a reading of cells that are already decoded, so nothing about
+        the bytes, the picture or the geometry moves; what changes is what the
+        text window says, and recomputing that is a pass over one preset
+        (:meth:`_apply_alphabet`).
+
+        The origin goes **back to zero** with the alphabet, because it was dialled
+        against the one being replaced: a shift that made one table read is
+        meaningless on the next, and carrying it over would greet the new pick
+        with a wrongness the user has to undo before they can judge it.
+        """
+        self._push_alphabet(lambda bound: (self._alphabet.currentData(), 0))
+
+    def _on_alphabet_base_change(self, value: int) -> None:
+        """Slide the bound font's alphabet along the code space — one step.
+
+        Its own command per settled value rather than per tick: ``keyboardTracking``
+        is off on this spin (:meth:`_tilemap_hex_spin`), so holding the arrow key
+        reports once at the end and the undo stack gets the gesture instead of
+        the path it took.
+        """
+        self._push_alphabet(lambda bound: (bound.alphabet_preset_id, value))
+
+    def _push_alphabet(self, wanted) -> None:  # noqa: ANN001 - Callable[[Entry], tuple]
+        """Push an alphabet change on the bound font, if there is one and it moves.
+
+        Both controls settle the same pair, so they share the gate — a fontmap
+        with nothing bound has no entry to write to, and a value that already
+        matches is a sync echo rather than a gesture.
+        """
+        entry = self._workspace.current
+        if entry is None or self._applying_undo:
+            return
+        bound = self._binding_target(entry.tile_source) if entry.tile_source else None
+        if bound is None:
+            return
+        before = (bound.alphabet_preset_id, bound.alphabet_base)
+        after = wanted(bound)
+        if after == before:
+            return
+        self._push_command(AlphabetCommand(self, bound, before, after))
+
+    def _apply_alphabet(self, font: Entry, state: tuple[str | None, int]) -> None:
+        """Land an alphabet and its origin on ``font`` — both command directions.
+
+        Every **open fontmap drawn through** ``font`` is re-read for it, not only
+        the one on screen: the alphabet is the font's, so a second string bound to
+        the same sheet is just as wrong until it picks the change up, and it is
+        the one on screen that would otherwise be the only one right. The same
+        rule the binding follows when an entry leaves the list
+        (``docs/design/tilemap-entry.md`` §1).
+        """
+        preset_id, base = state
+        font.alphabet_preset_id = preset_id
+        font.alphabet_base = base
+        for entry in self._workspace.entries:
+            doc = entry.doc
+            if doc is None or not doc.is_font:
+                continue
+            if self._binding_target(entry.tile_source) is not font:
+                continue
+            doc.alphabet = pipeline.load_alphabet(
+                preset_id,
+                self._registry,
+                doc.pixel_ctx,
+                controls=self._tilemap_declares(entry, "controls") or (),
+                code_digits=max(1, doc.cell_bytes) * 2,
+                base=base,
+                flag_break=self._tilemap_flag_break(entry),
+            )
+        # Puts both controls back where an undo or a preset-driven origin reset
+        # left them, and re-reads the text window through the new lookup: the
+        # refresh drives ``_sync_tilemap_bar`` and ``_sync_text`` in turn, so
+        # neither is called here (:meth:`~...rendering.RenderingMixin._refresh_view`).
+        self._refresh_view()
 
     def _on_all_frames_change(self, on: bool) -> None:
         """Redraw with the empty frame slots shown, or without them.
@@ -577,6 +806,18 @@ class TilemapBarMixin:
         else:
             combo.setCurrentIndex(0)
 
+    def _preset_name(self, preset_id: str) -> str:
+        """What the registry calls ``preset_id``, or the id when it has nothing.
+
+        For the messages that name a format to the user. Reading it back rather
+        than taking the combo's text is what keeps the picker free to decorate its
+        entries without every message it feeds inheriting the decoration.
+        """
+        try:
+            return self._registry.preset(preset_id).name
+        except KeyError:
+            return preset_id
+
     def _fill_codec_combo(self, entry: Entry) -> None:
         """Put the tilemap formats into the codecs toolbar's picker.
 
@@ -587,16 +828,19 @@ class TilemapBarMixin:
         container named a codec for is read under the default
         (:meth:`~...session.SessionMixin._tilemap_preset_id`), and showing an
         empty selection over it would name a format the canvas is not drawing.
+
+        Every entry is tagged with the **layout** it declares (:data:`_LAYOUT_TAG`)
+        because that is the part of the choice the names do not carry evenly:
+        "Text run" says what it is, "Sprite object subsprite (OBJ/OBX)" leaves you
+        to know that a subsprite makes it a sprite map, and picking across layouts
+        is not a change of byte order — it is a different kind of document, with a
+        different bar under it and a different window over it.
         """
-        combo = self._tilemap_preset
-        combo.clear()
-        for preset in sorted(
-            self._registry.presets(Stage.INTERPRET_TILEMAP), key=lambda p: p.name
-        ):
-            combo.addItem(preset.name, preset.id)
-        at = combo.findData(self._tilemap_preset_id(entry))
-        if at >= 0:
-            combo.setCurrentIndex(at)
+        fill_grouped(
+            self._tilemap_preset,
+            preset_rows(self._registry.presets(Stage.INTERPRET_TILEMAP), _codec_label),
+            self._tilemap_preset_id(entry),
+        )
 
     # -- edits ---------------------------------------------------------------
     def _on_tile_binding_change(self, _index: int) -> None:
@@ -725,11 +969,15 @@ class TilemapBarMixin:
         ):
             return
         before = self._tilemap_binding_state(entry)
+        preset_id = str(self._tilemap_preset.currentData())
+        # The format's own name, not the combo's text: that carries the layout tag
+        # ("[S] Sprite object subsprite"), which is a column marker and reads as
+        # noise in an Undo menu entry.
         self._push_tilemap_binding(
             entry,
             before,
-            replace(before, preset_id=str(self._tilemap_preset.currentData())),
-            f"switch cell format to {self._tilemap_preset.currentText()}",
+            replace(before, preset_id=preset_id),
+            f"switch cell format to {self._preset_name(preset_id)}",
         )
 
     def _rebind_tiles(

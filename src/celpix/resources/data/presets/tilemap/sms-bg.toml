@@ -4,6 +4,7 @@
 id = "preset.tilemap.sms-bg"
 name = "Master System name table (16-bit, also Game Gear)"
 engine_id = "codec.tilemap.packed"
+category = "Sega"
 
 [params]
 bytes = 2

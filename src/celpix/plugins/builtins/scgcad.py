@@ -343,6 +343,7 @@ class ScrContainer:
         extensions=(".scr",),
         magic=((SCR_HEADER_AT, SIGNATURE),),
         short_name="SCR",
+        category="Authoring tools",
     )
     # Declaring this is what says "the payload is a tilemap, not pixels" — the
     # host reads it to set an opened file's content kind and to pick its first
@@ -486,6 +487,7 @@ class PnlContainer:
         # so length is the only thing that tells them apart.
         exact_size=PNL_SIZE,
         short_name="PNL",
+        category="Authoring tools",
     )
     default_tilemap_preset = "preset.tilemap.scgcad-panel"
 
@@ -586,6 +588,7 @@ class MapContainer:
         magic=((0, SIGNATURE),),
         exact_size=MAP_SIZE,
         short_name="MAP",
+        category="Authoring tools",
     )
     # A stamp layout's entry word is a panel coordinate, not a tile reference,
     # so it reads through its own preset — and resolving one into tiles needs
@@ -656,6 +659,7 @@ class ObjContainer:
         extensions=(".obj", ".obx"),
         magic=tuple((at, SIGNATURE) for at in OBJ_PAYLOADS),
         short_name="OBJ",
+        category="Authoring tools",
     )
     default_tilemap_preset = "preset.tilemap.scgcad-object"
 
@@ -774,6 +778,7 @@ class ObzContainer:
         extensions=(".obz",),
         exact_size=OBZ_SIZE,
         short_name="OBZ",
+        category="Authoring tools",
     )
     default_tilemap_preset = "preset.tilemap.scgcad-obz"
 
@@ -846,6 +851,7 @@ class StdContainer:
         extensions=(".std",),
         exact_size=STD_SIZE,
         short_name="STD",
+        category="Authoring tools",
     )
     default_tilemap_preset = "preset.tilemap.scgcad-std"
 
@@ -938,6 +944,7 @@ class ColContainer:
         exact_size=COL_SIZE,
         short_name="COL",
         content_kinds=(ContentKind.PALETTE,),
+        category="Authoring tools",
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
@@ -1133,6 +1140,7 @@ class CgxContainer:
         # it is *is* which bank this is.
         magic=tuple((payload, SIGNATURE) for payload, _, _ in CGX_BANKS.values()),
         short_name="CGX",
+        category="Authoring tools",
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

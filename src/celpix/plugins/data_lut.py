@@ -166,6 +166,7 @@ class DataLutReshape:
         luts: list[list[int]],
         selector_bits: tuple[int, ...] = (),
         unit: int = 1,
+        category: str = "",
     ) -> None:
         self._unit = unit
         self._bits = selector_bits
@@ -178,7 +179,9 @@ class DataLutReshape:
         # selector repeats every 2^(highest bit + 1) bytes, so one set of masks
         # serves every chunk.
         self._period = (1 << (max(selector_bits) + 1)) if selector_bits else 0
-        self.info = PluginInfo(id=plugin_id, name=name, stage=Stage.RESHAPE)
+        self.info = PluginInfo(
+            id=plugin_id, name=name, stage=Stage.RESHAPE, category=category
+        )
 
     def _map(self, data: bytes, tables: tuple[tuple[bytes, ...], ...]) -> bytes:
         """Substitute every unit of ``data`` through one compiled table set."""
@@ -310,4 +313,6 @@ def data_lut_from_spec(spec: dict) -> DataLutReshape:
         if not all(0 <= i < len(luts) for i in remap):
             raise ValueError("params.selector_remap entries must index a table")
         luts = [luts[i] for i in remap]
-    return DataLutReshape(spec["id"], spec["name"], luts, bits, unit)
+    return DataLutReshape(
+        spec["id"], spec["name"], luts, bits, unit, spec.get("category", "")
+    )

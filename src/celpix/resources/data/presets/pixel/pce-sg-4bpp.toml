@@ -4,6 +4,7 @@
 id = "preset.pixel.pce-sg-4bpp"
 name = "PC Engine SG 4bpp (16x16)"
 engine_id = "codec.pixel.planar"
+category = "NEC"
 
 [params]
 bpp = 4

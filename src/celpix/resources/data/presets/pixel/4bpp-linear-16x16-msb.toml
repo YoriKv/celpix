@@ -8,6 +8,7 @@
 id = "preset.pixel.4bpp-linear-16x16-msb"
 name = "4bpp linear, high nibble left (16x16)"
 engine_id = "codec.pixel.packed"
+category = "Generic linear"
 
 [params]
 bpp = 4

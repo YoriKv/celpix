@@ -12,6 +12,7 @@
 id = "preset.pixel.psx-8bpp"
 name = "PlayStation 8bpp (TIM, 8x8)"
 engine_id = "codec.pixel.packed"
+category = "Sony"
 
 [params]
 bpp = 8

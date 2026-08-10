@@ -178,6 +178,7 @@ class KonamiNesRle(_KonamiRle):
         id="compression.konami-nes-rle",
         name="Konami RLE (Contra family)",
         stage=Stage.COMPRESSION,
+        category="Nintendo",
     )
     fds = False
 
@@ -187,5 +188,6 @@ class KonamiFdsRle(_KonamiRle):
         id="compression.konami-fds-rle",
         name="Konami RLE (Simon's Quest / FDS family)",
         stage=Stage.COMPRESSION,
+        category="Nintendo",
     )
     fds = True

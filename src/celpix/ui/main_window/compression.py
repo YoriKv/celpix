@@ -37,6 +37,7 @@ from celpix.project.workspace import (
     slice_of,
 )
 from celpix.ui.decompress_overlay import Badge
+from celpix.ui.searchable_combo import fill_stage_combo
 from celpix.ui.undo_commands import (
     AddEntryCommand,
 )
@@ -51,13 +52,19 @@ class CompressionMixin:
     package docstring for why these are mixins.
     """
 
-    def _populate_compression(self) -> None:
-        """Fill the compression combo from the registry, in registration order
-        (the built-ins group naturally: none first, then the LZ family)."""
-        for plugin in self._registry.plugins(Stage.COMPRESSION):
-            self._compression.addItem(plugin.info.name, plugin.info.id)
-            if plugin.info.id == NO_COMPRESSION:
-                self._compression.setCurrentIndex(self._compression.count() - 1)
+    def _populate_compression(self, selected: str = NO_COMPRESSION) -> None:
+        """Fill the compression combo from the registry, grouped by category.
+
+        The pass-through names no category, which is what keeps it at the top
+        where a default belongs (:func:`~celpix.plugins.base.category_order`);
+        the schemes below it stay in registration order inside each group, so
+        each one still sits beside its improved encoder.
+        """
+        fill_stage_combo(
+            self._compression,
+            self._registry.plugins(Stage.COMPRESSION),
+            selected or NO_COMPRESSION,
+        )
 
     def _on_promote_structure(self) -> None:
         """One click: the structure in view becomes a slice entry.

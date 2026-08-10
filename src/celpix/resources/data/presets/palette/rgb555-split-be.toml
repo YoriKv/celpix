@@ -11,6 +11,7 @@
 id = "preset.palette.rgb555-split-be"
 name = "RGB555 split low bits (15-bit, big-endian)"
 engine_id = "codec.palette.mask"
+category = "Generic"
 
 [params]
 bytes_per_entry = 2

@@ -4,6 +4,7 @@
 id = "preset.pixel.dc-bgr555"
 name = "Direct BGR555 (8x8)"
 engine_id = "codec.pixel.direct-color"
+category = "Direct color"
 
 [params]
 bytes_per_pixel = 2

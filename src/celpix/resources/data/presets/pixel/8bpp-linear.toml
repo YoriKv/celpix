@@ -9,6 +9,7 @@
 id = "preset.pixel.8bpp-linear"
 name = "8bpp linear (Mode 7 / NDS, 8x8)"
 engine_id = "codec.pixel.packed"
+category = "Generic linear"
 
 [params]
 bpp = 8

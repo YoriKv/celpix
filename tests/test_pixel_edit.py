@@ -805,6 +805,12 @@ def test_number_key_selects_tool(qtbot, tmp_path) -> None:
     assert window._pixel_key(Qt.Key.Key_1, False, False)  # "1" -> Select
     assert window._tool is Tool.SELECT
 
+    # They are the rail's keys, so a greyed rail is their answer too - pixel mode
+    # can outlive the document that could be painted on.
+    window._tools_panel.setEnabled(False)
+    assert window._pixel_key(Qt.Key.Key_4, False, False)  # swallowed all the same
+    assert window._tool is Tool.SELECT
+
 
 # -- pixel transforms ------------------------------------------------------
 def test_flip_transforms_the_marquee_region(qtbot, tmp_path) -> None:

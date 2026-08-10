@@ -154,6 +154,7 @@ class SprContainer:
         extensions=(".spr",),
         short_name="SPR",
         preserves_offsets=False,
+        category="Nintendo",
     )
     default_tilemap_preset = "preset.tilemap.ys-spr"
 

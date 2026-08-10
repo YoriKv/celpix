@@ -1,0 +1,43 @@
+# A text run - one 16-bit word per character, little-endian. Its sibling
+# `text-8bit` is the commoner form; this is what a font with more than 256
+# glyphs needs, so it is the shape a Japanese script is stored in. Read exactly
+# as a tilemap because that is what it is (fontmap-entry.md).
+#
+# `layout = "text"` is the whole of what makes this a **fontmap** rather than an
+# ordinary tilemap, and it is declared rather than inferred for the same reason
+# `sprite` is: the bar has to describe the entry before anything is bound to it,
+# and a string with no font is still a string.
+#
+# It declares no controls. A bare index-only run genuinely has none - every word
+# is a character and the line width is the view's Cols - and inventing a
+# terminator would put a line break in the text window that the file does not
+# have.
+#
+# A stream that *does* have punctuation states it here, where the stream's own
+# format is stated, and not on the font: two runs in one game routinely share a
+# font and differ in exactly this. Copy this preset and add, for example:
+#
+#   [[params.controls]]
+#   code = 0xFFFE
+#   text = "line break"
+#   role = "break"
+#
+#   [[params.controls]]
+#   code = 0xFFFF
+#   text = "end of string"
+#
+# `role` is `break` (reads as a real newline; the first one declared is what
+# Enter types) or `control` (reads as its own `[$FFFF]`, and the name captions a
+# button on the insert row). Declaring nothing is always safe: an undeclared code
+# reads as `[$FFFF]` and types back to the same word, so a command celPix knows
+# nothing about survives an edit untouched.
+id = "preset.tilemap.text-16bit"
+name = "Text run (16-bit character codes)"
+engine_id = "codec.tilemap.packed"
+category = "Text"
+
+[params]
+layout = "text"
+bytes = 2
+endian = "little"
+index = { shift = 0, bits = 16 }

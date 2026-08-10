@@ -113,7 +113,9 @@ class SplitPartsReshape:
             # 32-bit bus and the four-chip 64-bit one.
             plugin_id = f"reshape.split-words-{parts}"
             name = f"Split ROM chips ({parts} chips, {unit * 8}-bit words, join)"
-        self.info = PluginInfo(id=plugin_id, name=name, stage=Stage.RESHAPE)
+        self.info = PluginInfo(
+            id=plugin_id, name=name, stage=Stage.RESHAPE, category="Arcade"
+        )
 
     def reshape(self, data: bytes, ctx: PipelineContext) -> bytes:
         return _join(data, self.parts, self.unit)

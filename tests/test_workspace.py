@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
@@ -35,6 +36,7 @@ from celpix.project.workspace import (
     pixel_config_for,
     relocate_path,
     reorders_bytes,
+    repair_presets,
     retarget_files,
 )
 
@@ -773,3 +775,42 @@ def test_a_missing_plugin_opens_view_only_and_names_itself(tmp_path) -> None:
     assert healed.write_enabled is True
     assert healed.missing_plugins == ()
     assert notices(pipeline.load_pixel_data(healed, reg).ctx) == ()
+
+
+def test_repair_presets_swaps_missing_formats_and_reports_them(tmp_path) -> None:
+    """A project naming a format this build hasn't got has to open, not raise.
+
+    Every surface reads these ids — the codec combo, the transform probes, the
+    decode — so they are corrected once, up front, rather than each one guessing.
+    """
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(b"\x00" * 64)
+    entry = Entry(
+        name="map",
+        kind=EntryKind.FILE,
+        path=str(rom),
+        content_kind=ContentKind.TILEMAP,
+        tilemap_preset_id="preset.tilemap.gone",
+        alphabet_preset_id="preset.alphabet.gone",
+        session=EntrySession(
+            pixel_preset_id="preset.pixel.gone",
+            palette_preset_id="preset.palette.bgr555",
+        ),
+    )
+    replaced = repair_presets([entry], default_registry())
+
+    assert entry.tilemap_preset_id == "preset.tilemap.snes-bg"
+    assert entry.session.pixel_preset_id == "preset.pixel.snes-4bpp"
+    # The palette one was fine and is left exactly as it was.
+    assert entry.session.palette_preset_id == "preset.palette.bgr555"
+    # An alphabet is cleared rather than substituted — a stand-in table would
+    # spell the codes as different letters, where None reads as hex.
+    assert entry.alphabet_preset_id is None
+
+    assert [(item.stage, item.wanted, item.used) for item in replaced] == [
+        (Stage.INTERPRET_PIXEL, "preset.pixel.gone", "preset.pixel.snes-4bpp"),
+        (Stage.INTERPRET_TILEMAP, "preset.tilemap.gone", "preset.tilemap.snes-bg"),
+        (Stage.ALPHABET, "preset.alphabet.gone", ""),
+    ]
+    # A second pass has nothing left to say.
+    assert repair_presets([entry], default_registry()) == []

@@ -6,6 +6,7 @@
 id = "preset.pixel.4bpp-linear-32x32-lsb"
 name = "4bpp linear, low nibble left (32x32)"
 engine_id = "codec.pixel.packed"
+category = "Generic linear"
 
 [params]
 bpp = 4

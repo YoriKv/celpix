@@ -6,6 +6,7 @@
 id = "preset.palette.abgr8888"
 name = "ABGR8888 (bytes A,B,G,R)"
 engine_id = "codec.palette.mask"
+category = "Generic"
 
 [params]
 bytes_per_entry = 4

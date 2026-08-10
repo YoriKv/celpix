@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
 
 from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.document import Document, GridMode
-from celpix.core.errors import PipelineError
+from celpix.core.errors import PipelineError, Stage
 from celpix.core.palette import Palette
 from celpix.plugins.detect import (
     content_kind_for,
@@ -70,6 +70,7 @@ from celpix.project import projectfile
 from celpix.project.workspace import (
     Entry,
     EntryKind,
+    MissingPreset,
     PaletteMode,
     Workspace,
     data_missing,
@@ -109,12 +110,14 @@ from celpix.ui.main_window.selection import (
 from celpix.ui.main_window.session import SessionMixin
 from celpix.ui.main_window.sprite_select import SpriteSelectMixin
 from celpix.ui.main_window.stamp_tool import StampToolMixin
+from celpix.ui.main_window.text import TextMixin
 from celpix.ui.main_window.tile_source_dock import TileSourceDockMixin
 from celpix.ui.main_window.tilemap_bar import TilemapBarMixin
 from celpix.ui.main_window.tilemap_edit import TilemapEditMixin
 from celpix.ui.main_window.transfer import TransferMixin
 from celpix.ui.main_window.transform import TransformMixin
 from celpix.ui.main_window.writing import WritingMixin
+from celpix.ui.text_window import TextWindow
 from celpix.ui.theme import THEME_KEY, Theme, apply_theme
 from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
@@ -128,11 +131,14 @@ from celpix.ui.widgets import (
     save_bool_setting,
     save_enum_setting,
 )
+from celpix.ui.window_layout import WindowLayout
 
-# Rebuilds a registry from built-ins + the current plugin folder, returning it
-# with any load issues. Injected by the app so the window can hot-reload plugins
-# without knowing about data dirs, the trust store, or the confirm dialog.
-ReloadPlugins = Callable[[], "tuple[Registry, list[PluginLoadIssue]]"]
+# Rebuilds a registry from built-ins + the plugin folders, returning it with any
+# load issues. Injected by the app so the window can hot-reload plugins without
+# knowing about data dirs, the trust store, or the confirm dialog. The argument
+# is the open project's path (or None), whose folder may carry project plugins -
+# the window knows which project is open, the app knows where plugins live.
+ReloadPlugins = Callable[["str | None"], "tuple[Registry, list[PluginLoadIssue]]"]
 
 # QSettings keys for the grid. All four parts of it are **local preferences**,
 # not project state: how you want to look at pixels is a property of the person
@@ -148,11 +154,16 @@ ENTIRE_FILE_KEY = "view/entire_file"
 # View ▸ Show Tile IDs, likewise: an annotation you turn on to read a map and off
 # again to look at it, which is about the reader and not about the map.
 TILE_IDS_KEY = "view/tile_ids"
+# Where the window's size, position and panel arrangement are stored. Its own
+# group rather than `view/`: what is under it is Qt's own opaque state and not a
+# preference anyone would edit by hand (celpix.ui.window_layout).
+MAIN_WINDOW_LAYOUT_KEY = "layout/main-window"
 
 
 class MainWindow(
     NavigationMixin,
     AnimationMixin,
+    TextMixin,
     HistoryMixin,
     InterpretationMixin,
     PaletteSourceMixin,
@@ -333,6 +344,23 @@ class MainWindow(
         self._overlay = DecompressOverlay(self)
         self._animation = AnimationOverlay(self)
         self._animation.refresh_requested.connect(self._show_animation)
+        self._text = TextWindow(self)
+        # Which run of typing the next text edit belongs to, so consecutive
+        # keystrokes merge into one undo step (``main_window/text.py``).
+        self._text_run = 0
+        # Whether the user has shut the text window this session. A fontmap opens
+        # it by itself; closing it is how that is turned off, and View ▸ Text is
+        # how it comes back (``main_window/text.py``, ``_sync_text``).
+        self._text_dismissed = False
+        self._text.committed.connect(self._on_text_committed)
+        self._text.drafted.connect(self._on_text_drafted)
+        self._text.dismissed.connect(self._on_text_dismissed)
+        self._text.caret_moved.connect(self._on_text_caret)
+        # The text window is a `Qt.Tool` - a top-level window of its own - so the
+        # Edit menu's window-context shortcuts do not reach it. Ctrl+Z there must
+        # still be the session's one history, not a second one in the field.
+        self._text.undo_requested.connect(self._undo_stack.undo)
+        self._text.redo_requested.connect(self._undo_stack.redo)
         self._init_sprite_select()
         self._canvas.slots_selected.connect(self._on_slots_selected)
         # After slots_selected, because the two report one press and this is the
@@ -453,6 +481,12 @@ class MainWindow(
         # the same path a close lands on rather than being half-assembled here -
         # which is what puts the read-only default palette in the dock.
         self._show_empty()
+        # Last, and after every dock is built and placed: what it finds here is
+        # the factory layout it hands back to Panels > Reset, and what it applies
+        # has to win over the placement each dock did for itself
+        # (celpix.ui.window_layout).
+        self._window_layout = WindowLayout(self, MAIN_WINDOW_LAYOUT_KEY)
+        self._window_layout.restore()
 
     def _announce_ready(self) -> None:
         self.statusBar().showMessage("Open pixel data to begin.")
@@ -781,6 +815,10 @@ class MainWindow(
         ):
             event.ignore()
             return
+        # Past both gates, so this really is the last look at the layout: flush
+        # whatever the delayed write is still holding, or a panel dragged and
+        # then quit on in the same breath goes back to where it was.
+        self._window_layout.save()
         super().closeEvent(event)
 
     # -- docks and menus --------------------------------------------------------
@@ -923,7 +961,9 @@ class MainWindow(
 
         self._write_action = QAction("&Write", self)
         self._write_action.setToolTip(
-            "Write this file or slice back to disk,\nwith the palette file it shows"
+            "Write this file or slice back to disk, with the\n"
+            "palette file it shows and, on a map, the tiles\n"
+            "it borrows if they have been painted on"
         )
         self._write_action.setShortcut(QKeySequence("Ctrl+W"))
         self._write_action.triggered.connect(self._write_current)
@@ -951,7 +991,10 @@ class MainWindow(
 
         refresh = QAction("&Refresh plugins", self)
         refresh.setShortcut(QKeySequence.StandardKey.Refresh)  # F5
-        refresh.setToolTip("Reload plugins and re-run on the open file")
+        refresh.setToolTip(
+            "Reload plugins - yours and the open project's -\nand re-run "
+            "on the open file"
+        )
         refresh.triggered.connect(self._refresh_plugins)
         refresh.setEnabled(self._reload_plugins is not None)
         file_menu.addAction(refresh)
@@ -1014,6 +1057,7 @@ class MainWindow(
         self._build_zoom_actions(menu)
         menu.addSeparator()
         self._build_animation_action(menu)
+        self._build_text_action(menu)
         menu.addSeparator()
         self._build_theme_menu(menu)
 
@@ -1075,6 +1119,32 @@ class MainWindow(
         self._animation_action.triggered.connect(self._show_animation)
         self._animation_action.setEnabled(False)
         view_menu.addAction(self._animation_action)
+
+    def _build_text_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
+        """View ▸ Text - open the string this fontmap holds, as words.
+
+        Beside Animation because it is the same kind of thing: a `Qt.Tool` window
+        holding a second reading of the entry on screen, closed from its own
+        frame rather than by a checkbox here.
+
+        Enabled on the **declaration** and not on the alphabet, unlike its
+        neighbour: a sprite object with no sequences has nothing to play, but a
+        fontmap with no font bound has something to say - that its codes mean
+        nothing yet, and where to fix it
+        (:meth:`~...text.TextMixin._text_available`).
+
+        Mnemonic "x": Theme has the word's own first letter and Entire File its
+        second, so the third is what is left - and it is the letter of the word
+        that stands out.
+        """
+        self._text_action = QAction("Te&xt...", self)
+        self._text_action.setToolTip(
+            "Read and edit this text run as words\n"
+            "Its own window, typed through the font's alphabet"
+        )
+        self._text_action.triggered.connect(self._show_text)
+        self._text_action.setEnabled(False)
+        view_menu.addAction(self._text_action)
 
     def _build_entire_file_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Entire File - drop the row window and show all of it at once.
@@ -1387,6 +1457,18 @@ class MainWindow(
         hex_toggle = self._hex_dock.toggleViewAction()
         hex_toggle.setText("&Hex Panel")
         menu.addAction(hex_toggle)
+        # The way back, and the reason it has to exist: the arrangement is
+        # remembered now, so a panel dropped somewhere unusable stays unusable
+        # across a restart - and a dock shrunk past its own separator cannot be
+        # dragged back out by hand.
+        menu.addSeparator()
+        reset = menu.addAction("&Reset Panel Layout")
+        reset.triggered.connect(self._reset_panel_layout)
+
+    def _reset_panel_layout(self) -> None:
+        """Panels ▸ Reset Panel Layout — the docks as a fresh install has them."""
+        self._window_layout.reset()
+        self.statusBar().showMessage("Panel layout reset.")
 
     def _open_plugins_folder(self) -> None:
         if self._plugin_dir is None:
@@ -1511,6 +1593,45 @@ class MainWindow(
         """Surface a pipeline failure. Thin wrapper over :meth:`_alert` kept for
         the many call sites that already hold a :class:`PipelineError`."""
         self._alert(str(exc), title="celPix - pipeline error")
+
+    # What each stage's presets are called in a sentence aimed at the user.
+    # "interpret-tilemap" is the pipeline's word for the stage, not a thing the
+    # picker the user chose from is labelled with.
+    _PRESET_KINDS = {
+        Stage.INTERPRET_PIXEL: "pixel format",
+        Stage.INTERPRET_PALETTE: "palette format",
+        Stage.INTERPRET_TILEMAP: "tilemap format",
+        Stage.ALPHABET: "alphabet",
+    }
+
+    def _alert_missing_presets(self, missing: list[MissingPreset]) -> None:
+        """Modal naming the formats entries wanted that this build hasn't got.
+
+        The Interpret-stage counterpart of :meth:`_alert_plugin_issues`, and the
+        reason a missing format is a dialog rather than a per-entry notice: the
+        substitution has already been written into the entries
+        (:func:`~celpix.project.workspace.repair_presets`), so the user has a
+        decision to make about *this* project before they touch it — install the
+        plugin and reopen, or accept the fallback. A notice they might read later
+        is no use for a choice that expires at the next save.
+        """
+        if not missing:
+            return
+        detail = "\n".join(
+            f"• {item.entry.name}: "
+            f"{self._PRESET_KINDS.get(item.stage, item.stage.value)} "
+            f"{item.wanted} -> {item.used or 'none'}"
+            for item in missing
+        )
+        self._alert(
+            f"{len(missing)} format(s) this project uses aren't installed. Those "
+            "entries fall back to a default, so what they show is not what the "
+            "files hold. Install the plugin that provides them and reopen the "
+            "project - saving it as it stands writes the fallbacks in place of "
+            "the formats it named.",
+            title="celPix - missing formats",
+            detail=detail,
+        )
 
     def _alert_plugin_issues(self) -> None:
         """Modal listing plugins that failed to load - shown at startup and

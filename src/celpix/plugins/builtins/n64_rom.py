@@ -88,6 +88,7 @@ class N64RomContainer:
         # file. Declared for the whole container, since which of the three a
         # given file is isn't known until it has been read.
         preserves_offsets=False,
+        category="Nintendo",
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

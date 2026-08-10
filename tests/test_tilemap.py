@@ -191,6 +191,30 @@ def test_a_too_wide_index_is_masked_not_raised() -> None:
     assert codec.decode(data, params, ctx)[0].index == 0x3FF
 
 
+def test_a_terminator_bit_leaves_the_index_and_rides_beside_it() -> None:
+    """The bit that ends a line is not part of the character.
+
+    A one-byte text run with `terminator` at bit 7 reads `$D2` as the letter at
+    `$52` — which is what the hardware draws, having cleared the bit — plus the
+    flag the fontmap turns into a newline. Left inside the index it would be a
+    tile past the end of a 128-glyph sheet, so the line's last character would
+    draw blank (``text-formats.md`` §4.4).
+    """
+    registry = default_registry()
+    codec, ctx = TilemapCodec(), PipelineContext()
+    params = _params(registry, "preset.tilemap.text-8bit-flag")
+    plain, flagged = codec.decode(b"\x52\xd2", params, ctx)
+    assert (plain.index, plain.ends_line) == (0x52, False)
+    assert (flagged.index, flagged.ends_line) == (0x52, True)
+    assert codec.index_limit(params) == 0x7F
+    # Byte-exact both ways: the flag is the eighth bit and nothing else is.
+    assert codec.encode([plain, flagged], params, ctx) == b"\x52\xd2"
+    # A format that places no such field drops the flag rather than corrupting a
+    # neighbouring bit with it.
+    bare = _params(registry, "preset.tilemap.text-8bit")
+    assert codec.encode([flagged], bare, ctx) == b"\x52"
+
+
 def test_a_trailing_partial_cell_is_dropped() -> None:
     """Unlike a partial tile, which still draws as something, half a cell has no
     meaningful index and would render as a spurious tile 0."""
@@ -839,24 +863,22 @@ def test_a_flipped_subsprite_reverses_its_tile_order_as_well_as_each_tile() -> N
     Both halves are needed and neither is sufficient."""
     from celpix.core.sprite import Subsprite
 
-    # (small, large) as multiples of the tile size, so `large` is a 2x2 of tiles.
-    pair = (1, 2)
-    assert Subsprite(index=0x20, large=True).tile_indices(pair) == [
+    # A 2x2 of tiles, stepping VRAM's 16-wide array to reach the second row.
+    big = {"index": 0x20, "across": 2, "down": 2}
+    assert Subsprite(**big).tile_indices() == [0x20, 0x21, 0x30, 0x31]
+    assert Subsprite(**big, flip_h=True).tile_indices() == [0x21, 0x20, 0x31, 0x30]
+    assert Subsprite(**big, flip_v=True).tile_indices() == [0x30, 0x31, 0x20, 0x21]
+
+    # The other order a console uses: consecutive tiles down each column, which
+    # is what a Mega Drive subsprite spends. Same rule for a flip.
+    tall = {"index": 0x20, "across": 3, "down": 2, "column_major": True}
+    assert Subsprite(**tall).tile_indices() == [0x20, 0x22, 0x24, 0x21, 0x23, 0x25]
+    assert Subsprite(**tall, flip_h=True).tile_indices() == [
+        0x24,
+        0x22,
         0x20,
-        0x21,
-        0x30,
-        0x31,
-    ]
-    assert Subsprite(index=0x20, large=True, flip_h=True).tile_indices(pair) == [
-        0x21,
-        0x20,
-        0x31,
-        0x30,
-    ]
-    assert Subsprite(index=0x20, large=True, flip_v=True).tile_indices(pair) == [
-        0x30,
-        0x31,
-        0x20,
+        0x25,
+        0x23,
         0x21,
     ]
 
@@ -955,6 +977,40 @@ def test_a_pixel_resolves_to_the_subsprite_a_user_can_see_there() -> None:
     assert at(200, 2) is None and at(6, 200) is None  # off the sheet entirely
 
 
+def test_a_pixel_lists_every_subsprite_under_it_in_the_order_a_click_takes_them() -> (
+    None
+):
+    """What a second click on the same tile has left to pick.
+
+    The front-most piece hides the ones behind it, so one answer per pixel would
+    leave records unreachable. The list is the same rule applied all the way down
+    rather than stopped at the first hit: what draws there, in file order, then
+    what merely covers it — so its head is the single answer, and nothing under
+    the cursor is missing from its tail.
+    """
+    from celpix.core.sprite import Subsprite
+    from celpix.pipeline.pipeline import subsprite_at, subsprites_at
+
+    # Tile 1 opaque throughout, tile 2 clear on its left half and set on its right.
+    bank = bytes(32) + bytes([0xFF]) * 32 + bytes([0x0F]) * 32
+    registry = default_registry()
+    doc = _sprite_doc(
+        [],
+        [(Subsprite(index=2), Subsprite(index=1), Subsprite(index=2))],
+        bank=bank,
+    )
+    at = lambda x, y: subsprites_at(doc, registry, 1, x, y)  # noqa: E731
+
+    # On the right half all three draw, so the order is the file's own.
+    assert at(6, 2) == [(0, 0), (0, 1), (0, 2)]
+    # On the left the two half-clear ones draw nothing, and drop behind the one
+    # that does without dropping out — a click can still reach them.
+    assert at(2, 2) == [(0, 1), (0, 0), (0, 2)]
+    # Which is the pick's single answer, every time.
+    assert at(2, 2)[0] == subsprite_at(doc, registry, 1, 2, 2)
+    assert at(200, 2) == []  # off the sheet: nothing to cycle through
+
+
 def test_a_sprite_object_is_view_only() -> None:
     """A canvas position resolves to a *subsprite* through an overlap order rather
     than to a cell through a grid, so what an edit would change is not settled
@@ -987,6 +1043,67 @@ def _obz_record(
     )
 
 
+def _md_record(*, x=0, y=0, tile=0, across=1, down=1, palette=0, mirror=None) -> bytes:
+    """One Mega Drive subsprite record, built the way the file stores it."""
+    size = ((across - 1) << 2) | (down - 1)
+    word = (tile & 0x7FF) | ((palette & 3) << 13)
+    if mirror is None:
+        mirror = -(x + across * 8)
+    return (
+        bytes((y & 0xFF, size))
+        + word.to_bytes(2, "big")
+        + bytes((x & 0xFF, mirror & 0xFF))
+    )
+
+
+def test_a_mega_drive_subsprite_is_a_rectangle_read_down_its_columns() -> None:
+    """Both of the things that make this a code format rather than a preset. A
+    record covers ``w x h`` tiles from the console's own size nibble — not a
+    square picked from a pair, which is what every other sprite record holds —
+    and its tiles run **down each column**, the opposite of a grid's walk.
+    """
+    from celpix.plugins.builtins.md_sprite import MdSpriteCodec
+
+    codec = MdSpriteCodec()
+    params = _params(default_registry(), "preset.tilemap.md-sprite")
+    ctx = PipelineContext()
+    raw = _md_record(x=-24, y=-8, tile=0x3C8, across=2, down=3, palette=2)
+
+    (cell,) = codec.decode(raw, params, ctx)
+    assert (cell.index, cell.palette_row) == (0x3C8, 2)
+    (sub,) = codec.frames([cell], params, ctx)[0]
+    assert (sub.x, sub.y, sub.size()) == (-24, -8, (2, 3))
+    # Down the first column, then the second — 6 consecutive tiles, not 2 rows of
+    # 3 stepped through a 16-wide array.
+    assert sub.tile_indices() == [0x3C8, 0x3CB, 0x3C9, 0x3CC, 0x3CA, 0x3CD]
+    assert codec.encode([cell], params, ctx) == raw
+
+
+def test_a_mega_drive_run_says_when_its_mirror_offsets_disagree() -> None:
+    """The one way this format is misread has no other symptom: a byte X plus a
+    mirrored-frame X is the same six bytes as a signed word X, so the wrong
+    reading draws a plausible object with its pieces moved. The mirror field is
+    redundant, so it can be checked — and is, on the way past.
+    """
+    from celpix.core.notices import notices
+    from celpix.plugins.builtins.md_sprite import MdSpriteCodec, mirrors_x
+
+    codec = MdSpriteCodec()
+    params = _params(default_registry(), "preset.tilemap.md-sprite")
+    honest = _md_record(x=-24, across=2) + _md_record(x=-8, across=1)
+    ctx = PipelineContext()
+    cells = codec.decode(honest, params, ctx)
+    assert mirrors_x(cells, params)
+    codec.frames(cells, params, ctx)
+    assert not notices(ctx)
+
+    ctx = PipelineContext()
+    wrong = codec.decode(_md_record(x=-24, across=2, mirror=7), params, ctx)
+    assert not mirrors_x(wrong, params)
+    codec.frames(wrong, params, ctx)
+    assert any("mirror" in note.summary for note in notices(ctx))
+
+
 def test_a_transfer_record_puts_every_field_somewhere_else() -> None:
     """The reason it is a second engine and not a parameter: the character number
     is 12 bits split across two bytes where a sprite object's is 9 inside a
@@ -1001,7 +1118,7 @@ def test_a_transfer_record_puts_every_field_somewhere_else() -> None:
     (cell,) = codec.decode(raw, params, ctx)
     assert (cell.index, cell.palette_row) == (0x9EE, 5)  # 12-bit, past a sprite's 9
     (sub,) = codec.frames([cell], params, ctx)[0]
-    assert (sub.x, sub.y, sub.group, sub.large) == (-8, 100, 3, True)
+    assert (sub.x, sub.y, sub.group, sub.size()) == (-8, 100, 3, (2, 2))
     assert codec.encode([cell], params, ctx) == raw
 
 
@@ -2318,7 +2435,10 @@ def test_frames_are_cut_where_the_file_counted_them_not_at_a_fixed_stride() -> N
     frames = codec.frames(cells, params, ctx)
     assert [len(frame) for frame in frames[:4]] == [2, 0, 1, 0]
     # The geometry that rides in `flags` has to come back out with it.
-    assert [(s.x, s.y, s.large) for s in frames[0]] == [(-8, 21, True), (8, 21, True)]
+    assert [(s.x, s.y, s.size()) for s in frames[0]] == [
+        (-8, 21, (2, 2)),
+        (8, 21, (2, 2)),
+    ]
     assert frames[2][0].index == 9
 
     bare = dict(params, subsprites_per_frame=2)

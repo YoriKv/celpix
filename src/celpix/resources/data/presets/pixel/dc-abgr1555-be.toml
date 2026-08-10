@@ -3,6 +3,7 @@
 id = "preset.pixel.dc-abgr1555-be"
 name = "Direct ABGR1555 (8x8, big-endian)"
 engine_id = "codec.pixel.direct-color"
+category = "Direct color"
 
 [params]
 bytes_per_pixel = 2

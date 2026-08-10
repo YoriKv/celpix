@@ -53,3 +53,42 @@ flip_v = { shift = 15, bits = 1 }
 # different cell from the map it draws through, and the `index` field above is what
 # bounds how high that can go.
 # indirect = true
+
+# Set when the cells are **character codes** rather than tile numbers - a run of
+# text stored as references into a font. The picture is unchanged (a text run
+# draws as the grid of glyph tiles it is); what this adds is View > Text, where
+# the run reads and is typed as words. Bind the entry to the font, then pick an
+# Alphabet for that font. See docs/design/fontmap-entry.md.
+# layout = "text"
+
+# A fontmap's **control codes**: how this stream is punctuated. They belong here,
+# on the stream's format, and not on the font - two runs in one game routinely
+# share a font and punctuate differently, so a font that carried them would have
+# to be wrong for one of them.
+#
+# You need declare only what changes how the text *reads*. Everything else
+# already round-trips: a code you say nothing about shows as `[$FF]` and types
+# straight back to the same byte, whatever the game does with it. So there is no
+# markup to invent per game, and nothing to get wrong by leaving out.
+#
+# `role` is one of:
+#   break    ends a line, and reads as a real newline. The FIRST one declared is
+#            what the Enter key types; any others stay reachable as their own hex
+#   control  anything else - a terminator, a speed change, a portrait command.
+#            Reads as its own `[$FF]`; the name is what captions its button on
+#            the insert row, so nobody has to remember the number
+#   text     a code that spells letters after all (rare here - that is the font's
+#            half)
+#
+# [[params.controls]]
+# code = 0xFE
+# text = "line break"
+# role = "break"
+#
+# [[params.controls]]
+# code = 0xFF
+# text = "end of string"
+#
+# A command that swallows further codes needs nothing said: those codes are read
+# on their own and show as `[$AA][$BB]` after it, which types back exactly as it
+# was and asks you to describe nothing.

@@ -4,6 +4,7 @@
 id = "preset.pixel.1bpp-16x12-ff5"
 name = "1bpp (16x12, FF5)"
 engine_id = "codec.pixel.planar"
+category = "Generic planar"
 
 [params]
 bpp = 1

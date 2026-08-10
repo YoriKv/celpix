@@ -289,6 +289,16 @@ def test_env_path_is_searched(tmp_path, monkeypatch) -> None:
     assert reg.preset("preset.pixel.custom-1bpp")
 
 
+def test_project_plugin_dir_only_when_the_folder_is_there(tmp_path) -> None:
+    project = tmp_path / "hack.celpix"
+    project.write_text("{}", encoding="utf-8")
+
+    assert discovery.project_plugin_dir(None) is None  # no project open
+    assert discovery.project_plugin_dir(str(project)) is None  # no plugins folder
+    (tmp_path / "plugins").mkdir()
+    assert discovery.project_plugin_dir(str(project)) == str(tmp_path / "plugins")
+
+
 def test_missing_directory_is_silent(tmp_path) -> None:
     reg = default_registry()
     assert discovery.load_directory(reg, str(tmp_path / "does-not-exist")) == []
@@ -346,7 +356,7 @@ def test_preset_in_code_only_folder_is_reported(tmp_path) -> None:
 
     issues = discovery.load_directory(reg, str(tmp_path))
     assert len(issues) == 1
-    assert "pixel/palette/tilemap/reshape only" in issues[0].message
+    assert "pixel/palette/tilemap/alphabet/reshape only" in issues[0].message
 
 
 def test_conflicting_legacy_stage_field_is_reported(tmp_path) -> None:
@@ -414,6 +424,8 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert (tmp_path / discovery.PLUGIN_README).is_file()
     seeded = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("_*"))
     assert seeded == [
+        "alphabet/_font.tbl",
+        "alphabet/_table.toml",
         "compression/_example.py",
         "containers/_example.py",
         "containers/_tiff.py",
@@ -431,6 +443,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         "reshape/_data-lut.toml",
         "reshape/_example.py",
         "tilemap/_example.py",
+        "tilemap/_md-sprite.toml",
         "tilemap/_object.toml",
         "tilemap/_obz.toml",
         "tilemap/_packed.toml",
@@ -778,3 +791,91 @@ def register(registry):
     assert "bytes_per_entry" in issues[0].message
     with pytest.raises(KeyError):
         reg.preset("format.palette.nosize")
+
+
+# -- alphabet/: the folder whose *data files* are plugins in their own right ---
+
+
+def test_a_bare_table_file_is_a_plugin_by_itself(tmp_path) -> None:
+    """Dropping a font's own ``20=A`` table into ``alphabet/`` registers it.
+
+    The data-first tier taken to its end: the file *is* the parameter set, so
+    there is nothing for a preset to add and the id and name come from the
+    filename. Both reference projects in this tree keep their fonts as exactly
+    such a file, and this is what lets one be used without transcription.
+    """
+    _drop(tmp_path, "alphabet", "menu-font.tbl", "20=A\n21=B\nFE=[line break]\n")
+    reg = default_registry()
+
+    assert discovery.load_directory(reg, str(tmp_path)) == []
+
+    preset = reg.preset("alphabet.menu-font")
+    assert preset.stage is Stage.ALPHABET  # inferred from the folder
+    engine = reg.plugin(Stage.ALPHABET, preset.engine_id)
+    glyphs = engine.glyphs(preset.params, PipelineContext())
+    assert [(g.code, g.text) for g in glyphs] == [
+        (0x20, "A"),
+        (0x21, "B"),
+        # A bracketed value names a command rather than spelling anything; it
+        # still reads as `[$FE]` in the text like every other non-letter.
+        (0xFE, "line break"),
+    ]
+
+
+def test_an_alphabet_preset_reads_the_table_beside_it(tmp_path) -> None:
+    """``table = "x.txt"`` is resolved against the preset's own folder.
+
+    Resolved by the loader and not the engine, since only the loader knows where
+    the preset came from - a Preset is parsed data with no origin, and giving it
+    one so an engine could open files beside it would hand every plugin a
+    filesystem the rest of them do not have.
+
+    This is also the route to the reversed line order, which a bare table file
+    has nowhere to state.
+    """
+    _drop(tmp_path, "alphabet", "font.txt", "A=00\nB=01\n")
+    _drop(
+        tmp_path,
+        "alphabet",
+        "asm-font.toml",
+        'id = "alphabet.asm-font"\n'
+        'name = "From the assembler table"\n'
+        'engine_id = "alphabet.table"\n'
+        "[params]\n"
+        'table = "font.txt"\n'
+        'order = "text-first"\n',
+    )
+    reg = default_registry()
+
+    assert discovery.load_directory(reg, str(tmp_path)) == []
+
+    preset = reg.preset("alphabet.asm-font")
+    engine = reg.plugin(Stage.ALPHABET, preset.engine_id)
+    glyphs = engine.glyphs(preset.params, PipelineContext())
+    assert [(g.code, g.text) for g in glyphs] == [(0x00, "A"), (0x01, "B")]
+
+
+def test_a_table_outside_the_presets_folder_is_refused(tmp_path) -> None:
+    """A font's table lives beside the font's preset, or it is not the font's.
+
+    The plugin directory is typed precisely so that what a file may reach is
+    bounded, and a preset naming a path out of its own folder is reaching for
+    something that is not plugin data.
+    """
+    (tmp_path / "elsewhere.txt").write_text("00=A\n", encoding="utf-8")
+    _drop(
+        tmp_path,
+        "alphabet",
+        "escape.toml",
+        'id = "alphabet.escape"\n'
+        'name = "Escape"\n'
+        'engine_id = "alphabet.table"\n'
+        "[params]\n"
+        'table = "../elsewhere.txt"\n',
+    )
+    reg = default_registry()
+
+    issues = discovery.load_directory(reg, str(tmp_path))
+    assert len(issues) == 1 and "not a file beside this preset" in issues[0].message
+    with pytest.raises(KeyError):
+        reg.preset("alphabet.escape")

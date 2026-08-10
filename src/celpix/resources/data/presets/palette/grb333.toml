@@ -8,6 +8,7 @@
 id = "preset.palette.grb333"
 name = "GRB333 (9-bit; YY-CHR R3G3B3)"
 engine_id = "codec.palette.mask"
+category = "Generic"
 
 [params]
 bytes_per_entry = 2

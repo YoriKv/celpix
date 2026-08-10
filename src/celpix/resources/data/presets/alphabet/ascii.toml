@@ -1,0 +1,17 @@
+# The printable ASCII range at its own code points — every character from space
+# to `~` mapped to the byte that spells it. Not a guess about any font's tile
+# order but the case where there is nothing to guess: a font sheet built by a
+# modern toolchain, or a string region a tool wrote out in plain ASCII.
+#
+# Worth trying second on an unknown run. If the text reads correctly the stream
+# is ASCII; if it reads as an alphabet shifted by a constant then the shape is
+# right and only the origin is not, which is what **Base code** on the tilemap
+# bar dials. A run with no lower case at all wants `ascii-upper` instead — same
+# gesture, a table that spends no codes on letters the sheet does not have.
+id = "alphabet.ascii"
+name = "ASCII (0x20-0x7E)"
+engine_id = "alphabet.table"
+
+[params]
+first = 0x20
+chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"

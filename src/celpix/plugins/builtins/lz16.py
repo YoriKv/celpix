@@ -541,6 +541,7 @@ class Lz16Compression:
         # No terminator: the extent comes from the row count, by context or
         # probe, and both need a bound the bit stream never carries.
         self_delimiting=False,
+        category="Nintendo",
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
@@ -575,6 +576,7 @@ class Lz16ImprovedCompression(Lz16Compression):
         name="LZ16 improved (Yoshi's Island Super FX)",
         stage=Stage.COMPRESSION,
         self_delimiting=False,
+        category="Nintendo",
     )
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:

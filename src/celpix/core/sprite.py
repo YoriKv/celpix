@@ -28,26 +28,34 @@ from dataclasses import dataclass
 
 from celpix.core.tilemap import VRAM_ROW_STRIDE, tile_run
 
-# An object's two subsprite sizes, **as multiples of the tile size**: each
-# subsprite stores one bit choosing which of the two it is, and the pair itself is
-# not in the file
-# — it was a register the game set, so it is a parameter of reading one.
+# An object's two subsprite sizes, **as multiples of the tile size**, for the
+# formats whose record holds a size *bit* rather than a size: the pair itself is
+# not in those files — it was a register the game set, so it is a parameter of
+# reading one. A format that states each subsprite's rectangle outright needs
+# none of this, and says so by declaring `subsprite_size = "stated"`.
 #
 # Multiples rather than pixels, because that is what a subsprite is built from: a
-# subsprite is a square of *tiles*, so `(1, 2)` says "one tile, or two by two" and
-# stays true whatever the bound codec's tile size turns out to be. Pixels would
-# have to be divided by it again at every use, and each division is a place for
-# an assumed 8 to hide.
+# subsprite is a rectangle of *tiles*, so `(1, 2)` says "one tile, or two by two"
+# and stays true whatever the bound codec's tile size turns out to be. Pixels
+# would have to be divided by it again at every use, and each division is a place
+# for an assumed 8 to hide.
 DEFAULT_SUBSPRITE_TILES: tuple[int, int] = (1, 2)
 
 
 @dataclass(frozen=True, slots=True)
 class Subsprite:
-    """One tile-square of a sprite frame, at a signed offset from the origin.
+    """One rectangle of tiles from a sprite frame, at a signed offset from the origin.
 
-    ``large`` selects between the two sizes of the object's size pair rather
-    than naming a size, because that is what the file stores: one bit, resolved
-    against a setting that lives outside it.
+    ``across`` and ``down`` are its size **in tiles**, stated rather than picked
+    from a setting: a format that records a rectangle can say so, and one whose
+    record holds a size *bit* resolves that bit against the object's size pair
+    while decoding (:data:`DEFAULT_SUBSPRITE_TILES`). Either way what reaches the
+    renderer is a shape, which is what it needs — the two consoles disagree about
+    whether a subsprite may be oblong, and only the codec knows which is reading.
+
+    ``column_major`` is the other thing only the codec knows: whether the
+    rectangle's tiles run down each column or across each row
+    (:func:`~celpix.core.tilemap.tile_run`).
 
     ``group`` is the authoring tool's own byte and means nothing here. It is
     carried for the reason every unmodelled field is — a field dropped at decode
@@ -61,35 +69,37 @@ class Subsprite:
     priority: int = 0
     flip_h: bool = False
     flip_v: bool = False
-    large: bool = False
+    across: int = 1
+    down: int = 1
+    column_major: bool = False
     group: int = 0
 
-    def tiles(self, pair: tuple[int, int]) -> int:
-        """This subsprite's side **in tiles**, under an object's size ``pair``.
+    def size(self) -> tuple[int, int]:
+        """This subsprite's size in tiles, never smaller than one either way."""
+        return max(1, self.across), max(1, self.down)
 
-        ``pair`` is (small, large) as multiples of the tile size, so this is the
-        number the tile walk wants directly — no pixel size to divide back down.
+    def pixels(self, tile_w: int, tile_h: int) -> tuple[int, int]:
+        """Its size in pixels, for placing it against its neighbours."""
+        across, down = self.size()
+        return across * tile_w, down * tile_h
+
+    def tile_indices(self) -> list[int]:
+        """The source tiles it draws, in the order they appear on screen.
+
+        Both walks are :func:`~celpix.core.tilemap.tile_run`'s, told apart by
+        :attr:`column_major`: a VRAM array read across, stepping
+        :data:`~celpix.core.tilemap.VRAM_ROW_STRIDE` to the next row, or the run
+        of consecutive tiles a Mega Drive sprite spends going down each column.
+        A flip reverses the order as well as mirroring each tile, which is the
+        walk's business either way.
         """
-        return max(1, pair[1] if self.large else pair[0])
-
-    def pixels(self, pair: tuple[int, int], tile_px: int) -> int:
-        """This subsprite's side in pixels, for placing it against its neighbours."""
-        return self.tiles(pair) * tile_px
-
-    def tile_indices(self, pair: tuple[int, int]) -> list[int]:
-        """The source tiles this subsprite draws, in the order they appear on screen.
-
-        A subsprite is square, so its two axes are the same count; everything else —
-        the VRAM stride, and the way a flip reverses the order as well as each
-        tile — is the walk a tilemap cell makes
-        (:func:`~celpix.core.tilemap.tile_run`).
-        """
-        side = self.tiles(pair)
+        across, down = self.size()
         return tile_run(
             self.index,
-            side,
-            side,
-            VRAM_ROW_STRIDE,
+            across,
+            down,
+            1 if self.column_major else VRAM_ROW_STRIDE,
+            column_stride=down if self.column_major else 1,
             flip_h=self.flip_h,
             flip_v=self.flip_v,
         )
@@ -118,21 +128,20 @@ def drawn_frames(frames: list[Frame]) -> list[Frame]:
 
 def frame_bounds(
     frames: list[Frame],
-    pair: tuple[int, int],
     tile_w: int = 8,
     tile_h: int | None = None,
 ) -> tuple[int, int, int, int]:
     """``(x, y, width, height)`` enclosing every subsprite of every frame, in pixels.
 
-    ``pair`` is in tiles and a subsprite's offsets are in pixels, so the tile size is
-    what reconciles them — and it is the same measure the box is rounded out to,
-    since "whole tiles" is the tile size whatever it is.
+    A subsprite states its size in tiles and its offset in pixels, so the tile
+    size is what reconciles them — and it is the same measure the box is rounded
+    out to, since "whole tiles" is the tile size whatever it is.
 
     The two axes are taken separately, and ``tile_h`` defaults to ``tile_w`` for
-    the square tile every console sprite format actually uses. A subsprite is a
-    square of *tiles*, not a square of pixels: on a 8x16 tile a 2x2 subsprite is 16
-    wide and 32 tall, so one number for both axes would be the assumed-square twin
-    of an assumed 8 (:data:`DEFAULT_SUBSPRITE_TILES`).
+    the square tile most console sprite formats use. A subsprite is a rectangle
+    of *tiles*, not of pixels: on an 8x16 tile a 2x2 subsprite is 16 wide and 32
+    tall, so one number for both axes would be the assumed-square twin of an
+    assumed 8.
 
     One box for the whole object, not one per frame, so that frames laid out
     side by side stay registered against each other — an animation's motion is
@@ -148,7 +157,7 @@ def frame_bounds(
     seen = False
     for frame in frames:
         for sub in frame:
-            wide, tall = sub.pixels(pair, tile_w), sub.pixels(pair, tile_h)
+            wide, tall = sub.pixels(tile_w, tile_h)
             if not seen:
                 left, top = sub.x, sub.y
                 right, bottom = sub.x + wide, sub.y + tall

@@ -63,6 +63,7 @@ from PySide6.QtGui import QAction, QKeySequence
 
 from celpix.core.arrangement import tile_first_pixel, tile_pixel_spans
 from celpix.core.paletteregions import PaletteRegions
+from celpix.core.quantize import ColorMatcher
 from celpix.core.tilemap import Cell
 from celpix.pipeline.pipeline import drawn_palette_row
 from celpix.ui.main_window.capability_sync import Gesture
@@ -269,7 +270,8 @@ class PaletteRegionsMixin:
         self._unpin_all_action.triggered.connect(self._unpin_all)
 
     def _toggle_show_palette_regions(self) -> None:
-        """``Shift+P`` — via the action, so key and button can't diverge."""
+        """The menu row's own route to the toggle ``Shift+P`` presses directly
+        (:class:`~...navigation.KeyControl`)."""
         if self._show_palette_regions_action.isEnabled():
             self._show_palette_regions_action.toggle()
 
@@ -574,6 +576,56 @@ class PaletteRegionsMixin:
         if space is None:
             space = self._index_space()
         return self._drawn_palette_row(cell.palette_row, space) * space
+
+    def _row_fold_table(self, base: int, space: int) -> bytes:
+        """The 256-entry lookup that takes a composed index into the row at
+        ``base`` — what a cell there can actually store
+        (:meth:`~celpix.core.index_grid.IndexGrid.remapped`).
+
+        A composed pixel is ``row * space + stored``, and a tile holds only the
+        ``stored`` part, so something has to come off. **Which** row's is the
+        whole question: a pixel *painted* through this cell is already on this
+        row and answers itself, but one **relocated** here — a float dragged
+        across, a paste, a marquee flip spanning two rows — is on whatever row it
+        was composed under, and neither taking this cell's base off it (which
+        goes negative, blanking everything below the base) nor a plain remainder
+        (which keeps the offset and so hands a grey off row 2 to whatever row 3
+        happens to hold at that offset) means anything.
+
+        So the row comes off **by colour**: the entry on this row that shows the
+        colour the composed index names. A painted pixel still answers itself,
+        exactly — its colour is on this row by construction — and a relocated one
+        lands on the nearest thing the destination can draw, which is what moving
+        art between palette rows means. Where the colour is on the row verbatim
+        the index is recovered exactly, so a copy set back down where it was
+        lifted is lossless.
+
+        Indices past the palette have no colour to match, and keep the remainder:
+        it is what the render composed them from, and a table has to answer for
+        all 256 either way.
+
+        **Index 0 on a sprite object is the one exception**, and it is a symmetry
+        rather than a special case: the sprite blit composes 0 *unbiased* — it is
+        the hole a piece leaves for whatever is behind it, not a colour of its row
+        (:func:`~celpix.pipeline.pipeline._transparent_shift`) — so what comes back
+        off it is 0 whatever row the destination is on. Matched by colour instead,
+        a hole became whichever entry of the row looked most like the palette's
+        first: transparency turned opaque by being cleared, or by being moved.
+        """
+        assert self._doc is not None
+        palette = self._doc.palette
+        matcher = ColorMatcher([palette.color(base + i) for i in range(space)])
+        table = bytearray(256)
+        for i in range(256):
+            if base <= i < base + space:
+                table[i] = i - base
+            elif i < len(palette):
+                table[i] = matcher.match(palette.color(i))[0]
+            else:
+                table[i] = i % space
+        if self._doc.is_sprite:
+            table[0] = 0
+        return bytes(table)
 
     def _pinned_palette_base(self, x: int, y: int) -> int:
         """The palette base the pixel at window position ``(x, y)`` is *shown* through.

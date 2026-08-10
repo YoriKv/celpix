@@ -39,27 +39,6 @@ def _shift(bias: int) -> bytes:
     return bytes(max(0, min(255, i + bias)) for i in range(256))
 
 
-@lru_cache(maxsize=256)
-def _fold(row_size: int) -> bytes:
-    """The 256-byte map that reduces an absolute index to its place in its row.
-
-    The inverse of :func:`_shift` for the one direction that has to be lossless:
-    taking a **composed** pixel back to the index its tile stores. A composed
-    index is ``row * row_size + stored``, and what a tile can hold is the
-    ``stored`` part, so the row comes off by remainder rather than by subtraction.
-
-    Subtracting a *particular* row's base is right only while the pixel came from
-    that row. It does not, whenever a gesture **relocates** pixels rather than
-    painting them — a float dragged onto a cell of another row, a paste, a
-    marquee flip spanning two rows — and there the subtraction went negative and
-    :func:`_shift` clamped it to 0, blanking every pixel whose colour sat below
-    the destination's base. Reducing instead keeps the pattern and lets the
-    destination cell's row recolour it, which is what moving art between palette
-    rows means in every editor of this kind.
-    """
-    return bytes(i % max(1, row_size) for i in range(256))
-
-
 class IndexGrid(PixelGrid):
     """A row-major grid of 8-bit palette indices.
 
@@ -100,18 +79,22 @@ class IndexGrid(PixelGrid):
             return self
         return IndexGrid(self._width, self._height, self._data.translate(_shift(bias)))
 
-    def folded(self, row_size: int) -> IndexGrid:
-        """A new grid with every index reduced to its position within its row.
+    def remapped(self, table: bytes) -> IndexGrid:
+        """A new grid with every index put through a 256-entry lookup.
 
-        How a **composed** pixel becomes the index a tile stores, and the exact
-        inverse of :meth:`shifted` for indices the shift produced
-        (:func:`_fold`). Used on the way from a gesture to the bank, where
-        subtracting the destination cell's own row is only right for pixels that
-        were painted there — not for pixels moved in from a cell of another row,
-        where a plain subtraction goes negative and clamps to nothing.
+        How a **composed** pixel becomes the index a tile stores: the caller
+        builds one table per destination palette row, so an index that names a
+        colour on some *other* row is answered by the entry on this one that
+        shows the same colour (:meth:`~celpix.ui.main_window.palette_regions.
+        PaletteRegionsMixin._row_fold_table`). Which row a pixel is arriving
+        from is the caller's to know; the grid only applies the answer.
+
+        A table rather than arithmetic because the mapping is not one: a pixel
+        painted through this cell is already row-relative and comes back
+        unchanged, while one moved in from another row has to be re-matched by
+        colour. Done with :meth:`bytes.translate` for the reason
+        :meth:`shifted` is — a commit remaps every edited tile.
         """
-        if row_size <= 0 or row_size >= 256:
+        if len(table) != 256:
             return self
-        return IndexGrid(
-            self._width, self._height, self._data.translate(_fold(row_size))
-        )
+        return IndexGrid(self._width, self._height, self._data.translate(table))

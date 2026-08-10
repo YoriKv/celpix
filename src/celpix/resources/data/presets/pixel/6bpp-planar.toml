@@ -3,6 +3,7 @@
 id = "preset.pixel.6bpp-planar"
 name = "6bpp planar (8x8)"
 engine_id = "codec.pixel.planar"
+category = "Generic planar"
 
 [params]
 bpp = 6

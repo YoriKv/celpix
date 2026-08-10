@@ -152,6 +152,7 @@ class PackBitsCompression:
         # A pure byte stream, ending where its container says rather than where
         # the data does. The overlay phrases its status accordingly.
         self_delimiting=False,
+        category="Generic",
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:

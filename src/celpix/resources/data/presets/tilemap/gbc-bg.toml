@@ -14,6 +14,7 @@
 id = "preset.tilemap.gbc-bg"
 name = "Game Boy Color BG map (16-bit, interleaved)"
 engine_id = "codec.tilemap.packed"
+category = "Nintendo"
 
 [params]
 bytes = 2

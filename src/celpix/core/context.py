@@ -193,6 +193,21 @@ KEY_TILE_PALETTE_ROWS = "pixel.tile-palette-rows"
 # (``docs/graphics-formats-reference/scgcad-formats.md`` §8.5) — and the bank
 # itself opens on it, its own pinned rows counting from the same origin.
 KEY_TILE_PALETTE_ROW_BASE = "pixel.palette-row-base"
+# list[Glyph] | str: the character lookup for the font in *these* bytes, where the
+# format states one. Published on the **pixel** pathway, because that is whose
+# bytes the font is: a fontmap asks the entry supplying its tiles what its codes
+# say (``docs/design/fontmap-entry.md`` §3), and this is how a container answers
+# without the user picking an alphabet by hand.
+#
+# The escape hatch for a mapping no table can hold. A font whose glyph numbering
+# is packed against a presence bitmap elsewhere in the ROM has no ``20=A`` to
+# write down, but the container that recognised the ROM can compute it once and
+# state it here — which is why this carries glyphs rather than a preset id, and
+# why the shipped ``alphabet.table`` engine reads it: the ordinary data tier then
+# serves the extraordinary case with no code plugin at all. A plain string is
+# accepted as the table-file text, for a container that has the lines but not the
+# parse.
+KEY_ALPHABET = "pixel.alphabet"
 # One more well-known key lives in :mod:`celpix.core.notices` rather than here:
 # what a stage wants to *tell the user* without failing. It keeps company with
 # the notice type and its helpers, since unlike the scalars above it is only ever

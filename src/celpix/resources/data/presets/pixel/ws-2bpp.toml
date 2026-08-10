@@ -3,6 +3,7 @@
 id = "preset.pixel.ws-2bpp"
 name = "WonderSwan 2bpp (8x8)"
 engine_id = "codec.pixel.planar"
+category = "Bandai"
 
 [params]
 bpp = 2

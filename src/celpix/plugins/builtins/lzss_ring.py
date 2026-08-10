@@ -187,6 +187,7 @@ class LzssRingCompression:
         # The body has no end marker, but the 32-bit size prefix bounds it, so a
         # decode does know where the structure ends.
         self_delimiting=True,
+        category="Generic",
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:

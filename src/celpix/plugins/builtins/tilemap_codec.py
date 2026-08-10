@@ -28,6 +28,15 @@ Params:
   chunk first** — the same convention, and the same kernel, the colour masks
   already use for split channels
   (:mod:`~celpix.plugins.builtins._mask`). A single table is the one-chunk case.
+- ``terminator`` — the same table again, for a **text** format that ends a line
+  by setting a bit on its last character rather than by spending a code on a
+  terminator (``docs/graphics-formats-reference/text-formats.md`` §4.4). It is
+  the only field here that changes no pixel: it lands on
+  :attr:`~celpix.core.tilemap.Cell.ends_line`, which the fontmap reading turns
+  into a newline. Placing it is also what takes the bit **out of the index**, so
+  ``index = { shift = 0, bits = 7 }`` beside a ``terminator`` at bit 7 is a
+  one-byte text run whose last character draws the letter the hardware draws
+  rather than a tile past the end of the sheet.
 - ``flags`` — the same, for bits the format has and celPix has no meaning for.
   Carried through untouched so a write stays byte-exact; see :class:`Cell`.
 - ``cell_tiles`` — ``[across, down]``, how many tiles one cell covers
@@ -69,7 +78,16 @@ TILEMAP_ENGINE = "codec.tilemap.packed"
 # ``drawn`` is set where the position IS drawn, which is how the one format that
 # has it stores the bit; a preset placing no ``drawn`` describes a format whose
 # every position is drawn, and every other format in hand is that.
-_FIELDS = ("index", "palette", "priority", "flip_h", "flip_v", "drawn", "flags")
+_FIELDS = (
+    "index",
+    "palette",
+    "priority",
+    "flip_h",
+    "flip_v",
+    "drawn",
+    "terminator",
+    "flags",
+)
 
 # The transforms this engine can express, and the bit each one lives in. The op's
 # own name *is* the preset field, which is what lets "does this format support
@@ -219,6 +237,7 @@ class TilemapCodec:
                     # is the right default and for this one is its opposite.
                     visible=fields["drawn"] is None
                     or bool(_get(word, fields["drawn"])),
+                    ends_line=bool(_get(word, fields["terminator"])),
                     flags=_get(word, fields["flags"]),
                 )
             )
@@ -240,6 +259,7 @@ class TilemapCodec:
             word = _put(word, fields["flip_h"], int(cell.flip_h))
             word = _put(word, fields["flip_v"], int(cell.flip_v))
             word = _put(word, fields["drawn"], int(cell.visible))
+            word = _put(word, fields["terminator"], int(cell.ends_line))
             word = _put(word, fields["flags"], cell.flags)
             out += word.to_bytes(size, order)
         return bytes(out)

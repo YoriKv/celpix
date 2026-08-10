@@ -1,0 +1,41 @@
+# A Mega Drive sprite object: a run of subsprite records placed at signed pixel
+# offsets from the object's origin.
+#
+# `layout = "sprite"` is the whole of what makes this a sprite map rather than a
+# grid — its cells are pieces at pixel offsets, so there is no width to lay them
+# out at and the codec hands over finished frames instead
+# (`docs/design/tilemap-entry.md` §6). `subsprite_size = "stated"` is the second
+# half of that: this record names each piece's rectangle outright, so there is no
+# size pair to resolve a size *bit* against and the bar's Subsprite spins go.
+#
+# The record's own bytes are `codec.tilemap.md-sprite`, not a field table here:
+# one record covers up to 4x4 tiles and its tiles run down each column, and
+# neither is something the packed cell engine can be parameterised into.
+#
+# The three fields that do vary across the family are parameters, and the
+# defaults are the form read out of a real ROM:
+#
+#   x_bytes = 1     the X offset's width; 2 for the signed-word variant
+#   mirror_x = true a trailing byte holding the X the piece takes when the whole
+#                   object is drawn mirrored, always -(x + w * 8)
+#   endian          the attribute word's byte order
+#
+# Getting the first two wrong is the trap worth naming: a record with a byte X
+# *and* a mirror byte is the same six bytes as one with a signed word X, so the
+# wrong reading scatters the pieces rather than failing. If a run comes out
+# strewn across the canvas, that pair is what to try first.
+#
+# **A run's count word is not part of the slice.** These files head their records
+# with one, and a codec that read it would have no fixed cell stride; start the
+# slice past the header and its length says how many records there are.
+id = "preset.tilemap.md-sprite"
+name = "Mega Drive sprite object"
+category = "Sega"
+engine_id = "codec.tilemap.md-sprite"
+
+[params]
+layout = "sprite"
+subsprite_size = "stated"
+x_bytes = 1
+mirror_x = true
+endian = "big"

@@ -28,10 +28,16 @@ from celpix.plugins.base import PluginInfo, Preset
 
 @dataclass(frozen=True)
 class FormatInfo:
-    """A format's identity: ``id`` doubles as engine id and preset id."""
+    """A format's identity: ``id`` doubles as engine id and preset id.
+
+    ``category`` is the picker heading it files under, exactly as a preset's is
+    (:data:`~celpix.plugins.base.CATEGORIES`) — a code format is one more entry
+    in the same list and should not have to sit outside the groups.
+    """
 
     id: str
     name: str
+    category: str = ""
 
 
 @runtime_checkable
@@ -187,5 +193,6 @@ def adapt_format(fmt: Any, stage: Stage) -> tuple[Any, Preset]:
         stage=stage,
         engine_id=fmt.info.id,
         params={},
+        category=fmt.info.category,
     )
     return engine, preset

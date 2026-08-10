@@ -8,6 +8,7 @@
 id = "preset.pixel.dc-snes-direct"
 name = "SNES 8bpp direct color (BBGGGRRR)"
 engine_id = "codec.pixel.direct-color"
+category = "Nintendo"
 
 [params]
 bytes_per_pixel = 1

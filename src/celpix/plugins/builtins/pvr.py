@@ -506,6 +506,7 @@ class PvrCompression:
         stage=Stage.COMPRESSION,
         # The PVRT header declares the chunk's own byte length.
         self_delimiting=True,
+        category="Sega",
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:

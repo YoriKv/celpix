@@ -1,4 +1,4 @@
-"""The slice dialog: name + offset + length + reshape + decompressor for a region.
+"""The slice dialog: what a region holds, where it is, and how it is unpacked.
 
 One dialog serves both creating a slice (New Slice) and editing an existing
 one's coordinates — the caller sets the ``title`` and prefills the fields.
@@ -6,6 +6,22 @@ Offsets and lengths follow the app-wide address-box convention (``parse_hex``):
 bare digits are hex, ``$``/``0x`` prefixes accepted — ``10`` must mean the same
 thing here as in the navbar. Validation happens on OK and keeps the dialog open
 with an inline message, so a typo never silently creates a wrong slice.
+
+**Content** is the one field only a *new* slice offers (``choose_content``). A
+slice inherits its parent's reading by default, which is right for the common
+case and wrong for the one this row exists for: a ROM is opened as pixels, and
+the map that draws them is a region of that same ROM
+(``docs/design/tilemap-entry.md`` §2). Editing an existing slice does not offer
+it — that would re-read a live entry as another kind of thing, taking its
+binding, its section in the Files list and its session with it — so the value is
+carried through unchanged there instead.
+
+**Spare room** appears only once a compression scheme is chosen, because it only
+means something there: a re-packed blob is the length its compressor makes it,
+and nothing else on this dialog can produce a result shorter than the slot it
+goes back into (:class:`~celpix.pipeline.pathway.SlotFill`). Hidden rather than
+disabled — a control that can never apply to what is being described is one
+question fewer, not a greyed-out one.
 """
 
 from __future__ import annotations
@@ -23,11 +39,14 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core.address import format_hex, parse_hex
+from celpix.core.capabilities import ContentKind
 from celpix.core.errors import Stage
+from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, SlotFill
 from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
 from celpix.plugins.registry import Registry
 from celpix.project.workspace import SliceParams, default_slice_name
-from celpix.ui.widgets import fill_stage_combo
+from celpix.ui.searchable_combo import SearchableComboBox, fill_stage_combo
+from celpix.ui.widgets import PRESET_COMBO_WIDTH
 
 __all__ = ["SliceDialog", "SliceParams"]
 
@@ -42,8 +61,11 @@ class SliceDialog(QDialog):
         length: int | None = None,
         compression_id: str = NO_COMPRESSION,
         reshape_id: str = NO_RESHAPE,
+        slot_fill: SlotFill = DEFAULT_SLOT_FILL,
         name: str = "",
         title: str = "New Slice",
+        content_kind: ContentKind = ContentKind.PIXELS,
+        choose_content: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -54,6 +76,25 @@ class SliceDialog(QDialog):
         self._paths = paths
         self._params: SliceParams | None = None
 
+        # Echoed back untouched when the row is not offered, so an edit round-trips
+        # the entry's own kind rather than resetting it to the default.
+        self._content_kind = content_kind
+        self._content: QComboBox | None = None
+        if choose_content:
+            self._content = QComboBox()
+            self._content.setToolTip(
+                "What this region holds:\n"
+                "• Pixels - tile graphics, drawn from these bytes\n"
+                "• Tilemap - indices into tiles that live somewhere else"
+            )
+            for label, data in (
+                ("Pixels", ContentKind.PIXELS),
+                ("Tilemap", ContentKind.TILEMAP),
+            ):
+                self._content.addItem(label, data)
+            at = self._content.findData(content_kind)
+            self._content.setCurrentIndex(max(0, at))
+
         self._name = QLineEdit(name)
         self._name.setToolTip("Name in the Files list; blank uses the placeholder")
         self._offset = QLineEdit(format_hex(offset))
@@ -63,7 +104,7 @@ class SliceDialog(QDialog):
             "Byte length (hex); blank lets a decompressor find the end"
         )
 
-        self._reshape = QComboBox()
+        self._reshape = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._reshape.setToolTip(
             "Undo a region-scoped byte reordering on load\n"
             "(a plane-per-chip split, an interleave). Applies to\n"
@@ -71,11 +112,32 @@ class SliceDialog(QDialog):
         )
         fill_stage_combo(self._reshape, registry.plugins(Stage.RESHAPE), reshape_id)
 
-        self._decompress = QComboBox()
+        self._decompress = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._decompress.setToolTip("Decompress with this codec on load")
         fill_stage_combo(
             self._decompress, registry.plugins(Stage.COMPRESSION), compression_id
         )
+
+        self._slot_fill = QComboBox()
+        self._slot_fill.setToolTip(
+            "What fills the end of the region when re-packing\n"
+            "produces fewer bytes than it replaces:\n"
+            "• Keep Bytes - write only what was packed, leaving\n"
+            "  the old stream's tail standing. Touches nothing\n"
+            "  the region may not really own\n"
+            "• Fill w/ $FF - how erased ROM reads, and obvious\n"
+            "  as spare room in a hex dump\n"
+            "• Fill w/ $00 - for images padded with zeroes\n"
+            "Nothing reads these bytes either way: the codec\n"
+            "stops at the end of its own stream."
+        )
+        for label, data in (
+            ("Keep Bytes", SlotFill.KEEP),
+            ("Fill w/ $FF", SlotFill.FF),
+            ("Fill w/ $00", SlotFill.ZERO),
+        ):
+            self._slot_fill.addItem(label, data)
+        self._slot_fill.setCurrentIndex(max(0, self._slot_fill.findData(slot_fill)))
 
         self._error = QLabel()
         self._error.setStyleSheet("color: #c04040;")
@@ -90,20 +152,33 @@ class SliceDialog(QDialog):
         self._refresh_placeholder()
 
         form = QFormLayout(self)
+        # First, because it decides what the rest of the dialog is describing —
+        # and, unlike the coordinates, it is the one field the parent's answer can
+        # be wrong about.
+        if self._content is not None:
+            form.addRow("Content:", self._content)
         form.addRow("Name:", self._name)
         form.addRow("Offset:", self._offset)
         form.addRow("Length:", self._length)
         form.addRow("Reshape:", self._reshape)
         form.addRow("Compression:", self._decompress)
+        form.addRow("Spare room:", self._slot_fill)
         form.addRow(self._error)
+        # Connected here rather than beside the other combo signals above,
+        # because the row can only be shown or hidden once it is in a layout.
+        self._form = form
+        self._decompress.currentIndexChanged.connect(self._sync_slot_fill_row)
+        self._sync_slot_fill_row()
         # QFormLayout builds the caption widgets itself, so copy each field's
         # tooltip onto its caption - hovering either half then answers the same.
         for field in (
+            *((self._content,) if self._content is not None else ()),
             self._name,
             self._offset,
             self._length,
             self._reshape,
             self._decompress,
+            self._slot_fill,
         ):
             label = form.labelForField(field)
             if label is not None:
@@ -114,6 +189,17 @@ class SliceDialog(QDialog):
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+
+    def _sync_slot_fill_row(self) -> None:
+        """Show Spare room only under a compression scheme — see the module docs.
+
+        The value is left alone while hidden, so a slice that had one and is
+        switched to raw carries it back out unchanged rather than being reset by
+        a row the user was not shown.
+        """
+        self._form.setRowVisible(
+            self._slot_fill, self._decompress.currentData() != NO_COMPRESSION
+        )
 
     def _refresh_placeholder(self) -> None:
         offset = parse_hex(self._offset.text())
@@ -175,7 +261,27 @@ class SliceDialog(QDialog):
         name = self._name.text().strip() or default_slice_name(
             offset, length, compression_id, reshape_id
         )
-        self._params = SliceParams(name, offset, length, compression_id, reshape_id)
+        # Back through the enum on the way out: ``ContentKind`` is str-valued, and
+        # a round trip through a QVariant hands the bare string back — which
+        # compares equal to the member but fails every ``is`` test the window
+        # gates on.
+        kind = (
+            self._content_kind
+            if self._content is None
+            else ContentKind(self._content.currentData())
+        )
+        self._params = SliceParams(
+            name,
+            offset,
+            length,
+            compression_id,
+            reshape_id,
+            kind,
+            # Back through the enum for the same reason ``kind`` is: str-valued,
+            # so a QVariant round trip hands back a bare string that compares
+            # equal to the member and fails every ``is`` test.
+            SlotFill(self._slot_fill.currentData()),
+        )
         self.accept()
 
     @staticmethod
@@ -188,8 +294,11 @@ class SliceDialog(QDialog):
         length: int | None = None,
         compression_id: str = NO_COMPRESSION,
         reshape_id: str = NO_RESHAPE,
+        slot_fill: SlotFill = DEFAULT_SLOT_FILL,
         name: str = "",
         title: str = "New Slice",
+        content_kind: ContentKind = ContentKind.PIXELS,
+        choose_content: bool = False,
     ) -> SliceParams | None:
         """Run the dialog modally; the validated parameters, or None on cancel."""
         dialog = SliceDialog(
@@ -199,8 +308,11 @@ class SliceDialog(QDialog):
             length=length,
             compression_id=compression_id,
             reshape_id=reshape_id,
+            slot_fill=slot_fill,
             name=name,
             title=title,
+            content_kind=content_kind,
+            choose_content=choose_content,
             parent=parent,
         )
         dialog.exec()

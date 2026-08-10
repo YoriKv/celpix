@@ -78,6 +78,7 @@ class Capability(Enum):
     # -- interpretation and navigation
     PIXEL_CODEC = auto()  # the bit-depth / pixel-format picker
     TILEMAP_CODEC = auto()  # cell width, field layout, endianness
+    TILE_ARRANGEMENT = auto()  # Pattern, block grouping, fill order, the 2D walk
     PALETTE_CODEC = auto()  # the color-format picker
     NAVIGATION = auto()  # offset, nudge, the address bar
     GRID = auto()  # the grid overlay settings
@@ -123,6 +124,7 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
         Capability.IMPORT_IMAGE,
         Capability.PIXEL_CODEC,
         Capability.PALETTE_CODEC,
+        Capability.TILE_ARRANGEMENT,
     },
     # A tilemap carries its own palette, so it edits colors and picks a color
     # format like any other entry (`docs/design/tilemap-entry.md` §3).
@@ -136,7 +138,7 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # particular map has a bank to paint into (`docs/design/tilemap-entry.md` §8.1;
     # `_pixel_edit_available` is the finer answer).
     #
-    # Five deliberate absences. PALETTE_REGIONS: a cell
+    # Six deliberate absences. PALETTE_REGIONS: a cell
     # already names its own palette row, so pinning a row over a span would be a
     # second, conflicting answer to a question the file has already answered —
     # which is why PALETTE_ROW is here instead, the same gesture landing in the
@@ -159,6 +161,14 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # hardware cell carries mirror bits and no transpose bit, so a tilemap can be
     # flipped and cannot be turned. One CELL_TRANSFORM capability would have had
     # to lie about one of the two.
+    #
+    # TILE_ARRANGEMENT is the last of the six, and the plainest: the Pattern picker
+    # and the block/order/2D axes beneath it say how a *linear run of bytes* is
+    # cut into tiles and grouped on screen. A tilemap places nothing linearly —
+    # the picture is its cells over a bank, and the block that groups them is the
+    # cell itself (:meth:`~...selection.SelectionMixin._view_layout`), which the
+    # map states rather than the toolbar. Every axis on that bar reads as 1x1 on a
+    # map however it is set, so the row is furniture for a different room.
     #
     # CELL_LABELS is tilemap-only because the label answers a question only a
     # tilemap has. A cell *names* a tile that lives somewhere else, and which one

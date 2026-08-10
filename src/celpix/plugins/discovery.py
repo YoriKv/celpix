@@ -24,21 +24,27 @@ reference files (:func:`seed_examples`) and works-in-progress inert.
 
 Where the plugin directory lives is the app bootstrap's choice and is passed in;
 discovery scans that plus the ``CELPIX_PLUGIN_PATH`` override, each entry being a
-typed root of its own. Qt-free.
+typed root of its own. A **project** carries a root of its own the same way — the
+``plugins/`` folder beside its ``.celpix`` file (:func:`project_plugin_dir`) —
+so the formats a project needs can travel with it. Qt-free.
 
 **Trust:** loading a ``*.py`` plugin executes its code with the app's privileges,
-gated on the user's approval (:mod:`celpix.plugins.trust`). Sandboxing and
-signing are a later concern (``docs/design/overview.md`` §9); a plugin directory
-is as trusted as the code put in it.
+gated on the user's approval (:mod:`celpix.plugins.trust`) — a project's plugins
+by the same gate, which is the point of routing them through here rather than
+giving them a pathway of their own: a project file is something a user
+*receives*, so its code has to be approved before it runs, exactly like a file
+dropped in the user's own folder. Sandboxing and signing are a later concern
+(``docs/design/overview.md`` §9); a plugin directory is as trusted as the code
+put in it.
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 
 try:
     import tomllib  # Python 3.11+
@@ -48,6 +54,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
 from celpix import resources
 from celpix.core.errors import Stage
 from celpix.plugins.base import (
+    ALPHABET_TABLE_ENGINE,
     Plugin,
     Preset,
     check_declared_stage,
@@ -80,6 +87,7 @@ FOLDER_STAGE: dict[str, Stage] = {
     "reshape": Stage.RESHAPE,
     "compression": Stage.COMPRESSION,
     "containers": Stage.CONTAINER,
+    "alphabet": Stage.ALPHABET,
 }
 
 # The interpret folders, whose *.toml files are presets and whose *.py files are
@@ -90,6 +98,26 @@ FOLDER_STAGE: dict[str, Stage] = {
 INTERPRET_FOLDER_STAGE: dict[str, Stage] = {
     folder: FOLDER_STAGE[folder] for folder in ("pixel", "palette", "tilemap")
 }
+
+# Every folder whose *.toml files are ordinary presets. ``alphabet/`` is here and
+# **not** above, and the difference is what a *.py file in it means: the three
+# interpret folders take code *formats* (a decode/encode pair adapted into an
+# engine plus a preset), while an alphabet has no such pair to adapt — a code
+# alphabet is a plain plugin class registered through ``register()``, the route
+# compression/ and containers/ already take.
+PRESET_FOLDER_STAGE: dict[str, Stage] = {
+    **INTERPRET_FOLDER_STAGE,
+    "alphabet": Stage.ALPHABET,
+}
+
+# Table files ``alphabet/`` accepts alongside its presets. Dropping a font's own
+# ``20=A`` table into the folder registers it by itself — no preset to write, the
+# file *is* the data — which is how both reference projects in this tree already
+# keep their fonts (``docs/design/fontmap-entry.md`` §4). Read code-first, the
+# order celPix states as its own: a bare file has nowhere to say otherwise, and
+# guessing reads an all-hex table backwards without saying so. The reversed
+# spelling is a three-line preset naming the same file.
+ALPHABET_TABLE_SUFFIXES = (".tbl", ".txt")
 
 
 @dataclass(frozen=True)
@@ -114,12 +142,62 @@ def preset_from_spec(spec: dict, stage: Stage) -> Preset:
         stage=stage,
         engine_id=spec["engine_id"],
         params=spec.get("params", {}),
+        category=spec.get("category", ""),
     )
 
 
 def preset_from_toml(text: str, stage: Stage) -> Preset:
     """Parse a preset's TOML source into a :class:`Preset`."""
     return preset_from_spec(tomllib.loads(text), stage)
+
+
+# The picker headings the two plugin roots are filed under. A **source**, not a
+# format family, and the one category a file does not get to choose: whatever
+# ``category`` a dropped preset states is replaced, because a handful of your own
+# entries scattered through a hundred shipped ones under vendor headings is the
+# problem the grouping exists to solve (:data:`~celpix.plugins.base.CATEGORIES`).
+USER_CATEGORY = "Your plugins"
+PROJECT_CATEGORY = "Project plugins"
+
+
+# What discovery's loaders actually take: the registry, or the wrapper standing in
+# for it while one plugin root is scanned. A wrapper rather than a subclass because
+# it is scoped to a scan, not to a registry — and the loaders below only ever
+# *register* through it, which is the whole of what both provide.
+RegistryLike = Union["Registry", "SourceRegistry"]
+
+
+class SourceRegistry:
+    """A registry that files everything registered through it under one heading.
+
+    Wrapped around the real registry for the length of one plugin root's scan, so
+    a preset, a code plugin and a code *format* out of that folder are all
+    stamped by one rule rather than each loader remembering to. Reads pass
+    straight through — a plugin inspecting what exists is asking about the
+    registry, not about where it came from.
+
+    Stamping the plugin means writing over its ``info``, which for a class
+    attribute shadows it per instance; a plugin that refuses the write (``
+    __slots__``, a read-only descriptor) is registered as it is rather than
+    dropped, since the heading is presentation and the format is the point.
+    """
+
+    def __init__(self, reg: Registry, category: str) -> None:
+        self._reg = reg
+        self._category = category
+
+    def register(self, plugin: Plugin, stage: Stage | None = None) -> None:
+        try:
+            plugin.info = replace(plugin.info, category=self._category)
+        except (AttributeError, TypeError):
+            pass
+        self._reg.register(plugin, stage)
+
+    def register_preset(self, preset: Preset) -> None:
+        self._reg.register_preset(replace(preset, category=self._category))
+
+    def __getattr__(self, name: str):
+        return getattr(self._reg, name)
 
 
 class ScopedRegistry:
@@ -134,7 +212,7 @@ class ScopedRegistry:
 
     def __init__(
         self,
-        reg: Registry,
+        reg: RegistryLike,
         folder: str,
         path: Path,
         issues: list[PluginLoadIssue],
@@ -231,6 +309,26 @@ class ScopedRegistry:
         return self._reg.presets(stage)
 
 
+# A project's own plugin root: the folder beside its .celpix file, in the same
+# typed layout as the user's. Named `plugins` for exactly that reason - one
+# layout to learn, and a plugin moves between the two roots by being copied.
+PROJECT_PLUGIN_DIRNAME = "plugins"
+
+
+def project_plugin_dir(project_path: str | None) -> str | None:
+    """The plugin root travelling with the project file at ``project_path``.
+
+    ``<the project's folder>/plugins/``, and only when it is actually there:
+    unlike the user's root (created and seeded at startup) this one is the
+    project author's to make, so most projects simply have none. ``None`` with
+    no project open, which is how a caller says "user plugins only".
+    """
+    if not project_path:
+        return None
+    directory = Path(project_path).parent / PROJECT_PLUGIN_DIRNAME
+    return str(directory) if directory.is_dir() else None
+
+
 def plugin_search_path(extra_dirs: Iterable[str] = ()) -> list[str]:
     """Ordered plugin dirs: ``CELPIX_PLUGIN_PATH`` first, then ``extra_dirs``."""
     dirs: list[str] = []
@@ -245,6 +343,7 @@ def load_user_plugins(
     reg: Registry,
     extra_dirs: Iterable[str] = (),
     *,
+    project_dir: str | None = None,
     trust: TrustStore | None = None,
     confirm: ConfirmCallback | None = None,
 ) -> list[PluginLoadIssue]:
@@ -253,10 +352,21 @@ def load_user_plugins(
     Code plugins are gated: one is loaded only if its content hash is already in
     ``trust`` or ``confirm`` approves it (and is then remembered). Presets are data
     and load ungated.
+
+    ``project_dir`` names whichever of the scanned roots travels with the open
+    project, so its formats are filed under their own picker heading rather than
+    the user's own (:data:`PROJECT_CATEGORY`). It is matched against the paths in
+    ``extra_dirs`` as given, since the caller built both from the same string
+    (:func:`project_plugin_dir`).
     """
     issues: list[PluginLoadIssue] = []
     for directory in plugin_search_path(extra_dirs):
-        issues.extend(load_directory(reg, directory, trust=trust, confirm=confirm))
+        category = PROJECT_CATEGORY if directory == project_dir else USER_CATEGORY
+        issues.extend(
+            load_directory(
+                reg, directory, category=category, trust=trust, confirm=confirm
+            )
+        )
     return issues
 
 
@@ -321,6 +431,7 @@ def load_directory(
     reg: Registry,
     directory: str,
     *,
+    category: str = USER_CATEGORY,
     trust: TrustStore | None = None,
     confirm: ConfirmCallback | None = None,
 ) -> list[PluginLoadIssue]:
@@ -329,14 +440,21 @@ def load_directory(
     Loose plugin files in the root are reported with a pointer to the right
     subfolder rather than loaded; unknown subfolders are ignored, so renaming one
     disables its contents.
+
+    Everything registered is filed under ``category`` in the format pickers — one
+    wrapper for the whole scan (:class:`SourceRegistry`), so a preset, a code
+    plugin and a code format out of this root are grouped by one rule. Pass ``""``
+    to leave each file's own ``category`` standing, which is what a test loading a
+    fixture folder wants.
     """
     issues: list[PluginLoadIssue] = []
     root = Path(directory)
     if not root.is_dir():
         return issues
+    target: RegistryLike = SourceRegistry(reg, category) if category else reg
     for entry in sorted(root.iterdir()):
         if entry.is_dir() and entry.name in FOLDER_STAGE:
-            _load_typed_dir(reg, entry, entry.name, issues, trust, confirm)
+            _load_typed_dir(target, entry, entry.name, issues, trust, confirm)
         elif (
             entry.is_file()
             and entry.suffix in (".toml", ".py")
@@ -346,15 +464,15 @@ def load_directory(
                 PluginLoadIssue(
                     str(entry),
                     "plugins live in typed subfolders - move this file into "
-                    "pixel/, palette/, tilemap/, reshape/, compression/ "
-                    "or containers/",
+                    "pixel/, palette/, tilemap/, alphabet/, reshape/, "
+                    "compression/ or containers/",
                 )
             )
     return issues
 
 
 def _load_typed_dir(
-    reg: Registry,
+    reg: RegistryLike,
     root: Path,
     folder: str,
     issues: list[PluginLoadIssue],
@@ -370,7 +488,7 @@ def _load_typed_dir(
         if not entry.is_file() or entry.name.startswith("_"):
             continue
         if entry.suffix == ".toml":
-            stage = INTERPRET_FOLDER_STAGE.get(folder)
+            stage = PRESET_FOLDER_STAGE.get(folder)
             if stage is not None:
                 _load_preset(reg, entry, stage, issues)
             elif folder == "reshape":
@@ -379,21 +497,76 @@ def _load_typed_dir(
                 issues.append(
                     PluginLoadIssue(
                         str(entry),
-                        f"presets are pixel/palette/tilemap/reshape only; '{folder}/' "
-                        "takes .py code plugins",
+                        f"presets are pixel/palette/tilemap/alphabet/reshape only; "
+                        f"'{folder}/' takes .py code plugins",
                     )
                 )
+        elif folder == "alphabet" and entry.suffix in ALPHABET_TABLE_SUFFIXES:
+            _load_alphabet_table(reg, entry, issues)
         elif entry.suffix == ".py":
             _load_module(reg, entry, folder, issues, trust, confirm)
 
 
 def _load_preset(
-    reg: Registry, path: Path, stage: Stage, issues: list[PluginLoadIssue]
+    reg: RegistryLike, path: Path, stage: Stage, issues: list[PluginLoadIssue]
 ) -> None:
     try:
-        reg.register_preset(preset_from_toml(path.read_text(encoding="utf-8"), stage))
+        spec = tomllib.loads(path.read_text(encoding="utf-8"))
+        if stage is Stage.ALPHABET:
+            _inline_alphabet_table(spec, path)
+        reg.register_preset(preset_from_spec(spec, stage))
     except Exception as exc:  # noqa: BLE001 — report, don't abort startup
         issues.append(PluginLoadIssue(str(path), f"preset load failed: {exc}"))
+
+
+def _inline_alphabet_table(spec: dict, path: Path) -> None:
+    """Read the sibling file an alphabet preset's ``table`` names, into its params.
+
+    Resolved **here** rather than in the engine because this is the only place
+    that knows where the preset came from: a :class:`Preset` is parsed data with
+    no origin, by design, and giving it one so an engine could open files beside
+    it would hand every plugin a filesystem the rest of them do not have.
+
+    Bounded to the preset's own folder for the same reason a plugin directory is
+    typed at all — ``table = "../../etc/passwd"`` is a path this has no business
+    following, and a font's table lives beside the font's preset or it is not the
+    font's table.
+    """
+    params = spec.get("params")
+    if not isinstance(params, dict):
+        return
+    named = params.get("table")
+    if not named:
+        return
+    sibling = path.parent / str(named)
+    if sibling.parent != path.parent or not sibling.is_file():
+        raise ValueError(f"table {named!r} is not a file beside this preset")
+    params["table_text"] = sibling.read_text(encoding="utf-8")
+
+
+def _load_alphabet_table(
+    reg: RegistryLike, path: Path, issues: list[PluginLoadIssue]
+) -> None:
+    """Register a bare table file as a preset of its own.
+
+    The file *is* the data, so there is nothing for a preset to add: the id and
+    the name come from the filename, and the lines go straight to the table
+    engine. Dropping ``smw-standard.tbl`` into ``alphabet/`` therefore puts
+    "smw-standard" in the alphabet picker with no TOML written at all — the
+    data-first tier taken to its end (``docs/design/plugin-system.md``).
+    """
+    try:
+        reg.register_preset(
+            Preset(
+                id=f"alphabet.{path.stem}",
+                name=path.stem,
+                stage=Stage.ALPHABET,
+                engine_id=ALPHABET_TABLE_ENGINE,
+                params={"table_text": path.read_text(encoding="utf-8")},
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — report, don't abort startup
+        issues.append(PluginLoadIssue(str(path), f"alphabet table load failed: {exc}"))
 
 
 # The reshape preset engines, keyed by the `engine_id` a preset declares. Unlike
@@ -408,7 +581,7 @@ RESHAPE_ENGINES = {
 
 
 def _load_reshape_preset(
-    reg: Registry, path: Path, issues: list[PluginLoadIssue]
+    reg: RegistryLike, path: Path, issues: list[PluginLoadIssue]
 ) -> None:
     """A ``reshape/*.toml`` preset, adapted into a reshape plugin.
 
@@ -453,7 +626,7 @@ def _is_approved(
 
 
 def _load_module(
-    reg: Registry,
+    reg: RegistryLike,
     path: Path,
     folder: str,
     issues: list[PluginLoadIssue],

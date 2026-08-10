@@ -30,6 +30,7 @@ from celpix.core.context import (
     KEY_TILEMAP_PAGES_ACROSS,
     PipelineContext,
 )
+from celpix.core.font import Alphabet
 from celpix.core.palette import Palette, palette_row_count
 from celpix.core.paletteregions import PaletteRegions
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, drawn_frames
@@ -366,6 +367,21 @@ class Document:
     # :data:`~celpix.core.sprite.DEFAULT_SUBSPRITE_TILES`): each size bit picks
     # one of the two, and no sprite file records the pair.
     sprite_size_pair: tuple[int, int] = DEFAULT_SUBSPRITE_TILES
+    # Set instead when the cells are **character codes**: this is a *fontmap*, a
+    # string of text stored as references into a font
+    # (``docs/design/fontmap-entry.md``). Unlike the sprite flag above it changes
+    # nothing about the picture — a text run draws as the grid of glyph tiles it
+    # already is — so it is a plain declaration off the cell format rather than a
+    # load product. It has to be one: an unbound fontmap has no alphabet and no
+    # tiles, and is a fontmap all the same, which is exactly when the user needs
+    # the controls that say so.
+    text_layout: bool = False
+    # What this fontmap's codes *say*: the font's glyph table with this stream's
+    # own control codes laid over it (:func:`~celpix.pipeline.pipeline.
+    # load_alphabet`). None where nothing is bound or the font has no alphabet
+    # picked, which is not an error — the text then reads as hex, and every code
+    # still round-trips.
+    alphabet: Alphabet | None = None
     # The decoded tile source a tilemap draws from, kept between renders
     # (:func:`~celpix.pipeline.pipeline.tile_bank`). A map's cells reach anywhere
     # in the bank, so there is no window to slice and the *whole* source has to
@@ -449,6 +465,50 @@ class Document:
     def is_sprite(self) -> bool:
         """Whether these cells are subsprites rather than grid positions."""
         return self.sprite_frames is not None
+
+    @property
+    def is_font(self) -> bool:
+        """Whether these cells are character codes — a **fontmap**.
+
+        The two named tilemap variants sit at opposite ends of how much they
+        change. A sprite map replaces the *layout* stage outright, because
+        subsprites at signed pixel offsets cannot be a grid. A fontmap replaces
+        nothing: a run of text draws as exactly the grid of glyph tiles its cells
+        already describe, at whatever width the view is set to. What it adds is a
+        second *reading* of the same cells — as words — which is why it is a flag
+        beside the picture rather than a branch through it
+        (``docs/design/fontmap-entry.md`` §2).
+
+        Reads the declaration and not :attr:`alphabet`, so an entry with no font
+        bound is still a fontmap and still offers the text window: that window is
+        where the user finds out the codes mean nothing yet.
+        """
+        return self.is_tilemap and self.text_layout
+
+    @property
+    def text(self):  # -> Text
+        """This fontmap's cells as readable text, with each character's cell.
+
+        Decoded on demand rather than cached beside the cells: an edit changes
+        the cells and the derived text at once, and a cache with no invalidation
+        rule is how a text window comes to show the string before the last
+        keystroke. The cost is a pass over the cells, which is the same pass the
+        canvas makes to draw them.
+
+        Empty text for a document that is not a fontmap, so a caller may ask
+        without checking first — and hex for one whose font has no alphabet,
+        which is the honest reading of codes nothing has explained.
+        """
+        from celpix.core.font import Alphabet as _Alphabet
+        from celpix.core.font import Text as _Text
+
+        if not self.is_font:
+            return _Text("", ())
+        alphabet = self.alphabet or _Alphabet(code_digits=max(1, self.cell_bytes * 2))
+        cells = self.cells or []
+        return alphabet.decode(
+            [cell.index for cell in cells], [cell.ends_line for cell in cells]
+        )
 
     @property
     def folds_palette_rows(self) -> bool:

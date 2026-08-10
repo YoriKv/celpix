@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from celpix.core.animation import Sequence, unknown_frames
 from celpix.ui.widgets import Badge, apply_badge, select_combo_data, signals_blocked
+from celpix.ui.window_layout import WindowLayout
 
 # The rate the durations are read at, and the range the spin offers. A duration is
 # the authoring tool's own tick and not a time (``core.animation.Step``), so this
@@ -315,6 +316,13 @@ class AnimationOverlay(QWidget):
         layout.addWidget(self._scroll, 1)
         layout.addWidget(self._status)
         self.resize(420, 420)
+        # Kept across runs like the main window's: the size that fits the sprite
+        # being animated is the user's to find, and finding it again every time
+        # the player opens is the tax celpix.ui.window_layout exists to stop.
+        self._layout_memory = WindowLayout(self, "layout/animation-player")
+        # A remembered position counts as already placed (see the overlay this
+        # follows, :mod:`celpix.ui.decompress_overlay`).
+        self._positioned = self._layout_memory.restore()
 
         # Single-shot and re-armed per step, rather than one repeating timer at
         # the tick rate: a step's duration is known when it starts, so this waits

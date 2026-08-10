@@ -1,0 +1,42 @@
+# A text run — one byte per character, and nothing else in the cell. The
+# commonest way a string is stored in a ROM: a stream of indices into a font,
+# read exactly as a tilemap because that is what it is (fontmap-entry.md).
+#
+# `layout = "text"` is the whole of what makes this a **fontmap** rather than a
+# one-byte tilemap, and it is declared rather than inferred for the same reason
+# `sprite` is: the bar has to describe the entry before anything is bound to it,
+# and a string with no font is still a string.
+#
+# It declares no controls. A bare index-only run genuinely has none - every byte
+# is a character and the line width is the view's Cols - and inventing a
+# terminator would put a line break in the text window that the file does not
+# have.
+#
+# A stream that *does* have punctuation states it here, where the stream's own
+# format is stated, and not on the font: two runs in one game routinely share a
+# font and differ in exactly this. Copy this preset and add, for example:
+#
+#   [[params.controls]]
+#   code = 0xFE
+#   text = "line break"
+#   role = "break"
+#
+#   [[params.controls]]
+#   code = 0xFF
+#   text = "end of string"
+#
+# `role` is `break` (reads as a real newline; the first one declared is what
+# Enter types) or `control` (reads as its own `[$FF]`, and the name captions a
+# button on the insert row). Declaring nothing is always safe: an undeclared code
+# reads as `[$FF]` and types back to the same byte, so a command celPix knows
+# nothing about survives an edit untouched.
+id = "preset.tilemap.text-8bit"
+name = "Text run (8-bit character codes)"
+engine_id = "codec.tilemap.packed"
+category = "Text"
+
+[params]
+layout = "text"
+bytes = 1
+endian = "little"
+index = { shift = 0, bits = 8 }

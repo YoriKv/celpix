@@ -38,6 +38,7 @@ floating but really down.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor
@@ -287,11 +288,10 @@ class PixelEditMixin:
         ``expand_cells``' memos are shared, and nothing here writes to those.
         """
         assert self._doc is not None
-        doc = self._grid_tilemap()
-        if doc is not None:
+        if self._doc.is_tilemap:
             try:
                 return pipeline.tilemap_image(
-                    doc, self._registry, self._tilemap_columns()
+                    self._doc, self._registry, self._tilemap_columns()
                 ).grid
             except PipelineError as exc:
                 self._report(exc)
@@ -302,18 +302,53 @@ class PixelEditMixin:
             return None
         return compose_window(tiles, cols, 0, rows, self._view_layout())
 
-    @staticmethod
-    def _clear_rect(grid, rect: QRect) -> None:
-        """Empty ``rect`` in ``grid`` — what Cut/Clear and a lifted move leave."""
-        draw.clear_region(grid, rect.x(), rect.y(), rect.width(), rect.height())
+    def _clear_rect(self, grid, rect: QRect) -> None:
+        """Empty ``rect`` in ``grid`` — what Cut/Clear and a lifted move leave.
 
-    def _paint_pixels(self, grid, pixels, value: int | None = None) -> None:
+        **Empty is index 0 of the row the pixel is drawn through**, not of the
+        palette. On a map that folds its rows into the indices, a cell drawn
+        through row 3 cannot show the palette's first entry at all, so blanking to
+        it left the commit resolving that colour into row 3 by nearest match — a
+        Clear that painted the closest thing to entry 0 rather than clearing. The
+        row is the destination's, so it is the same per-pixel question the pen
+        asks, and it goes through the same answer (:meth:`_paint_pixels`).
+
+        **Unmasked**, unlike a tool's paint, and that is the difference worth
+        stating: the marquee *is* what asked for the blanking in Cut and Clear, and
+        by the time a lifted float owes its hole the marquee has travelled with
+        the float — so masking would leave a move's source exactly as it was.
+
+        The straight blit stays for everything with no row folded in — every pixel
+        document, and every map composed row-relative — where the two readings of
+        "0" are the same number and a per-pixel walk would buy nothing. **A sprite
+        object keeps it too**, for the opposite reason: index 0 is the hole a piece
+        leaves and the blit composes it unbiased, so a stored 0 shows as 0 there
+        and writing the row's base would preview a colour where the commit is
+        about to put transparency (:meth:`~...palette_regions.
+        PaletteRegionsMixin._row_fold_table`).
+        """
+        doc = self._doc
+        if not self._folds_palette_rows() or doc is None or doc.is_sprite:
+            draw.clear_region(grid, rect.x(), rect.y(), rect.width(), rect.height())
+            return
+        pixels = [
+            (x, y)
+            for y in range(rect.y(), rect.y() + rect.height())
+            for x in range(rect.x(), rect.x() + rect.width())
+        ]
+        self._paint_pixels(grid, pixels, 0, masked=False)
+
+    def _paint_pixels(
+        self, grid, pixels, value: int | None = None, *, masked: bool = True
+    ) -> None:
         """Set ``pixels`` on ``grid`` to the pen (or ``value``), clipped to bounds.
 
         **A selection is a mask**: while a marquee is up, every tool paints only
         inside it, so a stroke can be run right across an edge without touching
         what is beyond it. The single choke point every tool's paint goes through,
-        so none of them can be clipped and the rest not.
+        so none of them can be clipped and the rest not. ``masked=False`` is for
+        the one caller that is not a tool and whose rectangle is the gesture
+        itself (:meth:`_clear_rect`).
 
         It is also where a tilemap's **palette row** is put on. The pen carries a
         row-relative index — the one a tile stores — while a map that folds its
@@ -323,43 +358,63 @@ class PixelEditMixin:
         gesture; it is resolved per **tile** and taken back off at the commit
         (:meth:`~...palette_regions.PaletteRegionsMixin._cell_paint_base`).
 
-        Per tile rather than per pixel because a cell's row is constant across it,
-        and the lookup behind it walks the map: asked per pixel, a fill over a
-        large map would resolve the same cell tens of thousands of times. The
-        three things that lookup needs are hoisted for the same reason — the cell
-        list, the layout and the index space are all rebuilt per call otherwise.
+        Per **tile** on a grid map, because a cell's row is constant across one and
+        the lookup behind it walks the map: asked per pixel, a fill over a large
+        map would resolve the same cell tens of thousands of times. What the
+        lookup needs is hoisted for the same reason (:meth:`~...selection.
+        SelectionMixin._bank_pixel_hoist`).
+
+        Per **pixel** on a sprite object, and there is no cheaper answer: its
+        pieces sit at signed offsets that are mostly not tile-aligned and they
+        overlap, so one canvas tile routinely spans two rows and caching a base
+        across it would paint the second piece in the first one's colours (§8.5).
         """
         if value is None:
             value = self._pen_value()
         w, h = grid.width, grid.height
         tile_w, tile_h = self._pixel_tile_size()
-        doc = self._grid_tilemap()
-        if not self._folds_palette_rows() or doc is None or tile_w <= 0 or tile_h <= 0:
-            for px, py in self._clipped(pixels, w, h):
+        doc = self._doc
+        if (
+            not self._folds_palette_rows()
+            or doc is None
+            or not doc.is_tilemap
+            or tile_w <= 0
+            or tile_h <= 0
+        ):
+            for px, py in self._clipped(pixels, w, h, masked):
                 grid.set(px, py, value)
             return
-        layout, cells = self._view_layout(), doc.laid_out_cells
+        hoist = self._bank_pixel_hoist()
         space = self._index_space()
-        bases: dict[tuple[int, int], int] = {}
-        for px, py in self._clipped(pixels, w, h):
-            at = (px // tile_w, py // tile_h)
-            base = bases.get(at)
-            if base is None:
-                found = self._bank_tile_at_pixel(px, py, cells, layout)
-                base = bases[at] = (
-                    0 if found is None else self._cell_paint_base(found[0], space)
-                )
+        # None where a tile is not one owner's to cache against — see above.
+        bases: dict[tuple[int, int], int] | None = None if doc.is_sprite else {}
+        for px, py in self._clipped(pixels, w, h, masked):
+            if bases is None:
+                found = self._bank_pixel_at(px, py, hoist)
+                base = 0 if found is None else self._cell_paint_base(found[0], space)
+            else:
+                at = (px // tile_w, py // tile_h)
+                base = bases.get(at)
+                if base is None:
+                    found = self._bank_pixel_at(px, py, hoist)
+                    base = bases[at] = (
+                        0 if found is None else self._cell_paint_base(found[0], space)
+                    )
             grid.set(px, py, value + base)
 
-    def _clipped(self, pixels, w: int, h: int):
+    def _clipped(self, pixels, w: int, h: int, masked: bool = True):
         """``pixels`` that a tool is allowed to paint — the clip rule, once.
 
         **A selection is a mask**, and this is where that is enforced, so the two
         paint loops above cannot enforce it differently. Bounds first, then the
         marquee: a stroke run across a selection's edge marks only what is inside
         it, and one run off the image marks nothing rather than wrapping.
+
+        The bounds are not optional; only the mask is (``masked=False``), and the
+        two are separate because a rectangle that *is* the gesture still must not
+        write off the edge of the picture.
         """
-        mask = self._marquee
+        mask = self._marquee if masked else None
         for px, py in pixels:
             if 0 <= px < w and 0 <= py < h and (mask is None or mask.contains(px, py)):
                 yield px, py
@@ -403,6 +458,8 @@ class PixelEditMixin:
         edit, and shouldn't litter the history.
         """
         assert self._doc is not None
+        if self._doc.is_sprite:
+            return self._commit_sprite_grid(grid, base_grid, text, no_op_step)
         tw, th = self._doc.tile_width, self._doc.tile_height
         layout = self._view_layout()
         base_tiles = split_grid(base_grid, tw, th, layout)
@@ -422,6 +479,71 @@ class PixelEditMixin:
         elif no_op_step:
             # The gesture happened but moved no pixels — still one interaction, so
             # it takes a step of its own rather than vanishing from the history.
+            self._push_pixel_interaction(self._marquee, self._marquee, text)
+        self._refresh_view()
+        return written
+
+    def _commit_sprite_grid(self, grid, base_grid, text: str, no_op_step: bool) -> int:  # noqa: ANN001 — two IndexGrids
+        """:meth:`_commit_grid` for a sprite object — the same write, per pixel.
+
+        A grid map can diff whole slots because a cell owns a canvas tile. An
+        object cannot: its pieces sit at signed offsets that are mostly not
+        tile-aligned and they overlap, so one canvas tile routinely holds parts of
+        three, and splitting the sheet into slots would attribute a whole tile to
+        whichever piece happened to claim its corner (§8.5). So the diff is per
+        pixel and so is the lookup, which is the cost of the shape rather than a
+        choice — hoisted as far as it goes
+        (:meth:`~...selection.SelectionMixin._bank_pixel_hoist`).
+
+        The result is still ``{index: tile}``, and for the reason a map's is: the
+        picture is a many-to-one scatter of the bank, one gesture can reach a tile
+        from several pieces, and the last write wins. Each edited tile starts as a
+        **copy of the bank's own**, so the pixels this stroke did not touch are
+        the ones the file already had — the diff says nothing about them, and a
+        blank tile would erase every one.
+        """
+        assert self._doc is not None
+        source = pipeline.tile_bank(self._doc, self._registry)
+        hoist = self._bank_pixel_hoist()
+        space = self._index_space()
+        folds = self._folds_palette_rows()
+        tables: dict[int, bytes] = {}
+        edits: dict[int, object] = {}
+        for py in range(min(grid.height, base_grid.height)):
+            for px in range(min(grid.width, base_grid.width)):
+                value = grid.get(px, py)
+                if value == base_grid.get(px, py):
+                    continue
+                found = self._bank_pixel_at(px, py, hoist)
+                if found is None:
+                    continue
+                owner, index, tx, ty = found
+                tile = edits.get(index)
+                if tile is None:
+                    tile = edits[index] = source[index].copy()
+                # The row the render folded in comes back off here, per pixel and
+                # by colour for the reason :meth:`_bank_tiles_from` gives: the
+                # pixels arriving may have been painted through this piece or
+                # moved in from one on another row, and only a colour answers for
+                # both. Index 0 is unmoved either way — the sprite blit keeps it
+                # transparent rather than shifting it (``_transparent_shift``).
+                #
+                # Cached per row and not per piece: a sprite's pieces overlap on
+                # a handful of rows between them, and building the table is a
+                # scan of the palette.
+                if folds and tile.bytes_per_pixel == 1:
+                    piece_base = self._cell_paint_base(owner, space)
+                    table = tables.get(piece_base)
+                    if table is None:
+                        table = tables[piece_base] = self._row_fold_table(
+                            piece_base, space
+                        )
+                    value = table[value]
+                tile.set(tx, ty, value)
+        written = 0
+        if edits:
+            written = self._apply_bank_tile_edit(edits, text)
+        elif no_op_step:
             self._push_pixel_interaction(self._marquee, self._marquee, text)
         self._refresh_view()
         return written
@@ -454,6 +576,8 @@ class PixelEditMixin:
         edits: dict[int, object] = {}
         cells = doc.laid_out_cells  # hoisted: it builds a list on an assembly
         space = self._index_space()
+        folds = self._folds_palette_rows()
+        tables: dict[int, bytes] = {}  # one per destination row, not per cell
         for slot in changed:
             found = self._bank_tile_at_slot(slot, cells)
             if found is None:
@@ -464,17 +588,23 @@ class PixelEditMixin:
             # nothing folded in to take back out (the guard `expand_cells` applies
             # going the other way).
             #
-            # Reduced into the row rather than offset by *this cell's* row: the
-            # pixels reaching here were painted through the destination cell for a
-            # stroke, but **moved in from another** for a float, a paste or a
-            # marquee flip spanning two rows. Subtracting the destination's base
-            # then went negative and clamped to zero, which blanked every pixel
-            # whose colour sat below it — a paste onto any row past the first
-            # wrote nothing but index 0. Both cases agree under a remainder
-            # (:meth:`~celpix.core.index_grid.IndexGrid.folded`), a painted pixel
-            # already being inside its own row.
-            if self._folds_palette_rows() and tile.bytes_per_pixel == 1:
-                tile = tile.folded(space)
+            # Resolved into the destination cell's row **by colour** rather than
+            # offset by it: the pixels reaching here were painted through that
+            # cell for a stroke, but **moved in from another** for a float, a
+            # paste or a marquee flip spanning two rows. Subtracting the
+            # destination's base goes negative for those and clamps to zero,
+            # blanking every pixel whose colour sat below it; a remainder keeps
+            # the offset instead, which hands a grey composed off one row to
+            # whatever the destination row holds at that offset — the colours
+            # come out unrelated. Matching the colour answers both: a painted
+            # pixel is already on its own row and recovers its own index exactly
+            # (:meth:`~...palette_regions.PaletteRegionsMixin._row_fold_table`).
+            if folds and tile.bytes_per_pixel == 1:
+                base = self._cell_paint_base(cell, space)
+                table = tables.get(base)
+                if table is None:
+                    table = tables[base] = self._row_fold_table(base, space)
+                tile = tile.remapped(table)
             edits[index] = tile
         return edits
 
@@ -583,33 +713,32 @@ class PixelEditMixin:
         (:func:`~celpix.pipeline.pipeline.tile_bank`), so an unsaved edit is
         already in it.
 
-        What is read back has to be what was *drawn*, so the cell's two
+        What is read back has to be what was *drawn*, so the owner's two
         contributions go on rather than coming off (the direction
         :meth:`_bank_tiles_from` runs): the coordinate is mirrored into the stored
-        tile, and the palette row is added to the index. Composing and sampling
-        would apply both by construction — doing it by hand is only worth it
-        because this is the one read that wants a pixel rather than a picture.
+        tile — which :meth:`~...selection.SelectionMixin._bank_pixel_at` has
+        already done — and the palette row is added to the index. Composing and
+        sampling would apply both by construction; doing it by hand is only worth
+        it because this is the one read that wants a pixel rather than a picture.
 
-        Falls back to composing where the fast path has no answer: a cell pointing
-        outside the bank draws blank, and a document that is not a grid tilemap
-        has no cells at all.
+        One lookup for both shapes, so the sample and the pen name the same piece
+        on an object as they do on a grid map. Falls back to composing where it
+        has no answer: a cell or a piece pointing outside the bank draws blank,
+        and a pixel document has no owners at all.
         """
-        found = self._bank_tile_at_pixel(x, y) if self._grid_tilemap() else None
+        doc = self._doc
+        mapped = doc is not None and doc.is_tilemap
+        found = self._bank_pixel_at(x, y) if mapped else None
         if found is not None:
-            cell, index = found
-            bank = pipeline.tile_bank(self._doc, self._registry)
+            owner, index, tx, ty = found
+            bank = pipeline.tile_bank(doc, self._registry)
             if 0 <= index < len(bank):
                 tile = bank[index]
-                tx, ty = x % tile.width, y % tile.height
-                if cell.flip_h:
-                    tx = tile.width - 1 - tx
-                if cell.flip_v:
-                    ty = tile.height - 1 - ty
                 value = tile.get(tx, ty)
                 # Direct colour carries no indices for a row to shift, the guard
                 # `expand_cells` applies on the way out.
                 if tile.bytes_per_pixel == 1:
-                    value += self._cell_paint_base(cell)
+                    value += self._cell_paint_base(owner)
                 return value
         grid = self._window_grid()
         if grid is None or not (0 <= x < grid.width and 0 <= y < grid.height):
@@ -620,6 +749,14 @@ class PixelEditMixin:
         value = self._sampled_value(x, y)
         if value is None:
             return
+        # A pixel of a tilemap belongs to a tile as much as to a colour, and the
+        # two panels answer one question each: the tile sheet picks the tile it
+        # was drawn from, the palette grid the colour - and, with it, the
+        # subpalette row that colour sits in, which on a map whose cells carry
+        # rows is the row the cell is drawn through
+        # (:meth:`~...palette_regions.PaletteRegionsMixin._cell_paint_base` folded
+        # it into the value, and ``select_index`` reads it back out).
+        self._point_source_at_pixel(x, y)
         if self._is_direct_color():
             self._pen_argb = value
             self.statusBar().showMessage(f"Picked color #{value & 0xFFFFFFFF:08X}.")
@@ -1225,20 +1362,18 @@ class PixelEditMixin:
         """Put a pixel region on the OS clipboard as a rendered image.
 
         Image-only (no tile payload — a pixel rectangle is not tile-aligned), so
-        another app receives a normal picture and a paste back re-fits it to the
-        active subpalette; for a same-view copy the colors match exactly, so the
+        another app receives a normal picture and a paste back re-fits it to this
+        view's colours; for a same-view copy the colors match exactly, so the
         round-trip is lossless.
         """
         assert self._doc is not None
-        clipboard.put(
-            None, render_bridge.render(region, self._doc.palette, self._palette_base())
-        )
+        clipboard.put(None, self._region_image(region, transparent_zero=False))
 
     def _take_pixel_clipboard(self):
         """The clipboard image as a region grid fitted to this view, or None.
 
         Direct-color views take the ARGB straight; indexed views quantize each
-        pixel to the active subpalette (the same importer path a PNG paste uses).
+        pixel to the candidate colours (the same importer path a PNG paste uses).
         """
         image = clipboard.take_image()
         if image is None:
@@ -1246,8 +1381,34 @@ class PixelEditMixin:
         argb = clipboard.image_to_argb(image)
         if self._is_direct_color():
             return argb
-        grid, _report = importer.quantize_grid(argb, self._import_target())
+        grid, _report = importer.quantize_grid(argb, self._pixel_import_target())
         return grid
+
+    def _pixel_import_target(self) -> importer.ImportTarget:
+        """The colours an incoming pixel region is fitted to.
+
+        The view's own subpalette window
+        (:meth:`~...selection.SelectionMixin._import_target`) everywhere but a map
+        whose cells carry palette rows. There the picture is composed in
+        **absolute** indices spanning every row, so fitting a paste into one row
+        would quantize each colour off that row onto the nearest one on it — a copy
+        of the map's own pixels would come back a different picture. The candidate
+        set is the whole palette instead, which is the set the picture was drawn
+        from; which row a pasted pixel ends up on is settled when it lands, where
+        the index is reduced into the destination cell's row
+        (:meth:`_bank_tiles_from`).
+        """
+        assert self._doc is not None
+        target = self._import_target()
+        if not self._folds_palette_rows() or target.direct_color:
+            return target
+        # At least one row's worth, so a palette shorter than the format's index
+        # space still yields candidates (the missing entries render as the sentinel,
+        # exactly as the subpalette window does).
+        count = min(256, max(len(self._doc.palette), self._index_space()))
+        return replace(
+            target, colors=tuple(self._doc.palette.color(i) for i in range(count))
+        )
 
     def _pixel_key(self, key, shift: bool, ctrl: bool) -> bool:
         """Pixel-mode bare-key shortcuts routed from the nav event filter.
@@ -1255,6 +1416,12 @@ class PixelEditMixin:
         Number keys 1–9 pick a tool; Escape stamps a live float, else drops the
         marquee. Returns True when it consumed the key. Inert outside pixel mode
         or with modifiers, so tile-mode navigation is untouched.
+
+        The tool keys are the rail's keys, so they are asked of the rail rather
+        than of the mode: pixel mode can outlive the document that could be
+        painted on — a map whose binding was closed under it — and a number that
+        picked a tool off a greyed rail would be the mistake
+        (:class:`~...navigation.KeyControl`, the same rule for the letter keys).
         """
         if self._edit_mode is not EditMode.PIXEL or shift or ctrl:
             return False
@@ -1270,7 +1437,11 @@ class PixelEditMixin:
         if Qt.Key.Key_1 <= key <= Qt.Key.Key_9:
             tool = TOOL_BY_KEY.get(chr(key))
             if tool is not None:
-                self._on_tool_selected(tool)
+                # Swallowed either way - the rail is showing a tool set that is
+                # simply not available right now, not one this key means
+                # something else in.
+                if self._tools_panel.isEnabled():
+                    self._on_tool_selected(tool)
                 return True
         return False
 
@@ -1318,8 +1489,47 @@ class PixelEditMixin:
         """Render the current floating grid onto the canvas overlay (no-op if none)."""
         if self._float_grid is None or self._doc is None:
             return
-        image = render_bridge.render(
-            self._float_grid, self._doc.palette, self._palette_base()
-        )
         fx, fy = self._float_pos
+        # Rendered exactly as the base under it was, index 0 included: a float is
+        # the picture's own pixels lifted off it, and the moment the two disagree
+        # about a colour the selection appears to change colour by being picked up.
+        image = self._region_image(
+            self._float_grid,
+            transparent_zero=self._doc.is_tilemap and self._transparent_zero,
+        )
         self._canvas.set_float(image, fx, fy)
+
+    def _region_image(self, grid, *, transparent_zero: bool):
+        """A piece of the composed window, under the colour rule it was drawn with.
+
+        A float and a pixel copy are both cut out of the picture on screen, so both
+        resolve back through the table that picture was rendered with
+        (:meth:`~...rendering.RenderingMixin._tilemap_grid_image` makes the same
+        choice for the base). On a map whose cells carry palette rows the composed
+        indices are **absolute** — :func:`~celpix.pipeline.pipeline.expand_cells`
+        folded the row in — so offsetting them by the view's Subpal on top of that
+        renders the region however many rows further on the spin happens to sit,
+        which on such a map is a row to *assign* rather than one to draw through.
+
+        ``transparent_zero`` is the caller's, because the two want opposite things
+        from the console's blank-index rule. The **float** wants it on wherever the
+        base has it, or the pixels it hides would come back opaque under a
+        selection that is only hovering. The **clipboard** wants it off: a copy
+        leaves as a picture to be matched back against this palette
+        (:meth:`_take_pixel_clipboard`), and a transparent pixel has no colour to
+        match on.
+        """
+        assert self._doc is not None
+        if self._folds_palette_rows():
+            return render_bridge.render_pinned(
+                grid,
+                self._doc.palette,
+                self._index_space(),
+                transparent_zero=transparent_zero,
+            )
+        return render_bridge.render(
+            grid,
+            self._doc.palette,
+            self._palette_base(),
+            transparent_zero=transparent_zero,
+        )

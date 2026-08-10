@@ -253,3 +253,35 @@ def test_a_stale_enum_preference_falls_back_to_the_default(qtbot, tmp_path) -> N
     assert load_enum_setting("probe/style", Style.LINE) is Style.DOT  # round trip
     settings().setValue("probe/style", "bogus")  # stale / foreign value
     assert load_enum_setting("probe/style", Style.LINE) is Style.LINE
+
+
+def test_the_slice_dialogs_spare_room_row_follows_the_compression_choice(
+    qtbot, tmp_path
+) -> None:
+    # The row means nothing without a compressor - only a re-pack can come up
+    # short of the slot - so it appears with one and goes away again. Its value
+    # has to survive being hidden: an edit that switches a slice to raw must
+    # carry the answer back out rather than resetting it to the default.
+    from celpix.pipeline.pathway import SlotFill
+    from celpix.plugins.base import NO_COMPRESSION
+    from celpix.plugins.registry import default_registry
+    from celpix.ui.slice_dialog import SliceDialog
+
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(256))
+    dialog = SliceDialog(
+        default_registry(),
+        paths=(str(rom),),
+        offset=0,
+        length=64,
+        compression_id="compression.lz2",
+        slot_fill=SlotFill.ZERO,
+    )
+    qtbot.addWidget(dialog)
+    assert dialog._slot_fill.isVisibleTo(dialog)
+
+    dialog._decompress.setCurrentIndex(dialog._decompress.findData(NO_COMPRESSION))
+    assert not dialog._slot_fill.isVisibleTo(dialog)
+
+    dialog._validate_and_accept()
+    assert dialog._params.slot_fill is SlotFill.ZERO

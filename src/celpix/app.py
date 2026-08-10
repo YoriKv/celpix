@@ -10,7 +10,12 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from celpix import APP_NAME, __version__, resources
-from celpix.plugins.discovery import FOLDER_STAGE, load_user_plugins, seed_examples
+from celpix.plugins.discovery import (
+    FOLDER_STAGE,
+    load_user_plugins,
+    project_plugin_dir,
+    seed_examples,
+)
 from celpix.plugins.registry import default_registry
 from celpix.plugins.trust import PendingCodePlugin, TrustStore
 from celpix.ui.main_window import MainWindow
@@ -34,12 +39,23 @@ def _app_data_dir() -> Path:
     )
 
 
-def _confirm_plugin(pending: PendingCodePlugin) -> bool:
-    """Ask the user whether to run a not-yet-approved code plugin. Default: No."""
+def _confirm_plugin(pending: PendingCodePlugin, *, from_project: bool = False) -> bool:
+    """Ask the user whether to run a not-yet-approved code plugin. Default: No.
+
+    ``from_project`` marks a plugin that came with the opened project rather than
+    from the user's own plugin folder - the same gate, but it says so, because a
+    project is something you can be *sent* and its author is not necessarily the
+    person answering this dialog.
+    """
     box = QMessageBox()
     box.setIcon(QMessageBox.Icon.Warning)
     box.setWindowTitle("celPix - load code plugin?")
-    box.setText("A code plugin wants to load and will run with celPix's privileges.")
+    box.setText(
+        "A code plugin that came with this project wants to load and will run "
+        "with celPix's privileges."
+        if from_project
+        else "A code plugin wants to load and will run with celPix's privileges."
+    )
     box.setInformativeText(
         f"{pending.path}\n\nSHA-256: {pending.digest[:16]}…\n\n"
         "Only load plugins you trust. Load it?"
@@ -85,13 +101,31 @@ def main(argv: list[str] | None = None) -> int:
     seed_examples(str(plugin_dir))
     trust = TrustStore(str(data_dir / "trusted-plugins.json"))
 
-    def reload_plugins():
-        """Build a fresh registry from built-ins + the plugin folder. Reused for
-        the initial load and for the window's Refresh action, so both go through
-        the same trust gate."""
+    def reload_plugins(project_path: str | None = None):
+        """Build a fresh registry from built-ins + the plugin folders. Reused for
+        the initial load, for opening a project and for the window's Refresh
+        action, so all three go through the same trust gate.
+
+        ``project_path`` is the open ``.celpix`` file, whose folder may carry a
+        ``plugins/`` root of its own - scanned **after** the user's, so a project
+        plugin colliding with one of theirs is reported rather than quietly
+        taking its id.
+        """
         reg = default_registry()
+        dirs = [str(plugin_dir)]
+        project_dir = project_plugin_dir(project_path)
+        if project_dir is not None:
+            dirs.append(project_dir)
+
+        def confirm(pending: PendingCodePlugin) -> bool:
+            return _confirm_plugin(
+                pending,
+                from_project=project_dir is not None
+                and Path(pending.path).is_relative_to(project_dir),
+            )
+
         load_issues = load_user_plugins(
-            reg, [str(plugin_dir)], trust=trust, confirm=_confirm_plugin
+            reg, dirs, project_dir=project_dir, trust=trust, confirm=confirm
         )
         return reg, load_issues
 

@@ -9,7 +9,7 @@ from celpix.core.capabilities import ContentKind
 from celpix.core.document import Document, ViewOptions
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
-from celpix.pipeline.pathway import PathwayConfig
+from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
 from celpix.plugins.base import RAW_CONTAINER, FileRef
 from celpix.project.projectfile import (
     PROJECT_VERSION,
@@ -511,6 +511,36 @@ def test_a_pixel_entry_keeps_its_palette_row_base(tmp_path) -> None:
     assert entry.palette_row_base == 0
 
 
+def test_a_font_entry_keeps_its_alphabet_and_where_that_alphabet_starts(
+    tmp_path,
+) -> None:
+    """Both halves of "what these tiles spell", on the pixel entry that has them.
+
+    The origin is the half worth a test of its own: it is dialled by hand against
+    a string, so losing it on save means doing that work again on every load -
+    and it is stored as a plain int beside the id rather than folded into it,
+    because one shipped table serves many games at many origins
+    (``docs/design/fontmap-entry.md`` §3).
+    """
+    (tmp_path / "font.bin").write_bytes(b"\x00" * 0x40)
+    ws = Workspace()
+    ws.entries.append(
+        Entry(
+            name="font.bin",
+            kind=EntryKind.FILE,
+            path=str(tmp_path / "font.bin"),
+            alphabet_preset_id="alphabet.ascii-upper",
+            alphabet_base=0x80,
+        )
+    )
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+
+    entry = load_project(str(project)).entries[0]
+    assert entry.alphabet_preset_id == "alphabet.ascii-upper"
+    assert entry.alphabet_base == 0x80
+
+
 def test_an_entry_bound_tile_source_stores_only_the_entry_index(tmp_path) -> None:
     """A binding holds the bound entry itself, and a file cannot name an object —
     so saving is where it becomes a position. Writing the whole dataclass would
@@ -687,6 +717,29 @@ def test_reshape_round_trips_and_the_default_is_omitted(tmp_path) -> None:
     loaded_file, loaded_slice = load_project(str(project)).entries
     assert loaded_file.reshape_id == "reshape.split-words-2"
     assert loaded_slice.reshape_id == "reshape.split-planes-2"
+
+
+def test_slot_fill_round_trips_and_the_default_is_omitted(tmp_path) -> None:
+    # The slice's answer for the room a tighter re-pack leaves. Omitted at the
+    # default so every project written before the choice existed round-trips
+    # unchanged — and reads back as the default, which is what it now gets.
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(b"\x00" * 64)
+    ws = Workspace()
+    ws.open_file(str(rom))
+    kept = ws.add_slice(str(rom), "kept", 16, 16, compression_id="compression.lz2")
+    kept.slot_fill = SlotFill.KEEP
+    ws.add_slice(str(rom), "default", 32, 16, compression_id="compression.lz2")
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert raw["entries"][1]["slot_fill"] == "keep"
+    assert "slot_fill" not in raw["entries"][2]
+
+    loaded = load_project(str(project)).entries
+    assert loaded[1].slot_fill is SlotFill.KEEP
+    assert loaded[2].slot_fill is DEFAULT_SLOT_FILL
 
 
 def test_palette_regions_round_trip_and_an_unpinned_view_omits_them(tmp_path) -> None:

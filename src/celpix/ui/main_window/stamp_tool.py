@@ -130,8 +130,11 @@ class StampToolMixin:
         return self._cell_reference_settable()
 
     def _toggle_stamping(self) -> None:
-        """The ``T`` key. Goes through the action so the key and the button can
-        only ever do the same thing — including staying inert while it is off."""
+        """The Edit ▸ row's slot: press the bar's button, if it is offering itself.
+
+        The row and the button are two spellings of one switch, so the row acts
+        through the button rather than setting the state itself. ``T`` presses
+        that button directly (:class:`~...navigation.KeyControl`)."""
         if self._stamp_action.isEnabled():
             self._stamp_action.toggle()
 

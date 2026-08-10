@@ -47,6 +47,7 @@ class ByteSwapReshape:
         id="reshape.swap-bytes-2",
         name="Byteswap 16-bit words",
         stage=Stage.RESHAPE,
+        category="Generic",
     )
 
     def reshape(self, data: bytes, ctx: PipelineContext) -> bytes:

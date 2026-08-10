@@ -1,0 +1,14 @@
+# `text-16bit` with the words stored MSB-first — the order a 68000-family ROM
+# holds them in, and what a stream read on the wrong one looks like: every code
+# byte-swapped, so the text is glyphs from all over the sheet rather than
+# nonsense in one region.
+id = "preset.tilemap.text-16bit-be"
+name = "Text run (16-bit character codes, big-endian)"
+engine_id = "codec.tilemap.packed"
+category = "Text"
+
+[params]
+layout = "text"
+bytes = 2
+endian = "big"
+index = { shift = 0, bits = 16 }

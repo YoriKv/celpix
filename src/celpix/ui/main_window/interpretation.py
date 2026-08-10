@@ -33,10 +33,16 @@ from celpix.core.arrangement import (
 from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_COMPRESSION
+from celpix.plugins.base import NO_COMPRESSION, category_order
 from celpix.project.workspace import (
     Entry,
     pixel_config_for,
+    repair_presets,
+)
+from celpix.ui.searchable_combo import (
+    SearchableComboBox,
+    fill_grouped,
+    preset_rows,
 )
 from celpix.ui.undo_commands import (
     PaletteState,
@@ -157,7 +163,13 @@ class InterpretationMixin:
         those edits instead of the stale file (:func:`pixel_config_for`), so every
         config the window builds goes through here rather than calling the factory
         directly and silently losing that.
+
+        It is also where a slice's parent settles any fold it owes: the config is
+        what carries the parent's live buffer to the read (``_parent_view_bytes``),
+        so this is the moment those bytes have to be true
+        (:meth:`~...writing.WritingMixin._settle_region`).
         """
+        self._settle_region(entry)
         return pixel_config_for(entry, preset_id, self._registry, self._workspace)
 
     def _build_toolbar(self) -> None:
@@ -221,10 +233,12 @@ class InterpretationMixin:
         # bytes are cells, and how they are read - field layout and byte order -
         # is the same kind of choice one row up from tiles. Its pathway has no
         # compression stage of its own either, so both go and this arrives.
-        self._tilemap_preset = CompactComboBox(PRESET_COMBO_WIDTH)
+        self._tilemap_preset = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._tilemap_preset.setToolTip(
             "How a cell's bytes are read: field layout and byte order\n"
-            "Formats from one tool can disagree about the order"
+            "Formats from one tool can disagree about the order\n"
+            "[T] grid map · [S] sprite map · [F] fontmap — the layout\n"
+            "the format declares, which decides what the entry can do"
         )
         self._tilemap_preset.activated.connect(self._on_tilemap_preset_change)
         self._tilemap_codec_action = codecs.addWidget(
@@ -233,7 +247,7 @@ class InterpretationMixin:
 
         # Compression preview: the main view stays raw; the chosen Decompress
         # plugin runs over the current window and shows in the floating overlay.
-        self._compression = CompactComboBox(PRESET_COMBO_WIDTH)
+        self._compression = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._populate_compression()
         self._compression.currentIndexChanged.connect(self._on_view_change)
         # Structure navigation for contiguously packed compressed data: hop
@@ -528,23 +542,26 @@ class InterpretationMixin:
         select_combo_data(self._pattern, target)
         self._apply_pattern_lock()
 
-    def _preset_combo(self, stage: Stage, default_suffix: str) -> QComboBox:
+    def _preset_combo(self, stage: Stage, default_suffix: str) -> SearchableComboBox:
         # Compact: preset names run past 50 characters and the combo shares a row
         # with other controls, so the closed button takes the format pickers'
-        # shared width; the popup stays full.
-        combo = CompactComboBox(PRESET_COMBO_WIDTH)
-        for preset in sorted(self._registry.presets(stage), key=lambda p: p.name):
-            combo.addItem(preset.name, preset.id)
-            if preset.id.endswith(default_suffix):
-                combo.setCurrentIndex(combo.count() - 1)
+        # shared width; the popup stays full, and carries the search field and
+        # the category headings a hundred-entry list needs.
+        combo = SearchableComboBox(PRESET_COMBO_WIDTH)
+        rows = preset_rows(self._registry.presets(stage))
+        ids = [preset_id for _, _, preset_id in rows]
+        default = next((i for i in ids if i.endswith(default_suffix)), None)
+        fill_grouped(combo, rows, default)
         return combo
 
     # -- pixel-format filter ----------------------------------------------
     def _all_pixel_presets(self) -> list:
-        """Every pixel preset the registry offers, name-sorted (the dropdown's
-        natural order and the filter list's order)."""
+        """Every pixel preset the registry offers, in the dropdown's own order —
+        by category, then by name — which is also the filter list's order, so the
+        two read the same way down the page."""
         return sorted(
-            self._registry.presets(Stage.INTERPRET_PIXEL), key=lambda p: p.name
+            self._registry.presets(Stage.INTERPRET_PIXEL),
+            key=lambda p: (category_order(p.category), p.name),
         )
 
     def _fill_pixel_combo(self, select_id: str) -> None:
@@ -559,15 +576,11 @@ class InterpretationMixin:
         hidden = self._workspace.hidden_pixel_presets
         visible = [
             preset
-            for preset in self._all_pixel_presets()
+            for preset in self._registry.presets(Stage.INTERPRET_PIXEL)
             if preset.id not in hidden or preset.id == select_id
         ]
         with signals_blocked(self._pixel_preset):
-            self._pixel_preset.clear()
-            for preset in visible:
-                self._pixel_preset.addItem(preset.name, preset.id)
-            index = self._pixel_preset.findData(select_id)
-            self._pixel_preset.setCurrentIndex(index if index >= 0 else 0)
+            fill_grouped(self._pixel_preset, preset_rows(visible), select_id)
 
     def _bake_pixel_filter_icon(self) -> None:
         """Paint the filter button's funnel in the theme's button-text color.
@@ -1002,10 +1015,12 @@ class InterpretationMixin:
     def _refresh_plugins(self) -> None:
         """Developer aid: reload plugins from disk and re-run on the open file.
 
-        Rebuilds the registry (picking up added/changed/removed presets and code
-        plugins - a changed code plugin passes the trust gate; one you approved this
-        run reloads without a prompt), refreshes the preset menus, and re-decodes the
-        currently open pixel/palette through the reloaded plugins.
+        Rebuilds the registry from both plugin roots - the user's folder and the
+        open project's own (:meth:`_load_project_plugins`) - picking up
+        added/changed/removed presets and code plugins (a changed code plugin
+        passes the trust gate; one you approved this run reloads without a
+        prompt), refreshes the preset menus, and re-decodes the currently open
+        pixel/palette through the reloaded plugins.
 
         The pixel re-run goes back to disk so a reloaded Read/Decompress plugin
         is exercised too - except on an entry with unsaved edits, which live only
@@ -1016,7 +1031,15 @@ class InterpretationMixin:
         if self._reload_plugins is None:
             return
         entry = self._workspace.current
-        self._registry, self._plugin_issues = self._reload_plugins()
+        # With the open project's path, so the scan covers its own plugins/
+        # folder too - F5 is the way to pick up an edit there, exactly as it is
+        # for the user's folder.
+        self._registry, self._plugin_issues = self._reload_plugins(self._project_path)
+        # A refresh can *remove* a format as easily as add one — a deleted preset
+        # file, a plugin that no longer passes the trust gate — so the open
+        # entries are put back in step with the registry before anything decodes
+        # through it. Reported at the end, with the load issues.
+        missing_presets = repair_presets(self._workspace.entries, self._registry)
         self._repopulate_presets()
         if self._doc is not None:
             # Re-decode the open file's sources through the new registry - via
@@ -1051,6 +1074,26 @@ class InterpretationMixin:
         self.statusBar().showMessage("; ".join(parts) + ".")
         # Any plugin that failed the reload is a warning, surfaced modally.
         self._alert_plugin_issues()
+        self._alert_missing_presets(missing_presets)
+
+    def _load_project_plugins(self, project_path: str | None) -> None:
+        """Rebuild the registry for the project at ``project_path``.
+
+        The ``plugins/`` folder beside a project file belongs to the project, so
+        it is scanned as the project opens and dropped again when it closes -
+        both ends go through here, and the registry an entry decodes through is
+        never one from the project before. Called *before* the workspace is
+        replaced: a restored entry may name a preset only the project provides,
+        and showing it decodes immediately.
+
+        Its code plugins pass the same trust gate as the user's own, so opening
+        a project that carries one asks first (:mod:`celpix.plugins.trust`).
+        """
+        if self._reload_plugins is None:
+            return
+        self._registry, self._plugin_issues = self._reload_plugins(project_path)
+        self._repopulate_presets()
+        self._alert_plugin_issues()
 
     def _repopulate_presets(self) -> None:
         """Rebuild the preset combos from the (reloaded) registry, keeping the
@@ -1062,22 +1105,15 @@ class InterpretationMixin:
         # Block signals so repopulating doesn't fire a reload per item; the
         # refresh does one explicit reload afterwards.
         with signals_blocked(self._palette_preset):
-            self._palette_preset.clear()
-            for preset in sorted(
-                self._registry.presets(Stage.INTERPRET_PALETTE), key=lambda p: p.name
-            ):
-                self._palette_preset.addItem(preset.name, preset.id)
-            index = self._palette_preset.findData(current)
-            self._palette_preset.setCurrentIndex(index if index >= 0 else 0)
+            fill_grouped(
+                self._palette_preset,
+                preset_rows(self._registry.presets(Stage.INTERPRET_PALETTE)),
+                current,
+            )
         # The compression combo lists Decompress *plugins*, not presets, but
         # refreshes the same way (keep the selection when it survives the reload).
-        current = self._compression.currentData()
         with signals_blocked(self._compression):
-            self._compression.clear()
-            self._populate_compression()
-            index = self._compression.findData(current)
-            if index >= 0:
-                self._compression.setCurrentIndex(index)
+            self._populate_compression(self._compression.currentData())
 
     def _partial_tile_note(self) -> str:
         """Status-bar warning when the data ends mid-tile, or ``""`` when aligned.

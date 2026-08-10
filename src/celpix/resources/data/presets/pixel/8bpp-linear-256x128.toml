@@ -6,6 +6,7 @@
 id = "preset.pixel.8bpp-linear-256x128"
 name = "8bpp linear bitmap (256x128, Super FX)"
 engine_id = "codec.pixel.packed"
+category = "Nintendo"
 
 [params]
 bpp = 8

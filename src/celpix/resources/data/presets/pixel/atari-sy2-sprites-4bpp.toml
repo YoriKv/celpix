@@ -8,6 +8,7 @@
 id = "preset.pixel.atari-sy2-sprites-4bpp"
 name = "Atari System 2 sprites (16x16, 4bpp, split halves joined)"
 engine_id = "codec.pixel.nibble-planar"
+category = "Arcade"
 
 [params]
 bpp = 4

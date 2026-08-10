@@ -14,6 +14,7 @@
 id = "preset.pixel.ngp-2bpp-swapped"
 name = "Neo Geo Pocket 2bpp (8x8)"
 engine_id = "codec.pixel.packed"
+category = "SNK"
 
 [params]
 bpp = 2

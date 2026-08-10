@@ -38,7 +38,7 @@ activation. External changes to the file on disk are ignored.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from os.path import abspath, basename, exists, normcase, splitext
 from typing import Callable
@@ -55,7 +55,7 @@ from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import Stage
 from celpix.core.notices import Notice, notices
 from celpix.pipeline import pipeline
-from celpix.pipeline.pathway import PathwayConfig
+from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
 from celpix.plugins.base import (
     NO_COMPRESSION,
     NO_RESHAPE,
@@ -264,6 +264,11 @@ class SliceParams:
     Plain, Qt-free data shared by the slice dialog (which produces it) and the
     slice-edit undo command (which stores a before/after pair) — one type so a
     dialog result flows straight into a command without a field-by-field copy.
+
+    ``content_kind`` is the odd one out: it says what the region *is* rather than
+    where it lies, and only a new slice chooses it. An edit carries the entry's
+    own kind in and back out unchanged, which is what keeps the before/after pair
+    comparable (:class:`~celpix.ui.slice_dialog.SliceDialog`).
     """
 
     name: str
@@ -271,6 +276,11 @@ class SliceParams:
     length: int | None
     compression_id: str
     reshape_id: str = NO_RESHAPE
+    content_kind: ContentKind = ContentKind.PIXELS
+    # Not a coordinate either, but unlike the kind above it is decided by the
+    # same answer the dialog is already asking for: it means something only under
+    # a compression scheme, so it belongs to the row that chooses one.
+    slot_fill: SlotFill = DEFAULT_SLOT_FILL
 
 
 @dataclass
@@ -360,6 +370,13 @@ class Entry:
     slice_offset: int = 0
     slice_length: int | None = None
     compression_id: str = NO_COMPRESSION
+    # What fills the room a re-compressed blob leaves at the end of this slice's
+    # slot when it packs tighter than the one it replaces
+    # (:class:`~celpix.pipeline.pathway.SlotFill`). A **slice** setting because
+    # only a bounded region has a tail to decide about, and only its owner knows
+    # whether those spare bytes are really its own — the slice dialog asks, and
+    # only where a compression scheme is chosen, since nothing else can shrink.
+    slot_fill: SlotFill = DEFAULT_SLOT_FILL
     # The region-scoped byte reordering the entry's bytes go through, between
     # container and decompressor. Unlike ``container_id`` this lives on **both
     # FILE and SLICE** entries: a reshape is a property of the region, and a
@@ -381,6 +398,20 @@ class Entry:
     # (:func:`_parent_view_bytes`).
     container_id: str = RAW_CONTAINER
     doc: Document | None = None  # lazy: loaded on first activation
+    # Children of this **file** whose current bytes are not in its buffer yet.
+    #
+    # A slice edit has to reach the file that owns those bytes, and re-encoding it
+    # to get there is the expensive half — on a compressed slice it is a search
+    # for the tightest packing, which is not a thing to run per stroke. So the
+    # edit records the debt here and the fold pays it at the next place the
+    # buffer is *believed* (``docs/design/slices-and-parents.md`` §2).
+    #
+    # Membership rather than a flag because a child that has been undone back to
+    # **clean** still owes the parent those bytes: the fold takes dirty children
+    # plus these, and "dirty" alone would leave the edited version standing in the
+    # buffer after it had been undone in the slice. Identity-keyed, like every
+    # other reference to an entry (this class is ``eq=False``).
+    pending_folds: set[Entry] = field(default_factory=set)
     session: EntrySession | None = None
     # Unsaved in-memory changes, tracked **per pathway** because the two write to
     # different files: the pixel pathway is the entry's own data (its pixel bytes
@@ -430,6 +461,27 @@ class Entry:
     # project state that no file states (`docs/design/tilemap-entry.md` §3).
     tile_source: TileSource | None = None
     tilemap_preset_id: str | None = None
+    # **PIXELS entries**, unlike everything around it: which alphabet says what
+    # this entry's tiles spell, for a **fontmap** drawn through them
+    # (``docs/design/fontmap-entry.md`` §3). It sits on the font and not on the
+    # map that reads it because that is whose fact it is — the tile ⇄ letter
+    # mapping is decided when the sheet is drawn, so every string in the game
+    # that uses the sheet is bound by it, and ten maps restating it would be ten
+    # copies to keep in step. A map re-pointed at another font picks up that
+    # font's answer with nothing else to change.
+    #
+    # None until picked, which is the ordinary first moment of a font: its
+    # fontmaps then read as hex, and every code still round-trips.
+    alphabet_preset_id: str | None = None
+    # Added to every code in that alphabet — the **Base code** spin. It rides
+    # beside the preset id and not inside it because the two answer different
+    # questions and one preset serves many fonts: a table states the *shape* of
+    # the mapping (which characters, in what order), and that is decided by the
+    # art, while the *origin* is decided by the game's code and is invisible in
+    # both (``docs/graphics-formats-reference/text-formats.md`` §3.2). So the
+    # shipped `A-Z 0-9, from 0` fits any sheet in that order, at any origin,
+    # rather than needing one preset per game.
+    alphabet_base: int = 0
     # The palette row this map's cells count their own row 0 from — the tile
     # base's colour twin, and the user's word on it. **None means the format's
     # own answer**, which is right almost always: a sprite's 3-bit field counts
@@ -1052,6 +1104,7 @@ def pixel_config_for(
         interpret_preset_id=preset_id,
         reshape_id=reshape_id,
         compression_id=resolved[Stage.COMPRESSION][0],
+        slot_fill=entry.slot_fill,
         write_enabled=writable,
         writes_through_parent=parent is not None,
         missing_plugins=missing,
@@ -1254,6 +1307,83 @@ def entry_notices(entry: Entry) -> tuple[Notice, ...]:
     if entry.doc is None:
         return ()
     return notices(entry.doc.pixel_ctx) + notices(entry.doc.palette_ctx)
+
+
+@dataclass(frozen=True)
+class MissingPreset:
+    """One entry field that named a format this build hasn't got, and its stand-in.
+
+    ``used`` is what the field now holds — the stage's default format, or ``""``
+    where the field was cleared instead (an alphabet, which has no stand-in).
+    """
+
+    entry: Entry
+    stage: Stage
+    wanted: str
+    used: str
+
+
+def repair_presets(entries: list[Entry], registry: Registry) -> list[MissingPreset]:
+    """Point every entry at a format ``registry`` has; report what was swapped.
+
+    The Interpret-stage counterpart to what :func:`pixel_config_for` does for the
+    byte stages, and it has to be a *repair* rather than a resolution at the point
+    of use: a byte stage's pass-through is one substitution inside one config,
+    where a preset id is read by a dozen surfaces — the codec combo, the transform
+    probes, the cell width, every decode — and each of them answering "no format"
+    separately is how a missing preset became an uncaught ``KeyError`` in the
+    first place. One pass, before the entries are shown, leaves every one of those
+    reading a format that exists.
+
+    Called wherever the registry and the entries can disagree, which is exactly
+    where the registry is rebuilt: opening a project (whose ``plugins/`` folder
+    may supply formats the previous one did not), and refreshing plugins.
+
+    **The stored id is overwritten**, so saving the project afterwards writes the
+    stand-in and the original reference is gone — which is why the swap is
+    reported and shown rather than made quietly. Quitting without saving keeps the
+    project file as it was, and installing the missing plugin makes it open
+    correctly again.
+    """
+    replaced: list[MissingPreset] = []
+
+    def resolved(entry: Entry, stage: Stage, wanted: str) -> str:
+        if not wanted:
+            return wanted
+        used = registry.resolve_preset(stage, wanted)
+        if used != wanted:
+            replaced.append(MissingPreset(entry, stage, wanted, used))
+        return used
+
+    for entry in entries:
+        if entry.session is not None:
+            entry.session.pixel_preset_id = resolved(
+                entry, Stage.INTERPRET_PIXEL, entry.session.pixel_preset_id
+            )
+            entry.session.palette_preset_id = resolved(
+                entry, Stage.INTERPRET_PALETTE, entry.session.palette_preset_id
+            )
+        if entry.palette_preset_id:
+            entry.palette_preset_id = resolved(
+                entry, Stage.INTERPRET_PALETTE, entry.palette_preset_id
+            )
+        if entry.tilemap_preset_id:
+            entry.tilemap_preset_id = resolved(
+                entry, Stage.INTERPRET_TILEMAP, entry.tilemap_preset_id
+            )
+        # Cleared rather than substituted: an alphabet celPix hasn't got would be
+        # stood in for by one that spells the same codes as different letters,
+        # which reads as a corrupt script rather than as a missing format. None
+        # is the ordinary "no alphabet picked" state, and its fontmaps read as
+        # hex until the plugin is back.
+        if entry.alphabet_preset_id and not registry.has_preset(
+            entry.alphabet_preset_id
+        ):
+            replaced.append(
+                MissingPreset(entry, Stage.ALPHABET, entry.alphabet_preset_id, "")
+            )
+            entry.alphabet_preset_id = None
+    return replaced
 
 
 def missing_paths(ws: Workspace) -> list[str]:

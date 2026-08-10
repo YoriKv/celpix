@@ -3,6 +3,7 @@
 id = "preset.pixel.vb-2bpp"
 name = "Virtual Boy 2bpp (8x8)"
 engine_id = "codec.pixel.packed"
+category = "Nintendo"
 
 [params]
 bpp = 2

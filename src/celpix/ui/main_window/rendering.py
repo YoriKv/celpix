@@ -453,6 +453,40 @@ class RenderingMixin:
             labels.extend([None] * (per_cell - 1))
         return labels
 
+    def _line_end_slots(self) -> frozenset[int]:
+        """The canvas slots whose cell ends a line — a **fontmap** only.
+
+        The one thing a text run's picture cannot say for itself. A grid of glyph
+        tiles is a correct drawing of the cells and shows nothing of where the
+        strings stop, which on most formats is not even where the row does: a
+        level-name region breaks mid-row, over and over, and the canvas draws it
+        as one unbroken block of letters.
+
+        Which cells those are is :meth:`~celpix.core.font.Alphabet.ends_line`'s
+        answer and not this method's, so the mark on the picture and the newline
+        in the text window come out of one rule. Where **no alphabet** is picked
+        the terminator bit is still a fact about the cells and still worth
+        drawing — it is read off the format, not off the font, and it is the only
+        thing legible about a stream nothing has explained yet.
+
+        Empty for everything that is not a fontmap, and indexed by the slot each
+        cell **starts** at, like :meth:`_tile_id_labels`' numbers.
+        """
+        doc = self._doc
+        if doc is None or not doc.is_font:
+            return frozenset()
+        alphabet = doc.alphabet
+        per_cell = doc.tiles_per_cell
+        return frozenset(
+            at * per_cell
+            for at, cell in enumerate(doc.laid_out_cells)
+            if (
+                alphabet.ends_line(cell.index, cell.ends_line)
+                if alphabet is not None
+                else cell.ends_line
+            )
+        )
+
     def _palette_row_labels(self, cols: int, rows: int) -> list[int | None] | None:
         """The row to number each canvas slot with — the overlay, for both stores.
 
@@ -673,11 +707,20 @@ class RenderingMixin:
         # The tilemap-side annotation, and the same kind of thing: a number laid
         # over the art saying what the picture cannot.
         self._canvas.set_tile_ids(self._tile_id_labels())
+        # And the fontmap's, which has no switch because it is not an annotation:
+        # where a string stops is content, and the grid of glyphs shows none of it.
+        self._canvas.set_line_ends(self._line_end_slots())
         self._canvas.set_image(image)
         # A lifted float's source is shown blank, never written, so a fresh base
         # image has to have that hole punched back into it — over the grid this
         # render just composed, where there is one, rather than a second copy of it.
         self._refresh_float_preview(composed)
+        # And the floating pixels themselves, for the other half of the same rule:
+        # the overlay carries its own rendered image, so anything that recolours
+        # the base — a palette edit, a Subpal move, the Transparent 0 box — leaves
+        # a float in the air showing the colours of the render before last. A
+        # no-op with nothing up, and never more than the float's own rectangle.
+        self._show_float()
         self._revalidate_selection()
         # And the sprite object's pick beside it: Cols re-flows the frames, so a
         # pick that survives is at a different pixel than it was.
@@ -707,6 +750,8 @@ class RenderingMixin:
         # the entry underneath them changes.
         self._animation_action.setEnabled(self._animation_available())
         self._sync_animation()
+        self._text_action.setEnabled(self._text_available())
+        self._sync_text()
         self._refresh_hex()
         # Rows owns its own enabled state (two different reasons to have no row
         # count to set), so it is refreshed here rather than gated below.

@@ -6,6 +6,7 @@
 id = "preset.pixel.atari-sy2-tiles-4bpp"
 name = "Atari System 2 playfield (8x8, 4bpp, split halves joined)"
 engine_id = "codec.pixel.nibble-planar"
+category = "Arcade"
 
 [params]
 bpp = 4

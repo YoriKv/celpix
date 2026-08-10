@@ -1,6 +1,10 @@
 /CLAUDE.md
 /docs/
 /tmp/
+# Worked .celpix projects over real carts, plus the scratch that produced them.
+# Local by nature: every one addresses a ROM in a sibling checkout by relative
+# path, so the settings are only meaningful on a machine laid out the same way.
+/sample-projects/
 
 # --- Python ---
 __pycache__/

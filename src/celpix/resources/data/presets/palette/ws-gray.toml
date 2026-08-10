@@ -9,6 +9,7 @@
 id = "preset.palette.ws-gray"
 name = "WonderSwan mono palette (4 x 3-bit grey)"
 engine_id = "codec.palette.mask"
+category = "Bandai"
 
 [params]
 bits_per_entry = 4

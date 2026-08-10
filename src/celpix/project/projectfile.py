@@ -36,10 +36,17 @@ from os.path import (
 from celpix.core.arrangement import BLOCK_ORDERS
 from celpix.core.capabilities import ContentKind
 from celpix.core.document import ViewOptions
+from celpix.core.errors import Stage
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
 from celpix.core.tilerearrangement import TileRearrangement
+from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, SlotFill
 from celpix.plugins.aliases import current_id
-from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE, RAW_CONTAINER
+from celpix.plugins.base import (
+    NO_COMPRESSION,
+    NO_RESHAPE,
+    RAW_CONTAINER,
+    STAGE_DEFAULT_PRESET,
+)
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -69,9 +76,11 @@ PROJECT_VERSION = 1
 PROJECT_EXTENSION = ".celpix"
 
 # Fallbacks for a hand-authored project that omits preset ids entirely — the
-# same built-ins a fresh window starts on, so a minimal project still renders.
-_DEFAULT_PIXEL_PRESET = "preset.pixel.snes-4bpp"
-_DEFAULT_PALETTE_PRESET = "preset.palette.bgr555"
+# same built-ins a fresh window starts on, so a minimal project still renders,
+# and the same ones an entry naming a *missing* format falls back to
+# (:func:`~celpix.project.workspace.repair_presets`).
+_DEFAULT_PIXEL_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
+_DEFAULT_PALETTE_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PALETTE]
 
 
 class ProjectError(Exception):
@@ -172,6 +181,11 @@ def _entry_dict(entry: Entry, base_dir: str, entries: list[Entry]) -> dict[str, 
         data["slice_offset"] = entry.slice_offset
         data["slice_length"] = entry.slice_length
         data["compression_id"] = entry.compression_id
+        # Only when it isn't what an unstated one means, so a slice left on the
+        # default — and every slice in every project written before the choice
+        # existed — is written exactly as it was before.
+        if entry.slot_fill is not DEFAULT_SLOT_FILL:
+            data["slot_fill"] = entry.slot_fill.value
     elif entry.kind is EntryKind.BOOKMARK:
         data["offset"] = entry.slice_offset
     elif entry.kind is EntryKind.PALETTE:
@@ -192,6 +206,15 @@ def _entry_dict(entry: Entry, base_dir: str, entries: list[Entry]) -> dict[str, 
     # says 8 and not an absent one.
     if entry.palette_row_base is not None:
         data["palette_row_base"] = entry.palette_row_base
+    # Not gated either, and for the mirror of that reason: this is a *font's*
+    # answer, so it belongs to the pixel entry holding the tiles rather than to
+    # any fontmap that reads them (`docs/design/fontmap-entry.md` §3).
+    if entry.alphabet_preset_id:
+        data["alphabet_preset_id"] = entry.alphabet_preset_id
+    # Written only when set, so an alphabet left at its stated origin - which is
+    # every one that needed no dialling - costs the file nothing.
+    if entry.alphabet_base:
+        data["alphabet_base"] = entry.alphabet_base
     if entry.content_kind is ContentKind.TILEMAP:
         if entry.tilemap_preset_id:
             data["tilemap_preset_id"] = entry.tilemap_preset_id
@@ -366,6 +389,10 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         slice_length=_int(raw.get("slice_length"), None),
         compression_id=_plugin_id(raw.get("compression_id"), NO_COMPRESSION),
         reshape_id=_plugin_id(raw.get("reshape_id"), NO_RESHAPE),
+        # Absent on every slice that never overrode it, and on every project
+        # written before the choice existed — SlotFill.parse gives those the
+        # default, which is what they get in the dialog too.
+        slot_fill=SlotFill.parse(raw.get("slot_fill")),
         # Absent for every file nothing claimed — plain bytes, which is also what
         # an entry naming a container the registry no longer has falls back to.
         container_id=_plugin_id(raw.get("container_id"), RAW_CONTAINER),
@@ -377,6 +404,8 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         # Absent means "whatever the format says", which is every entry that never
         # overrode it — so the default has to stay None and not 0.
         palette_row_base=_int(raw.get("palette_row_base"), None),
+        alphabet_preset_id=(_plugin_id(raw.get("alphabet_preset_id"), "") or None),
+        alphabet_base=_int(raw.get("alphabet_base"), 0),
         sprite_size_pair=_size_pair(raw.get("sprite_size_pair")),
         session=_session_from(raw.get("session")),
         pending_view=_view_from(raw.get("view")),

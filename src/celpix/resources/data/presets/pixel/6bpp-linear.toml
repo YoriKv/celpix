@@ -3,6 +3,7 @@
 id = "preset.pixel.6bpp-linear"
 name = "6bpp linear (8x8)"
 engine_id = "codec.pixel.linear-bespoke"
+category = "Generic linear"
 
 [params]
 bpp = 6

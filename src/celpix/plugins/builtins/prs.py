@@ -279,6 +279,7 @@ class PrsCompression:
         id="compression.prs",
         name="PRS (Sega LZ + RLE)",
         stage=Stage.COMPRESSION,
+        category="Sega",
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:

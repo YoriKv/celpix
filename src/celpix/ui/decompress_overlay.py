@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from celpix.core.document import GridMode, ViewOptions
 from celpix.ui.canvas import Canvas, GridStyle
 from celpix.ui.widgets import Badge, apply_badge
+from celpix.ui.window_layout import WindowLayout
 
 __all__ = ["Badge", "DecompressOverlay"]
 
@@ -66,6 +67,10 @@ class DecompressOverlay(QWidget):
         layout.addWidget(scroll, 1)
         layout.addWidget(self._status)
         self.resize(420, 420)
+        self._layout_memory = WindowLayout(self, "layout/decompress-preview")
+        # A remembered position counts as already placed: the beside-the-main-
+        # window move below is for a window nobody has put anywhere yet.
+        self._positioned = self._layout_memory.restore()
 
     def show_result(
         self,

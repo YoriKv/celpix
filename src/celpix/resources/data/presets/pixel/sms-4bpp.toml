@@ -3,6 +3,7 @@
 id = "preset.pixel.sms-4bpp"
 name = "SMS 4bpp (GG/WSC, 8x8)"
 engine_id = "codec.pixel.planar"
+category = "Sega"
 
 [params]
 bpp = 4

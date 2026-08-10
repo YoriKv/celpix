@@ -194,11 +194,15 @@ def show_in_file_manager(path: str) -> bool:
     target = Path(path)
     folder = target.parent
     if target.exists():
-        # One comma-joined argument: explorer parses "/select,<path>" as a unit
-        # and ignores a path passed separately. Native separators too - it opens
-        # the user's home rather than the folder for a forward-slash path.
+        # Explorer parses its own command line rather than argv, so the whole
+        # command goes as one string: "/select,<path>" must stay a single token
+        # with the quotes around the path alone. An argv list would quote the
+        # token as a unit the moment the path has a space, and explorer then
+        # ignores the switch and opens Documents instead - successfully, so the
+        # folder fallback below never gets a chance. Native separators too - it
+        # opens the user's home rather than the folder for a forward-slash path.
         if sys.platform == "win32" and _spawn(
-            ["explorer", f"/select,{os.path.normpath(target)}"]
+            f'explorer /select,"{os.path.normpath(target)}"'
         ):
             return True
         if sys.platform == "darwin" and _spawn(["open", "-R", str(target)]):
@@ -208,15 +212,17 @@ def show_in_file_manager(path: str) -> bool:
     return QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
 
-def _spawn(argv: list[str]) -> bool:
-    """Start ``argv`` detached, False if the program isn't there.
+def _spawn(command: list[str] | str) -> bool:
+    """Start ``command`` detached, False if the program isn't there.
 
     Detached because the file manager outlives us, and we never read back from
-    it: a ``Popen`` we don't wait on would otherwise leave a zombie.
+    it: a ``Popen`` we don't wait on would otherwise leave a zombie. A string
+    is a pre-quoted Windows command line handed straight to ``CreateProcess``
+    (never a shell), for programs that parse their own arguments.
     """
     try:
-        subprocess.Popen(  # noqa: S603 - fixed argv, no shell
-            argv,
+        subprocess.Popen(  # noqa: S603 - fixed program, no shell
+            command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -253,18 +259,6 @@ def add_labelled(
     layout.addWidget(label)
     layout.addWidget(widget)
     return label
-
-
-def fill_stage_combo(combo: QComboBox, plugins, selected: str) -> None:
-    """Fill ``combo`` with a stage's plugins by name, and select ``selected``.
-
-    Every picker over a stage is the same two steps — list the registered
-    plugins, snap to the stored id — and the snap has to survive an id the
-    registry no longer has (:func:`select_combo_data`).
-    """
-    for plugin in plugins:
-        combo.addItem(plugin.info.name, plugin.info.id)
-    select_combo_data(combo, selected)
 
 
 def icon_cache_key(widget: QWidget) -> tuple[int, float]:
@@ -385,8 +379,18 @@ class CompactComboBox(QComboBox):
 
     def focusOutEvent(self, event) -> None:  # Qt override
         super().focusOutEvent(event)
-        if event.reason() != Qt.FocusReason.PopupFocusReason:
+        if self._is_real_focus_loss(event):
             self.focus_lost.emit()
+
+    def _is_real_focus_loss(self, event) -> bool:
+        """Whether this focus-out means the user moved on, not "a popup opened".
+
+        A hook rather than a bare check inside :meth:`focusOutEvent`, because a
+        subclass with a popup of its own has to widen the exception without
+        re-deciding what the rest of the handler does
+        (:class:`~celpix.ui.searchable_combo.SearchableComboBox`).
+        """
+        return event.reason() != Qt.FocusReason.PopupFocusReason
 
     def _fixed(self, hint: QSize) -> QSize:
         hint.setWidth(self._width)

@@ -10,7 +10,7 @@ with the palette's save optional. Any stage that cannot proceed raises
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -37,17 +37,20 @@ from celpix.core.context import (
 )
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
+from celpix.core.font import Alphabet, Glyph, GlyphRole, glyphs_from_spec
 from celpix.core.index_grid import IndexGrid
 from celpix.core.notices import KEY_NOTICES, Notice, notices, warn
 from celpix.core.palette import Palette
 from celpix.core.sprite import (
     DEFAULT_SUBSPRITE_TILES,
     Frame,
+    Subsprite,
     frame_bounds,
 )
 from celpix.core.tilemap import Cell, resolve_cell
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import (
+    NO_COMPRESSION,
     NO_RESHAPE,
     RAW_CONTAINER,
     CompressionPlugin,
@@ -1141,7 +1144,7 @@ def sprite_sheet(doc: Document, columns: int) -> SpriteSheet:
     object; everything the sheet reports back is in tiles.
     """
     frames = doc.shown_frames
-    box = frame_bounds(frames, doc.sprite_size_pair, doc.tile_width, doc.tile_height)
+    box = frame_bounds(frames, doc.tile_width, doc.tile_height)
     across = max(1, columns)
     return SpriteSheet(
         frames=len(frames),
@@ -1188,7 +1191,6 @@ def sprite_image(
     fields for no gain.
     """
     frames = doc.shown_frames
-    pair = doc.sprite_size_pair
     sheet = sprite_sheet(doc, columns)
     left, top, width, height = sheet.box
     across = sheet.across
@@ -1204,17 +1206,16 @@ def sprite_image(
     space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
     rows = doc.palette_row_wrap(space)
     # A subsprite's own tiles step by the *tile* size, the codec's and not an
-    # assumed 8: the size pair is stated in tiles for exactly this reason, and a
-    # literal here would put the second half of every large one 8px from the first
-    # whatever the tiles behind it measure
-    # (:data:`~celpix.core.sprite.DEFAULT_SUBSPRITE_TILES`).
+    # assumed 8: a subsprite states its size in tiles for exactly this reason, and
+    # a literal here would put the second half of every multi-tile one 8px from
+    # the first whatever the tiles behind it measure.
     step_x, step_y = max(1, doc.tile_width), max(1, doc.tile_height)
     for at, frame in enumerate(frames):
         ox = (at % across) * width - left
         oy = (at // across) * height - top
         for sub in reversed(frame):
-            side = sub.tiles(pair)
-            for slot, index in enumerate(sub.tile_indices(pair)):
+            wide, _tall = sub.size()
+            for slot, index in enumerate(sub.tile_indices()):
                 index += doc.tile_base_index
                 if not 0 <= index < len(source):
                     continue
@@ -1226,24 +1227,111 @@ def sprite_image(
                 _blit(
                     image,
                     tile,
-                    ox + sub.x + (slot % side) * step_x,
-                    oy + sub.y + (slot // side) * step_y,
+                    ox + sub.x + (slot % wide) * step_x,
+                    oy + sub.y + (slot // wide) * step_y,
                     drawn_palette_row(sub.palette_row, doc.palette_row_base, rows)
                     * space,
                 )
     return image, sheet
 
 
-def subsprite_at(
-    doc: Document, reg: Registry, columns: int, x: int, y: int
-) -> tuple[int, int] | None:
-    """Which subsprite the sheet pixel ``(x, y)`` shows — ``(frame, subsprite)``.
+@dataclass(frozen=True)
+class SpriteHit:
+    """What one sheet pixel is: the piece that owns it, and the byte behind it.
 
-    :func:`sprite_image` run backwards, and the only way to ask the question: a
-    sprite object has no cell grid to divide a position by, its subsprites sit at
-    signed pixel offsets that are mostly not tile-aligned, and they overlap. A
-    slot cannot answer it — one 8x8 square of the sheet routinely holds pieces of
-    three subsprites — which is why the canvas reports the pixel for this.
+    ``tile`` is an index into the bound bank with the base already applied, and
+    ``x``/``y`` are the pixel *inside* that tile with the subsprite's flips
+    undone — so the two together name a byte a pen can write, which is the whole
+    reason this is one answer rather than two lookups that could disagree.
+
+    ``tile`` is **None** where the piece claims the pixel but has no byte there:
+    a subsprite pointing outside the bank draws blank. The pick still wants that
+    hit (it is a real piece under the cursor); an edit has nothing to write and
+    drops it.
+    """
+
+    frame: int
+    subsprite: int
+    piece: Subsprite
+    tile: int | None
+    x: int
+    y: int
+
+
+def _sprite_walk(
+    doc: Document,
+    reg: Registry,
+    columns: int,
+    x: int,
+    y: int,
+    hoist: tuple[list[Frame], SpriteSheet, list[IndexGrid]] | None,
+) -> Iterator[tuple[SpriteHit, bool]]:
+    """Every subsprite whose box covers the sheet pixel, front to back.
+
+    :func:`sprite_image` run backwards, and the shared body of the two questions
+    asked of it: each hit is paired with whether that piece actually *draws*
+    there, which is what separates the one under the cursor from the ones merely
+    around it. Yields nothing for a pixel off the sheet, past the last frame, or
+    on a document that is not a sprite object.
+    """
+    if not doc.is_sprite:
+        return
+    frames, sheet, source = hoist or (doc.shown_frames, None, None)
+    if sheet is None:
+        sheet = sprite_sheet(doc, columns)
+    left, top, width, height = sheet.box
+    if not (0 <= x < sheet.across * width and 0 <= y < sheet.down * height):
+        return
+    at = (y // height) * sheet.across + (x // width)
+    if not 0 <= at < len(frames):
+        return
+    # Into the object's own coordinates: every frame is drawn in the same box, so
+    # backing the box's origin out is what turns a sheet pixel into the offset a
+    # subsprite states.
+    px, py = x % width + left, y % height + top
+    step_x, step_y = max(1, doc.tile_width), max(1, doc.tile_height)
+    if source is None:
+        source = tile_bank(doc, reg)
+    for index, sub in enumerate(frames[at]):
+        across, down = sub.size()
+        dx, dy = px - sub.x, py - sub.y
+        col, row = dx // step_x, dy // step_y
+        if not (0 <= col < across and 0 <= row < down):
+            continue
+        tile_index = sub.tile_indices()[row * across + col] + doc.tile_base_index
+        # The walk already mirrored the *order* of the tiles, so what is left is
+        # mirroring the pixel inside the one under the cursor — the render's own
+        # two halves, taken apart (:func:`~celpix.core.tilemap.tile_run`).
+        tx, ty = dx % step_x, dy % step_y
+        if sub.flip_h:
+            tx = step_x - 1 - tx
+        if sub.flip_v:
+            ty = step_y - 1 - ty
+        inside = 0 <= tile_index < len(source)
+        yield (
+            SpriteHit(at, index, sub, tile_index if inside else None, tx, ty),
+            inside and bool(source[tile_index].get(tx, ty)),
+        )
+
+
+def sprite_hit(
+    doc: Document,
+    reg: Registry,
+    columns: int,
+    x: int,
+    y: int,
+    *,
+    hoist: tuple[list[Frame], SpriteSheet, list[IndexGrid]] | None = None,
+) -> SpriteHit | None:
+    """What one sheet pixel *is* — see :class:`SpriteHit`.
+
+    The only way to ask the question: a sprite object has no cell grid to divide
+    a position by, its subsprites sit at signed pixel offsets that are mostly not
+    tile-aligned, and they overlap. A slot cannot answer it — one 8x8 square of
+    the sheet routinely holds pieces of three subsprites — which is why the
+    canvas reports the pixel for this, and why the pixel is also the unit a
+    stroke through a sprite writes back in (``docs/design/tilemap-entry.md``
+    §8.5).
 
     **Front to back, and what is drawn wins.** The file lists a frame's
     subsprites topmost-first, so the walk is in file order; but index 0 is
@@ -1251,54 +1339,83 @@ def subsprite_at(
     *box* covers the pixel is not always the one the user is pointing at. So the
     first one that actually draws something there is the answer, and the
     front-most box hit is the fallback — a click on a subsprite's transparent
-    part still picks it where nothing else claims the pixel, rather than picking
-    nothing and reading as a dead click.
+    part still finds it where nothing else claims the pixel, rather than finding
+    nothing and reading as a dead click. A pen lands on the same piece the
+    eyedropper samples, which is what keeps "edit what you can see" true here.
 
     ``columns`` is the frames-across the view is laid out at, as everywhere else
     on the sprite side; ``None`` for a pixel off the sheet, past the last frame,
     or on a document that is not a sprite object.
+
+    ``hoist`` is what a caller resolving many pixels lifts out of its loop —
+    :func:`sprite_hoist`'s answer. A fill asks this once per pixel it touches, and
+    all three of its parts are rebuilt per call otherwise: the shown frames are a
+    fresh list, the sheet walks every frame to find the shared box, and the bank
+    is a decode.
     """
-    if not doc.is_sprite:
-        return None
-    frames = doc.shown_frames
-    sheet = sprite_sheet(doc, columns)
-    left, top, width, height = sheet.box
-    if not (0 <= x < sheet.across * width and 0 <= y < sheet.down * height):
-        return None
-    at = (y // height) * sheet.across + (x // width)
-    if not 0 <= at < len(frames):
-        return None
-    # Into the object's own coordinates: every frame is drawn in the same box, so
-    # backing the box's origin out is what turns a sheet pixel into the offset a
-    # subsprite states.
-    px, py = x % width + left, y % height + top
-    pair = doc.sprite_size_pair
-    step_x, step_y = max(1, doc.tile_width), max(1, doc.tile_height)
-    source = tile_bank(doc, reg)
-    covering: tuple[int, int] | None = None
-    for index, sub in enumerate(frames[at]):
-        side = sub.tiles(pair)
-        dx, dy = px - sub.x, py - sub.y
-        col, row = dx // step_x, dy // step_y
-        if not (0 <= col < side and 0 <= row < side):
-            continue
+    covering: SpriteHit | None = None
+    for hit, drawn in _sprite_walk(doc, reg, columns, x, y, hoist):
+        if drawn:
+            return hit
         if covering is None:
-            covering = (at, index)
-        tile_index = sub.tile_indices(pair)[row * side + col] + doc.tile_base_index
-        if not 0 <= tile_index < len(source):
-            continue
-        tile = source[tile_index]
-        # The walk already mirrored the *order* of the tiles, so what is left is
-        # mirroring the pixel inside the one under the cursor — the render's own
-        # two halves, taken apart (:func:`~celpix.core.tilemap.tile_run`).
-        tx, ty = dx % step_x, dy % step_y
-        if sub.flip_h:
-            tx = tile.width - 1 - tx
-        if sub.flip_v:
-            ty = tile.height - 1 - ty
-        if tile.get(tx, ty):
-            return at, index
+            covering = hit
     return covering
+
+
+def sprite_hits(
+    doc: Document,
+    reg: Registry,
+    columns: int,
+    x: int,
+    y: int,
+    *,
+    hoist: tuple[list[Frame], SpriteSheet, list[IndexGrid]] | None = None,
+) -> list[SpriteHit]:
+    """*Every* subsprite under the sheet pixel, in the order a click picks them.
+
+    :func:`sprite_hit`'s answer is the first of these, and the rest are what a
+    second click on the same tile moves on to: the pieces the front-most one is
+    hiding. Same rule, applied all the way down rather than stopping — the ones
+    that draw there first, in file order, then the ones whose box covers the
+    pixel without putting anything in it.
+    """
+    drawn: list[SpriteHit] = []
+    covering: list[SpriteHit] = []
+    for hit, is_drawn in _sprite_walk(doc, reg, columns, x, y, hoist):
+        (drawn if is_drawn else covering).append(hit)
+    return drawn + covering
+
+
+def sprite_hoist(doc: Document, reg: Registry, columns: int):  # noqa: ANN201
+    """What :func:`sprite_hit` wants lifted out of a per-pixel loop.
+
+    One call before the loop instead of three inside it. Opaque to the caller:
+    it carries the tuple from one hit to the next without unpacking it.
+    """
+    return doc.shown_frames, sprite_sheet(doc, columns), tile_bank(doc, reg)
+
+
+def subsprite_at(
+    doc: Document, reg: Registry, columns: int, x: int, y: int
+) -> tuple[int, int] | None:
+    """Which subsprite the sheet pixel ``(x, y)`` shows — ``(frame, subsprite)``.
+
+    The pick's half of :func:`sprite_hit`, which is where the walk and the rule
+    it follows are stated.
+    """
+    hit = sprite_hit(doc, reg, columns, x, y)
+    return None if hit is None else (hit.frame, hit.subsprite)
+
+
+def subsprites_at(
+    doc: Document, reg: Registry, columns: int, x: int, y: int
+) -> list[tuple[int, int]]:
+    """Every subsprite under the sheet pixel, front-most first — the pick's cycle.
+
+    :func:`subsprite_at` is this list's first entry;
+    :func:`sprite_hits` is where the order comes from.
+    """
+    return [(hit.frame, hit.subsprite) for hit in sprite_hits(doc, reg, columns, x, y)]
 
 
 @lru_cache(maxsize=64)
@@ -1500,11 +1617,16 @@ def load_tilemap_data(
             Pathway.TILEMAP,
             lambda: engine.frames(cells, preset.params, ctx),
         )
-        size_pair = _run(
-            Stage.INTERPRET_TILEMAP,
-            Pathway.TILEMAP,
-            lambda: engine.size_pair(preset.params),
-        )
+        # Optional even among the sprite formats: it is the setting a record
+        # holding a size *bit* is resolved against, and a format whose record
+        # states the rectangle outright has nothing to resolve. Its subsprites
+        # arrive already sized, so the default here is only what the bar shows.
+        if hasattr(engine, "size_pair"):
+            size_pair = _run(
+                Stage.INTERPRET_TILEMAP,
+                Pathway.TILEMAP,
+                lambda: engine.size_pair(preset.params),
+            )
         # Bounded here as well as at the allocation itself, because *this* is the
         # call the UI can take back: a read that fails leaves the binding on what
         # it was and says why, where a render that fails has already replaced the
@@ -1512,7 +1634,7 @@ def load_tilemap_data(
         # is measured over nominal 8px tiles — the real ones come from whatever
         # entry the map is bound to, and are not known until the document exists —
         # which is close enough for a limit the offsets, not the tiles, blow past.
-        box = frame_bounds(frames, size_pair)
+        box = frame_bounds(frames)
         _check_sprite_extent(
             len(frames) * box[2] * box[3],
             f"{len(frames)} frames of subsprites, {box[2]}x{box[3]} pixels each",
@@ -1561,6 +1683,80 @@ def load_tilemap_data(
     )
     return TilemapData(
         cells, cell_bytes, tiles, ctx, data, frames, size_pair, rows, mask, row_base
+    )
+
+
+def load_alphabet(
+    preset_id: str | None,
+    reg: Registry,
+    ctx: PipelineContext,
+    *,
+    controls: Iterable[dict] = (),
+    code_digits: int = 2,
+    base: int = 0,
+    flag_break: bool = False,
+) -> Alphabet | None:
+    """The lookup a fontmap's codes are read through, from its two halves.
+
+    ``preset_id`` is the **font's** alphabet, picked on the entry that supplies
+    the tiles, and ``ctx`` is that entry's own context — so a container that
+    computed a mapping no table could hold reaches the engine that way
+    (:data:`~celpix.core.context.KEY_ALPHABET`). ``controls`` is the **fontmap's**
+    own, off its cell format's params, and it is laid over the font's: where a
+    stream reserves a code the font also spells, the stream wins, because the
+    font's table was authored against tiles and knows nothing about which codes a
+    given stream has taken (``docs/design/fontmap-entry.md`` §3).
+
+    ``base`` shifts the **font's** half and not the stream's
+    (:meth:`~celpix.core.font.Alphabet.shifted`). The two are stated against
+    different things and only one of them can be off by an origin: a table
+    numbers the glyphs from wherever its author started reading the sheet, while
+    a format's controls name the codes the stream actually holds. Shifting those
+    too would move a terminator the user read straight out of the file.
+
+    ``flag_break`` is the third thing the **fontmap's** cell format states, beside
+    its controls: that lines end on a bit the cell carries rather than on a code
+    (:attr:`~celpix.core.font.Alphabet.flag_break`). It travels with the controls
+    for the same reason they do — it is punctuation, and punctuation is the
+    stream's.
+
+    Returns **None** rather than an empty alphabet where neither half says
+    anything: "no lookup picked" and "a lookup that maps nothing" are different
+    states, and only the first is worth telling the user about.
+
+    Never raises. An alphabet is a *reading* of cells that are already decoded,
+    so a preset naming an engine this build has not got must not take the
+    document with it — the map still draws, and its text reads as hex until the
+    picker is put right. That is the opposite of the hard-stop the byte stages
+    take, and deliberately: those stages have no output at all without their
+    plugin, and this one does.
+    """
+    glyphs: list[Glyph] = []
+    if preset_id:
+        try:
+            engine, preset = reg.engine_for(preset_id)
+            params = {"code_digits": code_digits, **preset.params}
+            glyphs = list(engine.glyphs(params, ctx))
+        except Exception:  # noqa: BLE001 — see the docstring: text degrades to hex
+            glyphs = []
+    font = Alphabet(glyphs, code_digits=code_digits, flag_break=flag_break).shifted(
+        base
+    )
+    stream = list(controls or ())
+    # Asked of what the preset *said*, not of what survived the shift: an
+    # alphabet dialled clean off the end of the code space is still an alphabet
+    # the user picked, and reporting "none picked" there would point them at the
+    # combo they already set instead of at the spin they just moved.
+    if not glyphs and not stream:
+        return None
+    if not stream:
+        return font
+    return font.merged(
+        Alphabet(
+            glyphs_from_spec(stream, GlyphRole.CONTROL),
+            code_digits=code_digits,
+            flag_break=flag_break,
+        )
     )
 
 
@@ -2312,9 +2508,15 @@ def _compress_unshape(
 
     A bounded target (``length`` set — a slice of a larger file) is a hard slot:
     a result that would overflow it raises before anything touches the file. A
-    result *smaller* than the slot is written short, leaving the slot's tail
-    bytes as they were — every supported scheme is self-delimiting, so the stale
-    tail is inert, and not rewriting it keeps the file diff minimal.
+    result *smaller* than the slot leaves room at the end, and what goes there is
+    the pathway's :class:`~celpix.pipeline.pathway.SlotFill`: padded out to the
+    slot with ``$FF`` or ``$00``, or written short so the previous stream's tail
+    stands. Every supported scheme is self-delimiting, so no reader reaches those
+    bytes either way — the choice is about what someone reading the file finds.
+
+    Only a **compressed** pathway is padded. Everywhere else the result is the
+    length of the buffer it was read from, so a short one means something the
+    pathway didn't expect, and inventing bytes to cover it would bury that.
 
     **Under an active reshape the slot must be filled exactly.** A reshape's
     part boundaries are fractions of the region's length, so a short result is
@@ -2356,4 +2558,14 @@ def _compress_unshape(
             "different reshape",
             "unshape",
         )
+    if (
+        cfg.compression_id != NO_COMPRESSION
+        and target.length is not None
+        and len(shaped) < target.length
+    ):
+        # A reshape can't reach here — the check above already demanded an exact
+        # fill — so padding never lands inside a permutation it would scatter.
+        filler = cfg.slot_fill.filler
+        if filler:
+            shaped += filler * (target.length - len(shaped))
     return shaped

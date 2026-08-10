@@ -3,6 +3,7 @@
 id = "preset.pixel.genesis-4bpp"
 name = "Genesis 4bpp (MD/X68000/MSX, 8x8)"
 engine_id = "codec.pixel.packed"
+category = "Sega"
 
 [params]
 bpp = 4

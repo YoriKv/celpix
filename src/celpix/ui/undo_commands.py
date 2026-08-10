@@ -69,6 +69,7 @@ if TYPE_CHECKING:
 # never merges); any other command landing in between breaks the chain.
 OFFSET_MOVE_ID = 1
 COLOR_EDIT_ID = 2
+TILEMAP_CELLS_ID = 3
 
 
 @dataclass(frozen=True)
@@ -262,6 +263,13 @@ class TilemapCellsCommand(_InPlaceCommand):
     map is a few thousand frozen cells, so a snapshot costs less than the
     bookkeeping a delta would need, and restoring one cannot drift the way
     replaying a sequence of per-cell writes could.
+
+    ``run`` is what lets **typing** land here without flooding the stack. Every
+    gesture that edits cells once — a paste, a flip, a stamp — leaves it None and
+    never merges; the text window instead stamps a run number on each keystroke's
+    command and bumps it when the run ends (a click, an arrow key, a command
+    button, focus leaving), so a typed word collapses into one step and the thing
+    that ended it is the thing that ends the step.
     """
 
     def __init__(
@@ -271,6 +279,8 @@ class TilemapCellsCommand(_InPlaceCommand):
         text: str,
         before: list,
         after: list,
+        *,
+        run: int | None = None,
     ) -> None:
         # The state is the cells *paired with* the data-pathway revision they leave
         # the entry at, so an undo hands back the exact unsaved-state it had before.
@@ -281,6 +291,28 @@ class TilemapCellsCommand(_InPlaceCommand):
             (before, entry.pixel_revision),
             (after, window._workspace.next_revision()),
         )
+        self._merge_run = run
+
+    def id(self) -> int:
+        # -1 is QUndoStack's "never merge", which is what every non-typing cell
+        # edit wants: two pastes in a row are two things the user did.
+        return TILEMAP_CELLS_ID if self._merge_run is not None else -1
+
+    def mergeWith(self, other: QUndoCommand) -> bool:
+        if (
+            not isinstance(other, TilemapCellsCommand)
+            or other._entry is not self._entry
+            or other._merge_run != self._merge_run
+        ):
+            return False
+        # other's redo has already run, so its half of the pair is the live state.
+        self._after = other._after
+        if self._after[0] == self._before[0]:
+            # The run typed its way back to the string it started from — drop the
+            # empty step, and hand the entry back the revision it had before it.
+            self.setObsolete(True)
+            self._window._workspace.set_pixel_revision(self._entry, self._before[1])
+        return True
 
     def _apply(self, state: tuple[list, int]) -> None:
         cells, revision = state
@@ -735,6 +767,44 @@ class RenameEntryCommand(_InPlaceCommand):
 
     def _apply(self, state: str) -> None:
         self._window._apply_entry_name(self._entry, state)
+
+
+class AlphabetCommand(_InPlaceCommand):
+    """Which alphabet says what a **font entry**'s tiles spell, and from where.
+
+    In-place, and it is the one command here whose entry is not the one the
+    change is *seen* on: the alphabet belongs to the font, and what it changes is
+    every fontmap drawn through that font
+    (``docs/design/fontmap-entry.md`` §3). Yanking the view to the font — a sheet
+    of letters, on which the setting shows nothing at all — would move away from
+    the string the user is reading it against.
+
+    The pair travels as one state because a change to either can move both:
+    picking a different alphabet returns the origin to zero, since a shift
+    dialled against one table means nothing on the next. Two commands would put
+    that reset on the stack as a second step to undo.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        before: tuple[str | None, int],
+        after: tuple[str | None, int],
+    ) -> None:
+        preset_id, base = after
+        # Named for whichever half moved, since one gesture only ever moves one
+        # of them - "set alphabet" on a base tick would describe the wrong thing
+        # in the history list.
+        text = (
+            f"set alphabet base to ${base:X}"
+            if preset_id == before[0]
+            else f"set alphabet to {preset_id or 'none'}"
+        )
+        super().__init__(window, entry, text, before, after)
+
+    def _apply(self, state: tuple[str | None, int]) -> None:
+        self._window._apply_alphabet(self._entry, state)
 
 
 class SliceEditCommand(_InPlaceCommand):

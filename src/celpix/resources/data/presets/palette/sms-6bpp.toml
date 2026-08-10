@@ -5,6 +5,7 @@
 id = "preset.palette.sms-6bpp"
 name = "BGR222 (6-bit, Master System CRAM)"
 engine_id = "codec.palette.mask"
+category = "Sega"
 
 [params]
 bytes_per_entry = 1

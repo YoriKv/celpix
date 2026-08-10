@@ -3,6 +3,7 @@
 id = "preset.pixel.pce-cg2-4bpp"
 name = "PC Engine CG2 4bpp (8x8)"
 engine_id = "codec.pixel.planar"
+category = "NEC"
 
 [params]
 bpp = 4

@@ -4,6 +4,7 @@
 id = "preset.palette.bgr444-be"
 name = "BGR444 (12-bit, big-endian)"
 engine_id = "codec.palette.mask"
+category = "Generic"
 
 [params]
 bytes_per_entry = 2

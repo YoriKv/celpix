@@ -9,6 +9,7 @@
 id = "preset.tilemap.snes-mode7"
 name = "SNES Mode 7 map (8-bit, also GBA affine)"
 engine_id = "codec.tilemap.packed"
+category = "Nintendo"
 
 [params]
 bytes = 1

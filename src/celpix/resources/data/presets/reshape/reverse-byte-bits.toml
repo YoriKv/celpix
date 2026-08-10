@@ -9,6 +9,7 @@
 id = "reshape.reverse-byte-bits"
 name = "Reverse bit order within each byte"
 engine_id = "reshape.data-lut"
+category = "Generic"
 
 [params]
 bitswaps = [[0, 1, 2, 3, 4, 5, 6, 7]]

@@ -5,6 +5,7 @@
 id = "preset.pixel.snes-8bpp-bank"
 name = "SNES 8bpp whole-bank (128x128)"
 engine_id = "codec.pixel.packed"
+category = "Nintendo"
 
 [params]
 bpp = 8

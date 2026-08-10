@@ -4,6 +4,7 @@
 id = "preset.pixel.3bpp-planar-separate"
 name = "3bpp planar, separate planes (8x8, NES-style)"
 engine_id = "codec.pixel.planar"
+category = "Generic planar"
 
 [params]
 bpp = 3

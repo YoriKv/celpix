@@ -98,6 +98,7 @@ class INesContainer:
         extensions=(".nes",),
         magic=((0, _INES_MAGIC),),
         short_name="iNES",
+        category="Nintendo",
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
@@ -252,6 +253,7 @@ class SmdContainer:
         extensions=(".smd",),
         short_name="SMD",
         preserves_offsets=False,
+        category="Sega",
     )
 
     _HEADER = 512
@@ -379,6 +381,7 @@ class CopierHeaderContainer:
         size_modulo=COPIER_SIZE_RULE,
         min_size=COPIER_MIN_SIZE,
         short_name="Header",
+        category="Generic",
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
@@ -458,6 +461,7 @@ class SnesInterleavedContainer:
         stage=Stage.CONTAINER,
         short_name="Interleaved",
         preserves_offsets=False,
+        category="Nintendo",
     )
 
     _HALF = 0x8000  # half of a 64 KB HiROM bank

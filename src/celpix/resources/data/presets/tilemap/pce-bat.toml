@@ -4,6 +4,7 @@
 id = "preset.tilemap.pce-bat"
 name = "PC Engine BAT (16-bit)"
 engine_id = "codec.tilemap.packed"
+category = "NEC"
 
 [params]
 bytes = 2

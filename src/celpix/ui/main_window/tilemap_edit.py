@@ -586,12 +586,18 @@ class TilemapEditMixin:
         return block is not None and len(block) > 0
 
     # -- committing ----------------------------------------------------------
-    def _apply_cells(self, cells: list[Cell], text: str) -> bool:
+    def _apply_cells(
+        self, cells: list[Cell], text: str, *, run: int | None = None
+    ) -> bool:
         """Push ``cells`` as one undoable edit; False when nothing changed.
 
         The no-change guard is what keeps a flip of an empty selection, or a
         paste of identical cells, from putting a step on the undo stack that
         would appear to do nothing when it came back.
+
+        ``run`` groups consecutive edits into one step and is the text window's
+        alone — typing is the only gesture here that fires per keystroke
+        (:class:`~celpix.ui.undo_commands.TilemapCellsCommand`).
 
         Refused outright only on a sprite object, whose cells are subsprites placed at
         pixel offsets rather than positions in a grid
@@ -606,7 +612,7 @@ class TilemapEditMixin:
         if doc is None or doc.cells is None or entry is None or cells == doc.cells:
             return False
         self._push_command(
-            TilemapCellsCommand(self, entry, text, list(doc.cells), cells)
+            TilemapCellsCommand(self, entry, text, list(doc.cells), cells, run=run)
         )
         return True
 

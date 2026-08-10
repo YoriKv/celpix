@@ -9,6 +9,7 @@
 id = "preset.palette.rgb444"
 name = "RGB444 (12-bit, WonderSwan Color)"
 engine_id = "codec.palette.mask"
+category = "Bandai"
 
 [params]
 bytes_per_entry = 2

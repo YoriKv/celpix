@@ -164,20 +164,31 @@ class _SubspriteCodec:
         that slot the same payload differently states the stride
         (:func:`subsprites_per_frame`), which is the sprite object's case and the
         one that cannot be worked out from the byte count.
+
+        The size **pair** is resolved here rather than carried to the renderer:
+        these records hold a size bit, and what a subsprite hands over is a
+        shape (:class:`~celpix.core.sprite.Subsprite`). Which is also why a
+        change of pair is a re-read and not a repaint.
         """
         per_frame = subsprites_per_frame(params, ctx)
+        pair = size_pair(params)
         return [
             tuple(
                 sub
                 for cell in cells[at : at + per_frame]
-                if (sub := self._subsprite(cell)) is not None
+                if (sub := self._subsprite(cell, pair)) is not None
             )
             for at in range(0, len(cells), per_frame)
         ]
 
     @staticmethod
-    def _subsprite(cell: Cell) -> Subsprite | None:
+    def _subsprite(cell: Cell, pair: tuple[int, int]) -> Subsprite | None:
         raise NotImplementedError
+
+    @staticmethod
+    def _side(large: bool, pair: tuple[int, int]) -> int:
+        """The square side, in tiles, the record's size bit picks out."""
+        return max(1, pair[1] if large else pair[0])
 
 
 class ObjectCodec(_SubspriteCodec):
@@ -225,11 +236,12 @@ class ObjectCodec(_SubspriteCodec):
         return bytes(out)
 
     @staticmethod
-    def _subsprite(cell: Cell) -> Subsprite | None:
+    def _subsprite(cell: Cell, pair: tuple[int, int]) -> Subsprite | None:
         """One decoded subsprite, or None when this slot says it is not drawn."""
         flags = cell.flags
         if not (flags >> 24) & _DRAWN:
             return None
+        side = _SubspriteCodec._side(bool((flags >> 24) & _LARGE), pair)
         return Subsprite(
             x=_signed(flags & 0xFF),
             y=_signed((flags >> 8) & 0xFF),
@@ -238,7 +250,8 @@ class ObjectCodec(_SubspriteCodec):
             priority=cell.priority,
             flip_h=cell.flip_h,
             flip_v=cell.flip_v,
-            large=bool((flags >> 24) & _LARGE),
+            across=side,
+            down=side,
             group=(flags >> 16) & 0xFF,
         )
 
@@ -325,10 +338,11 @@ class ObzCodec(_SubspriteCodec):
         return bytes(out)
 
     @staticmethod
-    def _subsprite(cell: Cell) -> Subsprite | None:
+    def _subsprite(cell: Cell, pair: tuple[int, int]) -> Subsprite | None:
         flags = cell.flags
         if not (flags >> _OBZ_DRAWN) & 1:
             return None
+        side = _SubspriteCodec._side(bool((flags >> _OBZ_LARGE) & 1), pair)
         return Subsprite(
             x=_signed((flags >> _OBZ_X) & 0xFF),
             y=_signed((flags >> _OBZ_Y) & 0xFF),
@@ -337,7 +351,8 @@ class ObzCodec(_SubspriteCodec):
             priority=cell.priority,
             flip_h=cell.flip_h,
             flip_v=cell.flip_v,
-            large=bool((flags >> _OBZ_LARGE) & 1),
+            across=side,
+            down=side,
             group=flags & 0xFF,
         )
 
@@ -456,21 +471,25 @@ class SprCodec(_SubspriteCodec):
         sizes = ctx.get(KEY_TILEMAP_FRAME_SIZES)
         if not sizes:
             return super().frames(cells, params, ctx)
+        pair = size_pair(params)
         out: list[Frame] = []
         at = 0
         for size in sizes:
-            out.append(tuple(self._subsprite(cell) for cell in cells[at : at + size]))
+            out.append(
+                tuple(self._subsprite(cell, pair) for cell in cells[at : at + size])
+            )
             at += size
         return out
 
     @staticmethod
-    def _subsprite(cell: Cell) -> Subsprite:
+    def _subsprite(cell: Cell, pair: tuple[int, int]) -> Subsprite:
         """One decoded subsprite — always one: the format has no undrawn slot.
 
         No group byte either, so that field of the model stays 0 rather than
         being fed a byte this record does not have.
         """
         flags = cell.flags
+        side = _SubspriteCodec._side(bool((flags >> _SPR_LARGE) & 1), pair)
         return Subsprite(
             x=_signed16((flags >> _SPR_X) & 0xFFFF),
             y=_signed16((flags >> _SPR_Y) & 0xFFFF),
@@ -479,7 +498,8 @@ class SprCodec(_SubspriteCodec):
             priority=cell.priority,
             flip_h=cell.flip_h,
             flip_v=cell.flip_v,
-            large=bool((flags >> _SPR_LARGE) & 1),
+            across=side,
+            down=side,
         )
 
 

@@ -3,6 +3,7 @@
 id = "preset.pixel.gb-2bpp"
 name = "GB 2bpp (8x8)"
 engine_id = "codec.pixel.planar"
+category = "Nintendo"
 
 [params]
 bpp = 2

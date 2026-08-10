@@ -9,6 +9,7 @@
 id = "preset.tilemap.scgcad-panel"
 name = "Panel tile table (byte-swapped)"
 engine_id = "codec.tilemap.packed"
+category = "Authoring tools"
 
 [params]
 bytes = 2

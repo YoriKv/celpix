@@ -126,13 +126,19 @@ _GATES: dict[Capability, tuple[str, ...]] = {
     Capability.STAMP: ("_stamp_action", "_toggle_stamp_action"),
     # Three surfaces onto the same view window, and all three have to go
     # together. The position bar is the visible one; the Navigate menu's
-    # position and row-count rows are the same movements spelled as menu rows
-    # (their keys are routed by the event filter, which is inert here already);
+    # position and row-count rows are the same movements spelled as menu rows;
     # and New Slice from View carves out whatever that window covers, which is
     # the third member of the family COMPRESSION_SCAN belongs to — it reads the
     # window rather than moving it. The menu's *column* rows stay: a map's cell
     # width is its own live setting, which is why the kind's refusal in
     # ``capabilities.py`` names the row count and the position and not that.
+    #
+    # The **keys** those rows document are not gated here at all: they are routed
+    # by an app-wide event filter rather than bound to these actions, so a
+    # disabled row does not disarm them. They are refused at the one place every
+    # position gesture lands instead
+    # (:meth:`~...navigation.NavigationMixin._set_offset`), which is also what
+    # covers the scrollbar and the address box.
     Capability.NAVIGATION: (
         "_tile_offset_bar",
         "_nav_window_actions",
@@ -146,6 +152,10 @@ _GATES: dict[Capability, tuple[str, ...]] = {
     Capability.PIXEL_CODEC: ("_pixel_codec_action",),
     Capability.TILEMAP_CODEC: ("_tilemap_codec_action",),
     Capability.COMPRESSION_SCAN: ("_compression_action",),
+    # The whole Arrangement row, as one bar rather than five names: every control
+    # on it states how a linear run of bytes is cut and grouped, and a tilemap
+    # places nothing linearly, so they go or stay together.
+    Capability.TILE_ARRANGEMENT: ("_arrange_toolbar",),
 }
 
 # Capabilities gated by their own ``_sync_*`` asking :meth:`_can`, because this
@@ -239,8 +249,20 @@ _HIDDEN = frozenset(
         "_pixel_codec_action",
         "_tilemap_codec_action",
         "_compression_action",
+        "_arrange_toolbar",
     }
 )
+
+# Hidden controls whose *enabled* state this pass must leave alone, because it
+# already has an owner that answers a different question. The Arrangement bar is
+# the case: it is greyed wholesale for an unavailable entry
+# (:meth:`~...session.SessionMixin._set_document_ui_enabled`) and frozen wholesale
+# while a scan runs (:meth:`~...compression.CompressionMixin._set_scan_ui`), so a
+# veto here would strand it grey on the way back to a pixel entry, and putting it
+# in :data:`_GATE_OWNS` instead would do the opposite — hand a bar back over a
+# missing file, which is the grant this pass promises never to make. Hidden, it
+# needs neither: an invisible bar has nothing left to switch off.
+_VISIBILITY_ONLY = frozenset({"_arrange_toolbar"})
 
 # Controls whose enabled state **nothing else manages**: they are built enabled
 # and no ``_sync_*`` ever touches them, because until capabilities existed they
@@ -409,6 +431,8 @@ class CapabilitySyncMixin:
                 for control in found if isinstance(found, tuple) else (found,):
                     if name in _HIDDEN:
                         control.setVisible(allowed)
+                    if name in _VISIBILITY_ONLY:
+                        continue  # hiding is the whole gate — see _VISIBILITY_ONLY
                     if name in _GATE_OWNS:
                         control.setEnabled(allowed)
                     elif not allowed:

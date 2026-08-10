@@ -7,6 +7,7 @@
 id = "preset.tilemap.ngp-bg"
 name = "Neo Geo Pocket map (16-bit, mono)"
 engine_id = "codec.tilemap.packed"
+category = "SNK"
 
 [params]
 bytes = 2

@@ -3,6 +3,7 @@
 id = "preset.palette.genesis-9bpp"
 name = "BGR333 (9-bit, Genesis VDP CRAM)"
 engine_id = "codec.palette.mask"
+category = "Sega"
 
 [params]
 bytes_per_entry = 2

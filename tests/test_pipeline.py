@@ -8,7 +8,7 @@ from celpix.core.context import KEY_SOURCE_FILES, KEY_SOURCE_PATH, PipelineConte
 from celpix.core.errors import PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.pipeline import pipeline
-from celpix.pipeline.pathway import PathwayConfig
+from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
 from celpix.plugins.base import FileRef
 from celpix.plugins.registry import default_registry
 
@@ -183,13 +183,14 @@ class _StubCompression:
         return self._packed
 
 
-def _save_slice_with_stub(tmp_path, packed: bytes):
+def _save_slice_with_stub(tmp_path, packed: bytes, slot_fill=DEFAULT_SLOT_FILL):
     """Save a 64-byte slice at offset 32 through a stub compressor emitting
     ``packed``; returns (path, original bytes, save thunk)."""
     reg = default_registry()
     px, pl, pixel_bytes, _ = _make_files(tmp_path)
     pixel_cfg, palette_cfg = _slice_configs(px, pl, offset=32, length=64)
     pixel_cfg.compression_id = "compression.stub"
+    pixel_cfg.slot_fill = slot_fill
     palette_cfg.write_enabled = False
     reg.register(_StubCompression(packed))
     doc = pipeline.load(pixel_cfg, palette_cfg, reg)
@@ -215,12 +216,43 @@ def test_bounded_write_accepts_exact_fit(tmp_path) -> None:
     assert out[:32] == pixel_bytes[:32] and out[96:] == pixel_bytes[96:]
 
 
-def test_bounded_write_leaves_slot_tail_on_short_result(tmp_path) -> None:
-    px, pixel_bytes, save = _save_slice_with_stub(tmp_path, packed=b"\xab" * 10)
+@pytest.mark.parametrize(
+    ("slot_fill", "tail"),
+    [
+        (SlotFill.FF, b"\xff" * 54),
+        (SlotFill.ZERO, bytes(54)),
+        (SlotFill.KEEP, None),  # None: whatever the file already held
+    ],
+)
+def test_short_result_fills_the_slot_tail_the_way_the_slice_asked(
+    tmp_path, slot_fill, tail
+) -> None:
+    # The room a tighter packing leaves is the slice's own choice. Whichever way
+    # it goes, the bytes *outside* the slot are never in play.
+    px, pixel_bytes, save = _save_slice_with_stub(
+        tmp_path, packed=b"\xab" * 10, slot_fill=slot_fill
+    )
     save()
     out = px.read_bytes()
     assert out[32:42] == b"\xab" * 10
-    assert out[42:96] == pixel_bytes[42:96]  # stale tail deliberately untouched
+    assert out[42:96] == (pixel_bytes[42:96] if tail is None else tail)
+    assert out[:32] == pixel_bytes[:32] and out[96:] == pixel_bytes[96:]
+
+
+def test_an_uncompressed_slot_is_never_filled(tmp_path) -> None:
+    # Only a compressor can pack tighter than the buffer it was handed, so a
+    # short result anywhere else means something unexpected — covering it with
+    # invented bytes would bury that, whatever the fill says.
+    reg = default_registry()
+    px, pl, pixel_bytes, _ = _make_files(tmp_path)
+    pixel_cfg, palette_cfg = _slice_configs(px, pl, offset=32, length=64)
+    palette_cfg.write_enabled = False
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    doc.pixel_data = b"\xab" * 10
+    pipeline.save(doc, reg)
+    out = px.read_bytes()
+    assert out[32:42] == b"\xab" * 10
+    assert out[42:96] == pixel_bytes[42:96]
 
 
 def test_pixel_write_optional(tmp_path) -> None:

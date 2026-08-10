@@ -3,6 +3,7 @@
 id = "preset.pixel.dc-argb4444-be"
 name = "Direct ARGB4444 (8x8, big-endian)"
 engine_id = "codec.pixel.direct-color"
+category = "Direct color"
 
 [params]
 bytes_per_pixel = 2

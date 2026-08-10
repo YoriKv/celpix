@@ -1273,6 +1273,25 @@ class PaletteSourceMixin:
             return entry
         return self._workspace.find_file(entry.path)
 
+    def _offset_palette_files(self, entry: Entry) -> tuple[str, ...]:
+        """The files ``entry``'s Offset palette offsets address.
+
+        The **owner's** (:meth:`_palette_offset_owner`), which for a slice is the
+        parent whose coordinates its offsets are already in; its own list when
+        the parent is not open, which is that same list — a slice carries the
+        parent's files precisely so an offset into a joined region keeps meaning
+        one thing (:func:`~celpix.project.workspace.slice_of`).
+
+        Asked of the *entry* rather than read off ``doc.pixel_config``, which is
+        the same answer for a pixel document and the wrong file entirely for a
+        **tilemap**: a map's pixel pathway is the bound bank's, so an unbound one
+        offers no file at all and a bank in another file offers the wrong one.
+        The map's own bytes are its ``tilemap_config``, and its palette offsets
+        are in that lineage's coordinates like any other entry's.
+        """
+        owner = self._palette_offset_owner(entry)
+        return owner.paths if owner is not None else entry.paths
+
     def _reordered_view(self, owner: Entry) -> tuple[bytes, int] | None:
         """``owner``'s view buffer plus the offset its first byte sits at, or
         ``None`` when reading the file would give the same bytes anyway.
@@ -1291,6 +1310,7 @@ class PaletteSourceMixin:
         """
         if not reorders_bytes(owner, self._registry):
             return None
+        self._settle_region(owner)
         return entry_view_bytes(
             owner,
             self._registry,
@@ -1320,7 +1340,6 @@ class PaletteSourceMixin:
         an ``.smd`` body begins past its copier header), so the base is that
         start.
         """
-        assert entry.doc is not None
         owner = self._palette_offset_owner(entry)
         view = self._reordered_view(owner) if owner is not None else None
         if view is not None:
@@ -1328,7 +1347,7 @@ class PaletteSourceMixin:
             if owner is not None and owner.reshape_id != NO_RESHAPE:
                 base = 0
             return (data, base), base + len(data)
-        paths = entry.doc.pixel_config.source.paths
+        paths = self._offset_palette_files(entry)
         return None, sum(Path(p).stat().st_size for p in paths)
 
     def _offset_palette_pixel_owner(self) -> Entry | None:
@@ -1418,7 +1437,7 @@ class PaletteSourceMixin:
         the one on screen.
         """
         entry = entry if entry is not None else self._workspace.current
-        assert entry is not None and entry.doc is not None
+        assert entry is not None
         fmt = preset_id or self._palette_preset_id()
         view, end = self._offset_palette_space(entry)
         writable = view is None
@@ -1431,10 +1450,9 @@ class PaletteSourceMixin:
         if colors <= 0:
             return None, writable
         length = pipeline.palette_read_bytes(colors, fmt, self._registry)
-        # The whole file list, as the pixel pathway reads it: the offset
-        # addresses the joined buffer, so a several-chip region cannot be
-        # answered from its first chip alone.
-        paths = entry.doc.pixel_config.source.paths
+        # The owner's whole file list: the offset addresses the joined region, so
+        # a several-chip one cannot be answered from its first chip alone.
+        paths = self._offset_palette_files(entry)
         if view is None:
             return FileRef(paths, offset=byte_off, length=length), True
         data, base = view
@@ -1489,16 +1507,23 @@ class PaletteSourceMixin:
         aren't really a palette and then saving rewrites them
         (``docs/design/palette-editing.md``).
         """
-        if self._doc is None:
+        entry = self._workspace.current
+        if self._doc is None or entry is None:
             return False
-        src = self._doc.pixel_config.source
         try:
             ref, writable = self._offset_palette_source(byte_off)
         except PipelineError as exc:
             self._report(exc)
             return False
         except OSError as exc:
-            self._alert(f"Cannot read {src.path}: {exc}", title="celPix - palette")
+            # The file the *offset* names, which is the owner's and not
+            # necessarily the one this entry draws from
+            # (:meth:`_offset_palette_files`).
+            files = self._offset_palette_files(entry)
+            self._alert(
+                f"Cannot read {files[0] if files else entry.path}: {exc}",
+                title="celPix - palette",
+            )
             return False
         if ref is None:
             self._alert(

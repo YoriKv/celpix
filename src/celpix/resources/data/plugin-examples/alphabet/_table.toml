@@ -1,0 +1,50 @@
+# An alphabet: what a font's tiles spell, so a text run in a ROM reads as words.
+#
+# Pick it on the entry that supplies a fontmap's tiles - the Alphabet box on the
+# bar below the canvas - and read the result in View > Text.
+#
+# You usually do NOT need this file. A plain table file dropped in this folder
+# (see `_font.tbl` beside it) is a working alphabet by itself, named after the
+# file. Write a preset when you want one of the things below.
+id = "alphabet.example"
+name = "Example alphabet"
+engine_id = "alphabet.table"
+
+[params]
+# THE SHORTHAND. A font sheet whose tiles are its letters in order: say where the
+# run starts and what it spells. This is most fonts, and often the whole file.
+first = 0x00
+chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,'!?-"
+
+# THE TABLE FILE, if you keep the mapping beside this preset. Must be a file in
+# this same folder. `order` is how its lines read:
+#   "code-first" (the default)  20=A
+#   "text-first"                A=20
+# Never guessed - both sides of `20=A` are valid hex, so a wrong guess would
+# reverse the whole font silently.
+# table = "_font.tbl"
+# order = "code-first"
+
+# THE EXPLICIT LIST, for what a run of characters cannot say. Later entries
+# override earlier ones by code, so a plain run plus a few of these is the usual
+# shape rather than writing every glyph out.
+[[params.glyphs]]
+# A code standing for a common pair, which some fonts have to fit more text into
+# a fixed slot. It shows as `th`, and typing `th` finds it in preference to
+# spending two codes.
+code = 0x3C
+text = "th"
+
+[[params.glyphs]]
+# A tile that draws something but spells nothing - an icon, a border piece. Give
+# it `role = "control"` and a name: it reads in the text as its own code,
+# `[$2A]`, and the name is what captions its button on the insert row.
+code = 0x2A
+text = "star icon"
+role = "control"
+
+# WHAT DOES NOT GO HERE: the punctuation. A line break, a terminator, a
+# text-speed command - those belong to the *stream*, not to the font, because two
+# runs in one game routinely share a font and punctuate differently. State them
+# as `[[params.controls]]` on the tilemap preset that reads the cells; see
+# `../tilemap/_packed.toml` and docs/design/fontmap-entry.md sec 3.

@@ -15,6 +15,7 @@
 id = "preset.tilemap.scgcad-obz"
 name = "Transfer object subsprite (OBZ)"
 engine_id = "codec.tilemap.scgcad-obz"
+category = "Authoring tools"
 
 [params]
 # A **sprite map**: the tilemap variant whose cells are freely-placed subsprites

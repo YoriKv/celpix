@@ -9,16 +9,22 @@ that renders an offset as flat hex or a ``bank:offset`` mapping.
 
 Navigation keys are routed by an **application event filter** rather than
 ``QShortcut`` so they work wherever focus is - except inside a widget that uses
-the arrow keys itself, which :meth:`_handle_nav_key` yields to.
+the arrow keys itself, which :meth:`_handle_nav_key` yields to. The window's
+bare *letter* keys (G, S, E, R, T and their Shift forms) are filtered the same
+way for the same reason, and are collected here for it: each one names the
+control it presses (:class:`KeyControl`), which is what keeps a key from acting
+while the thing it drives is switched off.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import NamedTuple
 
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QCursor,
     QPalette,
 )
@@ -47,6 +53,7 @@ from celpix.core.address import (
     format_hex,
     parse_hex,
 )
+from celpix.core.capabilities import Capability
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.undo_commands import (
     OffsetMoveCommand,
@@ -58,6 +65,51 @@ from celpix.ui.widgets import (
     signals_blocked,
     zoom_level_after,
 )
+
+
+class KeyControl(NamedTuple):
+    """A bare-key shortcut, expressed as **the control it presses**.
+
+    The bare letters are routed by the app-wide event filter rather than bound
+    to their actions (see the module docstring), which means Qt does not disarm
+    them the way it disarms a disabled action's real shortcut — so every one of
+    them has to be refused by hand. Doing that per handler means each one carries
+    its own copy of the conditions, which drifts from the copy that greys the
+    control: that is what leaves ``S`` swapping a selection shape the picker has
+    locked.
+
+    So a key names its control rather than its effect, and
+    :meth:`NavigationMixin._handle_nav_key` asks that one object. A key is dead
+    exactly when clicking the control would do nothing — there is no second
+    predicate to keep in step. The table of them is
+    :meth:`NavigationMixin._build_key_controls`.
+
+    ``control`` is whatever the user would otherwise click: usually the
+    :class:`QAction` behind a menu row or a toolbar button, but a plain widget
+    (the Selection Shape combo) or a :class:`QActionGroup` (the grid styles)
+    where that is what the key drives. All three answer ``isEnabled()``.
+
+    ``press`` is what the key does, defaulting to triggering the action — given
+    explicitly where the control is not a single action, or where the effect is
+    a step through it rather than a click on it.
+    """
+
+    control: QAction | QActionGroup | QWidget
+    press: Callable[[], None] | None = None
+
+    def fire(self) -> None:
+        """Do what a click on the control would; nothing while it is switched off."""
+        if not self.control.isEnabled():
+            return
+        # Only an *action* is asked whether it is visible. A hidden action means
+        # "not a thing on this document" - the Edit Tiles mode off a tilemap - so
+        # its key has to go with it. A QWidget answers False for as long as its
+        # window is unshown (startup, and every offscreen test), which would
+        # strand the key rather than gate it.
+        if isinstance(self.control, QAction | QActionGroup):
+            if not self.control.isVisible():
+                return
+        (self.press or self.control.trigger)()
 
 
 class NavigationMixin:
@@ -439,20 +491,49 @@ class NavigationMixin:
             (Qt.Key.Key_Down, *shift): lambda: self._adjust_spin(self._rows, 1),
             (Qt.Key.Key_Left, *shift): lambda: self._adjust_spin(self._columns, -1),
             (Qt.Key.Key_Right, *shift): lambda: self._adjust_spin(self._columns, 1),
-            # Not navigation, but the same routing need: bare letter keys that
-            # must yield to focused text inputs (Palette ▸ Load from Selection,
-            # View ▸ Grid, and the three mode switches). The transform bar's
-            # letters are handled ahead of this map, since which button they press
-            # depends on the group it is showing.
-            (Qt.Key.Key_P, *no_mod): self._load_palette_from_selection,
-            (Qt.Key.Key_G, *no_mod): self._grid.toggle,
-            (Qt.Key.Key_G, *shift): self._cycle_grid_style,
-            (Qt.Key.Key_S, *no_mod): self._toggle_selection_mode,
-            (Qt.Key.Key_E, *no_mod): self._toggle_edit_mode,
-            (Qt.Key.Key_R, *no_mod): self._toggle_rearranging,
-            (Qt.Key.Key_R, *shift): self._toggle_show_rearranged,
-            (Qt.Key.Key_T, *no_mod): self._toggle_stamping,
-            (Qt.Key.Key_P, *shift): self._toggle_show_palette_regions,
+        }
+        self._build_key_controls()
+
+    def _build_key_controls(self) -> None:
+        """The bare letter keys, each named by the control it presses.
+
+        Not navigation, but the same routing need: they must yield to a focused
+        text input, so they are filtered app-wide rather than bound as shortcuts
+        (see :class:`KeyControl` for what that costs and what this table pays it
+        with). Keyed like :meth:`_build_nav_keys`, by ``(key, shift, ctrl)``.
+
+        Each row points at the thing on screen the key stands in for, and every
+        new one has to: that is the whole guarantee, and it is why the middle
+        column is a control rather than a handler. Where a mode has both a
+        toolbar button and an Edit-menu row, the button is named — it is the one
+        the user is looking at, and the row is greyed in step with it.
+
+        The transform bar's flip/rotate letters are not here. They are handled
+        ahead of this table (:meth:`~...transform.TransformMixin._transform_key`)
+        because which button they press depends on the group it is showing, but
+        they are refused on exactly these terms.
+        """
+        no_mod = (False, False)
+        shift = (True, False)
+        self._key_controls = {
+            (Qt.Key.Key_P, *no_mod): KeyControl(self._palette_from_selection_action),
+            (Qt.Key.Key_G, *no_mod): KeyControl(self._grid),
+            # The style is a radio group rather than one control, and the key
+            # steps through it rather than clicking any single row of it.
+            (Qt.Key.Key_G, *shift): KeyControl(
+                self._grid_style_group, self._cycle_grid_style
+            ),
+            # The picker itself, not the Edit ▸ row that documents the key: it is
+            # a widget, so Qt already answers for the transform bar it sits on
+            # (greyed with no document) as well as for the shapes being forced.
+            (Qt.Key.Key_S, *no_mod): KeyControl(
+                self._selection_shape, self._toggle_selection_mode
+            ),
+            (Qt.Key.Key_E, *no_mod): KeyControl(self._edit_mode_action),
+            (Qt.Key.Key_R, *no_mod): KeyControl(self._rearrange_action),
+            (Qt.Key.Key_R, *shift): KeyControl(self._show_rearranged_action),
+            (Qt.Key.Key_T, *no_mod): KeyControl(self._stamp_action),
+            (Qt.Key.Key_P, *shift): KeyControl(self._show_palette_regions_action),
         }
 
     def eventFilter(self, obj, event) -> bool:
@@ -642,12 +723,18 @@ class NavigationMixin:
         return int(cx // zoom), int(cy // zoom)
 
     def _handle_nav_key(self, event) -> bool:
-        """Run the navigation handler for ``event``; return True if it was consumed.
+        """Run the handler for ``event``; return True if it was consumed.
 
         Yields (returns False) when an arrow-consuming input has focus, a popup
         (e.g. an open menu, which arrow keys navigate) is up, or the event carries
         Alt/Meta, so only bare / Shift-ed / Ctrl-ed navigation keys ever act (an
         unregistered Ctrl combo still falls through to the normal shortcuts).
+
+        Two tables, in this order: the bare letters that press a control
+        (:meth:`_build_key_controls`), then the navigation keys that move the view
+        (:meth:`_build_nav_keys`). The letters are refused when their control is
+        off; the navigation keys are refused where every position gesture is, at
+        :meth:`_set_offset`.
         """
         if self._scanning:
             return True  # a running scan owns the view position; swallow keys
@@ -672,6 +759,14 @@ class NavigationMixin:
         # Pixel mode claims the bare number keys (tool select) and Escape (stamp
         # the float / drop the marquee) before the navigation map sees them.
         if self._pixel_key(event.key(), shift, ctrl):
+            return True
+        # A bare letter presses its control, and is swallowed either way: the
+        # control being switched off is an answer, and letting the letter fall
+        # through to something else would be a surprise (the reading
+        # ``_transform_key`` takes for the same keys' neighbours).
+        binding = self._key_controls.get((event.key(), shift, ctrl))
+        if binding is not None:
+            binding.fire()
             return True
         handler = self._nav_keys.get((event.key(), shift, ctrl))
         if handler is None:
@@ -779,9 +874,25 @@ class NavigationMixin:
         Tile-based moves pass only ``offset`` and keep the current byte nudge -
         the nudge is alignment state, not position, so paging/rowing preserves
         it. Byte-based moves (:meth:`_set_byte_position`) supply both.
+
+        Every deliberate reposition also ends a pixel-format switching run: the
+        place the user just navigated to is the position now, so the next format
+        switch anchors there instead of on the target a previous run captured.
+        Focus alone can't decide this - the position bar never takes focus, so a
+        drag would otherwise leave the stale target live.
+
+        Inert on a document with no view window (a tilemap, which is always drawn
+        entire - ``Capability.NAVIGATION``). The bar and the menu rows are already
+        gated, but the nav **keys** are filtered app-wide rather than bound to
+        those actions, so this is where they stop: without it an arrow key moved a
+        position nothing renders from, and pushed an undo step that dirtied the
+        project for a move the user could not see.
         """
         if self._doc is None or self._applying_undo:
             return
+        if not self._can(Capability.NAVIGATION):
+            return
+        self._end_pixel_switch_run()
         if nudge is None:
             nudge = self._nudge
         offset = self._doc.clamp_tile_offset(

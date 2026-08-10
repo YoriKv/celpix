@@ -1,0 +1,45 @@
+# A table file IS a plugin. Drop one in this folder, drop the underscore, and it
+# appears in the Alphabet picker named after the file - no preset to write.
+#
+# One `code=text` line per glyph, hex on the left. Lines that do not parse are
+# ignored, so comments, blank lines and an assembler's own directives all cost
+# nothing. A value in [brackets] names a code that spells nothing - it reads in
+# the text as its own `[$2A]` like any other non-letter, and the name is what
+# captions its button on the insert row.
+#
+# For the reversed order an assembler writes (`A=20`), name this file from a
+# preset with `order = "text-first"` - see `_table.toml`.
+00=A
+01=B
+02=C
+03=D
+04=E
+05=F
+06=G
+07=H
+08=I
+09=J
+0A=K
+0B=L
+0C=M
+0D=N
+0E=O
+0F=P
+10=Q
+11=R
+12=S
+13=T
+14=U
+15=V
+16=W
+17=X
+18=Y
+19=Z
+1A= 
+1B=.
+1C=,
+1D='
+1E=!
+1F=?
+# A tile that draws something but spells nothing.
+2A=[star icon]

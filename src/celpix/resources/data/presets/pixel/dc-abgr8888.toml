@@ -3,6 +3,7 @@
 id = "preset.pixel.dc-abgr8888"
 name = "Direct ABGR8888 (8x8)"
 engine_id = "codec.pixel.direct-color"
+category = "Direct color"
 
 [params]
 bytes_per_pixel = 4

@@ -19,6 +19,7 @@ from typing import Any, Protocol, runtime_checkable
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
+from celpix.core.font import Glyph
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
 from celpix.core.tilemap import Cell, CellOp
@@ -38,6 +39,12 @@ RAW_CONTAINER = "container.raw-file"
 # offsets: addresses go dark and slices can't be carved until this is selected.
 NO_RESHAPE = "reshape.none"
 
+# The data-tier alphabet engine. Known by name because a *bare table file*
+# dropped into a plugin folder is adapted straight onto it, with no preset to
+# name it (:func:`~celpix.plugins.discovery._load_alphabet_table`) — so the host
+# has to know which engine a file of ``20=A`` lines belongs to.
+ALPHABET_TABLE_ENGINE = "alphabet.table"
+
 # The same three keyed by stage. Each one *does nothing*, so standing in for a
 # plugin the registry hasn't got leaves the stage a no-op rather than a different
 # transform (:meth:`~celpix.plugins.registry.Registry.resolve_stage`).
@@ -46,6 +53,83 @@ STAGE_PASSTHROUGH: dict[Stage, str] = {
     Stage.RESHAPE: NO_RESHAPE,
     Stage.COMPRESSION: NO_COMPRESSION,
 }
+
+# What each Interpret stage falls back to when the preset an entry names is one
+# this build hasn't got (:meth:`~celpix.plugins.registry.Registry.resolve_preset`).
+#
+# A byte stage has a pass-through to stand in with, so a missing plugin there
+# costs nothing but the transform. Interpret has no such thing — *something* has
+# to say how many bits a pixel is before anything can be drawn — so the stand-in
+# is a plain, commonplace format instead: what a fresh window starts on. It will
+# usually be the wrong one, and that is the point of saying so out loud rather
+# than degrading quietly.
+#
+# No entry for ALPHABET: "no alphabet picked" is a real and ordinary state (a
+# fontmap then reads as hex), so a missing one falls back to *none* rather than
+# to a table that would spell the codes wrongly.
+STAGE_DEFAULT_PRESET: dict[Stage, str] = {
+    Stage.INTERPRET_PIXEL: "preset.pixel.snes-4bpp",
+    Stage.INTERPRET_PALETTE: "preset.palette.bgr555",
+    Stage.INTERPRET_TILEMAP: "preset.tilemap.snes-bg",
+}
+
+
+# The headings a format picker groups its entries under, in the order they are
+# shown. A plugin or preset names one in its ``category`` field; anything else it
+# names is honoured too and sorted alphabetically after these, so a third-party
+# preset is never rejected for inventing a heading — the list is a *convention*,
+# so the shipped formats don't grow three spellings of "Nintendo", not a
+# whitelist.
+#
+# The two **source** headings lead, and are the one pair a format does not choose
+# for itself: discovery stamps them on everything it loads out of a plugin folder
+# (:func:`~celpix.plugins.discovery.load_directory`), overriding whatever the file
+# said. Anything you dropped in yourself is a handful of entries among a hundred
+# shipped ones, and burying them under a vendor heading is exactly the "scroll
+# past everything to find the one you want" this grouping exists to end. The
+# project's own folder comes first of the two, being the narrower answer to
+# "what am I working on".
+#
+# Then vendor, because that is how someone hunting a shipped format asks the
+# question ("what does the SNES use?"). The generic buckets after them are for the
+# presets that belong to no one machine — a bitplane layout several consoles
+# happen to share, a texel format that is just a pixel's bits — and they come last
+# because reaching for one means the vendor list didn't have it.
+CATEGORIES: tuple[str, ...] = (
+    "Project plugins",
+    "Your plugins",
+    "Nintendo",
+    "Sega",
+    "NEC",
+    "SNK",
+    "Sony",
+    "Bandai",
+    "Arcade",
+    "Authoring tools",
+    "Text",
+    "Generic planar",
+    "Generic linear",
+    "Direct color",
+    "Indexed",
+    "Generic",
+)
+
+
+def category_order(category: str) -> tuple[int, str]:
+    """Sort key placing ``category`` in :data:`CATEGORIES` order.
+
+    Unlisted headings sort alphabetically after the listed ones, and the empty
+    category — a format that names none — sorts *before* every heading, so an
+    untagged entry stays at the top of its picker rather than under the
+    groups. That is what keeps the pass-through ("None (uncompressed)") where a
+    default belongs, and what makes a picker of entirely untagged formats read as
+    the plain flat list it was before any of this.
+    """
+    if not category:
+        return (-1, "")
+    if category in CATEGORIES:
+        return (CATEGORIES.index(category), "")
+    return (len(CATEGORIES), category)
 
 
 @dataclass(frozen=True)
@@ -332,6 +416,9 @@ class PluginInfo:
     *output* either way, but only a position-preserving container can also write
     an edit back through a plain file offset (``docs/design/palette-editing.md``
     §2).
+
+    ``category`` is the heading a picker files this plugin under
+    (:data:`CATEGORIES`) — presentation only, and empty means "no heading".
     """
 
     id: str
@@ -346,6 +433,7 @@ class PluginInfo:
     short_name: str = ""
     content_kinds: tuple[ContentKind, ...] = (ContentKind.PIXELS, ContentKind.TILEMAP)
     preserves_offsets: bool = True
+    category: str = ""
 
 
 # The methods a plugin must have to be that kind of plugin at all. Only the
@@ -362,6 +450,7 @@ STAGE_METHODS: dict[Stage, tuple[str, ...]] = {
     Stage.INTERPRET_PIXEL: ("decode", "encode", "bytes_per_tile", "tile_size"),
     Stage.INTERPRET_PALETTE: ("decode", "encode", "bytes_per_entry"),
     Stage.INTERPRET_TILEMAP: ("decode", "encode", "bytes_per_cell", "cell_tiles"),
+    Stage.ALPHABET: ("glyphs",),
 }
 
 
@@ -484,6 +573,7 @@ class CompressionPlugin(Plugin, Protocol):
     ``compress`` is optional on :meth:`ContainerPlugin.write`'s rule: a scheme
     reverse-engineered far enough to view but not to re-encode ships
     ``decompress`` alone, and its data opens read-only.
+
     """
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes: ...
@@ -703,6 +793,37 @@ class TilemapCodecPlugin(Plugin, Protocol):
         ...
 
 
+@runtime_checkable
+class AlphabetPlugin(Plugin, Protocol):
+    """A font's character lookup: which codes read as which text.
+
+    The one engine that is not on the byte path. It is handed no bytes and
+    produces none — it answers a single question a **fontmap** asks of the font
+    it draws through: what does code *n* say (``docs/design/fontmap-entry.md``).
+
+    It is a stage of its own rather than a parameter of the tilemap codec because
+    of **who states it**. The tile ⇄ letter mapping is a fact about the *art*: it
+    is decided when the font sheet is drawn, and every string in the game that
+    uses that sheet is bound by it. Hanging it off the cell format instead would
+    make ten strings over one font restate the same table ten times and then let
+    them drift. So it is picked once, on the entry that supplies the tiles.
+
+    Data covers nearly all of it (``alphabet.table`` reads a run of characters, a
+    table file, or an explicit list), and this protocol is the escape hatch for
+    the rest: a font whose glyph numbering is *computed* — packed against a
+    presence bitmap the ROM carries, or derived arithmetically from a text
+    encoding — has no table to write down, and only code can answer.
+
+    ``ctx`` is the **font entry's own** pipeline context, so a plugin can read
+    what that entry's container published rather than going to the file itself;
+    a game-specific container that already knows its font's mapping states it
+    there (:data:`~celpix.core.context.KEY_ALPHABET`) and the data tier picks it
+    up with no code at all.
+    """
+
+    def glyphs(self, params: dict[str, Any], ctx: PipelineContext) -> list[Glyph]: ...
+
+
 @dataclass(frozen=True)
 class Preset:
     """A named, data-only interpretation: which engine to use and its parameters.
@@ -710,10 +831,15 @@ class Preset:
     The data-first tier for the View stage. A preset targets an ``engine_id`` (a
     registered pixel, color or tilemap codec) and supplies the ``params`` that
     engine interprets; ``stage`` says which pathway it belongs to.
+
+    ``category`` is the heading the format picker files it under
+    (:data:`CATEGORIES`). Presentation only — nothing in the pipeline reads it —
+    and omitting it leaves the preset ungrouped at the top of the list.
     """
 
     id: str
     name: str
-    stage: Stage  # INTERPRET_PIXEL, INTERPRET_PALETTE or INTERPRET_TILEMAP
+    stage: Stage  # an INTERPRET_* stage, or ALPHABET
     engine_id: str
     params: dict[str, Any] = field(default_factory=dict)
+    category: str = ""

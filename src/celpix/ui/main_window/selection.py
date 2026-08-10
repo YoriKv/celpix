@@ -219,8 +219,12 @@ class SelectionMixin:
 
         Display-only shortcuts, like View ▸ Grid: the bare letters are routed by
         the app-wide event filter (``_handle_nav_key``), which yields to focused
-        text inputs — a live shortcut here would steal them mid-word. Each is
-        enabled only while its swap is available (see :meth:`_sync_edit_actions`).
+        text inputs — a live shortcut here would steal them mid-word. What the
+        letters actually press is the control each row stands for — the Selection
+        Shape picker and the Pixel Mode button
+        (:class:`~...navigation.KeyControl`) — so these two rows carry the key's
+        *label*, for the menu and the F1 guide, and are greyed in step with it
+        (:meth:`_sync_edit_actions`).
         """
         specs = (
             (
@@ -282,13 +286,16 @@ class SelectionMixin:
         )
 
     def _can_toggle_selection_mode(self) -> bool:
-        # Pixel editing and the rearrange tool are both rectangle-only, so there
-        # is nothing to swap in either (see _sync_selection_shape).
-        return (
-            self._doc is not None
-            and self._edit_mode is EditMode.TILE
-            and not self._rearranging
-        )
+        """Whether a swap is on offer — asked of the picker, not re-derived.
+
+        Everything that leaves only one shape (pixel editing, the rearrange tool,
+        a tilemap, no document at all) already disables the combo, either
+        directly (:meth:`_sync_selection_shape`) or by greying the transform bar
+        it sits on — and a QWidget's ``isEnabled`` answers for both. Asking it is
+        what stops the menu row and the ``S`` key from offering a swap the picker
+        is refusing, which is what a second copy of the conditions did.
+        """
+        return self._selection_shape.isEnabled()
 
     def _can_toggle_edit_mode(self) -> bool:
         return self._doc is not None and self._pixel_edit_available()
@@ -301,18 +308,19 @@ class SelectionMixin:
         is true of every entry of a kind, and two tilemaps differ here
         (``docs/design/tilemap-entry.md`` §4).
 
-        A pixel document always qualifies. A tilemap qualifies when a canvas
-        position resolves to a tile it can write — which asks two things and both
-        can fail on their own:
+        A pixel document always qualifies. A tilemap — of either shape — qualifies
+        when it has **a bank to write into**: the art belongs to the bound entry,
+        so an unbound map, or one whose binding no longer names anything, has
+        nothing to deposit into and must not offer a brush over a picture of
+        placeholders.
 
-        - **A grid**, so a position names a cell at all. A sprite object's records
-          sit at signed pixel offsets and overlap, so what a pixel belongs to is an
-          overlap order rather than a slot; that is an undecided question, not
-          missing arithmetic (§6, OBJ).
-        - **A bank to write into.** The art belongs to the bound entry, so an
-          unbound map — or one whose binding no longer names anything — has
-          nothing to deposit into and must not offer a brush over a picture of
-          placeholders.
+        A sprite object qualifies on the same terms as a grid map, which it did
+        not always: what a pixel belongs to there is an overlap order rather than
+        a slot, and that is now answered rather than avoided
+        (:func:`~celpix.pipeline.pipeline.sprite_hit`, §8.5). The question is per
+        *pixel* on an object where a map can answer per slot, but it is the same
+        question and it has the same answer — the piece the eyedropper samples is
+        the piece the pen writes through.
         """
         doc = self._doc
         if doc is None or not self._can(Capability.PIXEL_EDIT):
@@ -320,11 +328,7 @@ class SelectionMixin:
         if not doc.is_tilemap:
             return True
         entry = self._workspace.current
-        return (
-            not doc.is_sprite
-            and entry is not None
-            and self._tile_bank_owner(entry) is not None
-        )
+        return entry is not None and self._tile_bank_owner(entry) is not None
 
     def _clipboard_actions(self) -> tuple[QAction, ...]:
         return (
@@ -351,10 +355,25 @@ class SelectionMixin:
         target = (
             self._marquee if self._edit_mode is EditMode.PIXEL else self._selected_tile
         )
-        # A tilemap whose cells are not what is on screen has no cell edit to
-        # make: a sprite object's cells are subsprites placed at pixel offsets, so
-        # there is none under the cursor to blank (``Document.cells_editable``).
-        editable = not (has_doc and self._doc.is_tilemap) or self._doc.cells_editable
+        # What a Cut or a Clear has to be able to **write**, which is a different
+        # thing in each mode and has to be asked of the mode rather than of the
+        # document alone.
+        #
+        # Tile mode blanks *cells*, and a tilemap whose cells are not what is on
+        # screen has none to blank: a sprite object's are subsprites placed at
+        # signed pixel offsets, so there is none under the cursor
+        # (``Document.cells_editable``).
+        #
+        # Pixel mode blanks *pixels*, and that same object has them — its pieces
+        # draw a bank's tiles exactly as a grid map's cells do
+        # (``docs/design/tilemap-entry.md`` §8.5), which is the question
+        # :meth:`_pixel_edit_available` already answers for the brush. Asking the
+        # cells here offered the brush and refused to take back what it laid down.
+        editable = (
+            self._pixel_edit_available()
+            if self._edit_mode is EditMode.PIXEL
+            else not (has_doc and self._doc.is_tilemap) or self._doc.cells_editable
+        )
         for action in (self._cut_action, self._clear_action):
             action.setEnabled(has_doc and target is not None and editable)
         # Copy is not one of them, because it is a **read**: every kind on screen
@@ -362,13 +381,19 @@ class SelectionMixin:
         # picture is - a sprite object copies the pixels of its sheet
         # (:meth:`~...tilemap_edit.TilemapEditMixin._copy_sprite_pixels`).
         self._copy_action.setEnabled(has_doc and target is not None)
-        # A tilemap pastes from its own in-app buffer, so the system clipboard's
-        # contents say nothing about whether a paste here would do anything.
-        tilemap = has_doc and self._doc.is_tilemap
+        # A tilemap pastes *cells* from its own in-app buffer, so the system
+        # clipboard's contents say nothing about whether a paste here would do
+        # anything — but only in tile mode. In pixel mode the same map pastes
+        # pixels through :meth:`~...pixel_edit.PixelEditMixin._pixel_paste`, which
+        # reads the system clipboard exactly as a pixel document's paste does, so
+        # asking the cell buffer there greys out the only paste on offer.
+        cells = (
+            has_doc and self._doc.is_tilemap and self._edit_mode is not EditMode.PIXEL
+        )
         self._paste_action.setEnabled(
             has_doc
             and editable
-            and (self._has_cell_clipboard() if tilemap else clipboard.has_content())
+            and (self._has_cell_clipboard() if cells else clipboard.has_content())
         )
         # An import needs no selection: with none, it lands at the view's start.
         # The capability is asked here rather than left to the gating pass
@@ -488,9 +513,9 @@ class SelectionMixin:
         (``visible`` reaches no tile — :class:`~celpix.core.tilemap.Cell`), but the
         picture paints over it. Editing through it would write into a tile drawn
         *elsewhere* on the map, from a spot showing nothing, with the stroke
-        invisible the whole way — the same "no cell under this pixel" that keeps
-        pixel editing off a sprite object entirely (§4, ``_pixel_edit_available``),
-        arrived at per position instead of per document.
+        invisible the whole way. An object's twin is a pixel no piece's box
+        covers, which :func:`~celpix.pipeline.pipeline.sprite_hit` refuses the
+        same way — one rule, asked per position on both shapes (§8.5).
 
         ``cells`` lets a caller resolving many slots hoist
         :attr:`~celpix.core.document.Document.laid_out_cells` out of its loop.
@@ -532,13 +557,88 @@ class SelectionMixin:
         document, and a fresh :class:`BlockLayout` whose derived sizes are cached
         on the instance and so thrown away with it.
         """
+        slot = self._slot_at_pixel(x, y, layout)
+        return None if slot is None else self._bank_tile_at_slot(slot, cells)
+
+    def _slot_at_pixel(
+        self, x: int, y: int, layout: BlockLayout | None = None
+    ) -> int | None:
+        """The canvas tile slot the pixel ``(x, y)`` falls in, or None off the grid.
+
+        The pixel → slot half of :meth:`_bank_tile_at_pixel`, on its own because
+        a caller may want the slot rather than what the bank holds under it — the
+        eyedropper's, which names the *cell* a pixel came from
+        (:meth:`~...tile_source_dock.TileSourceDockMixin._point_source_at_pixel`).
+        """
         tile_w, tile_h = self._pixel_tile_size()
         if tile_w <= 0 or tile_h <= 0:
             return None
         if layout is None:
             layout = self._view_layout()
-        slot = layout.cell_to_slot(x // tile_w, y // tile_h)
-        return None if slot is None else self._bank_tile_at_slot(slot, cells)
+        return layout.cell_to_slot(x // tile_w, y // tile_h)
+
+    def _bank_pixel_at(self, x: int, y: int, hoist=None):  # noqa: ANN001, ANN201
+        """The byte canvas pixel ``(x, y)`` draws: ``(owner, tile, tx, ty)`` or None.
+
+        The **pixel**-grained twin of :meth:`_bank_tile_at_pixel`, and the one
+        thing the pen, the eyedropper and a sprite's commit all need to agree
+        about: which tile of the bound bank a pixel came from, where in that tile
+        it sits with the drawing flips undone, and the *owner* that put it there —
+        a cell on a grid map, a subsprite on an object. Only ``palette_row`` is
+        read off the owner (:meth:`~...palette_regions.PaletteRegionsMixin.
+        _cell_paint_base`), which the two kinds spell the same way.
+
+        A grid map answers through its slots, since a cell's tiles land on the
+        canvas's own tile grid. An object cannot: its pieces sit at signed pixel
+        offsets that are mostly not 8-aligned and they overlap, so one canvas tile
+        routinely holds parts of three (:func:`~celpix.pipeline.pipeline.
+        sprite_hit`). That is why this is per pixel and not per slot — and why the
+        sprite side of a stroke costs a resolution per pixel rather than per tile.
+
+        ``hoist`` is whatever the caller lifted out of its loop, opaque here and
+        built by :meth:`_bank_pixel_hoist`: the cell list and layout for a map,
+        the sheet and the decoded bank for an object.
+        """
+        doc = self._doc
+        if doc is None:
+            return None
+        tile_w, tile_h = self._pixel_tile_size()
+        if tile_w <= 0 or tile_h <= 0:
+            return None
+        if doc.is_sprite:
+            hit = pipeline.sprite_hit(
+                doc, self._registry, self._tilemap_columns(), x, y, hoist=hoist
+            )
+            if hit is None or hit.tile is None:
+                return None
+            return hit.piece, hit.tile, hit.x, hit.y
+        cells, layout = hoist or (None, None)
+        found = self._bank_tile_at_pixel(x, y, cells, layout)
+        if found is None:
+            return None
+        cell, index = found
+        tx, ty = x % tile_w, y % tile_h
+        if cell.flip_h:
+            tx = tile_w - 1 - tx
+        if cell.flip_v:
+            ty = tile_h - 1 - ty
+        return cell, index, tx, ty
+
+    def _bank_pixel_hoist(self):  # noqa: ANN201 — an opaque pair
+        """What :meth:`_bank_pixel_at` wants lifted out of a per-pixel loop.
+
+        Both kinds rebuild something expensive per call — the cell list of an
+        assembled map, or an object's sheet box and decoded bank — and a fill asks
+        per pixel. Opaque on purpose: the caller carries it from one call to the
+        next without knowing which kind it is holding.
+        """
+        doc = self._doc
+        if doc is None:
+            return None
+        if doc.is_sprite:
+            return pipeline.sprite_hoist(doc, self._registry, self._tilemap_columns())
+        grid = self._grid_tilemap()
+        return None if grid is None else (grid.laid_out_cells, self._view_layout())
 
     def _selection_extent(self) -> int:
         """How many canvas slots hold something a selection can name.

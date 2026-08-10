@@ -1,0 +1,29 @@
+# A text run whose lines end by setting **bit 7 of the last character** rather
+# than by spending a code on a terminator. The renderer clears the bit, draws the
+# character, and stops — so the last glyph of a line and its terminator are the
+# *same byte* (`../../../../docs/graphics-formats-reference/text-formats.md`
+# §4.4). Super Mario World's level names and message boxes are both this shape.
+#
+# The whole of it is where the eighth bit goes. `index` is **7 bits**, so a cell
+# draws the letter the hardware draws instead of a tile past the end of a
+# 128-glyph sheet; `terminator` takes bit 7 on its own, and the fontmap reading
+# turns it into the newline that ends the line. Nothing is lost either way — the
+# byte is put back exactly as it was read.
+#
+# There is no `break` control to declare, and declaring one would be wrong: the
+# bit is the punctuation, so Enter in the text window sets it on the character
+# before the caret and costs no cell.
+#
+# Copy this preset if a game puts the flag somewhere else — a 16-bit stream whose
+# high word bit ends a line is the same two lines with different numbers.
+id = "preset.tilemap.text-8bit-flag"
+name = "Text run (8-bit, high bit ends a line)"
+engine_id = "codec.tilemap.packed"
+category = "Text"
+
+[params]
+layout = "text"
+bytes = 1
+endian = "little"
+index = { shift = 0, bits = 7 }
+terminator = { shift = 7, bits = 1 }

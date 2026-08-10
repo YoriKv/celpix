@@ -249,13 +249,17 @@ class RearrangeMixin:
         self._show_rearranged_action.toggled.connect(self._set_show_rearranged)
 
     def _toggle_rearranging(self) -> None:
-        """The ``R`` key. Goes through the action so the key and the button can
-        only ever do the same thing — including staying inert while it is off."""
+        """The Edit ▸ row's slot: press the bar's button, if it is offering itself.
+
+        The row and the button are two spellings of one switch, so the row acts
+        through the button rather than setting the state itself. ``R`` presses
+        that button directly (:class:`~...navigation.KeyControl`)."""
         if self._rearrange_action.isEnabled():
             self._rearrange_action.toggle()
 
     def _toggle_show_rearranged(self) -> None:
-        """``Shift+R`` — the view toggle's key, via its action as ``R`` is."""
+        """The view toggle's Edit ▸ row, which is also the action ``Shift+R``
+        presses — so this is only the menu's own route to it."""
         if self._show_rearranged_action.isEnabled():
             self._show_rearranged_action.toggle()
 

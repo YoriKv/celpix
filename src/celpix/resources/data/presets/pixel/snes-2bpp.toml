@@ -4,6 +4,7 @@
 id = "preset.pixel.snes-2bpp"
 name = "SNES 2bpp (8x8)"
 engine_id = "codec.pixel.planar"
+category = "Nintendo"
 
 [params]
 bpp = 2

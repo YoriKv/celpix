@@ -27,6 +27,7 @@ class M7VramReshape:
         id="reshape.snes-m7-vram",
         name="SNES Mode 7 VRAM (split pixels/map)",
         stage=Stage.RESHAPE,
+        category="Nintendo",
     )
 
     def reshape(self, data: bytes, ctx: PipelineContext) -> bytes:

@@ -13,6 +13,7 @@ them up — no reinstall, no editing the app.
 | `reshape/` | a byte reordering applied to a whole region |
 | `compression/` | a packing scheme, unpacked before the pixel format reads it |
 | `containers/` | an on-disk wrapper — a header to skip, an interleave to undo |
+| `alphabet/` | what a font's tiles spell, so a text run reads as words |
 
 Files starting with `_` are ignored. Every `_example.*` here is a working
 reference: **copy one, drop the underscore, and edit it.** Press <kbd>F5</kbd> in
@@ -28,6 +29,10 @@ never touched.
 parameters, so a new tile or palette format is usually a handful of numbers and no
 code at all. Nothing executes, and celPix loads them without asking. Start here —
 most formats need nothing more.
+
+`alphabet/` goes one better: drop a plain **table file** in it — one `20=A` line
+per character, or `A=20` with `order = "text-first"` in a preset — and it appears
+in the Alphabet picker by itself, named after the file. No preset needed.
 
 `pixel/`, `palette/` and `tilemap/` have one example preset per engine; pick the
 one whose layout matches your format:
@@ -55,11 +60,41 @@ parameter it takes with the values that parameter accepts.
 `reshape/` takes presets too: `_bitswap.toml` for boards that scramble the byte
 *address*, `_data-lut.toml` for boards that substitute byte *values*.
 
+## Where yours appears in the picker
+
+celPix's format pickers group their entries under headings — `Nintendo`, `Sega`,
+`Direct color` and so on — and have a search box at the top.
+
+**Yours are not filed among them.** Everything loaded out of this folder appears
+under **Your plugins**, and everything out of a project's own `plugins/` folder
+under **Project plugins**, and those two headings come *first* in every picker.
+Nothing to write and nothing to keep in sync: a handful of your formats scattered
+through a hundred shipped ones is the thing the grouping exists to prevent, and
+where a file came from is a fact the file cannot state about itself.
+
+So the `category` field you will see in celPix's own presets is not something to
+copy — it is set for you, and a value you write is replaced.
+
 **`.py` plugins are code**, for anything the engines cannot express. They run with
 the app's privileges, so celPix asks before loading one the first time and
 remembers your answer; changing the file asks again. A plugin file defines a class
 and a `register(registry)` function — see the `_example.py` in each folder, and
 `containers/_tiff.py` for a full real-world format.
+
+## Plugins that travel with a project
+
+A project can carry its own plugins: put a `plugins/` folder **next to the
+`.celpix` file**, with the same subfolders as this one, and celPix loads it when
+that project opens (and on <kbd>F5</kbd>). They leave again when the project
+closes, so they only exist while you are working on it.
+
+That is how you hand someone a hack: zip the project folder and the formats go
+with it, with nothing to install. Anything you want in *every* project belongs
+here in your own folder instead.
+
+A project's `.py` plugins are code that came from whoever sent you the project,
+so celPix asks before running one just as it does for your own — and says the
+plugin came with the project.
 
 ## Writing one
 

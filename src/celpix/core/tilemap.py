@@ -46,6 +46,7 @@ def tile_run(
     down: int,
     stride: int,
     *,
+    column_stride: int = 1,
     flip_h: bool = False,
     flip_v: bool = False,
 ) -> list[int]:
@@ -54,6 +55,15 @@ def tile_run(
     One index for an ordinary hardware cell; four for a 16x16 metatile or a 16x16
     subsprite, stepped by ``stride`` rather than by ``across``
     (:data:`VRAM_ROW_STRIDE`).
+
+    ``column_stride`` is the step to the *next column*, and the two together are
+    what let one walk serve both orders a console uses. Left at 1 it is the
+    row-major walk of a VRAM array read across (:data:`VRAM_ROW_STRIDE` being the
+    step down); set to the thing's own height with ``stride`` at 1 it is the
+    **column-major** walk a Mega Drive sprite takes, whose tiles run down each
+    column before starting the next. Neither is more natural than the other —
+    they are two hardwares' answers, and a walk that assumed one would scramble
+    every multi-tile piece of the other.
 
     **A flip reverses the order as well as mirroring each tile.** A mirrored
     metatile shows its right-hand tile on the left, mirrored; toggling the bits
@@ -76,7 +86,7 @@ def tile_run(
     return [
         first
         + (down - 1 - row if flip_v else row) * stride
-        + (across - 1 - col if flip_h else col)
+        + (across - 1 - col if flip_h else col) * column_stride
         for row in range(down)
         for col in range(across)
     ]
@@ -136,6 +146,15 @@ class Cell:
     (``docs/design/tilemap-entry.md`` §6). Defaults True, which is what every
     format with no such bit means.
 
+    ``ends_line`` is whether this position is the **last of its line**, for the
+    text formats that say so with a bit on the character rather than with a code
+    of their own (``docs/graphics-formats-reference/text-formats.md`` §4.4). It
+    is the one field that says nothing about the picture and everything about the
+    reading: the cell still draws the glyph its ``index`` names, and what the bit
+    adds is the newline the text window shows after it
+    (``docs/design/fontmap-entry.md`` §5). False for every format with no such
+    bit, which is most of them.
+
     ``flags`` is the same idea as ``priority`` generalised: bits a format has that
     celPix has no meaning for at all. Naming such a bit ``priority`` to get it
     round-tripped would be a lie; dropping it would corrupt the file on the next
@@ -156,6 +175,8 @@ class Cell:
     over the composed image by position
     (:attr:`~celpix.pipeline.pipeline.TilemapImage.hidden`), so the tile it would
     have drawn is still the tile its twin draws and the memo stays sound.
+    ``ends_line`` is not in it either, and for the stronger reason: it reaches no
+    pixel at all.
     """
 
     index: int = 0
@@ -164,6 +185,7 @@ class Cell:
     flip_h: bool = False
     flip_v: bool = False
     visible: bool = True
+    ends_line: bool = False
     flags: int = 0
 
     def flipped_h(self) -> Cell:

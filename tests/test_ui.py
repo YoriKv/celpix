@@ -102,6 +102,13 @@ def _make_snes_file(tmp_path):
     return px
 
 
+def _combo_ids(combo) -> list:
+    """A format picker's actual choices — its rows minus the category headings."""
+    return [
+        combo.itemData(row) for row in range(combo.count()) if not combo.is_heading(row)
+    ]
+
+
 def _drag_payload(*paths):
     from PySide6.QtCore import QMimeData, QUrl
 
@@ -822,6 +829,37 @@ def test_use_bookmark_as_palette_reads_offset_from_parent(qtbot, tmp_path) -> No
     assert window._byte_position() == 0  # the view position is untouched
 
 
+def test_use_bookmark_as_palette_stays_on_the_current_slice(qtbot, tmp_path) -> None:
+    from celpix.project.workspace import EntryKind, slice_of
+
+    # BGR555 white at absolute offset 32, outside the slice's own window - a
+    # slice's palette offsets are parent-absolute and reach past it by design.
+    data = bytearray(bytes((i * 13 + 1) & 0xFF for i in range(32 * 8)))
+    data[32:34] = b"\xff\x7f"
+    px = tmp_path / "p.4bpp.sfc"
+    px.write_bytes(bytes(data))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    entry = window._workspace.find_file(str(px))
+    window._new_bookmark_for(entry)  # at byte 0, then retargeted below
+    bookmark = next(
+        e for e in window._workspace.entries if e.kind is EntryKind.BOOKMARK
+    )
+    bookmark.slice_offset = 32
+
+    sl = slice_of(entry, "gfx", 0, 32)
+    window._apply_add_entry(sl)  # adds and activates
+    assert window._workspace.current is sl
+
+    window._use_bookmark_as_palette(bookmark)
+    assert window._workspace.current is sl  # no detour through the parent
+    assert window._palette_mode == "offset"
+    assert window._doc.palette_config.source.offset == 32
+    assert window._doc.palette.colors[0] == 0xFFFFFFFF
+
+
 def test_offset_palette_step_buttons_move_by_one_tile(qtbot, tmp_path) -> None:
     # snes-4bpp: 32 bytes per tile. Start an offset palette at byte 32, then step.
     data = bytearray(bytes((i * 13 + 1) & 0xFF for i in range(32 * 8)))
@@ -1249,6 +1287,33 @@ def test_cycling_pixel_formats_keeps_target_offset_across_whole_bank(
     assert window._pixel_switch_target is None
 
 
+def test_scrolling_the_position_bar_ends_a_pixel_switch_run(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # The position bar never takes focus, so focus_lost can't end a switching run
+    # after a drag: navigating with it has to end the run itself, or the next
+    # format switch would resurrect the pre-scroll target and jump back there.
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=1024)
+    window._columns.setValue(16)
+    window._rows.setValue(2)
+    window._set_offset(100)  # byte 3200
+
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.gb-2bpp")
+    )
+    assert window._pixel_switch_target == 3200  # latched by the first switch
+
+    window._tile_offset_bar.setValue(400)  # a drag, not a button or a key
+    assert window._offset == 400
+    assert window._pixel_switch_target is None
+
+    # 16 B/tile -> 32: the switch anchors on byte 6400, where the drag landed.
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.snes-4bpp")
+    )
+    assert window._offset == 200  # 400 * 16 // 32, not the pre-scroll 100
+
+
 def test_nav_keys_act_unless_an_arrow_input_is_focused(
     qtbot, tmp_path, monkeypatch
 ) -> None:
@@ -1326,7 +1391,7 @@ def test_refresh_reloads_edited_preset_and_reruns(qtbot, tmp_path, monkeypatch) 
     data_file = tmp_path / "d.bin"
     data_file.write_bytes(bytes(64))  # 64 bytes
 
-    def reload():
+    def reload(project_path=None):
         reg = default_registry()
         return reg, load_user_plugins(reg, [str(plugdir)])
 
@@ -1351,6 +1416,59 @@ def test_refresh_reloads_edited_preset_and_reruns(qtbot, tmp_path, monkeypatch) 
     _write_planar_preset(plugdir, bpp=2)
     window._refresh_plugins()
     assert window._doc.tile_count == 4
+
+
+def test_project_folder_plugins_load_and_unload_with_the_project(
+    qtbot, tmp_path
+) -> None:
+    from celpix.plugins.discovery import load_user_plugins, project_plugin_dir
+    from celpix.plugins.registry import default_registry
+    from celpix.project.projectfile import save_project
+    from celpix.project.workspace import EntrySession, Workspace
+
+    # A project whose folder carries a plugins/ root of its own: one 1bpp preset
+    # (8 bytes/tile) that no other root provides, and an entry saved against it.
+    proj_dir = tmp_path / "hack"
+    (proj_dir / "plugins").mkdir(parents=True)
+    _write_planar_preset(proj_dir / "plugins", bpp=1)
+    data_file = proj_dir / "d.bin"
+    data_file.write_bytes(bytes(64))  # 64 bytes -> 8 tiles at 8 bytes each
+
+    ws = Workspace()
+    entry = ws.open_file(str(data_file))
+    entry.session = EntrySession(
+        pixel_preset_id="preset.pixel.custom",
+        palette_preset_id="preset.palette.bgr555",
+    )
+    ws.set_current(entry)
+    project = proj_dir / "hack.celpix"
+    save_project(ws, str(project))
+
+    user_dir = tmp_path / "user-plugins"  # empty: the preset can only come from
+    user_dir.mkdir()  # the project's own folder
+
+    def reload(project_path=None):
+        reg = default_registry()
+        dirs = [str(user_dir)]
+        project_plugins = project_plugin_dir(project_path)
+        if project_plugins is not None:
+            dirs.append(project_plugins)
+        return reg, load_user_plugins(reg, dirs)
+
+    registry, _ = reload()
+    window = MainWindow(registry=registry, reload_plugins=reload)
+    qtbot.addWidget(window)
+    assert window._pixel_preset.findData("preset.pixel.custom") < 0
+
+    # Opening the project registers its plugins *before* the restored entry is
+    # shown, so the entry decodes through the project's own preset.
+    window._load_project(str(project))
+    assert window._pixel_preset.findData("preset.pixel.custom") >= 0
+    assert window._doc.tile_count == 8
+
+    # Closing the project takes them with it.
+    window._new_project()
+    assert window._pixel_preset.findData("preset.pixel.custom") < 0
 
 
 def test_click_selects_tile_and_selection_survives_scrolling(
@@ -1642,6 +1760,50 @@ def test_palette_offset_failure_alerts_not_status(
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
     assert not window._load_palette_at_offset(1 << 20)
     assert any("Not enough data" in message for _title, message in captured_alerts)
+
+
+def test_offset_palette_on_a_tilemap_reads_the_file_the_map_cuts_into(
+    qtbot, tmp_path, captured_alerts
+) -> None:
+    """An Offset palette is in the owning **file entry's** coordinates — for a
+    map exactly as for a graphic, since the map's cells are cut from that file
+    too.
+
+    A tilemap's ``pixel_config`` is the *bound bank's*, so resolving the offset
+    through it read the wrong file — and an **unbound** map offers no file at
+    all, which turned every offset into "not enough data" and dropped the entry
+    to the default palette on the way in. The palette is the map's own answer and
+    must survive having no tiles yet, which is the state a map is in until it is
+    bound.
+    """
+    from celpix.core.capabilities import ContentKind
+
+    # Deep into a ROM-sized file, where the palettes of a real project sit: the
+    # wrong file is not merely a different palette, it is one no offset this
+    # large fits inside, which is what turned the bug into a hard failure.
+    data = bytearray((i * 7 + 3) & 0xFF for i in range(0x8000))
+    data[0x7000:0x7002] = b"\xff\x7f"  # BGR555 white, the map's first color
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(data))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    cut = window._workspace.add_slice(str(rom), "map", 0x100, 0x40)
+    cut.content_kind = ContentKind.TILEMAP
+    cut.tilemap_preset_id = "preset.tilemap.snes-bg"
+    window._activate_entry(cut)
+    assert window._doc.is_tilemap and not window._doc.pixel_data  # nothing bound
+
+    assert window._load_palette_at_offset(0x7000)
+    assert window._doc.palette.color(0) == 0xFFFFFFFF
+
+    # And again on the way back in, which is where a project restore reads it.
+    window._capture_session()
+    window._workspace.drop_document(cut)
+    window._activate_entry(cut)
+    assert window._doc.palette.color(0) == 0xFFFFFFFF
+    assert captured_alerts == []
 
 
 def test_emulator_state_redetects_on_restore(qtbot, tmp_path, monkeypatch) -> None:
@@ -2025,6 +2187,68 @@ def test_g_key_cycles_grid(qtbot, tmp_path, monkeypatch) -> None:
     assert window._grid_mode() is GridMode.PIXEL
 
 
+def test_a_bare_letter_key_is_dead_while_its_control_is(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """The one rule the key table exists to keep: a bare letter presses a control
+    on screen, and does nothing at all while that control is switched off - so a
+    new key cannot arrive carrying its own idea of when it applies.
+
+    Both halves are checked over *every* registered key rather than over the
+    handful that have a lockout today, because the mistake this guards against is
+    made by the next key added, not by these.
+    """
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QAction, QActionGroup, QKeyEvent
+
+    from celpix.ui.main_window.navigation import KeyControl
+
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
+    fired: list[tuple] = []
+    # Stand in for each key's effect, so "did the key act?" is answerable for all
+    # of them at once; the controls, and the gate on them, stay the real ones.
+    window._key_controls = {
+        combo: KeyControl(binding.control, lambda c=combo: fired.append(c))
+        for combo, binding in window._key_controls.items()
+    }
+
+    def press(combo) -> bool:
+        key, shift, ctrl = combo
+        mods = Qt.KeyboardModifier.NoModifier
+        if shift:
+            mods |= Qt.KeyboardModifier.ShiftModifier
+        if ctrl:
+            mods |= Qt.KeyboardModifier.ControlModifier
+        return window._handle_nav_key(QKeyEvent(QEvent.Type.KeyPress, key, mods))
+
+    for combo, binding in window._key_controls.items():
+        control = binding.control
+        # Only an action's visibility is its own; a widget's answers for the
+        # unshown test window, which is why ``fire`` doesn't ask it.
+        hideable = isinstance(control, QAction | QActionGroup)
+        enabled = control.isEnabled()
+
+        control.setEnabled(False)
+        # Swallowed, and inert: the letter means this control everywhere, so
+        # falling through to whatever else wanted it would be the surprise.
+        assert press(combo) is True
+        assert fired == [], f"{combo} acted with its control disabled"
+
+        control.setEnabled(True)
+        if hideable:
+            # An action hidden as "not a thing on this document" takes its key
+            # with it - the Edit Tiles mode off a tilemap is the live case.
+            control.setVisible(False)
+            assert press(combo) is True
+            assert fired == [], f"{combo} acted with its control hidden"
+            control.setVisible(True)
+        assert press(combo) is True
+        assert fired == [combo], f"{combo} did not press its control"
+
+        fired.clear()
+        control.setEnabled(enabled)
+
+
 def _isolate_settings(tmp_path) -> None:
     """Point QSettings at a throwaway INI so grid-style writes don't touch the
     user's real config, and reads are deterministic across a fresh window."""
@@ -2365,6 +2589,61 @@ def test_mode_switch_resets_row_and_selection_into_palette(
     assert "Subpal 7 · Color 15" in window._color_details.text()
 
 
+def test_the_format_pickers_open_grouped_and_never_on_a_heading(
+    qtbot, tmp_path
+) -> None:
+    """The wiring, checked on the live window rather than on the widget: every
+    picker filled from the registry has to come up grouped, with a real format
+    selected — a heading landing in ``currentData`` would be passed to the
+    pipeline as a preset id.
+    """
+    from celpix.plugins.base import NO_COMPRESSION
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+
+    for combo in (window._pixel_preset, window._palette_preset, window._compression):
+        headings = [i for i in range(combo.count()) if combo.is_heading(i)]
+        assert headings, combo.toolTip()
+        assert not combo.is_heading(combo.currentIndex())
+        assert isinstance(combo.currentData(), str)
+
+    # The pass-through leads the compression list: it names no category, so it
+    # sits above every heading, which is where the default belongs.
+    assert window._compression.itemData(0) == NO_COMPRESSION
+    assert window._compression_id() == NO_COMPRESSION
+
+
+def test_the_cell_format_picker_tags_each_entry_with_its_layout(
+    qtbot, tmp_path
+) -> None:
+    """Which of the three layouts a cell format declares decides what the entry
+    *is* — a grid map, a sprite map or a fontmap, each with a different bar under
+    it — and the names carry that unevenly, so the picker says it outright."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    combo = window._tilemap_preset
+
+    tagged = {
+        combo.itemData(row): combo.itemText(row)
+        for row in range(combo.count())
+        if not combo.is_heading(row)
+    }
+
+    assert tagged["preset.tilemap.snes-bg"].startswith("[T] ")
+    assert tagged["preset.tilemap.scgcad-object"].startswith("[S] ")
+    assert tagged["preset.tilemap.text-8bit"].startswith("[F] ")
+    # Every entry carries one, so the column reads as a column rather than as
+    # some formats being annotated and the rest not.
+    assert all(text[:3] in ("[T]", "[S]", "[F]") for text in tagged.values())
+    # …and the tag stays out of what the Undo menu says.
+    assert window._preset_name("preset.tilemap.snes-bg") == "SNES BG map (16-bit)"
+
+
 def test_pixel_filter_prunes_the_dropdown_without_losing_the_view(
     qtbot, tmp_path
 ) -> None:
@@ -2381,16 +2660,14 @@ def test_pixel_filter_prunes_the_dropdown_without_losing_the_view(
     qtbot.addWidget(window)
     window._load_pixel(str(px))
     combo = window._pixel_preset
-    full = combo.count()
+    full = len(_combo_ids(combo))
     assert full > 2
     current = combo.currentData()
-    other = next(
-        combo.itemData(i) for i in range(combo.count()) if combo.itemData(i) != current
-    )
+    other = next(i for i in _combo_ids(combo) if i != current)
 
     # Hiding everything else leaves the two, with the shown one untouched.
     assert window._apply_pixel_filter({current, other}) == {current, other}
-    assert {combo.itemData(i) for i in range(combo.count())} == {current, other}
+    assert set(_combo_ids(combo)) == {current, other}
     assert combo.currentData() == current
     # The popup model marks exactly the visible formats checked.
     assert {key for key, _name, checked in window._pixel_filter_items() if checked} == {
@@ -2400,17 +2677,17 @@ def test_pixel_filter_prunes_the_dropdown_without_losing_the_view(
 
     # A repopulation (plugin reload) keeps the filter and the shown format.
     window._repopulate_presets()
-    assert {combo.itemData(i) for i in range(combo.count())} == {current, other}
+    assert set(_combo_ids(combo)) == {current, other}
     assert combo.currentData() == current
 
     # Select None can't empty the list; it collapses to the current format.
     assert window._apply_pixel_filter(set()) == {current}
-    assert combo.count() == 1
+    assert _combo_ids(combo) == [current]
     assert combo.currentData() == current
 
     # Select All brings every format back and clears the filter.
     window._apply_pixel_filter({p.id for p in window._all_pixel_presets()})
-    assert combo.count() == full
+    assert len(_combo_ids(combo)) == full
     assert not window._workspace.hidden_pixel_presets
 
     # Unchecking the *shown* format moves the view to the remaining one - an
@@ -2431,9 +2708,7 @@ def test_pixel_filter_is_saved_and_restored_with_the_project(qtbot, tmp_path) ->
     window._load_pixel(str(px))
     combo = window._pixel_preset
     current = combo.currentData()
-    other = next(
-        combo.itemData(i) for i in range(combo.count()) if combo.itemData(i) != current
-    )
+    other = next(i for i in _combo_ids(combo) if i != current)
     window._apply_pixel_filter({current, other})
 
     project = tmp_path / "s.celpix"
@@ -2445,7 +2720,7 @@ def test_pixel_filter_is_saved_and_restored_with_the_project(qtbot, tmp_path) ->
     other_window._load_project(str(project))
     # The restored project prunes the dropdown to the saved formats.
     restored = other_window._pixel_preset
-    assert {restored.itemData(i) for i in range(restored.count())} == {current, other}
+    assert set(_combo_ids(restored)) == {current, other}
     assert other_window._workspace.hidden_pixel_presets == (
         window._workspace.hidden_pixel_presets
     )
@@ -2880,6 +3155,49 @@ def test_slice_of_a_reshaped_two_chip_region_writes_back_through_its_parent(
     assert first.read_bytes() != chip_a
     assert second.read_bytes() != chip_b
     assert not cut.pixel_dirty and not parent.pixel_dirty
+
+
+def test_a_sibling_slice_reads_an_edit_the_fold_has_not_run_for_yet(
+    qtbot, tmp_path
+) -> None:
+    """The invariant that lets the fold be lazy. An edit through a slice records
+    what the parent owes rather than re-encoding on the spot — re-encoding is the
+    whole cost, and on a compressed slice it is a search no stroke can afford — so
+    the parent's buffer is briefly *behind* its slices.
+
+    It may never be observed that way. Everything that reads those bytes settles
+    the region first, and a **sibling over the same window** is the sharpest
+    reader: a dirty parent hands its buffer to a slice's read
+    (``workspace._parent_view_bytes``), so a sibling loading here sees either the
+    edit or the bytes it replaced, with nothing in between.
+    """
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes((i * 7) & 0xFF for i in range(0x800)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+
+    edited = window._workspace.add_slice(parent.path, "first", 0x100, 0x100)
+    window._workspace.set_current(edited)
+    window._apply_pixel_bytes(
+        [(0, b"\x5a" * 32)],
+        window._workspace.next_revision(),
+        window._workspace.next_revision(),  # the parent's, so it reads dirty too
+        entry=edited,
+    )
+    assert parent.pixel_dirty  # ...which is what sends a sibling to its buffer
+    # The debt stands: nothing has needed the parent's bytes yet.
+    assert edited in parent.pending_folds
+    assert bytes(parent.doc.pixel_data[0x100:0x120]) != b"\x5a" * 32
+
+    # A sibling over the same region loads now, and settles it on the way.
+    sibling = window._workspace.add_slice(parent.path, "second", 0x100, 0x100)
+    window._activate_entry(sibling)
+
+    assert not parent.pending_folds
+    assert bytes(sibling.doc.pixel_data[:32]) == b"\x5a" * 32
+    assert bytes(parent.doc.pixel_data[0x100:0x120]) == b"\x5a" * 32
 
 
 def test_a_slice_edit_reaches_its_parent_and_the_parents_container(
@@ -3729,6 +4047,27 @@ def test_jump_to_source_shows_slice_in_parent_at_absolute_offset(
     # The view origin lands byte-exactly on the slice's absolute file offset (64).
     assert window._offset_text() == "0x000040"
     assert window._byte_position() == 64
+
+
+def test_jump_to_source_arms_the_slices_compression_preview(qtbot, tmp_path) -> None:
+    # The parent reads raw, so a compressed slice's bytes are packed at its
+    # address: the jump has to arm the preview combo with the codec that unpacks
+    # them, or the user lands on the right offset with no way to see the tiles.
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    parent = window._workspace.find_file(str(px))
+
+    slice_entry = window._workspace.add_slice(
+        str(px), "packed", 64, 64, "compression.lz1"
+    )
+    window._jump_to_slice_source(slice_entry)
+
+    assert window._workspace.current is parent
+    assert window._compression_id() == "compression.lz1"
+    # Preview only - the parent's own bytes are still read unpacked.
+    assert parent.compression_id == "compression.none"
 
 
 def test_jump_to_source_carries_the_slices_live_palette(qtbot, tmp_path) -> None:
@@ -4887,6 +5226,38 @@ def test_write_saves_the_graphic_and_the_file_palette_it_shows(qtbot, tmp_path) 
     assert entry.name not in window.statusBar().currentMessage()
 
 
+def test_write_saves_the_tiles_a_map_was_painted_on(qtbot, tmp_path) -> None:
+    """The tilemap half of the same rule. A map borrows its tiles, so a pixel edit
+    made on it is deposited into the entry those bytes belong to and the map reads
+    clean (``tilemap-entry.md`` §8.1) — which left Ctrl+W reporting a successful
+    write with the painting still only in memory, reachable only by finding the
+    bank in the Files list.
+    """
+    from pathlib import Path
+
+    from celpix.core.tilemap import Cell
+
+    window, bank, entry = _bound_screen(qtbot, tmp_path, [Cell(index=1)])
+    window._activate_entry(entry)
+    _painting_on(window)
+    before = Path(bank.path).read_bytes()
+
+    _paint(window, 1, 1, 9)
+    assert bank.pixel_dirty and not entry.pixel_dirty  # it landed in the bank
+
+    window._write_current()
+    assert not bank.pixel_dirty  # the bank went with the map...
+    assert Path(bank.path).read_bytes() != before
+    assert bank.name in window.statusBar().currentMessage()  # ...and is named
+
+    # A bank nobody painted on is left alone, for the reason a clean .pal is: it
+    # is a shared file with nothing of its own to save.
+    stamp = Path(bank.path).stat().st_mtime_ns
+    window._write_current()
+    assert Path(bank.path).stat().st_mtime_ns == stamp
+    assert bank.name not in window.statusBar().currentMessage()
+
+
 def test_editing_a_file_palette_updates_every_graphic_using_it(qtbot, tmp_path) -> None:
     from celpix.project.workspace import EntryKind
 
@@ -5382,9 +5753,8 @@ def test_switching_pixel_format_keeps_unsaved_edits(qtbot, tmp_path) -> None:
     assert edited != (tmp_path / "clip.4bpp.sfc").read_bytes()  # unsaved: memory only
 
     combo = window._pixel_preset
-    presets = [combo.itemData(i) for i in range(combo.count())]
-    other = next(p for p in presets if p != window._pixel_preset_id())
-    combo.setCurrentIndex(presets.index(other))
+    other = next(p for p in _combo_ids(combo) if p != window._pixel_preset_id())
+    combo.setCurrentIndex(combo.findData(other))
 
     assert bytes(window._doc.pixel_data) == edited
     window._undo_stack.undo()  # back to the original format, still edited
@@ -6776,15 +7146,18 @@ def _scr_file(tmp_path, cells, name="screen.SCR"):
 def _obj_file(tmp_path, parts, name="sprite.OBJ"):
     """A real-shaped sprite object whose first frame holds ``parts``.
 
-    Each part is ``(x, y, tile)``, or ``(x, y, tile, palette_row)``; the record is
-    built the way the file stores one - the row in the attribute word's own bits -
-    so this exercises the container and the codec rather than standing in for them.
+    Each part is ``(x, y, tile)``, ``(x, y, tile, palette_row)`` or
+    ``(x, y, tile, palette_row, large)``; the record is built the way the file
+    stores one - the row in the attribute word's own bits, the size as the bit
+    that picks the object's larger square - so this exercises the container and
+    the codec rather than standing in for them.
     """
     from celpix.plugins.builtins.scgcad import OBJ_PAYLOADS, OBJ_SIZE, SIGNATURE
 
     out = bytearray(OBJ_SIZE)
     for at, (x, y, tile, *rest) in enumerate(parts):
-        head = bytes((0x80, 0, y & 0xFF, x & 0xFF))
+        large = 0x01 if len(rest) > 1 and rest[1] else 0
+        head = bytes((0x80 | large, 0, y & 0xFF, x & 0xFF))
         attr = (tile & 0x1FF) | ((rest[0] if rest else 0) & 0x7) << 9
         out[at * 6 : at * 6 + 6] = head + attr.to_bytes(2, "big")
     header = OBJ_PAYLOADS[0]
@@ -6818,6 +7191,12 @@ def test_a_tilemap_forces_rectangle_selection_and_hands_it_back(
         window._load_pixel(str(tilemap))
         assert window._selection_shape.currentData() is SelectionShape.RECT
         assert not window._selection_shape.isEnabled()
+        # And the S key with it: it presses this picker, so a locked picker is
+        # the whole of its answer. Swapping here would have persisted Linear as
+        # the preference and handed it back on the next pixel document.
+        assert not window._can_toggle_selection_mode()
+        window._toggle_selection_mode()
+        assert window._selection_shape.currentData() is SelectionShape.RECT
 
         window._activate_entry(window._workspace.entries[0])  # back to the pixels
         assert window._selection_shape.currentData() is preference
@@ -7026,6 +7405,54 @@ def test_clicking_a_sprite_picks_the_subsprite_and_rings_the_tile_it_names(
     assert window._picked_subsprite is None and canvas._pick_outline is None
 
 
+def test_pressing_the_same_sprite_tile_again_cycles_the_records_under_it(
+    qtbot, tmp_path
+) -> None:
+    """Overlap is the normal case on a sprite object, and the front-most record
+    hides the ones behind it - so one answer per press would leave whole records
+    unreachable by clicking the picture they are part of.
+
+    The tile is what makes a press a second press: the same spot clicked twice is
+    never the same pixel twice, and anywhere else has to start over at the front
+    or the first answer on a piece would not be the one the eye picks out.
+    """
+    from PySide6.QtCore import QPoint, Qt
+
+    # Two records stacked at the origin, and a third off on its own.
+    window, _ = _shown_sprite_source(
+        qtbot, tmp_path, [(0, 0, 1), (0, 0, 2), (24, 5, 3)]
+    )
+    canvas = window._canvas
+    zoom = canvas._zoom
+    stack = QPoint(int(2 * zoom), int(2 * zoom))
+    apart = QPoint(int(26 * zoom), int(7 * zoom))
+
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=stack)
+    first = window._picked_subsprite
+    # The stack is worth saying out loud - the outline moving is otherwise the
+    # only sign that pressing again does anything at all.
+    assert "click again for the next of 2" in window.statusBar().currentMessage()
+
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=stack)
+    second = window._picked_subsprite
+    assert {first, second} == {(0, 0), (0, 1)}  # both reachable, front one first
+
+    # A third press wraps rather than sticking on the last one.
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=stack)
+    assert window._picked_subsprite == first
+
+    # A record with nothing over it says so, and does not cycle.
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=apart)
+    assert window._picked_subsprite == (0, 2)
+    assert "click again" not in window.statusBar().currentMessage()
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=apart)
+    assert window._picked_subsprite == (0, 2)
+
+    # Coming back to the stack starts at its front again, not where it left off.
+    qtbot.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=stack)
+    assert window._picked_subsprite == first
+
+
 def test_transparent_zero_clears_a_blank_cell_on_every_palette_row(
     qtbot, tmp_path
 ) -> None:
@@ -7077,6 +7504,99 @@ def test_transparent_zero_clears_a_blank_cell_on_every_palette_row(
     assert not window._transparent_zero
     window._activate_entry(entry)
     assert window._transparent_zero and window._transparent_zero_box.isChecked()
+
+
+def test_navigation_keys_do_nothing_on_a_tilemap(qtbot, tmp_path) -> None:
+    """A map is always drawn entire, so it has no view window to move — and the
+    nav keys are filtered app-wide rather than bound to the actions the
+    NAVIGATION capability hides, so ``_set_offset`` is where they have to stop.
+
+    The bank is what makes this bite: a map's ``pixel_data`` is the bound entry's
+    art, so the offset clamp measures a window against *the bank's* tile count. A
+    bank bigger than the window left the offset free to move a position nothing
+    renders from, and each step pushed an undo command that dirtied the project.
+    """
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    bank = tmp_path / "bank.4bpp.sfc"
+    bank.write_bytes(bytes((i * 13 + 1) & 0xFF for i in range(32 * 1024)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(bank))
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1), Cell(index=2)])))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(entry)
+    steps = window._undo_stack.count()
+
+    for move in (
+        lambda: window._nav_rows(window._row_step()),
+        lambda: window._nav_tiles(1),
+        window._nav_end,
+        lambda: window._nav_bytes(1),
+    ):
+        move()
+        assert (window._offset, window._nudge) == (0, 0)
+    assert window._undo_stack.count() == steps
+
+    # The bank itself still pages: the veto is the document's, not the window's.
+    window._activate_entry(window._workspace.entries[0])
+    window._nav_rows(1)
+    assert window._offset == window._columns.value()
+
+
+def test_a_tilemap_row_is_marked_by_the_layout_it_holds(qtbot, tmp_path) -> None:
+    """The picture glyph says "a little graphic", which a map is not. Which of the
+    three map layouts it is comes off the *format*, so a row can draw it before
+    the entry has been loaded or bound — and it goes on the row whatever the row
+    is a window onto, a whole file as much as a slice of a ROM. Keyed on the
+    bounding, every map opened as its own file went unmarked.
+    """
+    from celpix.core.capabilities import ContentKind
+
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    panel = window._files_panel
+
+    def marker(entry) -> str:
+        icon, what = panel._entry_marker(entry)
+        assert not icon.isNull()
+        return what
+
+    whole = window._workspace.current  # a pixel file wears no glyph at all
+    assert panel._entry_marker(whole)[0].isNull()
+
+    cut = window._workspace.add_slice(str(px), "gfx", 32, 32)
+    assert marker(cut) == ""  # the picture glyph, unnamed
+
+    for entry in (cut, whole):
+        entry.content_kind = ContentKind.TILEMAP
+        assert marker(entry) == "Tilemap"  # no format named yet
+        for preset, what in (
+            ("preset.tilemap.snes-bg", "Tilemap"),
+            ("preset.tilemap.scgcad-object", "Sprite map"),
+            ("preset.tilemap.text-8bit", "Fontmap"),
+        ):
+            entry.tilemap_preset_id = preset
+            assert marker(entry) == what
+
+    # A bookmark keeps the ribbon even on a map: it marks a position, not
+    # content, and that is what tells it from the slices it sits among.
+    from celpix.project.workspace import Entry, EntryKind
+
+    mark = Entry(
+        name="here",
+        kind=EntryKind.BOOKMARK,
+        path=str(px),
+        slice_offset=64,
+        content_kind=ContentKind.TILEMAP,
+    )
+    assert marker(mark) == ""
 
 
 def test_all_frames_is_a_sprite_maps_own_switch_and_grows_the_sheet(
@@ -7646,6 +8166,119 @@ def test_the_size_readout_names_the_cell_on_a_tilemap(qtbot, tmp_path) -> None:
     assert (window._tile_size_label.text(), window._tile_size.text()) == (
         "Tile:",
         "8×8",
+    )
+
+
+def test_a_moved_panel_is_written_out_and_comes_back_on_the_next_window(
+    qtbot, monkeypatch
+) -> None:
+    """The layout a user arrives at is their answer to a question the defaults
+    only guess at, so rebuilding it every launch is a tax paid dozens of times.
+
+    Written on a delay rather than at quit, and both halves of that matter: a
+    dock separator dragged to a new width emits no signal to hang a save off, and
+    a layout kept only until a clean shutdown is a layout lost to a crash. So no
+    save is asked for here - the move alone has to reach the settings. The delay
+    is shortened to keep the test off the wall clock; what it is set to is a
+    tuning value, not behaviour.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.ui import window_layout
+
+    monkeypatch.setattr(window_layout, "SAVE_DELAY_MS", 10)
+    first = MainWindow()
+    qtbot.addWidget(first)
+    first.show()
+    qtbot.waitUntil(lambda: _stored_layout() is not None, timeout=3000)
+    settled = _stored_layout()
+
+    # Both a panel moved and a panel opened: Qt's state carries visibility too,
+    # and the Hex dock is the one that starts hidden.
+    first.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, first._hex_dock)
+    first._hex_dock.show()
+    # Waited for the write the *move* caused, not the one opening the window did,
+    # so what the second one reads below cannot be the layout from before it.
+    qtbot.waitUntil(lambda: _stored_layout() != settled, timeout=3000)
+
+    second = MainWindow()
+    qtbot.addWidget(second)
+    second.show()
+    assert (
+        second.dockWidgetArea(second._hex_dock) == Qt.DockWidgetArea.RightDockWidgetArea
+    )
+    assert second._hex_dock.isVisible()
+    # The one that was left alone is still where its own code put it, rather than
+    # the restore having flattened everything into one remembered arrangement.
+    assert (
+        second.dockWidgetArea(second._files_dock)
+        == Qt.DockWidgetArea.LeftDockWidgetArea
+    )
+
+
+def test_a_tool_window_keeps_the_size_it_was_given(qtbot) -> None:
+    """The floating windows are remembered the same way, minus the docks they
+    have none of: the text window is where a fontmap is actually typed, and its
+    default size is a starting point rather than an answer.
+
+    Its position counts as set once it is remembered, so the first-show placement
+    beside the main window stops overriding it — that move is for a window nobody
+    has put anywhere yet."""
+    from celpix.ui.text_window import TextWindow
+
+    first = TextWindow()
+    qtbot.addWidget(first)
+    first.show()
+    first.resize(600, 500)
+    first._layout_memory.save()
+
+    second = TextWindow()
+    qtbot.addWidget(second)
+    assert second.size().toTuple() == (600, 500)
+    assert second._positioned
+
+
+def _stored_layout():
+    """The main window's saved dock arrangement, or None with nothing written."""
+    from celpix.ui.main_window.window import MAIN_WINDOW_LAYOUT_KEY
+    from celpix.ui.widgets import settings
+
+    return settings().value(f"{MAIN_WINDOW_LAYOUT_KEY}/state")
+
+
+def test_reset_panel_layout_is_the_way_back_from_a_panel_dragged_anywhere(
+    qtbot,
+) -> None:
+    """The escape hatch the remembering makes necessary: a panel dropped
+    somewhere unusable now stays unusable across a restart, and a dock shrunk
+    past its own separator cannot be dragged back by hand.
+
+    It puts the *panels* back and leaves the window where it is - resetting the
+    size and position too would be answering a question nobody asked."""
+    from PySide6.QtCore import Qt
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, window._files_dock)
+    window._hex_dock.show()
+    was = window.size()
+
+    window._reset_panel_layout()
+    assert (
+        window.dockWidgetArea(window._files_dock)
+        == Qt.DockWidgetArea.LeftDockWidgetArea
+    )
+    assert not window._hex_dock.isVisible()  # hidden again, as a fresh install has it
+    assert window.size() == was
+
+    # And the reset is what a following window reads, rather than the arrangement
+    # it replaced still sitting in the settings waiting to come back.
+    other = MainWindow()
+    qtbot.addWidget(other)
+    other.show()
+    assert (
+        other.dockWidgetArea(other._files_dock) == Qt.DockWidgetArea.LeftDockWidgetArea
     )
 
 
@@ -9231,11 +9864,25 @@ def test_a_sprite_map_offers_a_size_pair_and_nothing_else_does(qtbot, tmp_path) 
     assert window._doc.sprite_size_pair == (1, 4)
 
     # A grid tilemap has no parts to size, so the controls are not there at all.
+    from celpix.core.capabilities import ContentKind
     from celpix.core.tilemap import Cell
 
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
     assert window._size_small.isHidden()
     assert window._size_large.isHidden()
+    assert window._size_pair_label.isHidden()
+
+    # Nor on a sprite format whose records **state** each part's rectangle: there
+    # is no size bit to resolve, so the pair would be a spin that redraws the same
+    # picture. The gate is the format's declaration, so an unbound entry answers.
+    records = tmp_path / "object.bin"
+    records.write_bytes(bytes((0xF8, 0x05, 0x03, 0xC8, 0xF0, 0x08)))
+    stated = window._workspace.add_slice(str(records), "object", 0, 6)
+    stated.content_kind = ContentKind.TILEMAP
+    stated.tilemap_preset_id = "preset.tilemap.md-sprite"
+    window._activate_entry(stated)
+    assert window._doc.is_sprite
+    assert window._size_small.isHidden()
     assert window._size_pair_label.isHidden()
 
 
@@ -10064,18 +10711,13 @@ def test_a_palette_is_never_offered_a_graphics_container(qtbot, tmp_path) -> Non
         window._registry, paths=(col,), kind=ContentKind.PALETTE
     )
     qtbot.addWidget(for_palette)
-    offered = {
-        for_palette._container.itemData(i)
-        for i in range(for_palette._container.count())
-    }
+    offered = set(_combo_ids(for_palette._container))
     assert "container.scgcad-col" in offered
     assert "container.ines" not in offered
 
     for_file = ContainerDialog(window._registry, paths=(col,), kind=ContentKind.PIXELS)
     qtbot.addWidget(for_file)
-    graphics = {
-        for_file._container.itemData(i) for i in range(for_file._container.count())
-    }
+    graphics = set(_combo_ids(for_file._container))
     assert "container.ines" in graphics
     assert "container.scgcad-col" not in graphics
 
@@ -10394,6 +11036,30 @@ def test_set_base_tile_is_offered_on_a_sprite_object_too(qtbot, tmp_path) -> Non
     assert entry.tile_source.base_index == 3
     assert window._tile_base.value() == 3  # the spin is the same value
     assert window._doc.tile_base_index == 3  # ...and the object draws through it
+
+
+def test_a_subsprite_counts_as_a_user_of_every_tile_it_draws(qtbot, tmp_path) -> None:
+    """A subsprite is a *rectangle*, and its record names only the corner of it.
+
+    Counted by that number alone, a 2x2 piece reports one user for its corner
+    tile and none for the other three - so the three tiles it plainly draws read
+    as spare, which is the opposite of what this line is asked for.
+    """
+    # A 2x2 record at tile 1, which draws 1, 2 and the row below (17, 18); and a
+    # 1x1 record naming tile 2, so that tile has two users by two different routes.
+    window, _ = _shown_sprite_source(qtbot, tmp_path, [(0, 0, 1, 0, True), (24, 5, 2)])
+
+    window._tile_source_panel.select_id(2)
+    assert "used by 2 subsprites" in window._tile_source_details.text()
+
+    # The corner tile is the one record that names it, counted once and not twice.
+    window._tile_source_panel.select_id(1)
+    assert "used by 1 subsprite." in window._tile_source_details.text()
+
+    # And a tile no record reaches is still spare - the rectangle widens the
+    # count, it does not blur it.
+    window._tile_source_panel.select_id(4)
+    assert "used by 0 subsprites" in window._tile_source_details.text()
 
 
 def test_the_sheet_reads_in_the_selected_cells_palette_row(qtbot, tmp_path) -> None:
@@ -10876,6 +11542,124 @@ def test_painting_a_cell_stores_its_palette_row_relative_index(qtbot, tmp_path) 
     assert _bank_tile(window, bank, 1).get(0, 0) == 1
 
 
+def _bound_object(qtbot, tmp_path, parts):
+    """A window with a 4bpp bank at entry 0 and a sprite object bound to it.
+
+    ``parts`` is ``_obj_file``'s — ``(x, y, tile)`` or ``(x, y, tile, row)``.
+    """
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.entries[0]
+    obj = _obj_file(tmp_path, parts)
+    window._load_pixel(str(obj))
+    entry = window._workspace.find_file(str(obj))
+    window._activate_entry(entry)
+    window._rebind_tiles(entry, TileSource(mode=TileMode.ENTRY, entry=bank))
+    return window, bank, entry
+
+
+def test_painting_a_sprite_object_deposits_into_the_bank_it_borrows_from(
+    qtbot, tmp_path
+) -> None:
+    """The tilemap feature over the other shape. An object's ``pixel_data`` is the
+    bound entry's art exactly as a grid map's is, so the edit has to land there
+    and not in the map — whose own data is its records and whose save writes
+    those.
+
+    What differs is only the way *in*: a piece sits at a signed pixel offset, so
+    which one owns a pixel is the overlap order rather than a slot
+    (``docs/design/tilemap-entry.md`` §8.5).
+    """
+    window, bank, obj = _bound_object(qtbot, tmp_path, [(0, 0, 2)])
+    _painting_on(window)
+    assert window._pixel_edit_available()
+
+    _paint(window, 1, 1, 9)
+
+    assert _bank_tile(window, bank, 2).get(1, 1) == 9
+    assert bank.pixel_dirty
+    assert not obj.pixel_dirty  # its own data is its records, and they stand
+    assert obj.doc.pixel_data == bank.doc.pixel_data  # the borrowed copy kept up
+
+    window._undo_stack.undo()
+    assert _bank_tile(window, bank, 2).get(1, 1) != 9
+    assert not bank.pixel_dirty
+    assert window._workspace.current is obj  # back to the picture it was drawn on
+
+
+def test_the_pixel_clipboard_is_offered_on_a_sprite_object(qtbot, tmp_path) -> None:
+    """What Cut, Clear and Paste need to be able to write is a different thing in
+    each mode, and asking the *cell* question in pixel mode refused an object the
+    gestures it does have: its cells are pieces at signed offsets, so there is
+    none under the cursor to blank, while the pixels those pieces draw are as
+    editable as a grid map's (§8.5). The brush was offered and taking back what it
+    laid down was not.
+
+    Tile mode is the other half of the same rule: there the cells really are what
+    a Cut would blank, so the object still refuses.
+    """
+    from PySide6.QtCore import QRect
+
+    from celpix.ui.tools import EditMode
+
+    window, bank, _obj = _bound_object(qtbot, tmp_path, [(0, 0, 2)])
+    _painting_on(window)
+    window._marquee = QRect(0, 0, 8, 8)
+    window._sync_edit_actions()
+
+    assert window._copy_action.isEnabled()
+    assert window._cut_action.isEnabled()
+    assert window._clear_action.isEnabled()
+
+    # And they act: a cut reaches the bank tile the piece draws, as one step.
+    before = [_bank_tile(window, bank, 2).get(x, 0) for x in range(8)]
+    window._cut_selection()
+    assert [_bank_tile(window, bank, 2).get(x, 0) for x in range(8)] != before
+    window._sync_edit_actions()
+    assert window._paste_action.isEnabled()  # the cut is on the clipboard
+    window._undo_stack.undo()
+    assert [_bank_tile(window, bank, 2).get(x, 0) for x in range(8)] == before
+
+    # Tile mode asks the cell question, and an object has no cell to blank.
+    window._set_edit_mode(EditMode.TILE)
+    window._select_tiles(0, 0)
+    window._sync_edit_actions()
+    assert window._copy_action.isEnabled()  # a read: the sheet's pixels
+    assert not window._cut_action.isEnabled()
+    assert not window._clear_action.isEnabled()
+
+
+def test_painting_a_sprite_piece_undoes_its_flip_and_its_palette_row(
+    qtbot, tmp_path
+) -> None:
+    """Both of the contributions a piece makes to what is on screen, taken back
+    off the way a cell's are. The offsets are what make this its own test: a
+    piece is placed at a signed pixel offset, so the pixel inside the tile is not
+    the canvas position modulo the tile size, and getting that wrong writes a
+    neighbouring pixel of the right tile — visible, plausible and wrong.
+    """
+    from dataclasses import replace
+
+    window, bank, obj = _bound_object(qtbot, tmp_path, [(0, 0, 3, 2)])
+    # Mirror the piece and shift it off the tile grid, both through the document
+    # so the record's own decode is what placed it.
+    frame = obj.doc.sprite_frames[0]
+    obj.doc.sprite_frames[0] = (replace(frame[0], flip_h=True, x=3, y=5),)
+    window._refresh_view()
+    _painting_on(window)
+
+    # The piece's top-left pixel now sits at canvas (3, 5), and it is mirrored,
+    # so that pixel is the tile's *far* column. Row 2 is folded into the picture.
+    _paint(window, 3, 5, 0x21)
+
+    tile = _bank_tile(window, bank, 3)
+    assert tile.get(7, 0) == 1  # mirrored across, and stored row-relative
+    assert tile.get(0, 0) != 1
+
+
 def test_one_stroke_over_two_cells_drawing_one_tile_leaves_the_last(
     qtbot, tmp_path
 ) -> None:
@@ -11290,6 +12074,57 @@ def test_the_eyedropper_on_a_row_bearing_cell_arms_the_pen_with_what_it_picked(
     assert window._pen_value() == picked % 16
 
 
+def test_the_eyedropper_points_both_panels_at_the_pixel_it_sampled(
+    qtbot, tmp_path
+) -> None:
+    """A pixel of a tilemap belongs to a tile as much as to a colour, and the two
+    panels answer one half each: the sheet picks the tile the pixel was drawn
+    from - the cell's own ID, which is what that panel is addressed in - and the
+    palette grid picks the colour, which on a row-bearing cell carries the row it
+    is drawn through. The record travels with the ID, so a stamp made after the
+    pick lays the whole cell down, exactly as the stamp tool's own eyedropper.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    cells = [Cell(index=1), Cell(index=2, palette_row=2)]
+    window, _bank, entry = _bound_screen(qtbot, tmp_path, cells)
+    window._activate_entry(entry)
+    window.show()
+    window._tile_source_dock.setVisible(True)
+    window._tile_source_dock.raise_()
+    window._refresh_tile_source()
+    _painting_on(window)
+
+    # A right-click one tile across, which is the second cell's first pixel.
+    window._on_pixel_pressed(8, 0, Qt.MouseButton.RightButton)
+
+    assert window._source_tile_id == 2
+    assert window._source_cell == window._doc.cells[1]
+    assert window._tile_source_panel.selected_id() == 2
+    assert window._subpalette.value() == 2
+    assert window._palette_panel.selected_index() // 16 == 2
+
+    # A pixel document has no cells for a pick to name, and the sheet keeps
+    # whatever it was showing.
+    window._activate_entry(window._workspace.entries[0])
+    _painting_on(window)
+    window._on_pixel_pressed(0, 0, Qt.MouseButton.RightButton)
+    assert window._source_tile_id == 2
+
+    # A sprite object answers with the piece the pixel hit - it has no slots to
+    # divide, and no cell record for a stamp to lay down.
+    window, _bank, _obj = _bound_object(qtbot, tmp_path, [(0, 0, 3, 2)])
+    _painting_on(window)
+    window._on_pixel_pressed(1, 1, Qt.MouseButton.RightButton)
+    assert window._source_tile_id == 3
+    assert window._source_cell is None
+    # Through the entry's own row base, which an object file has (its rows are
+    # named in the sprite half of the hardware's palette).
+    assert window._subpalette.value() == window._drawn_palette_row(2)
+
+
 def test_unbinding_a_map_being_painted_on_leaves_pixel_mode(qtbot, tmp_path) -> None:
     """A binding change is where pixel editing can stop being available without
     the view having moved, and the mode is app-wide state nothing else resets.
@@ -11317,10 +12152,12 @@ def test_moving_pixels_onto_a_higher_palette_row_keeps_them(qtbot, tmp_path) -> 
     so relocating art onto any cell past palette row 0 wrote nothing but index 0 -
     a paste onto such a cell blanked the tile outright.
 
-    Reducing into the row instead keeps the pattern and lets the destination's row
-    recolour it, which is what moving art between palette rows means.
+    A pixel edit settles into the row the destination cell already names rather
+    than moving one: the incoming colours are matched inside that row, so the art
+    arrives looking like what was dragged and the cell's own field is untouched.
     """
     from celpix.core.index_grid import IndexGrid
+    from celpix.core.quantize import color_distance
     from celpix.core.tilemap import Cell
 
     window, bank, entry = _bound_screen(
@@ -11328,6 +12165,8 @@ def test_moving_pixels_onto_a_higher_palette_row_keeps_them(qtbot, tmp_path) -> 
     )
     window._activate_entry(entry)
     _painting_on(window)
+    palette = window._doc.palette
+    space = window._index_space()
 
     # The source cell's tile, as composed on screen: row 0, so absolute == stored.
     source = [window._sampled_value(x, 0) for x in range(8)]
@@ -11335,11 +12174,64 @@ def test_moving_pixels_onto_a_higher_palette_row_keeps_them(qtbot, tmp_path) -> 
 
     # Land that row of pixels on cell 1, which draws through palette row 2 - so
     # what arrives carries row 0's absolute indices, not row 2's.
+    was = window._doc.cells[1].palette_row
     moved = IndexGrid(8, 8, bytearray(bytes(source) + bytes(56)))
     tiles = [IndexGrid(8, 8), moved]
     edits = window._bank_tiles_from(window._doc, [1], tiles)
-    landed = edits[2]
-    assert [landed.get(x, 0) for x in range(8)] == source
+    landed = [edits[2].get(x, 0) for x in range(8)]
+
+    assert any(landed), "the tile came back blank"
+    assert window._doc.cells[1].palette_row == was  # the edit moved no cell's row
+    # Stored row-relative, and each index is the entry on row 2 nearest the colour
+    # that was dragged - so nothing is stored that row 2 cannot draw.
+    assert all(0 <= v < space for v in landed)
+    row = [palette.color(2 * space + i) for i in range(space)]
+    for pixel, value in zip(source, landed, strict=True):
+        want = palette.color(pixel)
+        chosen = color_distance(want, row[value])
+        assert chosen == min(color_distance(want, c) for c in row)
+
+
+def test_clearing_blanks_to_the_row_s_own_first_index(qtbot, tmp_path) -> None:
+    """ "Empty" is index 0 **of the row the pixel is drawn through**, not of the
+    palette. A cell drawn through row 2 cannot show the palette's first entry at
+    all, so blanking to it left the commit matching that colour into row 2 by
+    nearest distance — a Clear that painted the closest thing to entry 0 rather
+    than clearing, and a Cut and a moved float that left the same behind them.
+
+    A sprite object is the same rule read from the other end: there index 0 is the
+    hole a piece leaves for whatever is behind it and the blit composes it
+    unbiased, so 0 is both what a cleared pixel stores and what it shows — and the
+    row must not be matched onto it either, or moving a piece's transparent pixels
+    would fill them in.
+    """
+    from PySide6.QtCore import QRect
+
+    from celpix.core.tilemap import Cell
+
+    window, bank, entry = _bound_screen(qtbot, tmp_path, [Cell(index=1, palette_row=2)])
+    window._activate_entry(entry)
+    _painting_on(window)
+    space = window._index_space()
+    window._marquee = QRect(0, 0, 8, 8)
+    window._pixel_clear()
+
+    tile = _bank_tile(window, bank, 1)
+    assert [tile.get(x, 0) for x in range(8)] == [0] * 8  # stored row-relative
+    grid = window._window_grid()
+    assert [grid.get(x, 0) for x in range(8)] == [2 * space] * 8  # shown on row 2
+
+    # The object's piece carries a row too, and clears to transparency through it.
+    window, bank, _obj = _bound_object(qtbot, tmp_path, [(0, 0, 2, 2)])
+    _painting_on(window)
+    assert window._cell_paint_base(window._doc.sprite_frames[0][0]) > 0
+    window._marquee = QRect(0, 0, 8, 8)
+    window._pixel_clear()
+
+    tile = _bank_tile(window, bank, 2)
+    assert [tile.get(x, 0) for x in range(8)] == [0] * 8
+    grid = window._window_grid()
+    assert [grid.get(x, 0) for x in range(8)] == [0] * 8
 
 
 def test_a_palette_file_that_states_its_format_is_read_in_it(qtbot, tmp_path) -> None:
@@ -11406,3 +12298,906 @@ def test_a_stated_palette_format_does_not_overrule_a_chosen_one(
     entry.palette_preset_id = "preset.palette.rgb444"
     window._load_palette_entry(entry)
     assert entry.palette_preset_id == "preset.palette.rgb444"
+
+
+# -- fontmaps: a tilemap whose cells are characters -------------------------
+
+
+def _fontmap(
+    qtbot,
+    tmp_path,
+    codes,
+    *,
+    alphabet="alphabet.ascii-upper",
+    preset="preset.tilemap.text-8bit",
+):
+    """A window with a font bank at entry 0 and a text run bound to it.
+
+    The run is carved by hand rather than detected, which is the ordinary way a
+    string region is reached: nothing in a ROM says "a text run starts here".
+    """
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.entries[0]
+    bank.alphabet_preset_id = alphabet
+
+    path = tmp_path / "text.bin"
+    path.write_bytes(bytes(codes))
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    entry = window._workspace.current
+    entry.tilemap_preset_id = preset
+    window._rebind_tiles(entry, TileSource(mode=TileMode.ENTRY, entry=bank))
+    return window, bank, entry
+
+
+def test_a_fontmap_reads_its_cells_as_words(qtbot, tmp_path) -> None:
+    """The whole feature in one line: cells that are character codes read as text.
+
+    Nothing about the *picture* changes - a text run draws as the grid of glyph
+    tiles its cells already are - so what has to be true is that the second
+    reading exists and agrees with the cells (``docs/design/fontmap-entry.md``).
+    """
+    # "CAB" under the shipped uppercase run, then a code the font has no glyph for.
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1, 0xF0])
+
+    doc = window._doc
+    assert doc is not None and doc.is_font and doc.is_tilemap
+    assert doc.text.body == "CAB[$F0]"
+    # The alphabet is the *font's*, reached through the binding rather than
+    # stored on the map.
+    assert doc.alphabet is not None
+    assert window._text_available()
+
+
+def test_a_fontmap_with_no_alphabet_still_opens_and_says_so(qtbot, tmp_path) -> None:
+    """Hex is the honest reading of codes nothing has explained, and the window
+    is where the user is told which control fixes it - so it must not be hidden
+    in the one state that most needs explaining."""
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], alphabet=None)
+
+    doc = window._doc
+    assert doc.is_font and doc.alphabet is None
+    assert doc.text.body == "[$02][$00][$01]"
+    assert window._text_available()  # gated on the declaration, not the alphabet
+    _status, badge = window._text_status(None)
+    assert badge is not None and badge.text == "no alphabet"
+
+
+def test_typing_in_the_text_window_lands_on_the_cells(qtbot, tmp_path) -> None:
+    """A committed string becomes cell indices, as one undoable step.
+
+    The attributes are the load-bearing half: a cell carries a palette row and
+    flips the text form cannot show, so an edit replaces the *index* and leaves
+    the rest of the cell alone. Rebuilding cells from the string would zero them.
+    """
+    from dataclasses import replace
+
+    window, _bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
+    # Give the middle cell an attribute the text has no way to express.
+    entry.doc.cells[1] = replace(entry.doc.cells[1], palette_row=3, flip_h=True)
+
+    window._on_text_committed("BAT")
+
+    cells = window._doc.cells
+    assert [cell.index for cell in cells] == [1, 0, 19]  # B, A, T
+    assert cells[1].palette_row == 3 and cells[1].flip_h  # carried, not rebuilt
+    # And it is one step on the shared stack, so Ctrl+Z brings the string back.
+    window._undo_stack.undo()
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 1]
+
+
+def test_text_past_the_end_of_its_region_is_cut_off_and_said_out_loud(
+    qtbot, tmp_path
+) -> None:
+    """A text region is a fixed run of cells and the codes have nowhere else to go,
+    so what runs past the end comes off the end.
+
+    Refusing the whole string instead would leave the canvas drawing the old one
+    while the window showed the new, which reads as the editor having stopped
+    working. What is owed is the *warning*: the words that came off are text the
+    user will look for later and not find, and they need to know before the run of
+    typing goes any further.
+    """
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
+
+    window._on_text_committed("MUCH LONGER")
+
+    assert [cell.index for cell in window._doc.cells] == [12, 20, 2]  # "MUC"
+    assert "'H LONGER' pushed off the end" in window.statusBar().currentMessage()
+
+
+def test_a_character_the_font_lacks_blocks_the_write(qtbot, tmp_path) -> None:
+    """Reported rather than substituted: a silent fallback character is how a
+    string comes to be saved with a letter nobody typed."""
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
+
+    window._on_text_committed("A%B")  # '%' is not in the uppercase run
+
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 1]
+    assert "has no code in this font" in window.statusBar().currentMessage()
+
+
+def test_the_alphabet_picker_writes_to_the_bound_font(qtbot, tmp_path) -> None:
+    """The one control on the binding bar whose value belongs to another entry.
+
+    Two fontmaps over one font must not be able to disagree about what its tiles
+    spell, so the answer is stored once, on the font - and changing it re-reads
+    every open map drawn through it, not only the one on screen.
+    """
+    window, bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1], alphabet=None)
+    window._refresh_view()
+    # Filled from the registry and armed, because a font *is* bound; it reads
+    # None because the font has not been given one yet.
+    assert window._alphabet.isEnabled()
+    assert window._alphabet.currentData() is None
+    assert window._alphabet.findData("alphabet.ascii-upper") > 0
+    # Base code follows one step behind: nothing to shift until one is picked.
+    assert not window._alphabet_base.isEnabled()
+
+    window._apply_alphabet(bank, ("alphabet.ascii-upper", 0))
+
+    assert bank.alphabet_preset_id == "alphabet.ascii-upper"
+    assert entry.doc.alphabet is not None
+    assert entry.doc.text.body == "CAB"
+    assert window._alphabet_base.isEnabled()
+
+
+def test_base_code_slides_the_alphabet_without_moving_the_picture(
+    qtbot, tmp_path
+) -> None:
+    """The origin control, and the one thing no font sheet can tell you.
+
+    A table states which characters the glyphs are and in what order - readable
+    off the sheet - but where the run *starts* lives in the game's code
+    (``docs/graphics-formats-reference/text-formats.md`` §3.2). So an unknown ROM
+    is dialled, not guessed, and what moves is the *reading* alone: the cells and
+    the tiles they draw are untouched.
+    """
+    # The same "CAB", but written by a game whose uppercase run begins at $80.
+    window, bank, entry = _fontmap(qtbot, tmp_path, [0x82, 0x80, 0x81])
+    assert entry.doc.text.body == "[$82][$80][$81]"
+    drawn = [cell.index for cell in entry.doc.cells]
+
+    window._apply_alphabet(bank, ("alphabet.ascii-upper", 0x80))
+
+    assert entry.doc.text.body == "CAB"
+    # The reading moved; the cells did not, so neither did the picture.
+    assert [cell.index for cell in entry.doc.cells] == drawn
+    # And it types back to the codes the file actually holds.
+    assert list(entry.doc.alphabet.encode("CAB").codes) == [0x82, 0x80, 0x81]
+
+
+def test_picking_a_different_alphabet_returns_the_origin_to_zero(
+    qtbot, tmp_path
+) -> None:
+    """A shift dialled against one table means nothing on the next.
+
+    Carrying it over would greet every new pick with a wrongness the user has to
+    undo before they can judge the alphabet they just chose - and the two land as
+    one undo step, not two.
+    """
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [0x82, 0x80, 0x81])
+    window._apply_alphabet(bank, ("alphabet.ascii-upper", 0x80))
+    window._refresh_view()
+
+    window._alphabet.setCurrentIndex(window._alphabet.findData("alphabet.ascii"))
+    window._on_alphabet_change(0)
+
+    assert bank.alphabet_preset_id == "alphabet.ascii"
+    assert bank.alphabet_base == 0
+    window._undo_stack.undo()
+    assert (bank.alphabet_preset_id, bank.alphabet_base) == (
+        "alphabet.ascii-upper",
+        0x80,
+    )
+
+
+def test_the_streams_control_codes_come_from_its_own_cell_format(
+    qtbot, tmp_path
+) -> None:
+    """The design's load-bearing split, end to end: letters from the font,
+    punctuation from the stream (``docs/design/fontmap-entry.md`` §3).
+
+    Two runs in one game routinely share a font and punctuate differently, so the
+    controls cannot live on the font - and the terminator here has to reach the
+    text through a *preset* param, not through the alphabet the bank names.
+    """
+    from celpix.core.errors import Stage
+    from celpix.plugins.base import Preset
+
+    window, _bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1, 0xFF, 0])
+    window._registry.register_preset(
+        Preset(
+            id="preset.tilemap.text-terminated",
+            name="Text run, FF-terminated",
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id="codec.tilemap.packed",
+            params={
+                "layout": "text",
+                "bytes": 1,
+                "index": {"shift": 0, "bits": 8},
+                # No `role` on the second: a cell format's controls are commands
+                # unless they say otherwise, which is what keeps every line from
+                # carrying the only thing it could be.
+                "controls": [
+                    {"code": 0xFF, "text": "line break", "role": "break"},
+                    {"code": 0x2A, "text": "wait for input"},
+                ],
+            },
+        )
+    )
+    entry.tilemap_preset_id = "preset.tilemap.text-terminated"
+    entry.doc = None
+    window._activate_entry(window._workspace.entries[0])
+    window._activate_entry(entry)
+
+    doc = window._doc
+    # 0xFF is the stream's line break, not the font's letter for it...
+    assert doc.text.body == "CAB\nA"
+    # ...and it types back to exactly the bytes it came from.
+    assert list(doc.alphabet.encode(doc.text.body).codes) == [2, 0, 1, 0xFF, 0]
+    # The unroled entry became a command: named for the insert row, but read as
+    # its own hex like anything else celPix does not spell.
+    assert doc.alphabet.decode([0x2A]).body == "[$2A]"
+    assert [g.text for g in doc.alphabet.commands] == ["line break", "wait for input"]
+
+
+def _typing(qtbot, tmp_path, codes, at, **kwargs):
+    """A fontmap with its text window open and the caret at ``at``."""
+    window, bank, entry = _fontmap(qtbot, tmp_path, codes, **kwargs)
+    window._show_text()
+    window._text.select_range(at, at)
+    return window, entry
+
+
+def test_a_keystroke_replaces_one_cell_and_the_budget_never_moves(
+    qtbot, tmp_path
+) -> None:
+    """The whole editing model in one gesture: the field is typed *over*, not
+    typed into.
+
+    A text region is a fixed run of cells and the codes have nowhere else to go,
+    so a key that inserted would push the string past the end of its region on
+    the second word (``docs/design/fontmap-entry.md`` §5).
+    """
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1], 1)  # "CAB", caret after C
+
+    qtbot.keyClicks(window._text._edit, "X")
+
+    assert window._text.body == "CXB"
+    assert [cell.index for cell in window._doc.cells] == [2, 23, 1]  # C X B
+
+
+def test_typing_on_a_code_replaces_the_whole_pair(qtbot, tmp_path) -> None:
+    """A ``[$F0]`` is one cell however wide it reads, so it costs one keystroke to
+    type over - and leaving ``$F0]`` behind would put three letters nobody typed
+    into the string."""
+    window, _entry = _typing(qtbot, tmp_path, [2, 0xF0, 1], 1)  # "C[$F0]B"
+
+    qtbot.keyClicks(window._text._edit, "A")
+
+    assert window._text.body == "CAB"
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 1]
+
+
+def test_a_code_is_written_only_once_it_is_finished(qtbot, tmp_path) -> None:
+    """Inside a ``[...]`` the overtyping stops: the user is spelling a number and
+    half of one is not a code, so nothing reaches the cells until the caret leaves.
+
+    The budget line keeps up all the same - a code being typed still costs the one
+    cell it will become, and a readout frozen until the ``]`` would read as the
+    keys having been ignored.
+    """
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1], 1)  # "CAB", caret after C
+    field = window._text._edit
+
+    qtbot.keyClicks(field, "[$F")
+
+    assert window._text.body == "C[$FB"  # the `A` went in the first keystroke
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 1]  # nothing written
+    qtbot.keyClicks(field, "0]")
+    assert [cell.index for cell in window._doc.cells] == [2, 0xF0, 1]
+
+    # An undo is the one refresh that takes the field back off the user: leaving
+    # a draft standing over a step they just reverted would offer to write it
+    # again the next time focus moved.
+    window._undo_stack.undo()
+    assert window._text.body == "CAB"
+
+
+def test_a_run_of_typing_is_one_undo_step(qtbot, tmp_path) -> None:
+    """Every keystroke reaches the cells at once, so the canvas follows the caret -
+    but Ctrl+Z has to take back the word, not the letter. What ends a run is the
+    user doing something else, which is why the window is what says so."""
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1], 0)
+    depth = window._undo_stack.index()
+
+    qtbot.keyClicks(window._text._edit, "EDA")
+
+    assert [cell.index for cell in window._doc.cells] == [4, 3, 0]
+    assert window._undo_stack.index() == depth + 1
+    window._undo_stack.undo()
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 1]
+
+    # A click, an arrow key or a command button breaks the run: what came after
+    # the break is its own step.
+    window._undo_stack.redo()
+    window._text.break_run()
+    window._text.select_range(0, 0)
+    qtbot.keyClicks(window._text._edit, "B")
+    assert window._undo_stack.index() == depth + 2
+    window._undo_stack.undo()
+    assert [cell.index for cell in window._doc.cells] == [4, 3, 0]
+
+
+def test_backspace_blanks_a_whole_code_and_leaves_the_length_alone(
+    qtbot, tmp_path
+) -> None:
+    """The delete keys walk the same pieces the typing does, and for the same two
+    reasons.
+
+    A whole code goes in one press because half of one is not something the string
+    can hold. And it is **blanked, not removed**: closing the gap would pull the
+    rest of the string a cell to the left and leave the tail holding whatever the
+    file had there, which is a second edit the user did not ask for. Blanking
+    changes the one cell they were looking at.
+    """
+    from PySide6.QtCore import Qt
+
+    window, _entry = _typing(qtbot, tmp_path, [2, 0xF0, 1], 6)  # "C[$F0]B", after `]`
+
+    qtbot.keyClick(window._text._edit, Qt.Key.Key_Backspace)
+
+    assert window._text.body == "C B"
+    assert [cell.index for cell in window._doc.cells] == [2, 36, 1]  # 36 is the space
+    # The caret is left on the space it made, so backspace held down walks left
+    # through the string instead of standing still.
+    assert window._text._edit.textCursor().position() == 1
+
+
+def test_the_insert_switch_gives_back_an_ordinary_text_field(qtbot, tmp_path) -> None:
+    """The mode that has to be asked for: every key in it spends a cell the region
+    has not got spare, and what falls off the far end to pay for it is a word the
+    user wrote.
+
+    On, the string grows and shrinks like any text field's - and the region takes
+    up the difference at its end, cutting text off or filling with the blank, so
+    that what the canvas draws is always the string the window shows.
+    """
+    from PySide6.QtCore import Qt
+
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1], 1)  # "CAB", caret after C
+    field = window._text._edit
+    # Off until asked for, every session: nothing restores it (see the switch).
+    assert not window._text.inserting
+    window._text._insert_mode.setChecked(True)
+
+    qtbot.keyClicks(field, "X")
+
+    # Nothing was replaced - the string grew, and the `B` it pushed past the end
+    # of the region came off there and was reported.
+    assert window._text.body == "CXA"
+    assert [cell.index for cell in window._doc.cells] == [2, 23, 0]
+    assert "'B' pushed off the end" in window.statusBar().currentMessage()
+
+    # And Backspace removes rather than blanking in place: `A` is pulled along and
+    # the cell it gave up at the end is filled with the blank.
+    qtbot.keyClick(field, Qt.Key.Key_Backspace)
+    assert window._text.body == "CA "
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 36]
+
+    # The room that made has to still be there on the next keystroke, which is
+    # what a preserved tail would have taken away.
+    qtbot.keyClicks(field, "Z")
+    assert [cell.index for cell in window._doc.cells] == [2, 25, 0]  # C Z A
+
+
+def test_the_field_keeps_its_own_editing_out_of_the_way(qtbot, tmp_path) -> None:
+    """celPix types over the string and ``QPlainTextEdit`` types into it, so the
+    widget's own editing - undo included - is switched off rather than left live
+    as a second editor with different rules writing to the same buffer."""
+    from PySide6.QtCore import Qt
+
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1], 0)
+
+    assert not window._text._edit.isUndoRedoEnabled()
+    # Ctrl+Z in a `Qt.Tool` window never reaches the Edit menu's shortcut, so the
+    # window forwards it to the one session history.
+    with qtbot.waitSignal(window._text.undo_requested):
+        qtbot.keyClick(
+            window._text._edit, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier
+        )
+
+
+def test_the_wrap_switch_folds_lines_to_the_window(qtbot, tmp_path) -> None:
+    """A local preference, not project state: whether a long string is folded to
+    the window or laid out as the file's own lines says how you are reading it."""
+    from PySide6.QtWidgets import QPlainTextEdit
+
+    from celpix.ui.text_window import WORD_WRAP_KEY
+    from celpix.ui.widgets import load_bool_setting
+
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1], 0)
+    field = window._text._edit
+    assert field.lineWrapMode() == QPlainTextEdit.LineWrapMode.NoWrap
+
+    window._text._wrap.setChecked(True)
+
+    assert field.lineWrapMode() == QPlainTextEdit.LineWrapMode.WidgetWidth
+    assert load_bool_setting(WORD_WRAP_KEY, False)
+
+
+def test_a_paste_costs_the_cells_it_is_worth_and_no_more(qtbot, tmp_path) -> None:
+    """A drop, a middle click and the menu's Paste all arrive through one Qt hook,
+    and all three would otherwise write straight into the buffer - leaving the
+    window's idea of the string an edit behind and every offset after it wrong.
+
+    What lands is the same overtype a keystroke is, counted in pieces: two
+    characters replace two cells, so the region cannot grow by pasting into it.
+    """
+    from PySide6.QtCore import QMimeData
+
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1, 0, 2], 0)  # "CABAC"
+    source = QMimeData()
+    source.setText("ED")
+
+    window._text._edit.insertFromMimeData(source)
+
+    assert window._text.body == "EDBAC"
+    assert [cell.index for cell in window._doc.cells] == [4, 3, 1, 0, 2]
+
+
+def test_a_fontmap_opens_its_text_window_and_a_close_stops_it(qtbot, tmp_path) -> None:
+    """The canvas can only ever draw a string as the grid of glyph tiles it is, so
+    the text window is not a second look at something already legible - it is the
+    reading, and landing on a string with the words a menu item away is the state
+    the entry exists to avoid.
+
+    Closing it is the one gesture that says otherwise, and it has to stick: a
+    window that came back on the next refresh would be unclosable.
+    """
+    window, bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
+    window._refresh_view()
+    assert window._text.isVisible()
+
+    window._text.close()
+    window._refresh_view()
+    assert not window._text.isVisible()
+
+    # Leaving the fontmap and coming back does not undo the close - being put
+    # away because the entry is not a fontmap says nothing about wanting it.
+    window._activate_entry(bank)
+    window._activate_entry(entry)
+    assert not window._text.isVisible()
+
+    # Asking for it is what re-arms the automatic opening, since the only way to
+    # have turned it off was to have closed the window.
+    window._show_text()
+    window._activate_entry(bank)
+    window._activate_entry(entry)
+    assert window._text.isVisible()
+
+
+# -- pixel editing on a tilemap: the clipboard and the float ----------------
+from PySide6.QtCore import QRect  # noqa: E402
+
+from celpix.ui.tools import EditMode  # noqa: E402
+
+
+def _painting_tilemap(qtbot, tmp_path, cells=None):
+    """A bound tilemap in pixel mode, over cells spread across palette rows."""
+    from celpix.core.tilemap import Cell
+
+    if cells is None:
+        cells = [Cell(index=i + 1, palette_row=i % 4) for i in range(8)]
+    window, entry = _bound_tilemap(qtbot, tmp_path, cells, maker=_pnl_file)
+    window._set_edit_mode(EditMode.PIXEL)
+    return window, entry
+
+
+def test_a_tilemap_in_pixel_mode_offers_the_pixel_paste(qtbot, tmp_path) -> None:
+    """Paste means cells in tile mode and *pixels* in pixel mode, so the in-app
+    cell buffer cannot be what decides whether the action is live: asking it in
+    pixel mode greyed out the only paste on offer there."""
+    window, _ = _painting_tilemap(qtbot, tmp_path)
+    window._marquee = QRect(0, 0, 8, 8)
+    window._pixel_copy()  # image-only, onto the system clipboard
+
+    window._sync_edit_actions()
+    assert window._paste_action.isEnabled()
+
+    # ...and tile mode still asks the cell buffer, which nothing has filled.
+    window._set_edit_mode(EditMode.TILE)
+    window._sync_edit_actions()
+    assert not window._paste_action.isEnabled()
+
+
+def test_pasting_pixels_into_a_map_lands_the_colours_that_were_copied(
+    qtbot, tmp_path
+) -> None:
+    """A map's picture is composed in *absolute* indices — every cell's own
+    palette row folded in — so fitting a paste into one subpalette row quantized
+    every colour off that row onto the nearest one on it, and a copy of the map's
+    own pixels came back a different picture."""
+    window, _ = _painting_tilemap(qtbot, tmp_path)
+    # A colour of its own for every index the four rows can reach, so a paste that
+    # came back on the wrong row is a different picture rather than a coincidence.
+    window._doc.palette.colors[:] = [0xFF000000 | i * 0x040404 for i in range(64)]
+    base = window._window_grid()
+    # Four cells across, one per palette row — so the copy spans rows the view's
+    # own subpalette window does not reach.
+    window._marquee = QRect(0, 0, 32, 8)
+    assert len({base.get(x, 0) // 16 for x in range(32)}) > 1
+    window._pixel_copy()
+
+    region = window._take_pixel_clipboard()
+    assert region is not None
+    copied = [base.get(x, y) for y in range(8) for x in range(32)]
+    assert [region.get(x, y) for y in range(8) for x in range(32)] == copied
+
+
+def test_a_float_lands_on_the_colours_it_shows_not_the_offsets_it_holds(
+    qtbot, tmp_path
+) -> None:
+    """A pasted pixel is composed against the *whole* palette, so the index it
+    carries names a colour on whatever row that colour was found on. Landing it
+    on a cell of another row by remainder kept the offset and threw the colour
+    away — grey composed at row 1 offset 5 was stored as offset 5, which on the
+    destination row is whatever that row holds there. The row has to come off by
+    colour, so the pixels stay the colour they were shown in.
+    """
+    from PySide6.QtGui import QGuiApplication, QImage
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _painting_tilemap(
+        qtbot, tmp_path, [Cell(index=i + 1, palette_row=3) for i in range(8)]
+    )
+    grey, red = 0xFF808080, 0xFFFF0000
+    window._doc.palette.colors[:] = [0xFF000000 | i * 0x030201 for i in range(64)]
+    window._doc.palette.colors[16 + 5] = grey  # where the whole-palette match hits
+    window._doc.palette.colors[48 + 2] = grey  # where row 3 keeps the same colour
+    window._doc.palette.colors[48 + 5] = red  # ...and what the old remainder took
+    window._refresh_view()
+
+    image = QImage(4, 4, QImage.Format.Format_ARGB32)
+    image.fill(grey)
+    QGuiApplication.clipboard().setImage(image)
+    window._pixel_paste()
+    assert window._float_grid is not None
+    window._float_pos = (0, 0)  # over a cell drawing through row 3
+    window._commit_float()
+
+    landed = window._window_grid()
+    shown = {
+        window._doc.palette.color(landed.get(x, y)) for y in range(4) for x in range(4)
+    }
+    assert shown == {grey}
+    assert landed.get(0, 0) == 48 + 2  # row 3's own grey, not its offset 5
+
+
+def test_a_lifted_float_keeps_the_colours_the_pixels_were_shown_in(
+    qtbot, tmp_path
+) -> None:
+    """A float is the picture's own pixels lifted off it, so the overlay has to
+    resolve them through the table the base was drawn with. Rendering them through
+    the view's Subpal instead shifted the selection by however many rows the spin
+    sat on — which on a map whose cells carry rows is a row to *assign*, not one
+    to draw through — and left index 0 opaque where the base has it clear.
+    """
+    window, _ = _painting_tilemap(qtbot, tmp_path)
+    window._transparent_zero_box.setChecked(True)
+    window._subpalette.setValue(2)  # a row to assign; the picture must not move
+    window._refresh_view()
+    shown = window._canvas._image
+
+    window._marquee = QRect(0, 0, 8, 8)
+    window._lift_float(cut=False)
+    float_image = window._canvas._float_image
+    assert float_image is not None
+    assert [float_image.pixel(x, y) for y in range(8) for x in range(8)] == [
+        shown.pixel(x, y) for y in range(8) for x in range(8)
+    ]
+
+
+def test_the_arrangement_bar_is_furniture_for_a_pixel_document(qtbot, tmp_path) -> None:
+    """Pattern, block, order and the 2D walk all say how a linear run of bytes is
+    cut and grouped. A tilemap places nothing linearly — its block is the cell the
+    map states — so every axis on that row reads as 1x1 however it is set."""
+    window, _ = _bound_tilemap(qtbot, tmp_path, [], maker=_pnl_file)
+    assert window._arrange_toolbar.isHidden()
+
+    # And back, still live: the bar has owners of its own for enablement, so a
+    # veto here would have stranded it grey (capability_sync._VISIBILITY_ONLY).
+    window._activate_entry(window._workspace.entries[0])
+    assert not window._arrange_toolbar.isHidden()
+    assert window._arrange_toolbar.isEnabled()
+
+
+def test_a_new_slice_can_be_carved_out_as_a_tilemap(qtbot, tmp_path) -> None:
+    """A slice inherits its parent's reading, which is right for the common case
+    and wrong for the one this row exists for: a ROM is opened as pixels, and the
+    map that draws them is a region of that same ROM. Only creation offers it —
+    editing a live slice would re-read it as another kind of thing.
+    """
+    from celpix.core.capabilities import ContentKind
+    from celpix.plugins.registry import default_registry
+    from celpix.ui.slice_dialog import SliceDialog, SliceParams
+
+    rom = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+    assert parent.content_kind is ContentKind.PIXELS
+
+    dialog = SliceDialog(
+        default_registry(),
+        paths=parent.paths,
+        offset=0,
+        length=0x40,
+        content_kind=parent.content_kind,
+        choose_content=True,
+    )
+    qtbot.addWidget(dialog)
+    dialog._content.setCurrentIndex(dialog._content.findData(ContentKind.TILEMAP))
+    dialog._validate_and_accept()
+    params = dialog._params
+    assert params.content_kind is ContentKind.TILEMAP
+
+    # An edit is not offered the row, and carries the entry's own answer through
+    # untouched - so its before/after pair stays comparable.
+    edit = SliceDialog(
+        default_registry(),
+        paths=parent.paths,
+        offset=0,
+        length=0x40,
+        content_kind=ContentKind.TILEMAP,
+    )
+    qtbot.addWidget(edit)
+    edit._validate_and_accept()
+    assert edit._params.content_kind is ContentKind.TILEMAP
+    assert edit._params == SliceParams(
+        params.name,
+        0,
+        0x40,
+        params.compression_id,
+        params.reshape_id,
+        ContentKind.TILEMAP,
+    )
+
+
+def test_typing_over_a_selection_blanks_all_of_it_first(qtbot, tmp_path) -> None:
+    """Selecting a phrase and typing is how a string gets rewritten, and what it
+    costs must not depend on how much of it you have typed so far.
+
+    The whole selection is blanked to spaces and the typing restarts at its head -
+    the same gesture Backspace makes, for the same reason. Replacing it with only
+    the first letter would pull the tail four cells left and leave the file's own
+    bytes showing at the end of the region.
+    """
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1, 0, 2], 0)  # "CABAC"
+    window._text.select_range(1, 4)  # "ABA", three pieces
+
+    qtbot.keyClicks(window._text._edit, "X")
+
+    assert window._text.body == "CX  C"
+    assert [cell.index for cell in window._doc.cells] == [2, 23, 36, 36, 2]
+    # And the caret is on the first cell still to be replaced, so the rest of the
+    # word carries on typing over the blanks it just made.
+    assert window._text._edit.textCursor().position() == 2
+    qtbot.keyClicks(window._text._edit, "YZ")
+    assert [cell.index for cell in window._doc.cells] == [2, 23, 24, 25, 2]
+
+
+def test_an_undo_settles_the_budget_line_on_what_it_restored(qtbot, tmp_path) -> None:
+    """The readout has to describe the string that is on screen, and which string
+    that is - the file's or the draft the window kept - is the window's decision.
+
+    Computed before it had made that decision, an undo left the budget of the
+    draft it had just taken away standing over the text it put back.
+    """
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1], 0)  # "CAB"
+    field = window._text._edit
+    qtbot.keyClicks(field, "X")  # typed over: one step on the stack
+    qtbot.keyClicks(field, "[")  # and a code opened, which the file has not got
+
+    assert window._text.body == "X[B"
+    assert "1 / 3 cells" in window._text._status.currentMessage()
+
+    window._undo_stack.undo()
+
+    assert window._text.body == "CAB"
+    assert "3 / 3 cells" in window._text._status.currentMessage()
+
+
+def test_a_font_with_no_space_fills_freed_cells_with_zero(qtbot, tmp_path) -> None:
+    """A region is always exactly full, so a string typed shorter has to leave
+    *something* in the cells it gave up - and a font drawn without a space has no
+    text for them.
+
+    Zero rather than the nearest letter that happens to exist: a cell nobody chose
+    the contents of should read as a cell nobody chose the contents of, and the
+    hex it comes back as says so.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.errors import Stage
+    from celpix.plugins.base import Preset
+
+    window, bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1], alphabet=None)
+    window._registry.register_preset(
+        Preset(
+            id="alphabet.letters-only",
+            name="A-J, from 0",
+            stage=Stage.ALPHABET,
+            engine_id="alphabet.table",
+            params={"first": 0, "chars": "ABCDEFGHIJ"},  # no space anywhere in it
+        )
+    )
+    bank.alphabet_preset_id = "alphabet.letters-only"
+    entry.doc = None
+    window._activate_entry(bank)
+    window._activate_entry(entry)
+    assert window._doc.text.body == "CAB"
+
+    window._text.select_range(3, 3)
+    window._text._insert_mode.setChecked(True)
+    qtbot.keyClick(window._text._edit, Qt.Key.Key_Backspace)
+
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 0]
+
+
+def test_the_canvas_marks_where_a_fontmaps_lines_end(qtbot, tmp_path) -> None:
+    """The picture's only account of where the strings stop.
+
+    A text run draws as a grid of glyph tiles whatever its punctuation, so the
+    canvas shows nothing of the line structure - and on a flag-terminated format
+    there is not even an odd-looking cell to notice, since the terminator is a
+    letter like any other (``docs/design/fontmap-entry.md`` §5).
+    """
+    # "CAB" with the bit set on the B, then another A: one line end, mid-run.
+    window, _bank, entry = _fontmap(
+        qtbot,
+        tmp_path,
+        [2, 0, 1 | 0x80, 0],
+        preset="preset.tilemap.text-8bit-flag",
+    )
+    doc = window._doc
+    assert doc.text.body == "CAB\nA"
+    assert window._line_end_slots() == {2}
+
+    # It follows the cells, not the load: typing the break away takes the mark
+    # with it, on the same refresh that redraws the glyphs.
+    window._on_text_committed("CABA")
+    assert entry.doc.text.body == "CABA"
+    assert window._line_end_slots() == frozenset()
+
+
+def test_nothing_is_marked_on_a_map_that_is_not_a_fontmap(qtbot, tmp_path) -> None:
+    """The mark is the fontmap's alone. Every other cell format's bit 7 means
+    something else entirely - a palette row, a flip, a priority - and ruling a
+    cell edge on a screen would be claiming a break in a picture that has none."""
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1 | 0x80, 0])
+    assert not window._doc.laid_out_cells[2].ends_line  # no field to hold it
+    assert window._line_end_slots() == frozenset()
+
+
+def test_a_command_button_puts_its_code_in_the_string(qtbot, tmp_path) -> None:
+    """The insert row's whole purpose, and the reason the switch beside it is not
+    called ``_insert``: an attribute of that name would shadow the method these
+    buttons bind to, and every click would raise instead of typing anything."""
+    from celpix.ui.text_window import TextWindow
+
+    window = TextWindow()
+    qtbot.addWidget(window)
+    window.show_text("t", "AB", (0, 1), [("line break", "[$FE]")], "", None)
+
+    with qtbot.waitSignal(window.committed):
+        window._guide_row.itemAt(0).widget().click()
+    # Typed over the piece the caret was on, one cell for one cell, like a key.
+    assert window.body == "[$FE]B"
+
+
+def test_retyping_a_lines_last_letter_does_not_unend_the_line(qtbot, tmp_path) -> None:
+    """The terminator bit belongs to the **cell**, not to the letter carrying it.
+
+    That cell decodes to two things - the letter and the break - and typing over
+    the letter took both, which on the canvas ran the line into the next one and
+    moved every glyph after it. Backspace did the same. Only Enter, and Backspace
+    on the break itself, may move a break.
+    """
+    from PySide6.QtCore import Qt
+
+    # "CAB\nCAB": the B at cell 2 carries the bit.
+    window, _entry = _typing(
+        qtbot,
+        tmp_path,
+        [2, 0, 1 | 0x80, 2, 0, 1],
+        2,  # the caret on the B
+        preset="preset.tilemap.text-8bit-flag",
+    )
+    field = window._text._edit
+    assert window._doc.text.body == "CAB\nCAB"
+
+    qtbot.keyClicks(field, "D")
+    assert window._doc.text.body == "CAD\nCAB"
+    assert window._line_end_slots() == {2}
+
+    # Blanking it is the same rule: the letter goes, the line still ends there.
+    window._text.select_range(3, 3)
+    qtbot.keyClick(field, Qt.Key.Key_Backspace)
+    assert window._doc.text.body == "CA \nCAB"
+    assert window._line_end_slots() == {2}
+
+    # And the break itself comes off on its own, taking no letter and freeing no
+    # cell - the only way to unend the line.
+    window._text.select_range(4, 4)
+    qtbot.keyClick(field, Qt.Key.Key_Backspace)
+    assert window._doc.text.body == "CA CAB"
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 0x24, 2, 0, 1]
+    assert window._line_end_slots() == frozenset()
+
+
+def test_enter_costs_no_cell_where_a_break_is_a_bit(qtbot, tmp_path) -> None:
+    """So it inserts rather than overtypes, even though overtyping is the mode.
+
+    The rule overtyping keeps is that the region's length never moves, and a
+    break that is a bit on the character before it does not move it. Overtyping
+    one spent a cell on something free: the letter under the caret was eaten and
+    the whole rest of the string pulled a cell left, which is the loudest way a
+    text region can appear to break.
+    """
+    from PySide6.QtCore import Qt
+
+    window, _entry = _typing(
+        qtbot,
+        tmp_path,
+        [2, 0, 1, 2, 0, 1],
+        3,
+        preset="preset.tilemap.text-8bit-flag",
+    )
+    before = [cell.index for cell in window._doc.cells]
+
+    qtbot.keyClick(window._text._edit, Qt.Key.Key_Return)
+
+    assert window._doc.text.body == "CAB\nCAB"
+    # Not one index moved - the break is the bit, and the bit was free.
+    assert [cell.index for cell in window._doc.cells] == before
+    assert window._line_end_slots() == {2}
+
+
+def test_a_project_naming_a_missing_format_opens_on_the_default_and_says_so(
+    qtbot, tmp_path, captured_alerts
+) -> None:
+    """The plugin that supplied a format can be gone by the next launch — the
+    project's own folder was closed, the plugin was deleted or left untrusted.
+    The entry has to open on a format this build does have, with the swap said
+    out loud: it is now what a save would write.
+    """
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import EntrySession
+
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px), content_kind=ContentKind.TILEMAP)
+    entry = window._workspace.current
+    entry.tilemap_preset_id = "preset.tilemap.gone"
+    entry.session = EntrySession(
+        pixel_preset_id="preset.pixel.gone",
+        palette_preset_id="preset.palette.bgr555",
+    )
+    project = tmp_path / "p.celpix"
+    window._save_project_to(str(project))
+
+    window._load_project(str(project))
+
+    restored = window._workspace.current
+    assert restored.tilemap_preset_id == "preset.tilemap.snes-bg"
+    assert restored.session.pixel_preset_id == "preset.pixel.snes-4bpp"
+    assert any(title == "celPix - missing formats" for title, _msg in captured_alerts)

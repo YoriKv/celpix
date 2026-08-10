@@ -4,6 +4,7 @@
 id = "preset.tilemap.snes-bg-swapped"
 name = "SNES BG map (16-bit, byte-swapped)"
 engine_id = "codec.tilemap.packed"
+category = "Nintendo"
 
 [params]
 bytes = 2
