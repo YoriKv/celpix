@@ -32,12 +32,6 @@ class Stage(str, Enum):
     INTERPRET_PIXEL = "interpret-pixel"
     INTERPRET_PALETTE = "interpret-palette"
     INTERPRET_TILEMAP = "interpret-tilemap"
-    # The one stage that is not on the byte path at all: it turns a fontmap's
-    # decoded *cells* into readable text and back (``docs/design/fontmap-entry.md``).
-    # A stage rather than a corner of the tilemap codec because of who states it —
-    # the lookup belongs to the **font**, and one font is shared by every string
-    # drawn through it, so it is picked once per tile source and not once per map.
-    ALPHABET = "alphabet"
 
 
 class Pathway(str, Enum):

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Callable, NamedTuple
 
 from celpix.core.context import (
+    KEY_ALPHABET,
     KEY_SOURCE_FILES,
     KEY_SOURCE_PATH,
     KEY_TILEMAP_PALETTE_ROW_BASE,
@@ -37,7 +38,14 @@ from celpix.core.context import (
 )
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
-from celpix.core.font import Alphabet, Glyph, GlyphRole, glyphs_from_spec
+from celpix.core.font import (
+    FontAlphabet,
+    Glyph,
+    GlyphRole,
+    glyphs_from_spec,
+    parse_table,
+    sequential,
+)
 from celpix.core.notices import warn
 from celpix.core.palette import Palette
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, Frame, frame_bounds
@@ -99,7 +107,6 @@ from celpix.plugins.base import (
     NO_COMPRESSION,
     NO_RESHAPE,
     RAW_CONTAINER,
-    AlphabetPlugin,
     ColorCodecPlugin,
     CompressionPlugin,
     ContainerPlugin,
@@ -140,7 +147,7 @@ __all__ = [
     "hidden_rects",
     "inspect_container",
     "load",
-    "load_alphabet",
+    "load_font_alphabet",
     "load_palette",
     "load_pixel_data",
     "load_tilemap_data",
@@ -158,6 +165,7 @@ __all__ = [
     "reinterpret_pixel_data",
     "save",
     "spliced_palette_bytes",
+    "stated_alphabet",
     "sprite_hit",
     "sprite_hits",
     "sprite_hoist",
@@ -479,78 +487,99 @@ def load_tilemap_data(
     )
 
 
-def load_alphabet(
-    preset_id: str | None,
-    reg: Registry,
+def load_font_alphabet(
+    chars: str,
+    codes: Iterable[Glyph],
     ctx: PipelineContext,
     *,
     controls: Iterable[dict] = (),
     code_digits: int = 2,
     base: int = 0,
     flag_break: bool = False,
-) -> Alphabet | None:
-    """The lookup a fontmap's codes are read through, from its two halves.
+) -> FontAlphabet | None:
+    """The lookup a fontmap's codes are read through, from its three sources.
 
-    ``preset_id`` is the **font's** alphabet, picked on the entry that supplies
-    the tiles, and ``ctx`` is that entry's own context — so a container that
-    computed a mapping no table could hold reaches the engine that way
-    (:data:`~celpix.core.context.KEY_ALPHABET`). ``controls`` is the **fontmap's**
-    own, off its cell format's params, and it is laid over the font's: where a
-    stream reserves a code the font also spells, the stream wins, because the
-    font's table was authored against tiles and knows nothing about which codes a
-    given stream has taken (``docs/design/fontmap-entry.md`` §3).
+    Merged in one order, each step laid over the one before it:
 
-    ``base`` shifts the **font's** half and not the stream's
-    (:meth:`~celpix.core.font.Alphabet.shifted`). The two are stated against
-    different things and only one of them can be off by an origin: a table
-    numbers the glyphs from wherever its author started reading the sheet, while
-    a format's controls name the codes the stream actually holds. Shifting those
-    too would move a terminator the user read straight out of the file.
+    ==============================  ========================  =================
+    source                          stated by                 moved by ``base``
+    ==============================  ========================  =================
+    the positional run, ``chars``   the **font** sheet        yes
+    the named ``codes``             the **font**, absolutely  no
+    ``controls``                    the **stream**            no
+    ==============================  ========================  =================
 
-    ``flag_break`` is the third thing the **fontmap's** cell format states, beside
-    its controls: that lines end on a bit the cell carries rather than on a code
-    (:attr:`~celpix.core.font.Alphabet.flag_break`). It travels with the controls
-    for the same reason they do — it is punctuation, and punctuation is the
-    stream's.
+    The run is the sheet read straight off: character *i* is what tile *i* draws,
+    which is legible the moment the art is. ``base`` moves it and only it,
+    because where the run *starts* is in the game's code and appears in neither
+    the sheet nor the string (``docs/graphics-formats-reference/text-formats.md``
+    §3.2) — while a named code and a stream's control were both read at the value
+    the stream actually holds, so shifting either would move a terminator the
+    user took straight out of the file.
 
-    Returns **None** rather than an empty alphabet where neither half says
-    anything: "no lookup picked" and "a lookup that maps nothing" are different
-    states, and only the first is worth telling the user about.
+    ``controls`` win last for the reason they always did: the sheet's table was
+    authored against tiles and knows nothing about which codes a given stream has
+    reserved, and two streams sharing one font routinely punctuate differently
+    (``docs/design/fontmap-entry.md`` §3). ``flag_break`` travels with them, being
+    the same kind of fact — that lines end on a bit the cell carries rather than
+    on a code (:attr:`~celpix.core.font.FontAlphabet.flag_break`).
+
+    **A container may state the whole thing** where the entry states nothing
+    (:data:`~celpix.core.context.KEY_ALPHABET`): a game-specific loader that
+    computed a mapping no table could hold is how the extraordinary font is
+    served now that there is no code tier. It fills in rather than overrides — a
+    stored table is the user's own work and beats anything guessed for them, and
+    the moment they type one it is theirs and the guess steps aside.
+
+    Returns **None** rather than an empty alphabet where nothing says anything:
+    "no alphabet yet" and "an alphabet that maps nothing" are different states,
+    and only the first is worth telling the user about.
 
     Never raises. An alphabet is a *reading* of cells that are already decoded,
-    so a preset naming an engine this build has not got must not take the
-    document with it — the map still draws, and its text reads as hex until the
-    picker is put right. That is the opposite of the hard-stop the byte stages
-    take, and deliberately: those stages have no output at all without their
-    plugin, and this one does.
+    so nothing here may take the document with it — the map still draws, and its
+    text reads as hex until the table is put right.
     """
-    glyphs: list[Glyph] = []
-    if preset_id:
-        try:
-            engine, preset = reg.engine_for(preset_id, AlphabetPlugin)
-            params = {"code_digits": code_digits, **preset.params}
-            glyphs = list(engine.glyphs(params, ctx))
-        except Exception:  # noqa: BLE001 — see the docstring: text degrades to hex
-            glyphs = []
-    alphabet = Alphabet(glyphs, code_digits=code_digits, flag_break=flag_break).shifted(
+    named = list(codes)
+    run = list(sequential(0, chars))
+    if not run and not named:
+        run = stated_alphabet(ctx)
+    font = FontAlphabet(run, code_digits=code_digits, flag_break=flag_break).shifted(
         base
     )
+    if named:
+        font = font.merged(
+            FontAlphabet(named, code_digits=code_digits, flag_break=flag_break)
+        )
     stream = list(controls or ())
-    # Asked of what the preset *said*, not of what survived the shift: an
-    # alphabet dialled clean off the end of the code space is still an alphabet
-    # the user picked, and reporting "none picked" there would point them at the
-    # combo they already set instead of at the spin they just moved.
-    if not glyphs and not stream:
+    # Asked of what the font *said*, not of what survived the shift: a run dialled
+    # clean off the end of the code space is still a run the user typed, and
+    # reporting "nothing here" would point them at the table they already filled
+    # in instead of at the spin they just moved.
+    if not run and not named and not stream:
         return None
     if not stream:
-        return alphabet
-    return alphabet.merged(
-        Alphabet(
+        return font
+    return font.merged(
+        FontAlphabet(
             glyphs_from_spec(stream, GlyphRole.CONTROL),
             code_digits=code_digits,
             flag_break=flag_break,
         )
     )
+
+
+def stated_alphabet(ctx: PipelineContext) -> list[Glyph]:
+    """The mapping the font's container published, if it published one.
+
+    Two spellings, because a container computes its answer in whichever is
+    cheaper: a table's worth of ``20=A`` text, or the glyphs themselves.
+    """
+    stated = ctx.get(KEY_ALPHABET)
+    if isinstance(stated, str):
+        return parse_table(stated)
+    if stated:
+        return [glyph for glyph in stated if isinstance(glyph, Glyph)]
+    return []
 
 
 def encode_cells(

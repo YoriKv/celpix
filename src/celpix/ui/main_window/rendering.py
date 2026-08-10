@@ -475,7 +475,7 @@ class RenderingMixin:
         doc = self._doc
         if doc is None or not doc.is_fontmap:
             return frozenset()
-        alphabet = doc.alphabet
+        alphabet = doc.font_alphabet
         per_cell = doc.tiles_per_cell
         return frozenset(
             at * per_cell
@@ -752,6 +752,12 @@ class RenderingMixin:
         self._sync_animation()
         self._text_action.setEnabled(self._text_available())
         self._sync_text()
+        # The third of the tool windows, and the tick that declares one. The
+        # window shows the font a fontmap draws through, so it follows the entry
+        # for the reason the other two do.
+        self._sync_use_as_font()
+        self._font_alphabet_action.setEnabled(self._font_alphabet_available())
+        self._sync_font_alphabet()
         self._refresh_hex()
         # Rows owns its own enabled state (two different reasons to have no row
         # count to set), so it is refreshed here rather than gated below.

@@ -7,6 +7,7 @@ from os.path import normcase, samefile
 
 from celpix.core.capabilities import ContentKind
 from celpix.core.document import Document, ViewOptions
+from celpix.core.font import HOLE, Glyph, GlyphRole, sequential
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
@@ -511,34 +512,187 @@ def test_a_pixel_entry_keeps_its_palette_row_base(tmp_path) -> None:
     assert entry.palette_row_base == 0
 
 
-def test_a_font_entry_keeps_its_alphabet_and_where_that_alphabet_starts(
-    tmp_path,
-) -> None:
-    """Both halves of "what these tiles spell", on the pixel entry that has them.
-
-    The origin is the half worth a test of its own: it is dialled by hand against
-    a string, so losing it on save means doing that work again on every load -
-    and it is stored as a plain int beside the id rather than folded into it,
-    because one shipped table serves many games at many origins
-    (``docs/design/fontmap-entry.md`` §3).
-    """
+def _font_entry(tmp_path, **fields) -> Entry:
+    """A pixel entry with a font alphabet on it, for the round trips below."""
     (tmp_path / "font.bin").write_bytes(b"\x00" * 0x40)
-    ws = Workspace()
-    ws.entries.append(
-        Entry(
-            name="font.bin",
-            kind=EntryKind.FILE,
-            path=str(tmp_path / "font.bin"),
-            alphabet_preset_id="alphabet.ascii-upper",
-            alphabet_base=0x80,
-        )
+    return Entry(
+        name="font.bin",
+        kind=EntryKind.FILE,
+        path=str(tmp_path / "font.bin"),
+        **fields,
     )
+
+
+def _saved(tmp_path, entry: Entry) -> tuple[dict, Entry]:
+    """``entry`` through a save and a load: the raw JSON, and what came back."""
+    ws = Workspace()
+    ws.entries.append(entry)
     project = tmp_path / "p.celpix"
     save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    return raw["entries"][0], load_project(str(project)).entries[0]
+
+
+def test_a_font_entry_keeps_its_run_its_origin_and_its_named_codes(tmp_path) -> None:
+    """All four halves of "what these tiles spell", on the entry that has them.
+
+    The origin is the piece worth naming: it is dialled by hand against a string,
+    so losing it on save means doing that work again on every load - and it is
+    stored beside the run rather than folded into it, because the run is read off
+    the sheet and the origin is not (``docs/design/fontmap-entry.md`` §4).
+    """
+    written, entry = _saved(
+        tmp_path,
+        _font_entry(
+            tmp_path,
+            use_as_font=True,
+            font_base=0x80,
+            font_chars="AB",
+            font_codes=(Glyph(0xFE, "line-break", GlyphRole.BREAK, "Ends it."),),
+        ),
+    )
+
+    assert written["font"] == {
+        "use": True,
+        "base": 0x80,
+        "chars": "AB",
+        # A command is a name, a role and whatever the author said it does —
+        # never `text`, which is what a *tile draws*.
+        "codes": [
+            {
+                "code": 0xFE,
+                "name": "line-break",
+                "role": "break",
+                "description": "Ends it.",
+            }
+        ],
+    }
+    assert entry.use_as_font and entry.font_base == 0x80
+    assert entry.font_chars == "AB"
+    assert entry.font_codes == (Glyph(0xFE, "line-break", GlyphRole.BREAK, "Ends it."),)
+
+
+def test_a_pixel_entry_with_no_alphabet_writes_no_font_key(tmp_path) -> None:
+    """Which is every entry any project written before this existed holds."""
+    written, entry = _saved(tmp_path, _font_entry(tmp_path))
+
+    assert "font" not in written
+    assert not entry.use_as_font
+    assert (entry.font_base, entry.font_chars, entry.font_codes) == (0, "", ())
+
+
+def test_trailing_holes_are_trimmed_and_interior_ones_are_not(tmp_path) -> None:
+    """A hole keeps the letters *after* it on the right tiles — and there are
+    none after the last, so trailing ones say nothing and are dropped."""
+    written, entry = _saved(
+        tmp_path, _font_entry(tmp_path, font_chars=f"A{HOLE}B{HOLE}{HOLE}")
+    )
+
+    assert written["font"]["chars"] == f"A{HOLE}B"
+    assert entry.font_chars == f"A{HOLE}B"
+    # And the hole yields no glyph, rather than a glyph with no text.
+    assert [(g.code, g.text) for g in sequential(0, entry.font_chars)] == [
+        (0, "A"),
+        (2, "B"),
+    ]
+
+
+def test_a_non_ascii_run_round_trips_and_is_written_unescaped(tmp_path) -> None:
+    """A font sheet spells whatever it was drawn to spell.
+
+    Unescaped because the alternative is a wall of ``\\uXXXX`` where the one
+    human-readable thing in the file used to be — a project is meant to live in
+    version control and be reviewed as a diff.
+    """
+    written, entry = _saved(
+        tmp_path,
+        _font_entry(
+            tmp_path,
+            font_chars="あいう",
+            # Several code points for one code is what the named half is for: the
+            # run is one code point per tile and cannot hold a composed glyph.
+            font_codes=(Glyph(0x40, "é"),),
+        ),
+    )
+
+    assert written["font"]["chars"] == "あいう"
+    assert entry.font_chars == "あいう"
+    assert entry.font_codes[0].text == "é"
+    project = (tmp_path / "p.celpix").read_text(encoding="utf-8")
+    assert "あいう" in project and "\\u3042" not in project
+
+
+def test_malformed_font_records_are_skipped_not_raised(tmp_path) -> None:
+    """A project is shared, hand-editable and untrusted: one bad line must not
+    cost the user the rest of their table."""
+    (tmp_path / "font.bin").write_bytes(b"\x00" * 0x40)
+    project = tmp_path / "p.celpix"
+    project.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "kind": "file",
+                        "name": "font.bin",
+                        "path": str(tmp_path / "font.bin"),
+                        "font": {
+                            "use": True,
+                            "chars": ["not", "a", "string"],
+                            "codes": [
+                                "not a record",
+                                {"text": "no code"},
+                                {"code": "not a number", "text": "x"},
+                                {"code": 3, "text": ""},
+                                {"code": 4, "text": "ok", "role": "invented"},
+                            ],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     entry = load_project(str(project)).entries[0]
-    assert entry.alphabet_preset_id == "alphabet.ascii-upper"
-    assert entry.alphabet_base == 0x80
+    assert entry.use_as_font
+    assert entry.font_chars == ""
+    # Only the last survives, and its unknown role reads as an ordinary
+    # character rather than costing the whole record.
+    assert entry.font_codes == (Glyph(4, "ok", GlyphRole.TEXT),)
+
+
+def test_an_older_project_naming_a_shipped_alphabet_preset_still_reads(
+    tmp_path,
+) -> None:
+    """The two tables celPix used to ship survive as the editor's templates, so a
+    project that named one of them opens with its text still readable."""
+    (tmp_path / "font.bin").write_bytes(b"\x00" * 0x40)
+    project = tmp_path / "p.celpix"
+    project.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "kind": "file",
+                        "name": "font.bin",
+                        "path": str(tmp_path / "font.bin"),
+                        "alphabet_preset_id": "alphabet.ascii-upper",
+                        "alphabet_base": 0x80,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    entry = load_project(str(project)).entries[0]
+    assert entry.use_as_font
+    assert entry.font_chars.startswith("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    # The dialled origin is the half that cost the user work, so it wins over the
+    # template's own starting guess.
+    assert entry.font_base == 0x80
 
 
 def test_an_entry_bound_tile_source_stores_only_the_entry_index(tmp_path) -> None:

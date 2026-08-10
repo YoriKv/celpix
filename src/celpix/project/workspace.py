@@ -53,6 +53,7 @@ from celpix.core.context import (
 )
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import Stage
+from celpix.core.font import Glyph
 from celpix.core.notices import Notice, notices
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
@@ -462,27 +463,43 @@ class Entry:
     # project state that no file states (`docs/design/tilemap-entry.md` §3).
     tile_source: TileSource | None = None
     tilemap_preset_id: str | None = None
-    # **PIXELS entries**, unlike everything around it: which alphabet says what
-    # this entry's tiles spell, for a **fontmap** drawn through them
-    # (``docs/design/fontmap-entry.md`` §3). It sits on the font and not on the
-    # map that reads it because that is whose fact it is — the tile ⇄ letter
-    # mapping is decided when the sheet is drawn, so every string in the game
-    # that uses the sheet is bound by it, and ten maps restating it would be ten
-    # copies to keep in step. A map re-pointed at another font picks up that
-    # font's answer with nothing else to change.
+    # The next four are **PIXELS entries**, unlike everything around them: the
+    # **font alphabet**, which says what this entry's tiles spell for a
+    # **fontmap** drawn through them (``docs/design/fontmap-entry.md`` §3). It
+    # sits on the font and not on the map that reads it because that is whose
+    # fact it is — the tile ⇄ letter mapping is decided when the sheet is drawn,
+    # so every string in the game that uses the sheet is bound by it, and ten
+    # maps restating it would be ten copies to keep in step. A map re-pointed at
+    # another font picks up that font's answer with nothing else to change.
     #
-    # None until picked, which is the ordinary first moment of a font: its
-    # fontmaps then read as hex, and every code still round-trips.
-    alphabet_preset_id: str | None = None
-    # Added to every code in that alphabet — the **Base code** spin. It rides
-    # beside the preset id and not inside it because the two answer different
-    # questions and one preset serves many fonts: a table states the *shape* of
-    # the mapping (which characters, in what order), and that is decided by the
-    # art, while the *origin* is decided by the game's code and is invisible in
-    # both (``docs/graphics-formats-reference/text-formats.md`` §3.2). So the
-    # shipped `A-Z 0-9, from 0` fits any sheet in that order, at any origin,
-    # rather than needing one preset per game.
-    alphabet_base: int = 0
+    # **Use as Font** on the arrangement bar. The declaration, and the gate: an
+    # unticked entry's table is not read at all. Declared rather than inferred
+    # from the table being non-empty, for the reason `layout = "text"` on the map
+    # is — it has to answer before there is a table to look at, and it is what
+    # makes the editor reachable on a sheet nobody has typed a letter into yet.
+    use_as_font: bool = False
+    # The code tile 0 draws, added to the whole positional run below — the
+    # **Base code** spin. Beside the run and not inside it because the two answer
+    # different questions: the run states the *shape* of the mapping (which
+    # characters, in what order), which is decided by the art and legible the
+    # moment the sheet is, while the *origin* is decided by the game's code and
+    # appears in neither the sheet nor the string
+    # (``docs/graphics-formats-reference/text-formats.md`` §3.2). So it is a
+    # thing to dial against the text window, not a thing to guess at.
+    font_base: int = 0
+    # The positional half: **one code point per tile, in tile order**, so
+    # character *i* is code ``font_base + i``. This is the shape a font sheet
+    # states about itself, and the editor's tile grid is a picture of it. A
+    # :data:`~celpix.core.font.HOLE` is a slot that draws no character — the run
+    # keeps its length either way, or every letter after a gap lands on the
+    # wrong tile.
+    font_chars: str = ""
+    # The absolute half: codes named because the game's code says what they are
+    # — a line break, a terminator, a command worth a caption — plus any code the
+    # run cannot spell, a pair standing behind one code or a glyph outside the
+    # sheet. **Not moved by** ``font_base``, since none of them was read off the
+    # sheet; they override the run where they collide.
+    font_codes: tuple[Glyph, ...] = ()
     # The palette row this map's cells count their own row 0 from — the tile
     # base's colour twin, and the user's word on it. **None means the format's
     # own answer**, which is right almost always: a sprite's 3-bit field counts
@@ -1372,18 +1389,9 @@ def repair_presets(entries: list[Entry], registry: Registry) -> list[MissingPres
             entry.tilemap_preset_id = resolved(
                 entry, Stage.INTERPRET_TILEMAP, entry.tilemap_preset_id
             )
-        # Cleared rather than substituted: an alphabet celPix hasn't got would be
-        # stood in for by one that spells the same codes as different letters,
-        # which reads as a corrupt script rather than as a missing format. None
-        # is the ordinary "no alphabet picked" state, and its fontmaps read as
-        # hex until the plugin is back.
-        if entry.alphabet_preset_id and not registry.has_preset(
-            entry.alphabet_preset_id
-        ):
-            replaced.append(
-                MissingPreset(entry, Stage.ALPHABET, entry.alphabet_preset_id, "")
-            )
-            entry.alphabet_preset_id = None
+        # Nothing here for the font alphabet: it is the entry's own data now
+        # (``font_chars`` / ``font_codes``), so there is no plugin for it to be
+        # missing and nothing to repair.
     return replaced
 
 

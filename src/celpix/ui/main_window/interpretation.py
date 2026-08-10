@@ -303,6 +303,30 @@ class InterpretationMixin:
             self._tile_size.fontMetrics().horizontalAdvance("64\u00d764")
         )
 
+        # Whether these tiles are *letters* — the declaration a fontmap bound to
+        # this sheet reads its codes through (``docs/design/fontmap-entry.md``).
+        #
+        # Beside the tile size and not on the fontmap's own bar because it is a
+        # fact about the **art**: it is settled when the sheet is drawn, and
+        # every string in the game that uses the sheet is bound by it. It reads
+        # as one thought with the readout it follows — what one of these tiles
+        # *is* — where on the arrangement row it would have sat among controls
+        # that all say how the bytes are grouped.
+        #
+        # A declaration and not an inference from the table being filled in, for
+        # the reason `layout = "text"` on the map is one: it has to answer before
+        # there is a table to look at, and it is what puts the editor within
+        # reach of a sheet nobody has typed a letter into yet.
+        self._use_as_font = QCheckBox("Use as Font")
+        self._use_as_font.setToolTip(
+            "These tiles are letters, so a fontmap bound to this\n"
+            "sheet reads its codes as words\n"
+            "What they spell is typed up in View > Font Alphabet\n"
+            "Unticking keeps the table, it just stops it being read"
+        )
+        self._use_as_font.toggled.connect(self._on_use_as_font_change)
+        view.addWidget(self._use_as_font)
+
         # Ranged well past a screenful of 8-px tiles because a bitmap width
         # derives this: a 4096-px bitmap of 8-px tiles is 512 columns.
         self._columns = value_spin(1, 512, 16, self._on_view_change)

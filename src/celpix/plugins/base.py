@@ -25,7 +25,6 @@ from celpix.core.context import (
     PipelineContext,
 )
 from celpix.core.errors import Stage
-from celpix.core.font import Glyph
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
 from celpix.core.tilemap import Cell, CellOp
@@ -45,12 +44,6 @@ RAW_CONTAINER = "container.raw-file"
 # offsets: addresses go dark and slices can't be carved until this is selected.
 NO_RESHAPE = "reshape.none"
 
-# The data-tier alphabet engine. Known by name because a *bare table file*
-# dropped into a plugin folder is adapted straight onto it, with no preset to
-# name it (:func:`~celpix.plugins.discovery._load_alphabet_table`) — so the host
-# has to know which engine a file of ``20=A`` lines belongs to.
-ALPHABET_TABLE_ENGINE = "alphabet.table"
-
 # The same three keyed by stage. Each one *does nothing*, so standing in for a
 # plugin the registry hasn't got leaves the stage a no-op rather than a different
 # transform (:meth:`~celpix.plugins.registry.Registry.resolve_stage`).
@@ -69,10 +62,6 @@ STAGE_PASSTHROUGH: dict[Stage, str] = {
 # is a plain, commonplace format instead: what a fresh window starts on. It will
 # usually be the wrong one, and that is the point of saying so out loud rather
 # than degrading quietly.
-#
-# No entry for ALPHABET: "no alphabet picked" is a real and ordinary state (a
-# fontmap then reads as hex), so a missing one falls back to *none* rather than
-# to a table that would spell the codes wrongly.
 STAGE_DEFAULT_PRESET: dict[Stage, str] = {
     Stage.INTERPRET_PIXEL: "preset.pixel.snes-4bpp",
     Stage.INTERPRET_PALETTE: "preset.palette.bgr555",
@@ -456,7 +445,6 @@ STAGE_METHODS: dict[Stage, tuple[str, ...]] = {
     Stage.INTERPRET_PIXEL: ("decode", "encode", "bytes_per_tile", "tile_size"),
     Stage.INTERPRET_PALETTE: ("decode", "encode", "bytes_per_entry"),
     Stage.INTERPRET_TILEMAP: ("decode", "encode", "bytes_per_cell", "cell_tiles"),
-    Stage.ALPHABET: ("glyphs",),
 }
 
 
@@ -843,37 +831,6 @@ class TilemapCodecPlugin(Plugin, Protocol):
         ...
 
 
-@runtime_checkable
-class AlphabetPlugin(Plugin, Protocol):
-    """A font's character lookup: which codes read as which text.
-
-    The one engine that is not on the byte path. It is handed no bytes and
-    produces none — it answers a single question a **fontmap** asks of the font
-    it draws through: what does code *n* say (``docs/design/fontmap-entry.md``).
-
-    It is a stage of its own rather than a parameter of the tilemap codec because
-    of **who states it**. The tile ⇄ letter mapping is a fact about the *art*: it
-    is decided when the font sheet is drawn, and every string in the game that
-    uses that sheet is bound by it. Hanging it off the cell format instead would
-    make ten strings over one font restate the same table ten times and then let
-    them drift. So it is picked once, on the entry that supplies the tiles.
-
-    Data covers nearly all of it (``alphabet.table`` reads a run of characters, a
-    table file, or an explicit list), and this protocol is the escape hatch for
-    the rest: a font whose glyph numbering is *computed* — packed against a
-    presence bitmap the ROM carries, or derived arithmetically from a text
-    encoding — has no table to write down, and only code can answer.
-
-    ``ctx`` is the **font entry's own** pipeline context, so a plugin can read
-    what that entry's container published rather than going to the file itself;
-    a game-specific container that already knows its font's mapping states it
-    there (:data:`~celpix.core.context.KEY_ALPHABET`) and the data tier picks it
-    up with no code at all.
-    """
-
-    def glyphs(self, params: dict[str, Any], ctx: PipelineContext) -> list[Glyph]: ...
-
-
 @dataclass(frozen=True)
 class Preset:
     """A named, data-only interpretation: which engine to use and its parameters.
@@ -889,7 +846,7 @@ class Preset:
 
     id: str
     name: str
-    stage: Stage  # an INTERPRET_* stage, or ALPHABET
+    stage: Stage  # one of the INTERPRET_* stages
     engine_id: str
     params: dict[str, Any] = field(default_factory=dict)
     category: str = ""

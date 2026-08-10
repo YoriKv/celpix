@@ -126,8 +126,8 @@ def test_a_missing_preset_falls_back_to_the_stage_default() -> None:
     assert reg.resolve_preset(
         Stage.INTERPRET_PALETTE, "preset.palette.r5g5b5-split-be"
     ) == ("preset.palette.r5g5b5-split-be")
-    # ALPHABET has no default: substituting a table would spell the same codes as
-    # different letters, so the miss comes back unchanged for the caller to clear.
-    assert reg.resolve_preset(Stage.ALPHABET, "preset.alphabet.gone") == (
-        "preset.alphabet.gone"
+    # A stage with no default at all comes back unchanged, for the caller's own
+    # handling of the miss to be the honest one.
+    assert reg.resolve_preset(Stage.COMPRESSION, "compression.gone") == (
+        "compression.gone"
     )

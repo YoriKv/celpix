@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from celpix.core.font import (
-    Alphabet,
+    FontAlphabet,
     Glyph,
     GlyphRole,
     carried_break,
@@ -21,10 +21,10 @@ from celpix.core.font import (
 )
 
 
-def _alphabet(**kwargs) -> Alphabet:
+def _alphabet(**kwargs) -> FontAlphabet:
     """A font with one of everything a general reader can express: letters, a
     code standing for a pair, two line breaks and a named command."""
-    return Alphabet(
+    return FontAlphabet(
         [
             *sequential(0, "ABCDE"),
             Glyph(0x20, "th"),
@@ -42,14 +42,14 @@ def _alphabet(**kwargs) -> Alphabet:
         # The canonical break is a newline and nothing else, so the window shows
         # the string's own line structure.
         ([0, 1, 0xFE, 2, 3], "AB\nCD"),
-        # Every other command is its own hex code - including a *second* break,
-        # which stays unambiguous precisely by not being a newline too.
-        ([0, 0xFD, 1], "A[$FD]B"),
-        ([0, 0xFF, 1, 0xFF], "A[$FF]B[$FF]"),
+        # Every other command reads as its **name** - including a *second*
+        # break, which stays unambiguous precisely by not being a newline too.
+        ([0, 0xFD, 1], "A[scroll break]B"),
+        ([0, 0xFF, 1, 0xFF], "A[end of string]B[end of string]"),
         # A code standing for a pair is spelled out as the pair.
         ([0x20, 0], "thA"),
-        # A code nothing claims reads exactly like a named command does: there is
-        # one fallback, and it is the whole vocabulary.
+        # A code **nobody has named** falls back to its own hex, which is what
+        # keeps the form general: nothing has to be described to survive an edit.
         ([0x99, 0], "[$99]A"),
         ([0x99] * 4, "[$99][$99][$99][$99]"),
     ],
@@ -76,7 +76,7 @@ def test_a_literal_bracket_is_doubled_so_it_types_back() -> None:
     Emitting a bare ``[`` would make the decoded string unparseable at exactly
     the point it mattered - the next code would be read as part of a letter.
     """
-    alphabet = Alphabet([Glyph(5, "["), *sequential(0, "AB")])
+    alphabet = FontAlphabet([Glyph(5, "["), *sequential(0, "AB")])
     text = alphabet.decode([0, 5, 1])
     assert text.body == "A[[B"
     assert list(alphabet.encode(text.body).codes) == [0, 5, 1]
@@ -94,29 +94,46 @@ def test_a_pair_code_is_preferred_over_the_letters_it_stands_for() -> None:
     assert list(alphabet.encode("th").codes) == [0x20]
 
 
-def test_what_the_font_cannot_say_is_reported_and_not_substituted() -> None:
-    """Unknown characters come back as a list, in order, without repeats.
+def test_what_the_font_cannot_say_is_reported_and_costs_a_blank_cell() -> None:
+    """Unknown characters come back as a list, in order and without repeats - and
+    each still spends the cell it was typed into.
 
-    Never raised and never substituted: the window has to keep showing what the
-    user typed while refusing to write it, and a silent fallback character is how
-    a string gets saved with a letter nobody typed.
+    Never raised: the window has to keep showing what the user typed while telling
+    them part of it will not fit. Never *dropped* either, which is the half that
+    matters to the picture - leaving the character out would slide every cell
+    after it one to the left, so what reached the file would be a string nobody
+    typed and no caller could do anything with it but refuse the whole edit.
     """
-    encoded = _alphabet().encode("AzBz!")
+    alphabet = FontAlphabet([Glyph(0x20, " "), *sequential(0, "AB")])
+
+    encoded = alphabet.encode("AzBz!")
+
     assert encoded.unknown == ("z", "!")
     assert not encoded.ok
-    # The encodable subset only - which is why a caller must not write this.
-    assert list(encoded.codes) == [0, 1]
+    assert list(encoded.codes) == [0, 0x20, 1, 0x20, 0x20]
 
 
-def test_a_newline_with_no_break_code_is_unknown_rather_than_dropped() -> None:
+def test_a_font_with_no_space_blanks_with_code_zero() -> None:
+    """There is no honest text for the cell, so the fallback is the one code that
+    is not a letter picked on the user's behalf."""
+    assert FontAlphabet(sequential(1, "AB")).encode("z").codes == (0,)
+
+
+def test_a_newline_with_no_break_code_is_reported_and_costs_nothing() -> None:
     """A bare index-only run has no punctuation, so Enter has nothing to encode to.
 
     Dropping it silently would let a user lay out a string that the file cannot
-    hold and be told nothing about it.
+    hold and be told nothing about it. It takes no blank either, unlike a letter
+    the font lacks: punctuation this format cannot express never had a cell to
+    stand in for, and inventing one would push a space into the string.
     """
-    plain = Alphabet(sequential(0, "AB"))
+    plain = FontAlphabet([Glyph(0x20, " "), *sequential(0, "AB")])
     assert plain.line_break is None
-    assert plain.encode("A\nB").unknown == ("\\n",)
+
+    encoded = plain.encode("A\nB")
+
+    assert encoded.unknown == ("\\n",)
+    assert encoded.codes == (0, 1)
 
 
 def test_the_stream_controls_win_over_the_fonts_letters() -> None:
@@ -126,10 +143,10 @@ def test_the_stream_controls_win_over_the_fonts_letters() -> None:
     codes a given text format has taken for itself, so the merge is one-way
     (``docs/design/fontmap-entry.md`` §3).
     """
-    font = Alphabet(sequential(0, "ABC"))
-    controls = Alphabet([Glyph(2, "end of string", GlyphRole.CONTROL)])
+    font = FontAlphabet(sequential(0, "ABC"))
+    controls = FontAlphabet([Glyph(2, "end of string", GlyphRole.CONTROL)])
     merged = font.merged(controls)
-    assert merged.decode([0, 1, 2]).body == "AB[$02]"
+    assert merged.decode([0, 1, 2]).body == "AB[end of string]"
     # The letters it did not claim are untouched.
     assert merged.decode([1]).body == "B"
 
@@ -211,8 +228,9 @@ def test_a_table_file_reads_code_first_by_default() -> None:
         (0x00, "A", GlyphRole.TEXT),
         (0x3D, "=", GlyphRole.TEXT),
         # A bracketed value names a *command*: not a letter, and worth calling
-        # something. It still reads as `[$FE]` in the text like any other.
-        (0xFE, "line break", GlyphRole.CONTROL),
+        # something. The name is spelled to one word, because it is what the
+        # string holds — `[line-break]`.
+        (0xFE, "line-break", GlyphRole.CONTROL),
     ]
 
 
@@ -251,23 +269,25 @@ def test_a_control_spec_defaults_to_control_and_a_font_spec_to_text() -> None:
 @pytest.mark.parametrize(
     ("typed", "codes"),
     [
-        ("A[br]B", [0, 1]),  # a named token left over from another tool
-        ("A[$ZZ]B", [0, 1]),  # brackets, a $, and not hex
-        ("A[]B", [0, 1]),  # empty
-        ("A[unclosed", [0]),  # half-typed, and the rest of the line with it
+        ("A[br]B", [1, 0, 2]),  # a named token left over from another tool
+        ("A[$ZZ]B", [1, 0, 2]),  # brackets, a $, and not hex
+        ("A[]B", [1, 0, 2]),  # empty
+        ("A[unclosed", [1, 0]),  # half-typed, and the rest of the line with it
     ],
 )
-def test_brackets_around_anything_but_a_code_are_refused(typed, codes) -> None:
+def test_brackets_around_anything_but_a_code_are_one_blank_cell(typed, codes) -> None:
     """The text form's only syntax is ``[$FF]``, so everything else in brackets
     is a mistake to report rather than letters to write.
 
     Encoding it character by character is the failure this guards: a leftover
     ``[br]`` pasted from another tool would silently become the four codes for
-    ``b``, ``r`` and two brackets, and be written to the ROM as text.
+    ``b``, ``r`` and two brackets, and be written to the ROM as text. What it
+    costs instead is **one** blank - the piece it is, not the characters it is
+    made of, which is the same unit the caret types over.
     """
-    encoded = Alphabet(sequential(0, "ABC")).encode(typed)
+    encoded = FontAlphabet([Glyph(0, " "), *sequential(1, "ABC")]).encode(typed)
     assert not encoded.ok
-    assert list(encoded.codes) == codes  # the letters outside, and nothing more
+    assert list(encoded.codes) == codes
 
 
 # -- typing over the string -------------------------------------------------
@@ -361,7 +381,7 @@ def test_a_terminator_bit_reads_as_a_newline_after_its_character() -> None:
     the same cell as the letter before it — which is what a caret standing on it
     has to select, and what one keystroke has to replace.
     """
-    alphabet = Alphabet(sequential(0, "ABC"), flag_break=True)
+    alphabet = FontAlphabet(sequential(0, "ABC"), flag_break=True)
     text = alphabet.decode([0, 1, 2], [False, True, False])
     assert text.body == "AB\nC"
     assert text.positions == (0, 1, 1, 2)
@@ -374,7 +394,7 @@ def test_a_typed_newline_sets_the_bit_and_costs_no_cell() -> None:
     count one — telling the user a string is a cell too long for its region when
     it fits exactly is a refusal they cannot act on.
     """
-    alphabet = Alphabet(sequential(0, "ABC"), flag_break=True)
+    alphabet = FontAlphabet(sequential(0, "ABC"), flag_break=True)
     encoded = alphabet.encode("AB\nC")
     assert encoded.ok
     assert encoded.codes == (0, 1, 2)
@@ -389,15 +409,15 @@ def test_a_newline_with_no_bit_left_to_set_is_reported(typed: str) -> None:
     only one — and a break before the first character has no cell at all. Both
     would otherwise vanish silently, which is the one thing the encoder never
     does."""
-    assert Alphabet(sequential(0, "ABC"), flag_break=True).encode(typed).unknown == (
-        "\\n",
-    )
+    assert FontAlphabet(sequential(0, "ABC"), flag_break=True).encode(
+        typed
+    ).unknown == ("\\n",)
 
 
 def test_a_break_code_beside_the_bit_is_what_makes_a_blank_line_expressible() -> None:
     """A format with both punctuations uses the bit first — it is free — and
     falls back to the code for the newline the bit cannot hold."""
-    alphabet = Alphabet(
+    alphabet = FontAlphabet(
         [*sequential(0, "ABC"), Glyph(0xFE, "line break", GlyphRole.BREAK)],
         flag_break=True,
     )
@@ -414,14 +434,14 @@ def test_which_cells_end_a_line_is_one_rule_for_the_text_and_the_picture() -> No
     The text window's newline comes out of ``decode`` and the canvas rules the
     same cells' edges, so two rules would eventually mark a cell the text does
     not break at. The case that separates them is a **second** break code: only
-    the first declared is the newline, and the rest stay hex - so the mark has to
-    stay off them too.
+    the first declared is the newline, and the rest read as their own name - so
+    the mark has to stay off them too.
     """
     alphabet = _alphabet()  # 0xFE is the canonical break, 0xFD the second
     codes = [0, 0xFE, 1, 0xFD, 2, 0xFF]
     flags = [True, False, False, False, False, False]
     body = alphabet.decode(codes, flags).body
-    assert body == "A\n\nB[$FD]C[$FF]"
+    assert body == "A\n\nB[scroll break]C[end of string]"
 
     marked = [alphabet.ends_line(code, flag) for code, flag in zip(codes, flags)]
     # The same fact read the other way: the piece a cell decodes to ends in a
@@ -450,3 +470,58 @@ def test_a_break_a_cell_carries_is_told_apart_from_a_break_code() -> None:
         True,
         False,
     ]
+
+
+def test_a_named_code_reads_as_its_name_and_types_back() -> None:
+    """The fourth case of the text form: ``[wait]`` rather than ``[$2A]``.
+
+    A name is the one thing in the string a *user* supplied, and it is what the
+    case buys: `[wait]` says what the byte does where `[$2A]` only says which
+    byte it is. Both reach the same cell, so nothing about the round trip moves.
+    """
+    alphabet = FontAlphabet(
+        [
+            Glyph(0x00, "A"),
+            Glyph(0x2A, "wait", GlyphRole.CONTROL),
+            Glyph(0xFE, "line break", GlyphRole.BREAK),
+        ]
+    )
+
+    text = alphabet.decode([0x00, 0x2A, 0xFE, 0x77])
+    # A break is still a newline, and a code nobody named is still its own hex.
+    assert text.body == "A[wait]\n[$77]"
+    assert alphabet.encode(text.body).codes == (0x00, 0x2A, 0xFE, 0x77)
+    # The hex form of a named code still reaches it, so nothing typed before the
+    # name existed stops working.
+    assert alphabet.encode("[$2A]").codes == (0x2A,)
+    # And the insert row writes whichever form round-trips.
+    assert alphabet.token(Glyph(0x2A, "wait", GlyphRole.CONTROL)) == "[wait]"
+
+
+def test_a_name_two_codes_share_falls_back_to_hex() -> None:
+    """Both would parse back to the first, so the second says which byte it is.
+
+    Silently writing the pair as one name is the one thing the text form never
+    does: a string that decodes to something typing back to a *different* cell
+    is worse than one that reads as a number.
+    """
+    alphabet = FontAlphabet(
+        [
+            Glyph(0x2A, "wait", GlyphRole.CONTROL),
+            Glyph(0x3B, "wait", GlyphRole.CONTROL),
+        ]
+    )
+
+    assert alphabet.decode([0x2A, 0x3B]).body == "[wait][$3B]"
+    assert alphabet.encode("[wait][$3B]").codes == (0x2A, 0x3B)
+
+
+def test_a_bracketed_name_the_font_lacks_is_reported_not_written() -> None:
+    """Reported whole, the rule an unparseable ``[...]`` already followed: encoded
+    letter by letter it would silently write the punctuation as glyphs."""
+    alphabet = FontAlphabet([Glyph(0x00, "A"), Glyph(0x2A, "wait", GlyphRole.CONTROL)])
+
+    encoded = alphabet.encode("A[nope]")
+
+    assert encoded.unknown == ("[nope]",)
+    assert not encoded.ok

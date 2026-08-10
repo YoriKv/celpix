@@ -25,7 +25,6 @@ from celpix.plugins.discovery import (
     preset_from_toml,
 )
 
-from .alphabet_table import AlphabetTable
 from .byte_swap import ByteSwapReshape
 from .color_codec import ColorCodec
 from .containers import (
@@ -132,7 +131,6 @@ def register_builtins(reg: Registry) -> None:
         ColorCodec(),
         IndexedColorCodec(),
         TilemapCodec(),
-        AlphabetTable(),
         ObjectCodec(),
         ObzCodec(),
         SprCodec(),

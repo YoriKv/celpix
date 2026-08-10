@@ -79,6 +79,17 @@ from celpix.ui.widgets import (
 # unit a base tile is usually a multiple of.
 GRID_STEP_TILES = 16
 
+# Below this many screen pixels a square, a caption is dropped rather than drawn
+# (:meth:`TileSourcePanel._paint_labels`). 24 is where a 7-pixel font stops
+# fitting inside one cell with the tile still visible above it.
+LABEL_MIN_PX = 24
+
+# The plate a caption sits on, and the ink on it. Near-opaque black under white
+# because a font sheet is as often light-on-dark as dark-on-light, and a single
+# ink colour vanishes into half of them.
+LABEL_PLATE = QColor(0, 0, 0, 190)
+LABEL_COLOR = QColor(255, 255, 255)
+
 
 class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
     tile_selected = Signal(int)  # the ID of the newly selected tile
@@ -94,6 +105,7 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         self._zoom = 2
         self._selected: int | None = None
         self._marked: int | None = None
+        self._labels: dict[int, str] = {}
         # ClickFocus, the canvas and palette grid's idiom: clicking a tile also
         # arms the arrow-key stepping below.
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
@@ -135,6 +147,27 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
 
     def _has_content(self) -> bool:
         return not self._sheet.isNull()
+
+    def set_labels(self, labels: dict[int, str]) -> None:
+        """Write a short caption into the corner of each tile in ``labels``.
+
+        Keyed by ID, so a caller states what it knows about a tile rather than
+        about a square, and a re-laid sheet carries the captions with it.
+
+        For the font alphabet editor, where the caption is what the tile *says*
+        (:mod:`celpix.ui.font_alphabet_window`) — a reading the picture cannot
+        give, since a glyph tile is a letter shape and the question is which
+        letter the game thinks it is. Empty by default and empty in the tile
+        source dock, which has nothing of that kind to add.
+
+        A character the UI font has no glyph for draws as tofu. That is the
+        honest outcome and not worth defending against: the tile beside it is the
+        truth, and substituting a placeholder would hide which of the two the
+        user is looking at.
+        """
+        if labels != self._labels:
+            self._labels = dict(labels)
+            self.update()
 
     def set_marked_id(self, tile_id: int | None) -> None:
         """Ring the tile the canvas's selected cell names, or clear the ring."""
@@ -279,6 +312,7 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
             painter.drawImage(0, 0, self._sheet)
             painter.resetTransform()
             self._paint_grid(painter, event.rect())
+            self._paint_labels(painter, event.rect())
         # The canvas's cell first, in the structural blue; this panel's own pick
         # inset one pixel inside it and slightly soft — so a tile that is both
         # still reads as two rings rather than one thick one, and the two answer
@@ -321,6 +355,42 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         for y in range(ch * GRID_STEP_TILES, height, ch * GRID_STEP_TILES):
             if exposed.top() <= y <= exposed.bottom():
                 painter.drawLine(exposed.left(), y, exposed.right(), y)
+
+    def _paint_labels(self, painter: QPainter, exposed: QRect) -> None:
+        """Draw each captioned tile's text over the bottom of its square.
+
+        **Skipped entirely below** :data:`LABEL_MIN_PX`, because a caption that
+        does not fit is worse than none: overflowing text spills onto the tiles
+        either side and claims to describe them. The zoom control is right there,
+        and a sheet read at 1x is being scanned for shape rather than read.
+
+        Drawn on a translucent plate rather than straight onto the art — a glyph
+        sheet is light letters on a dark ground about as often as the reverse, so
+        text in any single colour disappears on half of them. Bottom-aligned so
+        it covers the part of a letter that carries the least of its identity,
+        and clipped to its own square so a wide caption is cut rather than
+        borrowed from the neighbour.
+        """
+        if not self._labels:
+            return
+        cw, ch = self._cell_px[0] * self._zoom, self._cell_px[1] * self._zoom
+        if min(cw, ch) < LABEL_MIN_PX:
+            return
+        font = painter.font()
+        font.setPixelSize(max(7, min(ch // 3, cw // 2)))
+        painter.setFont(font)
+        height = painter.fontMetrics().height()
+        for slot, tile_id in enumerate(self._ids):
+            caption = self._labels.get(tile_id)
+            if not caption:
+                continue
+            cell = self._cell_rect(slot)
+            if not cell.intersects(exposed):
+                continue
+            strip = QRect(cell.left(), cell.bottom() - height, cell.width(), height)
+            painter.fillRect(strip, LABEL_PLATE)
+            painter.setPen(LABEL_COLOR)
+            painter.drawText(strip, Qt.AlignmentFlag.AlignCenter, caption)
 
     def sizeHint(self):  # noqa: ANN201 — Qt override
         return self.size()

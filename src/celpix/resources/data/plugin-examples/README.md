@@ -13,7 +13,6 @@ them up — no reinstall, no editing the app.
 | `reshape/` | a byte reordering applied to a whole region |
 | `compression/` | a packing scheme, unpacked before the pixel format reads it |
 | `containers/` | an on-disk wrapper — a header to skip, an interleave to undo |
-| `alphabet/` | what a font's tiles spell, so a text run reads as words |
 
 Files starting with `_` are ignored. Every `_`-prefixed file here is a working
 reference: **copy one, drop the underscore, and edit it.** Press <kbd>F5</kbd> in
@@ -29,10 +28,6 @@ never touched.
 parameters, so a new tile or palette format is usually a handful of numbers and no
 code at all. Nothing executes, and celPix loads them without asking. Start here —
 most formats need nothing more.
-
-`alphabet/` goes one better: drop a plain **table file** in it — one `20=A` line
-per character, or `A=20` with `order = "text-first"` in a preset — and it appears
-in the Alphabet picker by itself, named after the file. No preset needed.
 
 `pixel/`, `palette/` and `tilemap/` have one example preset per engine; pick the
 one whose layout matches your format:
@@ -89,8 +84,8 @@ beside the presets, with no preset to author. Every other stage writes a
 **plugin**: a `PluginInfo` that names the stage as well, the stage's own pair of
 methods, and `registry.register(...)`.
 
-Every folder but `alphabet/` carries an `_example.py` of the right shape for it,
-and `containers/_tiff.py` is a full real-world format.
+Every folder carries an `_example.py` of the right shape for it, and
+`containers/_tiff.py` is a full real-world format.
 
 ## Plugins that travel with a project
 

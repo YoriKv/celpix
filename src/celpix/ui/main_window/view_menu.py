@@ -105,6 +105,7 @@ class ViewMenuMixin:
         menu.addSeparator()
         self._build_animation_action(menu)
         self._build_text_action(menu)
+        self._build_font_alphabet_action(menu)
         menu.addSeparator()
         self._build_theme_menu(menu)
 
@@ -192,6 +193,27 @@ class ViewMenuMixin:
         self._text_action.triggered.connect(self._show_text)
         self._text_action.setEnabled(False)
         view_menu.addAction(self._text_action)
+
+    def _build_font_alphabet_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
+        """View ▸ Font Alphabet - say what this font's tiles spell.
+
+        Directly after Text, because the two are one gesture split in half: the
+        string is read through the alphabet, and the alphabet is only judged
+        against the string. Both windows open on a fontmap and sit side by side.
+
+        Enabled wherever there is a **font** to write to - a bound one under a
+        fontmap, or a sheet ticked Use as Font - and not on there being a table
+        already, since the empty table is the thing it exists to fill in
+        (:meth:`~...font_alphabet.FontAlphabetMixin._font_alphabet_available`).
+        """
+        self._font_alphabet_action = QAction("&Font Alphabet...", self)
+        self._font_alphabet_action.setToolTip(
+            "Say which character each of this font's tiles draws\n"
+            "Its own window, beside the text it is read against"
+        )
+        self._font_alphabet_action.triggered.connect(self._show_font_alphabet)
+        self._font_alphabet_action.setEnabled(False)
+        view_menu.addAction(self._font_alphabet_action)
 
     def _build_entire_file_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Entire File - drop the row window and show all of it at once.

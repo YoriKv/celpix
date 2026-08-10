@@ -19,12 +19,13 @@
 #
 #   [[params.controls]]
 #   code = 0xFFFE
-#   text = "line break"
+#   name = "line-break"
 #   role = "break"
+#   description = "Ends the line."
 #
 #   [[params.controls]]
 #   code = 0xFFFF
-#   text = "end of string"
+#   name = "end-of-string"
 #
 # `role` is `break` (reads as a real newline; the first one declared is what
 # Enter types) or `control` (reads as its own `[$FFFF]`, and the name captions a

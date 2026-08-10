@@ -37,6 +37,7 @@ from celpix.core.arrangement import BLOCK_ORDERS
 from celpix.core.capabilities import ContentKind
 from celpix.core.document import ViewOptions
 from celpix.core.errors import Stage
+from celpix.core.font import HOLE, TEMPLATES, Glyph, GlyphRole, glyphs_from_spec
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
 from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, SlotFill
@@ -74,6 +75,16 @@ from celpix.project.workspace import (
 # `plugins/aliases.py` and is independent of this number.
 PROJECT_VERSION = 1
 PROJECT_EXTENSION = ".celpix"
+
+# The two alphabet presets celPix used to ship, by the id an older project names
+# them with, as ``(chars, base)`` — the runs are :data:`~celpix.core.font.
+# TEMPLATES` and have not changed. This is the whole of the alphabet's legacy
+# read (:func:`_font_from`): the tables that were shipped survive as data, and a
+# project naming one of them opens with its text still readable.
+_LEGACY_PRESET_RUNS: dict[str, tuple[str, int]] = {
+    "alphabet.ascii-upper": (TEMPLATES[0][2], TEMPLATES[0][1]),
+    "alphabet.ascii": (TEMPLATES[1][2], TEMPLATES[1][1]),
+}
 
 # Fallbacks for a hand-authored project that omits preset ids entirely — the
 # same built-ins a fresh window starts on, so a minimal project still renders,
@@ -135,8 +146,12 @@ def save_project(ws: Workspace, path: str) -> None:
     """Serialize ``ws`` to ``path`` as a version-stamped ``.celpix`` document."""
     document = project_dict(ws, path)
     # LF + trailing newline: projects are meant to live in version control.
+    #
+    # ``ensure_ascii=False`` because a font alphabet's run is whatever characters
+    # the sheet draws, and a Japanese or Cyrillic font escaped to ``\uXXXX`` is a
+    # wall nobody can read or review a diff of. The file is UTF-8 either way.
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(document, handle, indent=2)
+        json.dump(document, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
 
 
@@ -209,12 +224,9 @@ def _entry_dict(entry: Entry, base_dir: str, entries: list[Entry]) -> dict[str, 
     # Not gated either, and for the mirror of that reason: this is a *font's*
     # answer, so it belongs to the pixel entry holding the tiles rather than to
     # any fontmap that reads them (`docs/design/fontmap-entry.md` §3).
-    if entry.alphabet_preset_id:
-        data["alphabet_preset_id"] = entry.alphabet_preset_id
-    # Written only when set, so an alphabet left at its stated origin - which is
-    # every one that needed no dialling - costs the file nothing.
-    if entry.alphabet_base:
-        data["alphabet_base"] = entry.alphabet_base
+    font = _font_dict(entry)
+    if font:
+        data["font"] = font
     if entry.content_kind is ContentKind.TILEMAP:
         if entry.tilemap_preset_id:
             data["tilemap_preset_id"] = entry.tilemap_preset_id
@@ -297,6 +309,51 @@ def _entry_dict(entry: Entry, base_dir: str, entries: list[Entry]) -> dict[str, 
     palette = palette_source_for(entry)
     if palette is not None:
         data["palette"] = _palette_dict(palette, base_dir)
+    return data
+
+
+def _font_dict(entry: Entry) -> dict[str, object]:
+    """``entry``'s font alphabet, or ``{}`` where it has nothing to say.
+
+    Every key omitted at its default, the house rule, so a pixel entry nobody has
+    used as a font — which is every entry any older project holds — writes no
+    ``font`` key at all.
+
+    The run is trimmed of trailing holes because they say nothing: a hole is what
+    keeps the letters *after* it on the right tiles, and there are none after the
+    last one. Interior holes stay, and have to.
+    """
+    data: dict[str, object] = {}
+    if entry.use_as_font:
+        data["use"] = True
+    if entry.font_base:
+        data["base"] = entry.font_base
+    chars = entry.font_chars.rstrip(HOLE)
+    if chars:
+        data["chars"] = chars
+    if entry.font_codes:
+        data["codes"] = [_glyph_dict(glyph) for glyph in entry.font_codes]
+    return data
+
+
+def _glyph_dict(glyph: Glyph) -> dict[str, object]:
+    """One named code, written the way it is meant: a character or a command.
+
+    A character spells itself and says nothing else, so it is ``text`` alone. A
+    command carries a ``name`` — what the string holds inside its brackets — its
+    ``role``, and a ``description`` where the author wrote one. Split by role
+    rather than written uniformly because the two fields are different promises:
+    ``text`` is what a tile *draws*, ``name`` is what a reader *types*.
+    """
+    if glyph.role is GlyphRole.TEXT:
+        return {"code": glyph.code, "text": glyph.text}
+    data: dict[str, object] = {
+        "code": glyph.code,
+        "name": glyph.text,
+        "role": glyph.role.value,
+    }
+    if glyph.description:
+        data["description"] = glyph.description
     return data
 
 
@@ -404,13 +461,46 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         # Absent means "whatever the format says", which is every entry that never
         # overrode it — so the default has to stay None and not 0.
         palette_row_base=_int(raw.get("palette_row_base"), None),
-        alphabet_preset_id=(_plugin_id(raw.get("alphabet_preset_id"), "") or None),
-        alphabet_base=_int(raw.get("alphabet_base"), 0),
+        **_font_from(raw),
         sprite_size_pair=_size_pair(raw.get("sprite_size_pair")),
         session=_session_from(raw.get("session")),
         pending_view=_view_from(raw.get("view")),
         pending_palette=_palette_from(raw.get("palette"), base_dir),
     )
+
+
+def _font_from(raw: dict) -> dict[str, object]:
+    """The font-alphabet fields of one entry, as ``Entry`` keyword arguments.
+
+    Tolerant throughout, the rule every reader here follows: a ``chars`` that is
+    not a string reads as no run, and a malformed record in ``codes`` is skipped
+    by :func:`~celpix.core.font.glyphs_from_spec` rather than costing the user
+    the rest of their table.
+
+    **The legacy read.** Before the alphabet was the entry's own data it was a
+    preset the entry named, and the two shipped presets held runs this build
+    still has (:data:`~celpix.core.font.TEMPLATES`). A project naming one of them
+    opens with its text still readable; a project naming any other is left with
+    an empty run, which is the ordinary "no alphabet yet" state and reads as hex.
+    Deletable once alpha projects have been re-saved.
+    """
+    font = raw.get("font")
+    if not isinstance(font, dict):
+        legacy = _plugin_id(raw.get("alphabet_preset_id"), "")
+        base = _int(raw.get("alphabet_base"), 0) or 0
+        chars = _LEGACY_PRESET_RUNS.get(legacy, ("", 0))
+        return {
+            "use_as_font": bool(legacy),
+            "font_base": base or chars[1],
+            "font_chars": chars[0],
+        }
+    spec = font.get("codes")
+    return {
+        "use_as_font": bool(font.get("use")),
+        "font_base": _int(font.get("base"), 0) or 0,
+        "font_chars": _str(font.get("chars"), ""),
+        "font_codes": tuple(glyphs_from_spec(spec) if isinstance(spec, list) else ()),
+    }
 
 
 def _size_pair(raw: object) -> tuple[int, int] | None:

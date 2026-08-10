@@ -47,6 +47,7 @@ from PySide6.QtGui import QUndoCommand
 
 from celpix.core.context import PipelineContext
 from celpix.core.document import Document
+from celpix.core.font import Glyph
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
 from celpix.core.tilerearrangement import TileRearrangement
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
 OFFSET_MOVE_ID = 1
 COLOR_EDIT_ID = 2
 TILEMAP_CELLS_ID = 3
+FONT_ALPHABET_ID = 4
 
 
 @dataclass(frozen=True)
@@ -769,42 +771,69 @@ class RenameEntryCommand(_InPlaceCommand):
         self._window._apply_entry_name(self._entry, state)
 
 
-class AlphabetCommand(_InPlaceCommand):
-    """Which alphabet says what a **font entry**'s tiles spell, and from where.
+#: A **font entry**'s whole alphabet: the tick, the origin, the positional run
+#: and the named codes (``docs/design/fontmap-entry.md`` §4). One state and not
+#: four commands because the editor settles several at once — a template moves
+#: the origin and the run together, and a paste can turn a named code back into
+#: an ordinary letter — and each of those is one gesture to undo.
+FontAlphabetState = tuple[bool, int, str, tuple[Glyph, ...]]
+
+
+class FontAlphabetCommand(_InPlaceCommand):
+    """What a **font entry**'s tiles spell, and which code each of them is.
 
     In-place, and it is the one command here whose entry is not the one the
     change is *seen* on: the alphabet belongs to the font, and what it changes is
     every fontmap drawn through that font
     (``docs/design/fontmap-entry.md`` §3). Yanking the view to the font — a sheet
-    of letters, on which the setting shows nothing at all — would move away from
-    the string the user is reading it against.
+    of letters, on which a code means nothing at all — would move away from the
+    string the user is reading it against.
 
-    The pair travels as one state because a change to either can move both:
-    picking a different alphabet returns the origin to zero, since a shift
-    dialled against one table means nothing on the next. Two commands would put
-    that reset on the stack as a second step to undo.
+    ``text`` is handed in rather than worked out here, because the editor is what
+    knows which gesture produced the state: "paste 26 characters" and "edit font
+    alphabet" can land identical values and are different things to undo.
+
+    ``run`` merges a **run of typing** down the table into one step, the rule
+    :class:`TilemapCellsCommand` follows for typing into the text window. Each
+    cell settles as it is left, so the sheet and the string follow the caret —
+    but a word typed into six rows is one thing the user did. A paste, a
+    template, the origin moving or the window closing ends the run, and each of
+    those arrives with ``run=None``, which never merges.
     """
 
     def __init__(
         self,
         window: MainWindow,
         entry: Entry,
-        before: tuple[str | None, int],
-        after: tuple[str | None, int],
+        text: str,
+        before: FontAlphabetState,
+        after: FontAlphabetState,
+        *,
+        run: int | None = None,
     ) -> None:
-        preset_id, base = after
-        # Named for whichever half moved, since one gesture only ever moves one
-        # of them - "set alphabet" on a base tick would describe the wrong thing
-        # in the history list.
-        text = (
-            f"set alphabet base to ${base:X}"
-            if preset_id == before[0]
-            else f"set alphabet to {preset_id or 'none'}"
-        )
         super().__init__(window, entry, text, before, after)
+        self._merge_run = run
 
-    def _apply(self, state: tuple[str | None, int]) -> None:
-        self._window._apply_alphabet(self._entry, state)
+    def id(self) -> int:
+        return FONT_ALPHABET_ID if self._merge_run is not None else -1
+
+    def mergeWith(self, other: QUndoCommand) -> bool:  # noqa: N802 — Qt override
+        if (
+            not isinstance(other, FontAlphabetCommand)
+            or other._entry is not self._entry
+            or other._merge_run != self._merge_run
+        ):
+            return False
+        # other's redo has already run, so its half of the pair is the live state.
+        self._after = other._after
+        if self._after == self._before:
+            # The run typed its way back to the table it started from — drop the
+            # empty step rather than leaving one that does nothing to undo.
+            self.setObsolete(True)
+        return True
+
+    def _apply(self, state: FontAlphabetState) -> None:
+        self._window._apply_font_alphabet(self._entry, state)
 
 
 class SliceEditCommand(_InPlaceCommand):

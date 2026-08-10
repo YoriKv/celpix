@@ -18,18 +18,24 @@
 #
 #   [[params.controls]]
 #   code = 0xFE
-#   text = "line break"
+#   name = "line-break"
 #   role = "break"
+#   description = "Ends the line."
 #
 #   [[params.controls]]
 #   code = 0xFF
-#   text = "end of string"
+#   name = "end-of-string"
+#
+# A control is three things. `code` is the byte, `name` is the one word the text
+# holds inside its brackets - `[end-of-string]` - and `description` is the
+# sentence behind it, which reaches the tooltip on the insert row's button and
+# never the string itself. A name with a space in it is hyphenated on the way in,
+# since it is what a reader retypes.
 #
 # `role` is `break` (reads as a real newline; the first one declared is what
-# Enter types) or `control` (reads as its own `[$FF]`, and the name captions a
-# button on the insert row). Declaring nothing is always safe: an undeclared code
-# reads as `[$FF]` and types back to the same byte, so a command celPix knows
-# nothing about survives an edit untouched.
+# Enter types) or `control` (reads as its own name). Declaring nothing is always
+# safe: a code nobody has named reads as `[$FF]` and types back to the same byte,
+# so a command celPix knows nothing about survives an edit untouched.
 id = "preset.tilemap.text-8bit"
 name = "Text run (8-bit character codes)"
 engine_id = "codec.tilemap.packed"

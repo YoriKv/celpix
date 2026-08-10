@@ -80,6 +80,7 @@ from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas
 from celpix.ui.color_editor import ColorEditorDialog
 from celpix.ui.decompress_overlay import DecompressOverlay
 from celpix.ui.file_list_panel import FileListPanel
+from celpix.ui.font_alphabet_window import FontAlphabetWindow
 from celpix.ui.help_dialogs import AboutDialog, ShortcutGuide, shortcut_sections
 from celpix.ui.hex_view_panel import HexViewPanel
 from celpix.ui.main_window.animation import AnimationMixin
@@ -88,6 +89,7 @@ from celpix.ui.main_window.clipboard_ops import ClipboardOpsMixin
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
 from celpix.ui.main_window.entries import EntriesMixin
+from celpix.ui.main_window.font_alphabet import FontAlphabetMixin
 from celpix.ui.main_window.history import HistoryMixin
 from celpix.ui.main_window.interpretation import (
     InterpretationMixin,
@@ -148,6 +150,7 @@ class MainWindow(
     NavigationMixin,
     AnimationMixin,
     TextMixin,
+    FontAlphabetMixin,
     HistoryMixin,
     InterpretationMixin,
     PaletteSourceMixin,
@@ -350,6 +353,18 @@ class MainWindow(
         # still be the session's one history, not a second one in the field.
         self._text.undo_requested.connect(self._undo_stack.undo)
         self._text.redo_requested.connect(self._undo_stack.redo)
+        # The third tool window, and the one the other two are read against: a
+        # fontmap opens the text beside the alphabet that decides what it says.
+        self._font_alphabet = FontAlphabetWindow(self)
+        # Which run of typing the next alphabet edit belongs to, so consecutive
+        # rows merge into one undo step (``main_window/font_alphabet.py``).
+        self._font_alphabet_run = 0
+        self._font_alphabet_dismissed = False
+        self._font_alphabet.edited.connect(self._on_font_alphabet_edited)
+        self._font_alphabet.dismissed.connect(self._on_font_alphabet_dismissed)
+        self._font_alphabet.tile_selected.connect(self._on_font_alphabet_tile)
+        self._font_alphabet.undo_requested.connect(self._undo_stack.undo)
+        self._font_alphabet.redo_requested.connect(self._undo_stack.redo)
         self._init_sprite_select()
         self._canvas.slots_selected.connect(self._on_slots_selected)
         # After slots_selected, because the two report one press and this is the
@@ -1121,7 +1136,6 @@ class MainWindow(
         Stage.INTERPRET_PIXEL: "pixel format",
         Stage.INTERPRET_PALETTE: "palette format",
         Stage.INTERPRET_TILEMAP: "tilemap format",
-        Stage.ALPHABET: "alphabet",
     }
 
     def _alert_missing_presets(self, missing: list[MissingPreset]) -> None:

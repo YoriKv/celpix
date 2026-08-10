@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.2 - unreleased
+
+- Improved fontmap support, new alphabet editor build into the UI
+
 ## v0.5.1 - 2026-08-10
 
 - Big cleanup pass on all code, plugins, and comments

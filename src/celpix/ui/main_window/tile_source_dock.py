@@ -402,14 +402,13 @@ class TileSourceDockMixin:
             )
             self._sync_set_base_tile()
             return
-        if doc.cells_carry_palette_rows:
-            image = render_bridge.render_pinned(sheet.grid, doc.palette)
-        else:
-            # No row field for the cells to have carried, so the row never
-            # reached the indices: it lands on the colour table instead.
-            image = render_bridge.render(
-                sheet.grid, doc.palette, row * self._index_space()
-            )
+        # Never offset at the colour table. Unlike the map, whose cells carry
+        # whatever row the *file* gave them, this sheet's cells are synthetic and
+        # were handed ``row`` above — so :func:`~celpix.pipeline.pipeline.
+        # expand_cells` has already folded it into the indices, exactly as it
+        # does for a format that states rows of its own. Shifting the table too
+        # would apply the row twice and draw the bank in row 2n.
+        image = render_bridge.render_pinned(sheet.grid, doc.palette)
         # The stamp, not the cell: where a source states a stamp size an ID names
         # the whole stamp, so the click target has to be the whole stamp too.
         across, down = doc.stamp_tiles

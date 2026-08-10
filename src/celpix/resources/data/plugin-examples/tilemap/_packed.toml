@@ -125,23 +125,34 @@ flip_v = { shift = 15, bits = 1 }
 # straight back to the same byte, whatever the game does with it. So there is no
 # markup to invent per game, and nothing to get wrong by leaving out.
 #
+# A control is three things:
+#   code         the byte itself
+#   name         the ONE WORD the text holds inside its brackets, `[end-of-msg]`.
+#                A space in it is hyphenated on the way in, because this is what
+#                a reader retypes
+#   description  the sentence behind that name. It reaches the tooltip on the
+#                insert row's button and never the string, and it is the one
+#                field only you can write
+#
 # `role` is one of:
 #   break    ends a line, and reads as a real newline. The FIRST one declared is
-#            what the Enter key types; any others stay reachable as their own hex
+#            what the Enter key types; any others read as their own name
 #   control  anything else - a terminator, a speed change, a portrait command.
-#            Reads as its own `[$FF]`; the name is what captions its button on
-#            the insert row, so nobody has to remember the number
+#            Reads as `[its-name]`, and that name captions its button on the
+#            insert row so nobody has to remember the number
 #   text     a code that spells letters after all (rare here - that is the font's
-#            half)
+#            half). Use `text` instead of `name` for one of those
 #
 # [[params.controls]]
 # code = 0xFE
-# text = "line break"
+# name = "line-break"
 # role = "break"
+# description = "Ends the line and starts the next."
 #
 # [[params.controls]]
 # code = 0xFF
-# text = "end of string"
+# name = "end-of-msg"
+# description = "Stops the printer. Every message ends with one."
 #
 # A command that swallows further codes needs nothing said: those codes are read
 # on their own and show as `[$AA][$BB]` after it, which types back exactly as it

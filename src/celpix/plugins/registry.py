@@ -158,8 +158,7 @@ class Registry:
         The stand-in is checked to be registered too, and any preset of the stage
         is taken over one that isn't: a registry assembled without the built-ins
         (a test's, a future trimmed build) would otherwise answer with an id that
-        fails the same way the stored one did. With nothing at all at the stage —
-        and for a stage that has no default to begin with, which is ALPHABET —
+        fails the same way the stored one did. With nothing at all at the stage,
         ``preset_id`` comes back untouched: there is no substitute to name, so the
         caller's own handling of the miss is the honest one.
         """

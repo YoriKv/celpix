@@ -791,7 +791,6 @@ def test_repair_presets_swaps_missing_formats_and_reports_them(tmp_path) -> None
         path=str(rom),
         content_kind=ContentKind.TILEMAP,
         tilemap_preset_id="preset.tilemap.gone",
-        alphabet_preset_id="preset.alphabet.gone",
         session=EntrySession(
             pixel_preset_id="preset.pixel.gone",
             palette_preset_id="preset.palette.bgr555",
@@ -803,14 +802,9 @@ def test_repair_presets_swaps_missing_formats_and_reports_them(tmp_path) -> None
     assert entry.session.pixel_preset_id == "preset.pixel.snes-4bpp"
     # The palette one was fine and is left exactly as it was.
     assert entry.session.palette_preset_id == "preset.palette.bgr555"
-    # An alphabet is cleared rather than substituted — a stand-in table would
-    # spell the codes as different letters, where None reads as hex.
-    assert entry.alphabet_preset_id is None
-
     assert [(item.stage, item.wanted, item.used) for item in replaced] == [
         (Stage.INTERPRET_PIXEL, "preset.pixel.gone", "preset.pixel.snes-4bpp"),
         (Stage.INTERPRET_TILEMAP, "preset.tilemap.gone", "preset.tilemap.snes-bg"),
-        (Stage.ALPHABET, "preset.alphabet.gone", ""),
     ]
     # A second pass has nothing left to say.
     assert repair_presets([entry], default_registry()) == []

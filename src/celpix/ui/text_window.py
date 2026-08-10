@@ -372,11 +372,17 @@ class TextWindow(QWidget):
         under the caret and pulling the whole rest of the string a cell left. The
         rule overtyping exists to keep is that the length never moves, and
         inserting something weightless does not move it.
+
+        **A bracket that could not close is dropped** (:meth:`_bracketing`), so
+        the field cannot be typed into a shape that reads back as something else.
         """
         if self._edit.isReadOnly():
             return
         cursor = self._edit.textCursor()
         first, last = cursor.selectionStart(), cursor.selectionEnd()
+        typed = self._bracketing(typed, first, first != last)
+        if not typed:
+            return
         if first == last and inside_code(self._body, first):
             self._splice(first, last, typed, label, unit=self._units[first - 1])
             return
@@ -409,6 +415,50 @@ class TextWindow(QWidget):
             start, stop = unit_bounds(self._units, first, len(unit_spans(typed)))
             stop = self._keep_break(start, stop)
         self._splice(start, stop, typed, label, caret=caret)
+
+    def _bracketing(self, typed: str, at: int, selecting: bool) -> str:
+        """``typed`` with the brackets that could not close taken out of it.
+
+        There are exactly two of those, and both are keys a user presses by
+        accident on the way to something else:
+
+        - **A** ``[`` **where one is already open**. The caret is spelling a code
+          already; a second opener cannot start another inside it, and left in it
+          turns the code being typed into a run of characters the font almost
+          certainly has no glyphs for.
+        - **A** ``]`` **where none is open**. There is nothing for it to close, so
+          it is a literal ``]`` — which the text form has no way to write, since
+          ``]`` only ever means "the code ends here".
+
+        Walked rather than filtered, because whether a bracket can close depends
+        on the ones before it: a whole ``[line-break]`` arriving from the insert
+        row starts outside a code and is kept entire, while the ``]`` of it typed
+        on its own is not. The walk starts from the caret's own context, so a
+        ``]`` finishing a code the field already holds is kept too.
+
+        Dropped rather than refused with a message: a stray bracket is a slip,
+        and the honest response to a slip is for nothing to happen. Only the
+        bracket goes — a paste carrying one keeps everything else, which is what
+        makes pasting a sentence out of a disassembly work.
+
+        A selection is being replaced, so there is no open code to be inside: the
+        span is spent whole and what lands starts a fresh piece.
+        """
+        if not typed or self._edit.isReadOnly():
+            return typed
+        inside = not selecting and inside_code(self._body, at)
+        kept: list[str] = []
+        for char in typed:
+            if char == "[":
+                if inside:
+                    continue
+                inside = True
+            elif char == "]":
+                if not inside:
+                    continue
+                inside = False
+            kept.append(char)
+        return "".join(kept)
 
     def _keep_break(self, start: int, stop: int) -> int:
         """``stop`` pulled back off a line break the last cell in the span carries.
@@ -578,7 +628,7 @@ class TextWindow(QWidget):
             self._fresh = False
         self.caret_moved.emit(caret)
 
-    def _build_guide(self, commands: list[tuple[str, str]]) -> None:
+    def _build_guide(self, commands: list[tuple[str, str, str]]) -> None:
         """Rebuild the insert row, or leave it alone when it already matches.
 
         Compared before rebuilding because this runs on every refresh of the
@@ -593,15 +643,52 @@ class TextWindow(QWidget):
             item = self._guide_row.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
-        for name, code in wanted:
+        for name, code, description in wanted:
             button = QPushButton(name)
-            # The tooltip carries the code the caption stands for, because that
-            # is what lands in the string and what the user will see there.
-            button.setToolTip(f"Insert {code}\n{name}")
+            # The tooltip carries what lands in the string, then whatever the
+            # format author said the code *does* — the one thing about a command
+            # that neither the caption nor the token can show, and the reason a
+            # format states a description at all.
+            button.setToolTip(
+                f"Insert {code}" + (f"\n{description}" if description else "")
+            )
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.clicked.connect(lambda _checked=False, text=code: self._insert(text))
             self._guide_row.addWidget(button)
         self._guide_row.addStretch(1)
+
+    def undo(self) -> None:
+        """Ctrl+Z — take back the draft if there is one, the session step if not.
+
+        A **draft** is the field being ahead of the file: a ``[...]`` half
+        spelled, or a character this font has no code for. Nothing has been
+        written for it, so it is not on the session's stack at all — and reaching
+        past it into the stack undoes something the user was not looking at while
+        leaving the half-typed code standing. That is what a backspace inside a
+        code and one Ctrl+Z used to do: the code stayed broken and the *binding*
+        came undone.
+
+        So the draft goes first. It is the most recent thing the user did, which
+        is what an undo means, and the step underneath is still one more Ctrl+Z
+        away.
+        """
+        if self.body != self._committed:
+            self._revert()
+            return
+        self.undo_requested.emit()
+
+    def _revert(self) -> None:
+        """Put the file's own string back in the field, discarding the draft."""
+        at = self._edit.textCursor().position()
+        self._syncing = True
+        try:
+            self._edit.setPlainText(self._committed)
+            cursor = self._edit.textCursor()
+            cursor.setPosition(min(at, len(self._committed)))
+            self._edit.setTextCursor(cursor)
+        finally:
+            self._syncing = False
+        self._body, self._drafting, self._fresh = self._committed, False, True
 
     def _insert(self, code: str) -> None:
         """Put a named command at the caret, as a step of its own.
@@ -609,7 +696,18 @@ class TextWindow(QWidget):
         A step of its own on both sides: the run of typing before it ends here,
         and the next key starts another. Clicking a button is a gesture the user
         will expect one Ctrl+Z to take back, whatever they were typing around it.
+
+        **Refused inside a** ``[...]``. The caret is mid-way through spelling a
+        code there, and a whole ``[wait]`` dropped into the middle of one makes a
+        bracketed thing no reader can parse — where the button's entire promise
+        is that what it writes is exactly what the string holds.
         """
+        cursor = self._edit.textCursor()
+        if cursor.selectionStart() == cursor.selectionEnd() and inside_code(
+            self._body, cursor.selectionStart()
+        ):
+            self._edit.setFocus()
+            return
         self.break_run()
         self.put(code, label=f"insert {code}")
         self.break_run()
@@ -686,7 +784,7 @@ class _TextEdit(QPlainTextEdit):
             super().keyPressEvent(event)
             return
         if event.matches(QKeySequence.StandardKey.Undo):
-            self._owner.undo_requested.emit()
+            self._owner.undo()
             return
         if event.matches(QKeySequence.StandardKey.Redo):
             self._owner.redo_requested.emit()

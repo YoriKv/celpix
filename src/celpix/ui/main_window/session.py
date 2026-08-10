@@ -380,7 +380,7 @@ class SessionMixin:
             sprite_size_pair=self._size_pair_for(entry, loaded.size_pair),
             cells_carry_palette_rows=loaded.palette_rows,
             text_layout=self._tilemap_is_fontmap(entry),
-            alphabet=self._alphabet_for(entry, tiles, loaded.cell_bytes),
+            font_alphabet=self._font_alphabet_for(entry, tiles, loaded.cell_bytes),
         )
         self._apply_restored_state(entry)
         self._apply_tilemap_columns(entry, restored=restored)
@@ -597,16 +597,22 @@ class SessionMixin:
         """
         return bool(self._tilemap_declares(entry, "terminator"))
 
-    def _alphabet_for(self, entry: Entry, tiles: _BoundTiles, cell_bytes: int):
+    def _font_alphabet_for(self, entry: Entry, tiles: _BoundTiles, cell_bytes: int):
         """The lookup ``entry``'s codes read through — its font's, plus its own.
 
-        The two halves meet here because this is the only place that holds both:
-        the **font** is whatever ``entry`` is bound to, and its alphabet is a
-        property of that entry (:attr:`~celpix.project.workspace.Entry.
-        alphabet_preset_id`, and its origin :attr:`~celpix.project.workspace.
-        Entry.alphabet_base` beside it); the **controls** are on ``entry``'s own
-        cell format. Neither knows about the other, and nothing downstream should
-        have to ask twice (:func:`~celpix.pipeline.pipeline.load_alphabet`).
+        The halves meet here because this is the only place that holds both: the
+        **font** is whatever ``entry`` is bound to, and its table is that entry's
+        own data (:attr:`~celpix.project.workspace.Entry.font_chars`,
+        :attr:`~celpix.project.workspace.Entry.font_codes` and the origin
+        :attr:`~celpix.project.workspace.Entry.font_base` beside them); the
+        **controls** are on ``entry``'s own cell format. Neither knows about the
+        other, and nothing downstream should have to ask twice
+        (:func:`~celpix.pipeline.pipeline.load_font_alphabet`).
+
+        Read only from a sheet that says it is a font — **Use as Font**
+        (:attr:`~celpix.project.workspace.Entry.use_as_font`). Unticking keeps the
+        table, since it is the user's work, so reading it anyway would leave the
+        tick meaning nothing.
 
         ``cell_bytes`` sets how wide an unmapped code prints, so a one-byte
         stream says ``[$1F]`` and a two-byte one ``[$FFFE]``. It is the stream's
@@ -616,14 +622,15 @@ class SessionMixin:
         if not self._tilemap_is_fontmap(entry):
             return None
         bound = self._binding_target(entry.tile_source) if entry.tile_source else None
+        font = bound if bound is not None and bound.use_as_font else None
         controls = self._tilemap_declares(entry, "controls") or ()
-        return pipeline.load_alphabet(
-            bound.alphabet_preset_id if bound is not None else None,
-            self._registry,
+        return pipeline.load_font_alphabet(
+            font.font_chars if font is not None else "",
+            font.font_codes if font is not None else (),
             tiles.ctx,
             controls=controls,
             code_digits=max(1, cell_bytes) * 2,
-            base=bound.alphabet_base if bound is not None else 0,
+            base=font.font_base if font is not None else 0,
             flag_break=self._tilemap_flag_break(entry),
         )
 
@@ -1313,6 +1320,8 @@ class SessionMixin:
         self._animation_action.setEnabled(False)
         self._text.hide_overlay()
         self._text_action.setEnabled(False)
+        self._font_alphabet.hide_overlay()
+        self._font_alphabet_action.setEnabled(False)
         self._hex_panel.clear()
         # No document, no palette source - blank the dock's per-mode widgets
         # (the mode member itself is left alone: it still mirrors the entry's

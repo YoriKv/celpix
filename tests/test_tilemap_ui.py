@@ -352,6 +352,27 @@ def test_a_tilemap_row_is_marked_by_the_layout_it_holds(qtbot, tmp_path) -> None
     assert marker(mark) == ""
 
 
+def test_switching_cell_format_redraws_the_rows_layout_marker(qtbot, tmp_path) -> None:
+    """The marker comes off the cell format, and a map carved out by hand names
+    none — so picking a text run *is* the moment a row becomes a fontmap. The
+    binding path is the only thing that moves it, and it is not on the render
+    cycle the rest of the bar rides on, so it has to say so itself; the row
+    otherwise kept the grid glyph until the project was next opened."""
+    from celpix.core.tilemap import Cell
+
+    window, _bank, entry = _bound_screen(qtbot, tmp_path, [Cell(index=1), Cell(index=2)])
+    panel = window._files_panel
+    item = panel._items[entry]
+    assert "Fontmap" not in item.toolTip(0)
+
+    combo = window._tilemap_preset
+    combo.setCurrentIndex(combo.findData("preset.tilemap.text-8bit"))
+    window._on_tilemap_preset_change(combo.currentIndex())
+
+    assert "Fontmap" in item.toolTip(0)
+    assert item.icon(0).cacheKey() == panel._entry_marker(entry)[0].cacheKey()
+
+
 def test_all_frames_is_a_sprite_maps_own_switch_and_grows_the_sheet(
     qtbot, tmp_path
 ) -> None:

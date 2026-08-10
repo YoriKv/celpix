@@ -54,7 +54,6 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
 from celpix import resources
 from celpix.core.errors import Stage
 from celpix.plugins.base import (
-    ALPHABET_TABLE_ENGINE,
     Plugin,
     Preset,
     check_declared_stage,
@@ -87,7 +86,6 @@ FOLDER_STAGE: dict[str, Stage] = {
     "reshape": Stage.RESHAPE,
     "compression": Stage.COMPRESSION,
     "containers": Stage.CONTAINER,
-    "alphabet": Stage.ALPHABET,
 }
 
 # The interpret folders, whose *.toml files are presets and whose *.py files are
@@ -99,25 +97,11 @@ INTERPRET_FOLDER_STAGE: dict[str, Stage] = {
     folder: FOLDER_STAGE[folder] for folder in ("pixel", "palette", "tilemap")
 }
 
-# Every folder whose *.toml files are ordinary presets. ``alphabet/`` is here and
-# **not** above, and the difference is what a *.py file in it means: the three
-# interpret folders take code *formats* (a decode/encode pair adapted into an
-# engine plus a preset), while an alphabet has no such pair to adapt — a code
-# alphabet is a plain plugin class registered through ``register()``, the route
-# compression/ and containers/ already take.
-PRESET_FOLDER_STAGE: dict[str, Stage] = {
-    **INTERPRET_FOLDER_STAGE,
-    "alphabet": Stage.ALPHABET,
-}
-
-# Table files ``alphabet/`` accepts alongside its presets. Dropping a font's own
-# ``20=A`` table into the folder registers it by itself — no preset to write, the
-# file *is* the data — which is how both reference projects in this tree already
-# keep their fonts (``docs/design/fontmap-entry.md`` §4). Read code-first, the
-# order celPix states as its own: a bare file has nowhere to say otherwise, and
-# guessing reads an all-hex table backwards without saying so. The reversed
-# spelling is a three-line preset naming the same file.
-ALPHABET_TABLE_SUFFIXES = (".tbl", ".txt")
+# Every folder whose *.toml files are ordinary presets. The same three, kept as
+# its own name because the two lists answer different questions — which folders
+# take presets, and which of those also take code *formats* — and have parted
+# company before.
+PRESET_FOLDER_STAGE: dict[str, Stage] = dict(INTERPRET_FOLDER_STAGE)
 
 
 @dataclass(frozen=True)
@@ -473,7 +457,7 @@ def load_directory(
                 PluginLoadIssue(
                     str(entry),
                     "plugins live in typed subfolders - move this file into "
-                    "pixel/, palette/, tilemap/, alphabet/, reshape/, "
+                    "pixel/, palette/, tilemap/, reshape/, "
                     "compression/ or containers/",
                 )
             )
@@ -506,12 +490,10 @@ def _load_typed_dir(
                 issues.append(
                     PluginLoadIssue(
                         str(entry),
-                        f"presets are pixel/palette/tilemap/alphabet/reshape only; "
+                        f"presets are pixel/palette/tilemap/reshape only; "
                         f"'{folder}/' takes .py code plugins",
                     )
                 )
-        elif folder == "alphabet" and entry.suffix in ALPHABET_TABLE_SUFFIXES:
-            _load_alphabet_table(reg, entry, issues)
         elif entry.suffix == ".py":
             _load_module(reg, entry, folder, issues, trust, confirm)
 
@@ -521,61 +503,9 @@ def _load_preset(
 ) -> None:
     try:
         spec = tomllib.loads(path.read_text(encoding="utf-8"))
-        if stage is Stage.ALPHABET:
-            _inline_alphabet_table(spec, path)
         reg.register_preset(preset_from_spec(spec, stage))
     except Exception as exc:  # noqa: BLE001 — report, don't abort startup
         issues.append(PluginLoadIssue(str(path), f"preset load failed: {exc}"))
-
-
-def _inline_alphabet_table(spec: dict, path: Path) -> None:
-    """Read the sibling file an alphabet preset's ``table`` names, into its params.
-
-    Resolved **here** rather than in the engine because this is the only place
-    that knows where the preset came from: a :class:`Preset` is parsed data with
-    no origin, by design, and giving it one so an engine could open files beside
-    it would hand every plugin a filesystem the rest of them do not have.
-
-    Bounded to the preset's own folder for the same reason a plugin directory is
-    typed at all — ``table = "../../etc/passwd"`` is a path this has no business
-    following, and a font's table lives beside the font's preset or it is not the
-    font's table.
-    """
-    params = spec.get("params")
-    if not isinstance(params, dict):
-        return
-    named = params.get("table")
-    if not named:
-        return
-    sibling = path.parent / str(named)
-    if sibling.parent != path.parent or not sibling.is_file():
-        raise ValueError(f"table {named!r} is not a file beside this preset")
-    params["table_text"] = sibling.read_text(encoding="utf-8")
-
-
-def _load_alphabet_table(
-    reg: RegistryLike, path: Path, issues: list[PluginLoadIssue]
-) -> None:
-    """Register a bare table file as a preset of its own.
-
-    The file *is* the data, so there is nothing for a preset to add: the id and
-    the name come from the filename, and the lines go straight to the table
-    engine. Dropping ``smw-standard.tbl`` into ``alphabet/`` therefore puts
-    "smw-standard" in the alphabet picker with no TOML written at all — the
-    data-first tier taken to its end (``docs/design/plugin-system.md``).
-    """
-    try:
-        reg.register_preset(
-            Preset(
-                id=f"alphabet.{path.stem}",
-                name=path.stem,
-                stage=Stage.ALPHABET,
-                engine_id=ALPHABET_TABLE_ENGINE,
-                params={"table_text": path.read_text(encoding="utf-8")},
-            )
-        )
-    except Exception as exc:  # noqa: BLE001 — report, don't abort startup
-        issues.append(PluginLoadIssue(str(path), f"alphabet table load failed: {exc}"))
 
 
 # The reshape preset engines, keyed by the `engine_id` a preset declares. Unlike

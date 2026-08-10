@@ -77,13 +77,13 @@ def _read(workspace, registry, name: str) -> tuple[str, bool]:
         registry,
     )
     params = registry.preset(entry.tilemap_preset_id).params
-    alphabet = pipeline.load_alphabet(
-        font.alphabet_preset_id,
-        registry,
+    alphabet = pipeline.load_font_alphabet(
+        font.font_chars,
+        font.font_codes,
         PipelineContext(),
         controls=params.get("controls", ()),
         code_digits=2,
-        base=font.alphabet_base,
+        base=font.font_base,
         flag_break=bool(params.get("terminator")),
     )
     codes = [cell.index for cell in loaded.cells]

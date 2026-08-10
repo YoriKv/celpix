@@ -30,7 +30,7 @@ from celpix.core.context import (
     KEY_TILEMAP_PAGES_ACROSS,
     PipelineContext,
 )
-from celpix.core.font import Alphabet
+from celpix.core.font import FontAlphabet
 from celpix.core.palette import Palette, palette_row_count
 from celpix.core.paletteregions import PaletteRegions
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, drawn_frames
@@ -376,12 +376,12 @@ class Document:
     # tiles, and is a fontmap all the same, which is exactly when the user needs
     # the controls that say so.
     text_layout: bool = False
-    # What this fontmap's codes *say*: the font's glyph table with this stream's
-    # own control codes laid over it (:func:`~celpix.pipeline.pipeline.
-    # load_alphabet`). None where nothing is bound or the font has no alphabet
-    # picked, which is not an error — the text then reads as hex, and every code
-    # still round-trips.
-    alphabet: Alphabet | None = None
+    # What this fontmap's codes *say*: the font's own run and named codes with
+    # this stream's control codes laid over them (:func:`~celpix.pipeline.
+    # pipeline.load_font_alphabet`). None where nothing is bound or the font has
+    # no table yet, which is not an error — the text then reads as hex, and every
+    # code still round-trips.
+    font_alphabet: FontAlphabet | None = None
     # The decoded tile source a tilemap draws from, kept between renders
     # (:func:`~celpix.pipeline.pipeline.tile_bank`). A map's cells reach anywhere
     # in the bank, so there is no window to slice and the *whole* source has to
@@ -499,12 +499,14 @@ class Document:
         without checking first — and hex for one whose font has no alphabet,
         which is the honest reading of codes nothing has explained.
         """
-        from celpix.core.font import Alphabet as _Alphabet
+        from celpix.core.font import FontAlphabet as _Alphabet
         from celpix.core.font import Text as _Text
 
         if not self.is_fontmap:
             return _Text("", ())
-        alphabet = self.alphabet or _Alphabet(code_digits=max(1, self.cell_bytes * 2))
+        alphabet = self.font_alphabet or _Alphabet(
+            code_digits=max(1, self.cell_bytes * 2)
+        )
         cells = self.cells or []
         return alphabet.decode(
             [cell.index for cell in cells], [cell.ends_line for cell in cells]

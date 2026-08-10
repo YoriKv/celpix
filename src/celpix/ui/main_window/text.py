@@ -5,17 +5,24 @@ string, a token list and a budget, and never reads the model. This is the half
 that builds those from the live document and turns a committed string back into
 cells.
 
-Four things it has to get right, and none of them is the window's to know:
+Five things it has to get right, and none of them is the window's to know:
 
 - **The region is always exactly full.** A text region is a fixed run of cells and
   the codes have nowhere else to go, so a string that encodes longer has the
   overrun **taken off the end** and one that encodes shorter has the cells it gave
-  up **filled with the blank** (:func:`_text_blank`). Either way what is written is
-  the length the file has, which is what makes an edit land on the canvas at all:
-  a refusal leaves the picture showing the old string, and a preserved tail leaves
-  it showing half of one. Text pushed off the end is **said out loud** when it was
-  something rather than trailing space, since it is text the user will look for
-  later and not find.
+  up **filled with the blank** (:attr:`~celpix.core.font.FontAlphabet.blank`).
+  Either way what is written is the length the file has, which is what makes an
+  edit land on the canvas at all: a refusal leaves the picture showing the old
+  string, and a preserved tail leaves it showing half of one. Text pushed off the
+  end is **said out loud** when it was something rather than trailing space, since
+  it is text the user will look for later and not find.
+- **Nothing the user can type refuses the write.** A character this font has no
+  code for takes its cell as a blank too, so the string still lands and the gap
+  sits on the picture where the missing glyph is. A refusal would leave the canvas
+  on the old string over one stray character, which reads as the editor having
+  stopped working — while the thing worth refusing over is a *warning*, and it is
+  already on the badge (:meth:`_text_status`) where it can be read without the
+  picture going stale.
 - **A write changes what the text form can say and nothing else.** That is the
   index, plus the terminator bit for the formats that end a line with one
   (:attr:`~celpix.core.tilemap.Cell.ends_line`) — a newline in the field *is*
@@ -37,7 +44,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from celpix.core.font import BLANK
 from celpix.ui.widgets import Badge
 
 
@@ -79,13 +85,17 @@ class TextMixin:
         doc = self._doc
         entry = self._workspace.current
         name = entry.name if entry is not None else "text"
-        alphabet = doc.alphabet
-        # The commands, captioned by name and inserting their own hex code -
-        # which is what the text form has in it. The name never appears in the
-        # string; it exists so the user is not left remembering that this game's
-        # line break is $FE (``docs/design/fontmap-entry.md`` §5).
+        alphabet = doc.font_alphabet
+        # The commands, captioned by name and inserting the form the text
+        # actually holds - ``[wait]`` for a code someone has named, its own hex
+        # for one nobody has (:meth:`~celpix.core.font.FontAlphabet.token`). Both
+        # type back to the same cell, so the row is a way of not having to
+        # remember that this game's line break is $FE
+        # (``docs/design/fontmap-entry.md`` §5). The third is the format author's
+        # own sentence about the code, which only they can write and which the
+        # button is the only place a reader would look for.
         commands = [
-            (glyph.text, alphabet.hex_code(glyph.code))
+            (glyph.text, alphabet.token(glyph), glyph.description)
             for glyph in (alphabet.commands if alphabet is not None else ())
         ]
         self._text.set_read_only(not doc.cells_editable)
@@ -157,7 +167,7 @@ class TextMixin:
         """
         doc = self._doc
         cells = len(doc.cells or []) if doc is not None else 0
-        if doc is not None and doc.alphabet is None:
+        if doc is not None and doc.font_alphabet is None:
             return (
                 f"{cells} cells - no alphabet",
                 Badge(
@@ -169,17 +179,18 @@ class TextMixin:
                     warning=True,
                 ),
             )
-        if typed is None or doc is None or doc.alphabet is None:
+        if typed is None or doc is None or doc.font_alphabet is None:
             return f"{cells} cells", None
-        encoded = doc.alphabet.encode(typed)
+        encoded = doc.font_alphabet.encode(typed)
         used = len(encoded.codes)
         line = f"{used} / {cells} cells"
         if not encoded.ok:
             shown = ", ".join(repr(item) for item in encoded.unknown[:4])
             return line, Badge(
                 f"{len(encoded.unknown)} not in font",
-                "These have no code in this font, so the text cannot\n"
-                "be written as typed:\n"
+                "These have no code in this font, so each is written\n"
+                "as a blank cell and the picture shows a gap where it\n"
+                "should be:\n"
                 f"  {shown}\n"
                 "Remove them, or pick an alphabet that has them.",
                 warning=True,
@@ -215,37 +226,32 @@ class TextMixin:
         only thing that sees the gesture — what ends a run is a click, an arrow
         key or a button, none of which reaches this far.
 
-        **Length is not a failure.** The region is a fixed run of cells, so it is
-        kept exactly full — what ran past the end comes off it, what the string
-        gave up is filled with the blank — and the only thing that stops a write is
-        a character the font has no code for, which is a *font* problem and cannot
-        be fixed by cutting anything. That one is refused with the reason on the
-        status bar, and the window keeps showing what the user has.
+        **Nothing here is a failure.** The region is a fixed run of cells, so it
+        is kept exactly full — what ran past the end comes off it, what the string
+        gave up is filled with the blank — and a character the font has no code
+        for takes its cell as a blank as well
+        (:attr:`~celpix.core.font.FontAlphabet.blank`). Both are *said* on the
+        status bar rather than acted on: the edit the user is in the middle of
+        goes on landing on the canvas, and what it cost them is a sentence they
+        can read while they keep typing.
         """
         doc = self._doc
-        if doc is None or not doc.is_fontmap or doc.alphabet is None:
+        if doc is None or not doc.is_fontmap or doc.font_alphabet is None:
             return
         if fresh:
             self._text_run += 1
         cells = list(doc.cells or [])
-        encoded = doc.alphabet.encode(body)
+        encoded = doc.font_alphabet.encode(body)
         self._text.set_status(*self._text_status(body))
-        if not encoded.ok:
-            self.statusBar().showMessage(
-                "Not written: "
-                + ", ".join(repr(item) for item in encoded.unknown[:4])
-                + " has no code in this font."
-            )
-            return
         codes = list(encoded.codes)
         # The terminator bit rides beside the index for the formats that have one
         # and is False everywhere else, so it is written unconditionally: a format
         # without the field has nowhere to put it and the codec drops it.
         ends = list(encoded.ends_line)
-        lost = doc.alphabet.decode(codes[len(cells) :], ends[len(cells) :]).body
+        lost = doc.font_alphabet.decode(codes[len(cells) :], ends[len(cells) :]).body
         codes = codes[: len(cells)]
         ends = ends[: len(cells)]
-        codes += [self._text_blank()] * (len(cells) - len(codes))
+        codes += [doc.font_alphabet.blank] * (len(cells) - len(codes))
         ends += [False] * (len(cells) - len(ends))
         for at, code in enumerate(codes):
             cells[at] = replace(cells[at], index=code, ends_line=ends[at])
@@ -259,6 +265,14 @@ class TextMixin:
                 f"{lost.strip()!r} pushed off the end - the region holds "
                 f"{len(cells)} cells and they are all in use."
             )
+        elif not encoded.ok:
+            # Said after the write, not instead of it. The badge carries the same
+            # news and stays up; this is the line that catches the user in the act,
+            # while the character they just typed is the one that went blank.
+            self.statusBar().showMessage(
+                ", ".join(repr(item) for item in encoded.unknown[:4])
+                + " has no code in this font - written as blank cells."
+            )
         elif written:
             self.statusBar().showMessage(f"Wrote {len(cells)} cells of text.")
         if not written:
@@ -266,18 +280,6 @@ class TextMixin:
             # holding text this region cannot: the keystroke that overflowed it
             # has to come back off the screen as well as off the cells.
             self._refresh_text(force=True)
-
-    def _text_blank(self) -> int:
-        """The code a cell the text no longer reaches is filled with.
-
-        The font's space, and **zero** where it has none. A fontmap's region is
-        always exactly full — a string typed shorter has to leave something in the
-        cells it gave up, and there is no third answer that is not a letter celPix
-        chose on the user's behalf.
-        """
-        alphabet = self._doc.alphabet
-        encoded = alphabet.encode(BLANK)
-        return encoded.codes[0] if encoded.ok and len(encoded.codes) == 1 else 0
 
     def _on_text_caret(self, offset: int) -> None:
         """Follow the text caret with the canvas selection.
