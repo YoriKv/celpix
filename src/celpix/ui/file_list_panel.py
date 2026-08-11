@@ -56,6 +56,7 @@ from celpix.project.workspace import (
     entry_palette_path,
     palette_missing,
 )
+from celpix.ui import clipboard
 from celpix.ui.widgets import (
     ShortcutIsland,
     icon_cache_key,
@@ -100,6 +101,11 @@ _ICON_H = 16
 _STATUS_COL = 1
 _STATUS_W = _ICON_W + 8  # the icon box plus breathing room from the name
 
+# Duplicate a row. Not a QKeySequence.StandardKey: Qt has no standard for it, and
+# Ctrl+D is what every list-of-things editor spells it as. Named here because the
+# tree matches the key and the context menu labels it, and the two must agree.
+DUPLICATE_KEY = QKeySequence("Ctrl+D")
+
 
 class _EntryTree(ShortcutIsland, QTreeWidget):
     """A tree that records when a selection change is driven by the keyboard,
@@ -117,26 +123,63 @@ class _EntryTree(ShortcutIsland, QTreeWidget):
     canvas editing shortcuts don't act on the canvas selection from here. That is
     also what disambiguates Delete, which the list binds too: left to compete with
     the canvas's Clear, Qt sees two claims on the key and fires neither, so it
-    silently does nothing. The only editing key the list acts on is Delete (remove
-    entry); the arrow keys reach the tree's own navigation through the app-wide
-    filter that already yields to this widget.
+    silently does nothing. Delete removes the entry and Cut/Copy/Paste act on the
+    rows rather than on the tiles behind them; the arrow keys reach the tree's own
+    navigation through the app-wide filter that already yields to this widget.
 
-    Shift+arrows reach it the same way, and it claims the vertical pair to reorder
-    the files (they resize the view window everywhere else). Selection is
-    single-item here, so nothing is lost: Shift+Up/Down would otherwise be a
-    second way to spell the bare arrows.
+    Duplicate is the one key here that is *not* claimed from anywhere — Ctrl+D is
+    bound nowhere else in the window, so it arrives as an ordinary press and only
+    has to be recognised before the base class sees it.
+
+    Shift+arrows reach it the same way the editing keys do, and it claims the
+    vertical pair to reorder rows (they resize the view window everywhere else) —
+    the keyboard spelling of the drag. Selection is single-item here, so nothing
+    is lost: Shift+Up/Down would otherwise be a second way to spell the bare
+    arrows.
     """
 
     delete_pressed = Signal()  # Delete with the list focused - remove the entry
     move_pressed = Signal(int)  # Shift+Up/Down - reorder by -1 / +1
+    cut_pressed = Signal()
+    copy_pressed = Signal()
+    paste_pressed = Signal()
+    duplicate_pressed = Signal()  # Ctrl+D
+    # A finished internal drag: the dragged entry, and the entry whose row it
+    # should land in front of (None for last among its siblings).
+    reorder_dropped = Signal(object, object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.key_navigating = False
+        # Rows are dragged to reorder them and nothing else, so the drag never
+        # leaves the widget and never carries a payload of its own: the drop
+        # handler below reads the dragged row off the tree and reports a position
+        # for the *model* to move, rather than letting the view move an item the
+        # workspace still believes is somewhere else.
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
+        self._dragged: QTreeWidgetItem | None = None
 
     def keyPressEvent(self, event) -> None:
         if event.matches(QKeySequence.StandardKey.Delete):
             self.delete_pressed.emit()
+            event.accept()
+            return
+        for sequence, signal in (
+            (QKeySequence.StandardKey.Cut, self.cut_pressed),
+            (QKeySequence.StandardKey.Copy, self.copy_pressed),
+            (QKeySequence.StandardKey.Paste, self.paste_pressed),
+        ):
+            if event.matches(sequence):
+                signal.emit()
+                event.accept()
+                return
+        # Compared as a sequence, not with ``matches``, which only speaks
+        # StandardKey — and Qt has no standard key for Duplicate.
+        if QKeySequence(event.keyCombination()) == DUPLICATE_KEY:
+            self.duplicate_pressed.emit()
             event.accept()
             return
         if event.modifiers() == Qt.KeyboardModifier.ShiftModifier and event.key() in (
@@ -152,11 +195,103 @@ class _EntryTree(ShortcutIsland, QTreeWidget):
         finally:
             self.key_navigating = False
 
+    # -- reordering by drag ---------------------------------------------------
+    def startDrag(self, actions) -> None:  # noqa: ANN001, N802 — Qt override
+        # Which row is being dragged is read here rather than off the drop's mime
+        # data: the drag never leaves this widget, so the item itself is the
+        # honest handle, and Qt's default encoding would only give it back as a
+        # row number in a tree that is about to change shape.
+        self._dragged = self.currentItem()
+        # Qt accepts a drop *between* two rows only when their **parent** is a
+        # drop target, so the group being rearranged is opened for the length of
+        # the drag and closed again after — without this a drag over a sibling
+        # shows the "no drop" cursor and no indicator line, which is every
+        # reorder this panel offers. It is opened only for the drag because the
+        # rest of the time nothing here is a drop target at all: a row that is
+        # one would also offer a drop *onto* it (see ``_drop_before``).
+        group = self._dragged.parent() if self._dragged is not None else None
+        if group is not None:
+            group.setFlags(group.flags() | Qt.ItemFlag.ItemIsDropEnabled)
+        try:
+            super().startDrag(actions)
+        finally:
+            if group is not None:
+                group.setFlags(group.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
+            self._dragged = None
+
+    def _drop_before(
+        self,
+        event,  # noqa: ANN001 — QDragMoveEvent / QDropEvent
+    ) -> tuple[QTreeWidgetItem, QTreeWidgetItem | None] | None:
+        """The dragged item and the sibling it would land in front of, or None
+        when this drop is not a reorder we allow.
+
+        Two rules, and both are about keeping a drag from meaning more than it
+        says. The drop must land **between** rows, never *on* one: a row taken
+        into another would be a re-pointing — a slice reading a different file's
+        offsets — which is a decision to make in a dialog, not by aiming. And the
+        two rows must be **siblings**, so a drag stays inside the group whose
+        order it is changing rather than moving an entry between a section and a
+        file's children.
+        """
+        source = self._dragged
+        if source is None:
+            return None
+        target = self.itemAt(event.position().toPoint())
+        if target is None or target is source:
+            return None
+        # A section header has no parent and carries no entry, so a drag from one
+        # (or onto one) fails the sibling test rather than needing its own check.
+        parent = source.parent()
+        if parent is None or target.parent() is not parent:
+            return None
+        position = self.dropIndicatorPosition()
+        if position is QTreeWidget.DropIndicatorPosition.AboveItem:
+            return source, target
+        if position is QTreeWidget.DropIndicatorPosition.BelowItem:
+            index = parent.indexOfChild(target) + 1
+            after = parent.child(index) if index < parent.childCount() else None
+            return source, after
+        return None
+
+    def dragMoveEvent(self, event) -> None:  # noqa: ANN001, N802 — Qt override
+        # The base class decides where the indicator is drawn, so it runs first;
+        # what it accepted is then overruled for anything the rules above refuse,
+        # which is what makes an illegal target show the "no drop" cursor rather
+        # than accepting and quietly doing nothing.
+        super().dragMoveEvent(event)
+        if self._drop_before(event) is None:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: ANN001, N802 — Qt override
+        landing = self._drop_before(event)
+        if landing is None:
+            event.ignore()
+            return
+        source, before = landing
+        # Accepted, but as **IgnoreAction** and without the base class: Qt's own
+        # internal move would take the row out and put it back on its own, leaving
+        # the view holding an order the workspace never agreed to (and no undo
+        # step for it). The signal is the whole of what a drop does; the row moves
+        # when the model has.
+        event.setDropAction(Qt.DropAction.IgnoreAction)
+        event.accept()
+        self.reorder_dropped.emit(
+            source.data(0, Qt.ItemDataRole.UserRole),
+            before.data(0, Qt.ItemDataRole.UserRole) if before is not None else None,
+        )
+
 
 class FileListPanel(QWidget):
     entry_activated = Signal(object)  # Entry — the user selected it in the list
     remove_requested = Signal(object)  # Entry — take it out of the list
-    move_requested = Signal(object, int)  # Entry (a FILE), -1/+1 — reorder the files
+    # Entry, and the row it should land in front of (None — last among its
+    # siblings). One signal behind both the drag and Shift+Up/Down.
+    reorder_requested = Signal(object, object)
+    copy_requested = Signal(object)  # Entry — put it and its children on the clipboard
+    cut_requested = Signal(object)  # Entry — copy, then take it out of the list
+    paste_requested = Signal(object)  # Entry | None — paste, targeting this row
+    duplicate_requested = Signal(object)  # Entry — a second copy of it in the project
     write_requested = Signal(object)  # Entry
     export_png_requested = Signal(object)  # Entry (FILE/SLICE) — render to one PNG
     export_raw_requested = Signal(object)  # Entry (FILE/SLICE) — decoded bytes out
@@ -226,6 +361,18 @@ class FileListPanel(QWidget):
         # canvas's window-wide Clear/Delete instead of overloading with it.
         self._tree.delete_pressed.connect(self._remove_current)
         self._tree.move_pressed.connect(self._move_current)
+        self._tree.cut_pressed.connect(lambda: self._for_current(self.cut_requested))
+        self._tree.copy_pressed.connect(lambda: self._for_current(self.copy_requested))
+        self._tree.duplicate_pressed.connect(
+            lambda: self._for_current(self.duplicate_requested)
+        )
+        # The one row action that means something with nothing highlighted, and
+        # with the highlight on a section header: a paste with no target lands
+        # where the payload itself says it belongs.
+        self._tree.paste_pressed.connect(
+            lambda: self.paste_requested.emit(self._current_entry())
+        )
+        self._tree.reorder_dropped.connect(self.reorder_requested)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -238,29 +385,88 @@ class FileListPanel(QWidget):
         return self._tree.key_navigating
 
     # -- model mirroring (driven by workspace callbacks) ---------------------
-    def add_entry(self, entry: Entry, parent: Entry | None = None) -> None:
-        """Add ``entry``; a slice or bookmark nests under ``parent``'s item,
-        inserted so children stay ordered by offset (files keep open order).
+    def add_entry(
+        self, entry: Entry, parent: Entry | None = None, before: Entry | None = None
+    ) -> None:
+        """Add ``entry``; a slice or bookmark nests under ``parent``'s item.
 
         A top-level entry goes under the section header for what it *holds* —
         Pixels, Tilemaps or Palettes (``docs/design/tilemap-entry.md`` §2) — so
         the tree's nesting keeps meaning "a window into that file's bytes" and
         the sections carry the other question.
+
+        ``before`` is the sibling row this one goes in front of, appended when it
+        is None or names a row that isn't there. **The order is the workspace's**,
+        not this panel's: rows are the user's to arrange, so the caller reads the
+        position out of the list rather than the panel deriving one — which is
+        also what makes a project reload and an undone removal put a row back
+        exactly where it was. Where offsets still decide anything is one step
+        earlier, in what position the *workspace* gives a newly carved slice
+        (:meth:`~celpix.project.workspace.Workspace.add_index_for`).
         """
         item = QTreeWidgetItem()
         item.setData(0, Qt.ItemDataRole.UserRole, entry)
+        # Draggable, and a drop target only while one of its own children is
+        # being dragged (``_EntryTree.startDrag``): a drop lands between rows
+        # (see ``_EntryTree._drop_before``), and a row that accepted one at any
+        # other time would offer a re-parenting the panel has no meaning for.
+        item.setFlags(
+            (item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
+            & ~Qt.ItemFlag.ItemIsDropEnabled
+        )
         parent_item = self._items.get(parent) if parent is not None else None
-        if parent_item is not None:
-            parent_item.insertChild(
-                self._sorted_index(parent_item, entry.slice_offset), item
-            )
-            parent_item.setExpanded(True)
-        else:
-            root = self._section_root(entry.content_kind)
-            root.addChild(item)
-            root.setExpanded(True)
+        if parent_item is None:
+            parent_item = self._section_root(entry.content_kind)
+        anchor = self._items.get(before) if before is not None else None
+        at = (
+            parent_item.indexOfChild(anchor)
+            if anchor is not None and anchor.parent() is parent_item
+            else parent_item.childCount()
+        )
+        parent_item.insertChild(at, item)
+        parent_item.setExpanded(True)
         self._items[entry] = item
         self._refresh_item(entry, item)
+
+    def move_item(self, entry: Entry, before: Entry | None) -> None:
+        """Re-place ``entry``'s row in front of ``before``'s — the view side of
+        :meth:`~celpix.project.workspace.Workspace.reorder`.
+
+        A file's row carries its nested slices and bookmarks with it, since they
+        are its item's children. Expansion and the highlight live in the *view*
+        rather than on the item, so a row taken out comes back collapsed and
+        unhighlighted — both are put back explicitly. The highlight is restored to
+        whatever it was on, which need not be the moved row itself: reordering a
+        file while one of its slices is the shown entry takes that row out of the
+        tree too, and it must come back current.
+        """
+        found = self._placed(entry)
+        if found is None:
+            return
+        item, parent_item = found
+        index = parent_item.indexOfChild(item)
+        anchor = self._items.get(before) if before is not None else None
+        if anchor is not None and anchor.parent() is not parent_item:
+            return
+        target = (
+            parent_item.indexOfChild(anchor)
+            if anchor is not None
+            else parent_item.childCount()
+        )
+        # Read before the removal, so it has to be corrected for it: everything
+        # after the row being lifted out slides one place up.
+        if index < target:
+            target -= 1
+        if target == index:
+            return
+        was_current = self._tree.currentItem()
+        was_expanded = item.isExpanded()
+        with signals_blocked(self._tree):  # a take/re-insert must not re-activate
+            parent_item.takeChild(index)
+            parent_item.insertChild(target, item)
+            item.setExpanded(was_expanded)
+            if was_current is not None:
+                self._tree.setCurrentItem(was_current)
 
     def _section_root(self, kind: ContentKind) -> QTreeWidgetItem:
         """The section header for ``kind``, created on first use.
@@ -291,14 +497,6 @@ class FileListPanel(QWidget):
         self._sections[kind] = item
         return item
 
-    def _sorted_index(self, parent_item: QTreeWidgetItem, offset: int) -> int:
-        """The child index at which an entry of ``offset`` belongs — the first
-        child whose offset is greater, keeping equal offsets in arrival order."""
-        for i in range(parent_item.childCount()):
-            if self._offset_of(parent_item.child(i)) > offset:
-                return i
-        return parent_item.childCount()
-
     @staticmethod
     def _has_slices(item: QTreeWidgetItem) -> bool:
         """Whether a file item has at least one slice child — its bookmark
@@ -307,11 +505,6 @@ class FileListPanel(QWidget):
             item.child(i).data(0, Qt.ItemDataRole.UserRole).kind is EntryKind.SLICE
             for i in range(item.childCount())
         )
-
-    @staticmethod
-    def _offset_of(item: QTreeWidgetItem) -> int:
-        entry: Entry = item.data(0, Qt.ItemDataRole.UserRole)
-        return entry.slice_offset
 
     def clear_entries(self) -> None:
         """Drop every row at once — the workspace's ``on_reset``.
@@ -353,58 +546,48 @@ class FileListPanel(QWidget):
             else:
                 self._tree.takeTopLevelItem(self._tree.indexOfTopLevelItem(item))
 
-    def move_entry(self, entry: Entry, delta: int) -> None:
-        """Move a file's row one place up (``delta`` -1) or down (+1), taking its
-        nested slices and bookmarks with it — the view side of
-        :meth:`~celpix.project.workspace.Workspace.move_file`.
+    def next_sibling(self, entry: Entry) -> Entry | None:
+        """The row after ``entry``'s among its own siblings — where a reorder has
+        to put it back, and so what an undo step captures before moving it."""
+        return self._step_sibling(entry, 1)
 
-        Expansion and the highlight live in the *view*, not the item, so a row
-        taken out comes back collapsed and unhighlighted — both are put back
-        explicitly. The highlight is restored to whatever it was on, which need
-        not be the moved row itself: moving a file from the context menu while
-        one of its slices is the shown entry takes that row out of the tree too,
-        and it must come back current.
-        """
+    def _step_sibling(self, entry: Entry, offset: int) -> Entry | None:
+        """The sibling ``offset`` places from ``entry``'s row, or None past
+        either end of its group."""
+        found = self._placed(entry)
+        if found is None:
+            return None
+        item, parent_item = found
+        at = parent_item.indexOfChild(item) + offset
+        if not 0 <= at < parent_item.childCount():
+            return None
+        return parent_item.child(at).data(0, Qt.ItemDataRole.UserRole)
+
+    def _placed(self, entry: Entry) -> tuple[QTreeWidgetItem, QTreeWidgetItem] | None:
+        """``entry``'s row and the row it is a child of, or None when it has no
+        row (never added, or already removed) — the one None-check the three
+        order-aware methods below would otherwise each spell out."""
         item = self._items.get(entry)
-        section = item.parent() if item is not None else None
-        if item is None or section is None:
-            return
-        index = section.indexOfChild(item)
-        target = self._file_neighbour(section, index, delta)
-        if target is None:
-            return
-        # The neighbour's *pre-removal* index is the destination either way:
-        # moving down, dropping the row first shifts the neighbour up into it.
-        was_current = self._tree.currentItem()
-        was_expanded = item.isExpanded()
-        with signals_blocked(self._tree):  # a take/re-insert must not re-activate
-            section.takeChild(index)
-            section.insertChild(target, item)
-            item.setExpanded(was_expanded)
-            if was_current is not None:
-                self._tree.setCurrentItem(was_current)
+        parent_item = item.parent() if item is not None else None
+        return None if item is None or parent_item is None else (item, parent_item)
 
-    def _file_neighbour(
-        self, section: QTreeWidgetItem, index: int, delta: int
-    ) -> int | None:
-        """The index of the nearest file row ``delta``'s way from ``index``
-        within ``section``, or None at that section's end.
+    def move_target(self, entry: Entry, delta: int) -> tuple[bool, Entry | None]:
+        """Whether ``entry`` can move ``delta`` places among its siblings, and
+        the row it would then sit in front of.
 
-        Scans rather than steps by one: a slice whose parent file isn't open
-        sits beside the files rather than under one. It is not a file, so a
-        reorder passes over it — which keeps this in step with the model, where
-        the move counts files alone. Confined to the section because that is
-        what is on screen as a list: a file cannot be reordered past a heading
-        into a group it does not belong to.
+        The keyboard's translation into the same "land in front of this" the drop
+        handler produces, so both gestures reach one model operation. Moving
+        **up** lands in front of the row it passes; moving **down** lands in front
+        of the one *after* it, which is None at the end of the group.
         """
-        step = 1 if delta > 0 else -1
-        position = index + step
-        while 0 <= position < section.childCount():
-            entry = section.child(position).data(0, Qt.ItemDataRole.UserRole)
-            if entry is not None and entry.kind is EntryKind.FILE:
-                return position
-            position += step
-        return None
+        found = self._placed(entry)
+        if found is None:
+            return False, None
+        item, parent_item = found
+        at = parent_item.indexOfChild(item) + delta
+        if not 0 <= at < parent_item.childCount():
+            return False, None
+        return True, self._step_sibling(entry, delta + (1 if delta > 0 else 0))
 
     def set_current(self, entry: Entry | None) -> None:
         previous, self._current = self._current, entry
@@ -444,36 +627,17 @@ class FileListPanel(QWidget):
             self._refresh_item(entry, item)
 
     def refresh_entry(self, entry: Entry) -> None:
-        """Re-render one entry's label (dirty marker, backfilled length, …) and
-        re-sort it if an edit moved its offset."""
+        """Re-render one entry's label — the dirty marker, a backfilled length, a
+        notice its load raised.
+
+        The row does **not** move for it. A slice re-pointed to another offset
+        stays where the user put it: the order is theirs from the moment the row
+        exists (:meth:`add_entry`), and a list that rearranged itself under an
+        edit would undo an arrangement nothing asked it to.
+        """
         item = self._items.get(entry)
         if item is not None:
             self._refresh_item(entry, item)
-            self._reorder_child(entry, item)
-
-    def _reorder_child(self, entry: Entry, item: QTreeWidgetItem) -> None:
-        """Move ``item`` back into offset order among its siblings if an offset
-        edit misplaced it. The list was sorted before the change, so only an
-        immediate neighbour can be out of order — check those and skip the
-        take/re-insert (which would disturb selection) when already in place."""
-        parent_item = item.parent()
-        if parent_item is None or entry.kind is EntryKind.FILE:
-            return  # a file keeps open order; only slices sort by offset
-        index = parent_item.indexOfChild(item)
-        offset = entry.slice_offset
-        last = parent_item.childCount() - 1
-        prev_ok = index == 0 or self._offset_of(parent_item.child(index - 1)) <= offset
-        next_ok = (
-            index == last or self._offset_of(parent_item.child(index + 1)) >= offset
-        )
-        if prev_ok and next_ok:
-            return
-        was_current = self._tree.currentItem() is item
-        with signals_blocked(self._tree):  # a take/re-insert must not re-activate
-            parent_item.takeChild(index)
-            parent_item.insertChild(self._sorted_index(parent_item, offset), item)
-            if was_current:
-                self._tree.setCurrentItem(item)
 
     # -- presentation --------------------------------------------------------
     def _container_hint(self, entry: Entry) -> str:
@@ -846,42 +1010,38 @@ class FileListPanel(QWidget):
         if entry is not None:
             self.entry_activated.emit(entry)
 
+    def _current_entry(self) -> Entry | None:
+        """The highlighted row's entry — None for nothing, a section header, or
+        a rename in flight (where every row key belongs to the editor)."""
+        item = self._tree.currentItem()
+        if item is None or self._editing is not None:
+            return None
+        return item.data(0, Qt.ItemDataRole.UserRole)
+
+    def _for_current(self, signal) -> None:  # noqa: ANN001 — a Signal to emit
+        """Fire a one-entry row signal for the highlighted row, if there is one."""
+        entry = self._current_entry()
+        if entry is not None:
+            signal.emit(entry)
+
     def _remove_current(self) -> None:
         """The Delete shortcut: request removal of the highlighted entry."""
-        item = self._tree.currentItem()
-        if item is None or self._editing is not None:  # nothing, or mid-rename
-            return
-        entry = item.data(0, Qt.ItemDataRole.UserRole)
-        if entry is not None:  # not the Palettes header
-            self.remove_requested.emit(entry)
+        self._for_current(self.remove_requested)
 
     def _move_current(self, delta: int) -> None:
-        """The Shift+Up/Down shortcut: reorder the highlighted file.
+        """The Shift+Up/Down shortcut: reorder the highlighted row.
 
-        Silent on anything else the highlight can be sitting on — a slice or
-        bookmark is ordered by its offset and a palette by registration, so there
-        is no hand order for the key to change there.
+        Every kind, unlike the file-only move this replaced: the order of the
+        whole list is the user's now, so a slice moves among its parent's
+        children and a palette among the palettes, each within the group its row
+        sits in.
         """
-        item = self._tree.currentItem()
-        if item is None or self._editing is not None:  # nothing, or mid-rename
+        entry = self._current_entry()
+        if entry is None:
             return
-        entry: Entry | None = item.data(0, Qt.ItemDataRole.UserRole)
-        if entry is None or entry.kind is not EntryKind.FILE:
-            return
-        if self._can_move(item, delta):
-            self.move_requested.emit(entry, delta)
-
-    def _can_move(self, item: QTreeWidgetItem, delta: int) -> bool:
-        """Whether ``item``'s file row has a file to trade places with.
-
-        Within its own section: a file row is a child of its content kind's
-        heading, and there is no order to swap across a heading.
-        """
-        section = item.parent()
-        if section is None:
-            return False
-        index = section.indexOfChild(item)
-        return index >= 0 and self._file_neighbour(section, index, delta) is not None
+        can_move, before = self.move_target(entry, delta)
+        if can_move:
+            self.reorder_requested.emit(entry, before)
 
     def _on_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         # A bookmark's or palette's double-click is its primary action — jump
@@ -1003,6 +1163,80 @@ class FileListPanel(QWidget):
             enabled=entry.doc is not None and entry.doc.pixel_config.write_enabled,
         )
 
+    def _add_order_actions(self, menu: QMenu, entry: Entry) -> None:
+        """Move Up / Move Down, on every kind of row.
+
+        Every row's place in the list is the user's, so every row can be moved —
+        within its own group, which is what the two are gated on. The keys go in
+        the label after a tab, which Qt renders in the shortcut column, rather
+        than being registered as the actions' shortcuts: Shift+Up/Down resize the
+        view window window-wide, and a real binding here would fire from anywhere
+        in the app. The working one is the tree's own key handling, which the
+        navigation filter already defers to while the list has focus.
+        """
+        menu.addSeparator()
+        for label, delta in (("M&ove Up\tShift+Up", -1), ("Move &Down\tShift+Down", 1)):
+            can_move, before = self.move_target(entry, delta)
+            self._entry_action(
+                menu,
+                label,
+                self.reorder_requested.emit,
+                entry,
+                before,
+                enabled=can_move,
+            )
+
+    def _add_clipboard_actions(self, menu: QMenu, entry: Entry) -> None:
+        """Cut / Copy / Paste / Duplicate, on every kind of row.
+
+        What travels is the **entry** — a reference plus the settings it is read
+        through — and never the file behind it: cutting a row takes it out of the
+        project, and duplicating one gives the project a second way in to bytes
+        that were only ever written once.
+
+        **Duplicate is for the kinds that can appear twice**, which is a slice and
+        a bookmark. A file and a palette are identified by their path
+        (:meth:`~celpix.project.workspace.Workspace.find_file`), and a second row
+        over one file would be a second document over one buffer — two sets of
+        unsaved edits with one file underneath them. Cut and Copy stay live on all
+        four, since pasting *elsewhere* is exactly what that identity permits.
+
+        The shortcuts are display-only here, like Remove's: a closed menu's action
+        never fires, so these label the keys while the working bindings are the
+        tree's own (:class:`_EntryTree`).
+        """
+        menu.addSeparator()
+        self._entry_action(
+            menu,
+            "Cu&t",
+            self.cut_requested.emit,
+            entry,
+            shortcut=QKeySequence.StandardKey.Cut,
+        )
+        self._entry_action(
+            menu,
+            "Cop&y",
+            self.copy_requested.emit,
+            entry,
+            shortcut=QKeySequence.StandardKey.Copy,
+        )
+        self._entry_action(
+            menu,
+            "&Paste",
+            self.paste_requested.emit,
+            entry,
+            enabled=clipboard.has_entries(),
+            shortcut=QKeySequence.StandardKey.Paste,
+        )
+        self._entry_action(
+            menu,
+            "Dup&licate",
+            self.duplicate_requested.emit,
+            entry,
+            enabled=entry.kind in (EntryKind.SLICE, EntryKind.BOOKMARK),
+            shortcut=DUPLICATE_KEY,
+        )
+
     def _show_menu(self, pos) -> None:
         item = self._tree.itemAt(pos)
         if item is None:
@@ -1065,31 +1299,6 @@ class FileListPanel(QWidget):
             self._add_container_info_action(menu, entry)
             self._add_write_action(menu, entry)
             menu.addSeparator()
-            # Files are the one kind in hand order (slices and bookmarks sort by
-            # offset, palettes by registration), so only they can be reordered.
-            # The key goes in the label after a tab, which Qt renders in the
-            # shortcut column, rather than being registered as the action's
-            # shortcut: Shift+Up/Down resize the view window window-wide, and a
-            # real binding here would fire from anywhere in the app. The working
-            # one is the tree's own key handling, which the navigation filter
-            # already defers to while the list has focus.
-            self._entry_action(
-                menu,
-                "Move &Up\tShift+Up",
-                self.move_requested.emit,
-                entry,
-                -1,
-                enabled=self._can_move(item, -1),
-            )
-            self._entry_action(
-                menu,
-                "Move &Down\tShift+Down",
-                self.move_requested.emit,
-                entry,
-                1,
-                enabled=self._can_move(item, 1),
-            )
-            menu.addSeparator()
         elif entry.kind is EntryKind.SLICE:
             # A slice's primary navigation action: reopen its region in the
             # parent file, decoded the slice's way, at the slice's offset.
@@ -1143,6 +1352,8 @@ class FileListPanel(QWidget):
             menu.addSeparator()
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
             menu.addSeparator()
+        self._add_order_actions(menu, entry)
+        self._add_clipboard_actions(menu, entry)
         if entry.kind in (EntryKind.FILE, EntryKind.SLICE):
             # Import is the mirror of Export ▸ As PNG…, and lands the image at
             # the start of the entry. Unlike export it needs the entry on screen

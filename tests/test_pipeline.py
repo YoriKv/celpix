@@ -883,7 +883,6 @@ def test_a_font_alphabet_merges_its_three_sources_in_one_order() -> None:
     alphabet = pipeline.load_font_alphabet(
         "ABC",
         (Glyph(0x01, "th"),),  # $01 would have been "B"
-        PipelineContext(),
         controls=[{"code": 0x02, "text": "end"}],  # $02 would have been "C"
     )
 
@@ -901,7 +900,6 @@ def test_the_base_moves_the_run_and_leaves_the_named_codes_alone() -> None:
     alphabet = pipeline.load_font_alphabet(
         "AB",
         (Glyph(0xFE, "line break", GlyphRole.BREAK),),
-        PipelineContext(),
         base=0x80,
     )
 
@@ -910,28 +908,8 @@ def test_the_base_moves_the_run_and_leaves_the_named_codes_alone() -> None:
     assert alphabet.decode([0x00]).body == "[$00]"
 
 
-def test_a_container_states_the_alphabet_only_where_the_entry_states_nothing() -> None:
-    """The one escape hatch left for a font whose numbering no table can hold.
-
-    It fills in rather than overrides: a table the user typed is their own work
-    and beats anything computed for them, and taking the computed one is a button
-    in the editor rather than something that happens behind their back.
-    """
-    from celpix.core.context import KEY_ALPHABET
-
-    ctx = PipelineContext()
-    ctx.set(KEY_ALPHABET, "00=X\n01=Y\n")
-
-    stated = pipeline.load_font_alphabet("", (), ctx)
-    assert stated.decode([0x00, 0x01]).body == "XY"
-
-    # With a run of its own, the entry wins whole — not per code.
-    own = pipeline.load_font_alphabet("A", (), ctx)
-    assert own.decode([0x00, 0x01]).body == "A[$01]"
-
-
 def test_an_empty_alphabet_is_none_rather_than_a_lookup_that_maps_nothing() -> None:
     """ "No alphabet yet" and "an alphabet that spells nothing" are different
     states, and only the first is worth telling the user about."""
-    assert pipeline.load_font_alphabet("", (), PipelineContext()) is None
-    assert pipeline.load_font_alphabet("A", (), PipelineContext()) is not None
+    assert pipeline.load_font_alphabet("", ()) is None
+    assert pipeline.load_font_alphabet("A", ()) is not None

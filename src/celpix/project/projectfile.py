@@ -165,7 +165,9 @@ _KIND_NAMES = {
 _KINDS_BY_NAME = {name: kind for kind, name in _KIND_NAMES.items()}
 
 
-def _entry_dict(entry: Entry, base_dir: str, entries: list[Entry]) -> dict[str, object]:
+def _entry_dict(
+    entry: Entry, base_dir: str | None, entries: list[Entry]
+) -> dict[str, object]:
     data: dict[str, object] = {
         "kind": _KIND_NAMES[entry.kind],
         "name": entry.name,
@@ -357,12 +359,118 @@ def _glyph_dict(glyph: Glyph) -> dict[str, object]:
     return data
 
 
-def _palette_dict(palette: PaletteSource, base_dir: str) -> dict[str, object]:
+def _palette_dict(palette: PaletteSource, base_dir: str | None) -> dict[str, object]:
     if palette.colors is not None:
         return {"colors": [f"#{color & 0xFFFFFFFF:08X}" for color in palette.colors]}
     if palette.path is not None:
         return {"path": _store_path(palette.path, base_dir), "offset": palette.offset}
     return {"offset": palette.offset}
+
+
+# -- the clipboard form (docs/design/project-format.md §6) -----------------
+#: Bumped only on an incompatible change to the payload below. A copy taken by
+#: another build reads as "nothing to paste" rather than as garbage entries.
+CLIPBOARD_VERSION = 1
+
+
+@dataclass(frozen=True)
+class CopiedEntry:
+    """One entry off the clipboard, plus the two positions it was written with.
+
+    ``source_index`` is where it sat in the list it was copied from, and
+    ``tile_source`` / ``tile_source_index`` its tile binding and the position
+    that binding named there (``None`` / ``-1`` for a map that is unbound, and
+    for everything that is not a map).
+
+    **Neither number is a reference to a live list**, and reading one as though
+    it were is the mistake the whole clipboard path is arranged to avoid: the
+    rows are the user's to rearrange, so a position recorded when a copy was
+    taken names something else entirely by the time it is pasted. They are a
+    **join between the records of one payload** — both written in a single
+    :func:`entries_payload` call against one snapshot — so all they can answer is
+    "was the bank copied along with the map?". A bank that was *not* copied is
+    matched by identity instead, outside this file, where the object still exists
+    (:data:`~celpix.ui.clipboard._COPIED_BINDINGS`).
+
+    The binding is handed back **beside** the entry rather than on it for the
+    reason :func:`_bind_tile_sources` leaves an unresolvable one at ``None``: a
+    :class:`~celpix.project.workspace.TileSource` that says it is bound and names
+    no entry is a state nothing downstream expects.
+    """
+
+    entry: Entry
+    source_index: int
+    tile_source: TileSource | None
+    tile_source_index: int
+
+
+def entries_payload(
+    entries: list[Entry], all_entries: list[Entry], session: str
+) -> dict[str, object]:
+    """``entries`` as a clipboard payload — the project form, absolute-pathed.
+
+    Deliberately the *same* per-entry shape a project file holds: a copied entry
+    is a copied reference plus its settings, which is exactly what
+    :func:`_entry_dict` already states, and one writer means a paste can never
+    carry less than a save does. What differs is only what a position can be
+    resolved against, which is what ``session`` and the two indices below are
+    for.
+
+    ``session`` is a token identifying the running editor, and what it buys is
+    named on :class:`CopiedEntry`: it says the entry objects this process
+    remembered alongside the payload are the ones this payload means. A paste
+    into another process has only the payload, and resolves bindings no further
+    than the copy itself carries.
+    """
+    positions = {id(entry): i for i, entry in enumerate(all_entries)}
+    written = []
+    for entry in entries:
+        data = _entry_dict(entry, None, all_entries)
+        data["source_index"] = positions.get(id(entry), -1)
+        written.append(data)
+    return {
+        "version": CLIPBOARD_VERSION,
+        "session": session,
+        "entries": written,
+    }
+
+
+def entries_from_payload(raw: object) -> list[CopiedEntry]:
+    """A clipboard payload back into entries — ``[]`` for anything unusable.
+
+    Tolerant per entry exactly as :func:`load_project` is: one unreadable record
+    is dropped and the rest of the paste still lands. The whole payload is
+    refused only where it is not ours to read at all — the wrong shape, or a
+    version this build has no meaning for.
+    """
+    if not isinstance(raw, dict) or raw.get("version") != CLIPBOARD_VERSION:
+        return []
+    records = raw.get("entries")
+    if not isinstance(records, list):
+        return []
+    out = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        try:
+            entry = _entry_from_dict(record, "")
+        except Exception:  # noqa: BLE001 — a garbage entry degrades, never aborts
+            continue
+        binding = _tile_source(record)
+        out.append(
+            CopiedEntry(
+                entry=entry,
+                source_index=_int(record.get("source_index"), -1),
+                tile_source=binding[0] if binding is not None else None,
+                tile_source_index=binding[1] if binding is not None else -1,
+            )
+        )
+    return out
+
+
+def payload_session(raw: object) -> str:
+    """The session token a payload was written by — ``""`` when it has none."""
+    return _str(raw.get("session"), "") if isinstance(raw, dict) else ""
 
 
 # -- loading ---------------------------------------------------------------
@@ -763,10 +871,18 @@ def _plugin_id(value: object, default: str) -> str:
 
 
 # -- path handling (docs/design/project-format.md §3) ----------------------
-def _store_path(target: str, base_dir: str) -> str:
+def _store_path(target: str, base_dir: str | None) -> str:
     """``target`` as stored in the project: relative to the project file with
-    POSIX separators when on the same drive/tree, absolute otherwise."""
+    POSIX separators when on the same drive/tree, absolute otherwise.
+
+    ``base_dir`` is ``None`` for the **clipboard** form of an entry
+    (:func:`entries_payload`), which has no file to be relative to: a copy has to
+    survive being pasted into a project saved somewhere else entirely, and only
+    an absolute path means the same thing in both.
+    """
     target = abspath(target)
+    if base_dir is None:
+        return target.replace(sep, "/")
     try:
         stored = relpath(target, base_dir)
     except ValueError:  # e.g. another drive letter on Windows — keep absolute

@@ -299,12 +299,24 @@ def test_a_panel_cell_covers_one_tile_by_default() -> None:
     """A panel word is one 8x8 tile: a 16x16 unit is four adjacent words, so a
     preset that expanded each word into a metatile would draw every unit four
     times over. That holds for all 1,172 surveyed panels, including the 80 whose
-    header byte claims 16x16 (``scgcad-formats.md`` §3.1)."""
+    header byte claims 16x16 (``scgcad-formats.md`` §3.1).
+
+    The console's own 16x16 BG reading is the opposite case and the reason the
+    two are asserted together: there one word *does* stand for four tiles, and
+    it is a separate preset because nothing in the bytes says which reading is
+    meant."""
     registry = default_registry()
     codec = TilemapCodec()
     assert codec.cell_tiles(_params(registry, PANEL)) == (1, 1)
     assert codec.cell_tiles(_params(registry, SNES_BG)) == (1, 1)
     assert codec.bytes_per_cell(_params(registry, SNES_BG)) == 2
+    big = _params(registry, "preset.tilemap.snes-bg-16x16")
+    assert codec.cell_tiles(big) == (2, 2)
+    # Same word, same width — only the tiles one cell covers differ.
+    assert codec.bytes_per_cell(big) == 2
+    assert codec.decode(b"\x34\x12", big, PipelineContext()) == codec.decode(
+        b"\x34\x12", _params(registry, SNES_BG), PipelineContext()
+    )
 
 
 def test_every_shipped_tilemap_preset_resolves_to_a_working_engine() -> None:

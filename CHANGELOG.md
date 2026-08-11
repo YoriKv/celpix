@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.5.4 - unreleased
+
+- Reorder slices, as well as cut/copy/paste/duplicate
+- Added snes 16x16 tilemap format
+- Lots of fontmap cleanup
+- Lots of other various fixes and cleanups
+
 ## v0.5.3 - 2026-08-10
 
 - **Subsprites window** (View -> Subsprites): separate window for displaying

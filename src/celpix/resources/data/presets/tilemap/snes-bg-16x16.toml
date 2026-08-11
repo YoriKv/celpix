@@ -1,0 +1,33 @@
+# SNES BG map entry read as 16x16 tiles — the same 16-bit word as `snes-bg`,
+# with each cell drawing four 8x8 tiles instead of one. The size is a BGMODE
+# register bit and not a bit of the entry, so nothing in the file distinguishes
+# the two readings: it is a choice of preset, made from what the map is for.
+#
+# The four tiles are `N`, `N+1`, `N+0x10`, `N+0x11` — VRAM behaves as a
+# 16-tile-wide array, which the engine steps through with `VRAM_ROW_STRIDE`
+# (docs/graphics-formats-reference/snes-hardware-notes.md §5). The cell's
+# palette row, priority and both flips apply to the whole 16x16 unit, and a flip
+# reverses the tiles' order as well as mirroring each of them.
+#
+# Not to be confused with a *panel* tile table, which also draws 16x16 units and
+# does it the other way round: there one word is one 8x8 tile and the unit is
+# four adjacent words (docs/design/terminology.md, "metatile" vs "block").
+id = "preset.tilemap.snes-bg-16x16"
+name = "SNES BG map (16-bit, 16x16 tiles)"
+engine_id = "codec.tilemap.packed"
+category = "Nintendo"
+
+[params]
+bytes = 2
+endian = "little"
+fields = "vhop ppii iiii iiii"
+# Four 8x8 tiles per cell. Everything else about the entry is unchanged, which
+# is the point of a separate preset rather than a control: the bytes are the
+# same bytes and only the reading differs.
+cell_tiles = [2, 2]
+# A screen is 32x32 *entries* whatever size its tiles are, so the assembly is
+# `snes-bg`'s unchanged — 1, 2 or 4 screens laid H-then-V for the 32x32,
+# 64x32 / 32x64 and 64x64 backgrounds. Only the pixels each entry covers grew.
+page_columns = 32
+page_rows = 32
+page_counts = [1, 2, 4]

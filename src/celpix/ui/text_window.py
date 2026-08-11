@@ -62,12 +62,12 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QCheckBox,
-    QHBoxLayout,
+    QGridLayout,
     QLabel,
     QMenu,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
+    QSizePolicy,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -90,10 +90,10 @@ from celpix.ui.widgets import (
 from celpix.ui.window_layout import WindowLayout
 
 # How many command buttons the insert row lays out before it stops. A format with
-# a hundred named commands would otherwise build a hundred buttons for a row
-# nobody can scan; past this every one is still typeable as its own hex, which is
-# the form the text uses anyway. Chosen to comfortably hold a full control-code
-# table, which is what the row is really for.
+# a hundred named commands would otherwise build a hundred buttons, and the grid
+# they fold into would take the window over; past this every one is still typeable
+# as its own hex, which is the form the text uses anyway. Chosen to comfortably
+# hold a full control-code table, which is what the row is really for.
 MAX_COMMAND_BUTTONS = 48
 
 # QSettings key for the wrap switch. A local preference like the grid's
@@ -111,6 +111,82 @@ WORD_WRAP_KEY = "view/text_word_wrap"
 # dangerous should be a thing you turned on, not a thing a session last week left
 # on: the cost of it being wrong is text pushed off the end, and the cost of
 # re-ticking a box is one click.
+
+
+class _CommandGrid(QWidget):
+    """The insert row, folded to the window's width.
+
+    A grid rather than a strip that scrolls sideways: the commands are the
+    format's whole vocabulary for punctuating this string, and one that has
+    scrolled out of sight is one the user has to go hunting for — a hidden name
+    is no better than an unlisted one. So every button is on screen at once and
+    the window grows a line at a time instead.
+
+    Columns are uniform and as wide as the widest caption needs, which keeps a
+    control table reading as a table; how many of them fit is the width divided
+    by that, recomputed as the window is dragged. The buttons stretch to fill,
+    so the last row of a short list lines up with the ones above it rather than
+    ending in a ragged edge.
+    """
+
+    def __init__(self, spacing: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(spacing)
+        self._spacing = spacing
+        self._buttons: list[QPushButton] = []
+        self._columns = 0
+        # Vertically Minimum: the height is whatever the rows come to, and the
+        # text field above keeps the rest. Nothing here is worth a pixel the
+        # string could have had.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+
+    @property
+    def layout_(self) -> QGridLayout:
+        """The grid itself — the buttons in the order they were given."""
+        return self._grid
+
+    def set_buttons(self, buttons: list[QPushButton]) -> None:
+        for button in self._buttons:
+            self._grid.removeWidget(button)
+            button.setParent(None)
+            button.deleteLater()
+        self._buttons = buttons
+        for button in buttons:
+            # Expanding, so a column wider than the caption is filled rather than
+            # leaving the button floating in the middle of its cell.
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._columns = 0  # nothing is placed yet, whatever the count was before
+        self._reflow()
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001, N802 — Qt override
+        super().resizeEvent(event)
+        self._reflow()
+
+    def _reflow(self) -> None:
+        """Lay the buttons out in as many columns as the current width holds."""
+        columns = self._fits()
+        if columns == self._columns:
+            return
+        self._columns = columns
+        # Taken out before being put back: adding a widget the layout already
+        # manages to a second cell leaves it in both, and the row it came from
+        # keeps its old height.
+        for button in self._buttons:
+            self._grid.removeWidget(button)
+        for at, button in enumerate(self._buttons):
+            self._grid.addWidget(button, *divmod(at, columns))
+        for column in range(self._grid.columnCount()):
+            self._grid.setColumnStretch(column, 1 if column < columns else 0)
+
+    def _fits(self) -> int:
+        """How many uniform columns the width holds — at least one, at most all."""
+        if not self._buttons:
+            return 1
+        widest = max(button.sizeHint().width() for button in self._buttons)
+        step = widest + self._spacing
+        return max(1, min(len(self._buttons), (self.width() + self._spacing) // step))
 
 
 class TextWindow(QWidget):
@@ -163,16 +239,8 @@ class TextWindow(QWidget):
         self._edit.cursorPositionChanged.connect(self._on_caret)
         self._edit.left.connect(self._on_focus_out)
 
-        self._guide_row = QHBoxLayout()
-        self._guide_row.setContentsMargins(0, 0, 0, 0)
-        self._guide_row.setSpacing(3)
-        guide_holder = QWidget()
-        guide_holder.setLayout(self._guide_row)
-        self._guide = QScrollArea()
-        self._guide.setWidget(guide_holder)
-        self._guide.setWidgetResizable(True)
-        self._guide.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._guide.setFixedHeight(34)
+        self._guide = _CommandGrid(3, self)
+        self._guide_row = self._guide.layout_
 
         self._wrap = QCheckBox("Wrap")
         self._wrap.setToolTip(
@@ -635,10 +703,7 @@ class TextWindow(QWidget):
         if wanted == getattr(self, "_commands", None):
             return
         self._commands = wanted
-        while self._guide_row.count():
-            item = self._guide_row.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
+        buttons = []
         for name, code, description in wanted:
             button = QPushButton(name)
             # The tooltip carries what lands in the string, then whatever the
@@ -650,8 +715,8 @@ class TextWindow(QWidget):
             )
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.clicked.connect(lambda _checked=False, text=code: self._insert(text))
-            self._guide_row.addWidget(button)
-        self._guide_row.addStretch(1)
+            buttons.append(button)
+        self._guide.set_buttons(buttons)
 
     def undo(self) -> None:
         """Ctrl+Z — take back the draft if there is one, the session step if not.

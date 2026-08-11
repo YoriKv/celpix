@@ -95,6 +95,37 @@ def open_as_answer(monkeypatch):
     return answer
 
 
+@pytest.fixture(autouse=True)
+def confirmations(monkeypatch):
+    """Answer ``MainWindow._confirm`` instead of showing it, for every test.
+
+    The third ``exec()`` modal on the same rule as ``captured_alerts``, and the
+    one that guards a gesture rather than reports on one. Defaults to **Cancel**,
+    like ``open_as_answer``: a prompt a test never arranged for must not silently
+    become a Yes and take the action with it. A test that wants it answered
+    assigns to ``.yes``, and every question asked is appended to ``.asked`` so it
+    can assert the user was the one who decided.
+    """
+    module = sys.modules.get("celpix.ui.main_window")
+    if module is None:
+        return None
+
+    class Answer:
+        yes = False
+
+        def __init__(self):
+            self.asked: list[str] = []
+
+    answer = Answer()
+
+    def confirm(_self, message, **_kwargs):
+        answer.asked.append(message)
+        return answer.yes
+
+    monkeypatch.setattr(module.MainWindow, "_confirm", confirm, raising=False)
+    return answer
+
+
 _settings_isolated = False
 
 

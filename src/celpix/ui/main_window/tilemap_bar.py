@@ -650,6 +650,9 @@ class TilemapBarMixin:
             source = TileSource(base_index=self._tile_base.value())
             text = "unbind tiles"
         else:
+            if not self._settle_font_declaration(entry, data):
+                self._refresh_tilemap_bar()  # cancelled: put the combo back
+                return
             source = TileSource(
                 mode=TileMode.ENTRY,
                 entry=data,
@@ -657,6 +660,42 @@ class TilemapBarMixin:
             )
             text = f"bind tiles to {self._tile_binding.currentText()}"
         self._rebind_tiles(entry, source, text)
+
+    def _settle_font_declaration(self, entry: Entry, bound: Entry) -> bool:
+        """Offer to declare ``bound`` a font where ``entry`` is a fontmap.
+
+        A string's codes only mean anything through a sheet ticked **Use as
+        Font**, and the tick lives on the *sheet* — so binding one is the moment
+        the user has said which sheet they mean, and the only moment the question
+        can be asked without them having to go and find the other entry to answer
+        it. Declining it is a real answer (the bank may be art bound to a map
+        that merely reads as text), so the binding is called off rather than
+        landed unread: a fontmap drawn through an undeclared sheet shows hex and
+        nothing on this bar explains why.
+
+        True where the caller may go ahead. **Two undo steps, not one**, the
+        shape a bind from file already has: the declaration is pushed first so
+        the map reloads with the alphabet, and one Ctrl+Z takes the binding back
+        while a second undeclares the font.
+        """
+        # The *format's* answer rather than the loaded document's, so it holds on
+        # the from-file route as well - opening the sheet activates another entry
+        # and this one may not be the one on screen by the time it is asked. Only
+        # a pixels entry can be a font: a stamp layout's chained tilemap has no
+        # tiles of its own to spell.
+        if not self._tilemap_is_fontmap(entry) or bound.use_as_font:
+            return True
+        if bound.content_kind is not ContentKind.PIXELS:
+            return True
+        if not self._confirm(
+            f"{entry.name} reads its cells as text, and {bound.name} is not "
+            "marked as a font.\n\nMark it as one so its tiles can be spelled?",
+            title="celPix - use as font",
+            accept="Use as Font",
+        ):
+            return False
+        self._declare_use_as_font(bound)
+        return True
 
     def _bind_tiles_from_file(self, entry: Entry) -> None:
         """Open a file of tiles as an entry, then bind this map to it.
@@ -702,6 +741,12 @@ class TilemapBarMixin:
             # that draws through a tilemap itself and so has no tiles to lend. It
             # stays open, since the user asked for it, but the binding is left
             # alone rather than pointed somewhere useless.
+            self._activate_entry(entry)
+            self._refresh_tilemap_bar()
+            return
+        if not self._settle_font_declaration(entry, bound):
+            # Cancelled. The file stays open - it is the user's own open and the
+            # second undo step never existed - but the map is left where it was.
             self._activate_entry(entry)
             self._refresh_tilemap_bar()
             return

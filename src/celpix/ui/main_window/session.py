@@ -380,7 +380,7 @@ class SessionMixin:
             sprite_size_pair=self._size_pair_for(entry, loaded.size_pair),
             cells_carry_palette_rows=loaded.palette_rows,
             text_layout=self._tilemap_is_fontmap(entry),
-            font_alphabet=self._font_alphabet_for(entry, tiles, loaded.cell_bytes),
+            font_alphabet=self._font_alphabet_for(entry, loaded.cell_bytes),
         )
         self._apply_restored_state(entry)
         self._apply_tilemap_columns(entry, restored=restored)
@@ -609,7 +609,7 @@ class SessionMixin:
         ask = getattr(engine, "has_line_flag", None)
         return bool(ask is not None and ask(preset.params))
 
-    def _font_alphabet_for(self, entry: Entry, tiles: _BoundTiles, cell_bytes: int):
+    def _font_alphabet_for(self, entry: Entry, cell_bytes: int):
         """The lookup ``entry``'s codes read through — its font's, plus its own.
 
         The halves meet here because this is the only place that holds both: the
@@ -624,7 +624,9 @@ class SessionMixin:
         Read only from a sheet that says it is a font — **Use as Font**
         (:attr:`~celpix.project.workspace.Entry.use_as_font`). Unticking keeps the
         table, since it is the user's work, so reading it anyway would leave the
-        tick meaning nothing.
+        tick meaning nothing. That is the whole of the gate, which is why the
+        entry's own four fields are the only source of a glyph table: anything
+        filled in from the file behind them would be read with the tick off.
 
         ``cell_bytes`` sets how wide an unmapped code prints, so a one-byte
         stream says ``[$1F]`` and a two-byte one ``[$FFFE]``. It is the stream's
@@ -639,7 +641,6 @@ class SessionMixin:
         return pipeline.load_font_alphabet(
             font.font_chars if font is not None else "",
             font.font_codes if font is not None else (),
-            tiles.ctx,
             controls=controls,
             code_digits=max(1, cell_bytes) * 2,
             base=font.font_base if font is not None else 0,

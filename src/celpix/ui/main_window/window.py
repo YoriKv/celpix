@@ -89,6 +89,7 @@ from celpix.ui.main_window.clipboard_ops import ClipboardOpsMixin
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
 from celpix.ui.main_window.entries import EntriesMixin
+from celpix.ui.main_window.entry_clipboard import EntryClipboardMixin
 from celpix.ui.main_window.font_alphabet import FontAlphabetMixin
 from celpix.ui.main_window.history import HistoryMixin
 from celpix.ui.main_window.interpretation import (
@@ -126,8 +127,8 @@ from celpix.ui.subsprite_window import SubspriteWindow
 from celpix.ui.text_window import TextWindow
 from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
-    MoveEntryCommand,
     RenameEntryCommand,
+    ReorderEntryCommand,
 )
 from celpix.ui.widgets import (
     counted,
@@ -178,6 +179,7 @@ class MainWindow(
     RenderingMixin,
     ViewMenuMixin,
     EntriesMixin,
+    EntryClipboardMixin,
     WritingMixin,
     TransferMixin,
     CompressionMixin,
@@ -413,6 +415,11 @@ class MainWindow(
         viewport_palette.setColor(QPalette.ColorRole.Window, CANVAS_BACKGROUND)
         viewport.setPalette(viewport_palette)
         viewport.setAutoFillBackground(True)
+        # ...and the surround answers the canvas's gestures, like the sheet's and
+        # the frame's do: the grey is the canvas as far as a user is concerned,
+        # and it is exactly where the pointer sits when a small picture is the one
+        # wanting a zoom *in*.
+        self._canvas.claim_background(scroll)
 
         # A file-position scrollbar: its range spans the whole file (in tiles), so
         # dragging jumps far through a large file at once. It drives the same offset
@@ -512,7 +519,11 @@ class MainWindow(
         self._files_panel = FileListPanel(self._registry)
         self._files_panel.entry_activated.connect(self._activate_entry)
         self._files_panel.remove_requested.connect(self._remove_entry)
-        self._files_panel.move_requested.connect(self._move_entry)
+        self._files_panel.reorder_requested.connect(self._reorder_entry)
+        self._files_panel.copy_requested.connect(self._copy_entry)
+        self._files_panel.cut_requested.connect(self._cut_entry)
+        self._files_panel.paste_requested.connect(self._paste_entries)
+        self._files_panel.duplicate_requested.connect(self._duplicate_entry)
         self._files_panel.write_requested.connect(self._write_entry_checked)
         self._files_panel.export_png_requested.connect(self._export_png)
         self._files_panel.export_raw_requested.connect(self._export_raw)
@@ -556,8 +567,37 @@ class MainWindow(
         ws.on_reset.append(self._forget_all_visits)
 
     def _on_entry_added(self, entry: Entry) -> None:
-        # The panel nests a slice under its parent file's item when it's open.
-        self._files_panel.add_entry(entry, self._workspace.parent_of(entry))
+        # The panel nests a slice under its parent file's item when it's open,
+        # and takes its position from the list rather than deriving one: the
+        # order of the rows is the user's (they drag them), so the workspace is
+        # the only thing that knows it.
+        parent = self._workspace.parent_of(entry)
+        self._files_panel.add_entry(entry, parent, self._next_row(entry, parent))
+
+    def _next_row(self, entry: Entry, parent: Entry | None) -> Entry | None:
+        """The row ``entry``'s must go in front of, read out of the workspace.
+
+        The panel groups rows two ways at once — nested under the file they cut
+        into, and gathered under a heading by what they hold — so "the next
+        entry in the list" is not by itself the next *row*. The group is
+        whichever of the two this entry belongs to, and the answer is the first
+        later entry in it. ``None`` (append) for the last of its group, which is
+        every ordinary open and every new slice carved past the existing ones.
+        """
+        entries = self._workspace.entries
+        later = entries[entries.index(entry) + 1 :]
+        if parent is not None:
+            siblings = self._workspace.children_of(parent)
+            return next((e for e in later if e in siblings), None)
+        return next(
+            (
+                e
+                for e in later
+                if self._workspace.parent_of(e) is None
+                and e.content_kind is entry.content_kind
+            ),
+            None,
+        )
 
     # -- the undo stack ------------------------------------------------------
     @contextmanager
@@ -629,15 +669,26 @@ class MainWindow(
         if entry is self._workspace.current:
             self._refresh_window_title()
 
-    def _move_entry(self, entry: Entry, delta: int) -> None:
-        """Reorder a file in the list, one place per gesture (undoable)."""
-        if self._applying_undo or not self._workspace.can_move_file(entry, delta):
-            return
-        self._push_command(MoveEntryCommand(self, entry, delta))
+    def _reorder_entry(self, entry: Entry, before: Entry | None) -> None:
+        """Move a row so it sits in front of ``before`` — a drop, or Shift+Up/Down.
 
-    def _apply_move_entry(self, entry: Entry, delta: int) -> None:
-        if self._workspace.move_file(entry, delta):
-            self._files_panel.move_entry(entry, delta)
+        Where it came *from* is asked of the panel rather than of the workspace,
+        and that is the point of asking at all: the list is flat and the rows are
+        grouped, so the neighbour a row has to be put back in front of is its
+        neighbour **on screen**. Both directions of the command then say the same
+        kind of thing, and the two halves of the reorder cannot disagree about
+        what "back" means.
+        """
+        if self._applying_undo:
+            return
+        was = self._files_panel.next_sibling(entry)
+        if was is before:
+            return  # already there
+        self._push_command(ReorderEntryCommand(self, entry, before=was, after=before))
+
+    def _apply_reorder_entry(self, entry: Entry, before: Entry | None) -> None:
+        if self._workspace.reorder(entry, before):
+            self._files_panel.move_item(entry, before)
 
     def _sync_write_action(self) -> None:
         """Arm File ▸ Write for whatever the current view can actually save.
@@ -753,12 +804,17 @@ class MainWindow(
 
     # -- list commands apply through here ---------------------------------------
     def _apply_add_entry(self, entry: Entry) -> None:
-        """Append ``entry`` to the workspace and show it - the application
+        """Add ``entry`` to the workspace and show it - the application
         path for open-file/new-slice/new-bookmark/add-palette commands and
         their redos. A bookmark or palette only lands in the list; previewing
         one in the dock is the opening gesture's call, not the add's
-        (:meth:`_open_palette_data`)."""
-        self._workspace.insert(entry, len(self._workspace.entries))
+        (:meth:`_open_palette_data`).
+
+        The end of the list, except a new slice or bookmark, which lands in
+        offset order among its parent's children — where the workspace says, so
+        that the one rule about it lives with the list it is about
+        (:meth:`~celpix.project.workspace.Workspace.add_index_for`)."""
+        self._workspace.insert(entry, self._workspace.add_index_for(entry))
         self._sync_locate_action()
         if entry.kind in (EntryKind.FILE, EntryKind.SLICE):
             self._activate_entry(entry)
@@ -1131,6 +1187,42 @@ class MainWindow(
         if detail:
             box.setDetailedText(detail)
         box.exec()
+
+    def _confirm(
+        self,
+        message: str,
+        *,
+        title: str = "celPix",
+        accept: str = "OK",
+        warn: bool = False,
+    ) -> bool:
+        """Ask before doing it; True where the user said go ahead.
+
+        The counterpart of :meth:`_alert` and the single surface for its kind:
+        a gesture whose consequence reaches past what the user is looking at -
+        one control re-declaring a *different* entry, an untick that discards a
+        table - stops here first. Cancel is the answer to a dialog dismissed any
+        other way, so a stray Escape can only ever leave things as they were.
+
+        ``accept`` labels the button that does the thing, because "OK" says
+        nothing about what is about to happen. ``warn`` marks it as the lossy
+        answer and puts the focus ring on Cancel, so Enter hit blind keeps the
+        work.
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning if warn else QMessageBox.Icon.Question)
+        box.setWindowTitle(title)
+        box.setText(message)
+        role = (
+            QMessageBox.ButtonRole.DestructiveRole
+            if warn
+            else QMessageBox.ButtonRole.AcceptRole
+        )
+        go = box.addButton(accept, role)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel if warn else go)
+        box.exec()
+        return box.clickedButton() is go
 
     def _report(self, exc: PipelineError) -> None:
         """Surface a pipeline failure. Thin wrapper over :meth:`_alert` kept for

@@ -173,9 +173,9 @@ class TextMixin:
                 Badge(
                     "no alphabet",
                     "Nothing says what this font's codes mean, so every\n"
-                    "one reads as hex. Pick an alphabet for the entry\n"
-                    "supplying the tiles - the Alphabet box on the bar\n"
-                    "below the canvas.",
+                    "one reads as hex. Tick Use as Font on the entry\n"
+                    "supplying the tiles, then spell its sheet in the\n"
+                    "Font Alphabet window.",
                     warning=True,
                 ),
             )

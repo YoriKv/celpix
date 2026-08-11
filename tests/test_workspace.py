@@ -31,6 +31,7 @@ from celpix.project.workspace import (
     export_basename,
     exportable_entries,
     missing_paths,
+    new_slice,
     palette_source_for,
     path_is_palette_only,
     pixel_config_for,
@@ -688,47 +689,71 @@ def test_saving_a_shared_chip_invalidates_the_entries_reading_it(tmp_path) -> No
     assert other.doc is None
 
 
-def test_move_file_carries_its_children_and_lands_between_files(tmp_path) -> None:
+def test_reordering_a_file_carries_its_children_with_it(tmp_path) -> None:
     # Reordering a file is a block move: its slices and bookmarks are matched by
     # path rather than position, but the panel can only nest them under a parent
-    # that precedes them, so they travel with it. And the block is positioned
-    # relative to the file that follows, not the neighbour it passes - a
-    # neighbour's own children sit somewhere after it, so aiming past the last of
-    # them would jump the block over whatever file came next.
+    # that precedes them, so they travel with it. The block lands in front of the
+    # named row and the row's *own* children stay behind it, which is what stops
+    # the two groups from interleaving.
     ws = Workspace()
     a = ws.open_file(str(tmp_path / "a.sfc"))
     b = ws.open_file(str(tmp_path / "b.sfc"))
     c = ws.open_file(str(tmp_path / "c.sfc"))
     a_slice = ws.add_slice(str(tmp_path / "a.sfc"), "cut", 0, 64)
     b_slice = ws.add_slice(str(tmp_path / "b.sfc"), "cut", 0, 64)
-    assert ws.entries == [a, b, c, a_slice, b_slice]
+    assert ws.entries == [a, a_slice, b, b_slice, c]
 
-    assert ws.move_file(a, 1)
-    # One place only: a sits between b and c, and b keeps its own slice after it.
-    assert ws.entries == [b, a, a_slice, c, b_slice]
+    assert ws.reorder(a, c)  # a goes between b and c
+    assert ws.entries == [b, b_slice, a, a_slice, c]
     assert ws.children_of(a) == [a_slice]
 
-    assert ws.move_file(a, -1)  # a one-step move is its own inverse
-    assert ws.entries == [a, a_slice, b, c, b_slice]
+    assert ws.reorder(a, b)  # and back, which is the same operation
+    assert ws.entries == [a, a_slice, b, b_slice, c]
 
-    assert not ws.move_file(a, -1)  # already first
-    assert not ws.move_file(c, 1)  # already last
-    assert not ws.move_file(a_slice, -1)  # slices sort by offset, not by hand
-    assert ws.entries == [a, a_slice, b, c, b_slice]
+    assert ws.reorder(a, None)  # last: the group goes to the end of the list
+    assert ws.entries == [b, b_slice, c, a, a_slice]
+
+    assert not ws.reorder(a, a_slice)  # a file cannot land inside its own group
+    assert not ws.reorder(a, None)  # already there
 
 
-def test_can_move_file_counts_only_files(tmp_path) -> None:
-    # Palettes and bookmarks share the flat list but not the hand order, so a
-    # file with only those between it and the end of the list is still last.
+def test_reordering_a_child_stays_inside_its_parents_group(tmp_path) -> None:
+    # "Last" for a slice means after its last sibling, not at the end of the
+    # list: a child that drifted past unrelated entries would still be its
+    # parent's child but would break the contiguity a file move relies on.
     ws = Workspace()
     rom = ws.open_file(str(tmp_path / "rom.sfc"))
-    ws.add_palette(str(tmp_path / "p.pal"), None)
-    assert not ws.can_move_file(rom, 1)
-    assert not ws.can_move_file(rom, -1)
-
+    first = ws.add_slice(str(tmp_path / "rom.sfc"), "first", 0, 64)
+    second = ws.add_slice(str(tmp_path / "rom.sfc"), "second", 0x40, 64)
     other = ws.open_file(str(tmp_path / "other.sfc"))
-    assert ws.can_move_file(rom, 1)
-    assert ws.can_move_file(other, -1)
+    assert ws.entries == [rom, first, second, other]
+
+    assert ws.reorder(first, None)
+    assert ws.entries == [rom, second, first, other]
+    assert ws.reorder(first, second)
+    assert ws.entries == [rom, first, second, other]
+
+
+def test_a_new_slice_is_seeded_into_offset_order(tmp_path) -> None:
+    # The offsets decide where a freshly carved slice *arrives* and nothing more:
+    # a list nobody has arranged reads low-to-high, and from then on the order is
+    # the user's. Only children of an open file are seeded - anything else, and a
+    # child whose parent is closed, goes to the end.
+    ws = Workspace()
+    rom = ws.open_file(str(tmp_path / "rom.sfc"))
+    low = ws.add_slice(str(tmp_path / "rom.sfc"), "low", 0x100, 64)
+    high = ws.add_slice(str(tmp_path / "rom.sfc"), "high", 0x900, 64)
+
+    middle = new_slice(str(tmp_path / "rom.sfc"), "middle", 0x500, 64)
+    assert ws.add_index_for(middle) == ws.entries.index(high)
+
+    later = new_slice(str(tmp_path / "rom.sfc"), "later", 0xF00, 64)
+    assert ws.add_index_for(later) == len(ws.entries)
+
+    # Not re-sorted afterwards: an offset edit leaves the row where it was put.
+    low.slice_offset = 0xFFF
+    assert ws.entries == [rom, low, high]
+    assert ws.add_index_for(ws.open_file(str(tmp_path / "b.sfc"))) == len(ws.entries)
 
 
 def test_a_missing_plugin_opens_view_only_and_names_itself(tmp_path) -> None:

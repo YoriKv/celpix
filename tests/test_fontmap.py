@@ -225,11 +225,13 @@ def test_a_named_code_beats_the_run_and_does_not_move_with_it(qtbot, tmp_path) -
 
 
 def test_an_unticked_font_is_not_read(qtbot, tmp_path) -> None:
-    """Use as Font is the declaration, and unticking keeps the table.
+    """Use as Font is the declaration, and the apply path honours it.
 
-    The table is the user's own work and there is no reading of unticking a box
-    that means "and throw that away" - so it stays, and what the tick decides is
-    whether it is read.
+    Asked of the apply rather than of the tick's own gesture, because this is the
+    state an **undo** puts back: the gesture deletes the table (see
+    ``test_unticking_use_as_font_deletes_the_table_and_undo_brings_it_back``),
+    while the command lands whatever state it is handed, unticked and spelled
+    included, and the codes must read as hex either way.
     """
     window, bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
     assert entry.doc.text.body == "CAB"
@@ -239,7 +241,99 @@ def test_an_unticked_font_is_not_read(qtbot, tmp_path) -> None:
     window._apply_font_alphabet(bank, (False, 0, UPPER, ()))
 
     assert entry.doc.text.body == "[$02][$00][$01]"
-    assert bank.font_chars == UPPER  # kept, not cleared
+
+
+def test_an_undeclared_sheet_has_no_alphabet_to_edit(qtbot, tmp_path) -> None:
+    """The editor is gated on the tick, both ways in.
+
+    An editor over an unticked sheet would be a table nothing reads: what the
+    user needs told is *why* the codes are hex, and that is the text window's
+    badge. So the window is not offered on either route - over the fontmap or
+    over the sheet itself.
+    """
+    window, bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
+    bank.use_as_font = False
+
+    window._activate_entry(entry)
+    window._refresh_view()
+    assert window._font_entry() is None
+    assert not window._font_alphabet_available()
+    assert not window._font_alphabet_action.isEnabled()
+    assert not window._font_alphabet.isVisible()
+
+    window._activate_entry(bank)
+    window._refresh_view()
+    assert window._font_entry() is None
+
+
+def _binding_gesture(qtbot, tmp_path, codes):
+    """A fontmap and an undeclared sheet, with the Tiles combo about to be set.
+
+    The bind goes through the combo rather than through ``_rebind_tiles``,
+    because what is under test is the *gesture* - the prompt hangs off the one
+    moment the user has said which sheet they mean.
+    """
+    from celpix.core.capabilities import ContentKind
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.entries[0]
+    bank.font_chars = UPPER  # typed up, but never declared
+
+    path = tmp_path / "text.bin"
+    path.write_bytes(bytes(codes))
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    entry = window._workspace.current
+    entry.tilemap_preset_id = "preset.tilemap.text-8bit"
+    window._refresh_tilemap_bar()
+    combo = window._tile_binding
+    combo.setCurrentIndex(combo.findText(bank.name))
+    return window, bank, entry, combo
+
+
+def test_binding_a_fontmap_offers_to_declare_the_sheet_a_font(
+    qtbot, tmp_path, confirmations
+) -> None:
+    """The bind is the moment the user has named the sheet, so it is when to ask.
+
+    The tick lives on the *sheet*, and a fontmap bound to an undeclared one shows
+    hex with nothing on its own bar to explain it - so the question is put here
+    rather than leaving the user to find the other entry and answer it there.
+    Two undo steps, the shape a bind from file already has.
+    """
+    window, bank, entry, combo = _binding_gesture(qtbot, tmp_path, [2, 0, 1])
+    confirmations.yes = True
+
+    window._on_tile_binding_change(combo.currentIndex())
+
+    assert confirmations.asked
+    assert bank.use_as_font
+    assert entry.tile_source is not None and entry.tile_source.entry is bank
+    assert window._doc.text.body == "CAB"
+
+    window._undo_stack.undo()  # the bind
+    assert bank.use_as_font
+    window._undo_stack.undo()  # the declaration
+    assert not bank.use_as_font
+
+
+def test_declining_the_declaration_calls_the_binding_off(qtbot, tmp_path) -> None:
+    """Declining is a real answer: the bank may be art a text-format map reads.
+
+    Landing the bind anyway would leave a string drawn through a sheet nothing
+    can spell, so the gesture is dropped whole and the combo goes back to what it
+    was bound to before.
+    """
+    window, bank, entry, combo = _binding_gesture(qtbot, tmp_path, [2, 0, 1])
+    depth = window._undo_stack.count()
+
+    window._on_tile_binding_change(combo.currentIndex())  # the fixture cancels
+
+    assert not bank.use_as_font
+    assert entry.tile_source is None
+    assert window._undo_stack.count() == depth
+    assert window._tile_binding.currentIndex() == 0  # (none), put back
 
 
 def test_an_alphabet_edit_is_one_undo_step(qtbot, tmp_path) -> None:
@@ -686,6 +780,35 @@ def test_a_command_button_puts_its_code_in_the_string(qtbot, tmp_path) -> None:
     assert window.body == "[line-break]B"
 
 
+def test_the_command_buttons_fold_to_the_width_instead_of_scrolling(qtbot) -> None:
+    """Every command stays on screen: a narrow window costs another row of
+    buttons, never a name the user has to scroll sideways to find."""
+    from celpix.ui.text_window import TextWindow
+
+    window = TextWindow()
+    qtbot.addWidget(window)
+    window.show_text(
+        "t", "AB", (0, 1), [(f"cmd{n}", f"[cmd{n}]", "") for n in range(8)], "", None
+    )
+    grid, guide = window._guide_row, window._guide
+
+    def rows() -> set[int]:
+        return {grid.getItemPosition(at)[0] for at in range(grid.count())}
+
+    guide.resize(2000, guide.height())
+    guide._reflow()  # the width is handed down by the layout on a real show
+    assert grid.count() == 8  # every button placed, and each of them once
+    assert rows() == {0}
+    one_row = guide.sizeHint().height()
+
+    guide.resize(160, guide.height())
+    guide._reflow()
+    assert grid.count() == 8
+    assert len(rows()) > 1
+    # And the fold is paid for in height, which is what the window is asked for.
+    assert guide.sizeHint().height() > one_row
+
+
 def test_retyping_a_lines_last_letter_does_not_unend_the_line(qtbot, tmp_path) -> None:
     """The terminator bit belongs to the **cell**, not to the letter carrying it.
 
@@ -778,6 +901,51 @@ def test_the_font_alphabet_window_opens_on_a_fontmap_and_a_close_stops_it(
     assert window._font_alphabet.isVisible()
 
 
+def test_a_cell_picked_on_the_canvas_selects_its_code_in_the_editor(
+    qtbot, tmp_path
+) -> None:
+    """Clicking a glyph in the string asks what that code says, and the answer
+    is a row of the table - so the pick lands there as a *selection*, the one
+    Enter opens and the clipboard buttons act on."""
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
+    window._refresh_view()
+    editor = window._font_alphabet
+
+    window._select_tiles(1, 1)  # the second cell, which names tile 0
+    assert [at.row() for at in editor._table.selectionModel().selectedRows()] == [0]
+    # Both readings moved: the sheet above the table follows a row pick, so a
+    # pick made for the user has to leave it in the same state a click would.
+    assert editor._sheet.selected_id() == 0
+
+    window._select_tiles(0, 0)  # the first cell names tile 2
+    assert [at.row() for at in editor._table.selectionModel().selectedRows()] == [2]
+    assert editor._sheet.selected_id() == 2
+
+
+def test_picking_a_stretch_of_rows_picks_the_same_stretch_of_tiles(
+    qtbot, tmp_path
+) -> None:
+    """One list shown twice, so a selection of several rows is a selection of
+    several tiles - the ones the clipboard buttons are about to act on."""
+    from PySide6.QtCore import QItemSelection, QItemSelectionModel
+
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
+    window._refresh_view()
+    editor = window._font_alphabet
+    table = editor._table
+
+    picked = QItemSelection(table.model().index(2, 0), table.model().index(5, 2))
+    table.selectionModel().select(picked, QItemSelectionModel.SelectionFlag.Select)
+    assert editor._sheet.selected_ids() == {2, 3, 4, 5}
+    # The first of them is still *the* tile, the one the arrows step from and
+    # the one the dock's ring is told about.
+    assert editor._sheet.selected_id() == 2
+
+    # And a single pick puts it back to one, rather than adding to the stretch.
+    editor.select_tile(0)
+    assert editor._sheet.selected_ids() == {0}
+
+
 def test_pasting_a_string_fills_consecutive_codes_from_the_selected_row(
     qtbot, tmp_path
 ) -> None:
@@ -857,26 +1025,62 @@ def test_enter_opens_the_text_cell_of_the_selected_row(qtbot, tmp_path) -> None:
     assert editor._table.state() is QAbstractItemView.State.NoState
 
 
-def test_the_use_as_font_tick_is_one_undoable_declaration(qtbot, tmp_path) -> None:
-    """It gates the table without taking it away.
+def test_unticking_use_as_font_deletes_the_table_and_undo_brings_it_back(
+    qtbot, tmp_path, confirmations
+) -> None:
+    """The untick is the whole declaration, so it takes the table with it.
 
-    The table is the user's own work and there is no reading of unticking a box
-    that means "and throw that away", so what the tick decides is only whether it
-    is read.
+    A sheet that is not a font has no use for an origin, a run and a list of
+    named codes, and the editor is gated on the same tick — so keeping them would
+    leave the project carrying a table with nowhere to see it. One undo step
+    carries all four fields, which is what makes the deletion safe to offer.
     """
-    window, bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
+    window, bank, entry = _fontmap(qtbot, tmp_path, [0x12, 0x10, 0x11], base=0x10)
+    window._activate_entry(bank)
+    confirmations.yes = True
+
+    window._on_use_as_font_change(False)
+
+    assert confirmations.asked  # never silently
+    # The origin goes with the run: it is a spin dialled against this sheet.
+    assert not bank.use_as_font and bank.font_chars == "" and bank.font_base == 0
+    window._activate_entry(entry)
+    assert window._doc.text.body == "[$12][$10][$11]"
+
+    window._undo_stack.undo()
+    assert bank.use_as_font and bank.font_chars == UPPER and bank.font_base == 0x10
+    window._activate_entry(entry)
+    assert window._doc.text.body == "CAB"
+
+
+def test_cancelling_the_untick_keeps_the_font_whole(qtbot, tmp_path) -> None:
+    """Nothing is declared and nothing is pushed - the tick goes back on.
+
+    The dialog is the only thing standing between a stray click and a table
+    typed by hand, so cancelling has to leave the entry exactly as it was rather
+    than untick and keep.
+    """
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
+    window._activate_entry(bank)
+    depth = window._undo_stack.count()
+
+    window._on_use_as_font_change(False)  # the fixture answers Cancel
+
+    assert bank.use_as_font and bank.font_chars == UPPER
+    assert window._undo_stack.count() == depth
+    assert window._use_as_font.isChecked()
+
+
+def test_a_sheet_with_nothing_typed_on_it_unticks_without_asking(
+    qtbot, tmp_path, confirmations
+) -> None:
+    """There is nothing to lose, and asking anyway trains the answer out of them."""
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="")
     window._activate_entry(bank)
 
     window._on_use_as_font_change(False)
 
-    assert not bank.use_as_font and bank.font_chars == UPPER
-    window._activate_entry(entry)
-    assert window._doc.text.body == "[$02][$00][$01]"
-
-    window._undo_stack.undo()
-    assert bank.use_as_font
-    window._activate_entry(entry)
-    assert window._doc.text.body == "CAB"
+    assert not confirmations.asked and not bank.use_as_font
 
 
 def test_the_editor_opens_on_the_font_sheet_itself(qtbot, tmp_path) -> None:
@@ -1068,10 +1272,31 @@ def test_a_role_pick_is_its_own_step_and_needs_a_name_to_land(qtbot, tmp_path) -
     assert (bank.font_chars, bank.font_codes) == ("AZCDE", ())
 
     steps = window._undo_stack.count()
-    table.item(6, COL_ROLE).setText("line break")  # a row past the run
+    table.item(6, COL_ROLE).setText("control")  # a row past the run
     assert window._undo_stack.count() == steps
     assert table.item(6, COL_ROLE).text() == "text"
     assert "no text" in editor._badge.text()
+
+
+def test_a_line_break_names_itself_and_numbers_the_next_one(qtbot, tmp_path) -> None:
+    """The one role that does not have to be said out loud first: a break reads
+    as `br`, and a second one as `br-1`, since two codes answering to one name
+    would leave whichever came second unreachable."""
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
+    window._refresh_view()
+    table = window._font_alphabet._table
+
+    table.item(6, COL_ROLE).setText("line break")
+    assert bank.font_codes == (Glyph(6, "br", GlyphRole.BREAK),)
+    assert table.item(6, COL_TEXT).text() == "br"  # written into the column it names
+
+    table.item(7, COL_ROLE).setText("line break")
+    assert [glyph.text for glyph in bank.font_codes] == ["br", "br-1"]
+
+    # A name the user wrote is left alone - only an empty row is filled in.
+    table.item(5, COL_TEXT).setText("scroll")
+    table.item(5, COL_ROLE).setText("line break")
+    assert Glyph(5, "scroll", GlyphRole.BREAK) in bank.font_codes
 
 
 def test_shift_moves_the_characters_and_not_the_codes(qtbot, tmp_path) -> None:

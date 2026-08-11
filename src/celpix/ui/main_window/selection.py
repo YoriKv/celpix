@@ -962,6 +962,11 @@ class SelectionMixin:
         # moves without anything being re-rendered. The palette grid's pinned-row
         # mark is the third of the same kind.
         self._sync_tile_source_marker()
+        # And the font alphabet editor's row, which is the same following done as
+        # a selection: over a fontmap the picked cell names a code, and the code
+        # is a row of that table (:meth:`~...font_alphabet.FontAlphabetMixin.
+        # _sync_font_alphabet_row`).
+        self._sync_font_alphabet_row()
         self._sync_marked_palette_row()
         self._palette_from_selection_action.setEnabled(has)
         self._sync_pin_actions()

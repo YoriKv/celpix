@@ -645,15 +645,21 @@ class Workspace:
 
     # -- lookups -----------------------------------------------------------
     @staticmethod
-    def _path_key(path: str) -> str:
-        # The project lives on a Windows drive but is used from both OSes, so
-        # path identity must survive case differences on the same file.
+    def path_key(path: str) -> str:
+        """``path`` reduced to what makes two references the same file.
+
+        The project lives on a Windows drive but is used from both OSes, so path
+        identity must survive case differences on the same file. Public because
+        the same question is asked of lists this workspace does not hold — a
+        paste works out where every row lands before it changes anything, and
+        has to ask it against the list it is building.
+        """
         return normcase(abspath(path))
 
     def _find(self, kind: EntryKind, path: str) -> Entry | None:
-        key = self._path_key(path)
+        key = self.path_key(path)
         for entry in self.entries:
-            if entry.kind is kind and self._path_key(entry.path) == key:
+            if entry.kind is kind and self.path_key(entry.path) == key:
                 return entry
         return None
 
@@ -674,13 +680,13 @@ class Workspace:
         palette's colors change. Only entries with a document are returned; an
         unloaded one re-mirrors on its next load.
         """
-        key = self._path_key(path)
+        key = self.path_key(path)
         out = []
         for entry in self.entries:
             if entry.kind not in (EntryKind.FILE, EntryKind.SLICE) or entry.doc is None:
                 continue
             src = entry.doc.palette_config.source.path
-            if src and self._path_key(src) == key:
+            if src and self.path_key(src) == key:
                 out.append(entry)
         return out
 
@@ -723,7 +729,7 @@ class Workspace:
         """
         if palette.kind is not EntryKind.PALETTE:
             return []
-        key = self._path_key(palette.path)
+        key = self.path_key(palette.path)
         users = []
         for entry in self.entries:
             if entry.kind not in (EntryKind.FILE, EntryKind.SLICE):
@@ -732,7 +738,7 @@ class Workspace:
             if session is None or session.palette_mode is not PaletteMode.FILE:
                 continue
             path = entry_palette_path(entry)
-            if path is not None and self._path_key(path) == key:
+            if path is not None and self.path_key(path) == key:
                 users.append(entry)
         return users
 
@@ -749,14 +755,20 @@ class Workspace:
         list order (empty unless ``entry`` is a FILE — children never nest).
         A PALETTE entry sharing the path is not a child: its path names the
         palette file itself, not a parent."""
+        return self._children_in(entry, self.entries)
+
+    def _children_in(self, entry: Entry, entries: list[Entry]) -> list[Entry]:
+        """:meth:`children_of` against an arbitrary list — what :meth:`reorder`
+        asks of the list it is *about* to commit, where the live one still holds
+        the group it has lifted out."""
         if entry.kind is not EntryKind.FILE:
             return []
-        key = self._path_key(entry.path)
+        key = self.path_key(entry.path)
         return [
             e
-            for e in self.entries
+            for e in entries
             if e.kind in (EntryKind.SLICE, EntryKind.BOOKMARK)
-            and self._path_key(e.path) == key
+            and self.path_key(e.path) == key
         ]
 
     def parent_of(self, entry: Entry) -> Entry | None:
@@ -833,8 +845,11 @@ class Workspace:
                 parent_path, name, offset, length, compression_id, reshape_id=reshape_id
             )
         )
-        self.entries.append(entry)
-        self._notify(self.on_added, entry)
+        # Placed by the same rule the undoable path uses — offset order among the
+        # parent's children. Undo is the only thing the two adds differ in, and
+        # letting them differ in *position* too would mean a slice landing
+        # somewhere else depending on which of them made it.
+        self.insert(entry, self.add_index_for(entry))
         return entry
 
     def insert(self, entry: Entry, index: int) -> None:
@@ -844,40 +859,76 @@ class Workspace:
         self.entries.insert(index, entry)
         self._notify(self.on_added, entry)
 
-    def can_move_file(self, entry: Entry, delta: int) -> bool:
-        """Whether ``entry`` has a file neighbour ``delta`` places away — what
-        arms the reorder gesture (False for anything but a FILE, which is the
-        only kind whose order is the user's: slices and bookmarks sort by
-        offset, palettes by registration)."""
-        files = [e for e in self.entries if e.kind is EntryKind.FILE]
-        if entry not in files:
-            return False
-        return 0 <= files.index(entry) + delta < len(files)
+    def add_index_for(self, entry: Entry) -> int:
+        """Where a newly created ``entry`` belongs in the list.
 
-    def move_file(self, entry: Entry, delta: int) -> bool:
-        """Move a FILE one place earlier (``delta`` -1) or later (+1) among the
-        open files; False when there is no neighbour that way.
+        The end, except a **slice or bookmark of an open file**, which lands in
+        offset order among that file's children. That seeding is the only thing
+        the offsets decide: from then on the order is the user's, so dragging a
+        row moves it and an offset edit leaves it where it sits
+        (:meth:`reorder`). Seeding rather than sorting is what lets both be true
+        — a list nobody has arranged still reads low-to-high, which is the order
+        slices are usually carved in.
 
-        The file takes its slices and bookmarks with it. They are matched by path
-        rather than position, so the list *could* leave them behind — but a parent
-        has to precede its children for the project panel to nest them (that is
-        the order a project reload replays), so the whole group moves as one.
-
-        Positioned relative to the file that will *follow* it, not the neighbour
-        it swaps with: a neighbour's own children sit somewhere after it, so
-        inserting after the last of them would jump the group past whatever file
-        came next.
+        A child whose parent isn't open has no group to sort within, so it goes
+        to the end like anything else.
         """
-        if not self.can_move_file(entry, delta):
-            return False
-        files = [e for e in self.entries if e.kind is EntryKind.FILE]
-        index = files.index(entry) + delta
-        follower = files[index] if delta < 0 else next(iter(files[index + 1 :]), None)
+        parent = self.parent_of(entry)
+        if parent is None or entry.kind not in (EntryKind.SLICE, EntryKind.BOOKMARK):
+            return len(self.entries)
+        siblings = self.children_of(parent)
+        later = next((e for e in siblings if e.slice_offset > entry.slice_offset), None)
+        if later is not None:
+            return self.entries.index(later)
+        # Past the last child, or straight after the parent when it has none —
+        # never merely "at the parent's index + 1", which would bury a new slice
+        # under the ones already there.
+        return self.entries.index(siblings[-1] if siblings else parent) + 1
+
+    def reorder(self, entry: Entry, before: Entry | None) -> bool:
+        """Move ``entry`` so it sits immediately in front of ``before``.
+
+        The single reordering primitive, behind both the drag gesture and
+        Shift+Up/Down: every kind's order is the user's, and one operation says
+        so for all of them. ``before`` is the entry the moved row lands in front
+        of, ``None`` for last in its own group. False when nothing moved.
+
+        A **file takes its slices and bookmarks with it**. They are matched by
+        path rather than position, so the list *could* leave them behind — but a
+        parent has to precede its children for the panel to nest them (that is
+        the order a project reload replays), so the whole group moves as one, and
+        ``before`` names the row the group as a whole goes in front of.
+
+        For a **slice or bookmark** ``None`` means after its last sibling rather
+        than at the end of the list: a child dropped last in its parent's group
+        is still that parent's child, and letting it drift past unrelated entries
+        would only break the contiguity the file move above relies on.
+
+        What ``before`` does *not* have to be is the entry that immediately
+        follows in this flat list. The panel groups rows into sections, so two
+        rows adjacent on screen may have another section's file between them
+        here; inserting in front of ``before`` gets their relative order right
+        either way, which is the only thing the display reads.
+        """
         group = [entry, *self.children_of(entry)]
-        for member in group:
-            self.entries.remove(member)
-        at = self.entries.index(follower) if follower is not None else len(self.entries)
-        self.entries[at:at] = group
+        if before is not None and any(before is member for member in group):
+            return False
+        rest = [e for e in self.entries if not any(e is member for member in group)]
+        if before is not None:
+            at = rest.index(before)
+        elif entry.kind in (EntryKind.SLICE, EntryKind.BOOKMARK):
+            parent = self.parent_of(entry)
+            if parent is None:
+                at = len(rest)
+            else:
+                siblings = self._children_in(parent, rest)
+                at = rest.index(siblings[-1] if siblings else parent) + 1
+        else:
+            at = len(rest)
+        rest[at:at] = group
+        if rest == self.entries:  # Entry is eq=False, so this compares identity
+            return False
+        self.entries[:] = rest
         return True
 
     def close(self, entry: Entry) -> list[Entry]:
@@ -1012,11 +1063,11 @@ class Workspace:
         including one that only borrows it as its *second* file — holding stale
         bytes.
         """
-        key = self._path_key(path)
+        key = self.path_key(path)
         for entry in self.entries:
             if entry is keep or entry.pixel_dirty or entry.palette_dirty:
                 continue
-            if any(self._path_key(p) == key for p in entry.paths):
+            if any(self.path_key(p) == key for p in entry.paths):
                 self.drop_document(entry)
 
     @staticmethod
@@ -1305,10 +1356,10 @@ def path_is_palette_only(ws: Workspace, path: str) -> bool:
     the graphic that uses it and may never have been picked by hand, so being
     asked for it by bare name reads as "which of my ROMs is this?".
     """
-    key = Workspace._path_key(path)
+    key = Workspace.path_key(path)
     return not any(
         entry.kind is not EntryKind.PALETTE
-        and any(Workspace._path_key(p) == key for p in entry.paths)
+        and any(Workspace.path_key(p) == key for p in entry.paths)
         for entry in ws.entries
     )
 
@@ -1412,7 +1463,7 @@ def missing_paths(ws: Workspace) -> list[str]:
         if palette_missing(entry):
             candidates.append(entry_palette_path(entry))
         for path in candidates:
-            key = Workspace._path_key(path)
+            key = Workspace.path_key(path)
             if key not in seen:
                 seen.add(key)
                 result.append(path)
@@ -1428,11 +1479,11 @@ def relocate_path(ws: Workspace, old_path: str, new_path: str) -> list[Entry]:
     slices/bookmarks (and any palette read from it) together. Pure data — the
     caller reloads the affected documents/palettes.
     """
-    key = Workspace._path_key(old_path)
+    key = Workspace.path_key(old_path)
     old_name, new_name = basename(old_path), basename(new_path)
     touched: list[Entry] = []
     for entry in ws.entries:
-        data_moved = bool(entry.path) and Workspace._path_key(entry.path) == key
+        data_moved = bool(entry.path) and Workspace.path_key(entry.path) == key
         if data_moved:
             entry.path = new_path
             # A FILE's or PALETTE's display name defaults to its on-disk
@@ -1446,7 +1497,7 @@ def relocate_path(ws: Workspace, old_path: str, new_path: str) -> list[Entry]:
         # A region's later chips move the same way, and independently: locating
         # one of them must not disturb the others or the order they join in.
         moved_extra = tuple(
-            new_path if Workspace._path_key(p) == key else p for p in entry.extra_paths
+            new_path if Workspace.path_key(p) == key else p for p in entry.extra_paths
         )
         if moved_extra != entry.extra_paths:
             entry.extra_paths = moved_extra
@@ -1455,7 +1506,7 @@ def relocate_path(ws: Workspace, old_path: str, new_path: str) -> list[Entry]:
         for source in (entry.missing_palette, entry.pending_palette):
             if source is None or not source.path:
                 continue
-            if Workspace._path_key(source.path) == key:
+            if Workspace.path_key(source.path) == key:
                 source.path = new_path
                 changed = True
         if changed:

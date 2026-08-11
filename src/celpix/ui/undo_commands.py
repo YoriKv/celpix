@@ -890,24 +890,65 @@ class ContainerEditCommand(_InPlaceCommand):
         self._window._apply_container_edit(self._entry, state)
 
 
-class MoveEntryCommand(_InPlaceCommand):
-    """Reordering a file in the files pane — one place up or down.
+class ReorderEntryCommand(_InPlaceCommand):
+    """Moving a row in the files pane — dragged, or Shift+Up/Down.
 
-    A single step is its own inverse, so the two directions are the same move
-    with the sign flipped.
+    The state either way is **the row this one sits in front of** (``None`` for
+    last in its group), which is what makes one command cover both a one-step
+    nudge and a drag across the whole group: a position is captured as a
+    neighbour rather than as a number, so undo puts the row back where it was
+    without having to reason about how far anything else shifted.
+
+    The anchor is an :class:`~celpix.project.workspace.Entry`, held by identity
+    like every other reference to one. It cannot go stale while this step is on
+    the stack — a command that removed it would be undone before this one.
     """
 
-    def __init__(self, window: MainWindow, entry: Entry, delta: int) -> None:
-        super().__init__(
-            window,
-            entry,
-            f'move "{entry.name}" {"up" if delta < 0 else "down"}',
-            -delta,
-            delta,
-        )
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        *,
+        before: Entry | None,
+        after: Entry | None,
+    ) -> None:
+        super().__init__(window, entry, f'move "{entry.name}"', before, after)
 
-    def _apply(self, state: int) -> None:
-        self._window._apply_move_entry(self._entry, state)
+    def _apply(self, state: Entry | None) -> None:
+        self._window._apply_reorder_entry(self._entry, state)
+
+
+class PasteEntriesCommand(QUndoCommand):
+    """Adding the clipboard's (or a duplicate's) entries to the files pane.
+
+    Shaped like :class:`AddEntryCommand` rather than derived from it because a
+    paste is *several* rows at known positions and one of them may be a parent
+    the paste had to open to hang the rest on — so the placements are captured
+    up front and replayed in list order, the way an undone removal is restored.
+    Holding the constructed entries means a redo puts back the very same objects,
+    and anything that came to reference them in between still resolves.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        placements: list[tuple[int, Entry]],
+        text: str,
+        *,
+        activate: Entry | None,
+    ) -> None:
+        super().__init__(text)
+        self._window = window
+        self._placements = placements
+        self._activate = activate
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            self._window._apply_paste_entries(self._placements, self._activate)
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            self._window._apply_unpaste_entries(self._placements)
 
 
 class AddEntryCommand(QUndoCommand):

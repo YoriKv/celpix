@@ -13,7 +13,10 @@ alphabet is judged against the string, never on its own.
 
 **One list, shown twice.** The tiles across the top and the table underneath are
 the same run in two readings, and either can be clicked to select in the other.
-The top is what the sheet looks like; the bottom is what it says.
+The top is what the sheet looks like; the bottom is what it says. A selection is
+one thing across both, however wide: picking a stretch of rows outlines that
+stretch of tiles, so what the clipboard buttons are about to act on is visible as
+a shape on the sheet and not only as a band of highlighted rows.
 
 **Two halves of the storage, one table on screen.** A row is written back to the
 positional run when its code is inside the run, its role is text and its text is
@@ -47,6 +50,9 @@ encodes anything and owns no undo history of its own
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterable
+from itertools import count
 
 from PySide6.QtCore import QEvent, QPoint, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QImage, QKeyEvent, QKeySequence
@@ -91,6 +97,12 @@ ROLE_LABELS: tuple[tuple[GlyphRole, str], ...] = (
     (GlyphRole.BREAK, "line break"),
     (GlyphRole.CONTROL, "control"),
 )
+
+# What an unnamed break is called when the Role column makes it one. A break has
+# to read as *something* — a name is how the text spells the code back
+# (``docs/design/fontmap-entry.md`` §5) — and there is only one word anyone wants
+# for it, so it is written rather than demanded.
+BREAK_NAME = "br"
 
 
 class _RoleDelegate(QStyledItemDelegate):
@@ -424,8 +436,28 @@ class FontAlphabetWindow(QWidget):
         apply_badge(self._badge, badge)
 
     def select_tile(self, tile_id: int) -> None:
-        """Mark the tile the canvas's selected cell names."""
-        self._sheet.set_marked_id(tile_id)
+        """Pick the tile the canvas's selected cell names, as a click would.
+
+        A **selection** in both readings and not a mark of its own: the row the
+        clipboard buttons act on and Enter opens to type into, and the picked
+        tile on the sheet above it. Clicking a glyph in the string and clicking
+        it on the sheet are the same question asked from two places, so they
+        must not leave the window in two different states.
+
+        Ignored for a tile the sheet does not show, which is a cell naming a
+        code past the bank the binding reaches.
+        """
+        if tile_id not in self._ids:
+            return
+        self._select_row(self._ids.index(tile_id))
+        # Guarded, so the sheet's own report of the pick does not answer this
+        # with `selectRow` — the reason a click on the sheet is the only pick
+        # that moves the table (:meth:`_on_tile_selected`).
+        self._syncing = True
+        try:
+            self._sheet.select_id(tile_id)
+        finally:
+            self._syncing = False
 
     # -- the two readings --------------------------------------------------
     def _merged(self) -> dict[int, Glyph]:
@@ -521,6 +553,13 @@ class FontAlphabetWindow(QWidget):
         text = text_item.text() if text_item else ""
         role = _role_of(role_item.text() if role_item else "")
         picked = item.column() == COL_ROLE
+        if picked and not text and role is GlyphRole.BREAK:
+            # The one role that names itself: a format's second and third break
+            # (one that scrolls, one that does not) are told apart by the code
+            # beside them rather than by what they are called, so a number is a
+            # better answer than a prompt. Only a *control* still has to be said
+            # out loud - what it does is the whole of what its name carries.
+            text = _fresh_break_name(self._merged().values())
         if picked and not text:
             self._rebuild()
             self.set_status(
@@ -535,6 +574,10 @@ class FontAlphabetWindow(QWidget):
             return
         self._write(code, text, role)
         if picked:
+            # A name written *for* the user has to appear in the column it was
+            # written into - the round trip through the undo stack redraws the
+            # table only once the edit has been applied to the entry.
+            self._rebuild()
             self._fresh = True
         self._emit(
             f"set ${code:02X} to {_label_of(role)}" if picked else "edit font alphabet"
@@ -839,16 +882,30 @@ class FontAlphabetWindow(QWidget):
         self.tile_selected.emit(tile_id)
 
     def _on_row_selected(self) -> None:
+        """Show the picked rows on the sheet — all of them, not just the first.
+
+        The two readings are one list, so a stretch of rows is a stretch of
+        tiles: the rows the clipboard buttons act on (:meth:`_span`) are the
+        tiles ringed above them, and there is never a moment where the window
+        says one thing at the top and another at the bottom. Rows past the last
+        tile — named codes the sheet cannot draw — carry no tile and are simply
+        not in the answer.
+        """
         rows = self._table.selectionModel().selectedRows()
         if self._syncing or not rows:
             return
-        row = rows[0].row()
-        if row < len(self._ids):
-            self._syncing = True
-            try:
-                self._sheet.select_id(self._ids[row])
-            finally:
-                self._syncing = False
+        picked = [
+            self._ids[index.row()]
+            for index in sorted(rows, key=lambda index: index.row())
+            if index.row() < len(self._ids)
+        ]
+        if not picked:
+            return
+        self._syncing = True
+        try:
+            self._sheet.select_ids(picked)
+        finally:
+            self._syncing = False
 
     def _select_row(self, row: int) -> None:
         self._syncing = True
@@ -896,6 +953,20 @@ def _put(table: QTableWidget, row: int, column: int, text: str) -> None:
         table.setItem(row, column, QTableWidgetItem(text))
     elif item.text() != text:
         item.setText(text)
+
+
+def _fresh_break_name(glyphs: Iterable[Glyph]) -> str:
+    """``br``, or ``br-1``, ``br-2``… where codes already spell that.
+
+    Numbered rather than shared: a name is what the text writes the code as and
+    what the user types to put it back, so two codes answering to one name would
+    leave whichever came second unreachable — the reader takes the first
+    (:class:`~celpix.core.font.Font`).
+    """
+    taken = {glyph.text for glyph in glyphs}
+    if BREAK_NAME not in taken:
+        return BREAK_NAME
+    return next(name for n in count(1) if (name := f"{BREAK_NAME}-{n}") not in taken)
 
 
 def _label_of(role: GlyphRole) -> str:

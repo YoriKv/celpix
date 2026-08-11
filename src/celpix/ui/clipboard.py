@@ -1,4 +1,4 @@
-"""The clipboard bridge: tiles ⇄ the system clipboard.
+"""The clipboard bridge: tiles, colors and files-pane rows ⇄ the system clipboard.
 
 A copy goes onto the OS clipboard in **two representations at once**, and which
 one a paste uses decides how faithful it is:
@@ -19,13 +19,22 @@ This module is the **Qt bridge alone** — what goes on the clipboard and what c
 off it. The tile flavour's own byte format, and the validation that makes reading
 one safe, are :class:`~celpix.core.tilepayload.TilePayload`'s: a payload arrives
 from outside the process, so parsing it belongs with the rest of the model where
-it can be tested without a window.
+it can be tested without a window. The same split holds for the files-pane rows
+at the foot of this file, whose records are
+:func:`~celpix.project.projectfile.entries_payload`'s.
+
+Those rows are the one flavour with a half that **cannot** be written down — a
+tile binding is an entry, and an entry is not a value — so a copy of one leaves
+the object behind in memory beside the payload (:data:`_COPIED_BINDINGS`) rather
+than writing a position that the next drag would invalidate.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import weakref
+from uuid import uuid4
 
 from PySide6.QtCore import QByteArray, QMimeData
 from PySide6.QtGui import QGuiApplication, QImage
@@ -44,6 +53,20 @@ TILES_MIME = "application/x-celpix-tiles"
 # program that speaks hex.
 PALETTE_MIME = "application/x-celpix-palette"
 PALETTE_PAYLOAD_VERSION = 1
+# Rows of the files pane — a file, a slice, a palette registration — as the same
+# references-and-settings records a project file holds
+# (:func:`~celpix.project.projectfile.entries_payload`). Nothing outside celPix
+# can act on one, so unlike the two flavours above there is no interchange
+# representation beside it, only a plain-text listing of the paths for a paste
+# into a text editor.
+ENTRIES_MIME = "application/x-celpix-entries"
+
+# This process, so a paste can tell a copy taken from the running editor from one
+# taken from another window (or another day). It buys exactly one thing: it says
+# the entry objects remembered beside the last copy (_COPIED_BINDINGS) are the
+# ones *this* payload means, since only a payload this process wrote can have
+# been written with them.
+SESSION_TOKEN = uuid4().hex
 
 # A 6- or 8-digit hex run, optionally ``#``-prefixed, not embedded in a longer
 # hex string — how a foreign clipboard's colors are recognised.
@@ -159,6 +182,81 @@ def has_colors() -> bool:
     if mime.hasFormat(PALETTE_MIME):
         return True
     return mime.hasText() and bool(_parse_hex_colors(mime.text()))
+
+
+# -- files-pane entries ----------------------------------------------------
+#: The half of an entry copy that cannot be written down: for each copied map,
+#: the entry its tiles are bound to, **held by identity** like every other
+#: reference to one (:class:`~celpix.project.workspace.TileSource`). A number
+#: would not do, and that is the whole reason this exists — the rows are the
+#: user's to rearrange, so any position recorded when the copy was taken names a
+#: different entry the moment anything is dragged, closed or opened before the
+#: paste. A copy can sit on the clipboard across all of that.
+#:
+#: **Weak**, so a copy taken and then forgotten about does not pin a closed
+#: entry's document in memory for the rest of the session. An entry that has gone
+#: that thoroughly is one nothing can be bound to anyway, and the paste treats a
+#: dead reference exactly as it treats a copy from another window: unbound.
+#:
+#: Keyed by the record's ``source_index``, which is the payload's own join key and
+#: not a live position — it and the payload are written together and replaced
+#: together, and the session token on the payload is what says they still are.
+_COPIED_BINDINGS: dict[int, weakref.ref] = {}
+
+
+def put_entries(payload: dict, paths: list[str], bindings: dict[int, object]) -> None:
+    """Place copied entry records on the clipboard, plus ``paths`` as text.
+
+    The text half is not a paste route back in — an entry is a reference *and*
+    its settings, and a bare path is only the first of those. It is there so a
+    copy can be dropped into a shell, a bug report or a notes file, which is what
+    a user reaches for the moment they want to say *which* files a project holds.
+
+    ``bindings`` is the unserialisable half (:data:`_COPIED_BINDINGS`), replaced
+    here rather than beside the call so the two cannot be written out of step.
+    """
+    _COPIED_BINDINGS.clear()
+    _COPIED_BINDINGS.update(
+        {key: weakref.ref(target) for key, target in bindings.items()}
+    )
+    mime = QMimeData()
+    mime.setData(ENTRIES_MIME, QByteArray(json.dumps(payload).encode("utf-8")))
+    mime.setText("\n".join(paths))
+    QGuiApplication.clipboard().setMimeData(mime)
+
+
+def take_bindings() -> dict[int, object]:
+    """The bound entries the last entry copy remembered, minus any since freed.
+
+    Only meaningful for a payload this process wrote — the caller checks that
+    against the payload's session token before asking.
+    """
+    live = {key: ref() for key, ref in _COPIED_BINDINGS.items()}
+    return {key: target for key, target in live.items() if target is not None}
+
+
+def take_entries() -> dict | None:
+    """The entry payload on the clipboard, if a celPix copy put one there.
+
+    Only our own flavour: unlike tiles and colors there is no foreign
+    representation an entry could be reconstructed from, so text on the clipboard
+    is never read as a paste (a path alone says nothing about how to read the
+    file, and guessing would turn an unrelated copied filename into an entry).
+    """
+    mime = QGuiApplication.clipboard().mimeData()
+    if mime is None or not mime.hasFormat(ENTRIES_MIME):
+        return None
+    try:
+        payload = json.loads(bytes(mime.data(ENTRIES_MIME)).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def has_entries() -> bool:
+    """Whether an entry paste could do anything — drives the action's state."""
+    mime = QGuiApplication.clipboard().mimeData()
+    return mime is not None and mime.hasFormat(ENTRIES_MIME)
 
 
 def image_to_argb(image: QImage) -> ArgbGrid:

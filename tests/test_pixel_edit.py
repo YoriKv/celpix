@@ -336,6 +336,43 @@ def test_ctrl_wheel_zooms_and_a_plain_wheel_is_left_to_scroll(qtbot) -> None:
     assert steps == [1, -1]
 
 
+def test_the_surround_around_the_canvas_answers_the_wheel_zoom(qtbot, tmp_path) -> None:
+    """The grey around the canvas is the canvas as far as a user is concerned —
+    and it is where the pointer sits when a small picture is the one wanting a
+    zoom *in*, so a Ctrl+wheel out there must step the same Zoom spin."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    window = _window(qtbot, tmp_path)
+    window._zoom.setValue(4)
+    canvas = window._canvas
+    beyond = QPointF(canvas.width() + 20, canvas.height() + 20)
+
+    def _wheel(dy, modifier=Qt.KeyboardModifier.ControlModifier):
+        return QWheelEvent(
+            beyond,
+            beyond,
+            QPoint(0, 0),
+            QPoint(0, dy),
+            Qt.MouseButton.NoButton,
+            modifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+
+    viewport = window._scroll.viewport()
+    QApplication.sendEvent(viewport, _wheel(120))
+    assert window._zoom.value() == 5
+    QApplication.sendEvent(viewport, _wheel(-120))
+    assert window._zoom.value() == 4
+
+    # A plain wheel out there is still the scroll area's, so the view scrolls.
+    plain = _wheel(120, modifier=Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(viewport, plain)
+    assert window._zoom.value() == 4
+
+
 def test_zoom_steps_from_the_menu_anchor_on_the_viewport_centre(
     qtbot, tmp_path
 ) -> None:

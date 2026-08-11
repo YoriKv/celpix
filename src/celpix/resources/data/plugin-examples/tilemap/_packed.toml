@@ -30,7 +30,8 @@
 #   gba-bg          the same 16-bit shape with 32x32 pages.
 #   text-8bit-flag  a text run whose last character carries the line break —
 #                   `eiii iiii`, the flag above a 7-bit index.
-#   scgcad-panel    a cell that draws a 16x16 metatile (`cell_tiles = [2, 2]`).
+#   snes-bg-16x16   the same word with a cell that draws a 16x16 metatile
+#                   (`cell_tiles = [2, 2]`) — four tiles, one set of attributes.
 #   scgcad-map      cells naming positions in another map (`indirect`), and the
 #                   one shipped format with a `d` bit.
 #   scgcad-std      the plain screen of the same family.

@@ -40,7 +40,7 @@ from celpix.pipeline import pipeline
 from celpix.project.workspace import Entry
 from celpix.ui import render_bridge
 from celpix.ui.undo_commands import FontAlphabetCommand, FontAlphabetState
-from celpix.ui.widgets import Badge, signals_blocked
+from celpix.ui.widgets import signals_blocked
 
 
 class FontAlphabetMixin:
@@ -57,9 +57,16 @@ class FontAlphabetMixin:
 
         Two ways in, because there are two moments the question comes up. Over a
         **fontmap** it is whatever the Tiles combo names, since that is the sheet
-        the codes index into. Over a **pixels entry** that has been ticked
-        **Use as Font** it is that entry itself, which is how a sheet is typed up
-        before any string has been carved out to test it against.
+        the codes index into. Over a **pixels entry** it is that entry itself,
+        which is how a sheet is typed up before any string has been carved out to
+        test it against.
+
+        Both ways ask the same question of the sheet — **Use as Font**
+        (:attr:`~celpix.project.workspace.Entry.use_as_font`) — so an editor is
+        only ever opened on a table that is actually read. A fontmap bound to a
+        sheet that is not declared one has no alphabet to edit: typing into it
+        would write a table nothing looks at, and the text window says so on its
+        own badge instead.
 
         None where neither holds, which is most entries.
         """
@@ -71,15 +78,16 @@ class FontAlphabetMixin:
             bound = (
                 self._binding_target(entry.tile_source) if entry.tile_source else None
             )
-            return bound
+            return bound if bound is not None and bound.use_as_font else None
         return entry if entry.use_as_font else None
 
     def _font_alphabet_available(self) -> bool:
         """Whether there is a font to edit the alphabet of.
 
-        A fontmap with nothing bound answers False and says so on the text
-        window's own badge instead: the alphabet has no entry to be written to
-        until the Tiles combo is set, and an editor over no font would be a table
+        A fontmap with nothing bound — or bound to a sheet not ticked **Use as
+        Font** — answers False and says so on the text window's own badge
+        instead: the alphabet has no entry to be written to until the Tiles combo
+        names a declared font, and an editor over anything else would be a table
         that goes nowhere.
         """
         return self._font_entry() is not None
@@ -134,7 +142,13 @@ class FontAlphabetMixin:
             font.font_chars,
             font.font_codes,
         )
-        self._font_alphabet.set_status(*self._font_alphabet_status(font))
+        self._font_alphabet.set_status(self._font_alphabet_status(font))
+        if sheet:
+            # Only where the sheet was rebuilt, which is the document changing or
+            # the window opening. An **edit** must not land here: it would answer
+            # every keystroke by dragging the selection back to whatever the
+            # canvas points at, and typing down the table would stick on one row.
+            self._sync_font_alphabet_row()
 
     def _font_sheet(self):  # noqa: ANN201 — (QImage, list[int], (int, int), int) | None
         """The font's tiles as one picture, in slot order.
@@ -193,19 +207,17 @@ class FontAlphabetMixin:
             FONT_SHEET_COLUMNS,
         )
 
-    def _font_alphabet_status(self, font: Entry) -> tuple[str, Badge | None]:
-        """The readout: how much of the sheet has been spelled, and whose it is."""
+    def _font_alphabet_status(self, font: Entry) -> str:
+        """The readout: how much of the sheet has been spelled, and whose it is.
+
+        No badge of its own. The window is only ever open on a sheet ticked
+        **Use as Font** (:meth:`_font_entry`), so everything it shows is read —
+        and a table that is *not* read is reported where the codes are, on the
+        text window.
+        """
         named = len(font.font_codes)
         spelled = sum(1 for char in font.font_chars if char != HOLE)
-        summary = f"{font.name}: {spelled} characters, {named} named codes"
-        if not font.use_as_font:
-            return summary, Badge(
-                "not a font",
-                "This entry is not ticked Use as Font, so its table\n"
-                "is not read. Tick it beside the tile size.",
-                warning=True,
-            )
-        return summary, None
+        return f"{font.name}: {spelled} characters, {named} named codes"
 
     def _on_font_alphabet_tile(self, tile_id: int) -> None:
         """A tile picked in the editor marks the same tile in the dock.
@@ -216,6 +228,33 @@ class FontAlphabetMixin:
         tile and stops there.
         """
         self._tile_source_panel.set_marked_id(tile_id)
+
+    def _sync_font_alphabet_row(self) -> None:
+        """Point the editor at the tile the canvas's selected cell draws.
+
+        The other direction of :meth:`_on_font_alphabet_tile`, and the one the
+        canvas starts: clicking a glyph in the string is asking what that code
+        says, and the row is where the answer is typed. So the editor follows the
+        selection the way the tile source dock's ring does — by the **row
+        selection** the user would have made by hand, not a mark of its own, so
+        that Enter opens the cell they just pointed at.
+
+        The cell's own index, before the binding's base tile: the same number the
+        dock rings and the Cell spin holds, and the number the editor's sheet is
+        laid out by (:meth:`_font_sheet`).
+
+        Fontmaps only. Over the font sheet itself the canvas selects tiles of a
+        window into the file rather than cells naming codes, and there is no
+        second reading of them to follow.
+        """
+        if not self._font_alphabet.isVisible():
+            return
+        doc = self._doc
+        if doc is None or not doc.is_fontmap or doc.cells is None:
+            return
+        cells = self._selected_cells()
+        if cells:
+            self._font_alphabet.select_tile(doc.cells[cells[0]].index)
 
     # -- taking an edit back -----------------------------------------------
     def _on_font_alphabet_edited(
@@ -269,12 +308,21 @@ class FontAlphabetMixin:
     def _on_use_as_font_change(self, on: bool) -> None:
         """Declare (or stop declaring) that this sheet's tiles are letters.
 
-        The table is deliberately **kept** when the tick comes off. It is the
-        user's own work and there is no reading of unticking a box that means
-        "and throw that away"; what the tick decides is whether it is read.
+        Unticking **discards the table**, which is why it asks first: the tick is
+        the entry's whole answer to "are these letters", and a sheet that is not
+        a font has no use for an origin, a run and a list of named codes. Keeping
+        them would leave the project carrying a table nothing reads and nothing
+        shows — the editor is gated on the same tick (:meth:`_font_entry`), so
+        there would be no way to see what was being kept.
+
+        Cancelling puts the tick back and pushes nothing. Going ahead is one undo
+        step carrying all four fields, so Ctrl+Z brings the table back whole.
         """
         entry = self._workspace.current
         if entry is None or self._applying_undo or entry.use_as_font == on:
+            return
+        if on:
+            self._declare_use_as_font(entry)
             return
         before: FontAlphabetState = (
             entry.use_as_font,
@@ -282,13 +330,55 @@ class FontAlphabetMixin:
             entry.font_chars,
             entry.font_codes,
         )
-        after: FontAlphabetState = (on, *before[1:])
-        text = (
-            f"use {entry.name} as a font"
-            if on
-            else f"stop using {entry.name} as a font"
+        if self._has_alphabet(entry) and not self._confirm(
+            f"{entry.name} has an alphabet typed against it. Unticking Use as "
+            "Font deletes it.\n\nUndo brings it back.",
+            title="celPix - stop using as a font",
+            accept="Delete alphabet",
+            warn=True,
+        ):
+            self._sync_use_as_font()  # put the tick back; nothing was declared
+            return
+        self._push_command(
+            FontAlphabetCommand(
+                self,
+                entry,
+                f"stop using {entry.name} as a font",
+                before,
+                (False, 0, "", ()),
+            )
         )
-        self._push_command(FontAlphabetCommand(self, entry, text, before, after))
+
+    @staticmethod
+    def _has_alphabet(entry: Entry) -> bool:
+        """Whether ``entry`` holds font data an untick would throw away.
+
+        The origin counts. A base with no run is a spin the user dialled against
+        the sheet, and losing it silently is the same surprise as losing a
+        letter — while a sheet that has been ticked and never typed on has
+        nothing to ask about, and asking anyway would train the answer out of
+        them.
+        """
+        return bool(entry.font_chars or entry.font_codes or entry.font_base)
+
+    def _declare_use_as_font(self, entry: Entry) -> None:
+        """Tick **Use as Font** on ``entry``, as its own undo step.
+
+        Reached from the tick itself and from binding a fontmap to a sheet that
+        is not declared one yet (:meth:`~...tilemap_bar.TilemapBarMixin.
+        _on_tile_binding_change`), so both routes land the same state by the same
+        command and an undo takes the declaration back either way.
+        """
+        rest = (entry.font_base, entry.font_chars, entry.font_codes)
+        self._push_command(
+            FontAlphabetCommand(
+                self,
+                entry,
+                f"use {entry.name} as a font",
+                (entry.use_as_font, *rest),
+                (True, *rest),
+            )
+        )
 
     # -- the one apply path ------------------------------------------------
     def _apply_font_alphabet(self, font: Entry, state: FontAlphabetState) -> None:
@@ -307,12 +397,15 @@ class FontAlphabetMixin:
             doc = entry.doc
             if doc is None or not doc.is_fontmap:
                 continue
-            if self._binding_target(entry.tile_source) is not font:
+            # An open fontmap with nothing bound is an ordinary state — a string
+            # carved out before its sheet was found — and it draws no font, so it
+            # is skipped rather than resolved.
+            source = entry.tile_source
+            if source is None or self._binding_target(source) is not font:
                 continue
             doc.font_alphabet = pipeline.load_font_alphabet(
                 font.font_chars if font.use_as_font else "",
                 font.font_codes if font.use_as_font else (),
-                doc.pixel_ctx,
                 controls=self._tilemap_declares(entry, "controls") or (),
                 code_digits=max(1, doc.cell_bytes) * 2,
                 base=font.font_base,
@@ -326,6 +419,11 @@ class FontAlphabetMixin:
         # itself — so those three are refreshed by name and nothing else runs.
         # Doing it the other way put a full map recompose behind every keystroke.
         self._sync_use_as_font()
+        # The tick decides whether there is an alphabet to edit at all, so the
+        # menu item follows it here rather than waiting for the next full refresh
+        # — an untick closes the window, and leaving View ▸ Font Alphabet enabled
+        # would offer to open one over nothing.
+        self._font_alphabet_action.setEnabled(self._font_alphabet_available())
         self._canvas.set_line_ends(self._line_end_slots())
         self._refresh_text()
         self._refresh_font_alphabet(sheet=False)

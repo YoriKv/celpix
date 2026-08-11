@@ -323,7 +323,17 @@ def test_slice_addresses_read_view_relative_while_offsets_stay_anchored(
     assert str(tmp_path / "colors.pal") in panel._items[palette].toolTip(0)
 
 
-def test_file_list_children_stay_sorted_by_offset(qtbot, tmp_path, monkeypatch) -> None:
+def test_new_children_arrive_in_offset_order_and_then_stay_put(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Offsets seed the order and nothing more.
+
+    A list nobody has arranged reads low-to-high, which is the order slices are
+    carved in - but from then on the arrangement is the user's, so re-pointing a
+    slice must not move its row out from under them.
+    """
+    from PySide6.QtCore import Qt
+
     from celpix.ui.slice_dialog import SliceDialog, SliceParams
 
     px = _make_snes_file(tmp_path)
@@ -332,7 +342,7 @@ def test_file_list_children_stay_sorted_by_offset(qtbot, tmp_path, monkeypatch) 
     window._load_pixel(str(px))
     file_entry = window._workspace.find_file(str(px))
 
-    # Add slices/bookmarks out of offset order; the list must present them sorted.
+    # Added out of offset order; the list must present them sorted anyway.
     window._workspace.add_slice(str(px), "c", 128, 32)
     window._workspace.add_slice(str(px), "a", 32, 32)
     b = window._workspace.add_slice(str(px), "b", 64, 32)
@@ -341,30 +351,29 @@ def test_file_list_children_stay_sorted_by_offset(qtbot, tmp_path, monkeypatch) 
     panel = window._files_panel
     file_item = panel._items[file_entry]
 
-    def offsets() -> list[int]:
-        n = file_item.childCount()
-        return [panel._offset_of(file_item.child(i)) for i in range(n)]
+    def rows() -> list[tuple[str, int]]:
+        children = (file_item.child(i) for i in range(file_item.childCount()))
+        entries = (child.data(0, Qt.ItemDataRole.UserRole) for child in children)
+        return [(entry.name, entry.slice_offset) for entry in entries]
 
-    assert offsets() == sorted(offsets())  # slices and bookmarks intermixed, by offset
+    assert [offset for _name, offset in rows()] == [0, 32, 64, 128]
 
-    # Editing a slice's offset re-sorts it in place: move "b" (was 64) past the
-    # 128 slice, and it should land last among the children.
+    # Re-pointing "b" past the 128 slice leaves its row exactly where it is: the
+    # rows are ordered by hand now, and an edit is not a rearrangement.
     monkeypatch.setattr(
         SliceDialog,
         "get_slice",
         staticmethod(lambda *_a, **_k: SliceParams("b", 200, 32, "compression.none")),
     )
     window._edit_slice(b)
-    assert offsets() == sorted(offsets())
-    assert panel._offset_of(file_item.child(file_item.childCount() - 1)) == 200
+    assert [name for name, _offset in rows()][1:] == ["a", "b", "c"]
+    assert rows()[2] == ("b", 200)
 
 
-def test_shift_arrows_reorder_the_files_and_undo_puts_them_back(
-    qtbot, tmp_path
-) -> None:
+def test_shift_arrows_reorder_the_rows_and_undo_puts_them_back(qtbot, tmp_path) -> None:
     # Shift+Up/Down resize the view window everywhere else; with the list focused
-    # they reorder the files instead (the navigation filter defers to the tree).
-    # Both the model list and the tree rows have to move, and the file's slices
+    # they reorder the rows instead (the navigation filter defers to the tree).
+    # Both the model list and the tree rows have to move, and a file's slices
     # have to stay nested under it rather than being left behind.
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
@@ -379,6 +388,7 @@ def test_shift_arrows_reorder_the_files_and_undo_puts_them_back(
     a = window._workspace.find_file(str(first))
     b = window._workspace.find_file(str(second))
     cut = window._workspace.add_slice(str(first), "cut", 64, 64)
+    other_cut = window._workspace.add_slice(str(first), "cut2", 128, 64)
     panel = window._files_panel
 
     def file_rows() -> list[str]:
@@ -393,7 +403,8 @@ def test_shift_arrows_reorder_the_files_and_undo_puts_them_back(
     tree.setFocus()
 
     qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
-    assert window._workspace.entries == [b, a, cut]  # the slice travelled along
+    # Both slices travelled along, and stayed in their own order.
+    assert window._workspace.entries == [b, a, cut, other_cut]
     assert file_rows() == [b.name, a.name]
     assert panel._items[cut].parent() is panel._items[a]
     assert tree.currentItem() is panel._items[a]  # the moved row keeps the highlight
@@ -405,19 +416,29 @@ def test_shift_arrows_reorder_the_files_and_undo_puts_them_back(
     assert file_rows() == [b.name, a.name]
 
     window._undo_stack.undo()
-    assert window._workspace.entries == [a, cut, b]
+    assert window._workspace.entries == [a, cut, other_cut, b]
     assert file_rows() == [a.name, b.name]
 
-    # A slice has no hand order to change - its offset places it.
+    # A slice moves too, among its own siblings - the order of every row is the
+    # user's now, and the drag has a keyboard spelling.
     tree.setCurrentItem(panel._items[cut])
     tree.setFocus()
-    qtbot.keyClick(tree, Qt.Key.Key_Up, Qt.KeyboardModifier.ShiftModifier)
-    assert window._workspace.entries == [a, cut, b]
+    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
+    assert window._workspace.entries == [a, other_cut, cut, b]
+    window._undo_stack.undo()
+    assert window._workspace.entries == [a, cut, other_cut, b]
 
-    # The context-menu path, with that slice still the shown row: it leaves the
-    # tree along with its parent, so it has to come back nested and highlighted.
-    panel.move_requested.emit(a, 1)
-    assert window._workspace.entries == [b, a, cut]
+    # ...but never out of its parent's group: the last sibling has nowhere to go.
+    tree.setCurrentItem(panel._items[other_cut])
+    depth = window._undo_stack.count()
+    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
+    assert window._undo_stack.count() == depth
+
+    # The context-menu path, with a slice still the shown row: it leaves the tree
+    # along with its parent, so it has to come back nested and highlighted.
+    tree.setCurrentItem(panel._items[cut])
+    panel.reorder_requested.emit(a, None)
+    assert window._workspace.entries == [b, a, cut, other_cut]
     assert panel._items[cut].parent() is panel._items[a]
     assert tree.currentItem() is panel._items[cut]
 
@@ -2844,3 +2865,325 @@ def test_a_project_plugins_cell_format_reaches_the_files_list(qtbot, tmp_path) -
     # falls back to the plain grid rather than naming a format nothing provides.
     window._new_project()
     assert issues == []
+
+
+# -- cut / copy / paste / duplicate over the rows ---------------------------
+def _never_asks(*_args, **_kwargs):
+    raise AssertionError("this gesture must not put a prompt in the way")
+
+
+def _two_roms(qtbot, tmp_path):
+    """A window with two SNES files open and one slice carved out of the first."""
+    first = _make_snes_file(tmp_path)
+    second = tmp_path / "other.4bpp.sfc"
+    second.write_bytes(bytes((i * 11 + 5) & 0xFF for i in range(32 * 8)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(first))
+    window._load_pixel(str(second))
+    a = window._workspace.find_file(str(first))
+    b = window._workspace.find_file(str(second))
+    cut = window._workspace.add_slice(str(first), "sprites", 64, 64)
+    return window, a, b, cut
+
+
+def test_a_slice_copied_onto_another_file_keeps_its_coordinates(qtbot, tmp_path):
+    """The operation the paste target rule exists for: finding the same regions
+    in a second dump of the same ROM.
+
+    The offsets are the point and must survive verbatim; what has to follow the
+    new parent is only the file the offsets are counted against.
+    """
+    window, a, b, cut = _two_roms(qtbot, tmp_path)
+    cut.slot_fill = cut.slot_fill  # (left as-is; the codec fields ride along too)
+
+    window._copy_entry(cut)
+    window._paste_entries(b)
+
+    pasted = window._workspace.slices_of(b)
+    assert [e.name for e in pasted] == ["sprites"]  # no collision, so no rename
+    assert (pasted[0].slice_offset, pasted[0].slice_length) == (64, 64)
+    assert pasted[0].compression_id == cut.compression_id
+    assert pasted[0] is not cut
+    assert window._workspace.slices_of(a) == [cut]  # the original stayed put
+
+    window._undo_stack.undo()
+    assert window._workspace.slices_of(b) == []
+
+
+def test_duplicating_a_slice_names_the_copy_and_lands_it_beside_the_original(
+    qtbot, tmp_path
+):
+    window, a, _b, cut = _two_roms(qtbot, tmp_path)
+
+    window._duplicate_entry(cut)
+    names = [e.name for e in window._workspace.slices_of(a)]
+    assert names == ["sprites", "sprites copy"]
+
+    window._duplicate_entry(cut)
+    assert [e.name for e in window._workspace.slices_of(a)][-1] == "sprites copy 2"
+
+    window._undo_stack.undo()
+    window._undo_stack.undo()
+    assert [e.name for e in window._workspace.slices_of(a)] == ["sprites"]
+
+
+def test_a_file_is_its_path_so_it_never_appears_twice(qtbot, tmp_path):
+    """Two rows over one file would be two documents over one buffer - two sets
+    of unsaved edits with one file underneath them. Both routes to a second one
+    are closed, and each says so rather than doing nothing."""
+    window, a, _b, _cut = _two_roms(qtbot, tmp_path)
+    before = list(window._workspace.entries)
+
+    window._duplicate_entry(a)
+    assert window._workspace.entries == before
+    assert "only be open once" in window.statusBar().currentMessage()
+
+    window._copy_entry(a)
+    window._paste_entries(None)
+    assert window._workspace.entries == before
+    assert "Already open" in window.statusBar().currentMessage()
+
+
+def test_cut_puts_the_row_on_the_clipboard_and_takes_it_out_without_asking(
+    qtbot, tmp_path, monkeypatch
+):
+    """Cut has already said where the row is going, so unlike Remove it does not
+    ask - and the removal is one undo away with the entry intact either way."""
+    from PySide6.QtWidgets import QMessageBox
+
+    window, a, b, cut = _two_roms(qtbot, tmp_path)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(_never_asks),
+    )
+
+    window._cut_entry(cut)
+    assert window._workspace.slices_of(a) == []
+
+    window._paste_entries(b)
+    assert [e.name for e in window._workspace.slices_of(b)] == ["sprites"]
+
+
+def test_dragging_a_row_reorders_it_and_refuses_a_drop_outside_its_group(
+    qtbot, tmp_path
+):
+    """A drop is only ever a reorder: between two rows, and between two rows of
+    the same group. Anything else would be a re-pointing, which is a decision for
+    a dialog rather than for aiming."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QDropEvent
+    from PySide6.QtWidgets import QTreeWidget
+
+    window, a, b, cut = _two_roms(qtbot, tmp_path)
+    panel = window._files_panel
+    tree = panel._tree
+    window.show()
+
+    def drop_on(dragged, target, position):
+        tree.setCurrentItem(panel._items[dragged])
+        tree._dragged = panel._items[dragged]
+        rect = tree.visualItemRect(panel._items[target])
+        event = QDropEvent(
+            QPointF(rect.center()),
+            Qt.DropAction.MoveAction,
+            tree.model().mimeData([tree.indexFromItem(panel._items[dragged])]),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        # dropIndicatorPosition() is set while the view is dragging over a row,
+        # which a synthesised drop has not done - so it is stated here instead.
+        tree.dropIndicatorPosition = lambda: position
+        tree.dropEvent(event)
+        tree._dragged = None
+
+    drop_on(b, a, QTreeWidget.DropIndicatorPosition.AboveItem)
+    assert window._workspace.entries == [b, a, cut]
+    assert [row.text(0) for row in _entry_rows(panel)] == [b.name, a.name]
+
+    window._undo_stack.undo()
+    assert window._workspace.entries == [a, cut, b]
+
+    # A slice onto a *file* row is a different group, so nothing moves.
+    depth = window._undo_stack.count()
+    drop_on(cut, b, QTreeWidget.DropIndicatorPosition.AboveItem)
+    assert window._undo_stack.count() == depth
+    assert window._workspace.entries == [a, cut, b]
+
+    # And a drop *onto* a row rather than between two is refused as well.
+    drop_on(b, a, QTreeWidget.DropIndicatorPosition.OnItem)
+    assert window._undo_stack.count() == depth
+    assert window._workspace.entries == [a, cut, b]
+
+
+def test_a_drag_opens_its_own_group_to_the_drop_and_closes_it_again(
+    qtbot, tmp_path, monkeypatch
+):
+    """Qt accepts a drop *between* two rows only when their parent row is itself
+    a drop target, so a reorder is dead — no indicator, "no drop" cursor — unless
+    the group is opened for the length of the drag. Rows outside it stay closed,
+    which is what keeps a drop from meaning a re-parenting."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QTreeWidget
+
+    window, a, b, cut = _two_roms(qtbot, tmp_path)
+    panel = window._files_panel
+    tree = panel._tree
+    file_row, section = panel._items[a], panel._items[a].parent()
+
+    seen: dict[str, bool] = {}
+
+    def record(_self, _actions) -> None:  # stands in for the blocking QDrag.exec
+        seen["group"] = bool(file_row.flags() & Qt.ItemFlag.ItemIsDropEnabled)
+        seen["other"] = bool(section.flags() & Qt.ItemFlag.ItemIsDropEnabled)
+
+    monkeypatch.setattr(QTreeWidget, "startDrag", record)
+
+    tree.setCurrentItem(panel._items[cut])
+    tree.startDrag(Qt.DropAction.MoveAction)
+    assert seen == {"group": True, "other": False}  # the slice's file, and only it
+    # Closed again: a row that stayed a drop target would offer a drop *onto* it.
+    assert not file_row.flags() & Qt.ItemFlag.ItemIsDropEnabled
+
+
+def test_a_hand_arranged_list_survives_a_project_round_trip(qtbot, tmp_path):
+    """The order is project state now, so saving and reopening has to give it
+    back - the list used to re-derive children from their offsets on load, which
+    would quietly undo every rearrangement."""
+    window, a, b, cut = _two_roms(qtbot, tmp_path)
+    second = window._workspace.add_slice(str(a.path), "later", 128, 64)
+    assert window._workspace.slices_of(a) == [cut, second]
+
+    window._reorder_entry(cut, None)  # send it past its sibling
+    window._reorder_entry(b, a)  # and the second file in front of the first
+    assert window._workspace.entries == [b, a, second, cut]
+
+    project = tmp_path / "arranged.celpix"
+    window._save_project_to(str(project))
+    window._new_project()
+    window._load_project(str(project))
+
+    assert [e.name for e in window._workspace.entries] == [
+        b.name,
+        a.name,
+        "later",
+        "sprites",
+    ]
+    # And on screen: the files in the order they were dragged into, each slice
+    # nested under its own in the order it was left in.
+    panel = window._files_panel
+    rows = [row.text(0) for row in _entry_rows(panel)]
+    assert rows == [b.name, a.name]
+    reopened = window._workspace.find_file(str(a.path))
+    item = panel._items[reopened]
+    children = [item.child(i).text(0) for i in range(item.childCount())]
+    assert children == ["later", "sprites"]
+
+
+def test_a_duplicated_tilemap_keeps_pointing_at_its_tiles(qtbot, tmp_path):
+    """A binding names a *position* in the list it was copied from, so a paste
+    has to re-resolve it or leave the map unbound - never hand it whichever entry
+    now happens to sit at a stale number.
+
+    Within one session the position still names a live entry, so the copy draws
+    the same bank the original does.
+    """
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.entries[0]
+    scr = _scr_file(tmp_path, [Cell(index=1), Cell(index=0)])
+    window._load_pixel(str(scr))
+    screen = window._workspace.find_file(str(scr))
+    window._rebind_tiles(screen, TileSource(mode=TileMode.ENTRY, entry=bank))
+    view = window._workspace.add_slice(str(scr), "view", 0, 64)
+    view.content_kind = screen.content_kind
+    view.tilemap_preset_id = screen.tilemap_preset_id
+    view.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+
+    window._duplicate_entry(view)
+
+    copy = window._workspace.slices_of(screen)[-1]
+    assert copy is not view
+    assert copy.tile_source is not None
+    assert copy.tile_source.entry is bank  # the same tiles, not a stale index
+
+
+def test_a_copy_from_another_session_leaves_a_tilemap_unbound(qtbot, tmp_path):
+    """Out of the session the position was written in it names nothing, and the
+    honest answer is placeholder cells and a re-pointable map - the same one a
+    project gives for a binding it cannot resolve."""
+    from celpix.core.tilemap import Cell
+    from celpix.project import projectfile
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.entries[0]
+    scr = _scr_file(tmp_path, [Cell(index=1), Cell(index=0)])
+    window._load_pixel(str(scr))
+    screen = window._workspace.find_file(str(scr))
+    window._rebind_tiles(screen, TileSource(mode=TileMode.ENTRY, entry=bank))
+    view = window._workspace.add_slice(str(scr), "view", 0, 64)
+    view.content_kind = screen.content_kind
+    view.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+
+    payload = projectfile.entries_payload(
+        [view], window._workspace.entries, "some-other-window"
+    )
+    from celpix.ui import clipboard
+
+    clipboard.put_entries(payload, [view.path], {})
+    window._paste_entries(screen)
+
+    copy = window._workspace.slices_of(screen)[-1]
+    assert copy is not view
+    assert copy.tile_source is None
+
+
+def test_a_binding_survives_the_rows_being_rearranged_between_copy_and_paste(
+    qtbot, tmp_path
+):
+    """A copy sits on the clipboard across whatever the user does next, so what it
+    remembers about its tiles has to be the *entry* and not where that entry sat.
+
+    Every other reference to an entry in the editor is held by identity for this
+    reason (`TileSource`); a position recorded at copy time would name whichever
+    row had since been dragged into it.
+    """
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.entries[0]
+    decoy = tmp_path / "decoy.4bpp.sfc"
+    decoy.write_bytes(bytes((i * 3 + 1) & 0xFF for i in range(32 * 8)))
+    window._load_pixel(str(decoy))
+    other = window._workspace.find_file(str(decoy))
+    scr = _scr_file(tmp_path, [Cell(index=1), Cell(index=0)])
+    window._load_pixel(str(scr))
+    screen = window._workspace.find_file(str(scr))
+    view = window._workspace.add_slice(str(scr), "view", 0, 64)
+    view.content_kind = screen.content_kind
+    view.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+
+    window._copy_entry(view)
+    # Now shuffle the list out from under the copy: the bank changes places with
+    # the other file, so its old position names the decoy.
+    window._reorder_entry(bank, None)
+    assert window._workspace.entries.index(bank) > window._workspace.entries.index(
+        other
+    )
+
+    window._paste_entries(screen)
+    copy = window._workspace.slices_of(screen)[-1]
+    assert copy is not view
+    assert copy.tile_source is not None
+    assert copy.tile_source.entry is bank  # not `other`, which now sits where it did

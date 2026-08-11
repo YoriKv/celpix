@@ -1298,10 +1298,17 @@ class EntriesMixin:
         self._push_command(AddEntryCommand(self, entry, f'new slice "{entry.name}"'))
 
     # -- removal -------------------------------------------------------------
-    def _remove_entry(self, entry: Entry) -> None:
+    def _remove_entry(self, entry: Entry, *, confirm: bool = True) -> None:
         """Remove ``entry`` from the list (a file takes its slices and
-        bookmarks with it), always confirming first - Remove is also on the
-        Delete key, and a slip there costs the entry's whole session setup."""
+        bookmarks with it), confirming first - Remove is also on the Delete key,
+        and a slip there costs the entry's whole session setup.
+
+        ``confirm=False`` is **Cut**, which has already said where the row is
+        going: it is on the clipboard before this runs, so the question the
+        prompt asks has an answer the gesture itself gave. The palette branch
+        below still asks either way — re-homing the graphics that render it is a
+        change to *those* entries, which no clipboard holds.
+        """
         if entry.kind is EntryKind.PALETTE:
             # The current graphic's palette mode is only written to its session on
             # a switch, so snapshot it first - otherwise a palette in use *right
@@ -1329,9 +1336,10 @@ class EntriesMixin:
             parts.append(f"discards unsaved changes ({', '.join(dirty)})")
         if parts:
             message = f"Remove {entry.name}? This also " + " and ".join(parts) + "."
-        answer = QMessageBox.question(self, "celPix - remove", message)
-        if answer != QMessageBox.StandardButton.Yes:
-            return
+        if confirm:
+            answer = QMessageBox.question(self, "celPix - remove", message)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         entries = self._workspace.entries
         self._push_command(
             RemoveEntriesCommand(

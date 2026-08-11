@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Callable, NamedTuple
 
 from celpix.core.context import (
-    KEY_ALPHABET,
     KEY_SOURCE_FILES,
     KEY_SOURCE_PATH,
     KEY_TILEMAP_PALETTE_ROW_BASE,
@@ -43,7 +42,6 @@ from celpix.core.font import (
     Glyph,
     GlyphRole,
     glyphs_from_spec,
-    parse_table,
     sequential,
 )
 from celpix.core.notices import warn
@@ -169,7 +167,6 @@ __all__ = [
     "reinterpret_pixel_data",
     "save",
     "spliced_palette_bytes",
-    "stated_alphabet",
     "sprite_hit",
     "sprite_hits",
     "sprite_hoist",
@@ -496,7 +493,6 @@ def load_tilemap_data(
 def load_font_alphabet(
     chars: str,
     codes: Iterable[Glyph],
-    ctx: PipelineContext,
     *,
     controls: Iterable[dict] = (),
     code_digits: int = 2,
@@ -530,12 +526,11 @@ def load_font_alphabet(
     the same kind of fact — that lines end on a bit the cell carries rather than
     on a code (:attr:`~celpix.core.font.FontAlphabet.flag_break`).
 
-    **A container may state the whole thing** where the entry states nothing
-    (:data:`~celpix.core.context.KEY_ALPHABET`): a game-specific loader that
-    computed a mapping no table could hold is how the extraordinary font is
-    served now that there is no code tier. It fills in rather than overrides — a
-    stored table is the user's own work and beats anything guessed for them, and
-    the moment they type one it is theirs and the guess steps aside.
+    **All three are stated by hand**, and nothing fills a font's half in from the
+    file. A container that stated one would be read whatever **Use as Font** said,
+    since that tick is what blanks ``chars`` and ``codes`` at the call site
+    (``docs/design/fontmap-entry.md`` §4) — so the one control over whether a
+    sheet's codes mean anything would stop deciding it.
 
     Returns **None** rather than an empty alphabet where nothing says anything:
     "no alphabet yet" and "an alphabet that maps nothing" are different states,
@@ -547,8 +542,6 @@ def load_font_alphabet(
     """
     named = list(codes)
     run = list(sequential(0, chars))
-    if not run and not named:
-        run = stated_alphabet(ctx)
     font = FontAlphabet(run, code_digits=code_digits, flag_break=flag_break).shifted(
         base
     )
@@ -572,20 +565,6 @@ def load_font_alphabet(
             flag_break=flag_break,
         )
     )
-
-
-def stated_alphabet(ctx: PipelineContext) -> list[Glyph]:
-    """The mapping the font's container published, if it published one.
-
-    Two spellings, because a container computes its answer in whichever is
-    cheaper: a table's worth of ``20=A`` text, or the glyphs themselves.
-    """
-    stated = ctx.get(KEY_ALPHABET)
-    if isinstance(stated, str):
-        return parse_table(stated)
-    if stated:
-        return [glyph for glyph in stated if isinstance(glyph, Glyph)]
-    return []
 
 
 def encode_cells(

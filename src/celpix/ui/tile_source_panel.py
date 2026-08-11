@@ -35,6 +35,14 @@ follows) — the outer is drawn in the grid's structural blue, the colour that
 marks structure rather than choice everywhere else. Two rings in one white on
 one small square read as one ring drawn twice.
 
+**The selection is a set of tiles with one of them current.** Clicking or
+dragging here picks one, which is all a stamp can place; a caller that already
+holds a wider pick — the font alphabet window's table, where a stretch of rows is
+a stretch of tiles (:mod:`celpix.ui.font_alphabet_window`) — states the whole set
+with :meth:`~TileSourcePanel.select_ids`. It is drawn as the canvas draws a
+multi-tile selection: one outline per contiguous run of a display row, so a
+picked block reads as a block and a scattered pick does not claim to be one.
+
 **A lattice every 16 tiles** marks where the numbering rolls over — the page a
 bank is addressed in, not the tile boundaries, which are already visible here
 (:data:`GRID_STEP_TILES`). Fixed rather than following View ▸ Grid: that setting
@@ -104,6 +112,10 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         self._columns = 16
         self._zoom = 2
         self._selected: int | None = None
+        # Every picked tile, the current one included. Held beside `_selected`
+        # rather than instead of it because the two answer different questions:
+        # what is outlined, and which tile a stamp places and the arrows step from.
+        self._picked: frozenset[int] = frozenset()
         self._marked: int | None = None
         self._labels: dict[int, str] = {}
         # ClickFocus, the canvas and palette grid's idiom: clicking a tile also
@@ -134,8 +146,10 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         self._ids = ids
         self._cell_px = (max(1, cell_px[0]), max(1, cell_px[1]))
         self._columns = max(1, columns)
-        if self._selected is not None and self._selected not in ids:
+        on_sheet = set(ids)
+        if self._selected is not None and self._selected not in on_sheet:
             self._selected = None
+        self._picked &= on_sheet
         if self._marked is not None and self._marked not in ids:
             self._marked = None
         self._update_size()
@@ -186,16 +200,47 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         """The picked tile's ID, or ``None``."""
         return self._selected
 
+    def selected_ids(self) -> frozenset[int]:
+        """Every picked tile's ID — one of them, unless a caller stated more."""
+        return self._picked
+
     def select_id(self, tile_id: int) -> None:
-        """Pick ``tile_id``, as a click would. Ignored for an ID not on show."""
+        """Pick ``tile_id`` alone, as a click would. Ignored for an ID not on show."""
         if tile_id in self._ids:
             self._select(tile_id)
 
+    def select_ids(self, ids: Sequence[int]) -> None:
+        """Pick every ID in ``ids``, the first of them current.
+
+        For a caller whose own reading of the sheet has a selection wider than
+        one tile. IDs the run does not hold are dropped rather than refused: a
+        table that lists codes past the last tile is the ordinary case
+        (:mod:`celpix.ui.font_alphabet_window`), and the tiles among them are
+        still the answer.
+        """
+        on_sheet = set(self._ids)
+        picked = [tile_id for tile_id in ids if tile_id in on_sheet]
+        if picked:
+            self._pick(frozenset(picked), picked[0])
+
     def _select(self, tile_id: int) -> None:
-        if tile_id != self._selected:
-            self._selected = tile_id
-            self.update()
-            self.tile_selected.emit(tile_id)
+        self._pick(frozenset({tile_id}), tile_id)
+
+    def _pick(self, picked: frozenset[int], current: int) -> None:
+        """Land a selection, reporting only a change of the *current* tile.
+
+        Widening a pick that still has the same tile current is not a new tile
+        being picked — everything downstream of the signal (the canvas, the Cell
+        spin, the ring in the dock) speaks of one tile, and would be told the
+        same one again.
+        """
+        if picked == self._picked and current == self._selected:
+            return
+        moved = current != self._selected
+        self._picked, self._selected = picked, current
+        self.update()
+        if moved:
+            self.tile_selected.emit(current)
 
     # -- geometry ------------------------------------------------------------
     def _rows(self) -> int:
@@ -323,10 +368,38 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
                 self._cell_rect(self._slot_of(self._marked)),
                 color=GRID_STRUCTURE_COLOR,
             )
-        if self._selected is not None:
-            rect = self._cell_rect(self._slot_of(self._selected)).adjusted(1, 1, -1, -1)
-            paint_selection_outline(painter, rect, alpha=230)
+        self._paint_selection(painter)
         painter.end()
+
+    def _paint_selection(self, painter: QPainter) -> None:
+        """Outline the picked tiles, one ring per contiguous run of a row.
+
+        The canvas's rule for a multi-tile selection (:meth:`~celpix.ui.canvas.
+        Canvas._paint_selection`): a run drawn as one box reads as the stretch it
+        is, and a gap in it is a gap the user can see. Run in **slots**, since
+        the sheet steps over the IDs between two units and only the list can say
+        which squares sit next to each other.
+
+        Inset a pixel and slightly soft, so a tile that is also *marked* still
+        reads as two rings rather than one thick one.
+        """
+        if not self._picked:
+            return
+        slots = [
+            slot for slot, tile_id in enumerate(self._ids) if tile_id in self._picked
+        ]
+        runs: list[tuple[int, int]] = []
+        for slot in slots:  # ascending, since they come out of `enumerate`
+            # A slot in column 0 starts a row and so starts a run, whatever sat
+            # before it: the square before it on the sheet is the far end of the
+            # line above, and one ring around both would enclose the whole width.
+            if runs and slot == runs[-1][1] + 1 and slot % self._columns:
+                runs[-1] = (runs[-1][0], slot)
+            else:
+                runs.append((slot, slot))
+        for first, last in runs:
+            rect = self._cell_rect(first).united(self._cell_rect(last))
+            paint_selection_outline(painter, rect.adjusted(1, 1, -1, -1), alpha=230)
 
     def _paint_grid(self, painter: QPainter, exposed: QRect) -> None:
         """Rule the sheet every :data:`GRID_STEP_TILES` cells, both ways.

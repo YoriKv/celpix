@@ -89,7 +89,6 @@ def _read(workspace, registry, name: str) -> tuple[str, bool]:
     alphabet = pipeline.load_font_alphabet(
         font.font_chars,
         font.font_codes,
-        PipelineContext(),
         controls=params.get("controls", ()),
         code_digits=2,
         base=font.font_base,
@@ -182,10 +181,10 @@ def test_the_yi_sample_project_reads_all_of_its_streams() -> None:
     table without any of them having stored it. The **controls** are each
     stream's own, and here they genuinely differ: `$FF` ends a page in the
     storybook, is an escape prefix in the message boxes and the ending text
-    (which therefore declare nothing and read the shipped preset), and is a
-    column-setting prefix in the level names, which break on `$FD` instead.
-    Asserting them in one test is the point — any one alone would pass with the
-    split collapsed the wrong way.
+    (which therefore declare nothing and read the shipped preset), and opens a
+    level name's first line, which breaks on `$FD` instead. Asserting them in one
+    test is the point — any one alone would pass with the split collapsed the
+    wrong way.
 
     The credits are a fifth stream and a *second* font entry, tested separately
     below: their codes are not this font's codes.
@@ -195,10 +194,10 @@ def test_the_yi_sample_project_reads_all_of_its_streams() -> None:
     story, story_exact = _read(workspace, registry, "storybook intro")
     assert story.startswith("A long, long time ago ...")
     assert "baby Mario and Yoshi." in story
-    # Positioning codes take a parameter byte each and nothing says so, so they
-    # read as their own hex - the case fontmap-entry.md §5 chose over describing
-    # per-command arity.
-    assert "[$FE][$02][$FD][$10][$FC][$38]This is a story about" in story
+    # The positioning codes are named, so each reads as a word - and each one's
+    # *parameter* still reads as its own hex, which is the whole of what naming
+    # buys and does not buy (fontmap-entry.md §5: no per-command arity).
+    assert "[line][$02][set-row][$10][set-column][$38]This is a story about" in story
 
     boxes, boxes_exact = _read(workspace, registry, "message boxes")
     # A 16-bit `$XXFF` control split by a one-byte cell. Ugly, and exactly right:
@@ -211,11 +210,17 @@ def test_the_yi_sample_project_reads_all_of_its_streams() -> None:
     assert ending.startswith("Thus, due to the marvelous[$FF][$0A]team work of")
 
     names, names_exact = _read(workspace, registry, "level names")
-    # `$FD` ends a name here and is a set-Y prefix in the storybook - the same
-    # byte, two streams, and the reason a stream's controls are not the font's.
+    # `$FD` ends a name here and sets a row in the storybook - the same byte,
+    # two streams, two names, and the reason a stream's controls are not the
+    # font's. `$FE` is the same story one code along.
     lines = names.splitlines()
-    assert lines[0] == "[$FF][$00]      Welcome To[$FE][$10][$00]   Yoshi's Island"
-    assert "[$FF][$00]1 - 1:  Make Eggs,[$FE][$10][$00]         Throw Eggs" in lines
+    assert lines[0] == (
+        "[set-column][$00]      Welcome To[set-position][$10][$00]   Yoshi's Island"
+    )
+    assert (
+        "[set-column][$00]1 - 1:  Make Eggs,[set-position][$10][$00]         Throw Eggs"
+        in lines
+    )
     # 54 level names, the world-1 splash, and the garbage sentinel the 21
     # unreachable pointer slots share.
     assert len(lines) == 56
