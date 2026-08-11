@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.4 - unreleased
+## v0.5.4 - 2026-08-11
 
 - Reorder slices, as well as cut/copy/paste/duplicate
 - Added snes 16x16 tilemap format
