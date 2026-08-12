@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.9 - unreleased
+
+- More fontmap fixes
+
 ## v0.5.8 - 2026-08-12
 
 - Fixed Refresh Plugins breaking tilemaps

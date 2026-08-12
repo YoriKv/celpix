@@ -366,12 +366,18 @@ class TilemapBindingState:
     seed has not been read yet.
     """
 
+    #: **Use as Font** rides along for one direction only: a cell format that
+    #: makes the entry a fontmap takes the tick off it, since a map cannot be the
+    #: font a map reads through (:attr:`~celpix.project.workspace.Entry.
+    #: is_font_sheet`). Carried here so an undo puts back the declaration the
+    #: switch cleared, in the same step that puts back the format.
     tile_source: TileSource | None = None
     preset_id: str | None = None
     size_pair: tuple[int, int] | None = None
     palette_mode: PaletteMode = PaletteMode.DEFAULT
     palette_preset_id: str = ""
     pending_palette: PaletteSource | None = None
+    use_as_font: bool = False
 
 
 class TilemapBindingCommand(_CurrentEntryCommand):

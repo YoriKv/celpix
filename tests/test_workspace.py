@@ -767,6 +767,23 @@ def test_sorting_reads_digit_runs_as_numbers_and_ties_by_name(tmp_path) -> None:
     assert sorted_entries(list(reversed(twins)), SortKey.OFFSET) == twins[::-1]
 
 
+def test_only_a_pixels_entry_counts_as_a_font_sheet(tmp_path) -> None:
+    # A map reads its cells *through* a font and has no tiles of its own to
+    # spell, so one carrying the tick — an older project, a hand-edited file —
+    # must not be offered as the font another map reads through.
+    ws = Workspace()
+    rom = str(tmp_path / "rom.sfc")
+    ws.open_file(rom)
+    sheet = ws.add_slice(rom, "font", 0x100, 64)
+    sheet.use_as_font = True
+    assert sheet.is_font_sheet
+
+    string = ws.add_slice(rom, "text", 0x200, 64)
+    string.content_kind = ContentKind.TILEMAP
+    string.use_as_font = True  # stale: the tick is offered on pixels alone
+    assert not string.is_font_sheet
+
+
 def test_sorting_by_type_ranks_the_map_readings_and_leaves_ties_alone(tmp_path) -> None:
     # The picture first, then the three readings of a map, and the palettes last.
     # Nothing breaks a tie on purpose: sorts compose, so a group put in name order

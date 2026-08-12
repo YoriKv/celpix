@@ -79,8 +79,8 @@ class FontAlphabetMixin:
             bound = (
                 self._binding_target(entry.tile_source) if entry.tile_source else None
             )
-            return bound if bound is not None and bound.use_as_font else None
-        return entry if entry.use_as_font else None
+            return bound if bound is not None and bound.is_font_sheet else None
+        return entry if entry.is_font_sheet else None
 
     def _font_alphabet_available(self) -> bool:
         """Whether there is a font to edit the alphabet of.
@@ -314,14 +314,24 @@ class FontAlphabetMixin:
         kind of document, and this is the one control on it that says something
         about *tiles* rather than about how many of them to show at once. A map's
         cells are not letters and a palette has no tiles at all, so on both there
-        is no question here to answer.
+        is no question here to answer — a **fontmap** least of all, which reads
+        its cells *through* a font and cannot also be one
+        (:attr:`~celpix.project.workspace.Entry.is_font_sheet`).
+
+        The tick follows that same answer rather than the raw flag, so a map
+        carrying a stale one from an older project shows nothing to untick.
+
+        Hidden by its **toolbar action**, which is the only handle that holds: a
+        toolbar wraps a widget in a QWidgetAction and shows the widget again on
+        its next re-layout, so hiding the checkbox itself lasts until the first
+        window resize (``docs/py-qt-reference/pyside6-pitfalls.md``).
         """
         entry = self._workspace.current
-        self._use_as_font.setVisible(
+        self._use_as_font_action.setVisible(
             entry is not None and entry.content_kind is ContentKind.PIXELS
         )
         with signals_blocked(self._use_as_font):
-            self._use_as_font.setChecked(entry is not None and entry.use_as_font)
+            self._use_as_font.setChecked(entry is not None and entry.is_font_sheet)
 
     def _on_use_as_font_change(self, on: bool) -> None:
         """Declare (or stop declaring) that this sheet's tiles are letters.

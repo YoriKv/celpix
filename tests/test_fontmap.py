@@ -72,6 +72,56 @@ def test_a_fontmap_reads_its_cells_as_words(qtbot, tmp_path) -> None:
     assert window._text_available()
 
 
+def test_use_as_font_stays_hidden_on_a_map_through_a_toolbar_relayout(
+    qtbot, tmp_path
+) -> None:
+    """The tick is the sheet's question, and a map must not be asked it.
+
+    Hiding the *checkbox* was not enough to keep it away: a toolbar wraps a
+    widget it is handed in a QWidgetAction and shows that widget again on its
+    next layout pass, so the tick came back on the first window resize — offering
+    a declaration a map cannot make, on the entry least able to make it.
+    """
+    window, bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
+    window.show()
+
+    window._activate_entry(bank)  # the sheet: the tick is its question to answer
+    qtbot.waitUntil(lambda: not window._use_as_font.isHidden())
+
+    window._activate_entry(entry)  # the fontmap drawn through it
+    window.resize(700, 600)
+    qtbot.waitUntil(lambda: window._use_as_font.isHidden())
+    window.resize(1100, 760)
+    qtbot.waitUntil(lambda: window._use_as_font.isHidden())
+
+
+def test_a_text_cell_format_takes_use_as_font_off_the_map(qtbot, tmp_path) -> None:
+    """A map reads its cells *through* a font and cannot also be one.
+
+    The tick is offered on a pixels entry alone, so what this clears is stale —
+    an older project, a hand-edited file — but the moment the format says the
+    cells are text is the moment it can be said to be wrong. One step with the
+    switch, so an undo puts both back.
+    """
+    window, _bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
+    entry.tilemap_preset_id = "preset.tilemap.gb-bg"  # a grid map, for now
+    entry.use_as_font = True
+    window._activate_entry(entry)
+    assert not entry.is_font_sheet  # inert on a map, whatever the flag says
+
+    combo = window._tilemap_preset
+    at = combo.findData("preset.tilemap.text-8bit")
+    combo.setCurrentIndex(at)
+    window._on_tilemap_preset_change(at)
+
+    assert entry.use_as_font is False
+    window._undo_stack.undo()
+    assert (entry.use_as_font, entry.tilemap_preset_id) == (
+        True,
+        "preset.tilemap.gb-bg",
+    )
+
+
 def test_a_fontmap_with_no_alphabet_still_opens_and_says_so(qtbot, tmp_path) -> None:
     """Hex is the honest reading of codes nothing has explained, and the window
     is where the user is told which control fixes it - so it must not be hidden

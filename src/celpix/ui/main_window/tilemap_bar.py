@@ -683,7 +683,7 @@ class TilemapBarMixin:
         # and this one may not be the one on screen by the time it is asked. Only
         # a pixels entry can be a font: a stamp layout's chained tilemap has no
         # tiles of its own to spell.
-        if not self._tilemap_is_fontmap(entry) or bound.use_as_font:
+        if not self._tilemap_is_fontmap(entry) or bound.is_font_sheet:
             return True
         if bound.content_kind is not ContentKind.PIXELS:
             return True
@@ -810,13 +810,22 @@ class TilemapBarMixin:
             return
         before = self._tilemap_binding_state(entry)
         preset_id = str(self._tilemap_preset.currentData())
+        # A format that reads the cells as text takes **Use as Font** off the
+        # entry with it: a string is not a sheet of letters, so a map left ticked
+        # would offer itself as the font for another map and read that one
+        # through its own table. Only stale state can be on to clear — the tick
+        # is offered on a pixels entry alone — and it goes in this step, so one
+        # Ctrl+Z puts the format and the declaration back together.
+        after = replace(before, preset_id=preset_id)
+        if self._preset_declares(preset_id, "layout") == "text":
+            after = replace(after, use_as_font=False)
         # The format's own name, not the combo's text: that carries the layout tag
         # ("[S] Sprite object subsprite"), which is a column marker and reads as
         # noise in an Undo menu entry.
         self._push_tilemap_binding(
             entry,
             before,
-            replace(before, preset_id=preset_id),
+            after,
             f"switch cell format to {self._preset_name(preset_id)}",
         )
 
@@ -933,6 +942,7 @@ class TilemapBarMixin:
             palette_mode=mode,
             palette_preset_id=preset,
             pending_palette=entry.pending_palette,
+            use_as_font=entry.use_as_font,
         )
 
     def _push_tilemap_binding(
@@ -1013,6 +1023,7 @@ class TilemapBarMixin:
         entry.tilemap_preset_id = state.preset_id
         entry.sprite_size_pair = state.size_pair
         entry.pending_palette = state.pending_palette
+        entry.use_as_font = state.use_as_font
         session = entry.session
         if session is None:
             return

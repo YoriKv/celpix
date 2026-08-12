@@ -572,6 +572,20 @@ class Entry:
         """Unsaved changes on the entry's palette pathway."""
         return self.palette_revision != self.palette_saved_revision
 
+    @property
+    def is_font_sheet(self) -> bool:
+        """Whether this entry's tiles are letters — the tick *and* the kind.
+
+        **Only a sheet of pixels can be a font**, which is why every reader asks
+        this rather than :attr:`use_as_font` directly. A map has no tiles of its
+        own to spell: its cells name another entry's, so a fontmap answering yes
+        would offer itself as the font for a second string and read that string
+        through its own table. The tick is offered on a pixels entry alone, so a
+        map carrying it can only be stale — an older project, or a hand-edited
+        file — and this is what keeps that inert rather than load-bearing.
+        """
+        return self.use_as_font and self.content_kind is ContentKind.PIXELS
+
     def can(self, capability: Capability) -> bool:
         """Whether this entry supports ``capability`` — the gate on its controls.
 

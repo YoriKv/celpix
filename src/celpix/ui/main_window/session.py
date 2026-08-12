@@ -568,8 +568,17 @@ class SessionMixin:
         answer as a preset that declares nothing: a format celPix does not have
         cannot have claimed anything about its cells.
         """
+        return self._preset_declares(self._tilemap_preset_id(entry), name)
+
+    def _preset_declares(self, preset_id: str, name: str) -> object:
+        """The same, of a **format** rather than of an entry.
+
+        What the cell-format picker needs: the entry still holds the old format
+        at the moment a switch is being weighed, so the question has to be asked
+        of the id about to be applied.
+        """
         try:
-            preset = self._registry.preset(self._tilemap_preset_id(entry))
+            preset = self._registry.preset(preset_id)
         except KeyError:
             return None
         return preset.params.get(name)
@@ -637,7 +646,7 @@ class SessionMixin:
         if not self._tilemap_is_fontmap(entry):
             return None
         bound = self._binding_target(entry.tile_source) if entry.tile_source else None
-        font = bound if bound is not None and bound.use_as_font else None
+        font = bound if bound is not None and bound.is_font_sheet else None
         return pipeline.load_font_alphabet(
             font.font_chars if font is not None else "",
             font.font_codes if font is not None else (),

@@ -384,7 +384,12 @@ class InterpretationMixin:
             "Unticking keeps the table, but stops it being read"
         )
         self._use_as_font.toggled.connect(self._on_use_as_font_change)
-        view.addWidget(self._use_as_font)
+        # The **action**, not the widget, is what :meth:`_sync_use_as_font` hides
+        # by: a toolbar wraps a widget it is handed in a QWidgetAction and shows
+        # that widget again on its next re-layout, so a `setVisible(False)` on
+        # the checkbox comes undone the first time the window is resized
+        # (``docs/py-qt-reference/pyside6-pitfalls.md``).
+        self._use_as_font_action = view.addWidget(self._use_as_font)
 
         # The Selection Shape picker (what a canvas drag selects) lives on the
         # canvas transform toolbar - see :mod:`celpix.ui.main_window.transform` -
