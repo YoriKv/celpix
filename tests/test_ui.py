@@ -150,6 +150,36 @@ def test_refresh_reloads_edited_preset_and_reruns(qtbot, tmp_path, monkeypatch) 
     assert window._doc.tile_count == 4
 
 
+def test_refresh_re_reads_a_bound_tilemap_instead_of_its_own_bytes(
+    qtbot, tmp_path
+) -> None:
+    """A map's pixel half belongs to the entry it is bound to.
+
+    Running the pixel pathway over the map's *own* file on refresh decoded its
+    cells as tiles and drew that over the picture — the map came back as noise
+    while the cells underneath were still right.
+    """
+    from celpix.pipeline import pipeline
+    from celpix.plugins.registry import default_registry
+    from test_fontmap import _fontmap
+
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
+    window._refresh_view()
+
+    def drawn():
+        doc = window._doc
+        tiles, _layout = pipeline.tilemap_tiles(doc, window._registry, doc.view.columns)
+        return [bytes(tile.data) for tile in tiles]
+
+    before = drawn()
+    window._reload_plugins = lambda project_path=None: (default_registry(), [])
+    window._refresh_plugins()
+
+    assert drawn() == before  # the same picture, drawn through the same bank
+    assert window._doc.pixel_data == bank.doc.pixel_data
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 1]
+
+
 def test_project_folder_plugins_load_and_unload_with_the_project(
     qtbot, tmp_path
 ) -> None:

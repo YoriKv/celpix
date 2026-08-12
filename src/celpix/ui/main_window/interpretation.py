@@ -1048,6 +1048,14 @@ class InterpretationMixin:
         in the loaded bytes and a re-read would throw away. There the refresh
         reinterprets what is in memory, so a changed *codec* still takes effect
         and the edits survive; a re-read happens on the entry's next load.
+
+        **A tilemap is re-read whole instead** (:meth:`~...tilemap_bar.
+        TilemapBarMixin._reload_tilemap`), because its pixel half is not its own:
+        the tiles come from the entry it is bound to, and running the pixel
+        pathway over *this* entry's bytes would decode the map's own cells as
+        tiles and draw noise over a picture that was right. That path re-reads
+        both halves under the binding, so the reloaded plugins are still
+        exercised, and it carries the same unsaved-edit rule.
         """
         if self._reload_plugins is None:
             return
@@ -1062,7 +1070,10 @@ class InterpretationMixin:
         # through it. Reported at the end, with the load issues.
         missing_presets = repair_presets(self._workspace.entries, self._registry)
         self._repopulate_presets()
-        if self._doc is not None:
+        if self._doc is not None and self._doc.is_tilemap and entry is not None:
+            # Cells, bound tiles and palette in one read, under the binding.
+            self._reload_tilemap(entry)
+        elif self._doc is not None:
             # Re-decode the open file's sources through the new registry - via
             # the application paths, never commands: a plugin refresh isn't an
             # edit and must not pollute the undo history.
