@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.5 - unreleased
+## v0.5.5 - 2026-08-12
 
 - Sort files and slices by name, offset, type
 - Lots of updates and fixes to both the functionality and ui of font maps
