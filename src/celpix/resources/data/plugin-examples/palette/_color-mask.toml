@@ -1,24 +1,22 @@
 # Example preset for the `codec.palette.mask` engine. Files starting with "_" are
 # ignored — copy this file, drop the underscore, edit it, press F5 in celPix.
 #
-# A preset is pure data: it names one built-in engine and fills in that engine's
-# parameters, so a file is only useful for the engine it names. This folder has
-# one example per palette engine.
-#
-# Because this file sits in palette/ it is an interpret-palette format — no
+# A preset names one built-in engine and fills in its parameters, so a file is
+# only useful for the engine it names. This folder has one example per palette
+# engine. Sitting in palette/ is what makes it an interpret-palette format — no
 # stage field needed.
 #
 # WHAT THE ENGINE DOES
 # --------------------
-# codec.palette.mask decodes fixed-size palette entries that store colour as packed
-# bit fields — essentially every hardware palette that isn't a lookup into fixed
-# silicon colours (for those, see _color-indexed.toml). An entry's bytes are
-# assembled into one value by `byte_order`, each channel is sliced out of it and
-# scaled up to 8 bits. A channel narrower than 8 bits is lossy: the *decoded
-# colour* round-trips, the raw bits cannot.
+# Fixed-size palette entries storing colour as packed bit fields — essentially
+# every hardware palette that is not a lookup into fixed silicon colours (for
+# those, see _color-indexed.toml). An entry's bytes are assembled into one value
+# by `byte_order`, and each channel is sliced out and scaled up to 8 bits. A
+# channel narrower than 8 bits is lossy: the *decoded colour* round-trips, the raw
+# bits cannot.
 #
-# It shares its arithmetic with codec.pixel.direct-color (_direct-color.toml) —
-# the same maths, applied to a palette entry rather than to a pixel.
+# Same arithmetic as codec.pixel.direct-color (_direct-color.toml), applied to a
+# palette entry rather than to a pixel.
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
@@ -39,8 +37,8 @@ engine_id = "codec.palette.mask"
 
 [params]
 
-# WHERE THE COMPONENTS SIT: one letter per bit, most significant bit first —
-# the diagram your format's own documentation draws. Whitespace groups it for
+# WHERE THE COMPONENTS SIT: one letter per bit, most significant first — the
+# diagram your format's own documentation draws. Whitespace groups it for
 # counting and means nothing; group in nibbles and each group is one hex digit.
 #
 #   r  red      g  green      b  blue      a  alpha
@@ -50,62 +48,47 @@ engine_id = "codec.palette.mask"
 # The layout below is RGB555 in a 16-bit entry, `0RRRRRGG GGGBBBBB`:
 fields = ".rrr rrgg gggb bbbb"
 
-# Every bit gets a letter, which is the point: a bit nobody names is written
-# back as ZERO when a palette is saved, and spelling it `.` is you saying so.
-# The layout is checked against the entry width, so a diagram that is too short
-# is a load error rather than a colour that quietly loses its top bits.
-#
-# A component the format has not got simply never appears — leave `a` out and
-# every entry decodes opaque.
-#
-# A channel SPLIT across the entry — its main run in one place and a stray low
-# bit parked elsewhere, which is how several 68000 arcade boards keep the
-# nibbles byte-aligned — needs nothing said. Write it where it is and the runs
-# are one channel, in the order they are read:
-#
-#   fields = "rrrr gggg bbbb rgb."
+# Every bit gets a letter: a bit nobody names is written back as ZERO on save, and
+# `.` is you saying so. The layout is checked against the entry width, so a short
+# diagram is a load error rather than a colour that quietly loses its top bits. A
+# component the format has not got never appears — leave `a` out and every entry
+# decodes opaque. A channel SPLIT across the entry (how several 68000 boards keep
+# their nibbles byte-aligned) needs nothing said: write it where it is and the
+# runs are one channel, in the order they are read — `"rrrr gggg bbbb rgb."`.
 #
 # A format that spells a channel some other way can keep its own letters:
 #
 #   [params.legend]
 #   c = "b"    # `c` in the diagram means blue
 
-# How many bytes one palette entry occupies. Optional — the layout above already
-# says — but worth stating, and the two are checked against each other. This is
-# also what the host uses to size a "load N entries" window.
+# How many bytes one palette entry occupies. Optional — the layout already says —
+# but worth stating, and the two are checked against each other. It also sizes a
+# "load N entries" window.
 bytes_per_entry = 2
 
-# How those bytes are assembled into the value the layout describes.
+# How those bytes are assembled into the value the layout describes. Only
+# meaningful above one byte, and it orders the entry's bytes IN THE FILE; the
+# layout is always the assembled value, high bit first, so the two are
+# independent.
 #   "little"  first byte is least significant   (the default)
 #   "big"     first byte is most significant
-# Only meaningful when bytes_per_entry is more than 1. It orders the entry's
-# bytes IN THE FILE; the layout is always the assembled value, high bit first,
-# so the two are independent.
 byte_order = "little"
 
-# For an entry SMALLER than a byte, replace `bytes_per_entry` above with this —
-# the two are mutually exclusive and giving both is refused. A handheld's shade
-# register is four two-bit entries in one byte, or four nibbles in two; it is a
-# register rather than an array, so nothing on disk is one entry wide to point
-# at. Sub-byte entries fill each unit from the LOW bits up, which is the order
-# both handheld families use. A value of 8 or more is `bytes_per_entry` spelt in
-# bits; anything else must divide 8.
+# For an entry SMALLER than a byte, replace `bytes_per_entry` with this (the two
+# are mutually exclusive). A handheld's shade register is four two-bit entries in
+# one byte, so nothing on disk is one entry wide to point at. Sub-byte entries
+# fill each unit from the LOW bits up, the order both handheld families use; a
+# value of 8 or more is `bytes_per_entry` spelt in bits, anything else divides 8.
 # bits_per_entry = 2
 
 # Does a field count DARKNESS rather than brightness? The handhelds' greyscales
-# do — 0 is white on all three of them — so the scaled value is flipped end for
-# end after the field is read.
+# do — 0 is white on all three — so the scaled value is flipped end for end after
+# the field is read.
 #   false  0 is black, the usual way round   (the default)
-#   true   0 is white
 invert = false
 
-# ONE SHADE rather than three channels? Spell that field `v` and it drives r, g
-# and b together:
-#
-#   fields = ".... .vvv"
-#
-# Naming those bits `r`, `g` and `b` instead is not the same thing, and the
-# notation will not let it be written — a bit carries one letter. That is the
-# point: a pure red would encode through the OR of three components reading one
-# field as a colour the format cannot mean. Going the other way an arbitrary
-# colour is reduced by luma, which is what the hardware's own converters do.
+# ONE SHADE rather than three channels? Spell that field `v` (`.... .vvv`) and it
+# drives r, g and b together. Naming those bits `r`, `g` and `b` is not the same
+# thing and the notation will not allow it — a pure red would encode through three
+# components reading one field as a colour the format cannot mean. An arbitrary
+# colour is reduced by luma, as the hardware's own converters do.

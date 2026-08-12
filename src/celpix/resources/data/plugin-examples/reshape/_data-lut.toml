@@ -8,18 +8,18 @@
 # the other, so a board scrambling both ways needs one of each (Reshape holds one
 # at a time, so those boards are not fully readable yet).
 #
-# The kernel is a 256-entry lookup table, which covers more than the bit
-# permutations hardware usually does: give it `bitswaps` and the permutations
-# compile to LUTs at load, or give it `luts` directly for an XOR mask or an
-# outright substitution. Either way every table must be a **bijection**, so the
-# inverse exists and edits still write back byte-exactly.
+# The kernel is a 256-entry lookup table, covering more than the bit permutations
+# hardware usually does: give it `bitswaps` and the permutations compile to LUTs
+# at load, or `luts` directly for an XOR mask or an outright substitution. Every
+# table must be a **bijection**, so the inverse exists and edits still write back
+# byte-exactly.
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
 # Board-specific descramblers like the one below do not ship — a table means
-# something only for the board it came from. What does ship are the tables that
-# are *pixel-order conventions* rather than scrambles, each turning a widespread
-# bit ordering into one an existing codec already reads:
+# something only for the board it came from. What ships are the tables that are
+# *pixel-order conventions* rather than scrambles, each turning a widespread bit
+# ordering into one an existing codec already reads:
 #
 #   reshape.deinterleave-nibbles  [[7,5,3,1,6,4,2,0]] — two 4bpp pixels woven bit
 #                                 by bit through a byte, gathered back into a

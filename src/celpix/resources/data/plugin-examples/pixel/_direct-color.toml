@@ -1,17 +1,16 @@
-# Example preset for the `codec.pixel.direct-color` engine. Copy, drop the underscore,
-# edit, press F5. See _planar.toml for what a preset is.
+# Example preset for the `codec.pixel.direct-color` engine. Copy, drop the
+# underscore, edit, press F5. See _planar.toml for what a preset is.
 #
 # WHAT THE ENGINE DOES
 # --------------------
-# codec.pixel.direct-color decodes **palette-less** pixels: each one carries its own
-# colour, so there is no index and no palette anywhere in the pipeline. A pixel
-# is a fixed number of bytes, assembled into one value by `byte_order`, and each
-# channel is then sliced out of that value and scaled up to 8 bits. A channel
-# narrower than 8 bits is therefore lossy: the *decoded colour* round-trips, the
-# raw bits cannot and never could.
+# **Palette-less** pixels: each carries its own colour, so there is no index and
+# no palette anywhere in the pipeline. A pixel is a fixed number of bytes,
+# assembled into one value by `byte_order`, and each channel is sliced out of that
+# value and scaled up to 8 bits. A channel narrower than 8 bits is therefore
+# lossy: the *decoded colour* round-trips, the raw bits cannot and never could.
 #
-# It shares its arithmetic with codec.palette.mask (_color-mask.toml) — the same
-# maths, applied to a pixel rather than to a palette entry.
+# Same arithmetic as codec.palette.mask (_color-mask.toml), applied to a pixel
+# rather than to a palette entry.
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
@@ -28,8 +27,8 @@ engine_id = "codec.pixel.direct-color"
 
 [params]
 
-# WHERE THE COMPONENTS SIT: one letter per bit, most significant bit first —
-# the diagram your format's own documentation draws. Whitespace groups it for
+# WHERE THE COMPONENTS SIT: one letter per bit, most significant first — the
+# diagram your format's own documentation draws. Whitespace groups it for
 # counting and means nothing; group in nibbles and each group is one hex digit.
 #
 #   r  red      g  green      b  blue      a  alpha
@@ -39,43 +38,37 @@ engine_id = "codec.pixel.direct-color"
 # The layout below is RGB565 in a 16-bit pixel, `RRRRRGGG GGGBBBBB`:
 fields = "rrrr rggg gggb bbbb"
 
-# Every bit gets a letter, which is the point: a bit nobody names is written
-# back as ZERO on save, and spelling it `.` is you saying so. The layout is
-# checked against the pixel width, so a diagram that is too short is a load
-# error rather than a colour that quietly loses its top bits.
+# Every bit gets a letter: a bit nobody names is written back as ZERO, and `.` is
+# you saying so. The layout is checked against the pixel width, so a short diagram
+# is a load error rather than a colour that quietly loses its top bits. A
+# component the format has not got never appears — leave `a` out and every pixel
+# decodes opaque. A channel SPLIT across the value needs nothing said: write it
+# where it is and the runs are one channel (`"rrrr gggg bbbb rgb."`).
 #
-# A component the format has not got simply never appears — leave `a` out and
-# every pixel decodes opaque.
-#
-# `v` is for the formats that store ONE value and mean grey: it goes to r, g and
-# b at once, so the round trip is exact for any grey the format can hold. A
-# colour that is not grey cannot be stored by such a format and collapses to the
-# OR of the three on write, which is what the format leaves us.
-#
-# A channel SPLIT across the value — its main run in one place and a stray low
-# bit parked elsewhere — needs nothing said. Write it where it is and the runs
-# are one channel, in the order they are read: `fields = "rrrr gggg bbbb rgb."`.
+# `v` is for formats that store ONE value and mean grey: it drives r, g and b at
+# once, so any grey the format can hold round-trips exactly, and a colour that is
+# not grey collapses to the OR of the three on write.
 #
 # A format that spells a channel some other way can keep its own letters:
 #
 #   [params.legend]
 #   i = "v"    # `i` in the diagram is the intensity
 
-# How many bytes one pixel occupies. Optional — the layout above already says —
-# but worth stating, and the two are checked against each other. The tile is
+# How many bytes one pixel occupies. Optional — the layout already says — but
+# worth stating, and the two are checked against each other. The tile is
 # bytes_per_pixel * width * height bytes.
 bytes_per_pixel = 2
 
-# How those bytes are assembled into the value the layout describes.
+# How those bytes are assembled into the value the layout describes. Only
+# meaningful above one byte, and it orders the pixel's bytes IN THE FILE; the
+# layout is always the assembled value, high bit first, so the two are
+# independent.
 #   "little"  first byte is least significant   (the default)
 #   "big"     first byte is most significant
-# Only meaningful when bytes_per_pixel is more than 1. It orders the pixel's
-# bytes IN THE FILE; the layout is always the assembled value, high bit first,
-# so the two are independent.
 byte_order = "little"
 
 # Pixel size of one tile; both default to 8. Free, since a pixel here occupies
-# whole bytes and so can never straddle one — this reads bitmaps of any size as
-# well as console tiles.
+# whole bytes and can never straddle one — this reads bitmaps of any size as well
+# as console tiles.
 tile_width = 8
 tile_height = 8

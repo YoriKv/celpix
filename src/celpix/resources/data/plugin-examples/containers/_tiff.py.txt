@@ -1,8 +1,7 @@
 """Worked container example: baseline TIFF (``.tif`` / ``.tiff``).
 
-Files starting with "_" are ignored — copy this file, drop the underscore from
-the name, and press F5 in celPix to load it (code plugins ask for confirmation
-the first time, since they run with the app's privileges).
+Copy this file, drop the leading underscore, and press F5 in celPix (code plugins
+ask for confirmation the first time, since they run with the app's privileges).
 
 ``_example.py`` alongside this file is the minimal shape. This is a real format,
 and a good one to learn containers from because its framing is a *lookup* rather
@@ -24,23 +23,18 @@ not a container concern: this hands over the strips exactly as stored and report
 which scheme they use, and the user picks "PackBits" in the Compression dropdown
 to unpack them. The two layers compose, which is why they are separate stages.
 
-**Telling the user something.** Two channels. Raise when the read cannot proceed:
-celPix stops, reports it, and nothing opens. Call ``warn``/``inform`` when it
-*can* proceed but the result deserves a caveat — an unsupported compression,
-strips joined out of a scattered file. Those mark the entry in the files list and
-spell themselves out in its tooltip without interrupting anyone. A plugin may also
-record notices and *then* raise, so a hard failure carries what led up to it.
+**Telling the user something.** Two channels: raise when the read cannot proceed
+and nothing opens, or call ``warn``/``inform`` when it *can* proceed but the
+result deserves a caveat — an unsupported compression, strips joined out of a
+scattered file. Notices mark the entry in the files list and spell themselves out
+in its tooltip. A plugin may record notices and *then* raise, so a hard failure
+carries what led up to it.
 
 **Saving somewhere else.** A Save As hands ``write`` an *empty* destination, and
 this container cannot rebuild a TIFF from pixels alone — the strip map is in the
-file. So the read stashes the image it came from and the write copies that,
-edits spliced in. Any container whose framing is a lookup rather than a fixed
-header needs the same, and getting it wrong is the classic way to ship a Save As
-that writes a file nothing can reopen.
-
-**Describing the file.** ``describe`` is optional and display-only: it fills the
-container-info popup with what this container read and what it did about it. It
-runs after the read has already succeeded, so it can never fail a file.
+file. So the read stashes the image it came from and the write copies that, edits
+spliced in. Every container whose framing is a lookup rather than a fixed header
+needs the same.
 
 **What it doesn't do**, being an example: tiled TIFFs (``TileOffsets``, tag 324),
 multi-page files (only the first IFD is read), BigTIFF, and any compression beyond
@@ -152,14 +146,12 @@ class TiffContainer:
         # Kept so a Save As has a TIFF to write into; see `write`.
         ctx.set(KEY_TIFF_SOURCE, raw)
         name = _COMPRESSION_NAMES.get(compression, f"unsupported ({compression})")
-        # Advisory, like everything on the context: it tells the user which
-        # Compression entry to pick without this container deciding for them.
+        # Advisory, like everything on the context: which Compression entry to
+        # pick, without this container deciding for them.
         ctx.set("tiff.compression", name)
-        # A *notice* is the other half of that. The context entry above is for
-        # another stage to read; this is for the person looking at the result.
-        # Use it when the read succeeded but the bytes are not quite what was
-        # asked for — celPix marks the entry in the files list and puts them in
-        # its tooltip. Raise instead when the read cannot proceed (see _strips).
+        # A *notice* is the other half: the entry above is for another stage to
+        # read, this is for the person looking at the result. Raise instead when
+        # the read cannot proceed (see _strips).
         if compression not in _COMPRESSION_NAMES:
             warn(
                 ctx,
@@ -187,27 +179,22 @@ class TiffContainer:
         """Put edited bytes back into the strips they were read out of.
 
         ``dest.offset`` is not consulted: the strips say where the bytes go and
-        they are not contiguous, so a single file offset could not describe the
-        destination even in principle. Every container that relocates data ends up
-        here, the read's mapping being the only thing that knows how to undo
-        itself. Returning the file *whole* is what makes that expressible — the
-        edit lands in several places at once, and everything between the strips is
-        carried across untouched.
+        they are not contiguous, so no single file offset could describe the
+        destination. Returning the file *whole* is what makes that expressible —
+        the edit lands in several places at once, and everything between the
+        strips is carried across untouched.
 
-        **Handle the empty destination.** A Save As to a path with no file at it
-        gives ``dest.existing == b""``, and the strip map lives in the file — so
-        with nothing there, there is nothing to look it up in. Reading the map out
-        of an empty buffer raises, and writing the strips on their own would emit
-        a bare pixel run that is not a TIFF and will not reopen as one. Both are
-        wrong in the same way: a Save As is a *copy of the document*, so the bytes
-        go back into a copy of the file they came from, which is what the read
-        stashed. Any container whose framing it cannot rebuild from the payload
-        alone wants this; celPix's own iNES and PVR plugins do the same.
+        **Handle the empty destination.** A Save As gives ``dest.existing == b""``
+        and the strip map lives in the file, so there is nothing to look it up in;
+        writing the strips alone would emit a bare pixel run that is not a TIFF. A
+        Save As is a *copy of the document*, so the bytes go back into a copy of
+        the file they came from — what the read stashed. celPix's own iNES and PVR
+        plugins do the same.
 
         The strips are a fixed set of slots, so the edited data has to be exactly
-        the size it was read as. It always is for an ordinary tile edit, which
-        rewrites bytes in place; a re-compression that packed to a different size
-        would not fit, and is refused rather than written half-way.
+        the size it was read as. It always is for an ordinary tile edit; a
+        re-compression that packed to a different size is refused rather than
+        written half-way.
         """
         existing = dest.existing
         if not existing:
@@ -236,10 +223,8 @@ class TiffContainer:
     ) -> tuple[ContainerField, ...]:
         """Rows for the container-info popup — optional, and display-only.
 
-        celPix reaches this with ``getattr``, so a container without one simply
-        reports nothing: it was added after the first plugins were written and
-        does not break them. It runs *after* a successful read and must not be
-        able to retract one, so raising here costs the rows, not the file.
+        Reached with ``getattr``, so a container without one reports nothing, and
+        run *after* a successful read: raising here costs the rows, not the file.
 
         Report what the format says and what you did with it. ``value`` is this
         file's answer, quoted the way the format quotes it; ``detail`` is the part

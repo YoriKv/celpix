@@ -751,10 +751,9 @@ def test_example_presets_name_shipped_presets_that_exist(tmp_path) -> None:
     # Every example in the three format folders has to carry a parsed block, or
     # one that quietly stops writing the list opts out of this check instead of
     # being caught by it — which is also what guards the parse itself against the
-    # day the comment format changes. The other two folders are out because their
-    # block is prose rather than a list: `reshape/` ships no preset built on
-    # either engine (the shipped tables are plugins in their own right), and
-    # `alphabet/`'s one engine reads a table rather than heading a tier.
+    # day the comment format changes. `reshape/` is the one preset folder out,
+    # because its block is prose rather than a list: it ships no preset built on
+    # either engine, the shipped tables being plugins in their own right.
     expected = {
         path.relative_to(tmp_path).as_posix()
         for folder in ("palette", "pixel", "tilemap")

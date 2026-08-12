@@ -1,7 +1,6 @@
-"""Example pixel code format. Files starting with "_" are ignored — copy this
-file, drop the underscore from the name, edit it, and press F5 in celPix to load
-it (code plugins ask for confirmation the first time, since they run with the
-app's privileges).
+"""Example pixel code format. Copy this file, drop the leading underscore, edit
+it, and press F5 in celPix (code plugins ask for confirmation the first time,
+since they run with the app's privileges).
 
 A code format implements a pixel interpretation directly, for layouts no built-in
 engine's parameters can express, and appears in the format picker like any preset.
@@ -12,14 +11,13 @@ they are given one tile at a time, with no notion of where the buffer sits in th
 file. That is what lets celPix decode just the visible window of a large file.
 
 **The one thing to get right is that a tile is not its bytes.** An ``IndexGrid``
-holds **one byte per pixel** — a palette index, 0..255 — so a tile of ``w x h``
-pixels is always ``w * h`` bytes of grid, whatever the format spends on disk. The
-8x8 2bpp tile below is 16 bytes in the file and 64 indices in the grid, and the
-whole of ``decode`` is the loop that turns the one into the other. Hand the raw
-slice straight to ``IndexGrid`` and the constructor raises ``data length 16 !=
-64`` — at decode time, long after the plugin loaded clean. That mistake is
-invisible at 8bpp, where the two happen to be the same number, so it is worth
-writing the unpack out even when your first format does not need it.
+holds **one byte per pixel** — a palette index — so a ``w x h`` tile is always
+``w * h`` bytes of grid, whatever the format spends on disk. The 8x8 2bpp tile
+below is 16 bytes in the file and 64 indices in the grid, and the whole of
+``decode`` is the loop that turns one into the other. Hand the raw slice straight
+to ``IndexGrid`` and it raises ``data length 16 != 64`` at decode time, long after
+the plugin loaded clean — a mistake invisible at 8bpp, where the two numbers
+happen to agree.
 """
 
 from celpix.core.index_grid import IndexGrid
@@ -36,8 +34,8 @@ class Packed2bpp:
 
     A row is eight pixels in two bytes and rows run top to bottom, so a tile is
     sixteen bytes. A layout this plain is really a preset (see _packed.toml); it
-    is here because the *unpack* is the part every code pixel format has to
-    write, and it reads clearest on a format with nothing else going on.
+    is here because the *unpack* every code pixel format has to write reads
+    clearest on a format with nothing else going on.
     """
 
     # The id doubles as the picker entry's stable identity; the name is shown.

@@ -4,17 +4,14 @@
 #
 # A tilemap is a file of *references*: each cell names a tile that lives
 # somewhere else (a tile bank you bind the map to) plus how to draw it. Nearly
-# every hardware map stores one cell as a single little- or big-endian integer
-# with the tile number in the low bits and a few attribute bits above it, so this
-# one engine covers the lot — a new map format is normally this file with the
-# layout redrawn and no code at all.
+# every hardware map stores a cell as one little- or big-endian integer with the
+# tile number in the low bits and attributes above it, so a new map format is
+# normally this file with the layout redrawn and no code at all.
 #
 # WHICH ENGINE IS WHICH
 # ---------------------
-# **This is the grid engine**: cells laid out in rows, one packed integer each.
-# The other four are sprite engines — their records carry a signed pixel offset
-# instead of a grid position and group into frames — and differ only in the
-# record:
+# This is the grid engine: cells in rows, one packed integer each. The other four
+# are sprite engines — records at signed pixel offsets, grouped into frames:
 #
 #   _object.toml     a packed sprite word; a size *bit* picks one of two sizes
 #   _obz.toml        one field per byte, a wider character number, X first
@@ -23,17 +20,17 @@
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
+# Most of them: every console BG entry is this engine with the layout redrawn.
+# The ones worth reading next to this file:
 #   snes-bg         the layout below, `vhop ppii iiii iiii`, with page geometry.
-#   snes-bg-swapped the same fields with the word stored the other way round.
-#   gb-bg           a bare index byte, `iiii iiii`: no attributes, and every
-#                   letter but `i` simply unused.
+#   snes-bg-swapped the same fields, word stored the other way round.
+#   gb-bg           a bare index byte, `iiii iiii`: every letter but `i` unused.
 #   gba-bg          the same 16-bit shape with 32x32 pages.
-#   text-8bit-flag  a text run whose last character carries the line break —
-#                   `eiii iiii`, the flag above a 7-bit index.
-#   snes-bg-16x16   the same word with a cell that draws a 16x16 metatile
-#                   (`cell_tiles = [2, 2]`) — four tiles, one set of attributes.
-#   scgcad-map      cells naming positions in another map (`indirect`), and the
-#                   one shipped format with a `d` bit.
+#   text-8bit       character codes — gb-bg's byte, made a fontmap by `layout`.
+#   text-16bit      the same at word width, for a font past 256 glyphs.
+#   text-8bit-flag  `eiii iiii`: the line break as a flag above a 7-bit index.
+#   snes-bg-16x16   the same word, cell drawing a 16x16 metatile.
+#   scgcad-map      cells naming positions in another map (`indirect`).
 #   scgcad-std      the plain screen of the same family.
 
 id = "preset.tilemap.example-packed"
@@ -41,118 +38,80 @@ name = "Example packed cell (16-bit)"
 engine_id = "codec.tilemap.packed"
 
 [params]
-# WHERE EACH FIELD SITS: one letter per bit, most significant bit first — the
-# diagram your format's own documentation draws. Whitespace groups it for
-# counting and means nothing; group in nibbles and each group is one hex digit.
+# WHERE EACH FIELD SITS: one letter per bit, most significant first — the diagram
+# your format's own documentation draws. Whitespace only groups it for counting.
 #
 #   i  which tile — the only field a map really needs
 #   p  which palette row the cell draws through
 #   o  priority; carried, never rendered, celPix has no layers
 #   h  flip horizontally          v  flip vertically
-#   d  this position IS drawn; see below
+#   d  this position IS drawn (leave it out unless your format has an enable bit)
 #   e  this cell ends the line; see below
-#   f  bits celPix has no meaning for; see below
+#   f  bits celPix has no meaning for, carried through so a write stays byte-exact
 #   .  a bit no field claims, and one a write leaves clear
+#
+# Every bit gets a letter: a bit nobody names is written back as ZERO, and `.` is
+# you saying so. The layout is checked against the cell width, so a short diagram
+# is a load error rather than a map that quietly loses a bit on the first edit. A
+# letter you never use is a field your format has not got.
 #
 # The layout below is the SNES BG entry, `vhopppcc tttttttt`:
 fields = "vhop ppii iiii iiii"
 
-# Every bit gets a letter, which is the point: a bit nobody names is written
-# back as ZERO, and spelling it `.` is you saying so. The layout is checked
-# against the cell width, so a diagram that is too short is a load error rather
-# than a map that quietly loses a bit on the first edit.
-#
-# A letter you never use is a field your format does not have: it decodes as
-# zero and is dropped on write, which is how a plain index-only map is
-# described — `fields = "iiii iiii"`, and see gb-bg.
+# A field need not be contiguous: hardware that grew a tile number past the room
+# left for it parks the extra bits wherever there was space. Write it where it is
+# and the runs are one field, in the order they are read — a Game Boy Color index
+# is `fields = "ovh. ippp iiii iiii"`.
 
-# Cell width in bytes. Optional — the layout above already says — but worth
-# stating, and the two are checked against each other. 2 is the common case; a
-# Game Boy map is 1.
+# `e` is for a TEXT format that ends a line by setting a bit on its last character
+# instead of spending a code on a terminator. It changes no pixel: it becomes the
+# newline View > Text shows. Placing it also takes that bit OUT of the index, so
+# `fields = "eiii iiii"` draws the letter the hardware draws rather than a tile
+# past the end of the sheet.
+
+# Cell width in bytes. Optional — the layout says — but checked against it.
 bytes = 2
 
-# "little" or "big" — the order the cell's BYTES are stored in, per *format*
-# rather than per family. Two formats from the same tool can disagree. The
-# layout is always the assembled word, high bit first, so the two are
-# independent.
+# "little" or "big": the order the cell's BYTES sit in, per *format* rather than
+# per family. The layout is always the assembled word, high bit first, so the two
+# are independent.
 endian = "little"
 
-# A field need not be contiguous. Hardware that grew a tile number past the room
-# left for it parks the extra bits wherever there was space — a Game Boy Color
-# index is bits 0-7 plus bit 8 stranded up in the attribute byte. Nothing needs
-# saying: write it where it is, and the two runs of `i` are one field in the
-# order they are read.
-# fields = "ovh. ippp iiii iiii"
-
-# `d` is set where a position IS drawn. A layout with no `d` describes a format
-# whose every position is drawn, which is all of them but one — leave it out
-# unless your format really has an enable bit, or every cell reads as hidden.
-
-# `e` is for a TEXT format that ends a line by setting a bit on its last
-# character rather than spending a code on a terminator. It is the only field
-# here that changes no pixel: it becomes the newline View > Text shows. Placing
-# it is also what takes the bit OUT of the index — `fields = "eiii iiii"` is a
-# one-byte text run whose last character draws the letter the hardware draws
-# rather than a tile past the end of the sheet.
-
-# `f` is for bits your format has that celPix has no meaning for. Carried
-# through untouched so a write stays byte-exact — name them rather than letting
-# them fall off.
-
-# A format whose own notes spell a field some other way can keep its letters:
+# A format that spells a field some other way can keep its letters:
 #
 #   [params.legend]
 #   c = "index"   # `c` and `t` in `vhopppcc tttttttt` are both the tile number
 #   t = "index"
 
 # How many tiles one cell draws, [across, down]. Default [1, 1]. Use [2, 2] for a
-# format whose cell *is* a 16x16 metatile — but check first: a map that stores
-# all four tiles as four adjacent cells is 1x1, and reading it as 2x2 draws every
-# metatile four times over.
+# cell that *is* a 16x16 metatile — but check first: a map storing all four tiles
+# as four adjacent cells is 1x1, and reading it as 2x2 draws every metatile four
+# times over.
 # cell_tiles = [1, 1]
 
-# The page geometry the FORMAT fixes, for hardware that cuts a map into screens
-# of a set size and lays the pieces out into one picture. State all three or none
-# of them: how wide a page is, how tall, and the whole-page counts the hardware
-# actually produces.
-#
-# `page_counts` is what keeps this from claiming maps the hardware never made:
-# the layout is applied only when the file holds one of those counts of whole
-# pages, so any other run of cells keeps the width you gave it.
+# Page geometry the FORMAT fixes, for hardware that cuts a map into screens of a
+# set size. State all three or none: page width, page height, and the whole-page
+# counts the hardware produces. `page_counts` keeps this from claiming maps the
+# hardware never made — any other run of cells keeps the width you gave it.
 # page_columns = 32
 # page_rows = 32
 # page_counts = [1, 2, 4]
 
-# Set when a cell names a position in *another map* rather than a tile. Binding a
-# tilemap to a tilemap works whatever this says — it is a hint, telling the host to
-# offer maps ahead of tile banks and to drop the Base tile a coordinate cannot use,
-# before anything is bound. Rare; the shipped scgcad-map preset is the only one
-# that needs it. Editing such a map *restamps*: setting a cell's index picks a
-# different cell from the map it draws through, and the `i` field above is what
-# bounds how high that can go.
+# Set when a cell names a position in *another map* rather than a tile. A hint,
+# not a gate: binding map-to-map works regardless, but it offers maps ahead of
+# tile banks and drops the Base tile a coordinate cannot use. Editing such a map
+# *restamps* — a cell's index picks a different cell from the map it draws
+# through. Rare; scgcad-map is the only shipped preset that needs it.
 # indirect = true
 
-# Set when the cells are **character codes** rather than tile numbers - a run of
-# text stored as references into a font. The picture is unchanged (a text run
-# draws as the grid of glyph tiles it is); what this adds is View > Text, where
-# the run reads and is typed as words. Bind the entry to the font, tick that
-# sheet **Use as Font**, and type its alphabet into the Font Alphabet window.
-# See docs/design/fontmap-entry.md.
+# Set when the cells are **character codes** rather than tile numbers. The picture
+# is unchanged; what this adds is View > Text, where the run reads and is typed as
+# words. Bind the entry to the font, tick that sheet **Use as Font**, and type its
+# alphabet into the Font Alphabet window (docs/design/fontmap-entry.md).
+#
+# There are no control codes here, deliberately: what a value *means* is the
+# font's answer, not the format's. So two streams punctuated differently over one
+# font are two font *entries*, not two presets, and this preset stays reusable by
+# every game with these bits. Name only what changes how the text reads — an
+# unnamed code shows as `[$FF]` and types back to the same byte.
 # layout = "text"
-
-# THERE ARE NO CONTROL CODES HERE, and that is deliberate. A cell format says
-# where the bits go; what a value *means* - a letter, a line break, a terminator,
-# a portrait command - is the font's answer, typed into the Font Alphabet window
-# against the sheet that draws it. A code no tile draws gets a row from that
-# window's Prepend/Append spins.
-#
-# So a stream that punctuates differently from its neighbour over the same font
-# is a **second font entry** over the same tiles, not a second preset: the same
-# slice carved twice, each carrying its own reading. This preset stays reusable
-# by every game with these bits, which is what a format plugin is for.
-#
-# You need name only what changes how the text *reads*. Everything else already
-# round-trips: a code nobody has named shows as `[$FF]` and types straight back
-# to the same byte, whatever the game does with it. So there is no markup to
-# invent per game, and nothing to get wrong by leaving out - including a command
-# that swallows further codes, whose parameters read as `[$AA][$BB]` after it.

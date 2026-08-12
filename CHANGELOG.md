@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.6 - unreleased
+
+- Clean up comments on all plugin examples
+
 ## v0.5.5 - 2026-08-12
 
 - Sort files and slices by name, offset, type

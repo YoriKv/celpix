@@ -1,24 +1,21 @@
 # Example preset for the `codec.pixel.planar` engine. Files starting with "_" are
 # ignored — copy this file, drop the underscore, edit it, and press F5 in celPix.
 #
-# A preset is pure data: it names one built-in engine and fills in that engine's
-# parameters, so a file is only useful for the engine it names. This folder has
+# A preset names one built-in engine and fills in its parameters. This folder has
 # one example per pixel engine; pick the one whose layout matches your format.
-#
-# Because this file sits in pixel/ it is an interpret-pixel format — no stage
-# field needed.
+# Sitting in pixel/ is what makes it an interpret-pixel format — no stage field.
 #
 # WHAT THE ENGINE DOES
 # --------------------
-# codec.pixel.planar decodes **bitplane** formats: bit k of a pixel's index comes from
-# a separate byte called plane k, and within a byte pixel x is bit 7 - x. That
-# eight-pixel group is the engine's fixed unit; a tile is a whole number of them,
-# so wide tiles are a parameter rather than a different engine. The only thing
-# that varies between planar formats is which byte each plane is read from:
+# **Bitplane** formats: bit k of a pixel's index comes from a separate byte called
+# plane k, and within a byte pixel x is bit 7 - x. That eight-pixel group is the
+# engine's fixed unit; a tile is a whole number of them, so wide tiles are a
+# parameter rather than a different engine. All that varies between planar formats
+# is which byte each plane is read from:
 #
 #     offset(k, y, g) = base[k] + stride[k] * y + group_stride[k] * g
 #
-# with y the pixel row and g the eight-pixel group across the row (g = x / 8).
+# with y the pixel row and g the eight-pixel group across it (g = x / 8).
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
@@ -38,23 +35,22 @@ engine_id = "codec.pixel.planar"
 
 [params]
 
-# How many bitplanes, i.e. bits per pixel. 1 to 8, and `planes` below must hold
-# exactly this many entries — one per bit of the index.
+# How many bitplanes, i.e. bits per pixel. 1 to 8, and `planes` must hold exactly
+# this many entries — one per bit of the index.
 bpp = 2
 
-# Where each plane's byte lives inside the tile, one entry per bit of the index.
-# Entry k describes plane k, which supplies bit k, so entry 0 is the *low* bit.
+# Where each plane's byte lives inside the tile. Entry k describes plane k, which
+# supplies bit k, so entry 0 is the *low* bit.
 #
 #   base          byte offset of that plane on row 0, group 0.
-#   stride        bytes to step per pixel row. Interleaved formats use the plane
-#                 count (2 here); formats keeping each plane in its own block of
-#                 the tile use 1 and separate the planes with `base` instead.
-#   group_stride  bytes to step per eight-pixel group across the row. Only
-#                 meaningful when tile_width is more than 8 — omit it, or leave
-#                 it 0, for 8-wide tiles. May be negative, for a tile storing its
-#                 right half before its left.
+#   stride        bytes per pixel row. Interleaved formats use the plane count (2
+#                 here); formats keeping each plane in its own block of the tile
+#                 use 1 and separate the planes with `base` instead.
+#   group_stride  bytes per eight-pixel group across the row. Only meaningful
+#                 above tile_width 8 — omit it, or leave it 0, otherwise. May be
+#                 negative, for a tile storing its right half first.
 #
-# Every offset these three terms produce has to land inside the tile, which is
+# Every offset these produce has to land inside the tile, which is
 # tile_width * tile_height * bpp / 8 bytes — 16 here.
 planes = [
   { base = 0, stride = 2, group_stride = 0 },  # plane 0: bytes 0, 2, 4, ...
@@ -62,7 +58,7 @@ planes = [
 ]
 
 # Pixel size of one tile; both default to 8. The width must be a whole number of
-# eight-pixel groups (8, 16, 24, 32, ...), a pixel being one bit of one byte. The
+# eight-pixel groups (8, 16, 24, ...), a pixel being one bit of one byte. The
 # height is free — 16x11 and 16x12 tiles both ship.
 tile_width = 8
 tile_height = 8

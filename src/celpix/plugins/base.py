@@ -838,7 +838,7 @@ class TilemapCodecPlugin(Plugin, Protocol):
         last character instead (``docs/design/fontmap-entry.md`` §4). The
         alphabet has to know, because it decides whether a typed newline sets a
         bit on the cell before the caret or writes a cell of its own
-        (:attr:`~celpix.core.font.Alphabet.flag_break`), and it is the
+        (:attr:`~celpix.core.font.FontAlphabet.flag_break`), and it is the
         **format's** answer rather than the font's — two streams in one game
         routinely share a font and punctuate differently.
 

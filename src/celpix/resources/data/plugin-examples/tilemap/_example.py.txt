@@ -1,47 +1,56 @@
-"""Example tilemap code format. Files starting with "_" are ignored — copy this
-file, drop the underscore from the name, edit it, and press F5 in celPix to load
-it (code plugins ask for confirmation the first time, since they run with the
-app's privileges).
+"""Example tilemap code format. Copy this file, drop the leading underscore,
+edit it, and press F5 in celPix (code plugins ask for confirmation the first
+time, since they run with the app's privileges).
 
 A tilemap is a file of *references*: each cell names a tile that lives in some
 other entry you bind the map to, plus how to draw it. A code format implements
-one directly, for cell layouts the packed engine's parameters cannot express, and
-appears in the tilemap format picker like any preset. Try a preset first: see
-_packed.toml, which covers any format whose cell is one packed integer.
+one directly, for cell layouts the packed engine's parameters cannot express.
+Try a preset first — see _packed.toml, which covers any format whose cell is one
+packed integer.
 
-Reach for code when the cell is *not* one integer — a value that has to be
+Reach for code when the cell is *not* one integer: a value that has to be
 computed rather than read out of a field, a run-length scheme where one stored
 cell yields several, or records that are not all the same length.
 
 **The format below is none of those, and that is deliberate**: it is the smallest
-thing that exercises every method. Worth knowing before you copy it, though, that
-the packed engine reads this very format as ``bytes = 3`` beside
-``fields = "ffff ffii ..op ppvh iiii iiii"``, byte for byte and both directions —
-a tile number split across two bytes is a preset, not a reason to write code.
-What follows is the *mechanics*, for a format that really does need them.
+thing that exercises every method. The packed engine reads this very format as
+``bytes = 3`` beside ``fields = "ffff ffii ..op ppvh iiii iiii"``, byte for byte
+and both directions — a tile number split across two bytes is a preset, not a
+reason to write code. What follows is the *mechanics*, for a format that really
+does need them.
 
 decode and encode must be buffer-relative and stateless — they walk whatever
-bytes they are given, with no notion of where the buffer sits in the file.
-Laying the flat list out as a grid is celPix's job: a tilemap file rarely records
-its own width, so the view has to be able to try one.
+bytes they are given, with no notion of where the buffer sits in the file. Laying
+the flat list out as a grid is celPix's job: a tilemap file rarely records its
+own width, so the view has to be able to try one.
 
-**A Cell has eight fields, and every one of them is yours to fill or to leave.**
+**A Cell has eight fields, and every one is yours to fill or to leave.**
 ``index``, ``palette_row``, ``priority``, ``flip_h``, ``flip_v``, ``visible``,
 ``ends_line``, ``flags``. What a field defaults to on decode is what encode will
 write back, so a field your format *has* and your decode ignores is zeroed on the
-next save — silently, and for the whole file. The four this format has no bit for
-are named below anyway, so nothing is dropped by omission.
+next save — silently, and for the whole file.
 
 **Then say what a cell can do.** Five optional methods, each reached with
 ``getattr`` so leaving one out is a real answer rather than a crash: silence
 means "do not infer this for me". That makes ``index_limit`` the one to write
 first — **a format that omits it cannot have its cells pointed at a tile at
-all**. The Cell spin and the Edit Tiles tool simply refuse, with no error to read,
-because the host will not guess how wide a field it was never told about is.
+all**, and the Cell spin and Edit Tiles simply refuse, with no error to read.
 
 Four of the five are below. The fifth, ``has_line_flag``, is left out for exactly
 the reason the protocol exists: this format ends no line on a bit, and silence
 says so.
+
+**What a format cannot say is anything about its cells' *kind*.** ``layout``
+(``"text"`` for a fontmap, ``"sprite"``), ``indirect`` and ``cell_tiles`` are
+preset parameters, and a ``FormatInfo`` is an id and a name. A code format that
+needs one ships a small preset naming it as the engine — the host reads the
+params, this engine ignores them:
+
+    id = "preset.tilemap.my-text"
+    name = "My text run"
+    engine_id = "format.tilemap.example-split"
+    [params]
+    layout = "text"
 """
 
 from celpix.core.tilemap import Cell, CellOp
@@ -74,23 +83,26 @@ class SplitCell:
                     index=low | ((high & 0x03) << 8),
                     palette_row=(attr >> 2) & 0x07,
                     # Carried, never rendered: celPix draws no layers, but a bit
-                    # dropped here is a bit gone from the file on the next save,
-                    # and nearly every hardware BG format has this one.
+                    # dropped here is a bit gone from the file on the next save.
                     priority=(attr >> 5) & 0x01,
                     flip_h=bool(attr & 0x01),
                     flip_v=bool(attr & 0x02),
-                    # Bits the format has that celPix has no meaning for: carry
-                    # them, or a save would quietly zero them.
+                    # Bits celPix has no meaning for: carry them, or a save
+                    # quietly zeroes them.
                     flags=high >> 2,
-                    # `visible` and `ends_line` are the two fields this format
-                    # has no bit for, so they are left at their defaults: every
-                    # position is drawn, and nothing ends a line. Set `visible`
-                    # from a format's own drawn/enable bit, and `ends_line` from
-                    # the bit a *text* format sets on the last character of a
-                    # line — that one reaches no pixel, only the newline
-                    # View > Text shows after it. A format that sets it wants
-                    # `has_line_flag` too, or the text window will read those
-                    # breaks and refuse to let one be typed.
+                    # `visible` and `ends_line` are the fields this format has no
+                    # bit for, so they keep their defaults: every position drawn,
+                    # nothing ending a line. Set `visible` from a drawn/enable
+                    # bit, and `ends_line` from the bit a *text* format sets on a
+                    # line's last character — that one reaches no pixel, only the
+                    # newline View > Text shows. A format that sets it wants
+                    # `has_line_flag` too, or the text window reads those breaks
+                    # and refuses to let one be typed.
+                    #
+                    # Neither makes the map a **fontmap**: that is `layout`, and
+                    # `layout` — like `sprite`, `indirect` and `cell_tiles` — is
+                    # a *preset* parameter, which a format carries none of. See
+                    # the module docstring.
                 )
             )
         return cells
@@ -115,8 +127,8 @@ class SplitCell:
         return bytes(out)
 
     def bytes_per_cell(self):
-        # How many bytes one cell occupies — celPix uses this to slice the byte
-        # window and to place an edited cell back in the buffer.
+        # How many bytes one cell occupies — celPix slices the byte window and
+        # places an edited cell back in the buffer with this.
         return 3
 
     def cell_tiles(self):
@@ -133,22 +145,22 @@ class SplitCell:
 
         Without it nothing can point a cell at a tile: the host refuses what a
         codec has not been asked about rather than inferring a field width and
-        masking the user's number down to something else on save. Return None for
-        a format whose cells genuinely have no index.
+        masking the user's number down on save. None for a format whose cells
+        genuinely have no index.
         """
         return (1 << _INDEX_BITS) - 1
 
     def palette_row_limit(self):
-        """The same for the colour field, and it is what lets a row be *assigned*
-        to a selection. None where a format has nowhere to put one."""
+        """The same for the colour field, and what lets a row be *assigned* to a
+        selection. None where a format has nowhere to put one."""
         return (1 << _PALETTE_BITS) - 1
 
     def has_palette_rows(self):
         """Whether the format gives a cell a row at all — about *reading*, where
-        the safe default is the opposite way round: omit this and celPix assumes
+        the safe default is the other way round: omit this and celPix assumes
         rows, so a format that carries them is not shifted by a view-wide row on
-        top. Return False for a bare tile number, and the subpalette control
-        supplies the colours instead."""
+        top. False for a bare tile number, and the subpalette control supplies
+        the colours instead."""
         return True
 
     def transform_cell(self, cell, op):
@@ -157,7 +169,7 @@ class SplitCell:
         Only the codec knows which bits mean a flip, so the tool names the
         operation and asks. **None is the whole refusal protocol** — the host
         probes with a blank cell first and tells the user once, rather than
-        setting a bit that encode then drops on save. Omit the method and every
+        setting a bit encode then drops on save. Omit the method and every
         transform is refused, which is the safe direction; the rotations are
         refused here because the record has no bit for one.
         """

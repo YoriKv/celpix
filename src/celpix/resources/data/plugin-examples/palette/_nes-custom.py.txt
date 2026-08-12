@@ -1,8 +1,8 @@
 """Example palette code format: NES/Famicom with a *custom* PPU master palette.
 
-Files starting with "_" are ignored — copy this file, drop the underscore from
-the name, edit it, and press F5 in celPix to load it (code plugins ask for
-confirmation the first time, since they run with the app's privileges).
+Copy this file, drop the leading underscore, edit it, and press F5 in celPix
+(code plugins ask for confirmation the first time, since they run with the app's
+privileges).
 
 celPix ships "NES/Famicom (64-color indexed)", but its 64 RGB colors are baked in.
 The NES PPU doesn't store RGB at all — a palette byte is a 6-bit index (0..63)

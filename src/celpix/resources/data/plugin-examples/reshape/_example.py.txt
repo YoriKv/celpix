@@ -1,33 +1,30 @@
-"""Example reshape. Files starting with "_" are ignored — copy this file, drop
-the underscore from the name, edit it, and press F5 in celPix to load it (code
-plugins ask for confirmation the first time, since they run with the app's
-privileges).
+"""Example reshape. Copy this file, drop the leading underscore, edit it, and
+press F5 in celPix (code plugins ask for confirmation the first time, since
+they run with the app's privileges).
 
 A reshape is a **region-scoped byte reordering**: a length-preserving permutation
 applied to the *whole* region — an arcade board's plane-per-chip split joined back
 together, an interleaved ROM pair woven into one stream. It runs between the
-container and the decompressor, so by the time compression and the pixel codec see
-the bytes they are in one contiguous, decodable order.
+container and the decompressor, so compression and the pixel codec see bytes in
+one contiguous, decodable order.
 
-It is not a compression scheme: it has no extent and no end marker, cannot be
-scanned for, and is only correct over the entire buffer, its boundaries being
-fractions of ``len(data)``. That is also why celPix blanks the address display and
-refuses to carve slices while a reshape is active — view positions no longer name
-file offsets.
+It is not a compression scheme: no extent, no end marker, nothing to scan for, and
+correct only over the entire buffer, its boundaries being fractions of
+``len(data)``. That is also why celPix blanks the address display and refuses to
+carve slices while a reshape is active — view positions no longer name file
+offsets.
 
-**``unshape`` is optional.** ``reshape`` runs on load and ``unshape`` is its exact
-inverse, run on save so every byte returns where it came from. A reordering
-understood well enough to view but not to restore ships ``reshape`` alone, and
-celPix opens its data read-only. Shipping the method is the declaration.
+**``unshape`` is optional**, and is ``reshape``'s exact inverse, run on save so
+every byte returns where it came from. A reordering understood well enough to view
+but not to restore ships ``reshape`` alone, and celPix opens its data read-only.
 
-**Address permutations need no code.** If a board scrambles its graphics by
-rotating address lines, or substitutes byte values through a table, write a TOML
-preset instead — see _bitswap.toml and _data-lut.toml in this folder. Code is for
-reorderings neither engine expresses, like the shipped split-plane joins.
+**Address permutations need no code**: a board that rotates address lines or
+substitutes byte values through a table wants a TOML preset — see _bitswap.toml
+and _data-lut.toml. Code is for reorderings neither engine expresses, like the
+shipped split-plane joins.
 
 This toy reshape swaps the two halves of the region; some boards store the second
-half of a sprite sheet first. Real ones are more involved, but the plumbing is
-identical.
+half of a sprite sheet first.
 """
 
 from celpix.core.context import PipelineContext

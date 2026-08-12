@@ -232,7 +232,7 @@ class TextWindow(QWidget):
         self._drafting = False
         self._fresh = True
         # Whether this stream ends a line with a bit on the last character rather
-        # than with a code (:attr:`~celpix.core.font.Alphabet.flag_break`). The one
+        # than with a code (:attr:`~celpix.core.font.FontAlphabet.flag_break`). The one
         # thing about the alphabet this window is told, and it earns it: it is what
         # decides whether Enter costs a cell (:meth:`put`).
         self._flag_break = False

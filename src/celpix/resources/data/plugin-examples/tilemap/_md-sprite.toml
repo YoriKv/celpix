@@ -7,19 +7,13 @@
 #
 # WHICH ENGINE IS WHICH
 # ---------------------
-# **This is the stated-rectangle engine**, the one to reach for when a record
-# names a **rectangle** rather than picking between two squares. Its size byte is
-# the Mega Drive VDP's own nibble, so one record covers anything from one tile to
-# a 4x4 block, and the record's tiles run *down each column* before starting the
-# next. Neither of those can be spelled as parameters for the grid engine, which
-# is why this is its own. Three more engines here read sprite records, differing
-# only in the record:
-#
-#   _object.toml     a packed sprite word; a size *bit* picks one of two sizes
-#   _obz.toml        one field per byte, a wider character number, X first
-#   _ys-spr.toml     frames of different lengths, counted by the container
-#
-# Anything laid out in rows wants the grid engine, _packed.toml.
+# This is the stated-rectangle engine, for a record that names a **rectangle**
+# instead of picking between two squares. Its size byte is the Mega Drive VDP's
+# own nibble, so one record covers anything from one tile to a 4x4 block, and the
+# record's tiles run *down each column*. Neither can be spelled as parameters for
+# the grid engine, which is why this is its own. See _object.toml for the sprite
+# engines' shared parameters and the other three records; anything in rows wants
+# _packed.toml.
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
@@ -31,28 +25,26 @@ name = "Example rectangular sprite object"
 engine_id = "codec.tilemap.md-sprite"
 
 [params]
-# A **sprite map**: cells are freely-placed parts grouped into frames rather than
-# positions in a grid (tilemap-entry.md sec 6). Declared rather than inferred so
-# the bar can describe an object before anything is bound to it.
+# Cells are freely-placed parts grouped into frames (tilemap-entry.md sec 6).
 layout = "sprite"
 
-# ...and one whose records **state** each part's rectangle. That is what takes
-# the Subsprite spins off the bar: they exist to resolve a size bit against, and
-# this format has a size to read instead of a bit to resolve.
+# ...and records that **state** each part's rectangle. That is what takes the
+# Subsprite spins off the bar: they exist to resolve a size bit against, and this
+# format has a size to read instead.
 subsprite_size = "stated"
 
 # The X offset's width in bytes. 1 is a signed byte; 2 is a signed word.
 x_bytes = 1
 
-# Whether a trailing byte holds the X the part takes when the whole object is
-# drawn mirrored — always -(x + width_in_pixels).
+# Whether a trailing byte holds the X the part takes when the object is drawn
+# mirrored — always -(x + width_in_pixels).
 #
-# This pair is the one thing to get right, and the one thing that fails quietly:
-# a record with a byte X *and* a mirror byte is the same six bytes as one with a
+# This pair is the one thing to get right, and the one that fails quietly: a
+# record with a byte X *and* a mirror byte is the same six bytes as one with a
 # signed word X, so the wrong choice draws a plausible object with its pieces in
 # the wrong places. celPix checks the mirror field against the X it should be and
-# says so in the status notices when they disagree — if a run comes out strewn
-# across the canvas, swap these two.
+# says so in the status notices — if a run comes out strewn across the canvas,
+# swap these two.
 mirror_x = true
 
 # Byte order of the record's attribute word — the 11-bit tile, both flips, the

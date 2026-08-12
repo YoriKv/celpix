@@ -1,12 +1,12 @@
-# Example preset for the `codec.pixel.packed` engine. Copy, drop the underscore, edit,
-# press F5. See _planar.toml for what a preset is; this folder has one example
-# per pixel engine.
+# Example preset for the `codec.pixel.packed` engine. Copy, drop the underscore,
+# edit, press F5. See _planar.toml for what a preset is; this folder has one
+# example per pixel engine.
 #
 # WHAT THE ENGINE DOES
 # --------------------
-# codec.pixel.packed decodes **packed** (linear) formats: a pixel's index is a sub-byte
-# field stored whole, with no planes. A byte holds 8 / bpp pixels and a row is
-# tile_width / pixels_per_byte bytes read left to right. Nothing in that is tied
+# **Packed** (linear) formats: a pixel's index is a sub-byte field stored whole,
+# with no planes. A byte holds 8 / bpp pixels and a row is
+# tile_width / pixels_per_byte bytes, read left to right. Nothing in that is tied
 # to eight-pixel rows, so the tile size is a parameter.
 #
 # SHIPPED PRESETS BUILT ON IT
@@ -30,33 +30,28 @@ engine_id = "codec.pixel.packed"
 
 [params]
 
-# Bits per pixel. Must divide 8 — 1, 2, 4 or 8 — that being what makes a pixel's
-# field fit a byte a whole number of times.
-#
-# At 8 the field *is* the whole byte, so a pixel never shares one and decoding is
-# a straight copy: that is the layout hardware docs call "chunky" and tile
-# editors call 8bpp linear. It needs no separate engine, and the tile size below
-# is then completely free. Pixels wider than a byte carry colour rather than an
-# index — those are _direct-color.toml.
+# Bits per pixel. Must divide 8 — 1, 2, 4 or 8 — so a pixel's field fits a byte a
+# whole number of times. At 8 the field *is* the byte (hardware docs call it
+# chunky) and the tile size below is completely free. Pixels wider than a byte
+# carry colour rather than an index: those are _direct-color.toml.
 bpp = 4
 
-# Is pixel 0 of a byte in its **high** field or its low one? At 4bpp that is
-# "which nibble is the left pixel".
+# Is pixel 0 of a byte in its **high** field or its low one? At 4bpp: which nibble
+# is the left pixel.
 #   true   Genesis / MSX / X68000 4bpp, Neo Geo Pocket 2bpp
 #   false  GBA 4bpp, Virtual Boy 2bpp   (the default)
 msb_first = true
 
-# Read each row's bytes right-to-left instead of left-to-right. This is the byte
-# order *along a row*, not endianness inside a value — the Neo Geo Pocket
-# ordering, where the second byte of a row holds its leftmost pixels.
+# Read each row's bytes right-to-left. This is the byte order *along a row*, not
+# endianness inside a value — the Neo Geo Pocket ordering, where a row's second
+# byte holds its leftmost pixels.
 #   false  ordinary left-to-right   (the default)
-#   true   right-to-left
 reverse_bytes = false
 
 # Split each pixel's index across *two* bytes this many apart: the nearer byte
-# carries its **high** bpp/2 bits and the one `nibble_stride` further on the low
-# ones. Arcade boards that wired each half of an index to its own ROM land here
-# once a two-part region join has interleaved the halves, which is stride 1.
+# carries its **high** bpp/2 bits, the further one the low. Arcade boards that
+# wired each half of an index to its own ROM land here once a two-part region join
+# has interleaved the halves, which is stride 1.
 #   0   off   (the default)
 #   n   the two half-index streams alternate in runs of n bytes; n has to divide
 #       half the tile, and bpp has to be even.

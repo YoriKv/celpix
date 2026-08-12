@@ -3,30 +3,25 @@
 # Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
 #
 # A sprite engine: its cells are not laid out in rows. Each record carries a
-# *signed pixel offset* from an object's origin, so what the view draws is frames
-# of freely placed subsprites rather than a grid — a sprite sheet, one frame
-# after another.
-#
-# Reach for this only if your format is shaped the same way: fixed-size subsprite
-# records, a fixed number of them per frame, each with its own x/y.
+# *signed pixel offset* from an object's origin, so the view draws frames of
+# freely placed subsprites — a sprite sheet, one frame after another. Reach for
+# it only if your format is shaped the same way: fixed-size subsprite records, a
+# fixed number of them per frame, each with its own x/y.
 #
 # WHICH ENGINE IS WHICH
 # ---------------------
-# **This is the packed-sprite-word engine**: the record is the console's own
-# sprite attribute word, and a size *bit* in it picks one of two square sizes.
-# Three more engines here read sprite records, differing only in the record:
-#
-#   _obz.toml        one field per byte, a wider character number, X first
-#   _md-sprite.toml  a size *nibble* stating a rectangle, tiles down columns
-#   _ys-spr.toml     frames of different lengths, counted by the container
-#
-# Anything laid out in rows wants the grid engine, _packed.toml.
+# This is the packed-sprite-word engine: the record is the console's own sprite
+# attribute word, and a size *bit* in it picks one of two square sizes. The other
+# three differ only in the record — _obz.toml (one field per byte, a wider
+# character number, X first), _md-sprite.toml (a size *nibble* stating a
+# rectangle, tiles down columns) and _ys-spr.toml (frames of different lengths,
+# counted by the container). Anything laid out in rows wants _packed.toml.
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
 #   scgcad-object   the format this engine exists for, and the only one shipped
-#                   on it — the record is one game family's, not a family of
-#                   formats, so there is nothing to parameterise but the two
+#                   on it: the record is one game family's rather than a family
+#                   of formats, so there is nothing to parameterise but the
 #                   values below.
 
 id = "preset.tilemap.example-object"
@@ -34,22 +29,23 @@ name = "Example sprite object subsprite"
 engine_id = "codec.tilemap.scgcad-object"
 
 [params]
-# A **sprite map**: the tilemap variant whose cells are freely-placed subsprites
-# grouped into frames rather than positions in a grid (tilemap-entry.md sec 6).
-# Declared rather than inferred so the bar can describe an object before anything
-# is bound to it, exactly as `indirect` does for a stamp layout.
+# A **sprite map**: cells are freely-placed subsprites grouped into frames rather
+# than positions in a grid (tilemap-entry.md sec 6). Declared rather than
+# inferred so the bar can describe an object before anything is bound to it,
+# exactly as `indirect` does for a stamp layout.
 layout = "sprite"
+
 # Byte order of the record's attribute word. A container that knows better can
-# override this per *file* — the shipped sprite format has two builds that
-# disagree, and each says which it is in its own header.
+# override it per *file* — the shipped sprite format has two builds that
+# disagree, each saying which it is in its own header.
 endian = "big"
 
-# How many subsprite records make one frame. The whole payload is cut into frames
-# of this size, so it decides how the sheet is divided as much as how it is drawn.
+# How many subsprite records make one frame. The payload is cut into frames of
+# this size, so it decides how the sheet is divided as much as how it is drawn.
 subsprites_per_frame = 64
 
 # The two sizes a subsprite's own size bit chooses between, each a square that
 # many tiles on a side. The file does not record the pair — the game set it in a
-# register — so this is a stated assumption you can change, not something read
-# from the bytes. `[1, 2]` is one tile, or two by two.
+# register — so this is a stated assumption you can change rather than something
+# read from the bytes. `[1, 2]` is one tile, or two by two.
 subsprite_tiles = [1, 2]

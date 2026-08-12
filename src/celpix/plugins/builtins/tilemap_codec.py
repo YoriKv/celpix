@@ -359,7 +359,7 @@ class TilemapCodec:
         :meth:`has_palette_rows` for the terminator: the layout already says, so
         the answer comes off the one table rather than a second that could
         disagree. The alphabet has to know before a newline can be typed into
-        such a stream (:attr:`~celpix.core.font.Alphabet.flag_break`), and it
+        such a stream (:attr:`~celpix.core.font.FontAlphabet.flag_break`), and it
         has to know from the *format*, since this is the stream's punctuation
         and not the font's (``docs/design/fontmap-entry.md`` §4).
         """

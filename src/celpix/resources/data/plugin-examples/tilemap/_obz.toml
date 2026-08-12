@@ -3,25 +3,17 @@
 # Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
 #
 # A sprite engine: frames of subsprites at signed pixel offsets rather than cells
-# in rows.
-#
-# There is nothing to configure about the record layout: it is fixed in the
-# engine, because it is one format's record rather than a family of them. If your
-# format is shaped like a sprite but lays its record out differently again, the
-# engine to copy is this one's code, not this file.
+# in rows. Nothing about the record layout is configurable — it is fixed in the
+# engine, being one format's record rather than a family of them. A sprite-shaped
+# format that lays its record out differently again wants this engine's *code*
+# copied, not this file.
 #
 # WHICH ENGINE IS WHICH
 # ---------------------
-# **This is the byte-per-field engine**: the record spreads its fields across
-# single bytes rather than packing them into a sprite attribute word, its
-# character number is 12 bits rather than 9, and it stores X before Y. Three more
-# engines here read sprite records, differing only in the record:
-#
-#   _object.toml     a packed sprite word; a size *bit* picks one of two sizes
-#   _md-sprite.toml  a size *nibble* stating a rectangle, tiles down columns
-#   _ys-spr.toml     frames of different lengths, counted by the container
-#
-# Anything laid out in rows wants the grid engine, _packed.toml.
+# This is the byte-per-field engine: fields across single bytes rather than
+# packed into a sprite attribute word, a 12-bit character number rather than 9,
+# and X stored before Y. See _object.toml for the sprite engines' shared
+# parameters and the other three records; anything in rows wants _packed.toml.
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
@@ -33,18 +25,12 @@ name = "Example transfer object subsprite"
 engine_id = "codec.tilemap.scgcad-obz"
 
 [params]
-# A **sprite map**: the tilemap variant whose cells are freely-placed subsprites
-# grouped into frames rather than positions in a grid (tilemap-entry.md sec 6).
-# Declared rather than inferred so the bar can describe an object before anything
-# is bound to it, exactly as `indirect` does for a stamp layout.
+# Cells are freely-placed subsprites grouped into frames (tilemap-entry.md sec 6).
 layout = "sprite"
 
-# How many subsprite records make one frame. The whole payload is cut into frames
-# of this size, so it decides how the sheet is divided as much as how it is drawn.
+# How many subsprite records make one frame — how the sheet is divided.
 subsprites_per_frame = 64
 
-# The two sizes a subsprite's own size bit chooses between, each a square that
-# many tiles on a side. The file does not record the pair — the game set it in a
-# register — so this is a stated assumption you can change, not something read
-# from the bytes. `[1, 2]` is one tile, or two by two.
+# The two sizes the record's size bit chooses between, in tiles a side. Stated
+# rather than read: the file does not record the pair.
 subsprite_tiles = [1, 2]

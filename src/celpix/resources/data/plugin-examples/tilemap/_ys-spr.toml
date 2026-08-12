@@ -7,29 +7,20 @@
 #
 # WHICH ENGINE IS WHICH
 # ---------------------
-# **This is the counted-frame engine**, the only one whose frames are
-# **different lengths**. There is no drawn bit — a record that is present is
-# drawn — and how many each frame holds is a count byte the *container* reads out
-# ahead of the records and states on the context. So there is no
-# `subsprites_per_frame` below: nothing here could say where a frame ends.
+# This is the counted-frame engine, the only one whose frames are **different
+# lengths**. There is no drawn bit — a record that is present is drawn — and how
+# many each frame holds is a count byte the *container* reads ahead of the
+# records and states on the context. Hence no `subsprites_per_frame` below:
+# nothing here could say where a frame ends. Point it at bytes that arrived
+# through some other container and it falls back to fixed slots, which is a
+# fallback and not a feature; a format that frames its subsprites some fixed way
+# wants _object.toml or _obz.toml.
 #
-# Point this preset at bytes that arrived through some other container and it has
-# no counts to go on, so it falls back to fixed slots. That is a fallback, not a
-# feature — if your format frames its subsprites some fixed way, the presets to
-# copy are _object.toml and _obz.toml.
-#
-# Three more engines here read sprite records, differing only in the record:
-#
-#   _object.toml     a packed sprite word; a size *bit* picks one of two sizes
-#   _obz.toml        one field per byte, a wider character number, X first
-#   _md-sprite.toml  a size *nibble* stating a rectangle, tiles down columns
-#
-# Anything laid out in rows wants the grid engine, _packed.toml.
-#
-# There is nothing to configure about the record layout either: 8 bytes, X and Y
-# as signed 16-bit pairs, a 16-bit character number, then the console's attribute
-# byte and the size bit. It is one format's record rather than a family of them,
-# so the engine's code is what to copy if yours differs.
+# The record layout is not configurable either: 8 bytes, X and Y as signed 16-bit
+# pairs, a 16-bit character number, then the console's attribute byte and the
+# size bit. One format's record rather than a family of them, so a format that
+# differs wants this engine's code copied. See _object.toml for the sprite
+# engines' shared parameters; anything in rows wants _packed.toml.
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
@@ -41,21 +32,16 @@ name = "Example sprite pattern subsprite"
 engine_id = "codec.tilemap.ys-spr"
 
 [params]
-# A **sprite map**: the tilemap variant whose cells are freely-placed subsprites
-# grouped into frames rather than positions in a grid (tilemap-entry.md sec 6).
-# Declared rather than inferred so the bar can describe an object before anything
-# is bound to it, exactly as `indirect` does for a stamp layout.
+# Cells are freely-placed subsprites grouped into frames (tilemap-entry.md sec 6).
 layout = "sprite"
 
-# Which palette row a cell's row 0 means. A sprite's 3-bit field counts from
-# CGRAM row 8, the console keeping OBJ palettes in the upper half of it, so
-# without this a pattern draws through the background's sixteen colours — not a
-# wrong shade but the wrong palette. The binding bar's Base row overrides it,
-# since only the user knows which palette actually got loaded.
+# Which palette row a cell's row 0 means. A sprite's 3-bit field counts from CGRAM
+# row 8, the console keeping OBJ palettes in the upper half, so without this a
+# pattern draws through the background's sixteen colours — not a wrong shade but
+# the wrong palette. The binding bar's Base row overrides it, since only the user
+# knows which palette actually got loaded.
 palette_row_base = 8
 
-# The two sizes a subsprite's own size bit chooses between, each a square that
-# many tiles on a side. The file does not record the pair — the game set it in a
-# register — so this is a stated assumption you can change, not something read
-# from the bytes. `[1, 2]` is one tile, or two by two.
+# The two sizes the record's size bit chooses between, in tiles a side. Stated
+# rather than read: the file does not record the pair.
 subsprite_tiles = [1, 2]

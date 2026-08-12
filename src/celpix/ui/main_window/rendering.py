@@ -480,7 +480,7 @@ class RenderingMixin:
         level-name region breaks mid-row, over and over, and the canvas draws it
         as one unbroken block of letters.
 
-        Which cells those are is :meth:`~celpix.core.font.Alphabet.ends_line`'s
+        Which cells those are is :meth:`~celpix.core.font.FontAlphabet.ends_line`'s
         answer and not this method's, so the mark on the picture and the newline
         in the text window come out of one rule. Where **no alphabet** is picked
         the terminator bit is still a fact about the cells and still worth

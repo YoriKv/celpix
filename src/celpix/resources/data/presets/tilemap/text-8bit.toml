@@ -7,20 +7,12 @@
 # `sprite` is: the bar has to describe the entry before anything is bound to it,
 # and a string with no font is still a string.
 #
-# It states no codes, and no cell format does. What a byte *means* - a letter, a
-# line break, a terminator, a command worth a caption - is the font's answer, and
-# it is typed into the **Font Alphabet** window against the sheet that draws it
-# (fontmap-entry.md sec 3). So this preset says where the bits go and stops.
-#
-# Two streams in one game that share a font and punctuate differently are two
-# font entries over the same tiles, each with its own reading: the same slice
-# carved twice, ticked **Use as Font** twice, and the map bound to whichever
-# reading is its own. A cell format that named a byte could only be right for one
-# of them, and would be silently wrong for the other.
-#
-# A code with no name reads as `[$FF]` and types back to the same byte, so
-# nothing has to be described for a region to round-trip - naming changes only
-# how the text *reads*.
+# It states no codes, and no cell format does. What a byte *means* — a letter, a
+# line break, a terminator, a command worth a caption — is the font's answer,
+# typed into the **Font Alphabet** window against the sheet that draws it
+# (fontmap-entry.md sec 3). So two streams that share a font and punctuate
+# differently are two font *entries* over the same tiles rather than two presets,
+# and this one stays reusable by every game with these bits.
 #
 # The line width of a bare run like this is the view's Cols, since an index-only
 # stream has no punctuation of its own until the alphabet gives it some.

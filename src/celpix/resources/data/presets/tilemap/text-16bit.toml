@@ -1,27 +1,17 @@
-# A text run - one 16-bit word per character, little-endian. Its sibling
-# `text-8bit` is the commoner form; this is what a font with more than 256
-# glyphs needs, so it is the shape a Japanese script is stored in. Read exactly
-# as a tilemap because that is what it is (fontmap-entry.md).
+# A text run — one 16-bit word per character, little-endian. Its sibling
+# `text-8bit` is the commoner form; this is what a font with more than 256 glyphs
+# needs, so it is the shape a Japanese script is stored in.
 #
-# `layout = "text"` is the whole of what makes this a **fontmap** rather than an
-# ordinary tilemap, and it is declared rather than inferred for the same reason
-# `sprite` is: the bar has to describe the entry before anything is bound to it,
-# and a string with no font is still a string.
+# `layout = "text"` is what makes it a **fontmap**, and the codes it is read
+# through are the font's rather than this preset's — `text-8bit` is the same
+# argument at half the width.
 #
-# It states no codes, and no cell format does. What a word *means* - a letter, a
-# line break, a terminator, a command worth a caption - is the font's answer, and
-# it is typed into the **Font Alphabet** window against the sheet that draws it
-# (fontmap-entry.md sec 3). So this preset says where the bits go and stops.
-#
-# A word that no tile draws still needs a row to be named on, and at this width
-# the terminator is routinely far past the end of the sheet - `$FFFF` over a
-# 4096-glyph font. That is what the window's **Append** spin is for: it lists
-# rows beyond the last tile, and what is typed into one is stored as a named code
-# at the value the row's header shows.
-#
-# A code with no name reads as `[$FFFF]` and types back to the same word, so
-# nothing has to be described for a region to round-trip - naming changes only
-# how the text *reads*.
+# What the width changes is where the punctuation sits. A word no tile draws
+# still needs a row to be named on, and at 16 bits the terminator is routinely
+# far past the end of the sheet — `$FFFF` over a 4096-glyph font. That is what
+# the window's **Append** spin is for: it lists rows beyond the last tile, and
+# what is typed into one is stored as a named code at the value the row's header
+# shows.
 id = "preset.tilemap.text-16bit"
 name = "Text run (16-bit character codes)"
 engine_id = "codec.tilemap.packed"

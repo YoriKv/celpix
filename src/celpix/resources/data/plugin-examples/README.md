@@ -16,91 +16,78 @@ them up — no reinstall, no editing the app.
 
 Files starting with `_` are ignored. Every `_`-prefixed file here is a working
 reference: **copy one, drop the underscore, and edit it.** Press <kbd>F5</kbd> in
-celPix to reload the folder.
-
-celPix rewrites these `_`-prefixed files when it starts, so they stay current with
-the version you are running. Your own plugins never start with `_`, so they are
-never touched.
+celPix to reload the folder. celPix rewrites the `_` files at startup so they
+track the version you are running; yours never start with `_` and are never
+touched.
 
 ## Two kinds of plugin
 
 **`.toml` presets are data.** They name a built-in engine and fill in its
-parameters, so a new tile or palette format is usually a handful of numbers and no
-code at all. Nothing executes, and celPix loads them without asking. Start here —
-most formats need nothing more.
+parameters, so a new format is usually a handful of numbers and no code at all.
+Nothing executes, and celPix loads them without asking. Start here — most formats
+need nothing more.
 
-`pixel/`, `palette/` and `tilemap/` have one example preset per engine; pick the
-one whose layout matches your format:
+`pixel/`, `palette/` and `tilemap/` carry one example preset per engine. Pick the
+one whose layout matches your format; each names its engine's shipped presets and
+every parameter it takes.
 
 - `_planar.toml` — bit *k* of a pixel comes from plane *k* (most console formats)
-- `_packed.toml` — a pixel is a field stored whole: sub-byte (Genesis, GBA, …)
-  or, at 8bpp, one whole byte per pixel
+- `_packed.toml` — a pixel is a field stored whole: sub-byte (Genesis, GBA, …) or
+  one whole byte per pixel at 8bpp
 - `_nibble-planar.toml` — one byte holds four pixels, a bitplane to each nibble
 - `_linear-bespoke.toml` — the 3bpp and 6bpp packings, whose fields straddle bytes
 - `_direct-color.toml` — the pixel carries its own colour, no palette
 - `_color-mask.toml` — a palette entry's channels as a bit layout (RGB555, …)
 - `_color-indexed.toml` — palette bytes index a table baked into the hardware
-- `_packed.toml` (in `tilemap/`) — a cell is one packed integer: tile number in
-  the low bits, attributes above it (nearly every hardware map)
+- `tilemap/_packed.toml` — a cell is one packed integer: tile number in the low
+  bits, attributes above it (nearly every hardware map)
 - `_object.toml` — parts carrying signed pixel offsets, drawn as frames rather
   than laid out in rows, a size *bit* picking one of two square sizes
-- `_obz.toml` — the same shape with each field in its own byte instead of packed
-  into a sprite attribute word
-- `_md-sprite.toml` — the same again where a record *states* its part's
-  rectangle instead of choosing between two squares
+- `_obz.toml` — the same shape with each field in its own byte
+- `_md-sprite.toml` — the same again where a record *states* its part's rectangle
 - `_ys-spr.toml` — the same again where frames are *different lengths*, the count
-  coming from the container rather than the record
-
-Each names what its engine does, which shipped presets are built on it, and every
-parameter it takes with the values that parameter accepts.
+  coming from the container
 
 `reshape/` takes presets too: `_bitswap.toml` for boards that scramble the byte
 *address*, `_data-lut.toml` for boards that substitute byte *values*.
 
-## Where yours appears in the picker
+**`.py` plugins are code**, for what the engines cannot express. They run with the
+app's privileges, so celPix asks before loading one the first time and remembers
+your answer; changing the file asks again.
 
-celPix's format pickers group their entries under headings — `Nintendo`, `Sega`,
-`Direct color` and so on — and have a search box at the top.
-
-**Yours are not filed among them.** Everything loaded out of this folder appears
-under **Your plugins**, and everything out of a project's own `plugins/` folder
-under **Project plugins**, and those two headings come *first* in every picker.
-Nothing to write and nothing to keep in sync: a handful of your formats scattered
-through a hundred shipped ones is the thing the grouping exists to prevent, and
-where a file came from is a fact the file cannot state about itself.
-
-So the `category` field you will see in celPix's own presets is not something to
-copy — it is set for you, and a value you write is replaced.
-
-**`.py` plugins are code**, for anything the engines cannot express. They run with
-the app's privileges, so celPix asks before loading one the first time and
-remembers your answer; changing the file asks again.
-
-A code file defines one class and one registration function, and there are two
-shapes of it. The three interpret stages — `pixel/`, `palette/`, `tilemap/` —
-write a **format**: a `FormatInfo` (an id and a name), that stage's decode/encode
-pair, and `registry.register_format(...)`. It lands in that stage's format picker
-beside the presets, with no preset to author. Every other stage writes a
-**plugin**: a `PluginInfo` that names the stage as well, the stage's own pair of
-methods, and `registry.register(...)`.
+A code file defines one class and one registration call, in one of two shapes.
+The interpret stages — `pixel/`, `palette/`, `tilemap/` — write a **format**: a
+`FormatInfo` (an id and a name), that stage's decode/encode pair, and
+`registry.register_format(...)`. It lands in the picker beside the presets with no
+preset to author — unless it is a tilemap that has to *declare* something about
+its cells (`layout = "text"` for a fontmap, `sprite`, `indirect`, `cell_tiles`).
+Those are preset parameters and a format carries none, so such a format ships a
+few-line preset naming it as the `engine_id`; see `tilemap/_example.py`. Every
+other stage writes a **plugin**: a `PluginInfo` that names the stage as well, the
+stage's own pair of methods, and `registry.register(...)`.
 
 Every folder carries an `_example.py` of the right shape for it, and
 `containers/_tiff.py` is a full real-world format.
 
+## Where yours appears in the picker
+
+The format pickers group their entries under headings — `Nintendo`, `Sega`,
+`Direct color` — with a search box on top. **Yours are not filed among them:**
+everything from this folder appears under **Your plugins** and everything from a
+project's own `plugins/` under **Project plugins**, both ahead of the shipped
+headings, so a handful of yours is never lost among a hundred of theirs. The
+`category` field in celPix's own presets is therefore not one to copy — it is set
+for you, and a value you write is replaced.
+
 ## Plugins that travel with a project
 
-A project can carry its own plugins: put a `plugins/` folder **next to the
-`.celpix` file**, with the same subfolders as this one, and celPix loads it when
-that project opens (and on <kbd>F5</kbd>). They leave again when the project
-closes, so they only exist while you are working on it.
-
-That is how you hand someone a hack: zip the project folder and the formats go
-with it, with nothing to install. Anything you want in *every* project belongs
-here in your own folder instead.
-
-A project's `.py` plugins are code that came from whoever sent you the project,
-so celPix asks before running one just as it does for your own — and says the
-plugin came with the project.
+A project can carry its own: put a `plugins/` folder **next to the `.celpix`
+file**, with the same subfolders as this one, and celPix loads it while that
+project is open (and on <kbd>F5</kbd>). That is how you hand someone a hack — zip
+the project folder and the formats go with it, with nothing to install. Anything
+you want in *every* project belongs here instead. A project's `.py` plugins are
+code from whoever sent you the project, so celPix asks before running one and says
+where it came from.
 
 ## Writing one
 
@@ -114,15 +101,13 @@ Each `_example.py` documents its own stage in full. In short:
 - Interpret code (pixel, palette, tilemap) must be **buffer-relative**: decode
   whatever bytes you are handed, with no assumption about where they sit in the
   file. That is what lets celPix decode only the visible part of a large ROM.
-- A **container** says what kind of entry it frames (`content_kinds`). It
-  defaults to pixels and tilemaps, which is what almost every wrapper is; set it
-  to `PALETTE` for one that frames a palette file, so the two are never offered
-  each other's formats.
+- A **container** says what kind of entry it frames (`content_kinds`), defaulting
+  to pixels and tilemaps; set it to `PALETTE` for one that frames a palette file,
+  so the two are never offered each other's formats.
 - A container's save is handed the **destination**, which on a Save As is empty.
-  Writing the payload alone there produces a file that is not your format and
-  will not reopen as one, so rebuild the framing — or, if it cannot be rebuilt
-  from the payload, stash what you need on the context during the read.
-  `containers/_tiff.py` does exactly that.
+  Write the payload alone there and the file will not reopen as your format, so
+  rebuild the framing — or stash what you need on the context during the read, as
+  `containers/_tiff.py` does.
 - A container may also implement **`describe`**, which fills the container-info
   popup with what it read and what it did about it. Optional and display-only.
 

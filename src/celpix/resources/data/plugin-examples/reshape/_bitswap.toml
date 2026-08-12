@@ -18,10 +18,9 @@
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
-# None — a table means something only for the board it came from, so celPix ships
-# no active one and this example carries a real, working table to copy and adapt.
-# (The Reshape stage does ship *board-independent* tables, but those are all
-# data-LUTs; see _data-lut.toml.)
+# None — a table means something only for the board it came from, so this example
+# carries a real, working one to copy and adapt. (The board-independent tables the
+# Reshape stage does ship are all data-LUTs; see _data-lut.toml.)
 
 id = "reshape.gaelco-16x16"
 name = "Gaelco 16x16 tiles (bitswap)"
@@ -34,20 +33,18 @@ engine_id = "reshape.bitswap"
 # N-1-k and a driver's argument list copies in verbatim.
 #
 # Length N sets the block size at 2^N bytes. Up to 24 entries are accepted, of
-# which at most 16 may actually *move*: real tables hold their low lines fixed
-# because they reorder tiles rather than the bytes inside them, and it is the
-# moving lines that cost anything. This one leaves A4..A0 alone and moves 15.
+# which at most 16 may actually *move*: real tables hold their low lines fixed,
+# reordering tiles rather than the bytes inside them. This one leaves A4..A0 alone
+# and moves 15. To lift your own, grep a board's init_ function in MAME for
+# `bitswap` and copy the argument list.
 #
-# To lift your own: grep a board's init_ function in MAME for `bitswap` and copy
-# the argument list.
-#
-# This table is the Gaelco "Modular System" 16x16 tile scramble — the background
-# ROMs store each tile in an order the single-pass codecs can't walk, undone in
-# hardware terms by rotating address lines 14..5. Shared by Splash!, Big Karnak,
-# World Rally, Xorworld, Gals Panic, Blood Bros., Raiden and Toki on that board
-# (MAME: descramble_16x16tiles in each of the *_ms.cpp drivers, bitswap<20>).
-# Once applied, the region reads with the stock sms-4bpp preset, 16x16 tiles
-# under a 2x2 block arrangement.
+# This table is the Gaelco "Modular System" 16x16 tile scramble — background ROMs
+# storing each tile in an order the single-pass codecs can't walk, undone by
+# rotating address lines 14..5. Shared by Splash!, Big Karnak, World Rally,
+# Xorworld, Gals Panic, Blood Bros., Raiden and Toki on that board (MAME:
+# descramble_16x16tiles in the *_ms.cpp drivers, bitswap<20>). Once applied, the
+# region reads with the stock sms-4bpp preset, 16x16 tiles under a 2x2 block
+# arrangement.
 bits = [19, 18, 17, 16, 15, 12, 11, 10, 9, 8, 7, 6, 5, 14, 13, 4, 3, 2, 1, 0]
 
 # Which way round the table is read.
