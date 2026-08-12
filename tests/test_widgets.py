@@ -1,6 +1,7 @@
 """Standalone widget behaviour: the committing line edit's commit-on-finish /
 emit-if-valid / self-normalise contract, the checklist popup's clamp spring-back,
-and the geometry of the tool-rail glyphs."""
+the geometry of the tool-rail glyphs, and the pan/zoom surface's claimed
+backing."""
 
 from __future__ import annotations
 
@@ -285,3 +286,64 @@ def test_the_slice_dialogs_spare_room_row_follows_the_compression_choice(
 
     dialog._validate_and_accept()
     assert dialog._params.slot_fill is SlotFill.ZERO
+
+
+def test_a_pan_drag_started_on_the_claimed_backing_moves_the_view(qtbot) -> None:
+    # The grey around a small picture is where the pointer is when the picture is
+    # the one wanting to be moved, so a drag begun out there has to pan. The whole
+    # drag lands on the backing and not just its press: the implicit mouse grab
+    # belongs to the widget that accepted the press.
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, Signal
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
+
+    from celpix.ui.widgets import PanZoomSurface
+
+    class Surface(PanZoomSurface, QWidget):
+        zoom_requested = Signal(int, object)
+        pan_requested = Signal(int, int)
+
+    surface = Surface()
+    surface.setFixedSize(400, 400)
+    scroll = QScrollArea()
+    scroll.setWidget(surface)
+    scroll.setWidgetResizable(False)
+    scroll.resize(120, 120)
+    qtbot.addWidget(scroll)
+    surface.claim_background(scroll)
+    moved: list[tuple[int, int]] = []
+    surface.pan_requested.connect(lambda dx, dy: moved.append((dx, dy)))
+    viewport = scroll.viewport()
+
+    def send(kind, at, buttons=Qt.MouseButton.LeftButton) -> None:
+        QApplication.sendEvent(
+            viewport,
+            QMouseEvent(
+                kind,
+                QPointF(at),
+                viewport.mapToGlobal(QPointF(at)),
+                Qt.MouseButton.LeftButton,
+                buttons,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+
+    # Unarmed, a press on the grey is nobody's pan - it focuses the surface and
+    # travels on, which is what puts this sheet's keys on it.
+    send(QEvent.Type.MouseButtonPress, QPoint(8, 8))
+    send(QEvent.Type.MouseMove, QPoint(28, 18))
+    assert moved == []
+
+    surface.set_pan_mode(True)
+    # Armed, the backing wears the same open hand as the picture - a pointer that
+    # changed shape on the way out would say the gesture stopped there.
+    assert viewport.cursor().shape() == Qt.CursorShape.OpenHandCursor
+
+    send(QEvent.Type.MouseButtonPress, QPoint(8, 8))
+    assert viewport.cursor().shape() == Qt.CursorShape.ClosedHandCursor
+    send(QEvent.Type.MouseMove, QPoint(28, 18))
+    send(QEvent.Type.MouseButtonRelease, QPoint(28, 18), Qt.MouseButton.NoButton)
+    send(QEvent.Type.MouseMove, QPoint(48, 38))  # the drag is over: nothing more
+
+    assert moved == [(20, 10)]
+    assert viewport.cursor().shape() == Qt.CursorShape.OpenHandCursor

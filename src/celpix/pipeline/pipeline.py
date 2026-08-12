@@ -40,8 +40,6 @@ from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.font import (
     FontAlphabet,
     Glyph,
-    GlyphRole,
-    glyphs_from_spec,
     sequential,
 )
 from celpix.core.notices import warn
@@ -494,39 +492,42 @@ def load_font_alphabet(
     chars: str,
     codes: Iterable[Glyph],
     *,
-    controls: Iterable[dict] = (),
     code_digits: int = 2,
     base: int = 0,
     flag_break: bool = False,
 ) -> FontAlphabet | None:
-    """The lookup a fontmap's codes are read through, from its three sources.
+    """The lookup a fontmap's codes are read through, from its two sources.
 
-    Merged in one order, each step laid over the one before it:
+    Both are the **font entry's own data**, and the second is laid over the first:
 
     ==============================  ========================  =================
     source                          stated by                 moved by ``base``
     ==============================  ========================  =================
     the positional run, ``chars``   the **font** sheet        yes
     the named ``codes``             the **font**, absolutely  no
-    ``controls``                    the **stream**            no
     ==============================  ========================  =================
 
     The run is the sheet read straight off: character *i* is what tile *i* draws,
     which is legible the moment the art is. ``base`` moves it and only it,
     because where the run *starts* is in the game's code and appears in neither
     the sheet nor the string (``docs/graphics-formats-reference/text-formats.md``
-    §3.2) — while a named code and a stream's control were both read at the value
-    the stream actually holds, so shifting either would move a terminator the
-    user took straight out of the file.
+    §3.2) — while a named code was read at the value the stream actually holds,
+    so shifting one would move a terminator the user took straight out of the
+    file.
 
-    ``controls`` win last for the reason they always did: the sheet's table was
-    authored against tiles and knows nothing about which codes a given stream has
-    reserved, and two streams sharing one font routinely punctuate differently
-    (``docs/design/fontmap-entry.md`` §3). ``flag_break`` travels with them, being
-    the same kind of fact — that lines end on a bit the cell carries rather than
-    on a code (:attr:`~celpix.core.font.FontAlphabet.flag_break`).
+    **The punctuation is in the named codes too**, which is the whole of where an
+    alphabet comes from: a line break, a terminator and a command worth a caption
+    are all ``codes`` carrying a role (``docs/design/fontmap-entry.md`` §3). A
+    cell format states no glyph table and no control of its own, so two streams
+    punctuated differently are two font entries over the same tiles rather than
+    one entry and two presets.
 
-    **All three are stated by hand**, and nothing fills a font's half in from the
+    ``flag_break`` is the exception and stays the **cell format's**, because it
+    is not a code at all: it says lines end on a *bit the cell carries*, which is
+    a fact about how the bytes are laid out and has nowhere to live in a table of
+    codes (:attr:`~celpix.core.font.FontAlphabet.flag_break`).
+
+    **Both are stated by hand**, and nothing fills a font's table in from the
     file. A container that stated one would be read whatever **Use as Font** said,
     since that tick is what blanks ``chars`` and ``codes`` at the call site
     (``docs/design/fontmap-entry.md`` §4) — so the one control over whether a
@@ -545,25 +546,16 @@ def load_font_alphabet(
     font = FontAlphabet(run, code_digits=code_digits, flag_break=flag_break).shifted(
         base
     )
-    if named:
-        font = font.merged(
-            FontAlphabet(named, code_digits=code_digits, flag_break=flag_break)
-        )
-    stream = list(controls or ())
     # Asked of what the font *said*, not of what survived the shift: a run dialled
     # clean off the end of the code space is still a run the user typed, and
     # reporting "nothing here" would point them at the table they already filled
     # in instead of at the spin they just moved.
-    if not run and not named and not stream:
+    if not run and not named:
         return None
-    if not stream:
+    if not named:
         return font
     return font.merged(
-        FontAlphabet(
-            glyphs_from_spec(stream, GlyphRole.CONTROL),
-            code_digits=code_digits,
-            flag_break=flag_break,
-        )
+        FontAlphabet(named, code_digits=code_digits, flag_break=flag_break)
     )
 
 

@@ -868,26 +868,28 @@ def test_a_pipeline_error_names_the_plugin_without_disturbing_the_sub_label() ->
     assert str(anonymous) == "[pixel/container:write] no header"
 
 
-# -- the font alphabet: three sources, one order ----------------------------
-def test_a_font_alphabet_merges_its_three_sources_in_one_order() -> None:
-    """Run, then the font's named codes, then the stream's controls.
+# -- the font alphabet: two sources, one order ------------------------------
+def test_a_font_alphabet_lays_its_named_codes_over_the_run() -> None:
+    """The run first, the font's own named codes over it — and nothing else.
 
-    Each step lays over the one before it, and the order is the ownership: the
-    sheet says which letters it draws, the font's own table names the codes the
-    game reserved, and the *stream* has the last word because two streams sharing
-    one font routinely punctuate differently
-    (``docs/design/fontmap-entry.md`` §3).
+    Both halves are the font entry's, and they differ in how they were *read*:
+    the sheet says which letters it draws, in tile order, and the named codes
+    were taken off the stream at the value it holds. So the second wins, and a
+    cell format has no say at all — a stream punctuated differently is a second
+    font entry over the same tiles (``docs/design/fontmap-entry.md`` §3).
     """
-    from celpix.core.font import Glyph
+    from celpix.core.font import Glyph, GlyphRole
 
     alphabet = pipeline.load_font_alphabet(
         "ABC",
-        (Glyph(0x01, "th"),),  # $01 would have been "B"
-        controls=[{"code": 0x02, "text": "end"}],  # $02 would have been "C"
+        (
+            Glyph(0x01, "th"),  # $01 would have been "B"
+            Glyph(0x02, "end", GlyphRole.CONTROL),  # $02 would have been "C"
+        ),
     )
 
     assert alphabet.decode([0x00, 0x01, 0x02]).body == "Ath[end]"
-    # And the stream's is a command, so it reaches the insert row by name.
+    # The named command reaches the insert row by name; the pair does not.
     assert [g.text for g in alphabet.commands] == ["end"]
 
 

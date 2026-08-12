@@ -51,6 +51,7 @@ from celpix.plugins.registry import Registry
 from celpix.project.workspace import (
     Entry,
     EntryKind,
+    SortKey,
     data_missing,
     entry_notices,
     entry_palette_path,
@@ -288,6 +289,8 @@ class FileListPanel(QWidget):
     # Entry, and the row it should land in front of (None — last among its
     # siblings). One signal behind both the drag and Shift+Up/Down.
     reorder_requested = Signal(object, object)
+    # Entry, SortKey — put the group this row sits in into that order.
+    sort_requested = Signal(object, object)
     copy_requested = Signal(object)  # Entry — put it and its children on the clipboard
     cut_requested = Signal(object)  # Entry — copy, then take it out of the list
     paste_requested = Signal(object)  # Entry | None — paste, targeting this row
@@ -562,6 +565,24 @@ class FileListPanel(QWidget):
         if not 0 <= at < parent_item.childCount():
             return None
         return parent_item.child(at).data(0, Qt.ItemDataRole.UserRole)
+
+    def sibling_entries(self, entry: Entry) -> list[Entry]:
+        """Every row in ``entry``'s group, in the order they are shown — what a
+        sort rearranges, and the reason it is asked of the panel.
+
+        A group is what sits under one parent row *on screen*: a file's slices and
+        bookmarks, or the files of one section. The workspace's list is flat and
+        holds every kind at once, so the group is only knowable here — the same
+        reason :meth:`next_sibling` is (see ``MainWindow._reorder_entry``).
+        """
+        found = self._placed(entry)
+        if found is None:
+            return []
+        _item, parent_item = found
+        return [
+            parent_item.child(i).data(0, Qt.ItemDataRole.UserRole)
+            for i in range(parent_item.childCount())
+        ]
 
     def _placed(self, entry: Entry) -> tuple[QTreeWidgetItem, QTreeWidgetItem] | None:
         """``entry``'s row and the row it is a child of, or None when it has no
@@ -1164,15 +1185,36 @@ class FileListPanel(QWidget):
         )
 
     def _add_order_actions(self, menu: QMenu, entry: Entry) -> None:
-        """Move Up / Move Down, on every kind of row.
+        """Move Up / Move Down and the Sort submenu, on every kind of row.
 
         Every row's place in the list is the user's, so every row can be moved —
-        within its own group, which is what the two are gated on. The keys go in
-        the label after a tab, which Qt renders in the shortcut column, rather
+        within its own group, which is what all of these are gated on. The keys go
+        in the label after a tab, which Qt renders in the shortcut column, rather
         than being registered as the actions' shortcuts: Shift+Up/Down resize the
         view window window-wide, and a real binding here would fire from anywhere
         in the app. The working one is the tree's own key handling, which the
         navigation filter already defers to while the list has focus.
+
+        Sorting rearranges the **group** the clicked row is in rather than the
+        whole list — the files of one section, or one file's children — since that
+        is the span the user is looking at as an ordered thing. Nothing latches:
+        it is one rearrangement of rows whose order stays theirs afterwards, so a
+        row moved by hand next stays moved, and a re-pointed slice stays put.
+
+        The orders live in a **submenu**: they are one question asked three ways,
+        and three more siblings of Move Up would be most of the menu. It also
+        gives them a mnemonic space of their own, where out here the obvious
+        letters are taken — N by Rename in every branch, S by New Slice where a
+        file's menu offers one — so inside it each order is its own first letter.
+        The submenu itself takes b, which is why a file's New Bookmark spells
+        itself with a k.
+
+        **By offset only on the child kinds**, where the offset is what the row
+        is: a file and a palette are the whole of their bytes, so a group of them
+        would sort on a column of zeros. Left out rather than shown dead, because
+        it is not a thing those rows could do under other circumstances — the
+        distinction the rest of this menu draws between an absent row and a
+        disabled one.
         """
         menu.addSeparator()
         for label, delta in (("M&ove Up\tShift+Up", -1), ("Move &Down\tShift+Down", 1)):
@@ -1184,6 +1226,16 @@ class FileListPanel(QWidget):
                 entry,
                 before,
                 enabled=can_move,
+            )
+        # A group of one has no order to put right — a dead submenu, not a missing
+        # one: the same rows with a second sibling would sort.
+        sort = menu.addMenu("Sort &by")
+        sort.setEnabled(len(self.sibling_entries(entry)) > 1)
+        self._entry_action(sort, "&Name", self.sort_requested.emit, entry, SortKey.NAME)
+        self._entry_action(sort, "&Type", self.sort_requested.emit, entry, SortKey.TYPE)
+        if entry.kind in (EntryKind.SLICE, EntryKind.BOOKMARK):
+            self._entry_action(
+                sort, "&Offset", self.sort_requested.emit, entry, SortKey.OFFSET
             )
 
     def _add_clipboard_actions(self, menu: QMenu, entry: Entry) -> None:
@@ -1275,9 +1327,13 @@ class FileListPanel(QWidget):
                 entry,
                 enabled=sliceable and self._has_selection,
             )
+            # "k" rather than the File menu's "B", which Sort by holds here: the
+            # letters only have to be unique within one menu, and every other one
+            # in "Sort by" is spoken for on a file's row (S by New Slice, o by
+            # Move Up, r by Remove, t by Cut, y by Copy).
             self._entry_action(
                 menu,
-                "New &Bookmark",
+                "New Boo&kmark",
                 self.new_bookmark_requested.emit,
                 entry,
                 enabled=sliceable,

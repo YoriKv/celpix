@@ -534,12 +534,15 @@ def _saved(tmp_path, entry: Entry) -> tuple[dict, Entry]:
 
 
 def test_a_font_entry_keeps_its_run_its_origin_and_its_named_codes(tmp_path) -> None:
-    """All four halves of "what these tiles spell", on the entry that has them.
+    """Everything "what these tiles spell" is made of, on the entry that has them.
 
-    The origin is the piece worth naming: it is dialled by hand against a string,
-    so losing it on save means doing that work again on every load - and it is
-    stored beside the run rather than folded into it, because the run is read off
-    the sheet and the origin is not (``docs/design/fontmap-entry.md`` §4).
+    Two pieces are worth naming. The **origin** is dialled by hand against a
+    string, so losing it on save means doing that work again on every load — and
+    it is stored beside the run rather than folded into it, because the run is
+    read off the sheet and the origin is not. **Prepend/append** are how far past
+    the sheet the table is read, which is a fact about this font: a stream that
+    terminates on ``$FF`` is read to ``$FF`` every time it is opened
+    (``docs/design/fontmap-entry.md`` §4).
     """
     written, entry = _saved(
         tmp_path,
@@ -547,6 +550,8 @@ def test_a_font_entry_keeps_its_run_its_origin_and_its_named_codes(tmp_path) -> 
             tmp_path,
             use_as_font=True,
             font_base=0x80,
+            font_prepend=4,
+            font_append=0x40,
             font_chars="AB",
             font_codes=(Glyph(0xFE, "line-break", GlyphRole.BREAK, "Ends it."),),
         ),
@@ -555,6 +560,8 @@ def test_a_font_entry_keeps_its_run_its_origin_and_its_named_codes(tmp_path) -> 
     assert written["font"] == {
         "use": True,
         "base": 0x80,
+        "prepend": 4,
+        "append": 0x40,
         "chars": "AB",
         # A command is a name, a role and whatever the author said it does —
         # never `text`, which is what a *tile draws*.
@@ -568,6 +575,7 @@ def test_a_font_entry_keeps_its_run_its_origin_and_its_named_codes(tmp_path) -> 
         ],
     }
     assert entry.use_as_font and entry.font_base == 0x80
+    assert (entry.font_prepend, entry.font_append) == (4, 0x40)
     assert entry.font_chars == "AB"
     assert entry.font_codes == (Glyph(0xFE, "line-break", GlyphRole.BREAK, "Ends it."),)
 
@@ -579,6 +587,7 @@ def test_a_pixel_entry_with_no_alphabet_writes_no_font_key(tmp_path) -> None:
     assert "font" not in written
     assert not entry.use_as_font
     assert (entry.font_base, entry.font_chars, entry.font_codes) == (0, "", ())
+    assert (entry.font_prepend, entry.font_append) == (0, 0)
 
 
 def test_trailing_holes_are_trimmed_and_interior_ones_are_not(tmp_path) -> None:

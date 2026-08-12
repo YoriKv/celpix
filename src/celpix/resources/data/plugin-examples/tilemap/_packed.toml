@@ -135,49 +135,24 @@ endian = "little"
 # Set when the cells are **character codes** rather than tile numbers - a run of
 # text stored as references into a font. The picture is unchanged (a text run
 # draws as the grid of glyph tiles it is); what this adds is View > Text, where
-# the run reads and is typed as words. Bind the entry to the font, then pick an
-# Alphabet for that font. See docs/design/fontmap-entry.md.
+# the run reads and is typed as words. Bind the entry to the font, tick that
+# sheet **Use as Font**, and type its alphabet into the Font Alphabet window.
+# See docs/design/fontmap-entry.md.
 # layout = "text"
 
-# A fontmap's **control codes**: how this stream is punctuated. They belong here,
-# on the stream's format, and not on the font - two runs in one game routinely
-# share a font and punctuate differently, so a font that carried them would have
-# to be wrong for one of them.
+# THERE ARE NO CONTROL CODES HERE, and that is deliberate. A cell format says
+# where the bits go; what a value *means* - a letter, a line break, a terminator,
+# a portrait command - is the font's answer, typed into the Font Alphabet window
+# against the sheet that draws it. A code no tile draws gets a row from that
+# window's Prepend/Append spins.
 #
-# You need declare only what changes how the text *reads*. Everything else
-# already round-trips: a code you say nothing about shows as `[$FF]` and types
-# straight back to the same byte, whatever the game does with it. So there is no
-# markup to invent per game, and nothing to get wrong by leaving out.
+# So a stream that punctuates differently from its neighbour over the same font
+# is a **second font entry** over the same tiles, not a second preset: the same
+# slice carved twice, each carrying its own reading. This preset stays reusable
+# by every game with these bits, which is what a format plugin is for.
 #
-# A control is three things:
-#   code         the byte itself
-#   name         the ONE WORD the text holds inside its brackets, `[end-of-msg]`.
-#                A space in it is hyphenated on the way in, because this is what
-#                a reader retypes
-#   description  the sentence behind that name. It reaches the tooltip on the
-#                insert row's button and never the string, and it is the one
-#                field only you can write
-#
-# `role` is one of:
-#   break    ends a line, and reads as a real newline. The FIRST one declared is
-#            what the Enter key types; any others read as their own name
-#   control  anything else - a terminator, a speed change, a portrait command.
-#            Reads as `[its-name]`, and that name captions its button on the
-#            insert row so nobody has to remember the number
-#   text     a code that spells letters after all (rare here - that is the font's
-#            half). Use `text` instead of `name` for one of those
-#
-# [[params.controls]]
-# code = 0xFE
-# name = "line-break"
-# role = "break"
-# description = "Ends the line and starts the next."
-#
-# [[params.controls]]
-# code = 0xFF
-# name = "end-of-msg"
-# description = "Stops the printer. Every message ends with one."
-#
-# A command that swallows further codes needs nothing said: those codes are read
-# on their own and show as `[$AA][$BB]` after it, which types back exactly as it
-# was and asks you to describe nothing.
+# You need name only what changes how the text *reads*. Everything else already
+# round-trips: a code nobody has named shows as `[$FF]` and types straight back
+# to the same byte, whatever the game does with it. So there is no markup to
+# invent per game, and nothing to get wrong by leaving out - including a command
+# that swallows further codes, whose parameters read as `[$AA][$BB]` after it.

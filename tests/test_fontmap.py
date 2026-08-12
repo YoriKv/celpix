@@ -164,7 +164,7 @@ def test_the_alphabet_editor_writes_to_the_bound_font(qtbot, tmp_path) -> None:
     assert window._font_alphabet_available()
     assert entry.doc.text.body == "[$02][$00][$01]"
 
-    window._on_font_alphabet_edited(0, UPPER, (), True, "edit font alphabet")
+    window._on_font_alphabet_edited(0, 0, 0, UPPER, (), "edit font alphabet")
 
     assert bank.font_chars == UPPER
     assert entry.doc.font_alphabet is not None
@@ -185,7 +185,7 @@ def test_base_code_slides_the_run_without_moving_the_picture(qtbot, tmp_path) ->
     assert entry.doc.text.body == "[$82][$80][$81]"
     drawn = [cell.index for cell in entry.doc.cells]
 
-    window._on_font_alphabet_edited(0x80, UPPER, (), True, "set base code to $80")
+    window._on_font_alphabet_edited(0x80, 0, 0, UPPER, (), "set base code to $80")
 
     assert entry.doc.text.body == "CAB"
     # The reading moved; the cells did not, so neither did the picture.
@@ -218,7 +218,7 @@ def test_a_named_code_beats_the_run_and_does_not_move_with_it(qtbot, tmp_path) -
     # Dialling the origin moves the run off $80 and leaves the named code where
     # the file put it.
     window._on_font_alphabet_edited(
-        0, bank.font_chars, bank.font_codes, True, "set base code to $0"
+        0, 0, 0, bank.font_chars, bank.font_codes, "set base code to $0"
     )
     assert entry.doc.text.body == "[$80][wait]"
     assert [g.text for g in entry.doc.font_alphabet.commands] == ["wait"]
@@ -236,9 +236,9 @@ def test_an_unticked_font_is_not_read(qtbot, tmp_path) -> None:
     window, bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
     assert entry.doc.text.body == "CAB"
 
-    window._on_font_alphabet_edited(0, UPPER, (), True, "edit font alphabet")
+    window._on_font_alphabet_edited(0, 0, 0, UPPER, (), "edit font alphabet")
     bank.use_as_font = False
-    window._apply_font_alphabet(bank, (False, 0, UPPER, ()))
+    window._apply_font_alphabet(bank, (False, 0, 0, 0, UPPER, ()))
 
     assert entry.doc.text.body == "[$02][$00][$01]"
 
@@ -341,7 +341,7 @@ def test_an_alphabet_edit_is_one_undo_step(qtbot, tmp_path) -> None:
     step - and an undo puts the whole table back, not part of it."""
     window, bank, entry = _fontmap(qtbot, tmp_path, [0x82, 0x80, 0x81], chars="")
 
-    window._on_font_alphabet_edited(0x80, UPPER, (), True, "paste 43 characters")
+    window._on_font_alphabet_edited(0x80, 0, 0, UPPER, (), "paste 43 characters")
 
     assert (bank.font_base, bank.font_chars) == (0x80, UPPER)
     assert entry.doc.text.body == "CAB"
@@ -350,63 +350,71 @@ def test_an_alphabet_edit_is_one_undo_step(qtbot, tmp_path) -> None:
     assert entry.doc.text.body == "[$82][$80][$81]"
 
 
-def test_the_streams_control_codes_come_from_its_own_cell_format(
+def test_the_punctuation_comes_from_the_font_and_the_cell_format_states_none(
     qtbot, tmp_path
 ) -> None:
-    """The design's load-bearing split, end to end: letters from the font,
-    punctuation from the stream (``docs/design/fontmap-entry.md`` §3).
+    """The whole alphabet is the font's — letters and punctuation alike — and a
+    cell format states no codes at all (``docs/design/fontmap-entry.md`` §3).
 
-    Two runs in one game routinely share a font and punctuate differently, so the
-    controls cannot live on the font - and the terminator here has to reach the
-    text through a *preset* param, not through the alphabet the bank names.
+    Both halves pinned together, because the second is what makes the first
+    load-bearing: the terminator has to reach the text through the bank's own
+    named codes, and a preset that names codes anyway must change nothing. Here
+    the preset's claims are deliberately *wrong* — a break on the letter ``A``
+    and a name for ``$FF`` — so honouring any of them would show.
     """
     from celpix.core.errors import Stage
+    from celpix.core.font import Glyph, GlyphRole
     from celpix.plugins.base import Preset
 
-    window, _bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1, 0xFF, 0])
+    window, _bank, entry = _fontmap(
+        qtbot,
+        tmp_path,
+        [2, 0, 1, 0xFF, 0],
+        named=(
+            Glyph(0xFF, "line-break", GlyphRole.BREAK),
+            Glyph(
+                0x2A,
+                "wait-for-input",
+                GlyphRole.CONTROL,
+                "Holds until the player presses a button.",
+            ),
+        ),
+    )
     window._registry.register_preset(
         Preset(
-            id="preset.tilemap.text-terminated",
-            name="Text run, FF-terminated",
+            id="preset.tilemap.text-with-controls",
+            name="Text run, controls the reader ignores",
             stage=Stage.INTERPRET_TILEMAP,
             engine_id="codec.tilemap.packed",
             params={
                 "layout": "text",
                 "bytes": 1,
                 "fields": "iiii iiii",
-                # No `role` on the second: a cell format's controls are commands
-                # unless they say otherwise, which is what keeps every line from
-                # carrying the only thing it could be.
                 "controls": [
-                    {"code": 0xFF, "name": "line break", "role": "break"},
-                    {
-                        "code": 0x2A,
-                        "name": "wait for input",
-                        "description": "Holds until the player presses a button.",
-                    },
+                    {"code": 0x00, "name": "not-a-letter", "role": "break"},
+                    {"code": 0xFF, "name": "from-the-preset"},
                 ],
             },
         )
     )
-    entry.tilemap_preset_id = "preset.tilemap.text-terminated"
+    entry.tilemap_preset_id = "preset.tilemap.text-with-controls"
     entry.doc = None
     window._activate_entry(window._workspace.entries[0])
     window._activate_entry(entry)
 
     doc = window._doc
-    # 0xFF is the stream's line break, not the font's letter for it...
+    # $FF is the font's line break and $00 is still an "A", which is both claims
+    # at once: the preset named neither and could not have.
     assert doc.text.body == "CAB\nA"
     # ...and it types back to exactly the bytes it came from.
     assert list(doc.font_alphabet.encode(doc.text.body).codes) == [2, 0, 1, 0xFF, 0]
-    # The unroled entry became a command, and reads as its own name — spelled to
-    # one word, since that name is what a reader retypes inside the brackets.
     assert doc.font_alphabet.decode([0x2A]).body == "[wait-for-input]"
     assert [g.text for g in doc.font_alphabet.commands] == [
         "line-break",
         "wait-for-input",
     ]
-    # And the format author's sentence about the code reaches the insert row,
-    # which is the only place a reader would look for it.
+    # And the sentence behind the name reaches the insert row, which is the only
+    # place a reader would look for it.
     assert [g.description for g in doc.font_alphabet.commands] == [
         "",
         "Holds until the player presses a button.",
@@ -499,6 +507,52 @@ def test_a_run_of_typing_is_one_undo_step(qtbot, tmp_path) -> None:
     assert window._undo_stack.index() == depth + 2
     window._undo_stack.undo()
     assert [cell.index for cell in window._doc.cells] == [4, 3, 0]
+
+
+def test_an_undo_hands_back_the_caret_along_with_the_string(qtbot, tmp_path) -> None:
+    """A text edit is made *somewhere*, so the place comes back with it.
+
+    Without it Ctrl+Z restores the word and leaves the caret at the far end of a
+    string that no longer has what was typed there - so carrying on typing means
+    first finding the spot again, in a field where a keystroke replaces whatever
+    it lands on.
+    """
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1], 0)  # "CAB", caret at the head
+
+    qtbot.keyClicks(window._text._edit, "ED")
+    assert window._text._edit.textCursor().position() == 2
+
+    window._undo_stack.undo()
+
+    assert window._text.body == "CAB"
+    # The head of the run, not the end of it: one step took back both letters.
+    assert window._text._edit.textCursor().position() == 0
+    window._undo_stack.redo()
+    assert window._text._edit.textCursor().position() == 2
+
+
+def test_a_letter_typed_over_itself_is_still_a_step(qtbot, tmp_path) -> None:
+    """The cells stand still and the caret does not, and the caret is part of the
+    step.
+
+    A key that lands the character already there is a thing the user did, and one
+    Ctrl+Z is what they will press to take it back - the alternative is a
+    keystroke that silently does nothing and an undo that reaches past it into
+    the word before. Nothing was written, though, so the entry must not start
+    reading dirty over it.
+    """
+    window, entry = _typing(qtbot, tmp_path, [2, 0, 1], 1)  # "CAB", caret after C
+    depth = window._undo_stack.index()
+    entry.pixel_saved_revision = entry.pixel_revision  # as if it were just saved
+
+    qtbot.keyClicks(window._text._edit, "A")  # the letter already in that cell
+
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 1]  # nothing moved
+    assert window._undo_stack.index() == depth + 1
+    assert not entry.pixel_dirty  # a caret is not an unsaved change
+
+    window._undo_stack.undo()
+    assert window._text._edit.textCursor().position() == 1
 
 
 def test_backspace_blanks_a_whole_code_and_leaves_the_length_alone(
@@ -946,6 +1000,28 @@ def test_picking_a_stretch_of_rows_picks_the_same_stretch_of_tiles(
     assert editor._sheet.selected_ids() == {0}
 
 
+def test_stepping_the_pick_with_shift_held_still_moves_one_row(qtbot, tmp_path) -> None:
+    """The arrows step the sheet's pick, and the table has to follow it exactly.
+
+    Shift is the state the key arrives in half the time — a user reaching for a
+    stretch — and Qt reads the live modifiers when a row is selected with no
+    event of its own: the table extended from its anchor and showed rows the
+    sheet was ringing one tile of, which is the two readings disagreeing.
+    """
+    from PySide6.QtCore import Qt
+
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
+    window._refresh_view()
+    editor = window._font_alphabet
+    editor._sheet.select_id(1)
+
+    qtbot.keyClick(editor._sheet, Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier)
+
+    assert editor._sheet.selected_ids() == {2}
+    rows = [index.row() for index in editor._table.selectionModel().selectedRows()]
+    assert rows == [2]
+
+
 def test_pasting_a_string_fills_consecutive_codes_from_the_selected_row(
     qtbot, tmp_path
 ) -> None:
@@ -1201,22 +1277,21 @@ def test_ctrl_z_takes_back_the_draft_before_it_reaches_the_stack(
     assert [cell.index for cell in window._doc.cells] == [2, 0, 1, 0xF0]
 
 
-def test_a_run_of_rows_typed_in_the_editor_is_one_undo_step(qtbot, tmp_path) -> None:
-    """Each row settles as it is left, so the sheet and the string follow the
-    caret — but a word typed into six rows is one thing the user did."""
+def test_each_row_settled_in_the_editor_is_its_own_undo_step(qtbot, tmp_path) -> None:
+    """A row is a code's whole answer, so three rows are three things to take
+    back — where a gesture that fills many at once stays one step."""
     window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="")
     window._refresh_view()
+    table = window._font_alphabet._table
     steps = window._undo_stack.count()
 
-    # fresh only on the first, which is what a run of typing reports.
-    window._on_font_alphabet_edited(0, "A", (), True, "edit font alphabet")
-    window._on_font_alphabet_edited(0, "AB", (), False, "edit font alphabet")
-    window._on_font_alphabet_edited(0, "ABC", (), False, "edit font alphabet")
+    for row, char in enumerate("ABC"):
+        table.item(row, COL_TEXT).setText(char)
 
     assert bank.font_chars == "ABC"
-    assert window._undo_stack.count() == steps + 1  # one step, not three
+    assert window._undo_stack.count() == steps + 3  # three steps, not one
     window._undo_stack.undo()
-    assert bank.font_chars == ""
+    assert bank.font_chars == "AB"  # only the last row comes back
 
 
 def test_ctrl_z_in_the_alphabet_window_reaches_the_session_stack(
@@ -1250,13 +1325,44 @@ def test_ctrl_z_in_the_alphabet_window_reaches_the_session_stack(
     assert bank.font_chars == "AZCDE"
 
 
-def test_a_role_pick_is_its_own_step_and_needs_a_name_to_land(qtbot, tmp_path) -> None:
-    """A role is a pick from a list, not a keystroke: it ends the run either side.
+def test_space_arms_the_sheets_pan_unless_a_cell_is_being_typed_into(
+    qtbot, tmp_path
+) -> None:
+    """The window claims space wherever focus sits, because the press goes to the
+    focused widget alone and the table is where reading the sheet leaves it.
 
-    And it needs something to be the role of - what a non-text code reads as is
-    its *name*, so a role on a row that spells nothing is put back rather than
-    silently dropped on the next redraw.
+    The one exception is a cell editor: a font's own space glyph is a character
+    somebody has to be able to type into the Text column.
     """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QLineEdit
+
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
+    window._refresh_view()
+    editor = window._font_alphabet
+    editor.show()
+    QApplication.setActiveWindow(editor)
+    editor._table.setFocus()
+
+    qtbot.keyPress(editor._table, Qt.Key.Key_Space)
+    assert editor._sheet._pan_active
+    qtbot.keyRelease(editor._table, Qt.Key.Key_Space)
+    assert not editor._sheet._pan_active
+
+    # Typing into a row: the editor is a line edit of this window, and the key is
+    # its own.
+    editor._table.editItem(editor._table.item(1, COL_TEXT))
+    cell = editor._table.findChildren(QLineEdit)[-1]
+    cell.setFocus()
+    qtbot.keyPress(cell, Qt.Key.Key_Space)
+    assert not editor._sheet._pan_active
+
+
+def test_a_role_pick_is_its_own_step_and_needs_a_name_to_land(qtbot, tmp_path) -> None:
+    """A role is a pick from a list rather than a keystroke, and it needs
+    something to be the role of - what a non-text code reads as is its *name*, so
+    a role on a row that spells nothing is put back rather than silently dropped
+    on the next redraw."""
     window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
     window._refresh_view()
     editor = window._font_alphabet
@@ -1297,6 +1403,149 @@ def test_a_line_break_names_itself_and_numbers_the_next_one(qtbot, tmp_path) -> 
     table.item(5, COL_TEXT).setText("scroll")
     table.item(5, COL_ROLE).setText("line break")
     assert Glyph(5, "scroll", GlyphRole.BREAK) in bank.font_codes
+
+
+def test_append_gives_a_code_past_the_sheet_a_row_to_be_named_on(
+    qtbot, tmp_path
+) -> None:
+    """The table is one row per tile, and a font routinely has to answer for
+    codes no tile draws — a terminator above the sheet, a letter the sheet
+    uploaded beside this one draws (``docs/design/fontmap-entry.md`` §4).
+
+    So the rows have to be reachable, and what is typed into one has to land on
+    the code the row's header shows. Nothing in an appended row is on a tile, so
+    it is stored as a **named code** whatever its role.
+    """
+    # $0A is four codes past the eight-tile sheet, so it reads as hex until the
+    # table can reach it at all.
+    window, bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1, 0x0A], chars="ABC")
+    window._refresh_view()
+    editor = window._font_alphabet
+    assert editor._table.rowCount() == 8  # the sheet, and nothing else
+    assert entry.doc.text.body == "CAB[$0A]"
+
+    editor._append_spin.setValue(4)
+
+    codes = [
+        editor._table.item(row, COL_CODE).text()
+        for row in range(editor._table.rowCount())
+    ]
+    assert codes[-4:] == ["$08", "$09", "$0A", "$0B"]
+    assert bank.font_append == 4  # the font's own answer, saved with the project
+
+    editor._table.item(10, COL_TEXT).setText("end")
+    editor._table.item(10, COL_ROLE).setText("control")
+
+    assert bank.font_codes == (Glyph(0x0A, "end", GlyphRole.CONTROL),)
+    assert entry.doc.text.body == "CAB[end]"
+    # Dialling the rows away again does not take the answer with it: a code that
+    # says something keeps its row, appended after the sheet.
+    editor._append_spin.setValue(0)
+    assert bank.font_codes == (Glyph(0x0A, "end", GlyphRole.CONTROL),)
+    assert editor._table.item(8, COL_CODE).text() == "$0A"
+
+
+def test_prepend_lists_below_the_origin_and_moves_the_tiles_down_the_table(
+    qtbot, tmp_path
+) -> None:
+    """The other direction, and the arithmetic that has to follow it.
+
+    Every row ⇄ tile conversion shifts by however many rows sit above the sheet,
+    so a pick made on the canvas has to land on the row the *tile* is on rather
+    than on the row its index would have been. The span is floored at code zero,
+    which is why that offset is not simply the spin.
+    """
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [0x82], chars="ABC", base=0x80)
+    window._refresh_view()
+    editor = window._font_alphabet
+
+    editor._prepend_spin.setValue(2)
+
+    assert editor._table.item(0, COL_CODE).text() == "$7E"
+    assert bank.font_prepend == 2
+    # The sheet's first tile is still its first tile; it is now the third row.
+    first = editor._ids[0]
+    editor.select_tile(first)
+    assert [at.row() for at in editor._table.selectionModel().selectedRows()] == [2]
+    assert editor._sheet.selected_id() == first
+
+    # Asked for more rows than there are codes below the origin: it lists them
+    # anyway, and the tiles stay where the count puts them.
+    editor._prepend_spin.setValue(0x100)
+    assert editor._table.item(0, COL_CODE).text() == "-$80"
+    editor.select_tile(first)
+    assert [at.row() for at in editor._table.selectionModel().selectedRows()] == [0x100]
+
+
+def test_a_run_longer_than_the_sheet_is_not_split_in_half(qtbot, tmp_path) -> None:
+    """Which half of the storage a code lands in is the **run's** extent, never
+    the sheet's — and that is a data-loss guard, not a tidiness one.
+
+    A paste or a template routinely leaves a run longer than the tiles that draw
+    it (*ASCII, from $20* is 95 characters). Bounded by the sheet, a code the run
+    already answers for reads out of the run but writes back as a *named* code:
+    two halves holding one code, the named one shadowing on read. Named codes do
+    not move with **Base code** and the run does, so dialling the origin then
+    slides one out from under the other and a character the user typed is gone.
+    """
+    # The eight-tile sheet is drawn by a 43-character run, so codes $08 upward
+    # are inside the run and past the last tile.
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars=UPPER)
+    window._refresh_view()
+    editor = window._font_alphabet
+    assert len(editor._ids) == 8 < len(bank.font_chars)
+    # Those codes get rows from the run, not only from the sheet.
+    assert editor._table.rowCount() == len(UPPER)
+
+    editor._table.item(20, COL_TEXT).setText("x")
+
+    # Into the run, at the slot the row names — not a named code beside it.
+    assert bank.font_codes == ()
+    assert bank.font_chars == UPPER[:20] + "x" + UPPER[21:]
+
+    # And so it travels with the origin, which is the whole point: a named code
+    # would have stayed at $14 while the letters around it moved.
+    editor._base_spin.setValue(0x10)
+    assert editor._table.item(20, COL_CODE).text() == "$24"
+    assert editor._table.item(20, COL_TEXT).text() == "x"
+
+
+def test_a_row_below_code_zero_is_listed_but_cannot_be_written_to(
+    qtbot, tmp_path
+) -> None:
+    """Prepend lists the rows it was asked for even under an origin of 0, where
+    they read as `-$04` — it is *how much headroom to look at*, and swallowing
+    the count would make the spin look broken on the commonest font of all.
+
+    Nothing is stored there, and that guard is load-bearing rather than tidy: a
+    named code is the one half of the storage nothing range-checks downstream, so
+    a negative one would survive into the alphabet and `encode` would write it
+    into a cell as the index.
+    """
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABC")
+    window._refresh_view()
+    editor = window._font_alphabet
+    table = editor._table
+
+    editor._prepend_spin.setValue(3)
+
+    codes = [table.item(row, COL_CODE).text() for row in range(4)]
+    assert codes == ["-$03", "-$02", "-$01", "$00"]
+
+    table.item(0, COL_TEXT).setText("Z")
+
+    # Refused, said out loud, and the row put back to what it was.
+    assert bank.font_codes == ()
+    assert bank.font_chars == "ABC"
+    assert "no such code" in editor._badge.text()
+    assert table.item(0, COL_TEXT).text() == ""
+
+    # And raising the origin is what makes those rows real, which is what the
+    # badge sends the user to do.
+    editor._base_spin.setValue(3)
+    assert table.item(0, COL_CODE).text() == "$00"
+    table.item(0, COL_TEXT).setText("Z")
+    assert bank.font_codes == (Glyph(0, "Z", GlyphRole.TEXT),)
 
 
 def test_shift_moves_the_characters_and_not_the_codes(qtbot, tmp_path) -> None:

@@ -189,6 +189,48 @@ def _destroy_widgets_between_tests():
 
 
 @pytest.fixture(autouse=True)
+def _drop_held_modifiers():
+    """Let go of Shift/Ctrl/Alt after a test that typed with one held.
+
+    ``QTest.keyClick(widget, key, modifier)`` leaves the modifier *held* as far
+    as ``QApplication.keyboardModifiers()`` is concerned — the release it sends
+    carries the modifier too — and that state is the application's, so it
+    outlives the test and every widget it touched. It is not cosmetic: Qt reads
+    the live modifiers wherever a widget is asked to do something with no event
+    of its own (``QAbstractItemView.selectRow`` turns into an extend-from-anchor
+    under a held Shift), so a later test would select more rows than it asked
+    for — passing alone and failing in the suite, which is the worst way to find
+    out.
+
+    A release aimed at a throwaway widget, since the one that was typed into is
+    gone by now and the state being cleared belongs to nobody in particular.
+    """
+    yield
+    widgets = sys.modules.get("PySide6.QtWidgets")
+    if widgets is None or widgets.QApplication.instance() is None:
+        return
+    qtcore = sys.modules["PySide6.QtCore"]
+    if qtcore.QCoreApplication.instance() is None:
+        return
+    from PySide6.QtTest import QTest
+
+    if (
+        widgets.QApplication.keyboardModifiers()
+        == qtcore.Qt.KeyboardModifier.NoModifier
+    ):
+        return
+    spare = widgets.QWidget()
+    for key in (
+        qtcore.Qt.Key.Key_Shift,
+        qtcore.Qt.Key.Key_Control,
+        qtcore.Qt.Key.Key_Alt,
+        qtcore.Qt.Key.Key_Meta,
+    ):
+        QTest.keyRelease(spare, key)
+    spare.deleteLater()
+
+
+@pytest.fixture(autouse=True)
 def _help_dialogs_never_block(monkeypatch):
     """Make the Help dialogs' ``exec()`` return instead of blocking forever.
 

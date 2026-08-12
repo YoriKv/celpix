@@ -3047,6 +3047,143 @@ def test_a_drag_opens_its_own_group_to_the_drop_and_closes_it_again(
     assert not file_row.flags() & Qt.ItemFlag.ItemIsDropEnabled
 
 
+def test_sorting_from_the_menu_rearranges_one_group_and_undo_puts_it_back(
+    qtbot, tmp_path, opened_menus
+):
+    """The Sort by rows act on the group the row is in — one file's children, or
+    the files of one section — and never on the list as a whole.
+
+    Offset order belongs to the child kinds alone, so a file's submenu offers Name
+    and Type and nothing else: every file's offset is 0, and a group of them would
+    sort on a column of zeros.
+    """
+    from PySide6.QtCore import Qt
+
+    window, a, b, cut = _two_roms(qtbot, tmp_path)
+    panel = window._files_panel
+    tree = panel._tree
+    # Carved in offset order, which is where a new slice is seeded; the names run
+    # the other way, so the two sorts have something to disagree about.
+    zeta = window._workspace.add_slice(str(a.path), "zeta", 0x100, 64)
+    alpha = window._workspace.add_slice(str(a.path), "alpha", 0x200, 64)
+
+    def sort_menu(entry):
+        """The Sort by row of ``entry``'s menu — the submenu's own action."""
+        panel._show_menu(tree.visualItemRect(panel._items[entry]).center())
+        return next(
+            action
+            for action in opened_menus[-1].actions()
+            if action.text() == "Sort &by"
+        )
+
+    # PySide hands a QAction ownership of the submenu it opens: drop the last
+    # Python reference to the Sort by row and the rows inside it go with it.
+    held = []
+
+    def sort_rows(entry):
+        """What that submenu offers, by label, mnemonics stripped."""
+        held.append(row := sort_menu(entry))
+        return {
+            action.text().replace("&", ""): action for action in row.menu().actions()
+        }
+
+    def children_of(entry):
+        item = panel._items[entry]
+        return [
+            item.child(i).data(0, Qt.ItemDataRole.UserRole)
+            for i in range(item.childCount())
+        ]
+
+    assert set(sort_rows(cut)) == {"Name", "Type", "Offset"}
+    assert set(sort_rows(a)) == {"Name", "Type"}  # no offset to sort a file on
+
+    sort_rows(cut)["Name"].trigger()
+    assert window._workspace.slices_of(a) == [alpha, cut, zeta]
+    assert children_of(a) == [alpha, cut, zeta]  # and the rows moved with them
+    assert window._workspace.entries[0] is a  # the file group stayed put
+
+    sort_rows(cut)["Offset"].trigger()
+    assert children_of(a) == [cut, zeta, alpha]
+
+    # Sorting the files sorts *that* group, each file still carrying its own
+    # children — "other.4bpp.sfc" comes before "s.4bpp.sfc".
+    sort_rows(a)["Name"].trigger()
+    assert [row.text(0) for row in _entry_rows(panel)] == [b.name, a.name]
+    assert children_of(a) == [cut, zeta, alpha]
+
+    # Three sorts, three undo steps, each restoring the arrangement it replaced
+    # rather than any derived order.
+    for expected_files, expected_children in (
+        ([a.name, b.name], [cut, zeta, alpha]),
+        ([a.name, b.name], [alpha, cut, zeta]),
+        ([a.name, b.name], [cut, zeta, alpha]),
+    ):
+        window._undo_stack.undo()
+        assert [row.text(0) for row in _entry_rows(panel)] == expected_files
+        assert children_of(a) == expected_children
+        assert window._workspace.slices_of(a) == expected_children
+
+    # An order already in force is not a step: nothing to undo, nothing pushed.
+    depth = window._undo_stack.count()
+    sort_rows(cut)["Offset"].trigger()
+    assert window._undo_stack.count() == depth
+
+    # A group of one has nothing to put in order.
+    lone = window._workspace.add_slice(str(b.path), "only", 0x40, 64)
+    assert not sort_menu(lone).isEnabled()
+
+
+def test_sorting_by_type_reads_the_cell_format_and_keeps_the_last_sort_on_ties(
+    qtbot, tmp_path, opened_menus
+):
+    """Which of the three readings a map is, is its *format's* declaration — the
+    same one the row's icon draws — so the window has to hand the registry's
+    answer to the sort.
+
+    And nothing breaks a tie: sorted by name and then by type, the group reads as
+    names within each type, which is how "the fontmaps last, alphabetically" is
+    asked for.
+    """
+    from celpix.core.capabilities import ContentKind
+
+    window, a, _b, cut = _two_roms(qtbot, tmp_path)
+    panel = window._files_panel
+    tree = panel._tree
+
+    def carve(name, kind=ContentKind.PIXELS, preset=""):
+        entry = window._workspace.add_slice(str(a.path), name, 0x100, 64)
+        entry.content_kind = kind
+        entry.tilemap_preset_id = preset
+        return entry
+
+    words = carve("words", ContentKind.TILEMAP, "preset.tilemap.text-8bit")
+    objects = carve("objects", ContentKind.TILEMAP, "preset.tilemap.md-sprite")
+    screen = carve("screen", ContentKind.TILEMAP, "preset.tilemap.snes-bg")
+    art = carve("art")
+    letters = carve("letters", ContentKind.TILEMAP, "preset.tilemap.text-8bit")
+
+    def sort_by(entry, label):
+        panel._show_menu(tree.visualItemRect(panel._items[entry]).center())
+        row = next(
+            action
+            for action in opened_menus[-1].actions()
+            if action.text() == "Sort &by"
+        )
+        next(a for a in row.menu().actions() if a.text() == f"&{label}").trigger()
+
+    sort_by(cut, "Name")
+    sort_by(cut, "Type")
+
+    assert window._workspace.slices_of(a) == [
+        art,  # the picture
+        cut,  # ...and "sprites", a pixel slice whatever its name says
+        screen,  # then the maps: a grid,
+        objects,  # the same cells placed freely,
+        letters,  # and the same cells read as words - in name order, from the
+        words,  # sort before this one
+    ]
+
+
 def test_a_hand_arranged_list_survives_a_project_round_trip(qtbot, tmp_path):
     """The order is project state now, so saving and reopening has to give it
     back - the list used to re-derive children from their offsets on load, which

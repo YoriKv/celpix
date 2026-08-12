@@ -24,6 +24,7 @@ from celpix.project.workspace import (
     EntryKind,
     EntrySession,
     PaletteSource,
+    SortKey,
     Workspace,
     backfill_slice_length,
     data_missing,
@@ -39,6 +40,7 @@ from celpix.project.workspace import (
     reorders_bytes,
     repair_presets,
     retarget_files,
+    sorted_entries,
 )
 
 
@@ -732,6 +734,82 @@ def test_reordering_a_child_stays_inside_its_parents_group(tmp_path) -> None:
     assert ws.entries == [rom, second, first, other]
     assert ws.reorder(first, second)
     assert ws.entries == [rom, first, second, other]
+
+
+def test_sorting_reads_digit_runs_as_numbers_and_ties_by_name(tmp_path) -> None:
+    # Plain string order is wrong for the names this list holds: default slice
+    # names lead with a hex offset of whatever width the offset needs, and
+    # hand-typed ones number their variants. Both are decided by the digit runs.
+    ws = Workspace()
+    ws.open_file(str(tmp_path / "rom.sfc"))
+    rom = str(tmp_path / "rom.sfc")
+    named = [
+        ws.add_slice(rom, name, offset, 64)
+        for name, offset in (
+            ("tile10", 0x200),
+            ("0x800", 0x800),
+            ("Tile2", 0x200),
+            ("0x1000", 0x1000),
+        )
+    ]
+    by_name = sorted_entries(named, SortKey.NAME)
+    assert [e.name for e in by_name] == ["0x800", "0x1000", "Tile2", "tile10"]
+
+    # By offset the name breaks the tie, so two slices on one position still land
+    # in a readable order rather than whichever the list happened to hold first.
+    by_offset = sorted_entries(named, SortKey.OFFSET)
+    assert [e.name for e in by_offset] == ["Tile2", "tile10", "0x800", "0x1000"]
+
+    # Equal on both counts: the sort is stable, so a group it cannot tell apart
+    # keeps the order the user left it in.
+    twins = [ws.add_slice(rom, "same", 0x40, 64) for _ in range(2)]
+    assert sorted_entries(twins, SortKey.NAME) == twins
+    assert sorted_entries(list(reversed(twins)), SortKey.OFFSET) == twins[::-1]
+
+
+def test_sorting_by_type_ranks_the_map_readings_and_leaves_ties_alone(tmp_path) -> None:
+    # The picture first, then the three readings of a map, and the palettes last.
+    # Nothing breaks a tie on purpose: sorts compose, so a group put in name order
+    # and then in type order reads as names within each type — which is the whole
+    # of how "fontmaps last, alphabetically" is asked for.
+    ws = Workspace()
+    rom = str(tmp_path / "rom.sfc")
+    ws.open_file(rom)
+    layouts = {}
+
+    def carve(name: str, kind: ContentKind, layout: str = "") -> Entry:
+        entry = ws.add_slice(rom, name, 0x100, 64)
+        entry.content_kind = kind
+        layouts[entry] = layout
+        return entry
+
+    art = carve("art", ContentKind.PIXELS)
+    colors = carve("colors", ContentKind.PALETTE)
+    screen = carve("screen", ContentKind.TILEMAP)
+    objects = carve("objects", ContentKind.TILEMAP, "sprite")
+    words = carve("words", ContentKind.TILEMAP, "text")
+    aardvark = carve("aardvark", ContentKind.TILEMAP, "text")
+
+    group = [colors, words, objects, aardvark, screen, art]
+    by_type = sorted_entries(group, SortKey.TYPE, layout=lambda e: layouts[e])
+    assert by_type == [art, screen, objects, words, aardvark, colors]
+
+    # The two fontmaps kept the order they were handed in above; put the group in
+    # name order first and they come out alphabetical, still last.
+    by_name = sorted_entries(group, SortKey.NAME)
+    then_type = sorted_entries(by_name, SortKey.TYPE, layout=lambda e: layouts[e])
+    assert then_type == [art, screen, objects, aardvark, words, colors]
+
+    # No layout to ask: every map is the plain reading of one, which is what an
+    # unrecognised format is anyway.
+    assert sorted_entries(group, SortKey.TYPE) == [
+        art,
+        words,
+        objects,
+        aardvark,
+        screen,
+        colors,
+    ]
 
 
 def test_a_new_slice_is_seeded_into_offset_order(tmp_path) -> None:

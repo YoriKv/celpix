@@ -65,8 +65,9 @@ def _read(workspace, registry, name: str) -> tuple[str, bool]:
     """One fontmap entry's text, and whether it types back to the same bytes.
 
     The font is reached **through the binding** rather than by name, because that
-    is the claim being tested: the alphabet belongs to whichever entry supplies
-    the tiles, and the controls to the stream's own cell format.
+    is the claim being tested: the whole alphabet — letters and punctuation both
+    — belongs to whichever entry supplies the tiles, and the cell format states
+    only where the bits go.
     """
     entry = next(e for e in workspace.entries if e.name == name)
     font = entry.tile_source.entry
@@ -89,7 +90,6 @@ def _read(workspace, registry, name: str) -> tuple[str, bool]:
     alphabet = pipeline.load_font_alphabet(
         font.font_chars,
         font.font_codes,
-        controls=params.get("controls", ()),
         code_digits=2,
         base=font.font_base,
         flag_break=engine.has_line_flag(params),
@@ -175,19 +175,24 @@ def test_the_smw_sample_project_reads_its_stripe_text_through_a_second_font() ->
 
 
 def test_the_yi_sample_project_reads_all_of_its_streams() -> None:
-    """One font, four streams over it, and the two halves of the split together.
+    """One run of font bytes, four streams, and three readings of it.
 
-    The **alphabet** is the font's, so all four regions read through the one
-    table without any of them having stored it. The **controls** are each
-    stream's own, and here they genuinely differ: `$FF` ends a page in the
-    storybook, is an escape prefix in the message boxes and the ending text
-    (which therefore declare nothing and read the shipped preset), and opens a
-    level name's first line, which breaks on `$FD` instead. Asserting them in one
-    test is the point — any one alone would pass with the split collapsed the
-    wrong way.
+    The whole alphabet is the **font entry's** — the letters and the punctuation
+    alike — so a stream that punctuates differently is a second entry over the
+    same 3072 bytes rather than a second cell format. All three here carry the
+    same 74 glyphs and disagree only about the top four codes: `$FF` ends a page
+    on `storybook font`, opens a level name's first line on `level-name font`
+    (which breaks on `$FD`, the storybook's row prefix), and is an escape prefix
+    on the plain `message font` the boxes and the ending text read through, which
+    therefore names nothing at all.
 
-    The credits are a fifth stream and a *second* font entry, tested separately
-    below: their codes are not this font's codes.
+    Asserting all four in one test is the point — any one alone would pass with
+    the readings collapsed onto each other. The two one-byte streams share the
+    shipped `text-8bit` preset, which is what that split buys: a cell format that
+    states only where the bits go is reusable, and a table of codes is not.
+
+    The credits are a fifth stream and a fourth font entry, tested separately
+    below: their codes are not these codes at all.
     """
     workspace, registry = _open("yi-text/yi-text.celpix")
 
@@ -211,8 +216,8 @@ def test_the_yi_sample_project_reads_all_of_its_streams() -> None:
 
     names, names_exact = _read(workspace, registry, "level names")
     # `$FD` ends a name here and sets a row in the storybook - the same byte,
-    # two streams, two names, and the reason a stream's controls are not the
-    # font's. `$FE` is the same story one code along.
+    # the same tiles, two font entries, two answers, and the reason a font's
+    # punctuation is a *reading* of it. `$FE` is the same story one code along.
     lines = names.splitlines()
     assert lines[0] == (
         "[set-column][$00]      Welcome To[set-position][$10][$00]   Yoshi's Island"

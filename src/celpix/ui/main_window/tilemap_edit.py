@@ -588,7 +588,12 @@ class TilemapEditMixin:
 
     # -- committing ----------------------------------------------------------
     def _apply_cells(
-        self, cells: list[Cell], text: str, *, run: int | None = None
+        self,
+        cells: list[Cell],
+        text: str,
+        *,
+        run: int | None = None,
+        caret: tuple[int, int] | None = None,
     ) -> bool:
         """Push ``cells`` as one undoable edit; False when nothing changed.
 
@@ -600,6 +605,13 @@ class TilemapEditMixin:
         alone — typing is the only gesture here that fires per keystroke
         (:class:`~celpix.ui.undo_commands.TilemapCellsCommand`).
 
+        ``caret`` is the text window's too — where the caret stood before and
+        after the edit — and it **lifts the no-change guard**, because a
+        keystroke changes where the user is standing in the string whether or
+        not it changes a cell. A letter typed over itself is a gesture Ctrl+Z
+        should answer; there is nothing equivalent for a flip or a paste, which
+        is why the guard stays for everything that names no caret.
+
         Refused outright only on a sprite object, whose cells are subsprites placed at
         pixel offsets rather than positions in a grid
         (:attr:`~celpix.core.document.Document.cells_editable`). A chained map does
@@ -610,10 +622,14 @@ class TilemapEditMixin:
         entry = self._workspace.current
         if self._refuse_view_only():
             return False
-        if doc is None or doc.cells is None or entry is None or cells == doc.cells:
+        if doc is None or doc.cells is None or entry is None:
+            return False
+        if cells == doc.cells and caret is None:
             return False
         self._push_command(
-            TilemapCellsCommand(self, entry, text, list(doc.cells), cells, run=run)
+            TilemapCellsCommand(
+                self, entry, text, list(doc.cells), cells, run=run, caret=caret
+            )
         )
         return True
 

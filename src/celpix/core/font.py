@@ -6,19 +6,24 @@ numbers — a string of text stored in a ROM as references into a font
 tilemap pathway's, unchanged; what this module adds is the one thing a tilemap
 has no notion of: **what the codes say**.
 
-A :class:`FontAlphabet` is that lookup, and it is deliberately two things merged:
+A :class:`FontAlphabet` is that lookup, and **all of it belongs to the font
+entry** — the letters and the punctuation alike. It is stored as two halves,
+which differ in how they were *read* rather than in who owns them:
 
-- the **glyph table**, which belongs to the *font* — it says which tile draws
-  which letter, so it is a fact about the art and not about any one string that
-  uses it. Ten fontmaps over one font share it and cannot disagree.
-- the **control codes**, which belong to the *text format* — how the stream is
-  punctuated, where a line ends, where a string does. Two streams in one game
-  routinely share a font and differ here, so this half rides on the fontmap's own
-  cell format.
+- the **positional run**, one character per tile in tile order, which is the
+  sheet read straight off and moves with the origin.
+- the **named codes**, absolute, which is the stream read straight off: a line
+  break, a terminator, a command worth a caption, a pair standing behind one
+  code, a glyph the sheet has not got.
 
 Both are :class:`Glyph`\\ s and both reach the decoder through one object, which
 is why :meth:`FontAlphabet.merged` exists rather than the reader consulting two
 tables and deciding which wins.
+
+A cell format states **no codes at all**. It says how a cell's bits are laid out
+and nothing about what any value means, so two streams punctuated differently
+are two font entries over the same tiles — each with its own reading of the same
+glyphs (``docs/design/fontmap-entry.md`` §3).
 
 **The text form has four cases and no more**, and that is the whole design. A
 glyph the font can spell reads as itself; a **line break** reads as an actual
@@ -128,10 +133,10 @@ class GlyphRole(str, Enum):
     this build has no business interpreting. A richer set would mean guessing at
     one game's conventions and imposing them on every other.
 
-    ``TEXT`` is the **font's** — a glyph is a glyph whatever stream it appears in.
-    ``BREAK`` and ``CONTROL`` are the **text format's**: they say how the stream
-    is punctuated, and two streams sharing a font routinely punctuate
-    differently.
+    ``TEXT`` says what the *sheet* draws, which is legible off the art. ``BREAK``
+    and ``CONTROL`` say how the *stream* is punctuated, which is in the game's
+    code and in nobody's picture. All three sit on the font entry, so a font read
+    by two differently-punctuated streams is two entries over the same tiles.
 
     ``str``-valued so a preset states a role as itself and the on-disk spelling
     is the enum.
@@ -393,16 +398,16 @@ class FontAlphabet:
     def merged(self, other: FontAlphabet | None) -> FontAlphabet:
         """This alphabet with ``other``'s glyphs laid over it.
 
-        The one place the font's half and the text format's half become one
-        table, and the reason the argument wins on a collision: the **controls
-        are** ``other``. A code the font claims as a letter and the stream claims
-        as a terminator is the stream's — the font's glyph table was authored
-        against the tiles, and it has no way of knowing which codes a given
-        stream reserves.
+        The one place the two halves of a font's own table become one, and the
+        reason the argument wins on a collision: the **named codes are**
+        ``other``. A code the positional run spells as a letter and the named
+        codes call a terminator is the terminator's — the run was read off the
+        sheet, in tile order, and the named codes were read off the stream at the
+        value it actually holds (``docs/design/fontmap-entry.md`` §4).
 
-        ``code_digits`` comes from ``other`` when it has one, and so does
-        ``flag_break``, for the same reason: both are the cell format's, and it is
-        the cell format doing the reserving.
+        ``code_digits`` and ``flag_break`` come from ``other``, which is what
+        makes the merged alphabet answer at the *stream's* measure rather than at
+        whatever the half being laid over was built with.
         """
         if other is None:
             return self
@@ -873,11 +878,8 @@ def parse_table(text: str, *, order: str = "code-first") -> list[Glyph]:
     return out
 
 
-def glyphs_from_spec(
-    spec: Iterable[dict],
-    default_role: GlyphRole = GlyphRole.TEXT,
-) -> list[Glyph]:
-    """Glyphs from the mapping form a project file or a preset states them in.
+def glyphs_from_spec(spec: Iterable[dict]) -> list[Glyph]:
+    """Glyphs from the mapping form a project file states them in.
 
     Each entry names ``code`` and either ``name`` (a command) or ``text`` (a
     character), optionally ``role`` and ``description``. This is the
@@ -888,16 +890,13 @@ def glyphs_from_spec(
     sheet. Neither kind moves when the run's origin is dialled, because neither
     was read off the sheet.
 
-    ``default_role`` is what an entry that omits ``role`` gets, and it differs by
-    who is stating the list: a font's glyphs are letters unless they say
-    otherwise, and a cell format's ``controls`` are commands unless they say
-    otherwise. Naming the common case per caller is what keeps the *other*
-    caller's every line from carrying a ``role`` that could only be one thing.
+    A line with no ``role`` is a **letter**, which is what the common line is:
+    the ones that punctuate say so, since what they are is the whole of what the
+    reader has to be told.
 
     A record that does not parse is **skipped, not refused**: this reads a
-    project file and a format author's preset, both of them shared,
-    hand-editable and untrusted, and one bad line must not cost the user the
-    rest of their table.
+    project file, which is shared, hand-editable and untrusted, and one bad line
+    must not cost the user the rest of their table.
 
     A **name** is spelled to one word on the way in (:func:`spell_name`), since
     it is what a reader retypes inside ``[...]``. ``text`` is left exactly as
@@ -912,7 +911,7 @@ def glyphs_from_spec(
         except (TypeError, ValueError):
             continue
         stated = entry.get("role")
-        role = default_role if stated is None else GlyphRole.parse(stated)
+        role = GlyphRole.TEXT if stated is None else GlyphRole.parse(stated)
         named = str(entry.get("name", ""))
         text = spell_name(named) if named else str(entry.get("text", ""))
         if not named and not role.spells:

@@ -42,7 +42,11 @@ Four rules the window itself enforces, each of which is about not lying:
 - **A step is a run of typing, not a keystroke.** Each edit is reported at once
   so the canvas and the file follow the caret, but consecutive keys merge into
   one undo step; a click, an arrow key, a command button or leaving the field
-  breaks the run, and the next key starts a fresh one.
+  breaks the run, and the next key starts a fresh one. **The caret is part of
+  the step**, which is what makes a key that changes nothing — the letter
+  already there, typed over itself — still one: the cells stand still, the
+  caret does not, and an undo owes the user the place in the string they were
+  working in as much as the string itself (:meth:`TextWindow.set_caret`).
 - **The budget is characters of the file, not of the string.** A text region is a
   fixed run of cells, and the main window keeps it exactly full — cutting off what
   runs past the end and filling what a string gives up. The readout here is live
@@ -192,9 +196,12 @@ class _CommandGrid(QWidget):
 class TextWindow(QWidget):
     """Presentation-only floating view of a fontmap's text, typed over in place."""
 
-    #: The body after an edit, with whether it starts a new undo step and what to
-    #: call that step.
-    committed = Signal(str, bool, str)
+    #: The body after an edit, with whether it starts a new undo step, what to
+    #: call that step, and where the caret stood before and after it. The caret
+    #: travels with the edit because it is part of it: an undo of typing has to
+    #: put the caret back where the typing started, or the string comes back
+    #: without the place in it the user was working (:meth:`set_caret`).
+    committed = Signal(str, bool, str, int, int)
     #: The body mid-composition — a ``[...]`` still being spelled. Nothing may be
     #: written from it; it exists so the budget readout keeps up with the keys.
     drafted = Signal(str)
@@ -397,6 +404,28 @@ class TextWindow(QWidget):
             self._edit.setTextCursor(cursor)
         finally:
             self._syncing = False
+
+    def set_caret(self, at: int) -> None:
+        """Put the caret at ``at`` of the body — an undo step landing, not a move.
+
+        The other half of the caret travelling with the edit (:attr:`committed`):
+        a step made in this field puts it back where it was made, so Ctrl+Z hands
+        back the place in the string as well as the string. Silent, like
+        :meth:`select_range`, because the caller is mid-apply and moving the
+        canvas is its own business.
+
+        The run of typing ends here. What the undo took back is on the stack
+        below, and a key pressed after it must start a step of its own rather
+        than merge into the one the caret has just been pulled out of.
+        """
+        self._syncing = True
+        try:
+            cursor = self._edit.textCursor()
+            cursor.setPosition(max(0, min(at, len(self.body))))
+            self._edit.setTextCursor(cursor)
+        finally:
+            self._syncing = False
+        self._fresh = True
 
     def hide_overlay(self) -> None:
         """Hide — the entry on screen is no longer a fontmap, or was closed."""
@@ -665,7 +694,11 @@ class TextWindow(QWidget):
         leaves it. Backspace is the exception and names the near end, so that
         holding it walks left over the string rather than standing still on the
         space it just made.
+
+        Where the caret stood *before* is read first and reported with the edit:
+        it is where an undo of this step has to leave it.
         """
+        was = self._edit.textCursor().position()
         self._body, self._units = splice(
             self._body, self._units, first, last, typed, unit=unit
         )
@@ -680,15 +713,15 @@ class TextWindow(QWidget):
             self._edit.setTextCursor(cursor)
         finally:
             self._syncing = False
-        self._report(caret, label)
+        self._report(was, caret, label)
 
-    def _report(self, caret: int, label: str) -> None:
+    def _report(self, was: int, caret: int, label: str) -> None:
         """Say what the edit was — a write, or a code still being spelled."""
         self._drafting = self._body != self._committed
         if inside_code(self._body, caret):
             self.drafted.emit(self._body)
         else:
-            self.committed.emit(self._body, self._fresh, label)
+            self.committed.emit(self._body, self._fresh, label, was, caret)
             self._fresh = False
         self.caret_moved.emit(caret)
 
@@ -801,9 +834,15 @@ class TextWindow(QWidget):
         self._commit()
 
     def _commit(self) -> None:
-        """Write the body out, if the field is ahead of the file."""
+        """Write the body out, if the field is ahead of the file.
+
+        The caret is reported unmoved, because from here it is: what lands is a
+        ``[...]`` the user finished typing some keystrokes ago, and the place to
+        come back to is the one the caret is standing in now.
+        """
         if self._body != self._committed:
-            self.committed.emit(self._body, True, "edit text")
+            at = self._edit.textCursor().position()
+            self.committed.emit(self._body, True, "edit text", at, at)
             self._fresh = True
 
     def closeEvent(self, event) -> None:  # noqa: ANN001 — QCloseEvent

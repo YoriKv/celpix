@@ -8,30 +8,20 @@
 # `sprite` is: the bar has to describe the entry before anything is bound to it,
 # and a string with no font is still a string.
 #
-# It declares no controls. A bare index-only run genuinely has none - every word
-# is a character and the line width is the view's Cols - and inventing a
-# terminator would put a line break in the text window that the file does not
-# have.
+# It states no codes, and no cell format does. What a word *means* - a letter, a
+# line break, a terminator, a command worth a caption - is the font's answer, and
+# it is typed into the **Font Alphabet** window against the sheet that draws it
+# (fontmap-entry.md sec 3). So this preset says where the bits go and stops.
 #
-# A stream that *does* have punctuation states it here, where the stream's own
-# format is stated, and not on the font: two runs in one game routinely share a
-# font and differ in exactly this. Copy this preset and add, for example:
+# A word that no tile draws still needs a row to be named on, and at this width
+# the terminator is routinely far past the end of the sheet - `$FFFF` over a
+# 4096-glyph font. That is what the window's **Append** spin is for: it lists
+# rows beyond the last tile, and what is typed into one is stored as a named code
+# at the value the row's header shows.
 #
-#   [[params.controls]]
-#   code = 0xFFFE
-#   name = "line-break"
-#   role = "break"
-#   description = "Ends the line."
-#
-#   [[params.controls]]
-#   code = 0xFFFF
-#   name = "end-of-string"
-#
-# `role` is `break` (reads as a real newline; the first one declared is what
-# Enter types) or `control` (reads as its own `[$FFFF]`, and the name captions a
-# button on the insert row). Declaring nothing is always safe: an undeclared code
-# reads as `[$FFFF]` and types back to the same word, so a command celPix knows
-# nothing about survives an edit untouched.
+# A code with no name reads as `[$FFFF]` and types back to the same word, so
+# nothing has to be described for a region to round-trip - naming changes only
+# how the text *reads*.
 id = "preset.tilemap.text-16bit"
 name = "Text run (16-bit character codes)"
 engine_id = "codec.tilemap.packed"

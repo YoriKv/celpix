@@ -72,8 +72,10 @@ from celpix.project.workspace import (
     EntryKind,
     MissingPreset,
     PaletteMode,
+    SortKey,
     Workspace,
     data_missing,
+    sorted_entries,
 )
 from celpix.ui.animation_overlay import AnimationOverlay
 from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas
@@ -129,6 +131,7 @@ from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
     RenameEntryCommand,
     ReorderEntryCommand,
+    SortEntriesCommand,
 )
 from celpix.ui.widgets import (
     counted,
@@ -366,9 +369,6 @@ class MainWindow(
         # The third tool window, and the one the other two are read against: a
         # fontmap opens the text beside the alphabet that decides what it says.
         self._font_alphabet = FontAlphabetWindow(self)
-        # Which run of typing the next alphabet edit belongs to, so consecutive
-        # rows merge into one undo step (``main_window/font_alphabet.py``).
-        self._font_alphabet_run = 0
         self._font_alphabet_dismissed = False
         self._font_alphabet.edited.connect(self._on_font_alphabet_edited)
         self._font_alphabet.dismissed.connect(self._on_font_alphabet_dismissed)
@@ -520,6 +520,7 @@ class MainWindow(
         self._files_panel.entry_activated.connect(self._activate_entry)
         self._files_panel.remove_requested.connect(self._remove_entry)
         self._files_panel.reorder_requested.connect(self._reorder_entry)
+        self._files_panel.sort_requested.connect(self._sort_entries)
         self._files_panel.copy_requested.connect(self._copy_entry)
         self._files_panel.cut_requested.connect(self._cut_entry)
         self._files_panel.paste_requested.connect(self._paste_entries)
@@ -689,6 +690,47 @@ class MainWindow(
     def _apply_reorder_entry(self, entry: Entry, before: Entry | None) -> None:
         if self._workspace.reorder(entry, before):
             self._files_panel.move_item(entry, before)
+
+    def _sort_entries(self, entry: Entry, key: SortKey) -> None:
+        """Put the group ``entry`` sits in into ``key`` order — a context-menu sort.
+
+        The group comes from the panel, for the reason :meth:`_reorder_entry`
+        asks it there: on screen the rows are nested and sectioned, and it is that
+        arrangement — one file's children, one section's files — the user is
+        asking to put in order.
+
+        A **type** sort needs what each map's format declares its cells to be,
+        which is the registry's answer and not the entry's — so it is handed in
+        from here, where the same declaration already decides whether a map opens
+        as a string or as a set of objects (:meth:`_tilemap_declares`).
+        """
+        if self._applying_undo:
+            return
+        was = self._files_panel.sibling_entries(entry)
+        order = sorted_entries(
+            was, key, layout=lambda e: str(self._tilemap_declares(e, "layout") or "")
+        )
+        if order == was:  # Entry is eq=False, so this compares identity
+            return
+        what = key.value
+        self._push_command(
+            SortEntriesCommand(self, entry, f"sort by {what}", before=was, after=order)
+        )
+
+    def _apply_entry_order(self, order: list[Entry]) -> None:
+        """Lay one group's rows out in ``order``.
+
+        Right to left, each row moved in front of the one that follows it: after
+        every step the tail from that row on is contiguous and already right, so
+        the next move only has to reach the head of it. Working the other way
+        would keep shunting rows past a tail that is still in the old order.
+
+        Spelled in the same "land in front of this row" moves a drag makes, so the
+        model and the tree stay in step through the one place that knows how to
+        keep them there.
+        """
+        for at in range(len(order) - 2, -1, -1):
+            self._apply_reorder_entry(order[at], order[at + 1])
 
     def _sync_write_action(self) -> None:
         """Arm File ▸ Write for whatever the current view can actually save.

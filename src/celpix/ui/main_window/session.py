@@ -591,10 +591,11 @@ class SessionMixin:
         """Whether ``entry``'s format ends a line on a bit rather than a code.
 
         Asked of the **codec**, which is the only thing that knows where a cell's
-        bits go: the format's own answer, for the same reason ``controls`` is
-        read off the format — it is the *stream's* punctuation, and the alphabet
-        has to know before a newline can be typed into one
-        (:attr:`~celpix.core.font.Alphabet.flag_break`).
+        bits go. It is the one piece of a stream's punctuation the alphabet
+        cannot state: every other kind is a code, and this one is a *bit*, so it
+        has nowhere to sit in a table of codes. The alphabet is told all the
+        same, because a newline typed into such a stream costs no cell
+        (:attr:`~celpix.core.font.FontAlphabet.flag_break`).
 
         False for a codec that was never asked, the same direction every optional
         method here defaults: a line break that costs a cell is always writable,
@@ -610,16 +611,16 @@ class SessionMixin:
         return bool(ask is not None and ask(preset.params))
 
     def _font_alphabet_for(self, entry: Entry, cell_bytes: int):
-        """The lookup ``entry``'s codes read through — its font's, plus its own.
+        """The lookup ``entry``'s codes read through — the font's, whole.
 
-        The halves meet here because this is the only place that holds both: the
-        **font** is whatever ``entry`` is bound to, and its table is that entry's
-        own data (:attr:`~celpix.project.workspace.Entry.font_chars`,
+        Reached from here because ``entry`` is the string and the table is the
+        **font's**: whatever ``entry`` is bound to, read off that entry's own data
+        (:attr:`~celpix.project.workspace.Entry.font_chars`,
         :attr:`~celpix.project.workspace.Entry.font_codes` and the origin
-        :attr:`~celpix.project.workspace.Entry.font_base` beside them); the
-        **controls** are on ``entry``'s own cell format. Neither knows about the
-        other, and nothing downstream should have to ask twice
-        (:func:`~celpix.pipeline.pipeline.load_font_alphabet`).
+        :attr:`~celpix.project.workspace.Entry.font_base` beside them). Letters
+        and punctuation both, since a cell format states no codes of its own
+        (:func:`~celpix.pipeline.pipeline.load_font_alphabet`) — two streams
+        punctuated differently are two font entries over the same tiles.
 
         Read only from a sheet that says it is a font — **Use as Font**
         (:attr:`~celpix.project.workspace.Entry.use_as_font`). Unticking keeps the
@@ -637,11 +638,9 @@ class SessionMixin:
             return None
         bound = self._binding_target(entry.tile_source) if entry.tile_source else None
         font = bound if bound is not None and bound.use_as_font else None
-        controls = self._tilemap_declares(entry, "controls") or ()
         return pipeline.load_font_alphabet(
             font.font_chars if font is not None else "",
             font.font_codes if font is not None else (),
-            controls=controls,
             code_digits=max(1, cell_bytes) * 2,
             base=font.font_base if font is not None else 0,
             flag_break=self._tilemap_flag_break(entry),

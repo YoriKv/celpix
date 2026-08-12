@@ -71,7 +71,6 @@ if TYPE_CHECKING:
 OFFSET_MOVE_ID = 1
 COLOR_EDIT_ID = 2
 TILEMAP_CELLS_ID = 3
-FONT_ALPHABET_ID = 4
 
 
 @dataclass(frozen=True)
@@ -272,6 +271,15 @@ class TilemapCellsCommand(_InPlaceCommand):
     command and bumps it when the run ends (a click, an arrow key, a command
     button, focus leaving), so a typed word collapses into one step and the thing
     that ended it is the thing that ends the step.
+
+    ``caret`` comes from the text window too, and is the position in the string
+    each half of the step leaves the caret at. A text edit is made at a place as
+    much as it is made to a string, so the place comes back with it — which is
+    also what makes a keystroke that changes no cell a step worth having: the
+    letter already there, typed over itself, moves the caret and nothing else,
+    and the user has still done something Ctrl+Z should answer. Such a step
+    leaves the **revision** alone, so a file whose bytes did not move does not
+    start reading dirty over a caret.
     """
 
     def __init__(
@@ -283,15 +291,23 @@ class TilemapCellsCommand(_InPlaceCommand):
         after: list,
         *,
         run: int | None = None,
+        caret: tuple[int, int] | None = None,
     ) -> None:
         # The state is the cells *paired with* the data-pathway revision they leave
-        # the entry at, so an undo hands back the exact unsaved-state it had before.
+        # the entry at, so an undo hands back the exact unsaved-state it had before,
+        # and with the text caret that belongs to that side of the edit.
         super().__init__(
             window,
             entry,
             text,
-            (before, entry.pixel_revision),
-            (after, window._workspace.next_revision()),
+            (before, entry.pixel_revision, caret[0] if caret else None),
+            (
+                after,
+                entry.pixel_revision
+                if after == before
+                else window._workspace.next_revision(),
+                caret[1] if caret else None,
+            ),
         )
         self._merge_run = run
 
@@ -309,16 +325,19 @@ class TilemapCellsCommand(_InPlaceCommand):
             return False
         # other's redo has already run, so its half of the pair is the live state.
         self._after = other._after
-        if self._after[0] == self._before[0]:
-            # The run typed its way back to the string it started from — drop the
-            # empty step, and hand the entry back the revision it had before it.
+        if self._after[0] == self._before[0] and self._after[2] == self._before[2]:
+            # The run typed its way back to the string it started from *and* to
+            # the caret it started at — drop the empty step, and hand the entry
+            # back the revision it had before it. A run that ended somewhere else
+            # in the string is kept: the caret is part of what an undo restores.
             self.setObsolete(True)
             self._window._workspace.set_pixel_revision(self._entry, self._before[1])
         return True
 
-    def _apply(self, state: tuple[list, int]) -> None:
-        cells, revision = state
+    def _apply(self, state: tuple[list, int, int | None]) -> None:
+        cells, revision, caret = state
         self._window._set_cells(self._entry, cells, revision)
+        self._window._restore_text_caret(self._entry, caret)
 
 
 @dataclass(frozen=True)
@@ -771,12 +790,13 @@ class RenameEntryCommand(_InPlaceCommand):
         self._window._apply_entry_name(self._entry, state)
 
 
-#: A **font entry**'s whole alphabet: the tick, the origin, the positional run
-#: and the named codes (``docs/design/fontmap-entry.md`` §4). One state and not
-#: four commands because the editor settles several at once — a template moves
-#: the origin and the run together, and a paste can turn a named code back into
-#: an ordinary letter — and each of those is one gesture to undo.
-FontAlphabetState = tuple[bool, int, str, tuple[Glyph, ...]]
+#: A **font entry**'s whole alphabet: the tick, the origin, how far past the
+#: sheet the table is listed either way, the positional run and the named codes
+#: (``docs/design/fontmap-entry.md`` §4). One state and not six commands because
+#: the editor settles several at once — a template moves the origin and the run
+#: together, and a paste can turn a named code back into an ordinary letter — and
+#: each of those is one gesture to undo.
+FontAlphabetState = tuple[bool, int, int, int, str, tuple[Glyph, ...]]
 
 
 class FontAlphabetCommand(_InPlaceCommand):
@@ -793,48 +813,13 @@ class FontAlphabetCommand(_InPlaceCommand):
     knows which gesture produced the state: "paste 26 characters" and "edit font
     alphabet" can land identical values and are different things to undo.
 
-    ``run`` merges a **run of typing** down the table into one step, the rule
-    :class:`TilemapCellsCommand` follows for typing into the text window. Each
-    cell settles as it is left, so the sheet and the string follow the caret —
-    but a word typed into six rows is one thing the user did.
-
-    Every alphabet edit carries a number and only edits sharing one merge, unlike
-    the cell command's ``None`` for "never". The difference is that here the
-    editor says where a run *starts*: a paste, a template, a shift or the origin
-    moving reports fresh on both sides, so it takes a number nothing else has and
-    joins neither the word before it nor the one after.
+    **Never merges**, unlike the cell command typing into the text window. A row
+    of this table is a code's whole answer rather than a letter of a word: the
+    user settles one, looks at the string, settles another somewhere else — so
+    two rows are two things to take back, and a gesture that fills many at once
+    (a fill-down, a template, a shift) is already reported as the single edit it
+    is.
     """
-
-    def __init__(
-        self,
-        window: MainWindow,
-        entry: Entry,
-        text: str,
-        before: FontAlphabetState,
-        after: FontAlphabetState,
-        *,
-        run: int | None = None,
-    ) -> None:
-        super().__init__(window, entry, text, before, after)
-        self._merge_run = run
-
-    def id(self) -> int:
-        return FONT_ALPHABET_ID if self._merge_run is not None else -1
-
-    def mergeWith(self, other: QUndoCommand) -> bool:  # noqa: N802 — Qt override
-        if (
-            not isinstance(other, FontAlphabetCommand)
-            or other._entry is not self._entry
-            or other._merge_run != self._merge_run
-        ):
-            return False
-        # other's redo has already run, so its half of the pair is the live state.
-        self._after = other._after
-        if self._after == self._before:
-            # The run typed its way back to the table it started from — drop the
-            # empty step rather than leaving one that does nothing to undo.
-            self.setObsolete(True)
-        return True
 
     def _apply(self, state: FontAlphabetState) -> None:
         self._window._apply_font_alphabet(self._entry, state)
@@ -916,6 +901,35 @@ class ReorderEntryCommand(_InPlaceCommand):
 
     def _apply(self, state: Entry | None) -> None:
         self._window._apply_reorder_entry(self._entry, state)
+
+
+class SortEntriesCommand(_InPlaceCommand):
+    """Sorting one group of rows in the files pane.
+
+    The state is the **whole group in order**, not a neighbour: a sort moves most
+    of a group at once, and the arrangement it replaced is not something the rows
+    left behind can describe between them. Both directions are then the same
+    operation — lay this list of rows out in this order — so an undone sort
+    restores a hand-made arrangement exactly rather than approximately.
+
+    The lists hold the same entries by identity, so a redo after later edits still
+    names the rows it moved; a command that removed one of them would be undone
+    before this one.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        text: str,
+        *,
+        before: list[Entry],
+        after: list[Entry],
+    ) -> None:
+        super().__init__(window, entry, text, before, after)
+
+    def _apply(self, state: list[Entry]) -> None:
+        self._window._apply_entry_order(state)
 
 
 class PasteEntriesCommand(QUndoCommand):

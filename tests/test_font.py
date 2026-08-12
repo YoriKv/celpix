@@ -245,24 +245,21 @@ def test_a_table_file_reads_text_first_when_told_to() -> None:
     assert [(g.code, g.text) for g in glyphs] == [(0x00, "A"), (0x3D, "=")]
 
 
-def test_a_control_spec_defaults_to_control_and_a_font_spec_to_text() -> None:
-    """Who is stating the list decides what an entry with no ``role`` is.
+def test_a_spec_line_is_a_letter_unless_it_says_what_else_it_is() -> None:
+    """The common line is a glyph, so it is the one that carries no ``role``.
 
-    A font's glyphs are letters unless they say otherwise and a cell format's
-    controls are controls unless they say otherwise, so neither has to spell out
-    the only thing its every line could be.
+    A code that punctuates has to say so, since what it *does* is the whole of
+    what a reader has to be told about it.
     """
     spec = [
         {"code": 0xFE, "text": "line break", "role": "break"},
-        {"code": 0xFF, "text": "end of string"},
+        {"code": 0xFD, "name": "end-of-string", "role": "control"},
+        {"code": 0xFF, "text": "A"},
     ]
     assert [g.role for g in glyphs_from_spec(spec)] == [
         GlyphRole.BREAK,
-        GlyphRole.TEXT,
-    ]
-    assert [g.role for g in glyphs_from_spec(spec, GlyphRole.CONTROL)] == [
-        GlyphRole.BREAK,
         GlyphRole.CONTROL,
+        GlyphRole.TEXT,
     ]
 
 

@@ -38,6 +38,7 @@ activation. External changes to the file on disk are ignored.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from os.path import abspath, basename, exists, normcase, splitext
@@ -66,12 +67,29 @@ from celpix.plugins.base import (
 from celpix.plugins.detect import resolved_container_id
 from celpix.plugins.registry import Registry
 
+# The digit runs :func:`_natural_key` compares as numbers. Captured, so the split
+# keeps them and the key sees the whole name rather than only its text.
+_DIGIT_RUN = re.compile(r"(\d+)")
+
 
 class EntryKind(Enum):
     FILE = auto()
     SLICE = auto()
     BOOKMARK = auto()
     PALETTE = auto()
+
+
+class SortKey(str, Enum):
+    """What a group of rows is put in order by — see :func:`sorted_entries`.
+
+    The list's order is the user's (:meth:`Workspace.reorder`), so this is a
+    gesture they ask for rather than a state anything keeps: nothing persists it,
+    and the next hand-placed row is not moved back.
+    """
+
+    NAME = "name"
+    OFFSET = "offset"
+    TYPE = "type"
 
 
 class PaletteMode(str, Enum):
@@ -500,6 +518,18 @@ class Entry:
     # sheet. **Not moved by** ``font_base``, since none of them was read off the
     # sheet; they override the run where they collide.
     font_codes: tuple[Glyph, ...] = ()
+    # How many rows the alphabet editor lists **before** the first tile and
+    # **after** the last — the Prepend and Append spins. A code outside the sheet
+    # is an ordinary thing to have to name (a terminator above a 128-tile font, a
+    # letter drawn by the sheet uploaded next to this one), and the table is one
+    # row per tile, so without these there is no row to type it into.
+    #
+    # Saved rather than kept on the window because how far past its tiles a font
+    # is read is a fact about that font: a sheet whose stream terminates on $FF
+    # is read to $FF every time it is opened, and re-dialling it each session is
+    # re-answering a question the project already knows the answer to.
+    font_prepend: int = 0
+    font_append: int = 0
     # The palette row this map's cells count their own row 0 from — the tile
     # base's colour twin, and the user's word on it. **None means the format's
     # own answer**, which is right almost always: a sprite's 3-bit field counts
@@ -1074,6 +1104,95 @@ class Workspace:
     def _notify(callbacks: list[Callable[[Entry], None]], entry) -> None:
         for callback in list(callbacks):
             callback(entry)
+
+
+#: What **by type** means, in the order the rows land: the picture first, then
+#: the three readings of a map — an even grid, the same cells placed freely, the
+#: same cells read as words — and the palettes applied onto all of them last.
+#: Keyed by string so one table covers both halves of the question, the content
+#: kind's own value and the *layout* a tilemap's cell format declares (the same
+#: declaration the row's icon reads).
+_TYPE_ORDER: dict[str, int] = {
+    ContentKind.PIXELS.value: 0,
+    ContentKind.TILEMAP.value: 1,
+    "sprite": 2,
+    "text": 3,
+    ContentKind.PALETTE.value: 4,
+}
+
+
+def sorted_entries(
+    entries: list[Entry],
+    key: SortKey,
+    *,
+    layout: Callable[[Entry], str] | None = None,
+) -> list[Entry]:
+    """``entries`` in ``key`` order — one group of rows, rearranged.
+
+    Sorting acts on a *group* (a file's children, or the files of one section),
+    because that is the only span whose order means anything: the list is flat
+    here but nested and sectioned on screen, so a sort across the whole of it
+    would rearrange rows the user cannot see together.
+
+    By **offset** the name breaks ties, so two bookmarks on one position still
+    land in a stable, readable order; by **name** the offset is not consulted at
+    all — a group sorted by name and holding two of the same name keeps the order
+    it had, Python's sort being stable. Offsets are the child kinds' question
+    only: a file and a palette are the whole of their bytes and every one of them
+    would answer 0.
+
+    By **type** nothing breaks a tie, deliberately: sorts compose, so a group put
+    in name order and then in type order reads as names within each type. It is
+    the cheapest way to state "fontmaps last, alphabetically" and it is why the
+    rank is the whole of the key.
+
+    ``layout`` answers what a tilemap's cell **format** declares its cells to be
+    (``"sprite"``, ``"text"``, or ``""`` for an even grid). Handed in because it
+    is a question for the preset registry rather than for the entry, and only the
+    type sort asks it: without one every map ranks as a plain tilemap, which is
+    what an unrecognised format is anyway.
+    """
+    if key is SortKey.OFFSET:
+        return sorted(entries, key=lambda e: (e.slice_offset, _natural_key(e.name)))
+    if key is SortKey.TYPE:
+        return sorted(entries, key=lambda e: _type_rank(e, layout))
+    return sorted(entries, key=lambda e: _natural_key(e.name))
+
+
+def _type_rank(entry: Entry, layout: Callable[[Entry], str] | None) -> int:
+    """Where ``entry`` sits in :data:`_TYPE_ORDER`.
+
+    A tilemap is asked what its format lays its cells out as; everything else is
+    its content kind and nothing more. An unknown answer either way ranks with
+    the plain reading of the kind it belongs to, since a map celPix has no format
+    for is still a map and sorting is not the place to say otherwise.
+    """
+    if entry.content_kind is ContentKind.TILEMAP and layout is not None:
+        declared = layout(entry)
+        if declared in _TYPE_ORDER:
+            return _TYPE_ORDER[declared]
+    return _TYPE_ORDER.get(entry.content_kind.value, 0)
+
+
+def _natural_key(name: str) -> tuple[tuple[int, object], ...]:
+    """A sort key that reads runs of digits as numbers, case-insensitively.
+
+    Plain string order is wrong for exactly the names this list holds: default
+    slice names lead with a hex offset (``0x800`` sorts after ``0x1000``
+    lexically, once the widths differ), and hand-typed ones number their variants
+    (``tile10`` before ``tile2``). Splitting on digit runs and comparing those as
+    integers puts both right.
+
+    Each part carries a leading flag saying which kind it is, so a number is never
+    compared against text. Two names line up by kind on their own — the split
+    always starts with a (possibly empty) text piece and alternates from there —
+    but that is a property of the splitting, and the flag is what makes it one of
+    the key, which is where a comparison actually happens.
+    """
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part.casefold())
+        for part in _DIGIT_RUN.split(name)
+    )
 
 
 def pixel_config_for(

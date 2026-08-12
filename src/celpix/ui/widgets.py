@@ -601,12 +601,21 @@ class ZoomSpinBox(QDoubleSpinBox):
         self.setValue(zoom_level_after(self.value(), steps))
 
 
+def _set_cursor(widget: QWidget, shape: Qt.CursorShape | None) -> None:
+    """``shape`` on ``widget``, or back to whatever it inherits for ``None``."""
+    if shape is None:
+        widget.unsetCursor()
+    else:
+        widget.setCursor(shape)
+
+
 class PanZoomSurface:
     """Space-drag panning and Ctrl+wheel zooming, for a widget in a scroll area.
 
-    The three surfaces that magnify pixel art inside a scroll area — the canvas,
-    the tile source sheet, the animation frame — all offer the same two gestures,
-    and a user who learns one on any of them expects it on the others. What they
+    The four surfaces that magnify pixel art inside a scroll area — the canvas,
+    the tile source sheet, the font alphabet's sheet, the animation frame — all
+    offer the same two gestures, and a user who learns one on any of them expects
+    it on the others. What they
     do *with* the gestures differs (each reports to a different controller over
     its own signals), but the mechanics are identical down to the reason for
     every line, so they live here rather than being kept in step by hand.
@@ -639,6 +648,9 @@ class PanZoomSurface:
     _pan_active = False
     _panning = False
     _pan_last = QPointF()
+    #: The scroll viewport this surface has claimed as its own backing, if it has
+    #: (:meth:`claim_background`) — the one other widget the gestures answer over.
+    _backing: QWidget | None = None
 
     def set_pan_mode(self, on: bool) -> None:
         """Arm/disarm space-drag panning (the window drives this off the space key).
@@ -669,17 +681,23 @@ class PanZoomSurface:
 
     def _apply_cursor(self) -> None:
         """Set the cursor for the current mode: closed hand while panning, open
-        while a pan is merely armed, and the surface's own otherwise."""
+        while a pan is merely armed, and the surface's own otherwise.
+
+        The claimed backing wears **the hands and nothing else**: a pan answers
+        out there exactly as it does over the art (:meth:`claim_background`), so a
+        pointer that changed shape on the way in would say otherwise — while the
+        surface's own cursor is a promise about its content (the canvas's cross
+        says "this paints"), which the grey cannot keep.
+        """
         if self._panning:
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            hand = Qt.CursorShape.ClosedHandCursor
         elif self._pan_active:
-            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            hand = Qt.CursorShape.OpenHandCursor
         else:
-            shape = self._pan_cursor()
-            if shape is None:
-                self.unsetCursor()
-            else:
-                self.setCursor(shape)
+            hand = None
+        _set_cursor(self, hand if hand is not None else self._pan_cursor())
+        if self._backing is not None:
+            _set_cursor(self._backing, hand)
 
     def _pan_press(self, event) -> bool:  # noqa: ANN001 — Qt event
         """Begin a pan drag if one is armed; True when the press was taken.
@@ -759,19 +777,21 @@ class PanZoomSurface:
         *in* on. Without this the gesture answers over the art and does nothing
         an inch to its right, which reads as the wheel zoom being broken rather
         than as a target having been missed. The **grey is the surface** as far
-        as a user is concerned, so a Ctrl+wheel out there zooms and a click out
-        there focuses — which is what puts the keys that address this sheet
-        (Shift+Left/Right for its width, the arrows for its pick) on it.
+        as a user is concerned, so both gestures answer out there — a Ctrl+wheel
+        zooms and an armed space-drag pans — and a click focuses, which is what
+        puts the keys that address this sheet (Shift+Left/Right for its width,
+        the arrows for its pick) on it.
 
         Filtered on the viewport rather than handled by a QScrollArea subclass so
         the whole gesture stays one class: the events land on the viewport (the
         surface is its child), and the filter gets them before the scroll area
         turns them into a scroll or takes the focus for itself.
         """
-        scroll.viewport().installEventFilter(self)
+        self._backing = scroll.viewport()
+        self._backing.installEventFilter(self)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001 — Qt override
-        """The backing's Ctrl+wheel and click, answered as the surface's own.
+        """The backing's Ctrl+wheel, pan drag and click, answered as our own.
 
         The wheel's position is mapped into this widget and **clamped to it**, so
         a zoom started out on the backing anchors on the nearest content pixel
@@ -781,14 +801,27 @@ class PanZoomSurface:
         still something that is not there. A plain wheel is left alone and
         scrolls as usual.
 
-        A **press** takes the focus and is then left to travel on. Qt has already
-        handed focus to the scroll area by the time this runs — it is given
-        before the press is delivered — so this is the surface taking it back,
-        and it is what a click on the grey has to do for the keys addressed to
-        this sheet to reach it. Not consumed: the press is still the scroll
+        A **pan drag** needs no mapping at all: it is measured in global screen
+        deltas, so where it started says nothing about what it moves. The whole
+        drag is taken here rather than only its press — the implicit mouse grab
+        belongs to the widget the press was accepted on, so every move and the
+        release land on the backing too.
+
+        Any other **press** takes the focus and is then left to travel on. Qt has
+        already handed focus to the scroll area by the time this runs — it is
+        given before the press is delivered — so this is the surface taking it
+        back, and it is what a click on the grey has to do for the keys addressed
+        to this sheet to reach it. Not consumed: the press is still the scroll
         area's to do whatever else it does with.
         """
-        if isinstance(obj, QWidget) and event.type() == QEvent.Type.MouseButtonPress:
+        et = event.type()
+        if et == QEvent.Type.MouseButtonPress and self._pan_press(event):
+            return True
+        if et == QEvent.Type.MouseMove and self._pan_move(event):
+            return True
+        if et == QEvent.Type.MouseButtonRelease and self._pan_release(event):
+            return True
+        if isinstance(obj, QWidget) and et == QEvent.Type.MouseButtonPress:
             self.setFocus(Qt.FocusReason.MouseFocusReason)
         elif (
             event.type() == QEvent.Type.Wheel

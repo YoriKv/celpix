@@ -18,10 +18,11 @@ Four things it has to get right, and none of them is the window's to know:
   right — the rule the binding follows when an entry leaves the list
   (``docs/design/tilemap-entry.md`` §1). Nothing about the bytes moves, so this
   is a re-read of the *reading* and not of the document.
-- **A run of typing is one step.** The window settles a cell at a time and
-  reports every one, so the sheet and the string follow the caret — but the undo
-  stack must not fill with letters. The run number is kept here, handed to each
-  command, and bumped whenever the window says the run has ended.
+- **One reported edit is one undo step.** The window settles a row at a time and
+  reports every one, so the sheet and the string follow the caret; each is its
+  own step, because a row is a code's whole answer and two rows are two things to
+  take back. A gesture that writes many rows at once — a fill-down, a template, a
+  shift — reports the finished table once and is therefore already one step.
 - **A fontmap opens its alphabet by itself.** The canvas shows a string as the
   grid of glyph tiles it is and the text window shows what those tiles say; this
   is where the second is decided. Landing on a fontmap whose font has no table
@@ -139,6 +140,8 @@ class FontAlphabetMixin:
         self._font_alphabet.show_alphabet(
             font.name,
             font.font_base,
+            font.font_prepend,
+            font.font_append,
             font.font_chars,
             font.font_codes,
         )
@@ -257,35 +260,50 @@ class FontAlphabetMixin:
             self._font_alphabet.select_tile(doc.cells[cells[0]].index)
 
     # -- taking an edit back -----------------------------------------------
+    @staticmethod
+    def _font_state(entry: Entry) -> FontAlphabetState:
+        """``entry``'s whole alphabet as one value — what a command carries.
+
+        Read in one place so the tuple's shape is stated once: every caller here
+        builds a *before* out of it, and the apply path unpacks the same order.
+        """
+        return (
+            entry.use_as_font,
+            entry.font_base,
+            entry.font_prepend,
+            entry.font_append,
+            entry.font_chars,
+            entry.font_codes,
+        )
+
     def _on_font_alphabet_edited(
-        self, base: int, chars: str, codes: tuple, fresh: bool, label: str
+        self,
+        base: int,
+        prepend: int,
+        append: int,
+        chars: str,
+        codes: tuple,
+        label: str,
     ) -> None:
         """One edit from the window, as an undo step on the bound font."""
         font = self._font_entry()
         if font is None or self._applying_undo:
             return
-        before: FontAlphabetState = (
+        before = self._font_state(font)
+        after: FontAlphabetState = (
             font.use_as_font,
-            font.font_base,
-            font.font_chars,
-            font.font_codes,
+            base,
+            prepend,
+            append,
+            chars,
+            tuple(codes),
         )
-        after: FontAlphabetState = (font.use_as_font, base, chars, tuple(codes))
         if after == before:
             return
-        # ``fresh`` **opens** a run rather than opting out of one, so the first
-        # row of a word merges with the rest of it. Every edit carries a number
-        # and only edits sharing it merge, which is what keeps two gestures apart
-        # without keeping the halves of one gesture apart: a paste reports fresh
-        # on both sides (the window ends the run before and after it), so it
-        # takes a number of its own and nothing can join it.
-        if fresh:
-            self._font_alphabet_run += 1
-        self._push_command(
-            FontAlphabetCommand(
-                self, font, label, before, after, run=self._font_alphabet_run
-            )
-        )
+        # One report, one step. The window reports a gesture rather than a
+        # keystroke — a fill-down or a template arrives as the whole table it
+        # landed — so nothing here has to be joined back together.
+        self._push_command(FontAlphabetCommand(self, font, label, before, after))
 
     # -- the Use as Font tick ----------------------------------------------
     def _sync_use_as_font(self) -> None:
@@ -324,12 +342,7 @@ class FontAlphabetMixin:
         if on:
             self._declare_use_as_font(entry)
             return
-        before: FontAlphabetState = (
-            entry.use_as_font,
-            entry.font_base,
-            entry.font_chars,
-            entry.font_codes,
-        )
+        before = self._font_state(entry)
         if self._has_alphabet(entry) and not self._confirm(
             f"{entry.name} has an alphabet typed against it. Unticking Use as "
             "Font deletes it.\n\nUndo brings it back.",
@@ -345,7 +358,7 @@ class FontAlphabetMixin:
                 entry,
                 f"stop using {entry.name} as a font",
                 before,
-                (False, 0, "", ()),
+                (False, 0, 0, 0, "", ()),
             )
         )
 
@@ -369,14 +382,11 @@ class FontAlphabetMixin:
         _on_tile_binding_change`), so both routes land the same state by the same
         command and an undo takes the declaration back either way.
         """
-        rest = (entry.font_base, entry.font_chars, entry.font_codes)
+        before = self._font_state(entry)
+        after: FontAlphabetState = (True, *before[1:])
         self._push_command(
             FontAlphabetCommand(
-                self,
-                entry,
-                f"use {entry.name} as a font",
-                (entry.use_as_font, *rest),
-                (True, *rest),
+                self, entry, f"use {entry.name} as a font", before, after
             )
         )
 
@@ -392,7 +402,14 @@ class FontAlphabetMixin:
         reading of cells that are already decoded, and what changes is only what
         they are read as.
         """
-        font.use_as_font, font.font_base, font.font_chars, font.font_codes = state
+        (
+            font.use_as_font,
+            font.font_base,
+            font.font_prepend,
+            font.font_append,
+            font.font_chars,
+            font.font_codes,
+        ) = state
         for entry in self._workspace.entries:
             doc = entry.doc
             if doc is None or not doc.is_fontmap:
@@ -406,7 +423,6 @@ class FontAlphabetMixin:
             doc.font_alphabet = pipeline.load_font_alphabet(
                 font.font_chars if font.use_as_font else "",
                 font.font_codes if font.use_as_font else (),
-                controls=self._tilemap_declares(entry, "controls") or (),
                 code_digits=max(1, doc.cell_bytes) * 2,
                 base=font.font_base,
                 flag_break=self._tilemap_flag_break(entry),

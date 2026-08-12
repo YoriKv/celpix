@@ -7,35 +7,23 @@
 # `sprite` is: the bar has to describe the entry before anything is bound to it,
 # and a string with no font is still a string.
 #
-# It declares no controls. A bare index-only run genuinely has none - every byte
-# is a character and the line width is the view's Cols - and inventing a
-# terminator would put a line break in the text window that the file does not
-# have.
+# It states no codes, and no cell format does. What a byte *means* - a letter, a
+# line break, a terminator, a command worth a caption - is the font's answer, and
+# it is typed into the **Font Alphabet** window against the sheet that draws it
+# (fontmap-entry.md sec 3). So this preset says where the bits go and stops.
 #
-# A stream that *does* have punctuation states it here, where the stream's own
-# format is stated, and not on the font: two runs in one game routinely share a
-# font and differ in exactly this. Copy this preset and add, for example:
+# Two streams in one game that share a font and punctuate differently are two
+# font entries over the same tiles, each with its own reading: the same slice
+# carved twice, ticked **Use as Font** twice, and the map bound to whichever
+# reading is its own. A cell format that named a byte could only be right for one
+# of them, and would be silently wrong for the other.
 #
-#   [[params.controls]]
-#   code = 0xFE
-#   name = "line-break"
-#   role = "break"
-#   description = "Ends the line."
+# A code with no name reads as `[$FF]` and types back to the same byte, so
+# nothing has to be described for a region to round-trip - naming changes only
+# how the text *reads*.
 #
-#   [[params.controls]]
-#   code = 0xFF
-#   name = "end-of-string"
-#
-# A control is three things. `code` is the byte, `name` is the one word the text
-# holds inside its brackets - `[end-of-string]` - and `description` is the
-# sentence behind it, which reaches the tooltip on the insert row's button and
-# never the string itself. A name with a space in it is hyphenated on the way in,
-# since it is what a reader retypes.
-#
-# `role` is `break` (reads as a real newline; the first one declared is what
-# Enter types) or `control` (reads as its own name). Declaring nothing is always
-# safe: a code nobody has named reads as `[$FF]` and types back to the same byte,
-# so a command celPix knows nothing about survives an edit untouched.
+# The line width of a bare run like this is the view's Cols, since an index-only
+# stream has no punctuation of its own until the alphabet gives it some.
 id = "preset.tilemap.text-8bit"
 name = "Text run (8-bit character codes)"
 engine_id = "codec.tilemap.packed"

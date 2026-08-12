@@ -1175,17 +1175,16 @@ def test_space_pans_whichever_surface_the_pointer_is_over(qtbot, tmp_path) -> No
     qtbot.mouseMove(panel, QPoint(4, 4))
     qtbot.keyPress(panel, Qt.Key.Key_Space)
     assert panel._pan_active and not window._canvas._pan_active
-    # The hand is worn by the surface that pans and by nothing else. Which is
-    # what keeps the arming rule honest now that a press decides nothing about
-    # it: the cursor is a property of the widget, and each surface is fixed to
-    # the size of its picture inside a scroll area that does not stretch it - so
-    # the pixels showing an open hand are exactly the pixels a press would pan.
-    # Setting it on the scroll area, or reaching for an application override
-    # cursor, would put a hand over the surround and over every dock.
+    # The hand is worn by the surface that pans, by the backing it has claimed as
+    # its own, and by nothing else. That is what keeps the arming rule honest now
+    # that a press decides nothing about it: the cursor is a property of the
+    # widget, so the pixels showing an open hand are exactly the pixels a press
+    # would pan - which the surround now is (`PanZoomSurface.claim_background`).
+    # An application override cursor would put a hand over every dock instead.
     assert panel.cursor().shape() is Qt.CursorShape.OpenHandCursor
     assert (
         window._tile_source_scroll.viewport().cursor().shape()
-        is Qt.CursorShape.ArrowCursor
+        is Qt.CursorShape.OpenHandCursor
     )
     assert window._canvas.cursor().shape() is not Qt.CursorShape.OpenHandCursor
     # An armed pan takes the mouse from the pick, as it does on the canvas.

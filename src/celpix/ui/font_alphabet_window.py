@@ -18,12 +18,41 @@ one thing across both, however wide: picking a stretch of rows outlines that
 stretch of tiles, so what the clipboard buttons are about to act on is visible as
 a shape on the sheet and not only as a band of highlighted rows.
 
+**The sheet magnifies and pans like every other one.** Ctrl+wheel zooms it and a
+space-drag moves it, over the grey around it as much as over the tiles
+(:class:`~celpix.ui.widgets.PanZoomSurface`) — a font sheet is small, and a user
+who has just magnified one past its half of the splitter wants it moved rather
+than resized. Space is the window's while the table is not being typed into: the
+cell editor and the Role combo keep it, a font's own space glyph being a
+character somebody has to be able to type.
+
 **Two halves of the storage, one table on screen.** A row is written back to the
 positional run when its code is inside the run, its role is text and its text is
 one code point; anything else — a role, a pair standing behind one code, a code
-past the end of the sheet — is written as a named code
+past the end of the run — is written as a named code
 (``docs/design/fontmap-entry.md`` §4). That split is a storage rule and not a
 thing to make the user think about, so there is one table and no mode.
+
+*Inside the **run***, which is not always inside the sheet: a run can be longer
+than the tiles that draw it, and bounding by the picture instead would let one
+code be held by both halves at once (:meth:`FontAlphabetWindow._run_slots`).
+
+**Prepend and Append are how a code off the sheet gets a row.** The table is one
+row per tile, and a font routinely has to answer for codes no tile draws: a
+terminator at ``$FF`` above a 128-tile sheet, a letter the sheet uploaded beside
+this one draws. Both spins are counts of *rows*, before the first tile and after
+the last, and every row they add is outside the run — so what is typed into one
+is stored as a named code, at the code the row's header says. They default to
+none, because the ordinary font has nothing outside its sheet and 65 536 rows is
+not a table anybody can read.
+
+**Prepend lists what it was asked for, including below zero.** Under an origin of
+0 those rows read as ``-$04``, and they are shown rather than swallowed because
+the spin is *how much headroom to look at*: it holds still while **Base code** is
+dialled, so the rows come into the code space as the origin rises instead of
+appearing and vanishing under the user's hands. Nothing is stored at a negative
+code — no cell can hold one — and a row that is typed into says so and names the
+spin that would fix it.
 
 **Pasting a string fills down.** Select the row under the first tile, paste the
 alphabet, and each code point lands on one consecutive code. It is the fastest
@@ -54,14 +83,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 from itertools import count
 
-from PySide6.QtCore import QEvent, QPoint, Qt, Signal
+from PySide6.QtCore import QEvent, QItemSelectionModel, QPoint, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QImage, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMenu,
     QPushButton,
     QScrollArea,
@@ -83,7 +114,13 @@ from celpix.core.font import (
     spell_name,
 )
 from celpix.ui.tile_source_panel import TileSourcePanel
-from celpix.ui.widgets import Badge, apply_badge, hex_spin
+from celpix.ui.widgets import (
+    Badge,
+    apply_badge,
+    hex_spin,
+    pan_scroll_area,
+    value_spin,
+)
 from celpix.ui.window_layout import WindowLayout
 
 # The three columns, in the order a row is read: which code, what it says, and
@@ -97,6 +134,12 @@ ROLE_LABELS: tuple[tuple[GlyphRole, str], ...] = (
     (GlyphRole.BREAK, "line break"),
     (GlyphRole.CONTROL, "control"),
 )
+
+# The most rows either spin will list outside the sheet. A whole byte of code
+# space each way, which covers every one-byte format outright and is as much of a
+# two-byte one as anybody types into by hand — past that the answer is a paste,
+# and an unbounded spin is a window that hangs on a mistyped digit.
+MAX_EXTRA_ROWS = 256
 
 # What an unnamed break is called when the Role column makes it one. A break has
 # to read as *something* — a name is how the text spells the code back
@@ -181,9 +224,10 @@ class _AlphabetTable(QTableWidget):
 class FontAlphabetWindow(QWidget):
     """Floating editor for one font's alphabet: its origin, run and named codes."""
 
-    #: The whole alphabet after an edit — ``(base, chars, codes)`` — with whether
-    #: it starts a new undo step and what to call that step.
-    edited = Signal(int, str, tuple, bool, str)
+    #: The whole alphabet after an edit — ``(base, prepend, append, chars,
+    #: codes)`` — and what to call the undo step it becomes. One report per
+    #: gesture: a fill-down or a template sends the finished table, not a row.
+    edited = Signal(int, int, int, str, tuple, str)
     #: A tile was picked, by its ID, so the canvas and the dock can follow.
     tile_selected = Signal(int)
     #: Ctrl+Z / Ctrl+Y arrived here rather than at the main window, because this
@@ -203,20 +247,23 @@ class FontAlphabetWindow(QWidget):
         # re-read because every edit is expressed as a change to one of them and
         # the window is what knows which row was touched.
         self._base = 0
+        self._prepend = 0
+        self._append = 0
         self._chars = ""
         self._codes: tuple[Glyph, ...] = ()
         self._ids: list[int] = []
-        # Whether the next edit opens a new undo step. A run of typing down the
-        # table is one step; a paste, a template, a shift or the origin moving
-        # ends it, the same rule the text window's typing follows.
-        self._fresh = True
 
         self._sheet = TileSourcePanel(self)
         self._sheet.tile_selected.connect(self._on_tile_selected)
         self._sheet.zoom_requested.connect(self._on_zoom)
-        scroller = QScrollArea()
-        scroller.setWidget(self._sheet)
-        scroller.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sheet.pan_requested.connect(self._pan)
+        self._scroll = QScrollArea()
+        self._scroll.setWidget(self._sheet)
+        self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # The backing around the sheet answers both gestures, as it does on the
+        # canvas and in the tile source dock: a font sheet is small and centred,
+        # so most of what the user is pointing at *is* the grey.
+        self._sheet.claim_background(self._scroll)
 
         self._table = _AlphabetTable(0, 3)
         self._table.setHorizontalHeaderLabels(["Code", "Text", "Role"])
@@ -237,7 +284,7 @@ class FontAlphabetWindow(QWidget):
         self._table.itemSelectionChanged.connect(self._on_row_selected)
 
         split = QSplitter(Qt.Orientation.Vertical)
-        split.addWidget(scroller)
+        split.addWidget(self._scroll)
         split.addWidget(self._table)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 1)
@@ -258,6 +305,59 @@ class FontAlphabetWindow(QWidget):
         # A remembered position counts as already placed (the tool windows'
         # shared rule, :mod:`celpix.ui.decompress_overlay`).
         self._positioned = self._layout_memory.restore()
+
+        # The pan gesture's space key is taken off an application filter rather
+        # than a key event of this window, so it answers wherever focus sits in
+        # here — see eventFilter.
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
+    # -- the sheet's own gestures ------------------------------------------
+    def _pan(self, dx: int, dy: int) -> None:
+        """Shift the sheet's scroll view by a space-drag delta (device pixels)."""
+        pan_scroll_area(self._scroll, dx, dy)
+
+    #: Where the space bar is a character rather than this window's pan: the
+    #: cell editor the table opens (a `QLineEdit` over the Text column, which a
+    #: font's space glyph is typed into) and the Role column's combo. The spins
+    #: are deliberately absent — space does nothing in one, and yielding to them
+    #: would kill the pan on the controls a user reaches for it from.
+    _SPACE_INPUT_TYPES = (QLineEdit, QComboBox)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: ANN001 — Qt override
+        """Claim the space bar for the pan wherever focus sits in this window.
+
+        Filtered on the application rather than handled in ``keyPressEvent``,
+        because a key press goes to the focused widget alone: with focus on the
+        table — where reading the sheet against the codes leaves it — the press
+        reached a widget that does nothing with it. The subsprite window's rule,
+        and the main window's (:meth:`~celpix.ui.main_window.navigation.
+        NavigationMixin._handle_space_pan`).
+
+        Any widget of *this* window and nothing outside it: only one window can
+        be the one being typed into.
+        """
+        et = event.type()
+        if et == QEvent.Type.WindowDeactivate and obj is self:
+            # A hold that outlives the window's activation: the release lands in
+            # whatever was raised over it and is never seen here, leaving the
+            # sheet holding an open hand and eating the next press.
+            self._sheet.set_pan_mode(False)
+        elif (
+            et in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
+            and event.key() == Qt.Key.Key_Space
+            and isinstance(obj, QWidget)
+            and obj.window() is self
+            and QApplication.activePopupWidget() is None
+            and not isinstance(QApplication.focusWidget(), self._SPACE_INPUT_TYPES)
+        ):
+            # Auto-repeat is swallowed rather than acted on: holding space fires
+            # press after press, and each would re-arm a mode already on.
+            if not event.isAutoRepeat():
+                self._sheet.set_pan_mode(et == QEvent.Type.KeyPress)
+            return True
+        return super().eventFilter(obj, event)
 
     # -- the keys this window answers itself -------------------------------
     def event(self, event) -> bool:  # noqa: ANN001 — QEvent
@@ -294,7 +394,15 @@ class FontAlphabetWindow(QWidget):
         event.accept()
 
     def _build_header(self) -> QHBoxLayout:
-        """The origin, and the way to fill a table without typing it."""
+        """The origin, how far past the sheet to list, and the first drafts.
+
+        The three spins are one question asked twice over. **Base code** says
+        which codes the tiles occupy; **Prepend** and **Append** say how many
+        codes *outside* them the table still has to be able to answer for — a
+        terminator no tile draws, a letter drawn by the sheet uploaded next to
+        this one. So they sit together, and they are told apart by the fact that
+        only the first moves anything already typed.
+        """
         row = QHBoxLayout()
         row.setSpacing(6)
         # Where the run starts. Its own control and not a column of the table for
@@ -314,21 +422,44 @@ class FontAlphabetWindow(QWidget):
         )
         self._base_spin.valueChanged.connect(self._on_base_changed)
         row.addWidget(self._base_spin)
+
+        # Rows, not codes, so these are plain decimal where Base code is hex:
+        # the answer to "how many" is a count, and showing $80 for a hundred and
+        # twenty-eight rows would read as a code and be dialled as one.
+        row.addWidget(QLabel("Prepend"))
+        self._prepend_spin = value_spin(0, MAX_EXTRA_ROWS, 0, self._on_prepend_changed)
+        self._prepend_spin.setToolTip(
+            "Rows to list before the first tile, for codes\n"
+            "below the sheet that the stream still uses\n"
+            "Nothing typed into one is on a tile, so it is\n"
+            "stored as a named code"
+        )
+        row.addWidget(self._prepend_spin)
+
+        row.addWidget(QLabel("Append"))
+        self._append_spin = value_spin(0, MAX_EXTRA_ROWS, 0, self._on_append_changed)
+        self._append_spin.setToolTip(
+            "Rows to list after the last tile, which is where\n"
+            "a terminator or a command code usually sits\n"
+            "Nothing typed into one is on a tile, so it is\n"
+            "stored as a named code"
+        )
+        row.addWidget(self._append_spin)
         row.addStretch(1)
 
-        self._start_from = QPushButton("Start from...")
-        self._start_from.setToolTip(
+        self._fill_with = QPushButton("Fill with...")
+        self._fill_with.setToolTip(
             "Fill the run with a common arrangement, as a first draft"
         )
-        menu = QMenu(self._start_from)
+        menu = QMenu(self._fill_with)
         for name, base, chars in TEMPLATES:
             menu.addAction(name).triggered.connect(
                 lambda _checked=False, b=base, c=chars, n=name: self._apply_template(
                     b, c, n
                 )
             )
-        self._start_from.setMenu(menu)
-        row.addWidget(self._start_from)
+        self._fill_with.setMenu(menu)
+        row.addWidget(self._fill_with)
 
         return row
 
@@ -407,6 +538,8 @@ class FontAlphabetWindow(QWidget):
         self,
         title: str,
         base: int,
+        prepend: int,
+        append: int,
         chars: str,
         codes: tuple[Glyph, ...],
     ) -> None:
@@ -415,7 +548,10 @@ class FontAlphabetWindow(QWidget):
         try:
             self.setWindowTitle(f"Font Alphabet - {title}")
             self._base, self._chars, self._codes = base, chars, codes
+            self._prepend, self._append = prepend, append
             self._base_spin.setValue(base)
+            self._prepend_spin.setValue(prepend)
+            self._append_spin.setValue(append)
             self._rebuild()
         finally:
             self._syncing = False
@@ -427,7 +563,12 @@ class FontAlphabetWindow(QWidget):
             self.show()
 
     def hide_overlay(self) -> None:
-        """Hide — the entry on screen has no font alphabet, or was closed."""
+        """Hide — the entry on screen has no font alphabet, or was closed.
+
+        Disarms the pan for the same reason :meth:`closeEvent` does: the space
+        release lands wherever the window went.
+        """
+        self._sheet.set_pan_mode(False)
         if self.isVisible():
             self.hide()
 
@@ -449,7 +590,7 @@ class FontAlphabetWindow(QWidget):
         """
         if tile_id not in self._ids:
             return
-        self._select_row(self._ids.index(tile_id))
+        self._select_row(self._sheet_row() + self._ids.index(tile_id))
         # Guarded, so the sheet's own report of the pick does not answer this
         # with `selectRow` — the reason a click on the sheet is the only pick
         # that moves the table (:meth:`_on_tile_selected`).
@@ -476,15 +617,64 @@ class FontAlphabetWindow(QWidget):
         merged.update({glyph.code: glyph for glyph in self._codes})
         return merged
 
-    def _rows(self) -> list[int]:
-        """Every code the table lists: one per tile, plus named codes past them.
+    def _run_slots(self) -> int:
+        """How many codes the **positional run** covers — its length or the sheet's.
 
-        Bounded to the sheet because the alternative is 65 536 rows on a two-byte
-        stream. A named code outside it is still reachable — it is appended, in
-        order — since a code the sheet cannot draw is exactly the kind that gets
-        named.
+        Not simply ``len(self._ids)``, and the difference is where a code is
+        *stored*. The sheet above is a picture of the tiles; the run is a fact
+        about the entry, and a paste or a template can leave it **longer than the
+        sheet** — *ASCII, from $20* is 95 characters, and plenty of fonts are
+        smaller than that.
+
+        Bounding by the sheet alone splits one run in half: a code the run
+        already answers for, but past the last tile, reads out of the run and
+        writes back as a *named* code. The two halves then disagree about that
+        code, and since named codes do not move with **Base code** and the run
+        does, dialling the origin afterwards slides one out from under the other
+        — which looks exactly like an entry being lost.
+
+        So the run's own length counts, whether or not a tile draws it.
         """
-        run = [self._base + at for at in range(len(self._ids))]
+        return max(len(self._ids), len(self._chars))
+
+    def _first_row_code(self) -> int:
+        """The code the table's first row holds — the sheet, less **Prepend**.
+
+        **Not floored at zero**, so the spin always lists the rows it was asked
+        for. Below the origin they read as ``-$04``, which is not a code any cell
+        can hold — and saying so plainly is the point: Prepend is *how much
+        headroom below the sheet to look at*, and it stays put while **Base code**
+        is dialled, so those rows come into the code space as the origin rises
+        rather than appearing and vanishing under the user's hands.
+
+        Nothing is ever **stored** at a negative code (:meth:`_write`).
+        """
+        return self._base - self._prepend
+
+    def _sheet_row(self) -> int:
+        """Which row the **first tile** sits on — everything above it is prepended.
+
+        Every row ⇄ tile conversion goes through here, since getting it wrong
+        points the sheet at the wrong glyph rather than failing outright.
+        """
+        return self._prepend
+
+    def _rows(self) -> list[int]:
+        """Every code the table lists, in order.
+
+        One row per tile, **Prepend** rows before them and **Append** rows after,
+        then any named code still outside all of that — appended, in order, since
+        a code that has been given an answer must have a row to show it on
+        whatever the spins say. A code appears once however many of those reach
+        it, and the prepended ones may be negative (:meth:`_first_row_code`).
+
+        Bounded by the spins because the alternative is 65 536 rows on a two-byte
+        stream, and they default to none because the ordinary font has nothing
+        outside its sheet.
+        """
+        first = self._first_row_code()
+        stop = self._base + self._run_slots() + self._append
+        run = list(range(first, max(first, stop)))
         span = set(run)
         return run + sorted(g.code for g in self._codes if g.code not in span)
 
@@ -509,7 +699,7 @@ class FontAlphabetWindow(QWidget):
                 label = _label_of(glyph.role if glyph else GlyphRole.TEXT)
                 name = self._table.item(row, COL_CODE)
                 if name is None or name.data(Qt.ItemDataRole.UserRole) != code:
-                    name = QTableWidgetItem(f"${code:02X}")
+                    name = QTableWidgetItem(_code_label(code))
                     # Everything a cell ordinarily is, minus typing into it: the
                     # code is the tile's position and the only way to move it is
                     # the Base code spin.
@@ -531,15 +721,19 @@ class FontAlphabetWindow(QWidget):
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         """One cell typed or picked: settle it into the run or the named codes.
 
-        **A role is its own step**, where a run of typing down the Text column is
-        one. It is a pick from a list rather than a keystroke, and it says
-        something different about the code than the letters around it did — so it
-        ends the run on both sides, the rule a paste and a template follow.
+        **One settled row is one undo step**, whichever column settled it: a row
+        is a code's whole answer, so the next row the user reaches for is the
+        next thing they would take back.
 
         **A role needs something to be the role of.** What a non-text code reads
         as is its *name*, and a glyph with no text is not a thing the model can
         hold at all — so the pick is put back and the row says what it wants
         first, rather than being silently dropped on the next redraw.
+
+        **A prepended row below zero is shown and not stored** (:meth:`_write`).
+        Same shape of answer, and the badge names the control that fixes it: no
+        cell can hold a negative code, so what such a row is waiting for is Base
+        code to come up under it.
         """
         if self._syncing:
             return
@@ -563,7 +757,7 @@ class FontAlphabetWindow(QWidget):
         if picked and not text:
             self._rebuild()
             self.set_status(
-                f"${code:02X} spells nothing.",
+                f"{_code_label(code)} spells nothing.",
                 Badge(
                     "no text",
                     "A line break or a control reads as its name.\n"
@@ -572,27 +766,47 @@ class FontAlphabetWindow(QWidget):
                 ),
             )
             return
-        self._write(code, text, role)
+        if not self._write(code, text, role):
+            self._rebuild()
+            self.set_status(
+                f"{_code_label(code)} is below code zero.",
+                Badge(
+                    "no such code",
+                    "No cell can hold a code below zero, so this row\n"
+                    "cannot be written to. Raise Base code to bring\n"
+                    "these rows into the code space.",
+                    warning=True,
+                ),
+            )
+            return
         if picked:
             # A name written *for* the user has to appear in the column it was
             # written into - the round trip through the undo stack redraws the
             # table only once the edit has been applied to the entry.
             self._rebuild()
-            self._fresh = True
         self._emit(
-            f"set ${code:02X} to {_label_of(role)}" if picked else "edit font alphabet"
+            f"set {_code_label(code)} to {_label_of(role)}"
+            if picked
+            else "edit font alphabet"
         )
-        if picked:
-            self._fresh = True
 
-    def _write(self, code: int, text: str, role: GlyphRole) -> None:
+    def _write(self, code: int, text: str, role: GlyphRole) -> bool:
         """Land one code's answer in whichever half of the storage holds it.
 
-        The run takes it when it can — inside the sheet, one code point, no role
-        — because that is the half a tile's position states, and keeping it there
-        means the run stays the thing the sheet is a picture of. Everything else
-        is a named code, and either way the other half is cleared of that code so
-        the two can never disagree.
+        The run takes it when it can — inside the run's own extent
+        (:meth:`_run_slots`), one code point, no role — because that is the half
+        a tile's position states, and keeping it there means the run stays the
+        thing the sheet is a picture of. Everything else is a named code, and
+        either way the other half is cleared of that code so the two can never
+        disagree.
+
+        **False, writing nothing, for a code below zero** — the rows Prepend
+        lists under the origin (:meth:`_first_row_code`). No cell can hold such a
+        value, and a named code is the one half of the storage that is *not*
+        range-checked downstream: `FontAlphabet.shifted` drops an out-of-range
+        glyph of the run, but a named one goes straight through `merged` and
+        `encode` would write it into a cell. So the refusal is here, at the one
+        door all three write paths go through, rather than at each of them.
 
         **More than one character names the code.** A tile draws one character,
         so a longer answer is not what the tile *says* — it is what the code is
@@ -602,8 +816,10 @@ class FontAlphabetWindow(QWidget):
         paste; the column is then how a one-character code is made a command, and
         how a break is picked out from the rest.
         """
+        if code < 0:
+            return False
         at = code - self._base
-        in_run = 0 <= at < len(self._ids)
+        in_run = 0 <= at < self._run_slots()
         if len(text) > 1 and role is GlyphRole.TEXT:
             role = GlyphRole.CONTROL
         if not role.spells:
@@ -620,6 +836,7 @@ class FontAlphabetWindow(QWidget):
             self._codes = tuple(
                 sorted([*self._codes, Glyph(code, text, role)], key=lambda g: g.code)
             )
+        return True
 
     def _set_char(self, at: int, char: str) -> None:
         """Put ``char`` at slot ``at``, padding the run out with holes to reach it."""
@@ -635,39 +852,36 @@ class FontAlphabetWindow(QWidget):
         describe the shape of whatever the text was copied out of.
 
         One undo step, because it is one gesture — and stopping at the last row
-        rather than growing the table, since a code past the sheet is a code no
-        tile draws and would be a glyph nobody could see.
+        rather than growing the table, since how far past the sheet this font is
+        read is what the two spins say and a paste is not an answer to that.
+
+        A run started on a prepended row below zero **steps over** those rows
+        rather than stopping at them: nothing can be stored there
+        (:meth:`_write`), and the characters that follow are still meant for the
+        codes that come after.
         """
         typed = QGuiApplication.clipboard().text()
         chars = [c for c in typed if c not in "\r\n\t"]
         rows = self._table.selectionModel().selectedRows()
         first = rows[0].row() if rows else 0
         codes = self._rows()
-        landed = 0
+        landed = below = 0
         for at, char in enumerate(chars):
             row = first + at
             if row >= len(codes):
                 break
-            self._write(codes[row], char, GlyphRole.TEXT)
-            landed += 1
+            if self._write(codes[row], char, GlyphRole.TEXT):
+                landed += 1
+            else:
+                below += 1
+        past = len(chars) - landed - below
+        badge = _dropped_badge(below, past)
         if not landed:
+            self.set_status("Nothing filled in.", badge)
             return
-        self._fresh = True
         self._rebuild()
         self._emit(f"paste {landed} character{'s' if landed != 1 else ''}")
-        self._fresh = True
-        lost = len(chars) - landed
-        self.set_status(
-            f"{landed} filled in",
-            Badge(
-                f"{lost} dropped",
-                "The paste ran past the last tile of the sheet,\n"
-                "so those characters were not written.",
-                warning=True,
-            )
-            if lost
-            else None,
-        )
+        self.set_status(f"{landed} filled in", badge)
 
     def _apply_template(self, base: int, chars: str, name: str) -> None:
         """Replace the run wholesale with one of the shipped arrangements.
@@ -682,10 +896,8 @@ class FontAlphabetWindow(QWidget):
             self._base_spin.setValue(base)
         finally:
             self._syncing = False
-        self._fresh = True
         self._rebuild()
-        self._emit(f"start from {name}")
-        self._fresh = True
+        self._emit(f"fill with {name}")
 
     def _shift(self, by: int) -> None:
         """Move the run ``by`` tiles along the sheet, one gesture, one step.
@@ -704,10 +916,8 @@ class FontAlphabetWindow(QWidget):
         self._chars = (HOLE * by + self._chars if by > 0 else self._chars[-by:]).rstrip(
             HOLE
         )
-        self._fresh = True
         self._rebuild()
         self._emit("shift the run down" if by > 0 else "shift the run up")
-        self._fresh = True
 
     def _span(self) -> tuple[list[int], bool]:
         """Which codes the two clipboard buttons act on, and whether that is all.
@@ -791,32 +1001,36 @@ class FontAlphabetWindow(QWidget):
         # Everything outside the span is kept exactly as it stands; inside it the
         # old answers go before the new ones land, which is what makes this a
         # replace and not a merge.
-        run = list(self._chars.ljust(len(self._ids), HOLE))
+        run = list(self._chars.ljust(self._run_slots(), HOLE))
         for code in span:
             at = code - self._base
             if 0 <= at < len(run):
                 run[at] = HOLE
         named = [glyph for glyph in self._codes if glyph.code not in span]
 
-        def place(code: int, text: str, role: GlyphRole = GlyphRole.TEXT) -> None:
+        def place(code: int, text: str, role: GlyphRole = GlyphRole.TEXT) -> bool:
+            # A prepended row below zero is a row and not a code, so it takes
+            # nothing here either — the same refusal :meth:`_write` makes for the
+            # table's own typing, since both end up in the same two fields.
+            if code < 0:
+                return False
             at = code - self._base
-            if role is GlyphRole.TEXT and len(text) == 1 and 0 <= at < len(self._ids):
+            if role is GlyphRole.TEXT and len(text) == 1 and 0 <= at < len(run):
                 run[at] = text
             else:
                 named.append(Glyph(code, text, role))
+            return True
 
         landed = 0
         if glyphs:
             rows = set(self._rows())
             for glyph in glyphs:
                 if glyph.code in span or (not bounded and glyph.code not in rows):
-                    place(glyph.code, glyph.text, glyph.role)
-                    landed += 1
+                    landed += place(glyph.code, glyph.text, glyph.role)
             lost, outside = 0, len(glyphs) - landed
         else:
             for code, char in zip(codes, chars):
-                place(code, char)
-                landed += 1
+                landed += place(code, char)
             lost, outside = len(chars) - landed, 0
         if not landed:
             self.set_status(
@@ -831,10 +1045,8 @@ class FontAlphabetWindow(QWidget):
             return
         self._chars = "".join(run).rstrip(HOLE)
         self._codes = tuple(sorted(named, key=lambda g: g.code))
-        self._fresh = True
         self._rebuild()
         self._emit(f"paste {landed} code{'s' if landed != 1 else ''}")
-        self._fresh = True
         dropped = lost or outside
         self.set_status(
             f"{landed} codes pasted.",
@@ -861,14 +1073,44 @@ class FontAlphabetWindow(QWidget):
         if self._syncing or value == self._base:
             return
         self._base = value
-        self._fresh = True
         self._rebuild()
         self._emit(f"set base code to ${value:X}")
-        self._fresh = True
+
+    def _on_prepend_changed(self, value: int) -> None:
+        """List ``value`` more rows below the sheet — a step of its own.
+
+        Nothing already typed moves: these rows are outside the run either way,
+        so what the spin changes is which of them have somewhere to be shown.
+        Dialling it *down* past a named code does not delete the code — it keeps
+        its row, appended (:meth:`_rows`), because a code with an answer must
+        stay reachable however the table is framed.
+        """
+        self._on_extra_rows_changed("prepend", value)
+
+    def _on_append_changed(self, value: int) -> None:
+        """List ``value`` more rows above the sheet. :meth:`_on_prepend_changed`."""
+        self._on_extra_rows_changed("append", value)
+
+    def _on_extra_rows_changed(self, which: str, value: int) -> None:
+        held = self._prepend if which == "prepend" else self._append
+        if self._syncing or value == held:
+            return
+        if which == "prepend":
+            self._prepend = value
+        else:
+            self._append = value
+        self._rebuild()
+        self._emit(f"{which} {value} row{'s' if value != 1 else ''}")
 
     def _emit(self, label: str) -> None:
-        self.edited.emit(self._base, self._chars, self._codes, self._fresh, label)
-        self._fresh = False
+        self.edited.emit(
+            self._base,
+            self._prepend,
+            self._append,
+            self._chars,
+            self._codes,
+            label,
+        )
 
     # -- the two readings following each other -----------------------------
     def _on_tile_selected(self, tile_id: int) -> None:
@@ -878,7 +1120,7 @@ class FontAlphabetWindow(QWidget):
         # takes a stretch of picked rows down to the one that pushed the tile,
         # and the clipboard buttons read that stretch (:meth:`_span`).
         if not self._syncing and tile_id in self._ids:
-            self._select_row(self._ids.index(tile_id))
+            self._select_row(self._sheet_row() + self._ids.index(tile_id))
         self.tile_selected.emit(tile_id)
 
     def _on_row_selected(self) -> None:
@@ -887,17 +1129,18 @@ class FontAlphabetWindow(QWidget):
         The two readings are one list, so a stretch of rows is a stretch of
         tiles: the rows the clipboard buttons act on (:meth:`_span`) are the
         tiles ringed above them, and there is never a moment where the window
-        says one thing at the top and another at the bottom. Rows past the last
-        tile — named codes the sheet cannot draw — carry no tile and are simply
-        not in the answer.
+        says one thing at the top and another at the bottom. Rows outside the
+        sheet — the prepended and appended ones, and named codes past both —
+        carry no tile and are simply not in the answer.
         """
         rows = self._table.selectionModel().selectedRows()
         if self._syncing or not rows:
             return
+        first = self._sheet_row()
         picked = [
-            self._ids[index.row()]
+            self._ids[at]
             for index in sorted(rows, key=lambda index: index.row())
-            if index.row() < len(self._ids)
+            if 0 <= (at := index.row() - first) < len(self._ids)
         ]
         if not picked:
             return
@@ -908,9 +1151,32 @@ class FontAlphabetWindow(QWidget):
             self._syncing = False
 
     def _select_row(self, row: int) -> None:
+        """Make ``row`` **the** selection — one row, not one more row.
+
+        Spelled as an explicit ``ClearAndSelect | Rows`` rather than as
+        ``selectRow``, which derives its command from the **live keyboard
+        modifiers**: with Shift held it extends from the anchor instead of
+        replacing, and Shift held is exactly the state an arrow key stepping the
+        pick across the sheet arrives in. The table then showed a stretch of rows
+        the sheet was ringing one tile of — the two readings saying different
+        things, which is the one thing this window must never do. A stray row is
+        not cosmetic either: the clipboard buttons read the selection
+        (:meth:`_span`), so a *Paste alphabet* aimed at one row would land as a
+        two-row replace.
+
+        The **current cell** moves with it, and to the Text column, since that is
+        the one Enter opens (:meth:`_AlphabetTable.keyPressEvent`) — and because
+        the anchor a later Shift+Down extends from is the current index, so a
+        stretch picked in the table starts where the sheet last pointed.
+        """
         self._syncing = True
         try:
-            self._table.selectRow(row)
+            self._table.setCurrentCell(
+                row,
+                COL_TEXT,
+                QItemSelectionModel.SelectionFlag.ClearAndSelect
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
             item = self._table.item(row, COL_TEXT)
             if item is not None:
                 self._table.scrollToItem(item)
@@ -927,10 +1193,48 @@ class FontAlphabetWindow(QWidget):
         """Closing says the user does not want this window, which is reported.
 
         :meth:`hide_overlay` is celPix putting it away and means nothing of the
-        sort, which is why only this one speaks up.
+        sort, which is why only this one speaks up. The pan goes down either way:
+        a space release landing anywhere else is one this window never sees, and
+        the sheet would come back holding an open hand.
         """
+        self._sheet.set_pan_mode(False)
         self.dismissed.emit()
         super().closeEvent(event)
+
+
+def _dropped_badge(below: int, past: int) -> Badge | None:
+    """What a fill-down could not write, and which of the two reasons it was.
+
+    Two ways a character finds no home and they want different sentences: a row
+    **below code zero** is one the user can fix by raising Base code, and a row
+    **past the end of the table** is one they can fix with Append. Reporting
+    either as the other sends them to the wrong spin.
+    """
+    if not below and not past:
+        return None
+    if below and not past:
+        why = "Those rows are below code zero, so nothing\ncould be written to them."
+    elif past and not below:
+        why = (
+            "The paste ran past the last row of the table,\n"
+            "so those characters were not written."
+        )
+    else:
+        why = (
+            "Some rows are below code zero and the paste ran\n"
+            "past the last row, so those were not written."
+        )
+    return Badge(f"{below + past} dropped", why, warning=True)
+
+
+def _code_label(code: int) -> str:
+    """A row's code, as the Code column writes it — ``$1A``, or ``-$04`` below zero.
+
+    The sign goes outside the ``$`` because ``$-1A`` reads as a hex digit soup
+    where ``-$1A`` reads as "four below the origin", which is the only thing a
+    negative row is ever saying.
+    """
+    return f"-${-code:02X}" if code < 0 else f"${code:02X}"
 
 
 def _role_column_width() -> int:

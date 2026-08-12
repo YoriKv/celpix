@@ -30,10 +30,14 @@ Five things it has to get right, and none of them is the window's to know:
   row, a flip, a priority bit — so the cell that was there is kept and those two
   fields replaced on it. Rebuilding cells from the string would silently zero
   every one of the rest.
-- **A run of typing is one step.** The window types over the string a piece at a
-  time and reports every one, so the canvas and the file follow the caret — but
-  the undo stack must not fill with letters. The run number is kept here, handed
-  to each command, and bumped whenever the window says the run has ended.
+- **A run of typing is one step, and the caret is part of it.** The window types
+  over the string a piece at a time and reports every one, so the canvas and the
+  file follow the caret — but the undo stack must not fill with letters. The run
+  number is kept here, handed to each command, and bumped whenever the window
+  says the run has ended. Each command also carries where the caret stood on
+  either side of it, so an undo hands back the place in the string as well as
+  the string — and so a keystroke that changes no cell at all, a letter typed
+  over itself, is still a step (:meth:`TextMixin._restore_text_caret`).
 - **A fontmap opens its text by itself.** The canvas can only ever show a string
   as the grid of glyph tiles it is, so the window is not a second look at
   something already legible — it is the reading. Closing it says so and turns
@@ -216,7 +220,12 @@ class TextMixin:
         self._text.set_status(*self._text_status(body))
 
     def _on_text_committed(
-        self, body: str, fresh: bool = True, label: str = "edit text"
+        self,
+        body: str,
+        fresh: bool = True,
+        label: str = "edit text",
+        caret_before: int = -1,
+        caret_after: int = -1,
     ) -> None:
         """One edit from the text window, landed on the cells.
 
@@ -225,6 +234,14 @@ class TextMixin:
         rather than a letter. The window owns that judgement because it is the
         only thing that sees the gesture — what ends a run is a click, an arrow
         key or a button, none of which reaches this far.
+
+        The **caret** rides along for the same reason it is on the step at all: a
+        text edit is made somewhere, and an undo owes the user that place back
+        along with the string. It is also what makes a keystroke that changes no
+        cell — the letter already there, typed over itself — a step rather than
+        nothing happening (:meth:`~...tilemap_edit.TilemapEditMixin._apply_cells`).
+        A negative position says the caller had none to give, which is a direct
+        call rather than the window's own signal.
 
         **Nothing here is a failure.** The region is a fixed run of cells, so it
         is kept exactly full — what ran past the end comes off it, what the string
@@ -255,7 +272,8 @@ class TextMixin:
         ends += [False] * (len(cells) - len(ends))
         for at, code in enumerate(codes):
             cells[at] = replace(cells[at], index=code, ends_line=ends[at])
-        written = self._apply_cells(cells, label, run=self._text_run)
+        caret = None if caret_before < 0 else (caret_before, caret_after)
+        written = self._apply_cells(cells, label, run=self._text_run, caret=caret)
         if lost.strip():
             # Only when something was *said* is this worth interrupting for. A run
             # of trailing spaces pushed off the end is the region doing its job;
@@ -276,10 +294,35 @@ class TextMixin:
         elif written:
             self.statusBar().showMessage(f"Wrote {len(cells)} cells of text.")
         if not written:
-            # Nothing changed, so no refresh is coming - and the field may be
+            # Nothing was pushed, so no refresh is coming - and the field may be
             # holding text this region cannot: the keystroke that overflowed it
             # has to come back off the screen as well as off the cells.
             self._refresh_text(force=True)
+
+    def _restore_text_caret(self, entry, at: int | None) -> None:  # noqa: ANN001
+        """Put the text caret where an undo step says it belongs.
+
+        The command's half of the caret travelling with the edit
+        (:class:`~celpix.ui.undo_commands.TilemapCellsCommand`), called after the
+        cells have landed so the position is an offset into the string that is
+        now there rather than into the one being replaced.
+
+        Only where the step is visible: a cell edit is reverted in place, so an
+        undo of typing done in another entry lands on that entry's cells while
+        the window on screen is showing something else entirely — and the caret
+        of a string nobody is looking at is not a position in this field.
+
+        The canvas selection follows it, exactly as it follows a caret the user
+        moved: the two views show the same cells, and a step that put the caret
+        back in the middle of a word should not leave the picture highlighting
+        where the word ended.
+        """
+        if at is None or entry is not self._workspace.current:
+            return
+        if not self._text.isVisible():
+            return
+        self._text.set_caret(at)
+        self._on_text_caret(at)
 
     def _on_text_caret(self, offset: int) -> None:
         """Follow the text caret with the canvas selection.

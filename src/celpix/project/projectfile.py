@@ -330,6 +330,10 @@ def _font_dict(entry: Entry) -> dict[str, object]:
         data["use"] = True
     if entry.font_base:
         data["base"] = entry.font_base
+    if entry.font_prepend:
+        data["prepend"] = entry.font_prepend
+    if entry.font_append:
+        data["append"] = entry.font_append
     chars = entry.font_chars.rstrip(HOLE)
     if chars:
         data["chars"] = chars
@@ -606,6 +610,11 @@ def _font_from(raw: dict) -> dict[str, object]:
     return {
         "use_as_font": bool(font.get("use")),
         "font_base": _int(font.get("base"), 0) or 0,
+        # Row counts, so negatives are meaningless rather than a direction — a
+        # file carrying one is read as none, the same tolerance every field here
+        # is read with.
+        "font_prepend": max(0, _int(font.get("prepend"), 0) or 0),
+        "font_append": max(0, _int(font.get("append"), 0) or 0),
         "font_chars": _str(font.get("chars"), ""),
         "font_codes": tuple(glyphs_from_spec(spec) if isinstance(spec, list) else ()),
     }
