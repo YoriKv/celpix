@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.8 - unreleased
+## v0.5.8 - 2026-08-12
 
 - Fixed Refresh Plugins breaking tilemaps
 
