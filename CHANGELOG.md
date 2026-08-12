@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.7 - unreleased
+## v0.5.7 - 2026-08-12
 
 - Even more example plugin cleanup
 
