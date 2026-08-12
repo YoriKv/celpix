@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.9 - unreleased
+## v0.5.9 - 2026-08-12
 
 - More fontmap fixes
 
