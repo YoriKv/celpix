@@ -21,7 +21,7 @@ four bytes or an offset to it. Three tags matter here: ``StripOffsets`` (273),
 **Compression.** Baseline TIFF's own PackBits is a *celPix* compression plugin,
 not a container concern: this hands over the strips exactly as stored and reports
 which scheme they use, and the user picks "PackBits" in the Compression dropdown
-to unpack them. The two layers compose, which is why they are separate stages.
+to unpack them.
 
 **Telling the user something.** Two channels: raise when the read cannot proceed
 and nothing opens, or call ``warn``/``inform`` when it *can* proceed but the
@@ -125,10 +125,9 @@ class TiffContainer:
         magic=((0, _LITTLE), (0, _BIG)),
         # The tag the Files list shows beside a filename: "board.tif (TIFF)".
         short_name="TIFF",
-        # The strips are joined end to end, so a position in the result names no
-        # position in the file. Declaring that stops celPix carving a slice, or
-        # writing an offset palette, at coordinates meaning nothing here: the
-        # read reorders, so only this container can place a write.
+        # The strips are joined end to end, so a position in the result names
+        # no position in the file. Set it on any container whose read reorders,
+        # and slicing and offset palettes stop being offered.
         preserves_offsets=False,
     )
 
@@ -138,10 +137,10 @@ class TiffContainer:
         # pure transform of them and never opens source.path.
         raw = source.data
         strips, compression = _strips(raw)
-        # Provenance is the first strip: where the data celPix now holds begins in
-        # the file, which is what the address display and a save-back want. The
-        # strips after it are not contiguous with it, which is why the write
-        # below cannot be a single splice.
+        # Provenance is the first strip: where the data now held begins in the
+        # file, which is what the address display and a save-back want. The
+        # strips after it are not contiguous, so the write below cannot be a
+        # single splice.
         ctx.set(KEY_SOURCE_OFFSET, strips[0][0])
         # Kept so a Save As has a TIFF to write into; see `write`.
         ctx.set(KEY_TIFF_SOURCE, raw)
@@ -180,9 +179,9 @@ class TiffContainer:
 
         ``dest.offset`` is not consulted: the strips say where the bytes go and
         they are not contiguous, so no single file offset could describe the
-        destination. Returning the file *whole* is what makes that expressible —
-        the edit lands in several places at once, and everything between the
-        strips is carried across untouched.
+        destination. Return the file *whole* instead — the edit lands in several
+        places at once, and everything between the strips is carried across
+        untouched.
 
         **Handle the empty destination.** A Save As gives ``dest.existing == b""``
         and the strip map lives in the file, so there is nothing to look it up in;

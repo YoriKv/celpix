@@ -88,7 +88,6 @@ byte_order = "little"
 invert = false
 
 # ONE SHADE rather than three channels? Spell that field `v` (`.... .vvv`) and it
-# drives r, g and b together. Naming those bits `r`, `g` and `b` is not the same
-# thing and the notation will not allow it — a pure red would encode through three
-# components reading one field as a colour the format cannot mean. An arbitrary
-# colour is reduced by luma, as the hardware's own converters do.
+# drives r, g and b together. Naming those bits `r`, `g` and `b` instead is
+# refused — one bit carries one letter — and an arbitrary colour written through
+# `v` is reduced by luma.

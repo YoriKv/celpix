@@ -12,12 +12,10 @@ Reach for code when the cell is *not* one integer: a value that has to be
 computed rather than read out of a field, a run-length scheme where one stored
 cell yields several, or records that are not all the same length.
 
-**The format below is none of those, and that is deliberate**: it is the smallest
-thing that exercises every method. The packed engine reads this very format as
-``bytes = 3`` beside ``fields = "ffff ffii ..op ppvh iiii iiii"``, byte for byte
-and both directions — a tile number split across two bytes is a preset, not a
-reason to write code. What follows is the *mechanics*, for a format that really
-does need them.
+The format below is none of those: it is the smallest thing that exercises every
+method. The packed engine reads it as ``bytes = 3`` beside
+``fields = "ffff ffii ..op ppvh iiii iiii"``, byte for byte — a tile number split
+across two bytes is a preset, not a reason to write code.
 
 decode and encode must be buffer-relative and stateless — they walk whatever
 bytes they are given, with no notion of where the buffer sits in the file. Laying
@@ -30,15 +28,13 @@ own width, so the view has to be able to try one.
 write back, so a field your format *has* and your decode ignores is zeroed on the
 next save — silently, and for the whole file.
 
-**Then say what a cell can do.** Five optional methods, each reached with
-``getattr`` so leaving one out is a real answer rather than a crash: silence
+**Then say what a cell can do.** Five optional methods, where leaving one out
 means "do not infer this for me". That makes ``index_limit`` the one to write
 first — **a format that omits it cannot have its cells pointed at a tile at
 all**, and the Cell spin and Edit Tiles simply refuse, with no error to read.
 
-Four of the five are below. The fifth, ``has_line_flag``, is left out for exactly
-the reason the protocol exists: this format ends no line on a bit, and silence
-says so.
+Four of the five are below; ``has_line_flag`` is left out because this format
+ends no line on a bit.
 
 **What a format cannot say is anything about its cells' *kind*.** ``layout``
 (``"text"`` for a fontmap, ``"sprite"``), ``indirect`` and ``cell_tiles`` are
@@ -82,13 +78,13 @@ class SplitCell:
                 Cell(
                     index=low | ((high & 0x03) << 8),
                     palette_row=(attr >> 2) & 0x07,
-                    # Carried, never rendered: celPix draws no layers, but a bit
-                    # dropped here is a bit gone from the file on the next save.
+                    # Carried, never rendered — but a bit dropped here is a bit
+                    # gone from the file on the next save.
                     priority=(attr >> 5) & 0x01,
                     flip_h=bool(attr & 0x01),
                     flip_v=bool(attr & 0x02),
-                    # Bits celPix has no meaning for: carry them, or a save
-                    # quietly zeroes them.
+                    # Bits with no meaning here: carry them, or a save quietly
+                    # zeroes them.
                     flags=high >> 2,
                     # `visible` and `ends_line` are the fields this format has no
                     # bit for, so they keep their defaults: every position drawn,

@@ -10,9 +10,8 @@
 # This is the stated-rectangle engine, for a record that names a **rectangle**
 # instead of picking between two squares. Its size byte is the Mega Drive VDP's
 # own nibble, so one record covers anything from one tile to a 4x4 block, and the
-# record's tiles run *down each column*. Neither can be spelled as parameters for
-# the grid engine, which is why this is its own. See _object.toml for the sprite
-# engines' shared parameters and the other three records; anything in rows wants
+# record's tiles run *down each column*. See _object.toml for the sprite engines'
+# shared parameters and the other three records; anything in rows wants
 # _packed.toml.
 #
 # SHIPPED PRESETS BUILT ON IT
@@ -28,9 +27,9 @@ engine_id = "codec.tilemap.md-sprite"
 # Cells are freely-placed parts grouped into frames (tilemap-entry.md sec 6).
 layout = "sprite"
 
-# ...and records that **state** each part's rectangle. That is what takes the
-# Subsprite spins off the bar: they exist to resolve a size bit against, and this
-# format has a size to read instead.
+# ...and records that **state** each part's rectangle, rather than choosing
+# between two squares. The alternative is to leave this out and give
+# `subsprite_tiles` the pair, as _object.toml does.
 subsprite_size = "stated"
 
 # The X offset's width in bytes. 1 is a signed byte; 2 is a signed word.

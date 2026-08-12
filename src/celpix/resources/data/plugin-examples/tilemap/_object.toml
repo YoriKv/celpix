@@ -19,10 +19,8 @@
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
-#   scgcad-object   the format this engine exists for, and the only one shipped
-#                   on it: the record is one game family's rather than a family
-#                   of formats, so there is nothing to parameterise but the
-#                   values below.
+#   scgcad-object   the only one shipped on it — the record is fixed, so the
+#                   values below are the whole of what varies.
 
 id = "preset.tilemap.example-object"
 name = "Example sprite object subsprite"
@@ -30,9 +28,8 @@ engine_id = "codec.tilemap.scgcad-object"
 
 [params]
 # A **sprite map**: cells are freely-placed subsprites grouped into frames rather
-# than positions in a grid (tilemap-entry.md sec 6). Declared rather than
-# inferred so the bar can describe an object before anything is bound to it,
-# exactly as `indirect` does for a stamp layout.
+# than positions in a grid. Required — an object read without it is laid out as
+# a grid of cells.
 layout = "sprite"
 
 # Byte order of the record's attribute word. A container that knows better can

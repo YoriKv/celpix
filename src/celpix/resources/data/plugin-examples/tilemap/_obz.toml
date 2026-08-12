@@ -3,10 +3,9 @@
 # Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
 #
 # A sprite engine: frames of subsprites at signed pixel offsets rather than cells
-# in rows. Nothing about the record layout is configurable — it is fixed in the
-# engine, being one format's record rather than a family of them. A sprite-shaped
-# format that lays its record out differently again wants this engine's *code*
-# copied, not this file.
+# in rows. The record layout is fixed in the engine, so a sprite-shaped format
+# that lays its record out differently wants this engine's *code* copied, not
+# this file.
 #
 # WHICH ENGINE IS WHICH
 # ---------------------

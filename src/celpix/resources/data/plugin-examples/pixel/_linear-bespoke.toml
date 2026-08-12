@@ -7,8 +7,7 @@
 # their index fields straddle byte boundaries and no field-per-byte kernel
 # expresses them. At 3bpp a row is three bytes with pixels spanning them; at 6bpp
 # six bytes, read in reversed byte order. Both packings are hard-coded from the
-# formats themselves, which is why this engine has one parameter and no layout
-# description — there is nothing about them left to vary. Fixed 8x8.
+# formats themselves, so the depth is the only parameter and the tile is 8x8.
 #
 # For 1, 2, 4 or 8bpp — the depths that *do* divide a byte — use _packed.toml,
 # which is data-driven instead.

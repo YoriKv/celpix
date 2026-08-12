@@ -43,7 +43,7 @@ engine_id = "codec.tilemap.packed"
 #
 #   i  which tile — the only field a map really needs
 #   p  which palette row the cell draws through
-#   o  priority; carried, never rendered, celPix has no layers
+#   o  priority; carried through, never rendered
 #   h  flip horizontally          v  flip vertically
 #   d  this position IS drawn (leave it out unless your format has an enable bit)
 #   e  this cell ends the line; see below
@@ -97,21 +97,14 @@ endian = "little"
 # page_rows = 32
 # page_counts = [1, 2, 4]
 
-# Set when a cell names a position in *another map* rather than a tile. A hint,
-# not a gate: binding map-to-map works regardless, but it offers maps ahead of
-# tile banks and drops the Base tile a coordinate cannot use. Editing such a map
-# *restamps* — a cell's index picks a different cell from the map it draws
-# through. Rare; scgcad-map is the only shipped preset that needs it.
+# Set when a cell names a position in *another map* rather than a tile. A hint
+# rather than a gate — binding map-to-map works either way — so it is worth
+# stating only for a format whose cells really are coordinates. Rare; scgcad-map
+# is the only shipped preset that needs it.
 # indirect = true
 
 # Set when the cells are **character codes** rather than tile numbers. The picture
 # is unchanged; what this adds is View > Text, where the run reads and is typed as
-# words. Bind the entry to the font, tick that sheet **Use as Font**, and type its
-# alphabet into the Font Alphabet window (docs/design/fontmap-entry.md).
-#
-# There are no control codes here, deliberately: what a value *means* is the
-# font's answer, not the format's. So two streams punctuated differently over one
-# font are two font *entries*, not two presets, and this preset stays reusable by
-# every game with these bits. Name only what changes how the text reads — an
-# unnamed code shows as `[$FF]` and types back to the same byte.
+# words. A cell format states no codes: what a value means is typed into the Font
+# Alphabet window, against the sheet the map is bound to.
 # layout = "text"

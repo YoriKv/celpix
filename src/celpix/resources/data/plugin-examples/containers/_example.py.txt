@@ -62,10 +62,9 @@ class ExampleContainer:
         magic=((0, _MAGIC),),
         # The tag the Files list shows beside a filename: "art.bin (Example)".
         short_name="Example",
-        # What kind of entry this frames — detection and the container picker
-        # both read it, so a palette is never offered a ROM wrapper or the
-        # reverse. The pair below *is* the default (pixels and tilemaps), spelled
-        # out because the line most people want is the other one,
+        # What kind of entry this frames, so a palette is never offered a ROM
+        # wrapper or the reverse. The pair below is the default; the line to
+        # write for a palette wrapper is
         # `content_kinds=(ContentKind.PALETTE,)`.
         content_kinds=(ContentKind.PIXELS, ContentKind.TILEMAP),
     )

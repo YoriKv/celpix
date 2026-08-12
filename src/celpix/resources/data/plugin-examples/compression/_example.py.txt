@@ -32,11 +32,10 @@ class ExampleRle:
         id="compression.example-rle",
         name="Example byte RLE",
         stage=Stage.COMPRESSION,
-        # A property of the *scheme*, about the decode direction: this one carries
-        # a terminator, so its extent is knowable from the data alone. Set False
-        # for a scheme that ends only where something outside it says — a slice
-        # length, a container's byte count. celPix words "the decode stopped here"
-        # differently for the two, and Scan can only find the first kind.
+        # Whether the scheme's extent is knowable from the data alone: this one
+        # carries a terminator. Set False for a scheme that ends only where
+        # something outside it says — a slice length, a container's byte count.
+        # Only self-delimiting schemes can be found by Scan.
         self_delimiting=True,
     )
 
@@ -44,9 +43,8 @@ class ExampleRle:
         """Expand ``(count, value)`` pairs until the 0-count terminator.
 
         **Strict by default: raise when the structure does not end inside the
-        buffer.** That is what makes "these bytes are an Example RLE structure" a
-        real question — Scan tries a decode at every offset and treats success as
-        a hit, so a best-effort decompressor reports a structure everywhere.
+        buffer.** Scan tries a decode at every offset and treats success as a
+        hit, so a best-effort decompressor reports a structure everywhere.
 
         ``KEY_DECOMPRESS_PARTIAL`` is set when, and only when, celPix knowingly
         hands over a window that may cut a structure short (the live preview).

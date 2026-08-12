@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.7 - unreleased
+
+- Even more example plugin cleanup
+
 ## v0.5.6 - 2026-08-12
 
 - Clean up comments on all plugin examples
