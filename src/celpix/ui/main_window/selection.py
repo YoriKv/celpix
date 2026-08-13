@@ -249,7 +249,7 @@ class SelectionMixin:
     def _toggle_selection_mode(self) -> None:
         """Swap Linear ⇄ Rectangle, when a swap is available.
 
-        Inert wherever Rectangle is forced (see :meth:`_sync_selection_shape`) —
+        Inert wherever a shape is forced (see :meth:`_sync_selection_shape`) —
         the combo carries the preference and its change handler does the rest of
         the work.
 
@@ -258,7 +258,7 @@ class SelectionMixin:
         :meth:`_on_selection_shape_change` — the one place that persists the
         preference and collapses the selection. Blocking the signal would leave a
         shape on screen that nothing remembers, and the next document that forces
-        Rectangle would hand back the stale stored one.
+        one would hand back the stale stored one.
         """
         if not self._can_toggle_selection_mode():
             return
@@ -284,7 +284,7 @@ class SelectionMixin:
         """Whether a swap is on offer — asked of the picker, not re-derived.
 
         Everything that leaves only one shape (pixel editing, the rearrange tool,
-        a tilemap, no document at all) already disables the combo, either
+        a tilemap, a fontmap, no document at all) already disables the combo, either
         directly (:meth:`_sync_selection_shape`) or by greying the transform bar
         it sits on — and a QWidget's ``isEnabled`` answers for both. Asking it is
         what stops the menu row and the ``S`` key from offering a swap the picker
@@ -650,6 +650,12 @@ class SelectionMixin:
         distinction arrived at from the other side: the bank it borrows from says
         nothing about how big the sheet is, and the slots past the last frame hold
         no picture to select (:attr:`~celpix.pipeline.pipeline.SpriteSheet.slots`).
+
+        A tilemap's cells are counted as **drawn positions** rather than as file
+        cells, which is the same distinction a third time: a fontmap spells a
+        dictionary code out into the characters it stands for, and the ones past
+        the first are positions the file has no cell for
+        (:attr:`~celpix.core.document.Document.drawn_positions`).
         """
         doc = self._doc
         if doc is None:
@@ -659,7 +665,7 @@ class SelectionMixin:
             return sheet.slots
         grid = self._grid_tilemap()
         if grid is not None:
-            return len(grid.drawn_cells) * grid.tiles_per_cell
+            return grid.drawn_positions * grid.tiles_per_cell
         return doc.tile_count
 
     def _window_slots(self) -> int:
@@ -692,8 +698,8 @@ class SelectionMixin:
         if self._doc is not None and self._selected_tile is not None:
             self._select_tiles(self._selected_tile, self._selected_tile)
 
-    def _sync_selection_shape(self) -> None:
-        """Force Rectangle where a run has no meaning, else restore the preference.
+    def _forced_selection_shape(self) -> SelectionShape | None:
+        """The shape this document leaves no choice about, or None for a free one.
 
         Three things work on rectangles alone. **Pixel editing** selects an *area*
         of pixels. The **rearrange tool**'s drag carries a rectangle whose shape
@@ -707,12 +713,36 @@ class SelectionMixin:
         its sheet is composed from frames, so a run over it is not even the
         contiguous byte range that is Linear's whole justification.
 
-        The picker is forced to Rectangle and disabled for any of them, with
-        signals blocked so the user's own preference survives and comes back when
-        they let go.
+        **A fontmap is the exception, and it is forced the other way.** Its cells
+        are a *sentence*, not a picture: they run on past the end of a canvas row
+        and carry on at the start of the next, and the width they wrap at is a
+        view setting rather than anything the file says. A rectangle over that
+        names the middle of three lines of one word and no part of the phrase
+        anybody was pointing at, while a run is exactly what a text selection is —
+        which is what lets the canvas and the text window mirror one another
+        (:meth:`~...text.TextMixin._sync_text_selection`).
 
-        A linear run already on screen collapses to its anchor tile rather than
-        being reinterpreted as a rectangle — the same honest conversion
+        The two gestures come first because they are about how the mouse is being
+        read rather than about what is under it: pixel mode over a fontmap is
+        still marking an area of pixels.
+        """
+        if self._edit_mode is EditMode.PIXEL or self._rearranging:
+            return SelectionShape.RECT
+        if self._doc is not None and self._doc.is_fontmap:
+            return SelectionShape.LINEAR
+        if self._content_kind() is ContentKind.TILEMAP:
+            return SelectionShape.RECT
+        return None
+
+    def _sync_selection_shape(self) -> None:
+        """Impose the forced shape where there is one, else restore the preference.
+
+        The picker is set to :meth:`_forced_selection_shape`'s answer and
+        disabled, with signals blocked so the user's own preference survives and
+        comes back when they let go.
+
+        A selection already on screen in the *other* shape collapses to its anchor
+        tile rather than being reinterpreted — the same honest conversion
         :meth:`_on_selection_shape_change` makes when the user switches by hand.
 
         Only the *crossing* touches the combo. The kind is re-read on every
@@ -720,23 +750,28 @@ class SelectionMixin:
         shape set programmatically rather than through the picker's own handler
         (which is what persists it).
         """
-        forced = (
-            self._edit_mode is EditMode.PIXEL
-            or self._rearranging
-            or self._content_kind() is ContentKind.TILEMAP
-        )
+        forced = self._forced_selection_shape()
         if forced is not self._selection_shape_forced:
             self._selection_shape_forced = forced
             with signals_blocked(self._selection_shape):
                 select_combo_data(
                     self._selection_shape,
-                    SelectionShape.RECT
-                    if forced
+                    forced
+                    if forced is not None
                     else load_enum_setting(SELECTION_SHAPE_KEY, SelectionShape.LINEAR),
                 )
-            if forced and self._rect_size is None and self._selected_tile is not None:
+            drawn = (
+                SelectionShape.RECT
+                if self._rect_size is not None
+                else SelectionShape.LINEAR
+            )
+            if (
+                forced is not None
+                and drawn is not forced
+                and self._selected_tile is not None
+            ):
                 self._select_tiles(self._selected_tile, self._selected_tile)
-        self._selection_shape.setEnabled(not forced)
+        self._selection_shape.setEnabled(forced is None)
         # The keyboard route to the same swap has to go with it.
         self._sync_edit_actions()
 
@@ -844,6 +879,12 @@ class SelectionMixin:
         self._sync_selection_actions()
         self._revalidate_selection()
         self._refresh_hex()  # the hex highlight tracks the selection
+        # And the text window's own selection, on a fontmap. Here rather than in
+        # the sync above because that pass also runs on every render, and this
+        # one must not: the push belongs to the selection *moving*, or a keystroke
+        # would drag the caret back through the string it just edited
+        # (:meth:`~...text.TextMixin._sync_text_selection`).
+        self._sync_text_selection()
 
     def _announce_selection(self) -> None:
         """Status-line summary of what is selected, in the shape it was made.

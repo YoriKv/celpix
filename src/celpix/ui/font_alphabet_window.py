@@ -33,6 +33,30 @@ past the end of the run — is written as a named code
 (``docs/design/fontmap-entry.md`` §4). That split is a storage rule and not a
 thing to make the user think about, so there is one table and no mode.
 
+**Several characters typed into Text are read as a command's name**, because
+that is what the common one is: ``wait``, ``end``, a code worth a caption. It is
+a *guess*, and the Role column is where it is corrected — picking **dict** on
+such a row keeps the spelling as a spelling, which is a code standing for a
+**pair**: ``th`` behind one byte, the one compression trick a fixed-size text
+region actually has (``docs/design/fontmap-entry.md`` §4). A row that already
+reads *dict* is not guessed at again, so its text can be corrected without the
+role falling back out from under it.
+
+**text and dict are one column entry, not two.** A code spells one character or
+it spells several, and the row says which it is doing rather than being asked:
+whichever of the two is picked, the spelling settles it. What that buys is
+downstream — a dictionary code past the end of the sheet has no tile of its own,
+and the fontmap draws it as the characters it stands for, which is a question
+only a role that never lies can be asked (``docs/design/fontmap-entry.md`` §5).
+
+**A command may say how many cells it swallows**, written beside its name in the
+same cell: ``speed, 1`` for a code whose argument is the cell after it, which the
+string then reads as ``[speed, $00]`` instead of a command followed by a letter
+that is not a letter (``docs/design/fontmap-entry.md`` §5). One cell rather than
+a fourth column, because that is how the count is written in every other place a
+font table is kept — ``7A=[speed, 1]`` — and a column empty on all but four rows
+is a column the eye skips past on all of them.
+
 *Inside the **run***, which is not always inside the sheet: a run can be longer
 than the tiles that draw it, and bounding by the picture instead would let one
 code be held by both halves at once (:meth:`FontAlphabetWindow._run_slots`).
@@ -112,6 +136,7 @@ from celpix.core.font import (
     GlyphRole,
     parse_table,
     spell_name,
+    split_params,
 )
 from celpix.ui.tile_source_panel import TileSourcePanel
 from celpix.ui.widgets import (
@@ -131,6 +156,7 @@ COL_CODE, COL_TEXT, COL_ROLE = 0, 1, 2
 # read as jargon in a cell; these are what the column offers.
 ROLE_LABELS: tuple[tuple[GlyphRole, str], ...] = (
     (GlyphRole.TEXT, "text"),
+    (GlyphRole.DICT, "dict"),
     (GlyphRole.BREAK, "line break"),
     (GlyphRole.CONTROL, "control"),
 )
@@ -270,6 +296,22 @@ class FontAlphabetWindow(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setItemDelegateForColumn(COL_ROLE, _RoleDelegate(self._table))
+        # The one place the two columns' relationship is written down where a user
+        # will meet it: that several characters are a name *by default*, and that
+        # the Role column is what says otherwise.
+        self._table.horizontalHeaderItem(COL_TEXT).setToolTip(
+            "What the code says: the character its tile draws, or\n"
+            "the name a command reads as inside [brackets]\n"
+            "Several characters are taken as a name - set Role to\n"
+            "dict where one code spells them all, as a th pair does"
+        )
+        self._table.horizontalHeaderItem(COL_ROLE).setToolTip(
+            "text is one character, the one its tile draws\n"
+            "dict is several standing behind the one code, and is\n"
+            "drawn as those characters where no tile draws it\n"
+            "line break reads as a newline; control is anything\n"
+            "else the game acts on, and reads as its own hex code"
+        )
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(COL_CODE, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(COL_TEXT, QHeaderView.ResizeMode.Stretch)
@@ -695,7 +737,7 @@ class FontAlphabetWindow(QWidget):
                 self._table.setRowCount(len(codes))
             for row, code in enumerate(codes):
                 glyph = merged.get(code)
-                text = glyph.text if glyph else ""
+                text = _spelling(glyph)
                 label = _label_of(glyph.role if glyph else GlyphRole.TEXT)
                 name = self._table.item(row, COL_CODE)
                 if name is None or name.data(Qt.ItemDataRole.UserRole) != code:
@@ -728,7 +770,22 @@ class FontAlphabetWindow(QWidget):
         **A role needs something to be the role of.** What a non-text code reads
         as is its *name*, and a glyph with no text is not a thing the model can
         hold at all — so the pick is put back and the row says what it wants
-        first, rather than being silently dropped on the next redraw.
+        first, rather than being silently dropped on the next redraw. A **text**
+        role wants nothing, so an empty row picking it is simply a row that still
+        spells nothing.
+
+        **Several characters typed in are guessed to be a name**, and the guess is
+        made here rather than in :meth:`_write` because it is about the *gesture*:
+        it is what somebody typing ``wait`` into a cell meant, and it is wrong for
+        somebody typing ``th``. So it applies to a Text edit alone — the Role
+        column overrides it, a row that already reads *dict* is left as it is, and
+        the status bar names the column that answers it.
+
+        **The spelling settles text ⇄ dict**, whichever of the two was picked, so
+        the role a row shows is never a role its text contradicts
+        (:class:`~celpix.core.font.GlyphRole`). It is the same rule the model
+        holds glyphs to, applied at the gesture as well so the column redraws to
+        what was actually stored.
 
         **A prepended row below zero is shown and not stored** (:meth:`_write`).
         Same shape of answer, and the badge names the control that fixes it: no
@@ -756,16 +813,28 @@ class FontAlphabetWindow(QWidget):
             text = _fresh_break_name(self._merged().values())
         if picked and not text:
             self._rebuild()
-            self.set_status(
-                f"{_code_label(code)} spells nothing.",
-                Badge(
-                    "no text",
-                    "A line break or a control reads as its name.\n"
-                    "Write one in the Text column first.",
-                    warning=True,
-                ),
-            )
+            if not role.spells:
+                self.set_status(
+                    f"{_code_label(code)} spells nothing.",
+                    Badge(
+                        "no text",
+                        "A line break or a control reads as its name.\n"
+                        "Write one in the Text column first.",
+                        warning=True,
+                    ),
+                )
             return
+        guessed = not picked and role is GlyphRole.TEXT and len(text) > 1
+        if guessed:
+            role = GlyphRole.CONTROL
+        elif role.spells:
+            # **text** and **dict** are one fact said twice — a code spells one
+            # character or it spells several — so the column's word is settled
+            # against the spelling rather than trusted over it. Which is also
+            # what stops the guess above being made twice: a row that already
+            # reads *dict* is no longer a row whose role says ``text``, so
+            # correcting ``th`` to ``the`` leaves the role alone.
+            role = GlyphRole.DICT if len(text) > 1 else GlyphRole.TEXT
         if not self._write(code, text, role):
             self._rebuild()
             self.set_status(
@@ -789,6 +858,25 @@ class FontAlphabetWindow(QWidget):
             if picked
             else "edit font alphabet"
         )
+        # After the emit, not before it: the step lands through the undo stack and
+        # comes back as a refresh, which writes the window's own readout over
+        # anything said here first.
+        if guessed:
+            name, takes = split_params(text)
+            self.set_status(
+                f"{_code_label(code)} reads as [{spell_name(name)}]"
+                + (
+                    f", swallowing the {takes} cell"
+                    f"{'s' if takes != 1 else ''} after it."
+                    if takes
+                    else " - set Role to dict if the code spells those characters."
+                )
+            )
+        elif role is GlyphRole.DICT:
+            self.set_status(
+                f"{_code_label(code)} spells {text!r} - "
+                f"one cell for {len(text)} characters."
+            )
 
     def _write(self, code: int, text: str, role: GlyphRole) -> bool:
         """Land one code's answer in whichever half of the storage holds it.
@@ -808,21 +896,35 @@ class FontAlphabetWindow(QWidget):
         `encode` would write it into a cell. So the refusal is here, at the one
         door all three write paths go through, rather than at each of them.
 
-        **More than one character names the code.** A tile draws one character,
-        so a longer answer is not what the tile *says* — it is what the code is
-        *for*, and the string shows it as ``[wait]`` and types straight back
-        (``docs/design/fontmap-entry.md`` §5). Done here rather than left to the
-        Role column so the rule holds however the row was reached, including a
-        paste; the column is then how a one-character code is made a command, and
-        how a break is picked out from the rest.
+        **More than one character is never positional**, whichever role it is. A
+        tile draws one character, so a longer answer is not what the tile *says*:
+        it is either what the code is *for* — ``[wait]``, which the string spells
+        by name — or a code standing for a pair, which spells all of it at once
+        (``docs/design/fontmap-entry.md`` §4). Both are facts about the stream, so
+        both are named codes and neither moves when the origin is dialled.
+
+        Storage only. Which of those two a typed spelling *is* is a reading of
+        the gesture rather than of the row, so it is decided where the gesture
+        arrives (:meth:`_on_item_changed`) — a paste says so in its own form, and
+        a fill-down never lands more than one character.
+
+        **The description survives a retyped row.** It is the one field of a
+        command no column shows — the sentence on its insert-row button — so
+        rebuilding the glyph from what is on screen would quietly drop it every
+        time somebody corrected a name or an operand count.
         """
         if code < 0:
             return False
         at = code - self._base
         in_run = 0 <= at < self._run_slots()
-        if len(text) > 1 and role is GlyphRole.TEXT:
-            role = GlyphRole.CONTROL
+        params = 0
         if not role.spells:
+            # ``speed, 1`` is a command and the cells it swallows, which is the
+            # spelling the table form uses and the one the column shows back
+            # (:func:`_spelling`). Only a command can swallow anything, so this
+            # is read here rather than off every row: a character with a comma
+            # in it is a character.
+            text, params = split_params(text)
             # A name is what goes inside the brackets, so it is one word by the
             # time it is stored rather than at the moment it is read back.
             text = spell_name(text)
@@ -831,10 +933,23 @@ class FontAlphabetWindow(QWidget):
             self._set_char(at, text)
         elif in_run:
             self._set_char(at, HOLE)
+        held = next((g for g in self._codes if g.code == code), None)
         self._codes = tuple(g for g in self._codes if g.code != code)
         if text and not positional:
             self._codes = tuple(
-                sorted([*self._codes, Glyph(code, text, role)], key=lambda g: g.code)
+                sorted(
+                    [
+                        *self._codes,
+                        Glyph(
+                            code,
+                            text,
+                            role,
+                            held.description if held is not None else "",
+                            params=params,
+                        ),
+                    ],
+                    key=lambda g: g.code,
+                )
             )
         return True
 
@@ -947,7 +1062,9 @@ class FontAlphabetWindow(QWidget):
         The form a font table is kept in everywhere outside celPix
         (``docs/graphics-formats-reference/text-formats.md`` §3.3), so what comes
         out of here pastes into a disassembly and back again. Named codes are
-        written in the bracketed form the same parser reads.
+        written in the bracketed form the same parser reads, operand count
+        included — ``7A=[speed, 1]`` — since that is the whole of what the row
+        said (:func:`~celpix.core.font.split_params`).
 
         Codes that say nothing are left out rather than written as blanks: what
         a run has not reached is not a glyph spelling the empty string.
@@ -957,7 +1074,7 @@ class FontAlphabetWindow(QWidget):
         lines = []
         for code in sorted(code for code in codes if code in merged):
             glyph = merged[code]
-            spelling = glyph.text if glyph.spells else f"[{glyph.text}]"
+            spelling = glyph.text if glyph.spells else f"[{_spelling(glyph)}]"
             lines.append(f"{code:02X}={spelling}\n")
         QGuiApplication.clipboard().setText("".join(lines))
         self.set_status(f"{len(lines)} codes copied.")
@@ -1008,7 +1125,12 @@ class FontAlphabetWindow(QWidget):
                 run[at] = HOLE
         named = [glyph for glyph in self._codes if glyph.code not in span]
 
-        def place(code: int, text: str, role: GlyphRole = GlyphRole.TEXT) -> bool:
+        def place(
+            code: int,
+            text: str,
+            role: GlyphRole = GlyphRole.TEXT,
+            params: int = 0,
+        ) -> bool:
             # A prepended row below zero is a row and not a code, so it takes
             # nothing here either — the same refusal :meth:`_write` makes for the
             # table's own typing, since both end up in the same two fields.
@@ -1018,7 +1140,10 @@ class FontAlphabetWindow(QWidget):
             if role is GlyphRole.TEXT and len(text) == 1 and 0 <= at < len(run):
                 run[at] = text
             else:
-                named.append(Glyph(code, text, role))
+                # ``params`` comes with the line: ``7A=[speed, 1]`` states the
+                # count as part of the name, and dropping it here would make a
+                # pasted table say less than the one it was copied from.
+                named.append(Glyph(code, text, role, params=params))
             return True
 
         landed = 0
@@ -1026,7 +1151,7 @@ class FontAlphabetWindow(QWidget):
             rows = set(self._rows())
             for glyph in glyphs:
                 if glyph.code in span or (not bounded and glyph.code not in rows):
-                    landed += place(glyph.code, glyph.text, glyph.role)
+                    landed += place(glyph.code, glyph.text, glyph.role, glyph.params)
             lost, outside = 0, len(glyphs) - landed
         else:
             for code, char in zip(codes, chars):
@@ -1273,8 +1398,34 @@ def _fresh_break_name(glyphs: Iterable[Glyph]) -> str:
     return next(name for n in count(1) if (name := f"{BREAK_NAME}-{n}") not in taken)
 
 
+def _spelling(glyph: Glyph | None) -> str:
+    """What the Text column shows for ``glyph`` — and what may be typed back in.
+
+    A command that swallows cells shows the count beside its name, ``speed, 1``,
+    which is the same spelling the table form writes as ``7A=[speed, 1]``
+    (:func:`~celpix.core.font.split_params`). One cell rather than a fourth
+    column, because the count is part of *what the code is called* in every other
+    place a font table is written down, and a column that is empty on every row
+    but four is a column the eye has to skip past on all of them.
+    """
+    if glyph is None:
+        return ""
+    if glyph.params and not glyph.spells:
+        return f"{glyph.text}, {glyph.params}"
+    return glyph.text
+
+
 def _label_of(role: GlyphRole) -> str:
-    return next(label for value, label in ROLE_LABELS if value is role)
+    """The column's caption for ``role`` — its own spelling where there is none.
+
+    Total on purpose. A role this table has no caption for is a table that has
+    fallen behind the model, and the honest cost of that is one row reading as
+    its on-disk word; taking the whole window down over it costs the user every
+    other row as well.
+    """
+    return next(
+        (label for value, label in ROLE_LABELS if value is role), str(role.value)
+    )
 
 
 def _role_of(label: str) -> GlyphRole:

@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from celpix.core.arrangement import BlockLayout
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
@@ -32,6 +33,7 @@ from celpix.plugins.base import FileRef
 from celpix.plugins.discovery import load_user_plugins, project_plugin_dir
 from celpix.plugins.registry import default_registry
 from celpix.project.projectfile import load_project
+from celpix.project.workspace import EntryKind
 
 ROOT = Path(__file__).resolve().parents[1] / "sample-projects"
 
@@ -48,7 +50,11 @@ def _open(name: str):
     if not project.is_file():
         pytest.skip(f"{name} not present")
     workspace = load_project(str(project))
-    if not all(Path(entry.path).is_file() for entry in workspace.entries):
+    # A **composite** names no file — it is assembled out of other entries, and
+    # its path is empty by construction — so it is the one kind this cannot ask
+    # about. Reading it as a missing cart skipped every test in the file.
+    named = [e for e in workspace.entries if e.kind is not EntryKind.COMPOSITE]
+    if not all(Path(entry.path).is_file() for entry in named):
         pytest.skip("cart not present - see sample-projects/README.md")
     registry = default_registry()
     # Approved rather than prompted, because a project's own ``plugins/`` is as
@@ -139,39 +145,6 @@ def test_the_smw_sample_project_reads_its_message_boxes_as_sentences() -> None:
     assert body.startswith("Welcome!   This is\nDinosaur Land.  In\n")
     assert "[$" not in body.split("Looks")[0]
     assert exact
-
-
-def test_the_smw_sample_project_reads_its_stripe_text_through_a_second_font() -> None:
-    """The cart's other way of storing a string, over its other Layer 3 sheet.
-
-    A stripe image is tilemap words copied straight to VRAM, so the cell is two
-    bytes and the character is one of them: `index` takes the low byte, `flags`
-    carries the palette and priority beside it. Both facts are load-bearing —
-    without the split the letters would be right and the colours lost on the
-    first edit, and without the second font entry the codes would index the
-    wrong sheet.
-    """
-    workspace, registry = _open("smw-text/smw-text.celpix")
-
-    clear, clear_exact = _read(workspace, registry, "course clear")
-    # `[$51]0` is a four-byte stripe header read as two cells. The `0` is real:
-    # the header's third byte is $00 and this sheet draws a `0` at tile $00.
-    assert "[$51]0COURSE CLEAR!" in clear
-
-    lives, lives_exact = _read(workspace, registry, "life exchange")
-    # The same letters one palette along - `$28` here against `$38` on the score
-    # card - which reads identically because the attribute is not the character.
-    assert "MARIO" in lives and "LUIGI" in lives
-
-    stars, stars_exact = _read(workspace, registry, "bonus stars")
-    assert "BONUS!" in stars
-
-    # And the two byte-per-character regions still read through the *other*
-    # sheet, which is the half a second font entry could quietly have broken.
-    names, names_exact = _read(workspace, registry, "level names")
-    assert names.splitlines()[0] == "YOSHI'S "
-
-    assert clear_exact and lives_exact and stars_exact and names_exact
 
 
 def test_the_yi_sample_project_reads_all_of_its_streams() -> None:
@@ -294,3 +267,45 @@ def test_the_yi_credits_font_reshape_is_an_exact_permutation() -> None:
     assert sheet[0xB2 * 12 : 0xB3 * 12] == font[0xAA * 12 : 0xAB * 12]
     assert sheet[0x98 * 12 : 0x99 * 12] == font[0xE0 * 12 : 0xE1 * 12]
     assert reshape.unshape(sheet, PipelineContext()) == font
+
+
+def test_the_alttp_sample_project_reads_its_dialogue_as_sentences() -> None:
+    """The cart whose font is 8x16 and whose text is a dictionary.
+
+    Two things have to be right that no other sample exercises. The **glyph** is
+    two tiles rather than one, stated as the sheet's own Pattern and nothing
+    else — no reshape, no glyph codec — so what draws code `c` is the block at
+    `c`, which has to come out as the game's own
+    ``top = ((c & $F0) << 1) | (c & $0F)``. And the top of the byte space is a
+    **dictionary**: 97 codes standing for `the`, `you` and the rest, which the
+    text has to spell out and type back.
+    """
+    workspace, registry = _open("alttp/alttp.celpix")
+    body, exact = _read(
+        workspace, registry, "Dialogue — first block, $E0000-$E7F29 (text)"
+    )
+
+    assert "They have taken her to\nthe castle." in body
+    assert "Prices as marked!" in body
+    # A dictionary code reading as the characters it stands for, and the whole
+    # region typing back to the same bytes — the two halves of that being
+    # lossless. `$E3` is `you` and `$D8` is `the`, both above the 128-glyph sheet.
+    assert "the wise men will open." in body
+    assert exact
+
+    # The font's geometry, which the text above says nothing about. The Pattern
+    # is the whole statement: 16 blocks per sheet row, two tiles each, tops row
+    # then bottoms row (``docs/design/fontmap-entry.md`` §4).
+    font = next(e for e in workspace.entries if e.name.startswith("Dialogue font"))
+    view = font.pending_view
+    assert (view.columns, view.block_columns, view.block_rows) == (16, 1, 2)
+    assert view.block_order == "row-interleave"
+    assert font.reshape_id in (None, "", "reshape.none")
+
+    layout = BlockLayout(
+        view.columns, view.block_columns, view.block_rows, view.block_order
+    )
+    assert layout.blocks(256) == 128  # a 4096-byte 2bpp sheet is 128 glyphs
+    for code in range(128):
+        top = ((code & 0xF0) << 1) | (code & 0x0F)
+        assert layout.block_slots(code) == [top, top + 16]

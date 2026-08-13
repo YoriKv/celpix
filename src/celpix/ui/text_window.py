@@ -205,8 +205,11 @@ class TextWindow(QWidget):
     #: The body mid-composition — a ``[...]`` still being spelled. Nothing may be
     #: written from it; it exists so the budget readout keeps up with the keys.
     drafted = Signal(str)
-    #: Where the caret is, as a character offset into the body the window was given.
-    caret_moved = Signal(int)
+    #: What is selected, as ``(first, last)`` character offsets into the body the
+    #: window was given — ``last`` exclusive, and equal to ``first`` for a bare
+    #: caret. The canvas mirrors it, so a phrase picked out here is the run of
+    #: cells highlighted there and not just the one the caret sits in.
+    caret_moved = Signal(int, int)
     #: Ctrl+Z / Ctrl+Y arrived here rather than at the main window, because a
     #: `Qt.Tool` window is the active one and window-context shortcuts follow it.
     undo_requested = Signal()
@@ -244,6 +247,15 @@ class TextWindow(QWidget):
         # keeps a column of `[$FF]` padding reading as a column.
         self._edit.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
         self._edit.cursorPositionChanged.connect(self._on_caret)
+        # Both, because neither alone is "what is selected": a Select All from a
+        # caret already at the end moves the anchor and not the position, and a
+        # plain click that only moves the caret changes no selection. They also
+        # both fire for one gesture — a click that clears a selection — which is
+        # what :attr:`_reported` is for.
+        self._edit.selectionChanged.connect(self._on_caret)
+        # The last span handed out, so one gesture is reported once. The canvas
+        # re-renders on each of them, and a draft lands on the first.
+        self._reported: tuple[int, int] = (0, 0)
         self._edit.left.connect(self._on_focus_out)
 
         self._guide = _CommandGrid(3, self)
@@ -363,6 +375,7 @@ class TextWindow(QWidget):
                 self._edit.setTextCursor(cursor)
             finally:
                 self._syncing = False
+            self._note_span()
             self._fresh = True
         self._committed = body
         if not self.isVisible():
@@ -392,6 +405,13 @@ class TextWindow(QWidget):
         Guarded against the caret signal so a selection arriving *from* the
         canvas does not bounce straight back out as a fresh caret position and
         move the canvas again.
+
+        Scrolled to, because the canvas is a whole string at once and this field
+        is not: picking a cell out of the picture is how a user asks *what does
+        this say*, and an answer that is still six screens down has not been
+        given. The run of typing ends for the same reason :meth:`set_caret` ends
+        it — the caret has been moved by something that was not a keystroke, and
+        the next one starts a step of its own.
         """
         self._syncing = True
         try:
@@ -402,8 +422,11 @@ class TextWindow(QWidget):
                 QTextCursor.MoveMode.KeepAnchor,
             )
             self._edit.setTextCursor(cursor)
+            self._edit.ensureCursorVisible()
         finally:
             self._syncing = False
+        self._note_span()
+        self._fresh = True
 
     def set_caret(self, at: int) -> None:
         """Put the caret at ``at`` of the body — an undo step landing, not a move.
@@ -425,6 +448,7 @@ class TextWindow(QWidget):
             self._edit.setTextCursor(cursor)
         finally:
             self._syncing = False
+        self._note_span()
         self._fresh = True
 
     def hide_overlay(self) -> None:
@@ -464,7 +488,9 @@ class TextWindow(QWidget):
         overtyping one would spend a cell on something free — eating the letter
         under the caret and pulling the whole rest of the string a cell left. The
         rule overtyping exists to keep is that the length never moves, and
-        inserting something weightless does not move it.
+        inserting something weightless does not move it. It lands past the piece
+        the caret is standing *inside*, since the bit is a whole cell's and a
+        pair has no half to end a line on.
 
         **A bracket that could not close is dropped** (:meth:`_bracketing`), so
         the field cannot be typed into a shape that reads back as something else.
@@ -480,15 +506,23 @@ class TextWindow(QWidget):
             self._splice(first, last, typed, label, unit=self._units[first - 1])
             return
         if first == last and typed == "\n" and self._flag_break:
+            # Past the piece the caret stands **inside**, which is only ever more
+            # than the caret itself where a piece reads wider than a character —
+            # a code standing for a pair. The bit belongs to a whole cell and
+            # there is no half of one for a line to end on, so putting it where
+            # the caret literally is would split the pair into the two letters it
+            # stands for and spend a second cell on them.
+            start, stop = unit_bounds(self._units, first)
+            at = stop if start < first < stop else first
             # Joined to the cell before it, which is the cell whose bit it will
             # become - so it reads back as one piece the moment the file is
             # re-decoded, and Backspace finds it as the carried break it is.
             self._splice(
-                first,
-                first,
+                at,
+                at,
                 typed,
                 label,
-                unit=self._units[first - 1] if first else None,
+                unit=self._units[at - 1] if at else None,
             )
             return
         caret = None
@@ -574,7 +608,9 @@ class TextWindow(QWidget):
 
         A whole ``[$FE]`` goes in one press, because it is one cell and half a
         code is not a thing the string can hold — except inside one, where the
-        digits are being spelled and are deleted as themselves.
+        digits are being spelled and are deleted as themselves. The same holds
+        for the other piece that reads wider than one character: a code standing
+        for a pair goes whole, from either side and from between its letters.
 
         **Overtyping, a piece is blanked to a space rather than removed.** That is
         the half of the model a removal would break: the point of typing over a
@@ -623,8 +659,17 @@ class TextWindow(QWidget):
             start, stop = unit_bounds(self._units, first)
             stop = self._keep_break(start, stop)
         else:
-            start, stop = unit_bounds(self._units, max(0, first - 1))
-            stop = min(stop, first)
+            if not first:
+                return  # nothing behind the caret to take back
+            # The **whole** piece behind the caret, even where the caret is
+            # standing inside it: a code that stands for a pair reads as two
+            # characters and is one cell, and blanking only the half in front of
+            # the caret left the other half in the string as a letter of its own
+            # — which costs a second cell the region has not got and pushes the
+            # tail of it off the end. The one thing held back is the line break
+            # the piece carries, exactly as on the way forward.
+            start, stop = unit_bounds(self._units, first - 1)
+            stop = self._keep_break(start, stop)
             caret = start
         if start == stop:
             return
@@ -670,6 +715,18 @@ class TextWindow(QWidget):
         self._fresh = True
 
     # -- internals ---------------------------------------------------------
+    def _note_span(self) -> None:
+        """Take what is selected as already reported — a move nobody made.
+
+        Every place this window moves the cursor itself does so behind
+        ``_syncing``, so no signal comes out of it; without this the *next*
+        genuine move back to the span before it would look like no change at all
+        and be swallowed by :meth:`_on_caret`'s guard. Read back off the widget
+        rather than from what was asked for, since both setters clamp.
+        """
+        cursor = self._edit.textCursor()
+        self._reported = (cursor.selectionStart(), cursor.selectionEnd())
+
     def _pieces(self, start: int, stop: int) -> int:
         """How many cells ``body[start:stop]`` occupies — its runs of one unit."""
         run = self._units[start:stop]
@@ -713,6 +770,7 @@ class TextWindow(QWidget):
             self._edit.setTextCursor(cursor)
         finally:
             self._syncing = False
+        self._note_span()
         self._report(was, caret, label)
 
     def _report(self, was: int, caret: int, label: str) -> None:
@@ -723,7 +781,9 @@ class TextWindow(QWidget):
         else:
             self.committed.emit(self._body, self._fresh, label, was, caret)
             self._fresh = False
-        self.caret_moved.emit(caret)
+        # A splice leaves the caret standing, never a selection: what was
+        # selected has just been replaced by what was typed.
+        self.caret_moved.emit(caret, caret)
 
     def _build_guide(self, commands: list[tuple[str, str, str]]) -> None:
         """Rebuild the insert row, or leave it alone when it already matches.
@@ -782,6 +842,7 @@ class TextWindow(QWidget):
             self._edit.setTextCursor(cursor)
         finally:
             self._syncing = False
+        self._note_span()
         self._body, self._drafting, self._fresh = self._committed, False, True
 
     def _insert(self, code: str) -> None:
@@ -821,12 +882,16 @@ class TextWindow(QWidget):
     def _on_caret(self) -> None:
         if self._syncing:
             return
-        at = self._edit.textCursor().position()
+        cursor = self._edit.textCursor()
+        span = (cursor.selectionStart(), cursor.selectionEnd())
+        if span == self._reported:
+            return
+        self._reported = span
         # Leaving a half-spelled code is what finishes it: nothing was written
         # while the caret was inside, so this is where the string catches up.
-        if self._drafting and not inside_code(self._body, at):
+        if self._drafting and not inside_code(self._body, cursor.position()):
             self._commit()
-        self.caret_moved.emit(at)
+        self.caret_moved.emit(*span)
 
     def _on_focus_out(self) -> None:
         """Attention has moved off the field: the run ends and the draft lands."""

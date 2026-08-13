@@ -15,6 +15,12 @@ change the codec — overview.md §4):
   (column-major). This grouping is the **user's**, over decoded tiles; a cell
   format's *metatile* and a map's *stamp* are different things that draw the same
   square (``docs/design/terminology.md``).
+
+  There is **one place it is more than display**, and it is worth knowing about:
+  on an entry ticked *Use as Font*, the block is what a character code numbers.
+  An 8×16 glyph is two tiles and this is the only thing that says which two, so a
+  fontmap reads it as a claim about the sheet rather than as a preference
+  (:meth:`BlockLayout.block_slots`, ``docs/design/fontmap-entry.md`` §4).
 - **2D / wide-bitmap** (:func:`reflow_2d`) — a different *byte walk*: the source is
   treated as one wide bitmap ``columns`` tiles across, so each tile's pixel-rows are
   strided ``columns`` tiles apart in the file rather than contiguous. This changes
@@ -240,6 +246,43 @@ class BlockLayout:
         else:  # "row"
             rem = block_x * (bc * br) + inner_y * bc + inner_x
         return blockrow * (bpr * bc * br) + rem
+
+    def blocks(self, slots: int) -> int:
+        """How many whole blocks ``slots`` tiles make up at this layout.
+
+        The count in the unit the *blocks* are, which is what a caller numbering
+        blocks rather than tiles needs — a 256-tile sheet read as 1x2 blocks is
+        128 of them. Whole ones only: a trailing partial block is half a picture
+        of something, and nothing that numbers blocks has a number for it.
+        """
+        per_row = self._blocks_per_row
+        return max(0, slots // (per_row * self._bc * self._br)) * per_row
+
+    def block_slots(self, block: int) -> list[int]:
+        """The linear slots block number ``block`` covers, in reading order.
+
+        The inverse of the placement, asked of a whole block rather than of one
+        slot: blocks are numbered left to right and top to bottom, and what comes
+        back is the tiles inside one of them, row by row — which is the order a
+        composer places them in and the order the tiles are wanted in.
+
+        This is what lets a caller *number in blocks* while the file numbers in
+        tiles. The font alphabet is the case it was written for: an 8x16 glyph is
+        two tiles the sheet stores a whole row apart, and the character code is
+        the block number (``docs/design/fontmap-entry.md`` §4).
+
+        Slots that fall outside the layout — a partial block column past the last
+        whole one — are dropped rather than clamped, so a run that comes back
+        short is short rather than wrong.
+        """
+        bc, br = self._bc, self._br
+        brow, bx = divmod(max(0, block), self._blocks_per_row)
+        found = (
+            self.pos_to_slot(bx * bc + dx, brow * br + dy)
+            for dy in range(br)
+            for dx in range(bc)
+        )
+        return [slot for slot in found if slot is not None]
 
 
 def compose_window(

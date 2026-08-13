@@ -157,6 +157,29 @@ def pixel_is_direct_color(preset_id: str, reg: Registry) -> bool:
     return _run(Stage.INTERPRET_PIXEL, Pathway.PIXEL, _probe, plugin=preset.id)
 
 
+def pixel_tile_bytes(preset_id: str, reg: Registry) -> int:
+    """How many bytes one tile of ``preset_id`` occupies.
+
+    The same number :func:`~celpix.pipeline._stage._pixel_geometry` puts on a
+    document, asked of a preset alone — for a caller that has to size a run of
+    tiles *before* there is a config to build a document from. A **composite**
+    entry's blank pads are that caller: a gap in an assembled tile window is
+    stated in tiles and has to become bytes for the buffer to be laid out at all
+    (``docs/design/composite-entry.md``).
+
+    On the codec's own tile, deliberately: a wide-bitmap width re-cuts the
+    geometry per *view*, and a pad measured against one view's cut would move
+    every tile after it when the view changed.
+    """
+    engine, preset = reg.engine_for(preset_id, PixelCodecPlugin)
+    return _run(
+        Stage.INTERPRET_PIXEL,
+        Pathway.PIXEL,
+        lambda: engine.bytes_per_tile(preset.params),
+        plugin=preset.id,
+    )
+
+
 def pixel_bpp(preset_id: str, reg: Registry) -> int:
     """Bits per pixel of a pixel preset, from its resolved engine's geometry.
 

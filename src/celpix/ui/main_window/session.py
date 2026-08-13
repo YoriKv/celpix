@@ -27,6 +27,7 @@ from typing import NamedTuple
 
 from PySide6.QtGui import QImage
 
+from celpix.core.arrangement import BlockLayout
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_PIXEL_PRESET,
@@ -39,6 +40,7 @@ from celpix.core.context import (
 )
 from celpix.core.document import CellChain, Document
 from celpix.core.errors import PipelineError, Stage
+from celpix.core.notices import warn
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
 from celpix.core.tilemap import VRAM_ROW_STRIDE, Cell
 from celpix.pipeline import pipeline
@@ -52,7 +54,11 @@ from celpix.project.workspace import (
     TileMode,
     TileSource,
     backfill_slice_length,
+    composite_config,
+    composite_layout,
+    composite_preset_id,
     data_missing,
+    record_composite_layout,
 )
 from celpix.ui.tools import EditMode
 from celpix.ui.widgets import select_combo_data, signals_blocked
@@ -190,7 +196,24 @@ class SessionMixin:
         session = entry.session
         if entry.content_kind is ContentKind.TILEMAP:
             return self._load_tilemap_entry(entry, quiet=quiet, live=live)
-        cfg = self._pixel_config(entry, session.pixel_preset_id)
+        layout = None
+        if entry.kind is EntryKind.COMPOSITE:
+            # The format is the entry's own, like any other pixel entry's — a
+            # composite is read at whatever depth its consumer wants, which is
+            # not always a depth its sources use (``docs/design/composite-entry.md``).
+            # Assembled here rather than inside ``_pixel_config`` so the one
+            # assembly serves both the bytes and the complaints below; joining
+            # the sources twice would re-read every one of them.
+            layout = self._composite_layout(entry, session.pixel_preset_id)
+            cfg = composite_config(
+                entry,
+                self._registry,
+                self._workspace,
+                layout=layout,
+                preset_id=session.pixel_preset_id,
+            )
+        else:
+            cfg = self._pixel_config(entry, session.pixel_preset_id)
         # A pending bitmap width re-cuts the codec's tile geometry, so it is an
         # input to this first load rather than something the view applied
         # afterwards can express - the entry would otherwise open at the codec's
@@ -211,6 +234,15 @@ class SessionMixin:
             if not quiet:
                 self._report(exc)
             return False
+        if layout is not None:
+            # A composite that could not read a source still opens — the run goes
+            # blank and everything after it stays put, which is the only outcome
+            # a map bound to the composite can survive — so this is a **notice**
+            # rather than a failure, landing where everything else a stage had to
+            # assume lands (``docs/design/overview.md`` §5). Without it the
+            # composite comes up with a hole and nothing saying which piece left it.
+            for problem in layout.problems:
+                warn(px.ctx, "Composite piece unavailable", problem, "composite")
         if backfill_slice_length(entry, px.ctx):
             # The decompressor discovered the slice's true extent: rebuild the
             # config bounded by it, so save-back is slot-enforced from now on.
@@ -344,7 +376,27 @@ class SessionMixin:
         # file is a better authority on its own geometry than a preset written
         # for the format in general.
         cell_tiles = loaded.ctx.get(KEY_TILEMAP_CELL_TILES) or loaded.cell_tiles
-        self._fit_tile_base(entry, loaded.cells, tiles, cell_tiles)
+        # A **fontmap**'s cell draws whatever one glyph of its font is, which the
+        # cell format has no opinion about: it says how many bytes a code is and
+        # nothing about how many tiles the letter takes. So the grouping comes
+        # from the font (:meth:`_glyph_layout_for`) — but only where the format
+        # has not claimed the cell covers several tiles itself, since two answers
+        # to "how many tiles is one cell" cannot both be right and the format's
+        # is about the file being read.
+        fontmap = self._tilemap_is_fontmap(entry)
+        glyph_layout = self._glyph_layout_for(entry) if fontmap else None
+        if glyph_layout is not None and cell_tiles == (1, 1):
+            cell_tiles = (glyph_layout.block_columns, glyph_layout.block_rows)
+        else:
+            glyph_layout = None
+        # Not under a glyph layout: the fit asks whether the map's indices
+        # overflow the source *in tiles*, and there they are block numbers with a
+        # base counted in blocks — so the arithmetic is in the wrong unit and its
+        # wrong answer would move a whole font sideways. Nothing is lost: the
+        # case it exists for is a map bound to a slice numbered from elsewhere,
+        # and a font sheet carved to be read as one numbers from its own zero.
+        if glyph_layout is None:
+            self._fit_tile_base(entry, loaded.cells, tiles, cell_tiles)
         entry.doc = Document(
             pixel_data=tiles.data,
             bytes_per_tile=tiles.bytes_per_tile,
@@ -365,7 +417,15 @@ class SessionMixin:
             tilemap_data=loaded.data,
             cell_bytes=loaded.cell_bytes,
             cell_tiles=cell_tiles,
-            cell_row_stride=VRAM_ROW_STRIDE if cell_tiles != (1, 1) else 0,
+            # The stride is the *fixed-offset* way of finding a cell's other
+            # tiles, and a glyph layout is the general one — so they are never
+            # both set, and a font's neighbours come out of the placement.
+            cell_row_stride=(
+                0
+                if glyph_layout is not None or cell_tiles == (1, 1)
+                else VRAM_ROW_STRIDE
+            ),
+            glyph_layout=glyph_layout,
             index_mask=loaded.index_mask,
             palette_row_base=self._row_base_for(
                 entry,
@@ -379,7 +439,7 @@ class SessionMixin:
             sprite_frames=loaded.frames,
             sprite_size_pair=self._size_pair_for(entry, loaded.size_pair),
             cells_carry_palette_rows=loaded.palette_rows,
-            text_layout=self._tilemap_is_fontmap(entry),
+            text_layout=fontmap,
             font_alphabet=self._font_alphabet_for(entry, loaded.cell_bytes),
         )
         self._apply_restored_state(entry)
@@ -595,6 +655,82 @@ class SessionMixin:
         codes mean nothing yet.
         """
         return self._tilemap_declares(entry, "layout") == "text"
+
+    def _glyph_layout_for(self, entry: Entry) -> BlockLayout | None:
+        """How the bound font groups its tiles into glyphs, or None for one each.
+
+        **The font sheet's own arrangement**, read off the entry supplying the
+        tiles: its Cols and the Pattern picker's block. That is the whole of what
+        an 8x16 font needs said — a glyph is two tiles, and which two is decided
+        by how wide the sheet is and whether the bottoms follow the tops or sit
+        under them. A Link to the Past's dialogue font is the interleaved case,
+        and reading the Pattern reproduces the game's own
+        ``top = ((c & $F0) << 1) | (c & $0F)`` exactly
+        (``docs/design/fontmap-entry.md`` §4).
+
+        Taken from the arrangement rather than from a field of its own because
+        there is nothing a field could say that this does not already: the user
+        sets the Pattern to make the sheet legible, and a sheet that reads as
+        letters is a sheet whose blocks *are* the letters. The cost is that the
+        Pattern stops being display-only on a font entry — changing it re-letters
+        every string drawn through it — which is the honest price of the fact
+        living in one place.
+
+        **None wherever the grouping is 1x1**, which is every 8x8 font and so
+        nearly every font: a glyph is then a tile, the cells number tiles, and
+        every path below is the one that was there before.
+
+        Read off the font's document where it has one and off its restored view
+        where it has not, because a map routinely loads before the sheet it draws
+        from and the arrangement is the sheet's either way.
+        """
+        source = entry.tile_source
+        font = source.entry if source is not None else None
+        if font is None or not font.is_font_sheet:
+            return None
+        view = font.doc.view if font.doc is not None else font.pending_view
+        if view is None or (view.block_columns <= 1 and view.block_rows <= 1):
+            return None
+        return BlockLayout(
+            max(1, view.columns),
+            view.block_columns,
+            view.block_rows,
+            view.block_order,
+        )
+
+    def _resync_glyph_layouts(self, font: Entry) -> None:
+        """Carry ``font``'s arrangement onto every open fontmap drawn through it.
+
+        The Pattern and Cols on a font sheet say how big a glyph is
+        (:meth:`_glyph_layout_for`), so moving either is a change to what every
+        string bound to that sheet draws — not only to the sheet on screen. It is
+        the same audience an alphabet edit has
+        (:meth:`~...font_alphabet.FontAlphabetMixin._apply_font_alphabet`) and
+        the same reason: the fact is the font's, and a second string reading the
+        old one is just as wrong as the first.
+
+        Nothing is reloaded. The glyph layout decides which *tiles* a code draws
+        and no byte moves when it changes, so the bound documents are amended in
+        place and their next repaint composes the new picture. A no-op — a scan
+        of the open entries — on every sheet that is not a font.
+        """
+        if not font.is_font_sheet:
+            return
+        for other in self._entries_bound_to(font):
+            doc = other.doc
+            if doc is None or not doc.is_fontmap:
+                continue
+            if doc.glyph_layout is None and doc.cell_tiles != (1, 1):
+                # A cell format that states its own metatile keeps it. The font's
+                # grouping only ever fills in where the format said nothing (see
+                # the load path), so it cannot take one away here either.
+                continue
+            layout = self._glyph_layout_for(other)
+            doc.glyph_layout = layout
+            doc.cell_tiles = (
+                (1, 1) if layout is None else (layout.block_columns, layout.block_rows)
+            )
+            doc.layout_cache = None
 
     def _tilemap_flag_break(self, entry: Entry) -> bool:
         """Whether ``entry``'s format ends a line on a bit rather than a code.
@@ -859,6 +995,90 @@ class SessionMixin:
             at = target
         return None
 
+    def _composites_using(self, owner: Entry) -> list[Entry]:
+        """Every open composite with ``owner`` among its pieces, in list order.
+
+        The audience for a change to ``owner``'s bytes on the assembly side, as
+        :meth:`_entries_bound_to` is on the binding side: each of them holds a
+        *join* of those bytes, which an edit reaches only if something puts it
+        there — and since a join cannot be patched in place
+        (:meth:`_reassemble_composites`), what it gets is a dropped cache and a
+        fresh assembly.
+
+        Identity, not paths: a piece names the entry itself, so a file and a
+        slice of it are different pieces even though the bytes overlap.
+        """
+        return [
+            other
+            for other in self._workspace.entries
+            if other.kind is EntryKind.COMPOSITE
+            and any(piece.entry is owner for piece in other.pieces)
+        ]
+
+    def _composite_layout(self, entry: Entry, preset_id: str = ""):
+        """Assemble ``entry``'s pieces, settling each one's region first.
+
+        The composite's twin of :meth:`~...interpretation.InterpretationMixin.
+        _pixel_config`, and settling is why it exists rather than being a bare
+        call to :func:`~celpix.project.workspace.composite_layout`: a piece reads
+        its own live buffer, and a *file* piece with an edited slice of its own
+        owes that slice a fold before its bytes are true
+        (``docs/design/slices-and-parents.md`` §2). Assembling without settling
+        would join the pre-fold version and put a stale run in the composite.
+
+        The run lengths it measures are recorded on the entry, so every later
+        question about where a piece sits is answered from those rather than by
+        assembling again (:attr:`~celpix.project.workspace.Entry.piece_spans`).
+        """
+        for piece in entry.pieces:
+            self._settle_region(piece.entry)
+        layout = composite_layout(entry, self._registry, self._workspace, preset_id)
+        if record_composite_layout(entry, layout):
+            self._files_panel.refresh_entry(entry)
+        return layout
+
+    def _composites_using(self, owner: Entry) -> list[Entry]:
+        """Every open composite with ``owner`` among its pieces, in list order.
+
+        The audience for a change to ``owner``'s bytes on the assembly side, as
+        :meth:`_entries_bound_to` is on the binding side: each of them holds a
+        *join* of those bytes, which an edit reaches only if something puts it
+        there — and since a join cannot be patched in place
+        (:meth:`_reassemble_composites`), what it gets is a dropped cache and a
+        fresh assembly.
+
+        Identity, not paths: a piece names the entry itself, so a file and a
+        slice of it are different pieces even though the bytes overlap.
+        """
+        return [
+            other
+            for other in self._workspace.entries
+            if other.kind is EntryKind.COMPOSITE
+            and any(piece.entry is owner for piece in other.pieces)
+        ]
+
+    def _composite_layout(self, entry: Entry, preset_id: str = ""):
+        """Assemble ``entry``'s pieces, settling each one's region first.
+
+        The composite's twin of :meth:`~...interpretation.InterpretationMixin.
+        _pixel_config`, and settling is why it exists rather than being a bare
+        call to :func:`~celpix.project.workspace.composite_layout`: a piece reads
+        its own live buffer, and a *file* piece with an edited slice of its own
+        owes that slice a fold before its bytes are true
+        (``docs/design/slices-and-parents.md`` §2). Assembling without settling
+        would join the pre-fold version and put a stale run in the composite.
+
+        The run lengths it measures are recorded on the entry, so every later
+        question about where a piece sits is answered from those rather than by
+        assembling again (:attr:`~celpix.project.workspace.Entry.piece_spans`).
+        """
+        for piece in entry.pieces:
+            self._settle_region(piece.entry)
+        layout = composite_layout(entry, self._registry, self._workspace, preset_id)
+        if record_composite_layout(entry, layout):
+            self._files_panel.refresh_entry(entry)
+        return layout
+
     def _entries_bound_to(self, owner: Entry) -> list[Entry]:
         """Every open entry that draws its tiles from ``owner``'s bytes.
 
@@ -899,6 +1119,54 @@ class SessionMixin:
                 if not any(other is seen for seen in found):
                     found.append(other)
         return found
+
+    def _reassemble_composites(
+        self, owners: list[Entry], *, keep: Entry | None = None
+    ) -> list[Entry]:
+        """Rebuild every composite assembled out of ``owners``; return the ones hit.
+
+        The **one** way a composite's join is invalidated, whatever made it stale:
+        a piece arriving or leaving the list, or a piece's bytes being edited.
+        Both are the same problem — a composite holds a copy of bytes it joined,
+        and a join cannot be patched in place, because an offset in it is not an
+        offset in the piece it came from. So it is dropped and assembled again.
+        (:meth:`_reresolve_bound_art` is the map-side twin, and *that* one can
+        patch, which is why the two stay separate.)
+
+        ``keep`` is the composite an edit was **made on**, which already holds the
+        bytes and whose buffer is the one the stroke landed in. It is the only
+        exemption — a second composite over the same source is stale whether or
+        not it happens to be on screen.
+
+        The rebuild is a drop, not a re-read: a composite has no unsaved state of
+        its own to carry across one — every edit made on it was deposited into its
+        pieces as it landed (``docs/design/composite-entry.md``) — so the next
+        activation reads it fresh, and the one on screen is reloaded here because
+        nothing else is going to ask. Quiet, because the gesture that reached here
+        was about some other entry: a composite whose pieces have gone missing
+        must not put a modal in front of the removal that caused it.
+
+        The list comes back because the maps drawing through these composites
+        need the same treatment one step later, and the caller is what knows to
+        ask.
+        """
+        seen: list[Entry] = []
+        for owner in owners:
+            for composite in self._composites_using(owner):
+                # One composite can hold several of these owners — a file and a
+                # slice of it, both pieces of the same composite — and rebuilding
+                # it once per owner would reload it once per piece.
+                if composite is keep or any(composite is other for other in seen):
+                    continue
+                seen.append(composite)
+                self._workspace.drop_document(composite)
+                if composite is not self._workspace.current:
+                    continue  # the next activation reads it fresh
+                if self._load_entry(composite, quiet=True):
+                    self._doc = composite.doc
+                    self._restore_session(composite)
+                self._refresh_view()
+        return seen
 
     def _reresolve_bound_art(self, maps: list[Entry]) -> None:
         """Re-read ``maps`` against whatever their bindings reach **now**.
@@ -1169,7 +1437,17 @@ class SessionMixin:
         freshly opened file keeps the codec the user is working in. A slice's
         preview combo starts at none - its bytes are already decompressed."""
         return EntrySession(
-            pixel_preset_id=self._pixel_preset_id(),
+            # A composite starts on its first source's format rather than on the
+            # toolbar's: it is assembled out of entries that already state one,
+            # and the toolbar is showing whatever was last on screen. Only a
+            # start — the picker is the user's from then on, and has to be,
+            # because a tile window is read at the depth its *consumer* wants
+            # (``docs/design/composite-entry.md``).
+            pixel_preset_id=(
+                composite_preset_id(entry, self._registry)
+                if entry.kind is EntryKind.COMPOSITE
+                else self._pixel_preset_id()
+            ),
             palette_preset_id=self._palette_preset_id(),
             preview_compression_id=(
                 NO_COMPRESSION

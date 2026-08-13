@@ -39,11 +39,12 @@ activation. External changes to the file on disk are ignored.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from os.path import abspath, basename, exists, normcase, splitext
 from typing import Callable
 
+from celpix.core import ceil_div
 from celpix.core.address import format_hex
 from celpix.core.capabilities import Capability, ContentKind, supports
 from celpix.core.context import (
@@ -53,7 +54,7 @@ from celpix.core.context import (
     PipelineContext,
 )
 from celpix.core.document import Document, ViewOptions
-from celpix.core.errors import Stage
+from celpix.core.errors import PipelineError, Stage
 from celpix.core.font import Glyph
 from celpix.core.notices import Notice, notices
 from celpix.pipeline import pipeline
@@ -62,6 +63,7 @@ from celpix.plugins.base import (
     NO_COMPRESSION,
     NO_RESHAPE,
     RAW_CONTAINER,
+    STAGE_DEFAULT_PRESET,
     FileRef,
 )
 from celpix.plugins.detect import resolved_container_id
@@ -77,6 +79,27 @@ class EntryKind(Enum):
     SLICE = auto()
     BOOKMARK = auto()
     PALETTE = auto()
+    # An ordered concatenation of *other* entries' pixel bytes, owning no file of
+    # its own (``docs/design/composite-entry.md``). A fourth answer to the
+    # question this enum asks — how an entry is **bounded** — and not a fifth
+    # :class:`~celpix.core.capabilities.ContentKind`: what a composite holds is
+    # pixels, which is what lets it be a tile bank a map binds to.
+    COMPOSITE = auto()
+
+    @property
+    def has_document(self) -> bool:
+        """Whether entries of this kind can be shown, and so have a document.
+
+        The question a dozen sites were asking as the literal pair
+        ``(FILE, SLICE)``, which is exactly the kind of set that falls out of
+        step when a fifth member arrives — and did: a composite is a third thing
+        with a document, a view, a palette and an undo history, and every one of
+        those sites meant "one of those" rather than "a file or a slice".
+
+        A bookmark is a position and a palette is applied rather than activated,
+        so neither is ever current and neither has a view of its own.
+        """
+        return self in (EntryKind.FILE, EntryKind.SLICE, EntryKind.COMPOSITE)
 
 
 class SortKey(str, Enum):
@@ -275,6 +298,97 @@ class TileSource:
     def is_bound(self) -> bool:
         """Whether this names a source at all — False renders as placeholders."""
         return self.mode is not TileMode.NONE
+
+
+@dataclass(frozen=True)
+class CompositePiece:
+    """One run of a composite view: a byte range of another entry, or blank bytes.
+
+    A composite view is an ordered list of these and nothing else
+    (``docs/design/composite-entry.md``). Two shapes are meaningful: an ``entry``
+    contributing its pixel bytes — all of them, or a range — or, with ``entry``
+    None, a **pad** of blank bytes standing for a hole in the tile window being
+    reproduced.
+
+    What a source contributes is its **resolved** bytes: what it looks like once
+    its own container, reshape and decompressor have run, which is what would
+    have been uploaded to VRAM. That is the whole point of the feature, and it is
+    what ``offset`` addresses — a position in the *decompressed* stream where the
+    source is compressed, and in the slice's own bytes where it is not.
+
+    ``entry`` is the bound :class:`Entry` **itself**, for the reason
+    :class:`TileSource`'s is: a positional index names a different entry the
+    moment anything ahead of it is closed or reordered, so the piece would follow
+    the number rather than the data the user pointed at. The project file stores
+    the position instead, computed on save and resolved back on load, in
+    :mod:`~celpix.project.projectfile` and nowhere else.
+
+    **A piece names a whole entry, and may take a range of it.** Which bytes an
+    entry *has* is the entry's own business — its container, reshape,
+    compression and format — and a piece restates none of that. What it may say
+    is how much of the result to take:
+
+    - ``length = 0`` is the ordinary case: from ``offset`` to the end.
+    - ``offset`` and ``length`` together take a run out of the middle.
+
+    That range is not a second spelling of a slice, because for a **compressed**
+    source there is no slice that would do: a slice bounds the *compressed
+    stream*, and what is wanted here is part of the *resolved output*, which no
+    offset and length into the file can name. Real data needs it — a console DMAs
+    half of a decompressed blob to one address and half of another below it,
+    which is five of the sixteen runs in every screen of the corpus this was
+    built for.
+
+    **Bytes, not tiles.** The range addresses the source's own byte stream, which
+    is a unit both sides agree on; a tile is not. The same bytes are read as 2bpp
+    by one layer and 4bpp by another — this corpus does exactly that — so "tile
+    64" means one thing to a source and another to the composite reading it,
+    while byte 0x800 means the same thing to both.
+
+    ``measured`` is how many bytes the last successful assembly actually
+    produced. It is a **cache**, not a request, and it is separate from ``length``
+    so that a refresh can never overwrite what the user asked for. Two things
+    need it:
+
+    - A piece whose entry is **closed or unreadable** contributes that many blank
+      bytes rather than nothing, so the composite does not silently renumber
+      itself — every cell of every map bound to it would move — because a source
+      was closed. An undo putting the entry back puts its bytes back too.
+    - The dialog's position column, which is the VRAM table the user is
+      transcribing and has to read before the sources are loaded.
+
+    0 until first assembled, which is the honest answer for a run nothing has
+    measured yet.
+    """
+
+    entry: Entry | None = None
+    offset: int = 0
+    length: int = 0
+    measured: int = 0
+
+    @property
+    def is_pad(self) -> bool:
+        """Whether this run stands for a hole rather than naming a source."""
+        return self.entry is None
+
+    @property
+    def is_ranged(self) -> bool:
+        """Whether this piece takes part of its source rather than all of it."""
+        return not self.is_pad and (self.length > 0 or self.offset > 0)
+
+    @property
+    def extent(self) -> int:
+        """How many bytes this run covers, as best anything can say without reading.
+
+        The **request** where there is one — a pad's length, or a range's — and
+        the last measurement otherwise. That order is what makes a ranged piece
+        answer for itself before its source has ever been read, and what keeps a
+        whole-entry piece answering with the size its entry actually turned out
+        to be rather than a stale guess.
+        """
+        if self.length > 0:
+            return self.length
+        return max(0, self.measured)
 
 
 @dataclass(frozen=True)
@@ -549,6 +663,22 @@ class Entry:
     # An object authored against another pair draws every subsprite at the wrong size
     # until this says so, which is why it is the user's and why it is per entry.
     sprite_size_pair: tuple[int, int] | None = None
+    # COMPOSITE entries only: the runs this entry's bytes are assembled from, in
+    # order (:class:`CompositePiece`). Empty is a legal state and renders as an
+    # empty document — a composite is created before it is filled in, and a
+    # dialog that refused to close on an empty list would be the only way to lose
+    # the entry you had just named.
+    pieces: tuple[CompositePiece, ...] = ()
+    # Where each of those pieces landed in the buffer the last assembly produced
+    # (:class:`PieceSpan`) — set by :func:`record_composite_layout` and dropped
+    # with the document, because it describes *that* buffer and nothing else.
+    #
+    # Session state, never persisted: it is derivable from the pieces and is
+    # derived again on every load. Held rather than recomputed because the
+    # question it answers — whose byte is this? — is asked per stroke, and
+    # rebuilding it would mean re-reading every source to find out where a click
+    # landed (``docs/design/composite-entry.md``).
+    piece_spans: tuple[PieceSpan, ...] = ()
 
     def __post_init__(self) -> None:
         # A palette entry's content kind is not a separate choice — its ``kind``
@@ -559,7 +689,18 @@ class Entry:
 
     @property
     def paths(self) -> tuple[str, ...]:
-        """Every file this entry's bytes come from, in the order they join."""
+        """Every file this entry's bytes come from, in the order they join.
+
+        **Empty for a composite**, which comes from no file: its bytes are other
+        entries', and each of those is a row in the same list answering for its
+        own. That emptiness is load-bearing rather than incidental — it is what
+        keeps a composite out of the missing-file scan, the relocate pass and the
+        post-save cache invalidation, none of which have anything to say to an
+        entry with no file (``docs/design/composite-entry.md``). Its ``path`` is
+        ``""``, so answering from it would name the working directory.
+        """
+        if self.kind is EntryKind.COMPOSITE:
+            return ()
         return (self.path, *self.extra_paths)
 
     @property
@@ -633,6 +774,21 @@ def new_slice(
         compression_id=compression_id,
         reshape_id=reshape_id,
     )
+
+
+def new_composite(name: str, pieces: tuple[CompositePiece, ...] = ()) -> Entry:
+    """A COMPOSITE entry — not yet in any workspace.
+
+    Built and *added* separately for the reason :func:`new_slice` is: the UI's
+    adds are undoable, so an ``AddEntryCommand`` needs the entry to exist before
+    it is pushed and owns the insertion, which is what lets undo and redo put the
+    very same object back — and every piece of every other composite, and every
+    tilemap binding, goes on naming it.
+
+    ``path`` is ``""`` and stays that way: a composite is assembled out of other
+    entries and has no file of its own (:attr:`Entry.paths`).
+    """
+    return Entry(name=name, kind=EntryKind.COMPOSITE, path="", pieces=tuple(pieces))
 
 
 def slice_of(
@@ -727,7 +883,7 @@ class Workspace:
         key = self.path_key(path)
         out = []
         for entry in self.entries:
-            if entry.kind not in (EntryKind.FILE, EntryKind.SLICE) or entry.doc is None:
+            if not entry.kind.has_document or entry.doc is None:
                 continue
             src = entry.doc.palette_config.source.path
             if src and self.path_key(src) == key:
@@ -776,7 +932,7 @@ class Workspace:
         key = self.path_key(palette.path)
         users = []
         for entry in self.entries:
-            if entry.kind not in (EntryKind.FILE, EntryKind.SLICE):
+            if not entry.kind.has_document:
                 continue
             session = entry.session
             if session is None or session.palette_mode is not PaletteMode.FILE:
@@ -816,10 +972,15 @@ class Workspace:
         ]
 
     def parent_of(self, entry: Entry) -> Entry | None:
-        """The open FILE entry a SLICE or BOOKMARK is anchored to (None for a
-        FILE or PALETTE — their path is their own file — or when the parent
-        is closed/never open)."""
-        if entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
+        """The open FILE entry a SLICE or BOOKMARK is anchored to.
+
+        None for the three kinds that anchor to nothing: a FILE and a PALETTE,
+        whose path is their own file, and a **COMPOSITE**, which has no path at
+        all. That last one is not merely tidy — a composite's ``path`` is ``""``,
+        which :meth:`path_key` resolves to the working *directory*, so asking
+        would be looking a file up by a name no file has.
+        """
+        if entry.kind in (EntryKind.FILE, EntryKind.PALETTE, EntryKind.COMPOSITE):
             return None
         return self.find_file(entry.path)
 
@@ -992,12 +1153,11 @@ class Workspace:
         if self.current in removed:
             # Bookmarks and palettes can never be current, so the neighbour
             # search skips them.
-            viewable = (EntryKind.FILE, EntryKind.SLICE)
             after = self.entries[anchor:]
             before = reversed(self.entries[:anchor])
             neighbour = next(
-                (e for e in after if e.kind in viewable),
-                next((e for e in before if e.kind in viewable), None),
+                (e for e in after if e.kind.has_document),
+                next((e for e in before if e.kind.has_document), None),
             )
             self.set_current(neighbour)
         return removed
@@ -1030,7 +1190,7 @@ class Workspace:
         assert entry is None or entry in self.entries
         # Bookmarks and palettes have no document or view of their own — they
         # can never be shown.
-        assert entry is None or entry.kind in (EntryKind.FILE, EntryKind.SLICE)
+        assert entry is None or entry.kind.has_document
         self.current = entry
         self._notify(self.on_current_changed, entry)
 
@@ -1092,6 +1252,10 @@ class Workspace:
         if source is not None:
             entry.pending_palette = source
         entry.doc = None
+        # A composite's spans describe the buffer that just went; keeping them
+        # would leave the one question they answer being answered about bytes
+        # nothing holds any more (:attr:`Entry.piece_spans`).
+        entry.piece_spans = ()
 
     def invalidate_path(self, path: str, keep: Entry | None = None) -> None:
         """Drop cached documents of entries rooted at ``path`` (after a save).
@@ -1243,7 +1407,14 @@ def pixel_config_for(
     A slice is saved **through its parent** (``writes_through_parent``) rather
     than deposited at its own bounds, so its writability is its own stages'
     *and* its parent's — see the comment at the branch.
+
+    A **composite** reads none of those stages: its bytes are already other
+    entries' decompressed buffers, joined here rather than read from anywhere, so
+    the config is an in-memory source over the assembled buffer with every byte
+    stage on its pass-through (:func:`composite_config`).
     """
+    if entry.kind is EntryKind.COMPOSITE:
+        return composite_config(entry, registry, workspace, preset_id=preset_id)
     stages = [(Stage.RESHAPE, entry.reshape_id)]
     if entry.kind is EntryKind.FILE:
         stages.append((Stage.CONTAINER, entry.container_id))
@@ -1367,6 +1538,293 @@ def entry_view_bytes(
         pixel_config_for(entry, preset_id, registry, workspace), registry
     )
     return data, ctx.get(KEY_SOURCE_OFFSET, 0)
+
+
+# -- composites (docs/design/composite-entry.md) ---------------------------
+@dataclass(frozen=True)
+class PieceSpan:
+    """Where one :class:`CompositePiece` landed in the assembled buffer.
+
+    ``owner`` is the entry those bytes belong to — the piece's, and **None** for
+    a pad or for a source that could not be read. That is the whole of what the
+    deposit path needs: a byte position in a composite either has an owner to be
+    written into or it has nothing behind it, and an edit there is refused rather
+    than kept in a buffer no file answers for
+    (``docs/design/slices-and-parents.md``).
+
+    ``source_base`` is where this run started **inside the owner's own buffer**,
+    which is 0 for a whole-entry piece and the range's own ``offset`` for a ranged
+    one (:attr:`CompositePiece.is_ranged`). An edit at composite position *p*
+    lands at ``source_base + (p - start)`` in the owner, so this is the one number
+    that keeps a deposit honest when only part of a source is on screen.
+    """
+
+    start: int
+    length: int
+    owner: Entry | None
+    source_base: int = 0
+
+    @property
+    def end(self) -> int:
+        """One past the last byte — the half-open bound the overlap test uses."""
+        return self.start + self.length
+
+
+@dataclass(frozen=True)
+class CompositeLayout:
+    """An assembled composite: its bytes, what they came from, and what went wrong.
+
+    ``problems`` are per-piece complaints in list order — a source that is closed,
+    unreadable or itself a composite, or one whose bytes did not fill a whole
+    number of tiles. They are returned rather than raised because none of them
+    stops the composite being shown: the run becomes blank tiles and everything
+    after it stays where it was, which is the only behaviour a map bound to it
+    can survive. The load path puts them on the document's context as notices
+    (:meth:`~celpix.ui.main_window.session.SessionMixin._load_entry`).
+    """
+
+    data: bytes
+    spans: tuple[PieceSpan, ...]
+    pieces: tuple[CompositePiece, ...]
+    problems: tuple[str, ...] = ()
+
+
+def composite_preset_id(entry: Entry, registry: Registry) -> str:
+    """The pixel format a new composite view **starts** on: its first source's.
+
+    A seed, not a rule. The first source's format is the best guess available
+    when the entry is created, and it is usually right — but it is only a guess,
+    because **which depth a composite is read at belongs to whatever consumes it,
+    not to its pieces.** A console's tile window is depth-agnostic: the same
+    bytes are 4bpp to one background layer and 2bpp to another, and a corpus of
+    seventeen assembled windows has nine that are read at a depth none of their
+    sources use. A composite that could not disagree with its pieces could not
+    express those at all.
+
+    So the picker stays the user's, exactly as it is on any other pixel entry,
+    and this only decides where it starts (``docs/design/composite-entry.md``).
+
+    Falls back to the stage's default when nothing resolves — an empty composite,
+    or one whose every source is closed — since *something* has to say how many
+    bits a pixel is before anything can be drawn, and this is the same stand-in a
+    missing preset gets (:data:`~celpix.plugins.base.STAGE_DEFAULT_PRESET`).
+    """
+    for piece in entry.pieces:
+        source = piece.entry
+        if source is None or source.session is None:
+            continue
+        return registry.resolve_preset(
+            Stage.INTERPRET_PIXEL, source.session.pixel_preset_id
+        )
+    return STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
+
+
+def can_compose(entry: Entry, candidate: Entry) -> bool:
+    """Whether ``candidate`` is something ``entry`` could take a piece from.
+
+    The one rule behind both the picker that offers sources and the assembly that
+    reads them, so what is offered and what is accepted cannot disagree — the
+    discipline :meth:`~celpix.ui.main_window.session.SessionMixin.
+    _can_supply_tiles` follows, for the same reason.
+
+    **A composite cannot contain a composite.** Without that, a pair pointed at
+    each other would each assemble the other, forever; with it, the depth
+    question has one answer instead of a recursion limit. Nor itself, which would
+    be that same loop with one participant.
+
+    Only **pixels**: a palette or a bookmark has no pixel buffer to contribute,
+    and a tilemap's is a borrowed copy of somebody else's art rather than bytes
+    of its own — assembling one would put a borrowed copy inside a composite.
+    """
+    return (
+        candidate is not entry
+        and candidate.kind is not EntryKind.COMPOSITE
+        and candidate.content_kind is ContentKind.PIXELS
+    )
+
+
+def _piece_problem(
+    entry: Entry, piece: CompositePiece, workspace: Workspace | None
+) -> str | None:
+    """Why ``piece`` cannot contribute its source's bytes, or None if it can.
+
+    A **closed** source is the case worth naming: a piece holds the entry object
+    itself, so closing it does not stop the file being readable off disk — but a
+    piece pointing into a list the entry has left is exactly the "not open"
+    state a tilemap binding reports rather than quietly going on drawing
+    (``docs/design/tilemap-entry.md`` §1). Asked of the workspace when there is
+    one; without one there is no list to be absent from.
+    """
+    source = piece.entry
+    if source is None:
+        return None  # a pad, which is not a problem but the plan
+    if not can_compose(entry, source):
+        return f"{source.name} cannot supply bytes to a composite"
+    if workspace is not None and not any(e is source for e in workspace.entries):
+        return f"{source.name} is not open"
+    return None
+
+
+def composite_layout(
+    entry: Entry,
+    registry: Registry,
+    workspace: Workspace | None = None,
+    preset_id: str = "",
+) -> CompositeLayout:
+    """Assemble ``entry``'s pieces into one buffer, in list order.
+
+    Each source piece contributes that entry's **resolved** pixel bytes — what it
+    looks like once its own container, reshape and decompressor have run
+    (:func:`entry_view_bytes`, which serves its live document's bytes when it has
+    one, so an edit to a source shows through the composite immediately).
+
+    A piece with a **range** takes only those bytes of it
+    (:attr:`CompositePiece.is_ranged`), zero-filled where the source is too short
+    to fill it: a stated range is a statement about the composite's layout, so it
+    keeps its length whatever the source turns out to hold. A piece without one
+    takes everything from ``offset`` on, **rounded up to a whole tile** — that
+    rounding is the point of the feature rather than tidiness, since a composite
+    view exists to give a map one predictable index space and a ragged source
+    would put every tile after it part of a tile out. A stated range is honoured
+    to the byte instead, because at that point the user has said where the run
+    ends and rounding would move the next one.
+
+    A pad piece — and a source that is closed, unreadable, or one this refuses
+    (:func:`can_compose`) — contributes ``piece.extent`` blank bytes. Contributing
+    *nothing* would be worse than blank: every cell of every map bound to the
+    composite would shift by the length of the missing run.
+
+    Returns the refreshed pieces alongside, each carrying what was actually
+    assembled as its ``measured`` — never as its ``length``, which is the user's
+    request and not this function's to touch.
+    :func:`record_composite_layout` is what records them, on the same
+    "discovered at load, written onto the entry" footing as
+    :func:`backfill_slice_length`.
+    """
+    # Only the un-ranged case needs this, and only to round a ragged source up.
+    # Everything else here is bytes, which is the unit a source and the composite
+    # reading it can both agree on (:class:`CompositePiece`).
+    tile_bytes = pipeline.pixel_tile_bytes(
+        preset_id or composite_preset_id(entry, registry), registry
+    )
+    out = bytearray()
+    spans: list[PieceSpan] = []
+    refreshed: list[CompositePiece] = []
+    problems: list[str] = []
+    for piece in entry.pieces:
+        data, owner = None, None
+        if not piece.is_pad:
+            refused = _piece_problem(entry, piece, workspace)
+            if refused is not None:
+                problems.append(f"{refused}, so its run is blank")
+            else:
+                try:
+                    # The preset is inert here — ``entry_view_bytes`` stops
+                    # before any codec runs — so the composite's own is handed
+                    # over rather than each source's being resolved for a value
+                    # nothing reads.
+                    data, _base = entry_view_bytes(
+                        piece.entry, registry, preset_id, workspace
+                    )
+                    owner = piece.entry
+                except (PipelineError, OSError) as exc:
+                    problems.append(f"{piece.entry.name} could not be read ({exc})")
+                    data = None
+        if data is None:
+            # The pad case, and every failure above: the run keeps the length it
+            # last had so nothing downstream of it moves.
+            data = bytes(piece.extent)
+        else:
+            end = piece.offset + piece.length if piece.length else len(data)
+            cut = data[piece.offset : end]
+            if piece.length and len(cut) < piece.length:
+                problems.append(
+                    f"{piece.entry.name} resolves to {len(data)} bytes, too short for "
+                    f"the {piece.length} asked for at {format_hex(piece.offset)}; the "
+                    "rest of the run is blank"
+                )
+                cut = cut + bytes(piece.length - len(cut))
+            elif not piece.length and len(cut) % tile_bytes:
+                filled = ceil_div(len(cut), tile_bytes) * tile_bytes
+                problems.append(
+                    f"{piece.entry.name} holds {len(cut)} bytes, which is not a whole "
+                    f"number of {tile_bytes}-byte tiles; it was padded to {filled}"
+                )
+                cut = cut + bytes(filled - len(cut))
+            data = cut
+        spans.append(PieceSpan(len(out), len(data), owner, piece.offset))
+        out += data
+        refreshed.append(replace(piece, measured=len(data)))
+    return CompositeLayout(bytes(out), tuple(spans), tuple(refreshed), tuple(problems))
+
+
+def composite_config(
+    entry: Entry,
+    registry: Registry,
+    workspace: Workspace | None = None,
+    layout: CompositeLayout | None = None,
+    preset_id: str = "",
+) -> PathwayConfig:
+    """A composite's pixel pathway: the assembled buffer, read as plain bytes.
+
+    ``layout`` is an assembly already in hand — the load path has one, having
+    needed its problems and its run lengths, and assembling a second time would
+    re-read every source for the same bytes. Omitted, one is made here.
+
+    Every byte stage is on its pass-through, because the pieces have already been
+    through theirs — each was read by its own entry's container, reshape and
+    decompressor before it was joined. Running a second set over the join would
+    be applying a file's framing to a buffer that is not that file.
+
+    ``write_enabled=False``, and that is not a limitation: a composite owns no
+    bytes, so there is nothing here to deposit. An edit made on one is deposited
+    into the piece that owns it as it lands, and *that* entry's write is what puts
+    it on disk (``docs/design/composite-entry.md``). Saying so here is what stops
+    :func:`~celpix.pipeline.pipeline.save` from writing the assembled buffer to a
+    file named after the entry.
+    """
+    if layout is None:
+        layout = composite_layout(entry, registry, workspace, preset_id)
+    return PathwayConfig(
+        # The entry's own name as the source path: nothing opens it — the bytes
+        # are supplied inline — but the address display and every error message
+        # want something to call this buffer, and a composite has no file to
+        # borrow a name from.
+        source=FileRef((entry.name or "composite",), data=layout.data),
+        interpret_preset_id=preset_id or composite_preset_id(entry, registry),
+        write_enabled=False,
+    )
+
+
+def record_composite_layout(entry: Entry, layout: CompositeLayout) -> bool:
+    """Record what an assembly measured onto ``entry``; True if a length changed.
+
+    Two things, and they are recorded together because one assembly is where both
+    become known — and because letting them be answered separately is what let
+    them disagree:
+
+    - each piece's ``measured``, a cache of how many bytes that run actually
+      produced, refreshed here at load exactly as a decompressed slice's
+      discovered extent is (:func:`backfill_slice_length`). Keeping it current is
+      what lets a closed source leave a hole of the right size behind it instead
+      of collapsing the composite.
+    - :attr:`Entry.piece_spans`, where each of those runs sits in the buffer the
+      assembly just built — the **one** answer to "whose byte is this?", and the
+      only one, since it describes a buffer that exists rather than re-deriving a
+      guess from recorded lengths.
+
+    Neither touches ``offset`` or ``length``: those are what the user asked for,
+    and a measurement that could overwrite a request would quietly turn a stated
+    range into whatever its source happened to be this time.
+
+    The return value is about the *lengths* alone — the spans are refreshed every
+    time, and are not something a caller re-reads the file over.
+    """
+    entry.piece_spans = layout.spans
+    if layout.pieces == entry.pieces:
+        return False
+    entry.pieces = layout.pieces
+    return True
 
 
 def _parent_view_bytes(
@@ -1687,10 +2145,15 @@ def exportable_entries(ws: Workspace) -> list[Entry]:
     explicitly (the single-entry Export), never in bulk — matching the rule that a
     file with slices isn't exported unless it alone is selected. Bookmarks and
     palettes hold no graphic of their own and never appear.
+
+    A **composite** always appears, and is not redundant with the pieces it is
+    assembled from even though its bytes are theirs: the picture it makes is one
+    nobody else in the list draws, which is the whole reason it exists. It has no
+    slices of its own to defer to either — a slice's parent is always a file.
     """
     result: list[Entry] = []
     for entry in ws.entries:
-        if entry.kind is EntryKind.SLICE:
+        if entry.kind in (EntryKind.SLICE, EntryKind.COMPOSITE):
             result.append(entry)
         elif entry.kind is EntryKind.FILE and not ws.slices_of(entry):
             result.append(entry)
@@ -1713,7 +2176,13 @@ def export_basename(entry: Entry) -> str:
     export folder, and its own (possibly punctuation-heavy) name is sanitized
     (``foo`` + ``1000 (800)`` → ``foo_1000__800_``). The caller still de-dupes,
     since two slices of one file can share a name.
+
+    A **composite** has no file to take a stem from, so its own name is the whole
+    answer — which is also the only name it has ever had, being the one the user
+    typed when they built it.
     """
+    if entry.kind is EntryKind.COMPOSITE:
+        return _sanitize(entry.name)
     parent_stem = splitext(basename(entry.path))[0] or "export"
     if entry.kind is not EntryKind.SLICE:
         return _sanitize(parent_stem)

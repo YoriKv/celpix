@@ -690,10 +690,11 @@ def test_a_sibling_slice_reads_an_edit_the_fold_has_not_run_for_yet(
 
     edited = window._workspace.add_slice(parent.path, "first", 0x100, 0x100)
     window._workspace.set_current(edited)
+    revision = window._workspace.next_revision()
     window._apply_pixel_bytes(
         [(0, b"\x5a" * 32)],
-        window._workspace.next_revision(),
-        window._workspace.next_revision(),  # the parent's, so it reads dirty too
+        revision,
+        ((parent, revision),),  # the parent's, so it reads dirty too
         entry=edited,
     )
     assert parent.pixel_dirty  # ...which is what sends a sibling to its buffer
@@ -2087,6 +2088,33 @@ def test_window_title_names_project_and_marks_it_unsaved(qtbot, tmp_path):
     # in one must never leave it looking unsaved.
     window._select_tiles(1, 3)
     assert not window._project_is_dirty()
+
+
+def test_open_project_folder_is_armed_only_while_a_project_is_open(qtbot, tmp_path):
+    """The row opens the folder the .celpix file sits in, so it has nothing to
+    open until the session has one - and loses it again on a new project. The
+    state is recomputed as the File menu opens, since none of the three moments
+    it changes at rebuilds the menu."""
+    from PySide6.QtWidgets import QMenu
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    # findChildren, not actions()[0].menu(): the latter hands back a wrapper
+    # PySide has already disowned, and touching it raises.
+    file_menu = next(
+        m for m in window.menuBar().findChildren(QMenu) if m.title() == "&File"
+    )
+
+    file_menu.aboutToShow.emit()
+    assert not window._open_project_folder_action.isEnabled()
+
+    window._save_project_to(str(tmp_path / "session.celpix"))
+    file_menu.aboutToShow.emit()
+    assert window._open_project_folder_action.isEnabled()
+
+    window._new_project()
+    file_menu.aboutToShow.emit()
+    assert not window._open_project_folder_action.isEnabled()
 
 
 def test_open_recent_lists_projects_newest_first_and_prunes_a_missing_one(

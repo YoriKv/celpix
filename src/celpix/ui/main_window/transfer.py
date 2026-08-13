@@ -345,7 +345,7 @@ class TransferMixin:
         image then lands as a block anchored at tile 0, so the file reads back
         exactly as the picture looks.
         """
-        if entry is None or entry.kind not in (EntryKind.FILE, EntryKind.SLICE):
+        if entry is None or not entry.kind.has_document:
             return
         if entry is not self._workspace.current:
             self._activate_entry(entry)

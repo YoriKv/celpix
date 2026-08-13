@@ -107,9 +107,12 @@ class WritingMixin:
         those bytes belong to and the map itself reads clean
         (``docs/design/tilemap-entry.md`` §8.1) — which left a painted map
         reporting a successful write with the painting still only in memory,
-        recoverable just by finding the bank in the Files list.
+        recoverable just by finding the bank in the Files list. A **composite
+        view** is the same story with several files at the end of it: it owns no bytes,
+        so a stroke on one was deposited into whichever pieces it crossed, and
+        every one of those is written here (``docs/design/composite-entry.md``).
 
-        Both companions are written **only when they actually have changes**:
+        The companions are written **only when they actually have changes**:
         rewriting a clean ``.pal`` or a clean tile bank would bump the mtime of a
         file other entries may share, for nothing.
 
@@ -126,13 +129,13 @@ class WritingMixin:
         palette = self._linked_palette_entry()
         if palette is None or palette.doc is None or not palette.palette_dirty:
             palette = None
-        tiles = self._unsaved_tile_source(entry)
+        owners = self._unsaved_owners(entry)
         wrote_entry = self._write_entry(entry)
         # After the map, so the map's own write is what a failure on the bank is
         # reported against; the order is otherwise free, since a save skips the
         # cached documents of entries that are still dirty when it invalidates
         # its path (``Workspace.invalidate_path``).
-        wrote_tiles = tiles is not None and self._write_entry(tiles)
+        wrote_owners = [owner for owner in owners if self._write_entry(owner)]
         wrote_palette = palette is not None and self._write_entry(palette)
         # Report what actually went to disk: a palette-only write leaves the
         # graphic alone, and Default/Custom/Emulator palettes have no file
@@ -144,23 +147,39 @@ class WritingMixin:
             if has_palette_file
             else "pixel"
         )
+        # A **composite** owns no bytes, so its own write is its palette or
+        # nothing at all — saying "pixel" there would name a file that was never
+        # touched, while the pieces that really were are listed below.
+        if entry.kind is EntryKind.COMPOSITE:
+            wrote_entry = wrote_entry and has_palette_file
+            wrote = "palette"
         landed = [f"{entry.name} ({wrote})"] if wrote_entry else []
-        if wrote_tiles:
-            landed.append(f"{tiles.name} (tiles)")
+        landed += [f"{owner.name} (tiles)" for owner in wrote_owners]
         if wrote_palette:
             landed.append(palette.name)
         if landed:
             self.statusBar().showMessage(f"Wrote {_and_list(landed)}.")
 
-    def _unsaved_tile_source(self, entry: Entry) -> Entry | None:
-        """The entry holding ``entry``'s tiles, when they have unsaved edits.
+    def _unsaved_owners(self, entry: Entry) -> list[Entry]:
+        """The entries holding ``entry``'s bytes, where those have unsaved edits.
 
-        None for everything that is not a tilemap with a painted-on bank: a
-        pixel entry owns its own art (:meth:`~...session.SessionMixin.
-        _tile_bank_owner` answers with the entry itself there), an unbound map
-        has no bank at all, and one whose bank is clean has nothing that needs
-        writing — a map may be opened, its cells edited and written a dozen times
-        without anybody having touched a tile.
+        Empty for everything that is not a tilemap with a painted-on bank, or a
+        composite with a painted-on piece: a pixel entry owns its own art
+        (:meth:`~...session.SessionMixin._tile_bank_owner` answers with the entry
+        itself there), an unbound map has no bank at all, and one whose bank is
+        clean has nothing that needs writing — a map may be opened, its cells
+        edited and written a dozen times without anybody having touched a tile.
+
+        A **list** because a composite view has as many owners as it has pieces,
+        and one stroke can cross two of them. A map bound to one reaches them the
+        same way: its bank is the composite, and the composite's own answer is
+        its pieces.
+
+        "Owners" rather than "tile sources", though a bound map is the commonest
+        way to get here: :class:`~celpix.project.workspace.TileSource` is a
+        specific thing in this codebase — a map's binding — and a composite's
+        pieces are not one (``docs/design/composite-entry.md``). What these all
+        have in common is owning bytes somebody else is showing.
 
         The **pixel** flag alone, which is the one a deposit sets. A palette edit
         made while looking at the map dirties the map's own entry, so a bank
@@ -168,9 +187,31 @@ class WritingMixin:
         when they go back to it.
         """
         owner = self._tile_bank_owner(entry)
-        if owner is None or owner is entry or owner.doc is None:
-            return None
-        return owner if owner.pixel_dirty else None
+        if owner is None:
+            return []
+        if owner.kind is EntryKind.COMPOSITE:
+            return self._dirty_composite_pieces(owner)
+        if owner is entry or owner.doc is None:
+            return []
+        return [owner] if owner.pixel_dirty else []
+
+    def _dirty_composite_pieces(self, entry: Entry) -> list[Entry]:
+        """``entry``'s source pieces with unsaved pixel edits, each named once.
+
+        Where a composite's Write actually goes. A piece may appear twice in one
+        composite — the same slice used at two places in a window is an ordinary
+        thing to want — and writing it twice would be one redundant round trip through
+        its container, so the run of pieces is reduced to the set of entries
+        behind it.
+        """
+        out: list[Entry] = []
+        for piece in entry.pieces:
+            source = piece.entry
+            if source is None or not source.pixel_dirty or source.doc is None:
+                continue
+            if not any(seen is source for seen in out):
+                out.append(source)
+        return out
 
     def _write_all(self) -> None:
         """File ▸ Write All: every entry with unsaved in-memory changes."""
@@ -184,6 +225,23 @@ class WritingMixin:
     def _write_entry_checked(self, entry: Entry) -> None:
         """The files dock's context-menu Write - guards, then writes."""
         if entry.doc is None:
+            return
+        if entry.kind is EntryKind.COMPOSITE:
+            # A composite has no file of its own, so "write it" means write the
+            # pieces its edits were deposited into. Reporting it as view-only
+            # would be true of the assembled buffer and false of everything the
+            # user did to it (``docs/design/composite-entry.md``).
+            written = [
+                piece.name
+                for piece in self._dirty_composite_pieces(entry)
+                if self._write_entry(piece)
+            ]
+            self.statusBar().showMessage(
+                f"Wrote {_and_list(written)}."
+                if written
+                else f"{entry.name} is assembled from other entries, and none of "
+                "them has unsaved changes."
+            )
             return
         # A PALETTE entry writes its own .pal (its pixel half is inert); every
         # other entry writes its graphic, which is view-only when any stage it
@@ -314,7 +372,7 @@ class WritingMixin:
         parent.pending_folds.clear()
         return folded
 
-    def _propagate_pixel_edit(self, entry: Entry, owner_revision: int) -> None:
+    def _propagate_pixel_edit(self, entry: Entry) -> None:
         """Carry a pixel edit across the file/slice boundary **as it lands**.
 
         The file's buffer is the authority for its bytes, so an edit made
@@ -322,14 +380,21 @@ class WritingMixin:
         write time. That is what keeps the two from racing: the parent then
         holds every unsaved change to the region, so a later edit made *on* the
         parent composes on top of them instead of being reverted by a stale
-        slice window folded in behind it. Its revision is stamped alongside -
-        the file has unsaved changes, and both rows say so; writing either
-        clears both, because it is one set of bytes.
+        slice window folded in behind it.
 
         Editing the parent goes the other way: every slice cache is dropped, the
         **dirty ones included**. Dropping those is safe only because of the fold
         above - their edits are already in this buffer, so re-deriving from it
         loses nothing and picks up what was just edited besides.
+
+        The parent's unsaved-state token is **not** stamped here. The file does
+        have unsaved changes and both rows do say so, but which token it takes is
+        the command's answer rather than this one's: an undo has to hand the
+        parent back the exact state it was in before, which only the push site
+        saw (:meth:`~...tile_bytes.TileBytesMixin._apply_pixel_bytes`). Splitting
+        the two is what let one edit acquire *several* owners — a composite's
+        pieces — without this method having to know how many
+        (``docs/design/composite-entry.md``).
         """
         if entry.kind is EntryKind.SLICE:
             parent = self._workspace.find_file(entry.path)
@@ -348,7 +413,6 @@ class WritingMixin:
             # is dirty would strand the edit in the parent's buffer after it had
             # been undone in the slice's.
             parent.pending_folds.add(entry)
-            self._workspace.set_pixel_revision(parent, owner_revision)
             self._drop_bound_copies(parent)
             self._files_panel.refresh_entry(parent)
         elif entry.kind is EntryKind.FILE:

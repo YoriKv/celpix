@@ -94,6 +94,43 @@ def test_a_pair_code_is_preferred_over_the_letters_it_stands_for() -> None:
     assert list(alphabet.encode("th").codes) == [0x20]
 
 
+def test_a_pair_at_the_very_end_of_the_string_is_still_matched_whole() -> None:
+    """The longest match is probed by width, and the last one has no room to spare.
+
+    :meth:`FontAlphabet._longest_text` asks for the widest spelling first and
+    lets the slice truncate at the end of the string, so a pair sitting on the
+    final characters is answered by a probe wider than the text left. It has to
+    come back as the pair all the same - a font that spent two codes on the last
+    two letters of a fixed-size region is a string that no longer fits it.
+    """
+    alphabet = FontAlphabet(
+        [*sequential(0, "AB"), Glyph(0x20, "th"), Glyph(0x21, "the")]
+    )
+    assert list(alphabet.encode("Ath").codes) == [0, 0x20]
+    assert list(alphabet.encode("Athe").codes) == [0, 0x21]
+    # And one character short of the widest spelling, where the probe truncates
+    # to a *shorter* glyph that does match.
+    assert list(alphabet.encode("th").codes) == [0x20]
+
+
+def test_encoding_a_second_string_does_not_answer_with_the_first() -> None:
+    """The alphabet keeps its last answer, and it is keyed on what was asked.
+
+    One edit asks :meth:`FontAlphabet.encode` the same question several times
+    over - the budget readout, the write, the readout again - so the answer is
+    kept. Two different strings must still get two answers, in either order and
+    however many times each is asked.
+    """
+    alphabet = _alphabet()
+    first = list(alphabet.encode("AB").codes)
+    second = list(alphabet.encode("CD").codes)
+    assert first == [0, 1]
+    assert second == [2, 3]
+    assert list(alphabet.encode("AB").codes) == first
+    assert list(alphabet.encode("").codes) == []
+    assert list(alphabet.encode("CD").codes) == second
+
+
 def test_what_the_font_cannot_say_is_reported_and_costs_a_blank_cell() -> None:
     """Unknown characters come back as a list, in order and without repeats - and
     each still spends the cell it was typed into.
@@ -134,6 +171,41 @@ def test_a_newline_with_no_break_code_is_reported_and_costs_nothing() -> None:
 
     assert encoded.unknown == ("\\n",)
     assert encoded.codes == (0, 1)
+
+
+def test_a_spelling_of_several_characters_is_a_dictionary_glyph() -> None:
+    """``text`` and ``dict`` are one fact said twice, so the model settles it.
+
+    Nothing downstream could ask ``role is DICT`` if a caller were free to
+    declare a three-character glyph ``text`` — the picture branches on that role
+    (``docs/design/fontmap-entry.md`` §5), and a role free to contradict its own
+    spelling is a branch taken on a coin toss. Both directions, because a role
+    picked in the editor is as much a claim as one read out of a file.
+    """
+    assert Glyph(0xE3, "you").role is GlyphRole.DICT
+    assert Glyph(0xE3, "you", GlyphRole.TEXT).role is GlyphRole.DICT
+    assert Glyph(0x00, "A", GlyphRole.DICT).role is GlyphRole.TEXT
+    # And the punctuating roles are left alone: a name is a name however long.
+    assert Glyph(0xFE, "line-break", GlyphRole.BREAK).role is GlyphRole.BREAK
+
+
+def test_a_dictionary_code_spells_out_into_its_characters_own_codes() -> None:
+    """What the picture needs from a code the sheet has no tile for.
+
+    Through the alphabet rather than at tiles directly, so the answer follows the
+    run's origin; and **nothing at all** where one character of it cannot be
+    spelled, since a word drawn with a letter missing from the middle is worse
+    than the cell nobody has explained yet.
+    """
+    alphabet = FontAlphabet([*sequential(0, "you"), Glyph(0xE3, "you")])
+    assert alphabet.has_dictionary
+    assert alphabet.spelling(0xE3) == (0, 1, 2)
+    assert alphabet.spelling(0) == ()  # a letter spells only itself
+    assert alphabet.spelling(0x77) == ()  # and a code nothing has named, nothing
+
+    missing = FontAlphabet([*sequential(0, "yo"), Glyph(0xE3, "you")])
+    assert missing.spelling(0xE3) == ()
+    assert not FontAlphabet(sequential(0, "you")).has_dictionary
 
 
 def test_the_stream_controls_win_over_the_fonts_letters() -> None:
@@ -493,6 +565,78 @@ def test_a_named_code_reads_as_its_name_and_types_back() -> None:
     assert alphabet.encode("[$2A]").codes == (0x2A,)
     # And the insert row writes whichever form round-trips.
     assert alphabet.token(Glyph(0x2A, "wait", GlyphRole.CONTROL)) == "[wait]"
+
+
+def _commanding() -> FontAlphabet:
+    """A font whose `speed` reads the cell after it and whose `window` reads two."""
+    return FontAlphabet(
+        [
+            *sequential(0, "ABCDE"),
+            Glyph(0x7A, "speed", GlyphRole.CONTROL, params=1),
+            Glyph(0x6B, "window", GlyphRole.CONTROL, params=2),
+            Glyph(0xFF, "end", GlyphRole.CONTROL),
+        ]
+    )
+
+
+def test_a_command_swallows_the_cells_it_declared_and_types_them_back() -> None:
+    """A parameter is a cell of the stream that is *not* a character.
+
+    Without the declaration the byte after `[speed]` reads as whatever letter it
+    happens to draw - `[speed]A` for speed $00 - which is honest and unreadable.
+    With it the pair reads as one thing and still types back to both cells.
+    """
+    alphabet = _commanding()
+
+    text = alphabet.decode([0x7A, 0x00, 0x01, 0x6B, 0x02, 0x03, 0xFF])
+    assert text.body == "[speed, $00]B[window, $02, $03][end]"
+    written = alphabet.encode(text.body).codes
+    assert written == (0x7A, 0x00, 0x01, 0x6B, 0x02, 0x03, 0xFF)
+
+    # Every character of the token belongs to the **command's** cell, operands
+    # included: it is one thing to type over, and a caret between a command and
+    # its operand would be a caret on half a piece.
+    assert set(text.positions[: len("[speed, $00]")]) == {0}
+    # A command with nothing left to swallow still reads, and still types back.
+    tail = alphabet.decode([0x00, 0x7A]).body
+    assert tail == "A[speed]"
+    assert alphabet.encode(tail).codes == (0x00, 0x7A)
+
+
+def test_an_operand_that_is_not_a_value_is_reported_rather_than_half_written() -> None:
+    """The one mistake a text form cannot show: a command eating the wrong byte.
+
+    Writing `[speed` and then giving up on `, X]` would put the command in the
+    stream with whatever followed it as its operand, and nothing on screen would
+    say so. So the token is read whole or handed back as unspellable.
+    """
+    alphabet = _commanding()
+
+    written = alphabet.encode("A[speed, X]B")
+    assert written.unknown == ("[speed, X]",)
+    # One blank cell where the token was, so nothing after it slides left.
+    assert written.codes == (0x00, alphabet.blank, 0x01)
+
+    # The count itself is not policed: a user mid-edit is owed the cells the
+    # string says, not the cells the table expected.
+    assert alphabet.encode("[speed, $01, $02]").codes == (0x7A, 0x01, 0x02)
+
+
+def test_a_commands_operand_count_travels_in_the_table_form() -> None:
+    """`7A=[speed, 1]` - the count beside the name, where a font table is kept.
+
+    The value varies per occurrence and lives in the stream; the *count* is a
+    property of the code and is the only thing a table can state.
+    """
+    (glyph,) = parse_table("7A=[speed, 1]")
+    assert glyph == Glyph(0x7A, "speed", GlyphRole.CONTROL, params=1)
+    # A comma that is not a count is part of the name, hyphenated like any other
+    # loose spelling rather than read as a declaration.
+    assert parse_table("7A=[wait, then go]")[0].params == 0
+
+    # And the insert row writes a token that round-trips: zeroed operands, since
+    # nothing can know what the user wants in one.
+    assert FontAlphabet([glyph]).token(glyph) == "[speed, $00]"
 
 
 def test_a_name_two_codes_share_falls_back_to_hex() -> None:

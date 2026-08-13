@@ -308,6 +308,7 @@ class FileListPanel(QWidget):
     container_info_requested = Signal(object)  # Entry (FILE/PALETTE) — what it read
     use_palette_requested = Signal(object)  # Entry (a PALETTE) — apply to the view
     edit_slice_requested = Signal(object)  # Entry (a SLICE) — edit its coordinates
+    edit_composite_requested = Signal(object)  # Entry (a COMPOSITE) — re-list it
     jump_to_source_requested = Signal(object)  # Entry (a SLICE) — show it in its parent
     jump_to_bookmark_requested = Signal(object)  # Entry (a BOOKMARK) — apply + jump
     bookmark_as_palette_requested = Signal(object)  # Entry (BOOKMARK) — offset palette
@@ -1246,12 +1247,14 @@ class FileListPanel(QWidget):
         project, and duplicating one gives the project a second way in to bytes
         that were only ever written once.
 
-        **Duplicate is for the kinds that can appear twice**, which is a slice and
-        a bookmark. A file and a palette are identified by their path
-        (:meth:`~celpix.project.workspace.Workspace.find_file`), and a second row
-        over one file would be a second document over one buffer — two sets of
-        unsaved edits with one file underneath them. Cut and Copy stay live on all
-        four, since pasting *elsewhere* is exactly what that identity permits.
+        **Duplicate is for the kinds that can appear twice**: a slice, a
+        bookmark, and a composite view — the three whose identity is not a path
+        (a composite has none at all). A file and a palette are identified by
+        theirs (:meth:`~celpix.project.workspace.Workspace.find_file`), and a
+        second row over one file would be a second document over one buffer — two
+        sets of unsaved edits with one file underneath them. Cut and Copy stay
+        live on every kind, since pasting *elsewhere* is exactly what that
+        identity permits.
 
         The shortcuts are display-only here, like Remove's: a closed menu's action
         never fires, so these label the keys while the working bindings are the
@@ -1366,6 +1369,17 @@ class FileListPanel(QWidget):
             self._entry_action(menu, "&Edit…", self.edit_slice_requested.emit, entry)
             self._add_write_action(menu, entry)
             menu.addSeparator()
+        elif entry.kind is EntryKind.COMPOSITE:
+            # No New Slice and no Jump to Source: a composite has no file behind
+            # it, so there is neither a coordinate space to anchor a slice in nor
+            # a source to jump to (``docs/design/composite-entry.md``). Edit…
+            # re-lists its pieces, and Write goes out through them.
+            self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
+            self._entry_action(
+                menu, "&Edit…", self.edit_composite_requested.emit, entry
+            )
+            self._add_write_action(menu, entry)
+            menu.addSeparator()
         elif entry.kind is EntryKind.PALETTE:
             # The double-click action, discoverable.
             self._entry_action(
@@ -1410,7 +1424,7 @@ class FileListPanel(QWidget):
             menu.addSeparator()
         self._add_order_actions(menu, entry)
         self._add_clipboard_actions(menu, entry)
-        if entry.kind in (EntryKind.FILE, EntryKind.SLICE):
+        if entry.kind.has_document:
             # Import is the mirror of Export ▸ As PNG…, and lands the image at
             # the start of the entry. Unlike export it needs the entry on screen
             # (it is fitted to the view's palette and arrangement), so the window

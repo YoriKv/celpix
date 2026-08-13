@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.10 - unreleased
+
+- New composite views to model composite VRAM
+- Lots of fontmap work improvements and fixes
+
 ## v0.5.9 - 2026-08-12
 
 - More fontmap fixes

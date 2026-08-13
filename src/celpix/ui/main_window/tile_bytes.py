@@ -44,6 +44,7 @@ from celpix.core.tilerearrangement import (
 from celpix.pipeline import pipeline
 from celpix.project.workspace import (
     Entry,
+    EntryKind,
 )
 from celpix.ui.undo_commands import (
     PixelEditCommand,
@@ -254,20 +255,68 @@ class TileBytesMixin:
         """Push ``spans`` against ``source`` as one undoable edit, if they change it.
 
         The tail both write paths share — the pixel view's and a tilemap's — so
-        the two rules in it are stated once. An edit that would write back the
+        the three rules in it are stated once. An edit that would write back the
         bytes already there is **skipped rather than pushed**, so a redundant
-        paste does not clutter the history; and the *before* half of every region
-        is read from the buffer the splices will land in, which is not always the
-        document on screen (:meth:`_apply_bank_tile_edit`).
+        paste does not clutter the history; the *before* half of every region is
+        read from the buffer the splices will land in, which is not always the
+        document on screen (:meth:`_apply_bank_tile_edit`); and a **composite**'s
+        unowned bytes are dropped here (:meth:`_owned_regions`), which is the one
+        place both paths pass through and so the only place that refusal can be
+        made once.
         """
         regions = [
             (start, source[start : start + len(data)], data) for start, data in spans
         ]
         regions = [r for r in regions if r[1] != r[2]]
+        regions = self._owned_regions(entry, regions)
         if regions:
             self._push_command(
                 PixelEditCommand(self, entry, text, regions=regions, through=through)
             )
+
+    def _owned_regions(
+        self, entry: Entry, regions: list[tuple[int, bytes, bytes]]
+    ) -> list[tuple[int, bytes, bytes]]:
+        """``regions`` clipped to the bytes ``entry`` actually has an owner for.
+
+        Only a **composite** ever loses anything here: its buffer holds runs that
+        belong to no file — the blank pads standing for holes in the window being
+        reproduced, and any run whose source is closed or unreadable — and an
+        edit landing there has nowhere to be deposited
+        (``docs/design/composite-entry.md``). Keeping it would put pixels on
+        screen that the next reassembly silently takes away again, which is the
+        worst of the three possible behaviours.
+
+        So the stroke is refused over those bytes and lands everywhere else,
+        which is the rule a hidden stamp position already follows on the tilemap
+        side (``docs/design/tilemap-entry.md`` §6): the parts of a gesture that
+        can be honoured are, and the user is told about the parts that cannot.
+        Clipped rather than dropped whole, so a rectangle overlapping a pad edits
+        the tiles beside it instead of nothing at all.
+        """
+        if entry.kind is not EntryKind.COMPOSITE:
+            return regions
+        kept = [
+            (
+                first,
+                before[first - start : last - start],
+                after[first - start : last - start],
+            )
+            for start, before, after in regions
+            for _owner, _at, first, last in self._composite_runs(
+                entry, start, len(before)
+            )
+        ]
+        # Measured in **bytes**, not in regions: one region overlapping two runs
+        # comes back as two, so counting them would report a loss where there was
+        # none — and a region clipped at one end comes back as one, where
+        # comparing them pairwise would miss the loss entirely.
+        if sum(len(k[1]) for k in kept) != sum(len(r[1]) for r in regions):
+            self.statusBar().showMessage(
+                "Part of that edit fell on blank tiles this composite has no "
+                "source for, and was not applied."
+            )
+        return kept
 
     def _encode_spans(
         self, runs: list[tuple[int, list]], frame: dict | None = None
@@ -336,7 +385,7 @@ class TileBytesMixin:
         self,
         splices: list[tuple[int, bytes]],
         revision: int,
-        owner_revision: int = 0,
+        owners: tuple[tuple[Entry, int], ...] = (),
         *,
         entry: Entry,
     ) -> None:
@@ -350,8 +399,15 @@ class TileBytesMixin:
         *pixel* pathway makes the entry read dirty against what was last
         written, so an undo back to those bytes reports clean again.
 
-        The edit then crosses the file/slice boundary (
-        :meth:`_propagate_pixel_edit`), which is where ``owner_revision`` lands.
+        ``owners`` is the same token for **every other entry this one edit is
+        also an edit to**, paired with the entry it belongs on. There is more
+        than one because an edit can cross more than one boundary: a slice's
+        bytes are its parent's, and a **composite**'s are several other entries'
+        at once, so a stroke over an assembled run can land in two sources and
+        one of their parents (``docs/design/composite-entry.md``).
+        The list comes from the command rather than being re-derived here for the
+        reason ``entry`` does — an undo has to hand back the exact unsaved state
+        each side was in *before*, which only the push site saw.
 
         ``entry`` is **whose bytes these are**, which is not always the entry on
         screen: a pixel edit made through a tilemap lands in the tile bank the map
@@ -368,10 +424,169 @@ class TileBytesMixin:
         if entry.doc is None:
             return
         self._land_splices(entry.doc, splices)
-        self._workspace.set_pixel_revision(entry, revision)
-        self._propagate_pixel_edit(entry, owner_revision)
+        # A **composite** is never stamped: it owns no bytes, so it has no
+        # unsaved state of its own to record and nothing to write that would
+        # clear one (``docs/design/composite-entry.md`` §4). Its edit's unsaved
+        # state is entirely its pieces', which ``owners`` below carries — the
+        # same shape a tilemap already has, where the map reads clean and the
+        # bank it painted into reads dirty. Stamping it anyway left it listed by
+        # every "unsaved changes" prompt with no gesture able to satisfy them.
+        if entry.kind is not EntryKind.COMPOSITE:
+            self._workspace.set_pixel_revision(entry, revision)
+        for owner, owner_revision in owners:
+            self._workspace.set_pixel_revision(owner, owner_revision)
+        # The bytes reach the entries that own them before the structural half
+        # below: a composite's pieces are where its edit actually lives, and a
+        # piece that is a slice then owes its own parent a fold, which is what
+        # `_propagate_pixel_edit` on that piece records.
+        self._deposit_composite_edit(entry, splices)
+        self._propagate_pixel_edit(entry)
         self._resync_tile_bindings(entry, splices)
+        # Every composite assembled out of these bytes now holds a stale join of
+        # them. A composite is never a piece of another, so editing one rebuilds
+        # nothing here — its own pieces were seen to in the deposit above.
+        self._reassemble_composites([entry])
         self._refresh_view()
+
+    def _pixel_edit_owners(
+        self, entry: Entry, splices: list[tuple[int, bytes]]
+    ) -> tuple[Entry, ...]:
+        """Every *other* entry an edit to ``entry``'s bytes is also an edit to.
+
+        What :class:`~celpix.ui.undo_commands.PixelEditCommand` reads the before
+        revisions off, and in the same order it will stamp the after ones. Two
+        boundaries produce them, and they compose:
+
+        - a **slice**'s bytes live inside its parent's region, so the file has
+          unsaved changes too (``docs/design/slices-and-parents.md`` §3);
+        - a **composite** owns nothing at all, so every piece under the edited
+          regions is an owner — and a piece that is itself a slice brings its
+          parent along, which is the composing case.
+
+        Deliberately the entries an edit *lands* in rather than every entry that
+        can see it: a map drawing from a source shows the change but has no
+        unsaved state of its own to record (``docs/design/tilemap-entry.md`` §8.1).
+        """
+        out: list[Entry] = []
+
+        def add(candidate: Entry | None) -> None:
+            if candidate is not None and not any(e is candidate for e in out):
+                out.append(candidate)
+
+        if entry.kind is EntryKind.SLICE:
+            add(self._workspace.find_file(entry.path))
+        elif entry.kind is EntryKind.COMPOSITE:
+            for start, data in splices:
+                for owner, _at, _first, _last in self._composite_runs(
+                    entry, start, len(data)
+                ):
+                    add(owner)
+                    if owner.kind is EntryKind.SLICE:
+                        add(self._workspace.find_file(owner.path))
+        return tuple(out)
+
+    def _composite_runs(
+        self, entry: Entry, start: int, length: int
+    ) -> list[tuple[Entry, int, int, int]]:
+        """The owned pieces of composite ``entry`` that ``[start, start+length)``
+        crosses, as ``(owner, offset in owner, first, last)`` in composite bytes.
+
+        **The one place a composite position becomes an owner and an offset**, so
+        the gesture that is *refused* over unowned bytes (:meth:`_owned_regions`)
+        and the deposit that *lands* the rest (:meth:`_deposit_composite_edit`)
+        cannot disagree about which bytes those are. They did while it was written
+        twice: a run whose source failed to read was refused by neither and
+        deposited by neither, so the stroke stayed on screen, in the undo stack,
+        and vanished at the next reassembly.
+
+        The spans come off the entry, where the assembly that built the buffer
+        recorded them (:attr:`~celpix.project.workspace.Entry.piece_spans`) — so
+        they describe the bytes actually on screen rather than a re-derivation
+        from recorded lengths, and a composite with no document has none, which
+        reads as "nothing here is owned".
+
+        A run is owned only if its owner's document can also be *reached*: a span
+        says which entry the bytes came from, not whether that entry can still be
+        written into. Loading is attempted once here, which is the same load the
+        deposit needed anyway.
+
+        Empty for anything that is not a composite, which is what makes the calls
+        to it unconditional.
+        """
+        if entry.kind is not EntryKind.COMPOSITE:
+            return []
+        out: list[tuple[Entry, int, int, int]] = []
+        for span in entry.piece_spans:
+            owner = span.owner
+            if owner is None:
+                continue
+            first = max(start, span.start)
+            last = min(start + length, span.end)
+            if first >= last:
+                continue
+            if owner.doc is None:
+                self._load_entry(owner, quiet=True)
+            if owner.doc is None:
+                continue  # a run that cannot be written is a run nothing owns
+            out.append((owner, span.source_base + (first - span.start), first, last))
+        return out
+
+    def _deposit_composite_edit(
+        self, entry: Entry, splices: list[tuple[int, bytes]]
+    ) -> None:
+        """Put a composite's edit into the entries whose bytes it really is.
+
+        A composite's ``pixel_data`` is a *derived copy* of several entries', the
+        way a tilemap's is of one, so the same rule applies and for the same
+        reason: the copy is not what any save writes, so an edit that stopped here
+        would be lost at the next reassembly. Each piece takes its own share
+        (:meth:`_composite_runs`), and everything that follows from an edit to
+        that piece follows here too — its bank cache is patched, its own maps
+        re-sync, and a piece that is a **slice** records the fold it now owes its
+        parent (``docs/design/slices-and-parents.md`` §2).
+
+        **The same owner can hold more than one run**, which the composite's own
+        buffer does not learn from the deposit: one slice used at two places in a
+        tile window is an ordinary thing to want, and splicing into the owner
+        leaves the *other* run on screen showing the bytes it had. So each landed
+        edit is mirrored into every other run of the same owner that covers it —
+        the composite's twin of :meth:`~...session.SessionMixin.
+        _resync_tile_bindings`, which does this for the maps drawing from it.
+
+        The revisions are not stamped here: they came off the command
+        (:meth:`_apply_pixel_bytes`), so an undo hands each side back the exact
+        unsaved state it had rather than a fresh token.
+        """
+        for start, data in splices:
+            for owner, at, first, last in self._composite_runs(entry, start, len(data)):
+                cut = data[first - start : last - start]
+                self._land_splices(owner.doc, [(at, cut)])
+                self._propagate_pixel_edit(owner)
+                self._resync_tile_bindings(owner, [(at, cut)])
+                # Every *other* composite sharing this piece is now stale; this
+                # one holds the edit already and keeps its buffer.
+                self._reassemble_composites([owner], keep=entry)
+                self._mirror_shared_runs(entry, owner, at, cut, skip=first)
+
+    def _mirror_shared_runs(
+        self, entry: Entry, owner: Entry, at: int, data: bytes, *, skip: int
+    ) -> None:
+        """Show a landed edit in this composite's *other* runs of ``owner``.
+
+        ``at`` is where the bytes went in the owner; ``skip`` is the run that
+        already has them. Any other run of the same owner whose source range
+        covers ``at`` is showing those bytes at a different composite position, so
+        it is spliced there too — otherwise half a tile window updates and half
+        does not, and which half depends on where the user happened to draw.
+        """
+        for span in entry.piece_spans:
+            if span.owner is not owner or span.start == skip:
+                continue
+            begin = span.source_base
+            overlap_at = at - begin
+            if 0 <= overlap_at < span.length:
+                room = min(len(data), span.length - overlap_at)
+                self._land_splices(entry.doc, [(span.start + overlap_at, data[:room])])
 
     def _land_splices(self, doc, splices: list[tuple[int, bytes]]) -> None:  # noqa: ANN001 — a Document
         """Put ``splices`` into ``doc``'s bytes and into everything derived from them.

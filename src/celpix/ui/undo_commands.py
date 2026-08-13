@@ -61,6 +61,7 @@ from celpix.project.workspace import (
     SliceParams,
     TileSource,
 )
+from celpix.ui.composite_dialog import CompositeParams
 from celpix.ui.container_dialog import ContainerEdit
 
 if TYPE_CHECKING:
@@ -676,38 +677,42 @@ class PixelEditCommand(_EditModeCommand):
         # The data pathway's revision on either side of this command, so an
         # undo hands the entry back the exact unsaved-state it had before.
         #
-        # A slice's bytes live inside its parent's region, so an edit to one is
-        # an edit to that file: it is folded into the parent's buffer as it
-        # lands (``_propagate_pixel_edit``) and the file carries the unsaved
-        # state too. That revision therefore has to travel through undo as well,
-        # exactly as a color edit inside a reordered region carries its owner's
-        # (:class:`ColorEditCommand`). The *after* token is shared - one edit,
-        # one state - while the *before* pair differs, since the parent may have
-        # been at an unsaved state of its own before this command.
-        owner = (
-            window._workspace.find_file(entry.path)
-            if entry.kind is EntryKind.SLICE
-            else None
-        )
+        # An edit is often an edit to more than one entry, so the second half is
+        # a **list** of them. A slice's bytes live inside its parent's region, so
+        # an edit to one is an edit to that file: it is folded into the parent's
+        # buffer as it lands (``_propagate_pixel_edit``) and the file carries the
+        # unsaved state too — exactly as a color edit inside a reordered region
+        # carries its owner's (:class:`ColorEditCommand`). A **composite** owns no
+        # bytes at all, so every piece the regions cross is such an owner, and a
+        # piece that is itself a slice brings its parent as well
+        # (``docs/design/composite-entry.md``).
+        #
+        # The *after* token is shared — one edit, one state — while each *before*
+        # differs, since any of those entries may have been at an unsaved state
+        # of its own before this command.
+        splices = [(start, before) for start, before, _after in regions]
+        owners = window._pixel_edit_owners(entry, splices)
         after_revision = window._workspace.next_revision()
         super().__init__(
             window,
             entry,
             text,
             (
-                [(start, before) for start, before, _after in regions],
+                splices,
                 entry.pixel_revision,
-                owner.pixel_revision if owner is not None else 0,
+                tuple((owner, owner.pixel_revision) for owner in owners),
             ),
             (
                 [(start, after) for start, _before, after in regions],
                 after_revision,
-                after_revision,
+                tuple((owner, after_revision) for owner in owners),
             ),
             through=through,
         )
 
-    def _apply(self, state: tuple[list[tuple[int, bytes]], int, int]) -> None:
+    def _apply(
+        self, state: tuple[list[tuple[int, bytes]], int, tuple[tuple[Entry, int], ...]]
+    ) -> None:
         """Land every splice, as one refresh.
 
         The regions are disjoint (the push site merges anything that touches),
@@ -852,6 +857,34 @@ class SliceEditCommand(_InPlaceCommand):
 
     def _apply(self, state: SliceParams) -> None:
         self._window._apply_slice_params(self._entry, state)
+
+
+class CompositeEditCommand(_InPlaceCommand):
+    """Re-listing a composite's pieces (its name and the runs it assembles).
+
+    The composite twin of :class:`SliceEditCommand`, and the same shape for the
+    same reason: what changed is which bytes arrive, so undo puts the list back
+    and re-assembles. It is *cheaper* to undo than a slice edit is, because a
+    composite has nothing unsaved of its own to lose — every edit made on one was
+    deposited into its pieces as it landed, and those entries keep it across any
+    number of re-assemblies (``docs/design/composite-entry.md``).
+
+    Applied in place; a composite that is not on screen re-assembles on its next
+    activation.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        *,
+        before: CompositeParams,
+        after: CompositeParams,
+    ) -> None:
+        super().__init__(window, entry, f'edit composite "{after.name}"', before, after)
+
+    def _apply(self, state: CompositeParams) -> None:
+        self._window._apply_composite_params(self._entry, state)
 
 
 class ContainerEditCommand(_InPlaceCommand):

@@ -283,6 +283,23 @@ def _container_info_never_blocks(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _composite_dialog_never_blocks(monkeypatch):
+    """Make the composite dialog's ``exec()`` return Rejected instead of blocking.
+
+    Reachable by triggering File ▸ New Composite View… or a composite's Edit…,
+    and the same rule as :func:`_container_dialog_never_blocks`: offscreen,
+    ``exec()`` never returns. Rejected is the safe default — the caller reads it
+    as a cancel and adds nothing — while construction still happens, so a test
+    can build the dialog and assert on the list it laid out. Guarded like
+    :func:`captured_alerts` so headless suites stay Qt-free.
+    """
+    module = sys.modules.get("celpix.ui.composite_dialog")
+    if module is None:
+        return
+    monkeypatch.setattr(module.CompositeDialog, "exec", lambda self: 0, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def opened_menus(monkeypatch):
     """Record context menus instead of popping them up, for every test.
 

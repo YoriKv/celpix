@@ -35,6 +35,8 @@ from PySide6.QtWidgets import (
 
 from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.document import Document, ViewOptions
+from celpix.core.errors import PipelineError
+from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.pipeline import inspect_container
 from celpix.plugins.base import NO_COMPRESSION, FileRef
@@ -50,7 +52,9 @@ from celpix.project.workspace import (
     EntrySession,
     PaletteSource,
     SliceParams,
+    composite_preset_id,
     missing_paths,
+    new_composite,
     palette_source_for,
     path_is_palette_only,
     relocate_path,
@@ -58,11 +62,13 @@ from celpix.project.workspace import (
     retarget_files,
     slice_of,
 )
+from celpix.ui.composite_dialog import CompositeDialog, CompositeParams
 from celpix.ui.container_dialog import ContainerDialog, ContainerEdit
 from celpix.ui.container_info_dialog import ContainerInfoDialog
 from celpix.ui.slice_dialog import SliceDialog
 from celpix.ui.undo_commands import (
     AddEntryCommand,
+    CompositeEditCommand,
     ContainerEditCommand,
     PaletteConsumerLink,
     RemoveEntriesCommand,
@@ -748,6 +754,118 @@ class EntriesMixin:
             length=end - start,
         )
 
+    def _new_composite(self) -> None:
+        """File ▸ New Composite View…: assemble a tile source out of open entries.
+
+        The tile window a converted console tilemap actually indexes: one flat
+        index space filled from several files, which is what the hardware had in
+        VRAM and what no single file holds (``docs/design/composite-entry.md``).
+
+        Created through an ``AddEntryCommand`` like every other interactive add,
+        so it can be undone — and so the *same object* comes back on redo, which
+        every piece of every other composite and every tilemap binding names.
+        """
+        entry = new_composite("")
+        params = CompositeDialog.get_composite(
+            self,
+            entry=entry,
+            candidates=list(self._workspace.entries),
+            tile_bytes=self._composite_tile_bytes(entry),
+            name=self._unused_composite_name(),
+        )
+        if params is None:
+            return
+        entry.name = params.name
+        entry.pieces = params.pieces
+        self._push_command(
+            AddEntryCommand(self, entry, f'new composite "{entry.name}"')
+        )
+
+    def _unused_composite_name(self) -> str:
+        """``Composite``, ``Composite 2``, … — the first the list has not got.
+
+        A composite has no file to be named after, so it needs one made up; two
+        rows called the same thing in the same section is the confusion this
+        avoids. Only a starting point — the user renames it in the dialog or in
+        the list, and nothing keeps the numbering true afterwards.
+        """
+        taken = {e.name for e in self._workspace.entries}
+        if "Composite" not in taken:
+            return "Composite"
+        return next(
+            f"Composite {n}"
+            for n in range(2, len(taken) + 3)
+            if f"Composite {n}" not in taken
+        )
+
+    def _composite_tile_bytes(self, entry: Entry) -> int:
+        """One tile's size in the format ``entry`` is *read* at.
+
+        The dialog states each run's position twice — as a byte and as a tile —
+        and this is what converts between them. The entry's **own** format, not
+        its first source's: those differ exactly where the feature is most used,
+        since a tile window assembled from 4bpp banks is routinely read at 2bpp,
+        and taking the source's would print a tile column off by a factor of two
+        against the view the user is checking it against.
+
+        Falls back to the seed for an entry with no session yet, which is a
+        composite being created — it has no sources to disagree with either. A
+        format this build hasn't got costs the reader that one column rather than
+        the dialog.
+        """
+        session = entry.session
+        preset = (
+            session.pixel_preset_id
+            if session is not None
+            else composite_preset_id(entry, self._registry)
+        )
+        try:
+            return pipeline.pixel_tile_bytes(preset, self._registry)
+        except PipelineError:
+            return 0
+
+    def _edit_composite(self, entry: Entry) -> None:
+        """The files dock's Edit… on a composite — re-list its pieces in place.
+
+        No unsaved-changes warning, unlike :meth:`_edit_slice`: a composite holds
+        no edits of its own to discard. Anything painted through it is already in
+        the pieces, and stays there however the list is rearranged.
+        """
+        if entry.kind is not EntryKind.COMPOSITE:
+            return
+        before = CompositeParams(entry.name, entry.pieces)
+        params = CompositeDialog.get_composite(
+            self,
+            entry=entry,
+            candidates=list(self._workspace.entries),
+            tile_bytes=self._composite_tile_bytes(entry),
+            name=entry.name,
+            pieces=entry.pieces,
+            title="Edit Composite View",
+        )
+        if params is None or params == before:
+            return  # cancelled, or OK'd unchanged - nothing to undo
+        self._push_command(
+            CompositeEditCommand(self, entry, before=before, after=params)
+        )
+
+    def _apply_composite_params(self, entry: Entry, params: CompositeParams) -> None:
+        """Re-list a composite's pieces and re-assemble — the application path
+        for composite edits and their undos.
+
+        The re-assembly is a plain re-read, and the maps drawing through the
+        composite are re-resolved after it: their tiles came out of the join that
+        has just changed shape, so leaving them would have them drawing the old
+        one indefinitely (:meth:`~...session.SessionMixin._reassemble_composites`).
+        """
+        entry.name = params.name
+        entry.pieces = params.pieces
+        if entry is self._workspace.current:
+            self._capture_session()
+        self._reassemble_composites([entry])
+        self._reresolve_bound_art(self._maps_drawing_from([entry]))
+        self._files_panel.refresh_entry(entry)
+
     def _edit_slice(self, entry: Entry) -> None:
         """The files dock's Edit… - rewrite a slice's coordinates in place.
 
@@ -1235,7 +1353,7 @@ class EntriesMixin:
         current = self._workspace.current
         anchored = (
             current is not None
-            and current.kind in (EntryKind.FILE, EntryKind.SLICE)
+            and current.kind.has_document
             and current.path == bookmark.path
         )
         if not anchored:

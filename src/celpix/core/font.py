@@ -50,6 +50,20 @@ the same bytes. A format whose commands are worth naming names them, and the nam
 reaches the user as a captioned button on the insert row rather than as syntax in
 the string.
 
+A code that spells **several characters** is a ``DICT`` glyph — a game's own
+compression table, a hundred codes standing for ``the``, ``you`` and ``ing ``
+above a font of 128 tiles. It reads and types exactly as the characters it
+spells, so it is not a case of its own here; what it adds is
+:meth:`FontAlphabet.spelling`, which is how the *picture* answers for a code the
+sheet has no tile for (``docs/design/fontmap-entry.md`` §5).
+
+A named code may also **swallow the cells after it** (:attr:`Glyph.params`),
+which is how a command with an argument stops reading as a command followed by a
+stray letter: ``[speed, $00]`` rather than ``[speed]A``. It is the same third
+case with its operands inside the brackets, opt-in per command, and a format that
+has said nothing about its commands is unchanged — the operand goes on reading as
+its own ``[$00]``, which is still correct and still types back to the same byte.
+
 **Nothing is ever dropped.** That is the same rule the cell model follows for a
 priority bit it cannot render: a field dropped on the way in is a field silently
 zeroed on the way out.
@@ -60,6 +74,7 @@ Qt-free, like the rest of ``core``.
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -113,6 +128,31 @@ _TOKEN_RE = re.compile(r"\[([^\[\]]*)\]")
 _HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
 
 
+def split_params(stated: str) -> tuple[str, int]:
+    """``speed, 1`` as the name and the cell count behind it.
+
+    The one spelling a command's operand count is written in, wherever a person
+    writes one: the table form's ``7A=[speed, 1]``, and the Text cell of the
+    alphabet editor's own table. Kept here beside :func:`spell_name` because
+    both are about what a *reader* types, and both have to be undone the same
+    way when it is written back.
+
+    ``(stated, 0)`` for anything that is not a name followed by a whole number
+    of cells — including a name that simply has a comma in it, which
+    :func:`spell_name` then hyphenates. A count is the only thing that may sit
+    there, so anything else is a name somebody wrote loosely rather than a
+    declaration, and reading it as one would silently make the command eat the
+    cell after it.
+    """
+    head, sep, tail = stated.rpartition(",")
+    if not sep:
+        return stated, 0
+    digits = tail.strip()
+    if not digits.isdigit():
+        return stated, 0
+    return head, int(digits)
+
+
 def spell_name(name: str) -> str:
     """``name`` as it may appear inside ``[...]`` — one word, no brackets.
 
@@ -128,28 +168,31 @@ def spell_name(name: str) -> str:
 class GlyphRole(str, Enum):
     """What one glyph *does* — which decides how it reads and who declares it.
 
-    Three, and no more, because there are only three answers a general reader can
-    give about a code: it spells something, it ends a line, or it is a command
-    this build has no business interpreting. A richer set would mean guessing at
-    one game's conventions and imposing them on every other.
+    Still only three answers a general reader can give about a code: it spells
+    something, it ends a line, or it is a command this build has no business
+    interpreting. A richer set would mean guessing at one game's conventions and
+    imposing them on every other. ``DICT`` is not a fourth answer — it is the
+    first one, said of a code that spells **more than one character**.
 
-    ``TEXT`` says what the *sheet* draws, which is legible off the art. ``BREAK``
-    and ``CONTROL`` say how the *stream* is punctuated, which is in the game's
-    code and in nobody's picture. All three sit on the font entry, so a font read
-    by two differently-punctuated streams is two entries over the same tiles.
+    ``TEXT`` and ``DICT`` say what the *sheet* draws, which is legible off the
+    art. ``BREAK`` and ``CONTROL`` say how the *stream* is punctuated, which is
+    in the game's code and in nobody's picture. All of them sit on the font
+    entry, so a font read by two differently-punctuated streams is two entries
+    over the same tiles.
 
     ``str``-valued so a preset states a role as itself and the on-disk spelling
     is the enum.
     """
 
-    TEXT = "text"  # types verbatim: "A", or a "th" pair one code stands for
+    TEXT = "text"  # types verbatim, one character: "A"
+    DICT = "dict"  # types verbatim, several: a "th" pair behind one code
     BREAK = "break"  # ends a line, and reads as a newline
     CONTROL = "control"  # anything the game acts on: reads as its own hex code
 
     @property
     def spells(self) -> bool:
         """Whether this role puts characters on screen rather than punctuating."""
-        return self is GlyphRole.TEXT
+        return self is GlyphRole.TEXT or self is GlyphRole.DICT
 
     @classmethod
     def parse(cls, value: object) -> GlyphRole:
@@ -174,28 +217,53 @@ class Glyph:
     which stays true across games — so each code is read on its own and the
     grouping, if it matters, is visible in the picture where it belongs.
 
-    ``text`` is what a ``TEXT`` glyph reads as, and it may be **several
+    ``text`` is what a glyph that spells reads as, and it may be **several
     characters**: that is what a code standing for a common pair is, and dropping
     it would cost the one compression trick fixed-size text regions actually use.
-    For the other two roles it is the **name**, and the name *is* what the string
-    holds — ``[line-break]`` — so it carries **no spaces**
+    For the punctuating roles it is the **name**, and the name *is* what the
+    string holds — ``[line-break]`` — so it carries **no spaces**
     (:func:`spell_name`): a token in a string is one word or it is two things to
     tell apart when a user retypes it.
+
+    **Spelling several characters is** ``DICT``, and the role is settled here
+    rather than trusted from the caller. The two are the same fact said twice —
+    a ``TEXT`` glyph is one character and a ``DICT`` glyph is a run of them — so
+    letting them disagree would mean a table that says one thing and a picture
+    that draws another. Normalizing at the one door every glyph comes through
+    (a project file, a table file, the alphabet editor, :func:`sequential`,
+    :meth:`FontAlphabet.shifted`'s ``replace``) is what makes
+    ``role is GlyphRole.DICT`` a question anything downstream may ask.
 
     ``description`` is the sentence behind that name — what the code does, in
     the tooltip on the insert row's button. It never reaches the string and it
     is the one field here a format author writes purely for a reader, which is
     why it is free-form where the name is not.
+
+    ``params`` is how many cells after this one the command **swallows** as its
+    own — ``[speed, $00]`` for a code that reads the next cell as a speed. Zero,
+    and every code stands alone, which is what a format that has said nothing
+    about its commands gets and is what most of them are. Declared per command
+    because that is where the fact lives: the count is a property of the one
+    code, not of the format, and a reader who has not worked one out leaves it
+    at zero and gets the operand as its own ``[$00]``, exactly as before.
+
+    It is meaningless on a glyph that spells, and ignored there: a character
+    consumes nothing.
     """
 
     code: int
     text: str
     role: GlyphRole = GlyphRole.TEXT
     description: str = ""
+    params: int = 0
 
     def __post_init__(self) -> None:
         if not self.text:
             raise ValueError(f"glyph at {self.code:#x} has no text")
+        if self.role.spells:
+            spelled = GlyphRole.DICT if len(self.text) > 1 else GlyphRole.TEXT
+            if spelled is not self.role:
+                object.__setattr__(self, "role", spelled)
 
     @property
     def spells(self) -> bool:
@@ -211,10 +279,14 @@ class Text:
     that character was decoded from. A hex code five characters wide maps all
     five to the one cell.
 
-    Kept per character rather than per glyph because of what reads it: the text
-    window turns a caret into a canvas selection, and a caret sits between
-    characters, not between glyphs. Deriving it from a glyph run at every
-    keystroke would be the same table built again on each cursor move.
+    Kept per character rather than per glyph because of what reads it: the two
+    views mirror each other's selection, and a caret sits between characters,
+    not between glyphs. Deriving it from a glyph run at every keystroke would be
+    the same table built again on each cursor move.
+
+    It is **nondecreasing** — the decode walks the cells in order and each one
+    contributes its characters in a run — which is what lets :meth:`offsets_of`
+    invert it by bisection rather than by scanning.
     """
 
     body: str
@@ -241,6 +313,24 @@ class Text:
         start = self.cell_at(first)
         stop = self.cell_at(max(first, last - 1)) + 1
         return start, max(stop, start + 1)
+
+    def offsets_of(self, start: int, stop: int) -> tuple[int, int]:
+        """The body range ``[first, last)`` the cells ``[start, stop)`` decoded to.
+
+        The inverse of :meth:`span_of`, and the direction a canvas selection
+        travels in: the user picked cells and the text has to show which
+        characters those are. A cell that read as a five-character hex code
+        contributes all five, which is what makes the two selections cover the
+        same thing rather than the same *length*.
+
+        Empty where the cells decoded to nothing — a range past the end of the
+        text — since :attr:`positions` is nondecreasing and both bisections land
+        in the same place.
+        """
+        return (
+            bisect_left(self.positions, start),
+            bisect_left(self.positions, stop),
+        )
 
 
 @dataclass(frozen=True)
@@ -303,8 +393,14 @@ class FontAlphabet:
         "_break",
         "_by_code",
         "_by_text",
+        "_dictionary",
+        "_encoded",
         "_glyphs",
         "_names",
+        "_params",
+        "_pieces",
+        "_spellings",
+        "_text_sizes",
         "code_digits",
         "flag_break",
     )
@@ -327,15 +423,51 @@ class FontAlphabet:
         # back to this one, so the second keeps its hex and says which byte it is
         # rather than claiming to be the first.
         self._names: dict[str, int] = {}
+        # How many cells each **command** swallows after itself, for the codes
+        # that swallow any (:attr:`Glyph.params`). Its own index rather than a
+        # field read off ``_by_code``, because :meth:`decode` asks it of every
+        # cell in the region and the answer is nothing for nearly all of them —
+        # an empty dict says so in one lookup.
+        self._params: dict[int, int] = {}
         self._break: Glyph | None = None
+        # Whether any code here stands for **several** characters at all, so the
+        # one caller that expands them can leave without a pass over the region
+        # (:meth:`spelling`). Nearly every font has no dictionary, and the
+        # question is asked of every fontmap drawn.
+        self._dictionary = False
         for glyph in self._glyphs:
             self._by_code.setdefault(glyph.code, glyph)
             if glyph.spells:
                 self._by_text.setdefault(glyph.text, glyph)
+                self._dictionary = self._dictionary or glyph.role is GlyphRole.DICT
             else:
                 self._names.setdefault(glyph.text, glyph.code)
+                if glyph.params > 0:
+                    self._params.setdefault(glyph.code, glyph.params)
             if glyph.role is GlyphRole.BREAK and self._break is None:
                 self._break = glyph
+        # The distinct spelling *widths*, longest first — what :meth:`_longest_text`
+        # probes instead of walking every glyph. A font is a hundred-odd glyphs and
+        # a text region is tens of thousands of characters, so a scan per character
+        # is the whole cost of encoding one; nearly every font has exactly one width
+        # and the probe is then a single dict lookup.
+        self._text_sizes: tuple[int, ...] = tuple(
+            sorted({len(text) for text in self._by_text}, reverse=True)
+        )
+        # One code's reading, remembered (:meth:`decode`). A text region draws tens
+        # of thousands of cells out of a hundred-odd codes, so the four-case
+        # decision below is the same handful of answers over and over. Safe to keep
+        # because an alphabet never changes after it is built — every operation on
+        # one (:meth:`merged`, :meth:`shifted`) returns a new object.
+        self._pieces: dict[int, str] = {}
+        # And one dictionary code's characters as codes of their own
+        # (:meth:`spelling`), remembered for the same reason: the answer depends
+        # on the code alone, and the caller asks it once per cell of a region.
+        self._spellings: dict[int, tuple[int, ...]] = {}
+        # And the last string encoded, for the same reason one reading over
+        # (:meth:`encode`). One entry: the callers are all asking about the string
+        # on screen right now, and a second would only ever hold the one before it.
+        self._encoded: tuple[str, EncodedText] | None = None
 
     # -- shape -------------------------------------------------------------
     @property
@@ -388,6 +520,59 @@ class FontAlphabet:
         """
         glyph = self._by_text.get(BLANK)
         return glyph.code if glyph is not None else 0
+
+    @property
+    def has_dictionary(self) -> bool:
+        """Whether any code here spells **several** characters — a ``DICT`` glyph.
+
+        The cheap guard in front of :meth:`spelling`, for the caller that has to
+        ask it of every cell on a map (:attr:`~celpix.core.document.Document.
+        laid_out_cells`). A font with no dictionary is nearly every font, and it
+        answers here in one attribute read rather than in a pass over the region.
+        """
+        return self._dictionary
+
+    def spelling(self, code: int) -> tuple[int, ...]:
+        """The codes that spell out what ``code`` says, one per character.
+
+        ``$E3 = "you"`` comes back as the codes for ``y``, ``o`` and ``u``. This
+        is the one thing a dictionary code needs that an ordinary one does not:
+        the sheet has no tile for it — a hundred-odd codes above a 128-tile font
+        are exactly the compression table, drawn by nothing — so the only honest
+        picture of that cell is the characters it stands for, each on its own
+        glyph (``docs/design/fontmap-entry.md`` §5).
+
+        **Empty for anything else**, which covers three cases the caller does not
+        have to tell apart: a code that is not a dictionary entry, one whose
+        characters this font cannot spell singly, and one nothing has named. In
+        all three there is nothing to draw it *as*, and the cell stays the one
+        cell it is — showing whatever tile its own code names, which is the
+        picture the file actually describes.
+
+        Nothing here recurses. A dictionary entry spells several characters and
+        each of them is looked up whole, so a piece can only ever be a one-
+        character glyph — which is by construction not a ``DICT``.
+        """
+        spelled = self._spellings.get(code)
+        if spelled is None:
+            spelled = self._spellings[code] = self._spell(code)
+        return spelled
+
+    def _spell(self, code: int) -> tuple[int, ...]:
+        """:meth:`spelling` without the memo — the lookup itself."""
+        glyph = self._by_code.get(code)
+        if glyph is None or glyph.role is not GlyphRole.DICT:
+            return ()
+        out: list[int] = []
+        for char in glyph.text:
+            piece = self._by_text.get(char)
+            if piece is None:
+                # One character the font cannot draw is the whole spelling gone:
+                # a partial run would put a word on the map with a letter missing
+                # from the middle of it and nothing saying which.
+                return ()
+            out.append(piece.code)
+        return tuple(out)
 
     def __len__(self) -> int:
         return len(self._glyphs)
@@ -451,9 +636,26 @@ class FontAlphabet:
         )
 
     # -- matching ----------------------------------------------------------
+    def _hex(self, value: int) -> str:
+        """``value`` as it is written inside a token — ``$1F``, at this width."""
+        return f"${value:0{self.code_digits}X}"
+
     def hex_code(self, code: int) -> str:
         """``code`` as the ``[$1F]`` form — the reading that loses nothing."""
-        return f"[${code:0{self.code_digits}X}]"
+        return f"[{self._hex(code)}]"
+
+    def _head(self, code: int) -> str:
+        """What a token calls ``code`` — its name where that name is its own.
+
+        Hex otherwise, which covers both the code nobody has named and the one
+        whose name another code claimed first: a token has to type back to the
+        cell it came out of, and a borrowed name would type back to somebody
+        else's.
+        """
+        glyph = self._by_code.get(code)
+        if glyph is not None and self._names.get(glyph.text) == code:
+            return glyph.text
+        return self._hex(code)
 
     def token(self, glyph: Glyph) -> str:
         """How ``glyph`` is written in the text — its name, or its hex code.
@@ -462,10 +664,17 @@ class FontAlphabet:
         what :meth:`decode` would have put there and what :meth:`encode` reads
         back. A name that is not this code's — because another code claimed it
         first — falls back to hex rather than typing to the wrong cell.
+
+        A command that swallows cells is written **with them**, zeroed:
+        ``[speed, $00]``. The button has no way to know what the user wants in
+        an operand, and writing the command without its operands would leave a
+        code eating whatever character followed it.
         """
-        if self._names.get(glyph.text) == glyph.code:
-            return f"[{glyph.text}]"
-        return self.hex_code(glyph.code)
+        head = self._head(glyph.code)
+        takes = 0 if glyph.spells else self._params.get(glyph.code, 0)
+        if not takes:
+            return f"[{head}]"
+        return "[" + ", ".join([head, *([self._hex(0)] * takes)]) + "]"
 
     def ends_line(self, code: int, flagged: bool = False) -> bool:
         """Whether a cell holding ``code`` finishes a line, by either mechanism.
@@ -509,34 +718,83 @@ class FontAlphabet:
         end are one cell, which is exactly what such a format stores — so the
         newline shares that cell in :attr:`Text.positions` and a caret on it is a
         caret on the character it ends.
+
+        Each code's reading is worked out once and remembered
+        (:attr:`_pieces`): the four cases below depend on the code alone, and a
+        text region spends tens of thousands of cells on a hundred-odd of them.
         """
         body: list[str] = []
         positions: list[int] = []
-        for at, code in enumerate(codes):
-            glyph = self._by_code.get(code)
-            if glyph is None or not glyph.spells:
-                if glyph is not None and glyph is self._break:
-                    piece = "\n"
-                elif glyph is not None and self._names.get(glyph.text) == code:
-                    # Named, and the name is still unambiguously this code's —
-                    # two codes given the same name would both parse back to the
-                    # first, so the second keeps its hex rather than lying.
-                    piece = f"[{glyph.text}]"
-                else:
-                    piece = self.hex_code(code)
+        pieces = self._pieces
+        params = self._params
+        reading = self._reading
+        flags = () if ends_line is None else ends_line
+        flagged = len(flags)
+        total = len(codes)
+        at = 0
+        while at < total:
+            code = codes[at]
+            stop = at + 1
+            takes = params.get(code, 0)
+            if takes:
+                # Cut short at the end of the region rather than reaching past
+                # it: a command with nothing left to swallow is what a run of
+                # padding after a terminator looks like, and it still has to
+                # read as something that types back.
+                stop = min(total, stop + takes)
+                piece = self._commanding(code, codes[at + 1 : stop])
             else:
-                # ``[`` opens a code, so a font with one as a *letter* doubles it
-                # here or the string it decodes to will not parse back.
-                piece = glyph.text.replace("[", ESCAPE)
+                piece = pieces.get(code)
+                if piece is None:
+                    piece = pieces[code] = reading(code)
             # Guarded rather than appended blind: a break *code* that also
             # carries the bit already reads as a newline, and a second one would
             # invent a blank line the file has not got.
-            if ends_line is not None and at < len(ends_line) and ends_line[at]:
-                if not piece.endswith("\n"):
-                    piece += "\n"
+            ends = at < flagged and flags[at]
+            if takes and not ends:
+                # A swallowed cell's own bit is the command's, since the command
+                # is what the string shows: the line ends after the whole token.
+                ends = any(flags[k] for k in range(at + 1, min(stop, flagged)))
+            if ends and not piece.endswith("\n"):
+                piece += "\n"
             body.append(piece)
+            # Every character of a command's token belongs to the **command's**
+            # cell, operands included. The token is one thing to type over and
+            # one thing to delete, and a caret that could stand between a command
+            # and its operand would be a caret standing on half a piece.
             positions.extend([at] * len(piece))
+            at = stop
         return Text("".join(body), tuple(positions))
+
+    def _commanding(self, code: int, operands: Sequence[int]) -> str:
+        """One command and the cells it swallowed, as ``[speed, $00]``.
+
+        Not memoized where the other four cases are (:attr:`_pieces`), because
+        this is the one reading that depends on cells other than its own.
+        """
+        return (
+            "[" + ", ".join([self._head(code), *(self._hex(v) for v in operands)]) + "]"
+        )
+
+    def _reading(self, code: int) -> str:
+        """What one code reads as, before its cell's terminator bit is applied.
+
+        The four cases of :meth:`decode`, split out so they can be memoized per
+        code rather than re-decided per cell.
+        """
+        glyph = self._by_code.get(code)
+        if glyph is None or not glyph.spells:
+            if glyph is not None and glyph is self._break:
+                return "\n"
+            if glyph is not None and self._names.get(glyph.text) == code:
+                # Named, and the name is still unambiguously this code's — two
+                # codes given the same name would both parse back to the first,
+                # so the second keeps its hex rather than lying.
+                return f"[{glyph.text}]"
+            return self.hex_code(code)
+        # ``[`` opens a code, so a font with one as a *letter* doubles it here or
+        # the string it decodes to will not parse back.
+        return glyph.text.replace("[", ESCAPE)
 
     # -- encode ------------------------------------------------------------
     def encode(self, text: str) -> EncodedText:
@@ -567,7 +825,24 @@ class FontAlphabet:
         asking for is already spoken for, and setting it again would swallow a
         line break silently. A format that has *both* a flag and a break code
         falls back to the code, which is what makes a blank line expressible.
+
+        **The last answer is kept** (:attr:`_encoded`), because one edit asks
+        this of the same string several times over: the budget readout, the write
+        itself, and the readout again once the cells have come back. They are one
+        question with one answer, and on a region of tens of thousands of cells
+        each asking of it is a pass over the whole string. Safe to keep for the
+        reason :attr:`_pieces` is — an alphabet never changes after it is built —
+        and the hit costs one string comparison, which is a memcmp against a pass.
         """
+        cached = self._encoded
+        if cached is not None and cached[0] == text:
+            return cached[1]
+        encoded = self._encode(text)
+        self._encoded = (text, encoded)
+        return encoded
+
+    def _encode(self, text: str) -> EncodedText:
+        """:meth:`encode` without the memo — the pass itself."""
         out: list[int] = []
         ends: list[bool] = []
         unknown: list[str] = []
@@ -590,11 +865,30 @@ class FontAlphabet:
 
         at = 0
         total = len(text)
+        # An ordinary character is nearly the whole of a text region — tens of
+        # thousands of them against a handful of codes and breaks — so it is
+        # answered first and without leaving this frame. ``lookup`` is the whole
+        # match where every spelling is one code point, which is every font that
+        # has no pair glyph; the general probe is only reached when one has.
+        # Safe before the two branches below because both test the character this
+        # one has already ruled out.
+        by_text = self._by_text
+        lookup = by_text.get if self._text_sizes in ((), (1,)) else None
         while at < total:
             char = text[at]
+            if char != "[" and char != "\n":
+                glyph = lookup(char) if lookup else self._longest_text(text, at)
+                if glyph is None:
+                    miss(char)
+                    at += 1
+                    continue
+                out.append(glyph.code)
+                ends.append(False)
+                at += len(glyph.text)
+                continue
             if text.startswith(ESCAPE, at):
                 at += len(ESCAPE)
-                glyph = self._by_text.get("[")
+                glyph = by_text.get("[")
                 if glyph is None:
                     miss("[")
                 else:
@@ -612,6 +906,17 @@ class FontAlphabet:
                     at = found.end()
                     emit(self._names[inside])
                     continue
+                if found is not None and "," in inside:
+                    # A command and the cells it swallows. Read whole or not at
+                    # all: the operands are cells of their own, so a token half
+                    # of which parses would write a command with somebody else's
+                    # byte behind it.
+                    written = self._commanded(inside)
+                    if written is not None:
+                        at = found.end()
+                        for value in written:
+                            emit(value)
+                        continue
                 if found is None or not inside.startswith("$"):
                     # Not a code: an unclosed bracket, brackets around a name
                     # this font has not got, or brackets around something else.
@@ -635,14 +940,41 @@ class FontAlphabet:
                 else:
                     miss("\\n", cell=False)
                 continue
-            glyph = self._longest_text(text, at)
-            if glyph is None:
-                miss(char)
-                at += 1
-                continue
-            emit(glyph.code)
-            at += len(glyph.text)
         return EncodedText(tuple(out), tuple(unknown), tuple(ends))
+
+    def _commanded(self, inside: str) -> list[int] | None:
+        """``speed, $00`` as the cells it writes, or None where it is not that.
+
+        The inverse of :meth:`_commanding`, and deliberately strict: **None** for
+        anything that is not a head this alphabet can place followed by operands
+        that are all plain values. A token half of which parsed would put a
+        command in the stream with whatever came after it as its operand, which
+        is the one mistake a text format cannot show — so the whole token is
+        handed back to :meth:`_encode` to be reported instead.
+
+        The head may be a **name or a hex code**, since that is what
+        :meth:`_commanding` writes: a command whose name another code claimed
+        first still reads and types back, as ``[$7A, $00]``.
+
+        The operand count is **not** checked against what the command declared.
+        A user editing one is mid-thought, the declaration is somebody's reading
+        of the format rather than a fact the file states, and the honest thing is
+        to write the cells the string actually says.
+        """
+        head, _, rest = inside.partition(",")
+        head = head.strip()
+        code = self._names.get(head)
+        if code is None:
+            if not head.startswith("$") or not _HEX_RE.match(head[1:]):
+                return None
+            code = int(head[1:], 16)
+        out = [code]
+        for part in rest.split(","):
+            value = part.strip()
+            if not value.startswith("$") or not _HEX_RE.match(value[1:]):
+                return None
+            out.append(int(value[1:], 16))
+        return out
 
     def _longest_text(self, text: str, at: int) -> Glyph | None:
         """The verbatim glyph at ``text[at]``, preferring the longest spelling.
@@ -650,14 +982,23 @@ class FontAlphabet:
         Longest first so a format with a code for a common pair uses it rather
         than spending two codes on the letters — which is the whole point of
         having one, and the difference between a string fitting its slot and not.
+
+        Probed by the **widths a font actually spells** (:attr:`_text_sizes`)
+        rather than by walking every glyph, because this is asked once per
+        character of the string: a scan over a hundred-odd glyphs per character
+        is what a region of thirty thousand cells pays it in, and a slice
+        lookup per distinct width is the same answer for a fraction of it.
+
+        A probe near the end of the string is **truncated** by the slice and can
+        answer at a wider size than it asked for — but only with a glyph whose
+        whole spelling is there, which is the same glyph the scan would have
+        found, since no longer one could have matched in the characters left.
         """
-        best: Glyph | None = None
-        for glyph in self._by_text.values():
-            if len(glyph.text) > (len(best.text) if best else 0) and text.startswith(
-                glyph.text, at
-            ):
-                best = glyph
-        return best
+        for size in self._text_sizes:
+            glyph = self._by_text.get(text[at : at + size])
+            if glyph is not None:
+                return glyph
+        return None
 
 
 # -- typing over a decoded string -------------------------------------------
@@ -716,18 +1057,39 @@ def inside_code(body: str, at: int) -> bool:
     piece, and a piece is a cell.
 
     ``[[`` is a literal ``[`` and so is never "inside" anything.
+
+    Answered from the **nearest opener behind the caret** rather than by splitting
+    the whole string into pieces (:func:`unit_spans`). The pieces are disjoint and
+    in order, so only the last one can contain the caret or end on it — and this
+    is asked several times per keystroke, where a walk of the string ahead of the
+    caret is a cost that grows with the region while what it decides does not.
     """
-    for start, stop in unit_spans(body):
-        if start >= at:
-            break
-        if body[start] != "[" or body.startswith(ESCAPE, start):
-            continue
-        # One past a *closed* code is beside it; one past an unclosed one is the
-        # far end of the number being typed, which is where the digits go.
-        closed = body[stop - 1 : stop] == "]"
-        if start < at < stop or (not closed and at == stop):
-            return True
-    return False
+    if at <= 0:
+        return False
+    opener = body.rfind("[", 0, at)
+    if opener < 0:
+        return False
+    # ``[[`` pairs off from the *start* of a run of brackets, so which of them is
+    # a real opener is decided by the whole run and not by the one found above: an
+    # even run is escapes end to end, and an odd one opens a code on its last
+    # bracket. Read in both directions for that reason — the run may continue past
+    # the caret, and a real opener there is not behind it.
+    start = opener
+    while start > 0 and body[start - 1] == "[":
+        start -= 1
+    end = opener
+    while end + 1 < len(body) and body[end + 1] == "[":
+        end += 1
+    if (end - start) % 2 or end >= at:
+        return False
+    close = body.find("]", end + 1)
+    nested = body.find("[", end + 1)
+    if close >= 0 and (nested < 0 or close < nested):
+        return end < at < close + 1
+    # Unclosed: one past it is the far end of the number being typed, which is
+    # where the digits go — where one past a *closed* code is beside it.
+    stop = len(body) if nested < 0 else nested
+    return end < at <= stop
 
 
 def carried_break(body: str, units: Sequence[int], at: int) -> bool:
@@ -850,6 +1212,12 @@ def parse_table(text: str, *, order: str = "code-first") -> list[Glyph]:
     like any other command — what the name buys is a captioned button on the
     insert row instead of a number to remember.
 
+    A number after the name says how many cells it **swallows**:
+    ``7A=[speed, 1]`` is a command that reads the cell after it as its operand
+    (:attr:`Glyph.params`), and the string then shows the pair together as
+    ``[speed, $00]``. Only a count belongs there — what the operand *is* varies
+    per occurrence and is in the stream, not in the table.
+
     Lines that do not parse are **ignored rather than refused**: that is what
     lets a table carry comments, blank lines and an assembler's own directives
     without a syntax of its own.
@@ -870,9 +1238,12 @@ def parse_table(text: str, *, order: str = "code-first") -> list[Glyph]:
         if not spelling or not _HEX_RE.match(digits or ""):
             continue
         if spelling.startswith("[") and spelling.endswith("]") and len(spelling) > 2:
-            name = spell_name(spelling[1:-1])
+            name, params = split_params(spelling[1:-1])
+            name = spell_name(name)
             if name:
-                out.append(Glyph(int(digits, 16), name, GlyphRole.CONTROL))
+                out.append(
+                    Glyph(int(digits, 16), name, GlyphRole.CONTROL, params=params)
+                )
         else:
             out.append(Glyph(int(digits, 16), spelling))
     return out
@@ -901,6 +1272,12 @@ def glyphs_from_spec(spec: Iterable[dict]) -> list[Glyph]:
     A **name** is spelled to one word on the way in (:func:`spell_name`), since
     it is what a reader retypes inside ``[...]``. ``text`` is left exactly as
     written, because a character is whatever the sheet draws.
+
+    ``params`` is how many cells the command swallows (:attr:`Glyph.params`),
+    and a value that is not a whole number of them reads as none: an operand
+    count is a small integer or it is a line somebody mistyped, and a command
+    that swallows nothing is what every format gets before anybody says
+    otherwise.
     """
     out: list[Glyph] = []
     for entry in spec:
@@ -919,5 +1296,11 @@ def glyphs_from_spec(spec: Iterable[dict]) -> list[Glyph]:
             text = spell_name(text)
         if not text:
             continue
-        out.append(Glyph(code, text, role, str(entry.get("description", ""))))
+        try:
+            params = max(0, int(entry.get("params", 0)))
+        except (TypeError, ValueError):
+            params = 0
+        out.append(
+            Glyph(code, text, role, str(entry.get("description", "")), params=params)
+        )
     return out

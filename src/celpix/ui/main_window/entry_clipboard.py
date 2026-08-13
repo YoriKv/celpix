@@ -42,9 +42,20 @@ from celpix.ui.undo_commands import PasteEntriesCommand
 from celpix.ui.widgets import counted
 
 #: The two kinds that are a *window into* another file, and so the two a paste
-#: has to find a parent for. Also the two that may exist more than once, which is
-#: the same fact from the other side: they are identified by nothing.
+#: has to find a parent for.
 _CHILD_KINDS = (EntryKind.SLICE, EntryKind.BOOKMARK)
+
+#: The kinds that may exist more than once, because their identity is not a path.
+#: A superset of :data:`_CHILD_KINDS`, and the two were one list until a
+#: **composite** turned out to be the second without being the first: it is
+#: identified by nothing (its ``path`` is ``""``) and so may be pasted twice, but
+#: it is a window into no file and has no parent to be found for it.
+_MULTIPLE_KINDS = (*_CHILD_KINDS, EntryKind.COMPOSITE)
+
+#: The slot a **tile binding** is remembered under in :meth:`~EntryClipboardMixin.
+#: _live_bindings`, beside the numbered slots a composite's pieces use. Negative
+#: so it can never collide with a piece index.
+TILE_SLOT = -1
 
 
 def _rows_at(
@@ -88,27 +99,36 @@ class EntryClipboardMixin:
         )
         self.statusBar().showMessage(f"Copied {self._describe(copied)}.")
 
-    def _live_bindings(self, entries: list[Entry]) -> dict[int, Entry]:
-        """Each copied map's bound entry, under the record key it is written with.
+    def _live_bindings(self, entries: list[Entry]) -> dict[tuple[int, int], Entry]:
+        """Every entry a copied row points at, under the record key it is written
+        with.
 
-        The half of a copy that has to stay an **object**. A binding is held by
-        identity everywhere else in the editor for a stated reason — a position
-        "silently names a different entry the moment anything ahead of it is
-        closed or reordered" (:class:`~celpix.project.workspace.TileSource`) — and
-        a clipboard is precisely where that happens, since a copy outlives every
-        drag, close and open between it and the paste.
+        The half of a copy that has to stay an **object**. A reference to an entry
+        is held by identity everywhere else in the editor for a stated reason — a
+        position "silently names a different entry the moment anything ahead of it
+        is closed or reordered" (:class:`~celpix.project.workspace.TileSource`) —
+        and a clipboard is precisely where that happens, since a copy outlives
+        every drag, close and open between it and the paste.
 
-        The key is the copied entry's own position in the list at copy time, which
-        is what its record carries as ``source_index``: not a reference to
-        anything, just the join between the two halves of one payload.
+        The key is ``(position at copy time, slot)``. The position is what the
+        record carries as ``source_index`` — not a reference to anything, just the
+        join between the two halves of one payload. The **slot** distinguishes the
+        several references one row can hold: ``TILE_SLOT`` for a map's binding,
+        and the piece's own index for a composite, which points at one entry per
+        run rather than one in total.
         """
         positions = {id(e): i for i, e in enumerate(self._workspace.entries)}
-        bound = {}
+        bound: dict[tuple[int, int], Entry] = {}
         for entry in entries:
-            source = entry.tile_source
             at = positions.get(id(entry))
-            if source is not None and source.entry is not None and at is not None:
-                bound[at] = source.entry
+            if at is None:
+                continue
+            source = entry.tile_source
+            if source is not None and source.entry is not None:
+                bound[(at, TILE_SLOT)] = source.entry
+            for slot, piece in enumerate(entry.pieces):
+                if piece.entry is not None:
+                    bound[(at, slot)] = piece.entry
         return bound
 
     def _cut_entry(self, entry: Entry) -> None:
@@ -161,7 +181,7 @@ class EntryClipboardMixin:
         row's identity being its path is not obvious from looking at it, and
         Ctrl+D doing nothing at all would read as a bug.
         """
-        if entry.kind not in (EntryKind.SLICE, EntryKind.BOOKMARK):
+        if entry.kind not in _MULTIPLE_KINDS:
             what = "A file" if entry.kind is EntryKind.FILE else "A palette"
             self.statusBar().showMessage(
                 f"{what} can only be open once - copy it into another project "
@@ -239,12 +259,12 @@ class EntryClipboardMixin:
         for record in copied:
             entry = record.entry
             key = Workspace.path_key(entry.path)
-            if entry.kind not in _CHILD_KINDS:
+            if entry.kind not in _MULTIPLE_KINDS:
                 if _rows_at(pending, entry.path, (entry.kind,)):
                     skipped.append(entry.name)  # a file is its path; never twice
                     left_behind.add(key)
                     continue
-            else:
+            elif entry.kind in _CHILD_KINDS:
                 if key in left_behind:
                     continue
                 own = key in carried
@@ -271,7 +291,7 @@ class EntryClipboardMixin:
             return
         self._rebind_copies(copied, placed, bindings)
         first = next(
-            (e for _, e in placements if e.kind in (EntryKind.FILE, EntryKind.SLICE)),
+            (e for _, e in placements if e.kind.has_document),
             None,
         )
         self._push_command(
@@ -372,45 +392,62 @@ class EntryClipboardMixin:
     def _rebind_copies(
         copied: list[projectfile.CopiedEntry],
         placed: list[Entry],
-        bindings: dict[int, Entry],
+        bindings: dict[tuple[int, int], Entry],
     ) -> None:
-        """Point every copied tilemap's tile binding back at an entry.
+        """Point every reference a copied row holds back at an entry.
 
-        Two things can answer "which tiles", and they are asked in this order:
+        Two kinds of row hold one: a **tilemap**, at the bank it draws, and a
+        **composite view**, at each of the entries its runs are assembled from
+        (``docs/design/composite-entry.md``). Both are resolved the same way,
+        because both are the same problem — an entry is not a value, so a copy
+        cannot carry one — and two things can answer it, asked in this order:
 
-        - the tile bank was **copied alongside the map**, so the pasted copy of it
-          is what the map should draw — a duplicated map keeps pointing at the
+        - the target was **copied alongside** the row, so the pasted copy of it is
+          what the row should point at — a duplicated map keeps pointing at the
           bank it came with rather than reaching back past it. Matched inside the
-          payload, where ``tile_source_index`` and ``source_index`` are two
+          payload, where the recorded position and ``source_index`` are two
           numbers written against one snapshot and mean the same thing by
           construction;
-        - the bank is **still open here**, in which case ``bindings`` has the
+        - the target is **still open here**, in which case ``bindings`` has the
           entry itself (:data:`~celpix.ui.clipboard._COPIED_BINDINGS`). Deliberately
           the object and not a position: a copy sits on the clipboard across every
           drag, close and open the user makes before pasting, and a number written
           when it was taken would by then name whatever had moved into that place.
 
         Anything else — a copy pasted into another window, or into the same one
-        after the bank was closed — leaves the map **unbound**, which is the same
-        answer a project gives for a binding it cannot resolve: placeholder cells
-        and a re-pointable map, never somebody else's tiles.
+        after the target was closed — resolves to nothing, and the two kinds
+        degrade the way each already does elsewhere: a map goes **unbound**
+        (placeholder cells, re-pointable, never somebody else's tiles), and a
+        composite's run becomes a **pad of the length it had**, so the pieces
+        after it stay on the index every map addressing them expects.
         """
         by_source = {
             record.source_index: record.entry
             for record in copied
             if record.source_index >= 0
         }
+
+        def target_for(record: projectfile.CopiedEntry, at: int, slot: int):
+            copied_too = by_source.get(at) if at >= 0 else None
+            return copied_too or bindings.get((record.source_index, slot))
+
         for record in copied:
-            if record.tile_source is None or record.entry not in placed:
+            if record.entry not in placed:
                 continue
-            target = by_source.get(record.tile_source_index) or bindings.get(
-                record.source_index
-            )
-            record.entry.tile_source = (
-                replace(record.tile_source, entry=target)
-                if target is not None
-                else None
-            )
+            if record.tile_source is not None:
+                found = target_for(record, record.tile_source_index, TILE_SLOT)
+                record.entry.tile_source = (
+                    replace(record.tile_source, entry=found)
+                    if found is not None
+                    else None
+                )
+            if record.entry.pieces:
+                record.entry.pieces = tuple(
+                    replace(piece, entry=target_for(record, at, slot))
+                    for slot, (piece, at) in enumerate(
+                        zip(record.entry.pieces, record.piece_sources)
+                    )
+                )
 
     # -- the undo command's two directions --------------------------------------
     def _apply_paste_entries(

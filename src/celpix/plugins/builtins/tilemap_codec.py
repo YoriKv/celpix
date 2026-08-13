@@ -73,6 +73,7 @@ always round-tripped.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from celpix.core.context import (
@@ -259,13 +260,20 @@ def _get(word: int, field: _Field | None) -> int:
     return gather(word, *field) if field else 0
 
 
-def _put(word: int, field: _Field | None, value: int) -> int:
-    if field is None:
-        return word
-    # Masked, not checked: see the module docstring on why a too-wide value
-    # costs its high bits rather than the whole save. ``scatter`` drops whatever
-    # sits above the chunks' combined width, which is that same masking.
-    return word | scatter(value, *field)
+# Every field a cell can state, with what reads it off one — the writer's half of
+# :meth:`TilemapCodec.decode`, in the order the word is assembled. A table rather
+# than eight lines of code so the encode loop can be built from the fields a
+# format declares instead of asking after all of them per cell.
+_CELL_FIELDS: tuple[tuple[str, Callable[[Cell], int]], ...] = (
+    ("index", lambda cell: cell.index),
+    ("palette", lambda cell: cell.palette_row),
+    ("priority", lambda cell: cell.priority),
+    ("flip_h", lambda cell: int(cell.flip_h)),
+    ("flip_v", lambda cell: int(cell.flip_v)),
+    ("drawn", lambda cell: int(cell.visible)),
+    ("terminator", lambda cell: int(cell.ends_line)),
+    ("flags", lambda cell: cell.flags),
+)
 
 
 class TilemapCodec:
@@ -311,17 +319,23 @@ class TilemapCodec:
         size = _cell_bytes(params)
         order = _endian(params)
         fields = _layout(params)
+        # The fields this format actually has, paired with what reads each off a
+        # cell. Settled once rather than probed per cell: a text cell is one byte
+        # carrying an index and nothing else, so seven of the eight probes below
+        # would be a call into a function whose whole answer is "no such field" —
+        # and this runs over every cell of the map on every committed edit.
+        present = [
+            (field, read)
+            for name, read in _CELL_FIELDS
+            if (field := fields[name]) is not None
+        ]
         out = bytearray()
         for cell in cells:
             word = 0
-            word = _put(word, fields["index"], cell.index)
-            word = _put(word, fields["palette"], cell.palette_row)
-            word = _put(word, fields["priority"], cell.priority)
-            word = _put(word, fields["flip_h"], int(cell.flip_h))
-            word = _put(word, fields["flip_v"], int(cell.flip_v))
-            word = _put(word, fields["drawn"], int(cell.visible))
-            word = _put(word, fields["terminator"], int(cell.ends_line))
-            word = _put(word, fields["flags"], cell.flags)
+            for field, read in present:
+                # Masked, not checked: see the module docstring on why a too-wide
+                # value costs its high bits rather than the whole save.
+                word |= scatter(read(cell), *field)
             out += word.to_bytes(size, order)
         return bytes(out)
 

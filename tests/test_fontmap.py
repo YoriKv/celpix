@@ -72,6 +72,157 @@ def test_a_fontmap_reads_its_cells_as_words(qtbot, tmp_path) -> None:
     assert window._text_available()
 
 
+def test_a_dictionary_code_off_the_sheet_draws_as_the_characters_it_spells(
+    qtbot, tmp_path
+) -> None:
+    """A compression-table index is not a tile number, so it is not drawn as one.
+
+    ALTTP spends ``$88``-``$E8`` on ``the``, ``you`` and a hundred more above a
+    128-tile font: there is nothing at ``$E3`` for the sheet to draw, and the
+    cell renders as whatever lies past the end of the font. Drawing it as the
+    glyphs it stands for is the only reading of that cell that is a picture of
+    anything (``docs/design/fontmap-entry.md`` §5).
+
+    What it costs is that a drawn position is no longer a cell, which is the half
+    everything touching the canvas has to agree on.
+    """
+    # An eight-tile sheet, so $0A is off it. "C", then the code for "BAD", then "B".
+    window, _bank, _entry = _fontmap(
+        qtbot, tmp_path, [2, 0x0A, 1], chars="ABCDE", named=(Glyph(0x0A, "BAD"),)
+    )
+    doc = window._doc
+
+    assert [cell.index for cell in doc.laid_out_cells] == [2, 1, 0, 3, 1]
+    assert doc.drawn_positions == 5
+    # Inward: every position the word covers is the one cell the file has there,
+    # so an edit through any of them changes $0A.
+    assert [doc.cell_at(at) for at in range(5)] == [0, 1, 1, 1, 2]
+    # And outward, which is the direction the text window's caret travels.
+    assert doc.drawn_span(1, 2) == (1, 4)
+
+    # Nothing about the file moved: the cells, and the string, are what they were.
+    assert [cell.index for cell in doc.cells] == [2, 0x0A, 1]
+    assert doc.text.body == "CBADB"
+
+
+def test_a_dictionary_code_the_sheet_can_draw_is_left_alone(qtbot, tmp_path) -> None:
+    """The picture the file describes wins over the reading of it.
+
+    A font that really has a ``th`` ligature tile has one, and spelling the code
+    out would replace a correct glyph with a wrong pair of them. So it is the
+    tile range that decides, not the role.
+    """
+    window, _bank, _entry = _fontmap(
+        qtbot, tmp_path, [2, 3, 1], chars="ABCDE", named=(Glyph(3, "BAD"),)
+    )
+    doc = window._doc
+
+    assert doc.text.body == "CBADB"  # it still *says* the three characters
+    assert [cell.index for cell in doc.laid_out_cells] == [2, 3, 1]
+    assert doc.drawn_positions == 3
+
+
+def _stacked_font(qtbot, tmp_path, codes, **kwargs):
+    """A fontmap whose font's Pattern reads its 8 tiles as four 8x16 glyphs.
+
+    Two columns of 1x2 interleaved blocks, which is the layout an 8x16 font sheet
+    is stored in — tops row, then the matching bottoms row. So glyph 0 is tiles
+    0 and 2, glyph 1 is 1 and 3, glyph 2 is 4 and 6, glyph 3 is 5 and 7
+    (``docs/design/fontmap-entry.md`` §4).
+    """
+    from celpix.ui.widgets import select_combo_data
+
+    window, bank, entry = _fontmap(qtbot, tmp_path, codes, **kwargs)
+    window._activate_entry(bank)
+    window._columns.setValue(2)
+    window._block_cols.setValue(1)
+    window._block_rows.setValue(2)
+    select_combo_data(window._block_order, "row-interleave")
+    # Through the view change, not by writing the document: the widgets are the
+    # authority and a refresh writes them over anything set behind its back.
+    window._on_view_change()
+    return window, bank, entry
+
+
+def test_a_font_whose_pattern_stacks_tiles_draws_each_code_as_its_block(
+    qtbot, tmp_path
+) -> None:
+    """An 8x16 glyph is two tiles, and the sheet's Pattern is what says which two.
+
+    A font sheet is only legible once its arrangement is set, and an arrangement
+    that makes it legible is one whose blocks *are* the characters — so that is
+    where the fact is taken from rather than from a field of its own
+    (``docs/design/fontmap-entry.md`` §4). The code is then a **block** number,
+    which is what lets a mapping no base index can express — ALTTP's
+    ``((c & $F0) << 1) | (c & $0F)`` — come out of ordinary placement.
+    """
+    from celpix.core.tilemap import Cell
+
+    window, _bank, entry = _stacked_font(qtbot, tmp_path, [2, 0, 1], chars="ABCD")
+    doc = entry.doc
+
+    assert doc.glyph_layout is not None
+    assert doc.cell_tiles == (1, 2)
+    # Eight tiles, four glyphs: the bound is in the unit the codes count in.
+    assert (doc.tile_count, doc.glyph_count) == (8, 4)
+    assert [doc.cell_tile_indices(Cell(index=c)) for c in range(4)] == [
+        [0, 2],
+        [1, 3],
+        [4, 6],
+        [5, 7],
+    ]
+    # And the reading is untouched: what a code *says* is the table's business
+    # and has nothing to do with how many tiles draw it.
+    assert doc.text.body == "CAB"
+
+
+def test_the_alphabet_editor_lists_one_row_per_glyph_not_per_tile(
+    qtbot, tmp_path
+) -> None:
+    """The sheet and the table are the same run, so both count in glyphs.
+
+    A row per *tile* over a stacked font would offer eight codes where the font
+    has four letters, and put every character after the first on the wrong one —
+    the sheet is what the codes index into, and under a grouping a code indexes a
+    block.
+    """
+    window, _bank, _entry = _stacked_font(qtbot, tmp_path, [2, 0, 1], chars="ABCD")
+    window._refresh_view()
+
+    image, ids, cell_px, _columns = window._font_sheet()
+    assert list(ids) == [0, 1, 2, 3]
+    assert cell_px == (8, 16)  # one glyph, not one tile
+    assert image.height() >= 16
+    assert window._font_alphabet._table.rowCount() == 4
+
+
+def test_changing_a_fonts_pattern_re_letters_the_strings_drawn_through_it(
+    qtbot, tmp_path
+) -> None:
+    """The Pattern stops being display-only on a font sheet, and has to say so.
+
+    The audience for it is every open string bound to the sheet, exactly as an
+    alphabet edit's is: the fact is the font's, so a second fontmap still reading
+    the old grouping is as wrong as the first
+    (:meth:`~celpix.ui.main_window.session.SessionMixin._resync_glyph_layouts`).
+    """
+    from celpix.core.tilemap import Cell
+
+    window, bank, entry = _stacked_font(qtbot, tmp_path, [2, 0, 1], chars="ABCD")
+    assert entry.doc.cell_tile_indices(Cell(index=1)) == [1, 3]
+
+    # Back to one tile per glyph, on the sheet — and the string follows without
+    # being reloaded or even looked at.
+    window._activate_entry(bank)
+    window._block_rows.setValue(1)
+    window._on_view_change()
+
+    assert entry.doc.glyph_layout is None
+    assert entry.doc.cell_tiles == (1, 1)
+    assert entry.doc.cell_tile_indices(Cell(index=1)) == [1]
+    assert entry.doc.glyph_count == 8
+
+
 def test_use_as_font_stays_hidden_on_a_map_through_a_toolbar_relayout(
     qtbot, tmp_path
 ) -> None:
@@ -605,6 +756,78 @@ def test_a_letter_typed_over_itself_is_still_a_step(qtbot, tmp_path) -> None:
     assert window._text._edit.textCursor().position() == 1
 
 
+def test_a_fontmap_selects_in_runs_where_every_other_map_selects_rectangles(
+    qtbot, tmp_path
+) -> None:
+    """A sentence is a run, and the width it wraps at is a view setting.
+
+    Every other tilemap is edited as the picture it draws, so a drag there corners
+    a rectangle of cells. A fontmap's cells are text: a phrase runs off the end of
+    a canvas row and carries on at the start of the next, and a rectangle over
+    that names the middle of three lines and no whole word at all.
+    """
+    from celpix.ui.main_window.selection import SelectionShape
+
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1, 4, 3, 0])
+    window._columns.setValue(3)
+
+    assert window._selection_shape.currentData() is SelectionShape.LINEAR
+    assert not window._selection_shape.isEnabled()  # so S cannot swap it either
+
+    # The second cell, dragged onto the row below: the whole run between them,
+    # where a rectangle would have taken the two-wide block and skipped cell 2.
+    window._on_slots_selected(1, 4)
+    assert window._selected_cells() == [1, 2, 3, 4]
+
+    # The same cells read as an ordinary grid map are back to a rectangle: what
+    # forces the shape is the reading, not the entry.
+    combo = window._tilemap_preset
+    at = combo.findData("preset.tilemap.gb-bg")
+    combo.setCurrentIndex(at)
+    window._on_tilemap_preset_change(at)
+    assert window._selection_shape.currentData() is SelectionShape.RECT
+
+
+def test_the_canvas_and_the_text_mirror_one_anothers_selection(qtbot, tmp_path) -> None:
+    """Both ways, because both are questions a user asks of a string.
+
+    Finding a word in the text is how they find it on the canvas; picking tiles
+    out of the picture is how they ask what those tiles say. A cell that reads as
+    a whole ``[$F0]`` carries all five of its characters either way, so the two
+    selections cover the same thing rather than the same length.
+    """
+    from PySide6.QtGui import QTextCursor
+
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1, 0xF0, 4], 0)  # "CAB[$F0]E"
+    field = window._text._edit
+    assert window._text.body == "CAB[$F0]E"
+
+    # Canvas → text: three cells picked out of the picture, and the code among
+    # them reads out whole.
+    window._on_slots_selected(1, 3)
+    cursor = field.textCursor()
+    assert (cursor.selectionStart(), cursor.selectionEnd()) == (1, 8)
+
+    # Text → canvas, and the way back does not bounce: the selection the canvas
+    # was just given must not be pushed back over the one the user made here.
+    cursor.setPosition(3)
+    cursor.setPosition(9, QTextCursor.MoveMode.KeepAnchor)
+    field.setTextCursor(cursor)
+    assert window._selection_tiles() == [3, 4]
+    assert (field.textCursor().selectionStart(), field.textCursor().selectionEnd()) == (
+        3,
+        9,
+    )
+
+    # A bare caret still names its own cell, and stays where it was put - a cell
+    # is coarser than a caret, so a round trip would drag it to the head of the
+    # code it is standing in the middle of.
+    cursor.setPosition(5)  # inside the [$F0]
+    field.setTextCursor(cursor)
+    assert window._selection_tiles() == [3]
+    assert field.textCursor().position() == 5
+
+
 def test_backspace_blanks_a_whole_code_and_leaves_the_length_alone(
     qtbot, tmp_path
 ) -> None:
@@ -981,6 +1204,98 @@ def test_enter_costs_no_cell_where_a_break_is_a_bit(qtbot, tmp_path) -> None:
     assert window._line_end_slots() == {2}
 
 
+def _pair_typing(qtbot, tmp_path, codes, at):
+    """A fontmap whose font spells ``TH`` with the single code $50.
+
+    The dictionary a fixed-size text region actually uses: one byte standing for
+    a run of characters (``docs/design/fontmap-entry.md`` §4), which is what
+    ALTTP's 97 dictionary codes are.
+    """
+    return _typing(
+        qtbot, tmp_path, codes, at, named=(Glyph(0x50, "TH", GlyphRole.TEXT),)
+    )
+
+
+def test_a_pair_typed_a_letter_at_a_time_lands_on_the_one_cell_it_costs(
+    qtbot, tmp_path
+) -> None:
+    """T then H is **one** cell, not two, because the font has a code for the pair.
+
+    The encoder matches the longest spelling first, so the second keystroke does
+    not write a second cell - it rewrites the first and frees one. The region is
+    a fixed run and stays exactly full, so what the freed cell costs is the rest
+    of the string sliding up behind the pair and a blank at the end.
+    """
+    #  "  FOX", caret at the head. 36 is the run's space.
+    window, _entry = _pair_typing(qtbot, tmp_path, [36, 36, 5, 14, 23], 0)
+    field = window._text._edit
+
+    qtbot.keyClicks(field, "T")
+    assert [cell.index for cell in window._doc.cells] == [19, 36, 5, 14, 23]
+
+    qtbot.keyClicks(field, "H")
+    assert [cell.index for cell in window._doc.cells] == [0x50, 5, 14, 23, 36]
+    # And the field is left showing what the file now says, rather than the
+    # shorter string that was typed to get there.
+    assert window._doc.text.body == "THFOX "
+    assert window._text.body == "THFOX "
+
+
+def test_backspace_between_a_pairs_letters_takes_the_whole_pair(
+    qtbot, tmp_path
+) -> None:
+    """A pair is one cell from either side of it and from inside it.
+
+    Blanking only the half in front of the caret left the other half standing as
+    a letter of its own, which costs a second cell the region has not got: the
+    string grew by one and the last character of the region was pushed off the
+    end and lost.
+    """
+    from PySide6.QtCore import Qt
+
+    window, _entry = _pair_typing(qtbot, tmp_path, [0x50, 2, 0, 1], 1)  # "THCAB"
+    field = window._text._edit
+    assert window._doc.text.body == "THCAB"
+
+    qtbot.keyClick(field, Qt.Key.Key_Backspace)
+    assert window._text.body == " CAB"
+    assert [cell.index for cell in window._doc.cells] == [36, 2, 0, 1]
+
+    # And nothing behind the caret is nothing to take back.
+    before = [cell.index for cell in window._doc.cells]
+    window._text.select_range(0, 0)
+    qtbot.keyClick(field, Qt.Key.Key_Backspace)
+    assert [cell.index for cell in window._doc.cells] == before
+
+
+def test_a_break_carried_by_a_pair_ends_the_line_after_the_whole_pair(
+    qtbot, tmp_path
+) -> None:
+    """The other half of a caret standing inside a pair, and the same rule.
+
+    Where a line ends on a bit the cell carries, the bit is a whole cell's -
+    there is no half of one for a line to end on. Landing it where the caret
+    literally was split the pair into the two letters it stands for, spent a
+    second cell on them and pushed the tail of the region off the end.
+    """
+    from PySide6.QtCore import Qt
+
+    window, _entry = _typing(
+        qtbot,
+        tmp_path,
+        [0x50, 2, 0, 1],  # "THCAB"
+        1,
+        named=(Glyph(0x50, "TH", GlyphRole.TEXT),),
+        preset="preset.tilemap.text-8bit-flag",
+    )
+
+    qtbot.keyClick(window._text._edit, Qt.Key.Key_Return)
+
+    assert window._doc.text.body == "TH\nCAB"
+    assert [cell.index for cell in window._doc.cells] == [0x50, 2, 0, 1]
+    assert [cell.ends_line for cell in window._doc.cells] == [True, False, False, False]
+
+
 # -- the Font Alphabet window ------------------------------------------------
 def test_the_font_alphabet_window_opens_on_a_fontmap_and_a_close_stops_it(
     qtbot, tmp_path
@@ -1225,10 +1540,11 @@ def test_the_editor_opens_on_the_font_sheet_itself(qtbot, tmp_path) -> None:
     assert window._font_alphabet.isVisible()
     # Slot n is code base + n, so the sheet has to have slots at all.
     assert window._font_sheet() is not None
-    # And the tick is on show here, where it is not on the map. isHidden rather
-    # than isVisible: the main window itself is never shown under offscreen Qt,
-    # so every child reads as invisible and only the explicit flag means anything.
-    assert not window._use_as_font.isHidden() and window._use_as_font.isChecked()
+    # And the tick is on show here, where it is not on the map. Asked of the
+    # toolbar *action*, which is what the sync sets and what survives a re-layout
+    # (the widget's own flag only catches up once the toolbar lays out, which a
+    # window nobody has shown never does).
+    assert window._use_as_font_action.isVisible() and window._use_as_font.isChecked()
 
 
 def test_the_tick_is_hidden_on_anything_that_is_not_a_sheet(qtbot, tmp_path) -> None:
@@ -1237,7 +1553,7 @@ def test_the_tick_is_hidden_on_anything_that_is_not_a_sheet(qtbot, tmp_path) -> 
     window._activate_entry(entry)
     window._refresh_view()
 
-    assert window._use_as_font.isHidden()
+    assert not window._use_as_font_action.isVisible()
 
 
 def test_the_sheet_reads_in_the_selected_palette_row(qtbot, tmp_path) -> None:
@@ -1453,6 +1769,67 @@ def test_a_line_break_names_itself_and_numbers_the_next_one(qtbot, tmp_path) -> 
     table.item(5, COL_TEXT).setText("scroll")
     table.item(5, COL_ROLE).setText("line break")
     assert Glyph(5, "scroll", GlyphRole.BREAK) in bank.font_codes
+
+
+def test_a_code_can_be_made_to_spell_a_pair_rather_than_name_a_command(
+    qtbot, tmp_path
+) -> None:
+    """Several characters typed in are *guessed* to be a name, and the Role
+    column is where that is corrected.
+
+    A code standing for a pair is what a game's dictionary compression is, and
+    the guess is right for `wait` and wrong for `th` - so it is a guess and not a
+    rule, it holds only for the keystroke that made it, and a row that already
+    reads *dict* keeps its role while its spelling is corrected.
+    """
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
+    window._refresh_view()
+    table = window._font_alphabet._table
+
+    table.item(1, COL_TEXT).setText("th")
+    assert bank.font_codes == (Glyph(1, "th", GlyphRole.CONTROL),)
+
+    table.item(1, COL_ROLE).setText("dict")
+    assert bank.font_codes == (Glyph(1, "th", GlyphRole.DICT),)
+    assert table.item(1, COL_ROLE).text() == "dict"
+
+    table.item(1, COL_TEXT).setText("the")  # not guessed at a second time
+    assert bank.font_codes == (Glyph(1, "the", GlyphRole.DICT),)
+
+    # Picking **text** on it is the same pick: the spelling is what says which of
+    # the two it is, so the column redraws to what was actually stored.
+    table.item(1, COL_ROLE).setText("text")
+    assert bank.font_codes == (Glyph(1, "the", GlyphRole.DICT),)
+    assert table.item(1, COL_ROLE).text() == "dict"
+
+    # Out of the run either way - a tile draws one character - and the string
+    # reads the code as everything it spells.
+    assert bank.font_chars == "A" + HOLE + "CDE"
+    assert window._doc.text.body == "CAthe"
+
+
+def test_a_command_can_be_declared_to_swallow_the_cell_after_it(
+    qtbot, tmp_path
+) -> None:
+    """`speed, 1` in the Text column - the count beside the name.
+
+    One cell rather than a fourth column, because that is how the count is
+    written everywhere else a font table is (`7A=[speed, 1]`), and the string
+    then shows the command and its operand as the one thing they are.
+    """
+    # "CA", then a command with the byte it swallows.
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 6, 1], chars="ABCDE")
+    window._refresh_view()
+    table = window._font_alphabet._table
+
+    table.item(6, COL_TEXT).setText("speed, 1")
+    assert bank.font_codes == (Glyph(6, "speed", GlyphRole.CONTROL, params=1),)
+    # Shown back the way it was typed, so the count can be corrected.
+    assert table.item(6, COL_TEXT).text() == "speed, 1"
+
+    assert window._doc.text.body == "CA[speed, $01]"
+    # And the cell it swallowed is no longer a letter of its own.
+    assert "B" not in window._doc.text.body
 
 
 def test_append_gives_a_code_past_the_sheet_a_row_to_be_named_on(

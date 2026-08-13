@@ -35,6 +35,8 @@ from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import NO_COMPRESSION, category_order
 from celpix.project.workspace import (
     Entry,
+    EntryKind,
+    composite_config,
     pixel_config_for,
     repair_presets,
 )
@@ -176,7 +178,27 @@ class InterpretationMixin:
         what carries the parent's live buffer to the read (``_parent_view_bytes``),
         so this is the moment those bytes have to be true
         (:meth:`~...writing.WritingMixin._settle_region`).
+
+        A **composite** settles every one of its pieces for the same reason and
+        goes through :meth:`~...session.SessionMixin._composite_layout`, which is
+        where that happens — and which records the run lengths the assembly
+        measured, so this is also what keeps them current
+        (``docs/design/composite-entry.md``).
+
+        ``preset_id`` reaches **both** halves of that, and has to. It is what the
+        buffer is read through, and it is also the tile a whole-entry piece is
+        rounded up to — so handing it to one and not the other would round the
+        assembly at one depth and decode it at another, leaving the run lengths
+        the assembly records disagreeing with the buffer they describe.
         """
+        if entry.kind is EntryKind.COMPOSITE:
+            return composite_config(
+                entry,
+                self._registry,
+                self._workspace,
+                layout=self._composite_layout(entry, preset_id),
+                preset_id=preset_id,
+            )
         self._settle_region(entry)
         return pixel_config_for(entry, preset_id, self._registry, self._workspace)
 

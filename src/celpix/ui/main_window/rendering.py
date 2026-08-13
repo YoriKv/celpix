@@ -225,7 +225,11 @@ class RenderingMixin:
         already pushed that number into the spin.
         """
         assert self._doc is not None and self._doc.cells is not None
-        count = len(self._doc.drawn_cells)
+        # The **drawn** positions, not the file's cells: a fontmap spells a
+        # dictionary code out into the characters it stands for, and each of them
+        # takes a position of its own
+        # (:attr:`~celpix.core.document.Document.drawn_positions`).
+        count = self._doc.drawn_positions
         columns = self._doc.assembled_columns or self._columns.value()
         return max(1, min(columns, count or 1))
 
@@ -664,6 +668,15 @@ class RenderingMixin:
             # keeps one answer per entry rather than a second place to gate it.
             transparent_zero=self._transparent_zero,
         )
+        # Straight after the view is written and before anything composes from
+        # it: on a **font sheet** Cols and the Pattern are what say how big one
+        # glyph is, so moving either changes what every string bound to this
+        # sheet draws and not only this picture
+        # (:meth:`~...session.SessionMixin._resync_glyph_layouts`). A scan of the
+        # open entries on any other kind of document, and nothing else.
+        current = self._workspace.current
+        if current is not None:
+            self._resync_glyph_layouts(current)
         # Deferred decode: only the visible window's bytes are sliced, then decoded
         # and laid out by the shared arrangement path (2D reflow / block layout).
         # Reads back through doc.view (like zoom/grid below) so the freshly stored

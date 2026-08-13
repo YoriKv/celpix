@@ -17,10 +17,12 @@ writes the buffer as it stands.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from bisect import bisect_left
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from celpix.core import ceil_div
+from celpix.core.arrangement import BlockLayout
 from celpix.core.context import (
     KEY_SOURCE_OFFSET,
     KEY_TILEMAP_ANIMATIONS,
@@ -110,6 +112,13 @@ class ViewOptions:
     :data:`~celpix.core.arrangement.BLOCK_ORDERS`. ``two_dimensional`` reads the
     source as one wide bitmap ``columns`` tiles across instead of back-to-back
     tiles — a different byte walk applied before decode (arrangement's ``reflow_2d``).
+
+    The block axes are display state everywhere but on an entry ticked **Use as
+    Font**, where they say how big one glyph is: a character code numbers blocks,
+    so an 8×16 font is 1×2 and a fontmap drawn through it follows
+    (:attr:`Document.glyph_layout`, ``docs/design/fontmap-entry.md`` §4). ``columns``
+    is load-bearing there for the same reason — how wide the sheet is decides which
+    tiles a block holds.
 
     ``bitmap_width`` (0 = off) says the data is a bitmap that many pixels wide.
     It belongs to ``two_dimensional`` and applies only with it: the codec's tile
@@ -339,7 +348,17 @@ class Document:
     # (``docs/graphics-formats-reference/snes-hardware-notes.md`` §5).
     cell_tiles: tuple[int, int] = (1, 1)
     cell_row_stride: int = 0  # 0 = the cell's own width, i.e. consecutive tiles
+    # Set instead of the stride above where the tiles a cell draws are a **block
+    # of the source's own arrangement** rather than a run at a fixed step: the
+    # general case the stride is the fixed-offset special case of. A **font**
+    # states it and nothing else does — an 8x16 glyph is two tiles the sheet
+    # keeps a whole row apart, and where they are is what the sheet's Pattern
+    # already says (``docs/design/fontmap-entry.md`` §4). ``None``, and cells
+    # number tiles one for one, which is every other document.
+    glyph_layout: BlockLayout | None = None
     # The source tile that cell index 0 draws (a format's base-character field).
+    # Counted in **glyphs** under a ``glyph_layout``, since that is the unit the
+    # indices themselves are in.
     tile_base_index: int = 0
     # How wide the format's tile-index *field* is, as a mask (0 = unbounded).
     # A multi-tile cell's neighbours are found by adding to that field, so the
@@ -391,6 +410,19 @@ class Document:
     tile_bank_cache: tuple[tuple, list] | None = field(
         default=None, compare=False, repr=False
     )
+    # The last answer :attr:`text` gave, with the two things it was read from —
+    # the cell list *object* and the alphabet — so a hit is two identity checks.
+    # Excluded from equality and repr for the reason above it: derived, not part
+    # of what a document is.
+    text_cache: tuple[object, object, object] | None = field(
+        default=None, compare=False, repr=False
+    )
+    # And the last answer :meth:`_drawn_layout` gave, keyed the same way. Derived
+    # from the cells, the alphabet and the size of the sheet they draw from, so a
+    # hit is two identity checks and a tuple compare.
+    layout_cache: tuple[tuple, tuple] | None = field(
+        default=None, compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         self.resolve()
@@ -411,6 +443,12 @@ class Document:
         does not falls back to the plain chain — resolving a grid whose shape is a
         guess would lay a shear on top of one.
         """
+        # The one call every cell edit makes, so it is also where the decoded
+        # text is dropped: :attr:`text` is the same cells read a second way, and
+        # a reading kept past the edit that changed them is a text window showing
+        # the string before the last keystroke.
+        self.text_cache = None
+        self.layout_cache = None
         chain = self.chain
         if chain is None or self.cells is None:
             self.resolved_cells = None
@@ -489,11 +527,14 @@ class Document:
     def text(self):  # -> Text
         """This fontmap's cells as readable text, with each character's cell.
 
-        Decoded on demand rather than cached beside the cells: an edit changes
-        the cells and the derived text at once, and a cache with no invalidation
-        rule is how a text window comes to show the string before the last
-        keystroke. The cost is a pass over the cells, which is the same pass the
-        canvas makes to draw them.
+        **Decoded once per cell list**, and kept only against the two things it
+        was read from: the ``cells`` object itself and the alphabet, both checked
+        by identity (:attr:`text_cache`). That is a rule and not a guess — every
+        writer of the cells replaces the list wholesale and calls :meth:`resolve`,
+        which drops the cache, so a reading can never outlive the edit that
+        changed it. It has to be kept: a caret moving is one of these, a keystroke
+        is two more, and the pass is over every cell of a region that may hold
+        tens of thousands.
 
         Empty text for a document that is not a fontmap, so a caller may ask
         without checking first — and hex for one whose font has no alphabet,
@@ -504,13 +545,22 @@ class Document:
 
         if not self.is_fontmap:
             return _Text("", ())
+        cells = self.cells or []
+        cached = self.text_cache
+        if (
+            cached is not None
+            and cached[0] is cells
+            and cached[1] is self.font_alphabet
+        ):
+            return cached[2]
         alphabet = self.font_alphabet or _Alphabet(
             code_digits=max(1, self.cell_bytes * 2)
         )
-        cells = self.cells or []
-        return alphabet.decode(
+        text = alphabet.decode(
             [cell.index for cell in cells], [cell.ends_line for cell in cells]
         )
+        self.text_cache = (cells, self.font_alphabet, text)
+        return text
 
     @property
     def folds_palette_rows(self) -> bool:
@@ -766,19 +816,134 @@ class Document:
         return page_order(columns, rows, self.pages, across)
 
     @property
-    def laid_out_cells(self) -> list[Cell]:
-        """:attr:`drawn_cells` in the order the view lays them out.
+    def spells_out(self) -> bool:
+        """Whether any cell here may be drawn as the characters it stands for.
 
-        What the renderer walks, and the only place the assembly reaches the
-        picture. Everything else about a cell — its position in
-        :attr:`cells`, what a save writes, what a chained map's coordinate names,
-        which record the hex dump highlights — stays in the **file's** order, so an
-        assembly can be changed (or undone, or restored differently) without any
-        of that meaning something else afterwards.
+        The cheap gate in front of :meth:`_drawn_layout`'s pass: a fontmap whose
+        font declares a **dictionary** (:attr:`~celpix.core.font.FontAlphabet.
+        has_dictionary`), which is the only kind that has anything to spell out.
+        False for every other document, at the cost of two attribute reads.
+        """
+        alphabet = self.font_alphabet
+        return self.is_fontmap and alphabet is not None and alphabet.has_dictionary
+
+    def _drawn_layout(self) -> tuple[list[Cell], tuple[int, ...] | None]:
+        """The cells the picture is made of, and which cell each position holds.
+
+        The full answer :attr:`laid_out_cells` and :meth:`cell_at` are two halves
+        of, worked out once because they must agree: a position the renderer drew
+        as ``o`` has to resolve back to the ``$E3`` the file holds.
+
+        Two things happen here, in order. The **assembly** permutes the cells so
+        a paged screen file draws its pages side by side. Then a **dictionary
+        code the sheet cannot draw** is spelled out — one drawn position per
+        character, each holding the character's own code
+        (:meth:`~celpix.core.font.FontAlphabet.spelling`). Only a code outside
+        the source's tiles is: a code the sheet *does* draw is drawn, whatever the
+        table says it says, because the picture the file describes is the one to
+        show (``docs/design/fontmap-entry.md`` §5).
+
+        The map comes back as **None** where the two are the same list — no
+        dictionary, or nothing outside the sheet — which is what lets every
+        caller skip the indirection on the ordinary map instead of paying for a
+        permutation that permutes nothing.
+
+        Kept between calls (:attr:`layout_cache`), because a refresh asks for it
+        several times over — the render, the line-end marks, the tile-ID labels,
+        the selection — and each asking is a pass over a region that may hold tens
+        of thousands of cells. Dropped by :meth:`resolve`, like the decoded text
+        beside it, so it cannot outlive the edit that changed the cells.
         """
         cells = self.drawn_cells
         order = self.cell_order
-        return cells if order is None else [cells[at] for at in order]
+        laid = cells if order is None else [cells[at] for at in order]
+        alphabet = self.font_alphabet
+        if not self.spells_out or alphabet is None:
+            return laid, None
+        # The sheet's extent, in the format's own index space: the base the
+        # binding starts at is added to a code before it names anything
+        # (:meth:`cell_tile_indices`), so the bound has to be asked in the same
+        # terms the cells are written in — and in the same *unit*, which on a
+        # font of 8x16 glyphs is glyphs and not tiles (:attr:`glyph_count`).
+        first, count = self.tile_base_index, self.glyph_count
+        key = (self.cells, alphabet, first, count, order)
+        cached = self.layout_cache
+        if (
+            cached is not None
+            and cached[0][0] is key[0]
+            and cached[0][1] is key[1]
+            and cached[0][2:] == key[2:]
+        ):
+            return cached[1]
+        drawn: list[Cell] = []
+        source: list[int] = []
+        spelled = False
+        for at, cell in enumerate(laid):
+            codes = (
+                () if 0 <= first + cell.index < count else alphabet.spelling(cell.index)
+            )
+            if not codes:
+                drawn.append(cell)
+                source.append(at)
+                continue
+            spelled = True
+            last = len(codes) - 1
+            for k, code in enumerate(codes):
+                # The line end rides on the **last** character: the cell's bit
+                # says its line stops after what the cell draws, and marking the
+                # first would put the rule through the middle of a word.
+                drawn.append(
+                    replace(cell, index=code, ends_line=cell.ends_line and k == last)
+                )
+                source.append(at)
+        answer = (drawn, tuple(source)) if spelled else (laid, None)
+        self.layout_cache = (key, answer)
+        return answer
+
+    @property
+    def laid_out_cells(self) -> list[Cell]:
+        """:attr:`drawn_cells` in the order the view lays them out.
+
+        What the renderer walks, and the only place the assembly and the spelling
+        out of a dictionary code reach the picture (:meth:`_drawn_layout`).
+        Everything else about a cell — its position in :attr:`cells`, what a save
+        writes, what a chained map's coordinate names, which record the hex dump
+        highlights — stays in the **file's** order, so an assembly can be changed
+        (or undone, or restored differently) without any of that meaning something
+        else afterwards.
+        """
+        return self._drawn_layout()[0]
+
+    @property
+    def drawn_positions(self) -> int:
+        """How many positions the picture has room for — cells, spelled out.
+
+        The count everything that bounds a selection or a column spin needs, and
+        **not** ``len(cells)``: one dictionary cell draws as several positions, so
+        counting the file's cells would put the tail of the map out of reach.
+        Answered off the cells directly where nothing spells out, which is every
+        document but a fontmap over a font with a dictionary.
+        """
+        if not self.spells_out:
+            return len(self.drawn_cells)
+        return len(self._drawn_layout()[0])
+
+    def drawn_span(self, first: int, last: int) -> tuple[int, int]:
+        """The drawn positions the cells ``[first, last)`` occupy.
+
+        The outward direction of :meth:`cell_at`, for the caller that has a range
+        of *cells* and needs the picture to highlight them — the text window
+        pushing its caret onto the canvas. Identity where nothing spells out.
+
+        Bisected, which is sound because the map is nondecreasing: the only thing
+        that could reorder it is a page assembly, and no text format is paged
+        (:attr:`page_size` reads a width and a row count the container publishes,
+        and a text run has neither).
+        """
+        source = self._drawn_layout()[1] if self.spells_out else None
+        if source is None:
+            return first, last
+        return bisect_left(source, first), bisect_left(source, last)
 
     def cell_at(self, position: int) -> int:
         """Which cell the drawn position ``position`` holds.
@@ -788,14 +953,23 @@ class Document:
         Identity on an unassembled document, and out-of-range positions come back
         unchanged so a caller's own bounds check stays the one that decides.
 
-        Two steps, in file-order terms: the assembly says which file position a
-        drawn one shows, and a **stamp** then snaps that to the entry whose stamp
-        contains it (:func:`~celpix.core.tilemap.stamp_origin`) — so an edit
-        anywhere inside a stamp changes the one entry that stamp came from, and
-        the positions the format never wrote stay unwritten. Composed rather than
-        alternated because they answer different halves of the same question; no
-        format in hand does both.
+        Three steps, in file-order terms. A **spelled-out** dictionary code draws
+        as several positions, so the first step is back to the one cell they all
+        came from — an edit anywhere in ``you`` changes the ``$E3`` that spells
+        it, which is the only cell the file has there. Then the assembly says
+        which file position a drawn one shows, and a **stamp** snaps that to the
+        entry whose stamp contains it (:func:`~celpix.core.tilemap.stamp_origin`)
+        — so an edit anywhere inside a stamp changes the one entry that stamp came
+        from, and the positions the format never wrote stay unwritten. Composed
+        rather than alternated because they answer different halves of the same
+        question; no format in hand does more than one of them.
         """
+        # Gated on the cheap question rather than asked outright: this is called
+        # per position of a rectangle fill, and the layout of an assembled map is
+        # a list built per call.
+        source = self._drawn_layout()[1] if self.spells_out else None
+        if source is not None and 0 <= position < len(source):
+            position = source[position]
         order = self.cell_order
         if order is not None and 0 <= position < len(order):
             position = order[position]
@@ -818,7 +992,19 @@ class Document:
         field the way the hardware's adder does. The two orders agree whenever
         there is no mask, addition being addition; they differ exactly where the
         run would otherwise leave the field.
+
+        A :attr:`glyph_layout` answers first and by a different route: there the
+        index is a **block number** of the source's own arrangement rather than a
+        tile number, so the run comes out of the placement
+        (:meth:`~celpix.core.arrangement.BlockLayout.block_slots`) instead of out
+        of a stride. That is the general case — an 8x16 font's two tiles sit a
+        whole sheet-row apart, at a step that depends on how wide the sheet is —
+        and it is why the base is in glyphs there: it is added to the *block*
+        number, which is what the cell holds.
         """
+        layout = self.glyph_layout
+        if layout is not None:
+            return layout.block_slots(self.tile_base_index + cell.index)
         across, down = self.cell_tiles
         if across <= 1 and down <= 1:
             # The ordinary hardware cell — one tile, no run to walk and no order
@@ -875,6 +1061,23 @@ class Document:
         # Ceiling: a trailing partial tile counts — it's viewable, zero-padded.
         tb = self.bytes_per_tile
         return ceil_div(len(self.pixel_data), tb) if tb else 0
+
+    @property
+    def glyph_count(self) -> int:
+        """How many whole units of the source an index can name.
+
+        :attr:`tile_count` for every document whose indices *are* tiles, which is
+        all of them but a fontmap over a font whose glyphs are several tiles
+        (:attr:`glyph_layout`). There a code numbers blocks, so the bound it has
+        to fall inside is the number of blocks — 128 glyphs over a 256-tile
+        sheet, not 256 — and the two questions "is there a tile at this index"
+        and "is there a picture at this code" stop being the same one.
+
+        **Whole** units only, and the floor is the point: half of an 8x16 glyph
+        is not a glyph, and a code naming it would draw a letter cut in two.
+        """
+        layout = self.glyph_layout
+        return self.tile_count if layout is None else layout.blocks(self.tile_count)
 
     def palette_rows(self, index_space: int) -> int:
         """How many subpalette rows this document's palette holds.

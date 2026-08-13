@@ -5,7 +5,7 @@ string, a token list and a budget, and never reads the model. This is the half
 that builds those from the live document and turns a committed string back into
 cells.
 
-Five things it has to get right, and none of them is the window's to know:
+Six things it has to get right, and none of them is the window's to know:
 
 - **The region is always exactly full.** A text region is a fixed run of cells and
   the codes have nowhere else to go, so a string that encodes longer has the
@@ -38,6 +38,14 @@ Five things it has to get right, and none of them is the window's to know:
   either side of it, so an undo hands back the place in the string as well as
   the string — and so a keystroke that changes no cell at all, a letter typed
   over itself, is still a step (:meth:`TextMixin._restore_text_caret`).
+- **The two views select together.** A selection in the field is the run of cells
+  on the canvas and a selection of cells is the characters in the field, because
+  they are two readings of one thing — and finding a word in either is how a user
+  finds it in the other (:meth:`TextMixin._on_text_caret`,
+  :meth:`TextMixin._sync_text_selection`). It is also why a fontmap selects
+  linearly where every other tilemap selects a rectangle
+  (:meth:`~celpix.ui.main_window.selection.SelectionMixin.
+  _forced_selection_shape`).
 - **A fontmap opens its text by itself.** The canvas can only ever show a string
   as the grid of glyph tiles it is, so the window is not a second look at
   something already legible — it is the reading. Closing it says so and turns
@@ -105,6 +113,12 @@ class TextMixin:
         self._text.set_read_only(not doc.cells_editable)
         text = doc.text
         status, badge = self._text_status(text.body)
+        # Read before the window is shown, because it is what makes an *opening*
+        # window land on the canvas's selection rather than at the head of the
+        # string (:meth:`_sync_text_selection`). Only then: a refresh runs on
+        # every render, and pushing from all of them is the loop that mirror is
+        # careful not to be.
+        opening = not self._text.isVisible()
         self._text.show_text(
             f"Text - {name}",
             text.body,
@@ -129,6 +143,8 @@ class TextMixin:
         # draft it had just taken away.
         if self._text.body != text.body:
             self._text.set_status(*self._text_status(self._text.body))
+        if opening:
+            self._sync_text_selection()
 
     def _sync_text(self) -> None:
         """Open the window on a fontmap, and close it on anything else.
@@ -270,8 +286,18 @@ class TextMixin:
         ends = ends[: len(cells)]
         codes += [doc.font_alphabet.blank] * (len(cells) - len(codes))
         ends += [False] * (len(cells) - len(ends))
+        # Only the cells the string actually moved are rebuilt. A keystroke
+        # re-encodes the whole region — it has to, since a code standing for a
+        # pair can slide everything after it — but nearly all of what comes back
+        # is what was already there, and building a fresh record for every cell
+        # of a region that may hold tens of thousands is the cost of one letter.
+        # The comparison is the same one :meth:`_apply_cells` makes to decide
+        # whether anything changed at all, done a field at a time instead of over
+        # a whole list of records nobody needed to build.
         for at, code in enumerate(codes):
-            cells[at] = replace(cells[at], index=code, ends_line=ends[at])
+            cell = cells[at]
+            if cell.index != code or cell.ends_line != ends[at]:
+                cells[at] = replace(cell, index=code, ends_line=ends[at])
         caret = None if caret_before < 0 else (caret_before, caret_after)
         written = self._apply_cells(cells, label, run=self._text_run, caret=caret)
         if lost.strip():
@@ -322,20 +348,72 @@ class TextMixin:
         if not self._text.isVisible():
             return
         self._text.set_caret(at)
-        self._on_text_caret(at)
+        self._on_text_caret(at, at)
 
-    def _on_text_caret(self, offset: int) -> None:
-        """Follow the text caret with the canvas selection.
+    def _on_text_caret(self, first: int, last: int) -> None:
+        """Follow the text selection with the canvas selection.
 
-        The two views show the same cells, and a caret in one is a position in
-        the other — so finding a word in the text is how a user finds it on the
-        canvas, which is the harder direction by far. One way only: the reverse
-        would fight the caret while the user is typing, and the selection moves
-        on every arrow key.
+        Half of the two views mirroring one another, and the half that was always
+        wanted: finding a word in the text is how a user finds it on the canvas.
+        ``[first, last)`` is what the field has selected, so picking a phrase out
+        highlights the cells it occupies rather than the one cell the caret ended
+        on — and a bare caret still names its own cell (:meth:`span_of`), which is
+        what it named before there was a selection to report.
+
+        Guarded against the mirror coming back the other way
+        (:meth:`_sync_text_selection`). A cell selection is coarser than a caret —
+        it names whole cells, and a five-character hex code is one — so a
+        round trip would jump the caret to the head of the piece it was in the
+        middle of on every arrow key.
+
+        **The selection is the whole of what this changes**, so it ends at
+        :meth:`~...selection.SelectionMixin._select_tiles` — which repaints the
+        highlight and converges everything that follows a pick, the hex dump and
+        the alphabet editor's row included. A render from here would recompose
+        the entire map, and a caret moving changes not one pixel of it: on a
+        region of tens of thousands of cells that is most of a second spent on an
+        arrow key.
         """
         doc = self._doc
         if doc is None or not doc.is_fontmap or not doc.cells:
             return
-        start, stop = doc.text.span_of(offset, offset)
-        self._select_tiles(start, min(stop, len(doc.cells)) - 1)
-        self._refresh_view()
+        cells = doc.text.span_of(first, last)
+        # Through the drawn positions, because the canvas selects those and they
+        # are not the file's cells on a fontmap that spells a dictionary code out
+        # (:meth:`~celpix.core.document.Document.drawn_span`): highlighting cell
+        # $E3's number would land three characters short of the word it draws.
+        start, stop = doc.drawn_span(*cells)
+        self._text_syncing = True
+        try:
+            self._select_tiles(start, min(stop, doc.drawn_positions) - 1)
+        finally:
+            self._text_syncing = False
+
+    def _sync_text_selection(self) -> None:
+        """Follow the canvas selection with the text window's own — the way back.
+
+        The canvas is where a fontmap is *found* and the window is where it is
+        read, so a run of cells picked out of the picture has to say what it says:
+        clicking the tiles of a word is the gesture that asks which word it is,
+        and answering it anywhere but in the text is not answering it. This is
+        why a fontmap selects linearly
+        (:meth:`~...selection.SelectionMixin._forced_selection_shape`) — a run of
+        cells is a run of characters, and a rectangle over a wrapped sentence is
+        not a phrase at all.
+
+        Driven from the selection changing rather than from the refresh cycle,
+        which is what keeps it off the back of a keystroke: an edit re-renders,
+        and a push from there would drag the caret through the string on every
+        letter typed. Its own guard covers the other direction — the canvas
+        selection this window's caret just set.
+        """
+        doc = self._doc
+        if self._text_syncing or not self._text.isVisible():
+            return
+        if doc is None or not doc.is_fontmap or not doc.cells:
+            return
+        cells = self._selected_cells()
+        if not cells:
+            return
+        first, last = doc.text.offsets_of(min(cells), max(cells) + 1)
+        self._text.select_range(first, last)

@@ -224,3 +224,43 @@ def test_arrangement_preset_lookup_round_trips_and_rejects_custom() -> None:
     # column *with* the 2D walk isn't the Mega Drive sprite preset (that's 1D).
     assert arrangement_preset_for(2, 2, "column", True) is None
     assert arrangement_preset_for(3, 1, "row", False) is None
+
+
+def test_block_slots_reads_an_8x16_font_sheet_the_way_its_game_does() -> None:
+    """The mapping a font of stacked glyphs needs, and where it comes from.
+
+    A Link to the Past's dialogue font is 256 8x8 tiles 16 across, and a
+    character is two of them: the text engine turns code ``c`` into
+    ``top = ((c & $F0) << 1) | (c & $0F)`` and ``bottom = top + $10``. That is
+    not affine in ``c``, so no base index expresses it — but it is exactly what
+    "16 blocks per row, two tiles each, tops row before bottoms row" places, and
+    a fontmap over such a font numbers **blocks** rather than tiles
+    (``docs/design/fontmap-entry.md`` §4).
+
+    Asserted against the game's own arithmetic rather than against a table, so
+    what is being tested is the claim and not a transcription of the answer.
+    """
+    layout = BlockLayout(16, 1, 2, "row-interleave")
+    for code in range(128):
+        top = ((code & 0xF0) << 1) | (code & 0x0F)
+        assert layout.block_slots(code) == [top, top + 16]
+    # And the sheet holds 128 of them, not 256: half a glyph is not a glyph.
+    assert layout.blocks(256) == 128
+    assert layout.blocks(255) == 112  # the last whole block *row*, not block
+
+
+def test_block_slots_follows_the_order_a_block_is_filled_in() -> None:
+    """The same question of the other two orders, since it is the order that
+    decides which tiles are in one block rather than where the block sits.
+
+    Stacked (NES/GB 8x16) fills one block before starting the next, so a glyph
+    is a tile and the one straight after it; row-major 2x2 takes the pair beside
+    it and the pair below. Which is the whole reason the order has to be read
+    rather than assumed: both store an 8x16 character as two tiles, and they
+    disagree about which two.
+    """
+    assert BlockLayout(4, 1, 2, "row").block_slots(1) == [2, 3]
+    assert BlockLayout(4, 2, 2, "row").block_slots(1) == [4, 5, 6, 7]
+    assert BlockLayout(4, 2, 2, "column").block_slots(0) == [0, 2, 1, 3]
+    # Plain 1x1 is one tile per block and the block number is the slot.
+    assert BlockLayout(4).block_slots(3) == [3]

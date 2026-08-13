@@ -389,9 +389,10 @@ class TransformMixin:
         doesn't fire the change handler.
         """
         self._selection_shape = CompactComboBox(100)
-        # Whether Rectangle is currently being imposed rather than chosen - what
-        # ``SelectionMixin._sync_selection_shape`` watches for a crossing.
-        self._selection_shape_forced = False
+        # Which shape is currently being imposed rather than chosen, or None where
+        # the preference rules - what ``SelectionMixin._sync_selection_shape``
+        # watches for a crossing.
+        self._selection_shape_forced = None
         for shape, label in (
             (SelectionShape.LINEAR, "Linear"),
             (SelectionShape.RECT, "Rectangle"),

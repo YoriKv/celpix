@@ -163,8 +163,17 @@ class FontAlphabetMixin:
         picture, so what the editor shows and what the map draws cannot drift.
         Over the **font sheet itself** there is no binding and no cells: the tiles
         are the document, so they are decoded and laid out directly. Either way
-        slot *n* is the tile code ``base + n`` draws, which is the whole premise
-        of the top half.
+        slot *n* is the picture code ``base + n`` draws, which is the whole
+        premise of the top half.
+
+        And a **picture** rather than a tile, because a glyph is not always one:
+        an 8x16 font stores each character as two tiles, and which two is what the
+        sheet's own Pattern says (``docs/design/fontmap-entry.md`` §4). So the
+        sheet-side route goes through :func:`~celpix.pipeline.pipeline.
+        glyph_sheet` wherever that grouping is real, which lays one glyph per
+        slot exactly as the fontmap route's cells do. Where it is 1x1 — every 8x8
+        font, and so nearly every font — nothing groups and the plain decode is
+        the one that was always here.
 
         The colour table is never offset in either. The row is folded into the
         indices upstream — by :func:`~celpix.pipeline.pipeline.expand_cells` for
@@ -190,11 +199,31 @@ class FontAlphabetMixin:
             )
         if not doc.tile_count:
             return None
+        grouped = self._sheet_glyph_layout(doc)
+        if grouped is not None:
+            source = pipeline.glyph_sheet(
+                doc,
+                self._registry,
+                FONT_SHEET_COLUMNS,
+                grouped,
+                doc.view.subpalette_row,
+            )
+            if not source.ids:
+                return None
+            return (
+                render_bridge.render_pinned(source.grid, doc.palette),
+                list(source.ids),
+                (
+                    grouped.block_columns * doc.tile_width,
+                    grouped.block_rows * doc.tile_height,
+                ),
+                FONT_SHEET_COLUMNS,
+            )
         engine, preset = self._registry.engine_for(doc.pixel_config.interpret_preset_id)
-        # Every tile, one per slot, in the file's own order — the sheet is what
-        # the *codes* index into, so it is not the view's window and takes none of
-        # its arrangement: a block grouping or a 2D read would place the tiles
-        # somewhere other than where the codes count them.
+        # Every tile, one per slot, in the file's own order. The sheet is what the
+        # *codes* index into, so with nothing grouping them it takes none of the
+        # view's other placement: a 2D read or a re-flow to another width would
+        # put the tiles somewhere other than where the codes count them.
         image, _filled = self._render_arrangement(
             doc.window_bytes(0, doc.tile_count),
             engine,
@@ -208,6 +237,29 @@ class FontAlphabetMixin:
             list(range(doc.tile_count)),
             (doc.tile_width, doc.tile_height),
             FONT_SHEET_COLUMNS,
+        )
+
+    def _sheet_glyph_layout(self, doc) -> BlockLayout | None:  # noqa: ANN001
+        """How ``doc``'s own view groups its tiles into glyphs, or None for one each.
+
+        The sheet-side twin of :meth:`~...session.SessionMixin._glyph_layout_for`,
+        which asks the same question of a *bound* font through a fontmap. Both
+        read the arrangement, because that is where the answer is: a glyph is a
+        block, and how wide the sheet is decides which tiles are in one.
+
+        Its own method rather than the session's because there is no binding to
+        reach through here — the document on screen **is** the font — and taking
+        the view off it directly is what lets the editor follow the Pattern
+        picker the moment it moves.
+        """
+        view = doc.view
+        if view.block_columns <= 1 and view.block_rows <= 1:
+            return None
+        return BlockLayout(
+            max(1, view.columns),
+            view.block_columns,
+            view.block_rows,
+            view.block_order,
         )
 
     def _font_alphabet_status(self, font: Entry) -> str:

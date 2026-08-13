@@ -37,7 +37,7 @@ from celpix.core.arrangement import BLOCK_ORDERS
 from celpix.core.capabilities import ContentKind
 from celpix.core.document import ViewOptions
 from celpix.core.errors import Stage
-from celpix.core.font import HOLE, TEMPLATES, Glyph, GlyphRole, glyphs_from_spec
+from celpix.core.font import HOLE, TEMPLATES, Glyph, glyphs_from_spec
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
 from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, SlotFill
@@ -49,6 +49,7 @@ from celpix.plugins.base import (
     STAGE_DEFAULT_PRESET,
 )
 from celpix.project.workspace import (
+    CompositePiece,
     Entry,
     EntryKind,
     EntrySession,
@@ -57,6 +58,7 @@ from celpix.project.workspace import (
     TileMode,
     TileSource,
     Workspace,
+    can_compose,
     palette_source_for,
 )
 
@@ -160,6 +162,7 @@ _KIND_NAMES = {
     EntryKind.SLICE: "slice",
     EntryKind.BOOKMARK: "bookmark",
     EntryKind.PALETTE: "palette",
+    EntryKind.COMPOSITE: "composite",
 }
 # Derived, so the two directions of the mapping cannot disagree.
 _KINDS_BY_NAME = {name: kind for kind, name in _KIND_NAMES.items()}
@@ -171,8 +174,13 @@ def _entry_dict(
     data: dict[str, object] = {
         "kind": _KIND_NAMES[entry.kind],
         "name": entry.name,
-        "path": _store_path(entry.path, base_dir),
     }
+    # Every kind but a composite is named by a file. A composite is assembled out
+    # of other entries and has none, and its ``path`` is ``""`` — which
+    # :func:`_store_path` would relativise into a path to the project's own
+    # folder, a plausible-looking string naming something that was never there.
+    if entry.kind is not EntryKind.COMPOSITE:
+        data["path"] = _store_path(entry.path, base_dir)
     # The rest of a region's files, when it has any — omitted for the ordinary
     # one-file entry, so nothing that predates multi-file regions changes shape.
     # Stored on a slice too, and not re-derived from its parent on load: a slice
@@ -209,6 +217,12 @@ def _entry_dict(
         # The codec the palette file was last read with — applying the entry
         # later must decode the same way, whatever the dropdown says then.
         data["palette_preset_id"] = entry.palette_preset_id
+    elif entry.kind is EntryKind.COMPOSITE:
+        # The whole of what a composite is: an ordered list of other entries,
+        # written as positions (``docs/design/composite-entry.md``). Its ``path``
+        # above is ``""`` — it comes from no file — which is what the reader uses
+        # to tell it apart from anything that does.
+        data["pieces"] = _pieces_list(entry, entries)
     # What the bytes are, as opposed to how the entry is bounded above. Omitted
     # at the default so a pixel entry — every entry any older project holds — is
     # written exactly as it was before tilemaps existed, and omitted for a
@@ -345,13 +359,18 @@ def _font_dict(entry: Entry) -> dict[str, object]:
 def _glyph_dict(glyph: Glyph) -> dict[str, object]:
     """One named code, written the way it is meant: a character or a command.
 
-    A character spells itself and says nothing else, so it is ``text`` alone. A
-    command carries a ``name`` — what the string holds inside its brackets — its
-    ``role``, and a ``description`` where the author wrote one. Split by role
-    rather than written uniformly because the two fields are different promises:
-    ``text`` is what a tile *draws*, ``name`` is what a reader *types*.
+    A character spells itself and says nothing else, so it is ``text`` alone —
+    including a **dictionary** code, which spells several of them and is still
+    only its spelling: ``dict`` is what having more than one character *is*
+    (:class:`~celpix.core.font.GlyphRole`), so writing the role beside it would
+    be a second copy of a fact the ``text`` already carries, free to disagree
+    with it. A command carries a ``name`` — what the string holds inside its
+    brackets — its ``role``, a ``description`` where the author wrote one, and
+    ``params`` where it swallows cells after itself. Split by role rather than
+    written uniformly because the two fields are different promises: ``text`` is
+    what a tile *draws*, ``name`` is what a reader *types*.
     """
-    if glyph.role is GlyphRole.TEXT:
+    if glyph.spells:
         return {"code": glyph.code, "text": glyph.text}
     data: dict[str, object] = {
         "code": glyph.code,
@@ -360,6 +379,8 @@ def _glyph_dict(glyph: Glyph) -> dict[str, object]:
     }
     if glyph.description:
         data["description"] = glyph.description
+    if glyph.params:
+        data["params"] = glyph.params
     return data
 
 
@@ -406,6 +427,12 @@ class CopiedEntry:
     source_index: int
     tile_source: TileSource | None
     tile_source_index: int
+    #: One position per piece of a copied **composite**, in order — the same join
+    #: as ``tile_source_index`` and read the same way, ``-1`` for a pad and for a
+    #: source that was not part of the copy. A composite's pieces are entries and
+    #: an entry is not a value, so without this a pasted composite arrives with
+    #: its list emptied (``docs/design/composite-entry.md``).
+    piece_sources: tuple[int, ...] = ()
 
 
 def entries_payload(
@@ -461,12 +488,17 @@ def entries_from_payload(raw: object) -> list[CopiedEntry]:
         except Exception:  # noqa: BLE001 — a garbage entry degrades, never aborts
             continue
         binding = _tile_source(record)
+        pieces = _pieces_from(record)
+        # The pieces themselves ride on the entry; only the entry each one names
+        # has to come back beside it, for the reason the binding does.
+        entry.pieces = tuple(piece for piece, _at in pieces)
         out.append(
             CopiedEntry(
                 entry=entry,
                 source_index=_int(record.get("source_index"), -1),
                 tile_source=binding[0] if binding is not None else None,
                 tile_source_index=binding[1] if binding is not None else -1,
+                piece_sources=tuple(at for _piece, at in pieces),
             )
         )
     return out
@@ -501,9 +533,12 @@ def load_project(path: str) -> LoadedProject:
         except Exception:  # noqa: BLE001 — a garbage entry degrades, never aborts
             parsed.append(None)
     _bind_tile_sources(data.get("entries", []), parsed)
+    # After the bindings and for the same reason: both turn a stored position
+    # back into an object, and both can only do it once every entry exists.
+    _bind_composite_pieces(data.get("entries", []), parsed)
     index = _int(data.get("current"), -1)
     current = parsed[index] if 0 <= index < len(parsed) else None
-    if current is not None and current.kind not in (EntryKind.FILE, EntryKind.SLICE):
+    if current is not None and not current.kind.has_document:
         # A bookmark or palette can't be shown; a hand-edited index degrades.
         current = None
     # Tolerate a missing/garbage filter: unknown ids are harmless (they just name
@@ -523,14 +558,29 @@ def load_project(path: str) -> LoadedProject:
 
 
 def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
-    path = raw["path"]  # type: ignore[index] — non-dict/missing raises: entry skipped
-    if not isinstance(path, str) or not path:
-        raise ValueError("entry has no usable path")
-    path = _resolve_path(path, base_dir)
     name = raw.get("name")
     # Anything unrecognised (hand-edited, or a kind a newer build wrote) reads
     # as a plain file rather than failing the entry.
     kind = _KINDS_BY_NAME.get(raw.get("kind"), EntryKind.FILE)
+    if kind is EntryKind.COMPOSITE:
+        # Alone among the kinds in having no path — it comes from no file — which
+        # is why it is answered before the path check below rather than inside
+        # it. Its pieces arrive empty and are filled in by
+        # :func:`_bind_composite_pieces` once every entry they name is parsed.
+        return Entry(
+            name=name if isinstance(name, str) and name else "composite",
+            kind=kind,
+            path="",
+            palette_row_base=_int(raw.get("palette_row_base"), None),
+            **_font_from(raw),
+            session=_session_from(raw.get("session")),
+            pending_view=_view_from(raw.get("view")),
+            pending_palette=_palette_from(raw.get("palette"), base_dir),
+        )
+    path = raw["path"]  # type: ignore[index] — non-dict/missing raises: entry skipped
+    if not isinstance(path, str) or not path:
+        raise ValueError("entry has no usable path")
+    path = _resolve_path(path, base_dir)
     if kind is EntryKind.PALETTE:
         # A palette entry is just a reference plus how to read it — the container
         # that says which of its bytes are colour, and the codec that decodes
@@ -749,6 +799,116 @@ def _bind_tile_sources(raw_entries: list, parsed: list[Entry | None]) -> None:
         source, at = found
         target = parsed[at] if 0 <= at < len(parsed) else None
         entry.tile_source = replace(source, entry=target) if target else None
+
+
+def _pieces_list(entry: Entry, entries: list[Entry]) -> list[dict[str, object]]:
+    """A composite's pieces as JSON, in order — positions, like a tile source.
+
+    A piece holds the source :class:`Entry` itself and a file cannot name an
+    object, so this is where it becomes a **position** and
+    :func:`_bind_composite_pieces` is where it becomes an object again. The same
+    two-places rule :func:`_tile_source_dict` states, for the same reason.
+
+    Every length here is **bytes**, into the source's resolved data — its
+    decompressed stream where it is compressed, its own bytes where it is not
+    (:class:`~celpix.project.workspace.CompositePiece`). Which keys appear says
+    which shape the piece is:
+
+    - A **pad** writes ``length`` and no ``entry_index``: it names nothing, and
+      its length is the whole of it.
+    - A **whole-entry** source writes ``entry_index`` and ``measured`` — how many
+      bytes the run last resolved to, which is what lets a composite keep its
+      shape when that piece cannot be read on the next open.
+    - A **ranged** source writes ``length`` (and ``offset`` where it is not 0) as
+      well, because those are the user's request rather than an observation, and
+      a request has to survive a load that cannot read the source
+      (``docs/design/composite-entry.md``).
+
+    ``-1`` for a source that is no longer in the list, which round-trips to a pad
+    of the right length rather than to whatever now sits at a stale index.
+    """
+    out: list[dict[str, object]] = []
+    for piece in entry.pieces:
+        data: dict[str, object] = {}
+        if piece.is_pad:
+            data["length"] = piece.extent
+            out.append(data)
+            continue
+        data["entry_index"] = next(
+            (i for i, other in enumerate(entries) if other is piece.entry), -1
+        )
+        if piece.offset:
+            data["offset"] = piece.offset
+        if piece.length:
+            data["length"] = piece.length
+        # Omitted when it says nothing a reload would not measure again anyway,
+        # so an unopened composite's pieces stay as small as their request.
+        if piece.measured:
+            data["measured"] = piece.measured
+        out.append(data)
+    return out
+
+
+def _pieces_from(raw: dict) -> list[tuple[CompositePiece, int]]:
+    """Stored pieces and the entry position each named, in order.
+
+    The positions come back separately because the entries they name may not be
+    parsed yet — :func:`_bind_composite_pieces` resolves them once they all are.
+    A piece with no ``entry_index`` is a pad and gets ``-1``, which resolves to
+    the same thing a missing source does: blank tiles, at the length recorded.
+
+    Tolerant like the rest of this path — a malformed piece becomes a pad rather
+    than failing the entry, so a composite opens with a hole in it and can be
+    repaired in the dialog instead of being lost.
+    """
+    items = raw.get("pieces")
+    if not isinstance(items, list):
+        return []
+    out: list[tuple[CompositePiece, int]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            out.append((CompositePiece(), 0))
+            continue
+        # ``length`` on a source *is* a range — the writer omits it for a whole
+        # entry — so a file that carries one pins that run to those bytes.
+        length = max(0, _int(item.get("length"), 0) or 0)
+        offset = max(0, _int(item.get("offset"), 0) or 0)
+        measured = max(0, _int(item.get("measured"), 0) or 0)
+        out.append(
+            (
+                CompositePiece(offset=offset, length=length, measured=measured),
+                _int(item.get("entry_index"), -1),
+            )
+        )
+    return out
+
+
+def _bind_composite_pieces(raw_entries: list, parsed: list[Entry | None]) -> None:
+    """Point every parsed composite piece at the entry its position named.
+
+    Resolved against ``parsed`` **including the entries that failed to parse**,
+    for the reason :func:`_bind_tile_sources` gives: a stored index counts those,
+    so resolving against the survivors would shift every piece past a dropped one
+    onto its neighbour — and in a composite that is not a wrong binding but a
+    wrong *picture*, since the runs are laid end to end.
+
+    A position naming nothing, or naming something a composite may not read
+    (:func:`~celpix.project.workspace.can_compose` — another composite, a map, a
+    palette), leaves a pad of the recorded length. So a composite whose source
+    has gone keeps its shape and every map indexing it still lands on the right
+    tiles; the run is simply blank, and the load says so.
+    """
+    for raw, entry in zip(raw_entries, parsed):
+        if entry is None or entry.kind is not EntryKind.COMPOSITE:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        pieces = []
+        for piece, at in _pieces_from(raw):
+            target = parsed[at] if 0 <= at < len(parsed) else None
+            usable = target is not None and can_compose(entry, target)
+            pieces.append(replace(piece, entry=target if usable else None))
+        entry.pieces = tuple(pieces)
 
 
 def _palette_regions(raw: dict) -> PaletteRegions:

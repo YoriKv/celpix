@@ -69,7 +69,6 @@ from celpix.plugins.registry import Registry, default_registry
 from celpix.project import projectfile
 from celpix.project.workspace import (
     Entry,
-    EntryKind,
     MissingPreset,
     PaletteMode,
     SortKey,
@@ -136,6 +135,7 @@ from celpix.ui.undo_commands import (
 from celpix.ui.widgets import (
     counted,
     make_action,
+    show_in_file_manager,
 )
 from celpix.ui.window_layout import WindowLayout
 
@@ -353,6 +353,10 @@ class MainWindow(
         # Which run of typing the next text edit belongs to, so consecutive
         # keystrokes merge into one undo step (``main_window/text.py``).
         self._text_run = 0
+        # Whether a selection currently on its way *out* of the text window is
+        # being applied, so the canvas selection it sets is not pushed straight
+        # back in (``main_window/text.py``, ``_sync_text_selection``).
+        self._text_syncing = False
         # Whether the user has shut the text window this session. A fontmap opens
         # it by itself; closing it is how that is turned off, and View ▸ Text is
         # how it comes back (``main_window/text.py``, ``_sync_text``).
@@ -542,6 +546,7 @@ class MainWindow(
         self._files_panel.container_info_requested.connect(self._show_container_info)
         self._files_panel.use_palette_requested.connect(self._use_palette_entry)
         self._files_panel.edit_slice_requested.connect(self._edit_slice)
+        self._files_panel.edit_composite_requested.connect(self._edit_composite)
         self._files_panel.jump_to_source_requested.connect(self._jump_to_slice_source)
         self._files_panel.jump_to_bookmark_requested.connect(self._jump_to_bookmark)
         self._files_panel.bookmark_as_palette_requested.connect(
@@ -858,7 +863,7 @@ class MainWindow(
         (:meth:`~celpix.project.workspace.Workspace.add_index_for`)."""
         self._workspace.insert(entry, self._workspace.add_index_for(entry))
         self._sync_locate_action()
-        if entry.kind in (EntryKind.FILE, EntryKind.SLICE):
+        if entry.kind.has_document:
             self._activate_entry(entry)
 
     def _apply_close_entry(self, entry: Entry) -> None:
@@ -867,10 +872,17 @@ class MainWindow(
         # Asked before the close, while the bindings still resolve: every map
         # drawing through this file (or through one of its slices) holds a decoded
         # copy of the art and would go on showing it.
-        orphaned = self._maps_drawing_from([entry, *self._workspace.children_of(entry)])
+        going = [entry, *self._workspace.children_of(entry)]
+        orphaned = self._maps_drawing_from(going)
         self._workspace.close(entry)
         self._sync_locate_action()
-        self._reresolve_bound_art(orphaned)
+        # The banks first: a composite losing a piece has to be re-assembled
+        # before the maps drawing through it are re-read, or they would each
+        # borrow the stale join and then be right about it (
+        # ``docs/design/composite-entry.md``). Maps bound to a rebuilt bank join
+        # the list the same way maps bound to the closed entry did.
+        rebuilt = self._reassemble_composites(going)
+        self._reresolve_bound_art(orphaned + self._maps_drawing_from(rebuilt))
         # Closing the bank a map is painted through takes its pixels away without
         # the view moving, so the mode has to be re-asked here as well as on an
         # entry switch (``session.SessionMixin._drop_unavailable_edit_mode``).
@@ -900,7 +912,11 @@ class MainWindow(
         # back, and it is that resolution which tells a map its art has returned.
         # Before the activation below, so a map that is about to come on screen is
         # already drawing the tiles it had rather than a page of placeholders.
-        self._reresolve_bound_art(self._maps_drawing_from([e for _, e in victims]))
+        restored = [e for _, e in victims]
+        rebuilt = self._reassemble_composites(restored)
+        self._reresolve_bound_art(
+            self._maps_drawing_from(restored) + self._maps_drawing_from(rebuilt)
+        )
         if any(entry is was_current for _, entry in victims):
             self._activate_entry(was_current)
 
@@ -1055,6 +1071,23 @@ class MainWindow(
             shortcut=QKeySequence("Ctrl+B"),
             enabled=False,
         )
+        # Always available, unlike the four above: a composite view is assembled
+        # out of entries rather than carved out of the one on screen, so it needs
+        # nothing of the current view — not even an entry.
+        #
+        # **No mnemonic** (as for Open Project Folder below), and not for want of
+        # trying: every letter of "New Composite View…" is spoken for here, "V"
+        # most pointedly of all — New Slice from &View holds it, spelling the
+        # same word. A silent clash (Qt cycles between the two rows instead of
+        # activating either) is worse than a row reached by arrowing to it.
+        make_action(
+            self,
+            "New Composite View…",
+            self._new_composite,
+            menu=file_menu,
+            tip="Assemble one tile source from several files and slices,\n"
+            "so a tilemap can index the window the hardware loaded",
+        )
 
         self._change_container_action = make_action(
             self,
@@ -1108,6 +1141,21 @@ class MainWindow(
 
         file_menu.addSeparator()
 
+        # No mnemonic, for the same reason as New Composite View above: every
+        # letter of "Open Project Folder" is taken in this menu - "F" by New
+        # Slice &from Selection, "O"/"P"/"J" by the project rows themselves.
+        self._open_project_folder_action = make_action(
+            self,
+            "Open Project Folder…",
+            self._open_project_folder,
+            menu=file_menu,
+            tip="Show the open .celpix project in a file manager,\n"
+            "where its plugins/ folder and its files live",
+            enabled=False,  # armed by an open project
+        )
+        # A project can be opened, closed or first saved without a menu rebuild -
+        # recompute the row whenever the File menu opens (as Export does).
+        file_menu.aboutToShow.connect(self._sync_project_folder_action)
         make_action(
             self,
             "Open plu&gins folder…",
@@ -1204,6 +1252,24 @@ class MainWindow(
         """Panels ▸ Reset Panel Layout — the docks as a fresh install has them."""
         self._window_layout.reset()
         self.statusBar().showMessage("Panel layout reset.")
+
+    def _sync_project_folder_action(self) -> None:
+        """Only a session with a project file behind it has a folder to open."""
+        self._open_project_folder_action.setEnabled(self._project_path is not None)
+
+    def _open_project_folder(self) -> None:
+        """File ▸ Open Project Folder — the folder the .celpix file sits in.
+
+        Reveals the project file rather than just opening its folder: the folder
+        is usually the user's own working directory, and the project is what
+        they came looking for in it.
+        """
+        if self._project_path is None:
+            return
+        if not show_in_file_manager(self._project_path):
+            self.statusBar().showMessage(
+                f"Cannot show {self._project_path} in a file manager."
+            )
 
     def _open_plugins_folder(self) -> None:
         if self._plugin_dir is None:

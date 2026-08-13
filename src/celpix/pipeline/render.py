@@ -744,7 +744,11 @@ def tile_source_span(doc: Document, limit: int | None = None) -> range:
         start, stop = 0, len(doc.chain.source)
     else:
         base = doc.tile_base_index
-        start, stop = max(0, -base), doc.tile_count - base
+        # In whatever unit the indices are: tiles for every ordinary map, and
+        # **glyphs** where a font's are several tiles each
+        # (:attr:`~celpix.core.document.Document.glyph_count`). Reading the
+        # tile count there would offer twice the codes the sheet has letters.
+        start, stop = max(0, -base), doc.glyph_count - base
     if limit is not None:
         stop = min(stop, limit + 1)
     return range(start, max(start, stop))
@@ -786,6 +790,12 @@ def tile_source_ids(doc: Document, limit: int | None = None) -> Sequence[int]:
     """
     span = tile_source_span(doc, limit)
     chain = doc.chain
+    if doc.glyph_layout is not None:
+        # A **glyph** is already the unit its index is counted in, so every one
+        # of them names a whole unit and there is nothing to narrow: the
+        # alignment question below is what a *tile* number has to answer when the
+        # thing it names is bigger than it, and a block number never does.
+        return span
     if chain is not None:
         unit, stride, offset = doc.stamp_cells, chain.source_columns, 0
     else:
@@ -876,6 +886,57 @@ def tile_source_image(
         ]
     tiles, layout = expand_cells(doc, reg, cells, columns, doc.stamp_tiles)
     return TileSheet(compose_tiles(tiles, layout, None), ids)
+
+
+def glyph_sheet(
+    doc: Document,
+    reg: Registry,
+    columns: int,
+    layout: BlockLayout,
+    palette_row: int = 0,
+) -> TileSheet:
+    """A **font sheet** laid out one glyph per slot, where a glyph is a block.
+
+    The alphabet editor's picture of a font entry that has no map drawing
+    through it yet — the sheet on its own, which is where a table is typed up
+    before any string has been carved out to test it against
+    (``docs/design/fontmap-entry.md`` §4). :func:`tile_source_image` answers the
+    other direction, through a fontmap's binding, and the two have to agree
+    about what slot *n* holds: it is the picture code ``base + n`` draws.
+
+    ``layout`` is the **font's own** arrangement and decides both halves — which
+    tiles make up glyph *n* (:meth:`~celpix.core.arrangement.BlockLayout.
+    block_slots`) and how many glyphs there are. ``columns`` is the editor's own
+    width and is unrelated to it: the sheet is re-flowed to whatever reads best
+    in the window, and only the grouping travels.
+
+    ``palette_row`` is folded into the indices, as
+    :func:`expand_cells` does it for the map's synthetic cells, so the caller
+    renders the result without offsetting the colour table a second time.
+    """
+    tiles = tile_bank(doc, reg)
+    ids = list(range(layout.blocks(len(tiles))))
+    blank = IndexGrid(doc.tile_width, doc.tile_height)
+    shift = palette_row * (1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg))
+    across = max(1, layout.block_columns)
+    down = max(1, layout.block_rows)
+    drawn: dict[int, object] = {}
+    out: list = []
+    for glyph in ids:
+        run = layout.block_slots(glyph)
+        for at in range(across * down):
+            slot = run[at] if at < len(run) else -1
+            tile = drawn.get(slot)
+            if tile is None:
+                tile = tiles[slot] if 0 <= slot < len(tiles) else blank
+                # Direct-colour grids carry their own ARGB and index no palette,
+                # so there is no row to fold into them.
+                if shift and tile.bytes_per_pixel == 1:
+                    tile = tile.shifted(shift)
+                drawn[slot] = tile
+            out.append(tile)
+    placed = BlockLayout(max(1, columns) * across, across, down, "row")
+    return TileSheet(compose_tiles(out, placed, None), ids)
 
 
 # A sprite sheet is allocated whole, one byte per pixel, and every number that
