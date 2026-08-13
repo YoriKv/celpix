@@ -657,6 +657,32 @@ def test_a_name_two_codes_share_falls_back_to_hex() -> None:
     assert alphabet.encode("[wait][$3B]").codes == (0x2A, 0x3B)
 
 
+def test_a_spelling_two_codes_share_falls_back_to_hex_the_same_way() -> None:
+    """The same promise, and fonts really do state one twice.
+
+    A Link to the Past's sheet draws a **second** ``I``, ``i`` and ``!`` at
+    ``$5F``-``$61``, above the ones at ``$08``, ``$22`` and ``$3E``: they are the
+    name-entry charset's, and `Text_FilterPlayerNameCharacters` rewrites them to
+    the first three before a name is drawn in dialogue. Reading both as ``I``
+    would type the second back to ``$08`` — a string decoding to something that
+    lands on a different cell, which is the one thing this form never does.
+
+    The pair-spelling case too, since a dictionary code is a spelling as much as
+    a letter is.
+    """
+    alphabet = FontAlphabet(
+        [*sequential(0, "Ii!"), Glyph(0x5F, "I"), Glyph(0x60, "i"), Glyph(0x61, "!")]
+    )
+    text = alphabet.decode([0, 0x5F, 1, 0x60, 2, 0x61])
+
+    assert text.body == "I[$5F]i[$60]![$61]"
+    assert list(alphabet.encode(text.body).codes) == [0, 0x5F, 1, 0x60, 2, 0x61]
+
+    pairs = FontAlphabet([*sequential(0, "AB"), Glyph(0x20, "th"), Glyph(0x21, "th")])
+    assert pairs.decode([0x20, 0x21]).body == "th[$21]"
+    assert pairs.encode("th[$21]").codes == (0x20, 0x21)
+
+
 def test_a_bracketed_name_the_font_lacks_is_reported_not_written() -> None:
     """Reported whole, the rule an unparseable ``[...]`` already followed: encoded
     letter by letter it would silently write the punctuation as glyphs."""

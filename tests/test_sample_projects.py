@@ -297,6 +297,17 @@ def test_the_alttp_sample_project_reads_its_dialogue_as_sentences() -> None:
     # is the whole statement: 16 blocks per sheet row, two tiles each, tops row
     # then bottoms row (``docs/design/fontmap-entry.md`` §4).
     font = next(e for e in workspace.entries if e.name.startswith("Dialogue font"))
+
+    # The character space is the game's own: `.widths` in vwf.asm has an entry
+    # for $00-$62 and stops, which the disassembly remarks on itself. $5F-$61 are
+    # a second I, i and ! — `Text_FilterPlayerNameCharacters` rewrites a stored
+    # name's $5F/$60/$61 to $08/$22/$3E, which are exactly those three — so they
+    # keep their codes here and read as hex, the canonical spellings having been
+    # claimed thirty codes earlier.
+    assert len(font.font_chars) == 0x63
+    assert font.font_chars[0x5F:0x62] == "Ii!"
+    assert font.font_chars[0x08], font.font_chars[0x22] == ("I", "i")
+
     view = font.pending_view
     assert (view.columns, view.block_columns, view.block_rows) == (16, 1, 2)
     assert view.block_order == "row-interleave"
@@ -309,3 +320,12 @@ def test_the_alttp_sample_project_reads_its_dialogue_as_sentences() -> None:
     for code in range(128):
         top = ((code & 0xF0) << 1) | (code & 0x0F)
         assert layout.block_slots(code) == [top, top + 16]
+
+    # And the same bytes carved a second time with the plain arrangement, which
+    # is how the console actually has them: `CopyFontToVram` copies all $1000 to
+    # VRAM as one 2bpp block for BG3, so every tile is also an ordinary 8x8 tile
+    # a tilemap can index — which is what the HUD and the file select do, and
+    # what the sets past tile $C7 are for.
+    flat = next(e for e in workspace.entries if e.name.startswith("Font sheet as BG3"))
+    assert (flat.slice_offset, flat.slice_length) == (font.slice_offset, 0x1000)
+    assert (flat.pending_view.block_columns, flat.pending_view.block_rows) == (1, 1)

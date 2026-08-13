@@ -828,6 +828,54 @@ def test_the_canvas_and_the_text_mirror_one_anothers_selection(qtbot, tmp_path) 
     assert field.textCursor().position() == 5
 
 
+def test_the_mirror_holds_where_a_cell_is_not_one_canvas_slot(qtbot, tmp_path) -> None:
+    """The caret's answer travels through three numberings, and two of them moved.
+
+    A character comes from a cell, a cell is drawn at one or more **positions**,
+    and the canvas selects **tiles**. Both of the last two steps used to be
+    identity on every fontmap there was, so both were invisible: a dictionary
+    code that spells out is several positions to one cell, and an 8x16 glyph is
+    two tiles to one position. Skip either and the highlight lands short of the
+    word by exactly that ratio.
+
+    Driven through the real cursor, so what is exercised is the signal path the
+    user's arrow key takes rather than the handler on its own.
+    """
+    from PySide6.QtGui import QTextCursor
+
+    def pick(window, first, last):
+        field = window._text._edit
+        cursor = field.textCursor()
+        cursor.setPosition(first)
+        cursor.setPosition(last, QTextCursor.MoveMode.KeepAnchor)
+        field.setTextCursor(cursor)
+
+    # Two tiles per glyph: "CAB" over an 8x16 font, so cell 1 is slots 2 and 3.
+    window, _bank, entry = _stacked_font(qtbot, tmp_path, [2, 0, 1], chars="ABCD")
+    window._activate_entry(entry)
+    window._show_text()
+    assert window._doc.tiles_per_cell == 2
+
+    pick(window, 1, 2)  # the "A"
+    assert window._selection_tiles() == [2, 3]
+    assert window._selected_cells() == [1]
+
+    # And several positions per cell: "BAD" is the one cell $0A, drawn as three.
+    window, _entry = _typing(
+        qtbot, tmp_path, [2, 0x0A, 1], 0, chars="ABCDE", named=(Glyph(0x0A, "BAD"),)
+    )
+    assert window._text.body == "CBADB"
+
+    pick(window, 1, 4)  # the whole word
+    assert window._selection_tiles() == [1, 2, 3]
+    assert window._selected_cells() == [1]
+
+    # A caret inside it names the same cell and the same three slots: the word is
+    # one thing to point at, however many glyphs draw it.
+    pick(window, 2, 2)
+    assert window._selection_tiles() == [1, 2, 3]
+
+
 def test_backspace_blanks_a_whole_code_and_leaves_the_length_alone(
     qtbot, tmp_path
 ) -> None:

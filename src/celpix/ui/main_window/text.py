@@ -373,19 +373,34 @@ class TextMixin:
         the entire map, and a caret moving changes not one pixel of it: on a
         region of tens of thousands of cells that is most of a second spent on an
         arrow key.
+
+        **Three numberings, and the answer travels through all of them**: the
+        caret is at a character, a character comes from a cell, a cell is drawn at
+        one or more positions, and the canvas selects *tiles*. Two of those steps
+        used to be identity on every fontmap in existence, which is why they were
+        not there — a dictionary code that spells out is several positions to one
+        cell, and an 8x16 glyph is two tiles to one position. Skipping either
+        lands the highlight short of the word by whatever the ratio is.
         """
         doc = self._doc
         if doc is None or not doc.is_fontmap or not doc.cells:
             return
         cells = doc.text.span_of(first, last)
-        # Through the drawn positions, because the canvas selects those and they
-        # are not the file's cells on a fontmap that spells a dictionary code out
+        # Cells -> drawn positions, because a dictionary code the sheet cannot
+        # draw takes one position per character it spells
         # (:meth:`~celpix.core.document.Document.drawn_span`): highlighting cell
-        # $E3's number would land three characters short of the word it draws.
+        # $E3's own number would land three characters short of the word it draws.
         start, stop = doc.drawn_span(*cells)
+        stop = min(stop, doc.drawn_positions)
+        # And positions -> tiles, which is what the canvas selects in: a glyph of
+        # an 8x16 font is two of them, so a run of ``n`` characters is ``2n``
+        # slots and the last of them is the *second* tile of the last glyph
+        # (:meth:`~...tilemap_edit.TilemapEditMixin._selected_positions` divides
+        # by the same number coming back).
+        per_cell = max(1, doc.tiles_per_cell)
         self._text_syncing = True
         try:
-            self._select_tiles(start, min(stop, doc.drawn_positions) - 1)
+            self._select_tiles(start * per_cell, stop * per_cell - 1)
         finally:
             self._text_syncing = False
 

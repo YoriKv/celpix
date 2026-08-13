@@ -781,6 +781,12 @@ class FontAlphabet:
 
         The four cases of :meth:`decode`, split out so they can be memoized per
         code rather than re-decided per cell.
+
+        **Whichever it is, only the code that owns the spelling keeps it.** A
+        name and a run of characters are the same promise — that what is written
+        types back to the cell it came out of — so two codes claiming one
+        answer is settled the same way for both: the first keeps it and the
+        second reads as its own hex.
         """
         glyph = self._by_code.get(code)
         if glyph is None or not glyph.spells:
@@ -791,6 +797,15 @@ class FontAlphabet:
                 # codes given the same name would both parse back to the first,
                 # so the second keeps its hex rather than lying.
                 return f"[{glyph.text}]"
+            return self.hex_code(code)
+        # And the same rule for a **spelling**, which a font really does state
+        # twice: A Link to the Past's sheet draws a second `I`, `i` and `!` at
+        # $5F-$61 for the name-entry charset, above the ones at $08, $22 and $3E
+        # (``docs/design/fontmap-entry.md`` §5). Both would read as `I` and both
+        # would type back to $08, which is the one thing this form never does —
+        # so the code that did not claim the spelling keeps its hex.
+        owner = self._by_text.get(glyph.text)
+        if owner is None or owner.code != code:
             return self.hex_code(code)
         # ``[`` opens a code, so a font with one as a *letter* doubles it here or
         # the string it decodes to will not parse back.
