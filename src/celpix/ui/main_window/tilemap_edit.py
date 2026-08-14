@@ -298,10 +298,19 @@ class TilemapEditMixin:
         Clamped to what the field can hold rather than left for :meth:`encode` to
         mask down later, the rule :meth:`_set_cell_index` follows: a row wider
         than three bits would come back as a row nobody asked for.
+
+        **Grown to whole groups where the format stores one row for several
+        cells** (:meth:`~celpix.core.document.Document.palette_row_group`). An
+        NES nametable colours a 2x2 square of cells from one two-bit field, so
+        setting one cell's row sets its neighbours' whether or not they were
+        selected — the only choice is whether they change *now*, on screen and in
+        one undo step, or silently on the next save. They change now, and the
+        status line says how many cells it took, because the alternative is an
+        edit whose picture is a lie until the file is reloaded.
         """
         doc = self._doc
-        indices = self._selected_cells()
-        if doc is None or doc.cells is None or not indices:
+        picked = self._selected_cells()
+        if doc is None or doc.cells is None or not picked:
             return
         limit = self._cell_palette_row_limit()
         if limit is None:
@@ -311,13 +320,27 @@ class TilemapEditMixin:
             )
             return
         row = max(0, min(self._named_row_picked(), limit))
+        # Dict rather than set: the group is walked in file order and a cell can
+        # be reached from any of the several selected cells sharing its field.
+        spread: dict[int, None] = {}
+        for at in picked:
+            for member in doc.palette_row_group(at):
+                spread.setdefault(member, None)
+        indices = list(spread)
         cells = list(doc.cells)
         for at in indices:
             cells[at] = replace(cells[at], palette_row=row)
         if self._apply_cells(cells, "set cell palette row"):
             shown = self._drawn_palette_row(row)
+            note = ""
+            if len(indices) > len(picked):
+                across, down = doc.palette_row_granularity
+                note = (
+                    f" This format colours {across}x{down} cells at a time,"
+                    f" so {counted(len(indices) - len(picked), 'more cell')} changed."
+                )
             self.statusBar().showMessage(
-                f"Set {counted(len(indices), 'cell')} to subpalette {shown}."
+                f"Set {counted(len(indices), 'cell')} to subpalette {shown}.{note}"
             )
 
     def _set_cell_index(self, value: int) -> None:
@@ -617,6 +640,14 @@ class TilemapEditMixin:
         (:attr:`~celpix.core.document.Document.cells_editable`). A chained map does
         land here: its cells are coordinates, and writing one restamps that
         position.
+
+        **Row groups are settled before the guard**, not after, so a paste whose
+        only difference from what is there is a row the format cannot store is
+        the no-op it will turn out to be
+        (:meth:`~celpix.core.document.Document.snapped_palette_rows`). Doing it
+        here rather than in each gesture is what keeps the coarse formats from
+        being a special case in the paste, the stamp, the clear and the fill
+        alike — every one of them arrives through this method.
         """
         doc = self._doc
         entry = self._workspace.current
@@ -624,6 +655,7 @@ class TilemapEditMixin:
             return False
         if doc is None or doc.cells is None or entry is None:
             return False
+        cells = doc.snapped_palette_rows(cells)
         if cells == doc.cells and caret is None:
             return False
         self._push_command(

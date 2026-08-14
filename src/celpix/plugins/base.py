@@ -842,6 +842,45 @@ class TilemapCodecPlugin(Plugin, Protocol):
         """
         ...
 
+    def palette_row_granularity(self, params: dict[str, Any]) -> tuple[int, int]:
+        """How many cells ``(across, down)`` are forced to share one palette row.
+
+        Optional, and the third question about the colour field after
+        :meth:`has_palette_rows` (is there one) and :meth:`palette_row_limit`
+        (how wide). This one is *how many cells one answer covers*, and it is
+        ``(1, 1)`` for every format whose row is a field of the cell word.
+
+        It is not for every format. An **NES nametable** keeps its rows in a
+        separate quarter-resolution plane at the end of the page, where one
+        two-bit field colours a 2x2 square of cells
+        (``docs/rom-mapping/console-nes.md`` §4), so
+        this reports ``(2, 2)``. The cells still each carry the row they are
+        drawn in — :class:`~celpix.core.tilemap.Cell` is unchanged and the
+        renderer asks no questions — but only one of the four can be *stored*,
+        so a host that wrote one cell's row would be writing its neighbours'
+        too, invisibly.
+
+        Declaring it is what lets the host write the group instead: an assignment
+        grows to cover every cell sharing the field before it is applied, so what
+        lands on screen is what a reload would show
+        (``docs/design/tilemap-entry.md`` §4). The group is resolved against the
+        width the **format** states rather than the view's, since the plane is
+        addressed in the file's own rows
+        (:meth:`~celpix.core.document.Document.palette_row_group`) — which is
+        why a format declaring a coarse granularity has to state its width too.
+
+        A plugin that omits this method has cells that answer for themselves,
+        which is the safe direction: an assignment that writes one cell can only
+        ever be too narrow, where one that writes four on a format storing one
+        per cell would silently recolour three the user never selected.
+
+        Encoding stays the codec's own problem. Cells can still reach
+        :meth:`encode` disagreeing inside a group — a paste carries the rows it
+        was cut with — and the codec resolves that the way it resolves a too-wide
+        index: by picking, not by raising.
+        """
+        ...
+
     def has_line_flag(self, params: dict[str, Any]) -> bool:
         """Whether this format ends a line on a **bit the cell carries**.
 

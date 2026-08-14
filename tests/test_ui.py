@@ -279,7 +279,9 @@ def test_the_cell_format_picker_tags_each_entry_with_its_layout(
     }
 
     assert tagged["preset.tilemap.snes-bg"].startswith("[T] ")
-    assert tagged["preset.tilemap.scgcad-object"].startswith("[S] ")
+    # A code format's tag comes out of what it *declares* to the host, which is
+    # the whole reason `FormatInfo.declares` exists (`plugins/formats.py`).
+    assert tagged["format.tilemap.scgcad-object"].startswith("[S] ")
     assert tagged["preset.tilemap.text-8bit"].startswith("[F] ")
     # Every entry carries one, so the column reads as a column rather than as
     # some formats being annotated and the rest not.

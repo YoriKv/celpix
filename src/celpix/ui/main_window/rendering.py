@@ -38,6 +38,7 @@ from celpix.ui.main_window.interpretation import (
     COLS_CELLS_TIP,
     COLS_FRAMES_TIP,
     COLS_STAMPED_TIP,
+    COLS_STAMPS_TIP,
     COLS_TIP,
     SUBPAL_CELLS_TIP,
     SUBPAL_TIP,
@@ -283,11 +284,21 @@ class RenderingMixin:
         it runs after that one for the same reason it exists: both take the column
         count over, and the last word has to be one of them. A tilemap wins
         wherever its width is not a preference at all
-        (:attr:`~celpix.core.document.Document.drawn_columns`) — pages are cut at
-        a fixed size and a dense map's entries are one per stamp, so any column
-        count but the one the file implies breaks the row at the wrong place and
-        shears the picture into diagonal stripes
+        (:attr:`~celpix.core.document.Document.columns_locked`) — pages are cut at
+        a fixed size and a *stated* stamp width is the file's, so any column count
+        but the one the file implies breaks the row at the wrong place and shears
+        the picture into diagonal stripes
         (``docs/design/tilemap-entry.md`` §3.1, §6).
+
+        **A dense map whose format states no width is the other way round**, and
+        the reason this pass writes into the document instead of only reading it.
+        Its entries are a plain rectangle with one per stamp, so the width is the
+        same preference an ordinary tilemap's is, and nothing but Cols can supply
+        it — a slice lifted out of a disk image runs no container, and its header
+        is four bytes before where the entry starts. So the spin's value goes into
+        the view *first*, and what comes back is that value floored to whole
+        stamps: setting Cols to 47 on a 2x2 map draws 46, because a row that ends
+        halfway through a stamp puts the other half at the start of the next.
 
         **There is no assembly control.** Every paged format celPix reads states
         its own layout — a screen file's four quadrants are one 64x64 tilemap and
@@ -300,22 +311,38 @@ class RenderingMixin:
         pages without stating their layout still lays out sensibly; what went is
         the widget, not the mechanism.
 
-        What is left here is the width, which is not a choice either: it *is* the
-        assembly (or the stamp), and the spin mirrors it.
+        What is left here is the width, which where the file states one is not a
+        choice either: it *is* the assembly (or the stamp), and the spin mirrors it.
         """
         doc = self._doc
+        if doc is not None and doc.is_tilemap and not doc.columns_locked:
+            # Before the width is read back, since on a view-driven dense map it
+            # is read *from* here. Harmless on everything else — the view is
+            # rewritten from the same spin a few lines later in `_refresh_view`,
+            # and only a stamped resolution reads the width at all.
+            doc.view.columns = self._columns.value()
         width = doc.drawn_columns if doc is not None else 0
+        # The unit Cols moves in, which is the unit it is *read* in: a step of one
+        # on a map that floors to whole stamps would land back where it started.
+        # Taken as the ratio the document itself lays out at rather than off the
+        # chain, so it is the number that actually did the flooring however the
+        # width was arrived at (:attr:`~...Document.stamp_columns`).
+        entries = doc.stamp_columns if doc is not None else 0
+        self._columns.setSingleStep(width // entries if width and entries else 1)
         if not width or doc is None:
             # Cols is left exactly as the bitmap-width pass set it: taking it over
             # is the only thing this pass does to it, so there is nothing to hand
             # back that the earlier owner has not already decided.
             self._label_columns(locked=False)
             return
-        self._columns.setEnabled(False)
-        self._label_columns(locked=True)
+        locked = doc.columns_locked
+        if locked:
+            self._columns.setEnabled(False)
+        self._label_columns(locked=locked)
         # The spin **mirrors** the width rather than setting it: the layout and the
         # selection both take it from the document, so this is what puts the number
-        # where the user can read it (and where a project stores it).
+        # where the user can read it (and where a project stores it). Unlocked, that
+        # is also what shows the user the flooring — the typed 47 reads back as 46.
         if self._columns.value() != width:
             with signals_blocked(self._columns):
                 self._columns.setValue(width)
@@ -348,8 +375,12 @@ class RenderingMixin:
             )
         elif doc is None or not doc.is_tilemap:
             tip = COLS_TIP
+        elif doc.is_sprite:
+            tip = COLS_FRAMES_TIP
         else:
-            tip = COLS_FRAMES_TIP if doc.is_sprite else COLS_CELLS_TIP
+            # A live spin on a map that still stamps: the number is the user's,
+            # and it is theirs in whole stamps (:meth:`_settle_tilemap_width`).
+            tip = COLS_STAMPS_TIP if doc.drawn_columns else COLS_CELLS_TIP
         self._columns.setToolTip(tip)
         self._columns_label.setToolTip(tip)
         self._columns_label.setEnabled(self._columns.isEnabled())

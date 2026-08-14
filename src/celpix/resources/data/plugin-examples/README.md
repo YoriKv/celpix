@@ -41,12 +41,11 @@ every parameter it takes.
 - `_color-indexed.toml` — palette bytes index a table baked into the hardware
 - `tilemap/_packed.toml` — a cell is one packed integer: tile number in the low
   bits, attributes above it (nearly every hardware map)
-- `_object.toml` — parts carrying signed pixel offsets, drawn as frames rather
-  than laid out in rows, a size *bit* picking one of two square sizes
-- `_obz.toml` — the same shape with each field in its own byte
-- `_md-sprite.toml` — the same again where a record *states* its part's rectangle
-- `_ys-spr.toml` — the same again where frames are *different lengths*, the count
-  coming from the container
+- `_md-sprite.toml` — parts carrying signed pixel offsets, drawn as frames rather
+  than laid out in rows, each record *stating* its own rectangle. The only sprite
+  record with an example here: the other three celPix reads are **formats**, one
+  bespoke codec apiece with nothing to parameterise, so there is no TOML for them
+  to be an example of (see the `.py` section below)
 
 `reshape/` takes presets too: `_bitswap.toml` for boards that scramble the byte
 *address*, `_data-lut.toml` for boards that substitute byte *values*.
@@ -59,12 +58,17 @@ A code file defines one class and one registration call, in one of two shapes.
 The interpret stages — `pixel/`, `palette/`, `tilemap/` — write a **format**: a
 `FormatInfo` (an id and a name), that stage's decode/encode pair, and
 `registry.register_format(...)`. It lands in the picker beside the presets with no
-preset to author — unless it is a tilemap that has to *declare* something about
-its cells (`layout = "text"` for a fontmap, `sprite`, `indirect`, `cell_tiles`).
-Those are preset parameters and a format carries none, so such a format ships a
-few-line preset naming it as the `engine_id`; see `tilemap/_example.py`. Every
-other stage writes a **plugin**: a `PluginInfo` that names the stage as well, the
-stage's own pair of methods, and `registry.register(...)`.
+preset to author. A tilemap that has to *declare* something about its cells —
+`layout = "text"` for a fontmap, `sprite`, `indirect`, `cell_tiles` — puts those
+in its `FormatInfo(..., declares={...})`, which is for what the **app** has to be
+told and never for what your own code reads; anything you would read yourself is a
+constant in the class. See `tilemap/_example.py`. Every other stage writes a
+**plugin**: a `PluginInfo` that names the stage as well, the stage's own pair of
+methods, and `registry.register(...)`.
+
+Reach for a format whenever you are implementing **one** codec. A preset is for
+parameterising an engine that serves many, and an engine you would ship a single
+preset for is a format that has not noticed yet.
 
 Every folder carries an `_example.py` of the right shape for it, and
 `containers/_tiff.py` is a full real-world format.

@@ -115,6 +115,11 @@ COLS_FRAMES_TIP = "Frames per row\nLays out the strip of frames, not the tiles i
 # entry (:attr:`~celpix.core.document.Document.drawn_columns`).
 COLS_ASSEMBLED_TIP = "Cells per row\nFixed by how this file's pages assemble"
 COLS_STAMPED_TIP = "Cells per row\nFixed by the stamp each of this file's entries draws"
+# And the dense map whose format states no width, where Cols is live: the number
+# is the user's, but it is theirs a stamp at a time, so say so before the spin
+# hands back a value they did not type
+# (:attr:`~celpix.core.document.Document.stamp_columns`).
+COLS_STAMPS_TIP = "Cells per row\nRounded down to whole stamps"
 
 # The Block W×H spins' width. Wide enough for the one digit every arrangement in
 # hand uses, with room to read a two-digit value typed into Custom — the range

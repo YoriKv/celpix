@@ -10,9 +10,9 @@
 # This is the stated-rectangle engine, for a record that names a **rectangle**
 # instead of picking between two squares. Its size byte is the Mega Drive VDP's
 # own nibble, so one record covers anything from one tile to a 4x4 block, and the
-# record's tiles run *down each column*. See _object.toml for the sprite engines'
-# shared parameters and the other three records; anything in rows wants
-# _packed.toml.
+# record's tiles run *down each column*. It is the **only** sprite record with a
+# preset to copy: the other three celPix reads are formats, one bespoke codec
+# apiece with nothing to parameterise. Anything in rows wants _packed.toml.
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------
@@ -29,7 +29,7 @@ layout = "sprite"
 
 # ...and records that **state** each part's rectangle, rather than choosing
 # between two squares. The alternative is to leave this out and give
-# `subsprite_tiles` the pair, as _object.toml does.
+# `subsprite_tiles` the pair of sizes a size *bit* picks between.
 subsprite_size = "stated"
 
 # The X offset's width in bytes. 1 is a signed byte; 2 is a signed word.

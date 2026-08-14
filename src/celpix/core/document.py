@@ -341,6 +341,11 @@ class Document:
     # cannot drift from the cells it came from. None for an ordinary tilemap,
     # whose cells already name tiles.
     resolved_cells: list[Cell] | None = None
+    # The width :meth:`resolve` built the list above at, so a resolution that
+    # follows the **view** can tell when the width has moved under it
+    # (:attr:`stamp_columns`). Derived like the caches at the end of this class,
+    # and excluded from equality for the same reason.
+    resolved_columns: int = field(default=0, compare=False, repr=False)
     tilemap_config: PathwayConfig | None = None
     tilemap_ctx: PipelineContext = field(default_factory=PipelineContext)
     # The cells' own bytes, kept in step with :attr:`cells` by whoever edits them
@@ -386,6 +391,15 @@ class Document:
     # hands the choice of colours back to the view's subpalette row
     # (``docs/design/tilemap-entry.md`` §8).
     cells_carry_palette_rows: bool = True
+    # How many cells ``(across, down)`` share one *stored* palette row, as the
+    # codec declares it
+    # (:meth:`~celpix.plugins.base.TilemapCodecPlugin.palette_row_granularity`).
+    # ``(1, 1)`` for every format whose row is a field of the cell word, and
+    # ``(2, 2)`` for an NES nametable, whose rows live in a quarter-resolution
+    # plane at the end of the page. Only the *write* side reads it
+    # (:meth:`palette_row_group`): a decoded cell already carries the row it is
+    # drawn in, so nothing about rendering changes.
+    palette_row_granularity: tuple[int, int] = (1, 1)
     # Set instead of a grid layout when the cells are **subsprites**: their
     # pixel offsets are not tile-aligned, so no cell grid can hold them and the
     # view draws frames of freely placed subsprites (:mod:`celpix.core.sprite`).
@@ -450,9 +464,9 @@ class Document:
         of source cells, so the list that comes back is in drawn order, and it is
         longer than :attr:`cells` on a dense map and the same length with three
         quarters of the entries unread on a sparse one. It needs the referrer's
-        own width to know where a row ends, so a stamp the file states but a width
-        it does not falls back to the plain chain — resolving a grid whose shape
-        is a guess would lay a shear on top of one.
+        own width to know where a row ends — :attr:`stamp_columns`, which on a
+        dense map is the view's where the format states nothing, so this is
+        called again whenever that moves (:attr:`drawn_cells`).
         """
         # The one call every cell edit makes, so it is also where the decoded
         # text is dropped: :attr:`text` is the same cells read a second way, and
@@ -461,10 +475,11 @@ class Document:
         self.text_cache = None
         self.layout_cache = None
         chain = self.chain
+        columns = self.stamp_columns
+        self.resolved_columns = columns
         if chain is None or self.cells is None:
             self.resolved_cells = None
             return
-        columns = self.stated_columns
         if chain.stamp != (1, 1) and columns:
             self.resolved_cells = expand_stamps(
                 self.cells,
@@ -487,12 +502,50 @@ class Document:
 
         The container's width hint read straight off the context
         (:data:`~celpix.core.context.KEY_TILEMAP_COLUMNS`). Distinct from the
-        view's Cols, which the user owns and which this only seeds: a stamped
-        resolution has to snap positions to stamps, and it can only do that
-        against a width the *file* fixes — snapping against a width the user was
-        free to change would move every stamp the moment they changed it.
+        view's Cols, which the user owns and which this only seeds — and from
+        :attr:`stamp_columns`, which is the width a stamped resolution actually
+        snaps against and falls back to the view where this is 0.
+
+        Everything addressing the file's **own** grid reads this and not that
+        one: a page's size, and an attribute plane's coarse row groups
+        (:meth:`palette_row_group`). Those are packed at a width the format
+        fixed, so resolving them against a width the user picked would name a
+        different set of cells from the one the codec writes.
         """
         return int(self.tilemap_ctx.get(KEY_TILEMAP_COLUMNS, 0) or 0)
+
+    @property
+    def stamp_columns(self) -> int:
+        """How many **entries** across a stamped resolution snaps at, 0 for none.
+
+        The format's own width where it states one, and that is the whole answer
+        for every stamped format that comes through a container: a header said so,
+        and nothing the user does may move it.
+
+        A **dense** map is the case that has no such authority and does not need
+        one. Its entries are a plain rectangle with one per stamp and no filler,
+        so the width is the same free preference an ordinary tilemap's is — the
+        difference being only that Cols counts drawn positions while this counts
+        entries, so the two differ by the stamp's own width. Which is why the
+        fallback divides: what the user sets is the picture's width, and the
+        resolution needs the file's.
+
+        A **sparse** map gets no fallback. Its entries sit at the positions the
+        stamps' corners landed on, so the width is not a preference at all — it is
+        where the file put its holes, and reading it at any other one snaps to
+        entries the format never wrote. 0, and :meth:`resolve` falls back to the
+        plain chain rather than laying a shear on top of a guess.
+        """
+        stated = self.stated_columns
+        if stated:
+            return stated
+        chain = self.chain
+        if chain is None or not chain.dense or chain.stamp == (1, 1):
+            return 0
+        # Floored to whole stamps, so a Cols the user typed between two of them
+        # narrows the picture by the remainder rather than shearing it — and the
+        # spin is set back to what was used (``_settle_tilemap_width``).
+        return max(1, self.view.columns // max(1, chain.stamp[0]))
 
     @property
     def is_tilemap(self) -> bool:
@@ -669,7 +722,18 @@ class Document:
         positions and the file's order has nothing one-to-one to be in
         (:meth:`resolve`). Everything that names a file cell goes through
         :meth:`cell_at`.
+
+        **Re-resolves where the width has moved under the list**, which is the
+        dense stamped map whose width comes from the view
+        (:attr:`stamp_columns`): every other document answers the same number it
+        was built at, so the check costs a comparison and never fires. Here rather
+        than at the callers that set Cols, because a render can be asked for by
+        something that never went through the UI at all — a project restore
+        putting a stored width on a document already built, or a bulk PNG export
+        of entries that were loaded and never shown.
         """
+        if self.resolved_columns != self.stamp_columns:
+            self.resolve()
         return (
             self.resolved_cells
             if self.resolved_cells is not None
@@ -830,6 +894,13 @@ class Document:
         hand does: it is the coarser cut of the two, and a page split at the wrong
         place misplaces whole rows rather than halves of one.
 
+        A dense map answers here **whether or not its format states a width**, and
+        that is not the same claim as :attr:`columns_locked`. Where the width came
+        from the view it is still the user's choice — but it is their choice
+        rounded down to whole stamps (:attr:`stamp_columns`), and the picture has
+        to be laid out at the number it was resolved at rather than at the one
+        they typed, or the last stamp of every row lands in the next.
+
         0 on everything that fixes no width, which is most documents — the
         ordinary tilemap, whose width really is a preference.
         """
@@ -837,13 +908,29 @@ class Document:
         if assembled:
             return assembled
         chain = self.chain
-        columns = self.stated_columns
-        # The same two conditions :meth:`resolve` expands under: without a stated
-        # width there is no stamped resolution to be wide, so there is no width to
-        # fix either.
+        # The same condition :meth:`resolve` expands a dense map under: with no
+        # width at all there is no stamped resolution to be wide, so there is no
+        # width to fix either.
+        columns = self.stamp_columns
         if chain is None or not chain.dense or not columns:
             return 0
         return columns * max(1, chain.stamp[0])
+
+    @property
+    def columns_locked(self) -> bool:
+        """Whether :attr:`drawn_columns` is the **file's** number and not the view's.
+
+        The two are different questions and the UI needs both: the width to draw
+        at, and whether Cols is still the user's to set. A page assembly and a
+        stated stamp width are facts about the file, so the spin mirrors them and
+        is disabled; a dense map whose format states nothing has a width only
+        because the user has one, and taking the spin away would leave no way to
+        supply it (``docs/design/tilemap-entry.md`` §3.1).
+        """
+        if self.assembled_columns:
+            return True
+        chain = self.chain
+        return chain is not None and chain.dense and bool(self.stated_columns)
 
     @property
     def cell_order(self) -> tuple[int, ...] | None:
@@ -1019,10 +1106,93 @@ class Document:
         if order is not None and 0 <= position < len(order):
             position = order[position]
         chain = self.chain
-        columns = self.stated_columns
+        # The width the picture was *resolved* at, so the entry a click snaps to
+        # is the entry that position draws (:attr:`stamp_columns`).
+        columns = self.stamp_columns
         if chain is None or chain.stamp == (1, 1) or not columns:
             return position
         return stamp_origin(position, columns, chain.stamp, dense=chain.dense)
+
+    def palette_row_group(self, index: int) -> list[int]:
+        """Every cell index whose stored palette row is the same field as ``index``'s.
+
+        ``[index]`` for every ordinary format, where a row is a field of the cell
+        word and each cell answers for itself. On a format whose rows live in a
+        coarser plane — an NES nametable's 2x2 attribute quadrant
+        (:attr:`palette_row_granularity`) — it is the whole square, so a caller
+        assigning a row can write what the file can actually hold instead of
+        setting one cell and having the other three follow on the next save.
+
+        **Resolved against the width the format states, not the view's Cols.**
+        The plane is addressed in the file's own rows, so a group computed at a
+        width the user picked would name a different set of cells from the one
+        the codec packs — and the picture would change under them on save. A
+        format declaring a coarse granularity therefore has to state its width;
+        one that has not is treated as having no group, which is the safe
+        direction (it writes exactly what was selected).
+
+        Indices are in the file's own order, like :meth:`cell_at`'s answer, and
+        the group is **clipped to the cells that exist**: the last attribute row
+        of a 30-row nametable covers two rows the page does not have.
+        """
+        across, down = self.palette_row_granularity
+        cells = self.cells
+        if cells is None or (across <= 1 and down <= 1):
+            return [index]
+        columns = self.stated_columns
+        if columns <= 0 or not (0 <= index < len(cells)):
+            return [index]
+        first_col = (index % columns) // across * across
+        first_row = (index // columns) // down * down
+        group: list[int] = []
+        for row in range(first_row, first_row + down):
+            for col in range(first_col, min(first_col + across, columns)):
+                at = row * columns + col
+                if 0 <= at < len(cells):
+                    group.append(at)
+        return group
+
+    def snapped_palette_rows(self, cells: list[Cell]) -> list[Cell]:
+        """``cells`` with every row group agreeing, the way the file will store it.
+
+        The backstop under :meth:`palette_row_group`, and the reason a coarse
+        format does not need every gesture taught about it. An assignment grows
+        to whole groups because that is what the user asked for; a **paste**, a
+        stamp or a clear carries whatever rows its cells were cut with, and on a
+        format storing one row per 2x2 square those can disagree inside a group.
+        Left alone, the model would show four colours the file has room for one
+        of, and the picture would change on the next reload.
+
+        So a group's row is settled here, on the way into the edit, by the same
+        rule the codec's ``encode`` follows: **the first cell of the group in
+        file order wins**. One rule in two places rather than a negotiation, and
+        the consequence is that what is on screen is what a reload would show.
+
+        Returns ``cells`` itself where there is nothing to do — every format
+        whose row is a field of the cell word, and any coarse one whose width
+        the format has not stated (:meth:`palette_row_group`).
+        """
+        across, down = self.palette_row_granularity
+        columns = self.stated_columns
+        if (across <= 1 and down <= 1) or columns <= 0 or not cells:
+            return cells
+        out: list[Cell] | None = None
+        rows = -(-len(cells) // columns)
+        for top in range(0, rows, down):
+            for left in range(0, columns, across):
+                head = top * columns + left
+                if head >= len(cells):
+                    continue
+                row = cells[head].palette_row
+                for r in range(top, top + down):
+                    for c in range(left, min(left + across, columns)):
+                        at = r * columns + c
+                        if at >= len(cells) or cells[at].palette_row == row:
+                            continue
+                        if out is None:
+                            out = list(cells)
+                        out[at] = replace(out[at], palette_row=row)
+        return cells if out is None else out
 
     def cell_tile_indices(self, cell: Cell) -> list[int]:
         """The source tile indices ``cell`` draws, in the order they appear.

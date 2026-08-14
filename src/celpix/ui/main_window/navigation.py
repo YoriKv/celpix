@@ -776,7 +776,11 @@ class NavigationMixin:
         # under View > Entire File, or anything on a greyed-out toolbar.
         if not spin.isEnabled():
             return
-        spin.setValue(spin.value() + delta)
+        # In the spin's own step rather than in ones: a Cols that only moves in
+        # whole stamps (:attr:`~celpix.core.document.Document.stamp_columns`) sets
+        # a step of two, and a key that moved by one would floor straight back and
+        # read as a dead shortcut.
+        spin.setValue(spin.value() + delta * max(1, spin.singleStep()))
 
     # -- navigation --------------------------------------------------------
     def _row_step(self) -> int:

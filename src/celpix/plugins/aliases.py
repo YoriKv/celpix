@@ -75,6 +75,17 @@ RENAMED: dict[str, str] = {
     "preset.pixel.1bpp16": "preset.pixel.1bpp-16x16",
     "preset.pixel.1bpp16-ff5": "preset.pixel.1bpp-16x12-ff5",
     "preset.pixel.1bpp16-ff6": "preset.pixel.1bpp-16x11-ff6",
+    # v0.5.10 — four bespoke codecs moved from the engine tier to the format
+    # tier, which the id spells: an engine is parameterised and serves many
+    # presets, a format is one codec written in code
+    # (`docs/design/plugin-system.md`). Each was an engine with exactly one
+    # preset, so both ids forward to the single name that replaced the pair.
+    "preset.tilemap.scgcad-object": "format.tilemap.scgcad-object",
+    "preset.tilemap.scgcad-obz": "format.tilemap.scgcad-obz",
+    "preset.tilemap.ys-spr": "format.tilemap.ys-spr",
+    "codec.tilemap.scgcad-object": "format.tilemap.scgcad-object",
+    "codec.tilemap.scgcad-obz": "format.tilemap.scgcad-obz",
+    "codec.tilemap.ys-spr": "format.tilemap.ys-spr",
 }
 
 

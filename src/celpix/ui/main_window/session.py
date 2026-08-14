@@ -446,6 +446,7 @@ class SessionMixin:
             sprite_frames=loaded.frames,
             sprite_size_pair=self._size_pair_for(entry, loaded.size_pair),
             cells_carry_palette_rows=loaded.palette_rows,
+            palette_row_granularity=loaded.row_granularity,
             text_layout=fontmap,
             font_alphabet=self._font_alphabet_for(entry, loaded.cell_bytes),
         )

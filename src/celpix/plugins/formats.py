@@ -6,16 +6,23 @@ interpretations no engine's parameters can express. One class and one
 ``registry.register_format(...)`` call put it in the format picker like any
 preset, with no companion preset to author.
 
+The line between the two tiers is what the *codec* is, not what the app around
+it needs: a **flexible engine** is parameterised and serves many presets, and a
+**bespoke implementation of a single codec** is a format, whether or not it has
+something to declare to the host (:class:`FormatInfo`, ``declares``).
+
 :func:`adapt_format` folds it into the existing machinery rather than teaching
 the pipeline a new tier: the format becomes a codec engine (ignoring the
 ``params`` every codec method carries — a format *is* its own parameterisation)
-plus an empty-params :class:`Preset` naming that engine. Preset → engine
-resolution and the UI's preset listing then work unchanged. Qt-free.
+plus a :class:`Preset` naming that engine, carrying the format's declarations
+and nothing else. Preset → engine resolution and the UI's preset listing then
+work unchanged. Qt-free.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from celpix.core.context import PipelineContext
@@ -33,11 +40,32 @@ class FormatInfo:
     ``category`` is the picker heading it files under, exactly as a preset's is
     (:data:`~celpix.plugins.base.CATEGORIES`) — a code format is one more entry
     in the same list and should not have to sit outside the groups.
+
+    ``declares`` is what the format has to tell the **host** — never itself. A
+    format takes no ``params``, so anything its own methods read is a constant in
+    its class; but some interpretations are not fully described by their bytes,
+    and the thing that has to know is the app rather than the codec. A sprite
+    record's ``layout = "sprite"`` says the cells are subsprites and not grid
+    positions, which decides how the whole entry is *read*, and
+    ``palette_row_base = 8`` says where its rows count from
+    (``docs/design/tilemap-entry.md`` §6). Neither is a parameter of the decode,
+    and neither can live in the class: the host asks the **preset**, before
+    anything has been decoded at all.
+
+    So :func:`adapt_format` copies these into the preset it generates, and that
+    is the whole of the mechanism. Without it a bespoke codec needing a
+    declaration had to be an engine with a hand-written preset — which is the
+    tier being chosen by a plumbing detail rather than by whether the codec is
+    parameterised, the distinction the two tiers exist to draw.
+
+    Keep it to declarations. A key the format's own methods would read is a
+    parameter, and a format that wants parameters is an engine.
     """
 
     id: str
     name: str
     category: str = ""
+    declares: Mapping[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -91,7 +119,8 @@ class TilemapFormat(Protocol):
     May also define the optional methods
     :class:`~celpix.plugins.base.TilemapCodecPlugin` carries, each minus
     ``params``: ``transform_cell(cell, op)``, ``index_limit()``,
-    ``palette_row_limit()``, ``has_palette_rows()`` and
+    ``palette_row_limit()``, ``has_palette_rows()``,
+    ``palette_row_granularity()`` and
     ``has_line_flag()``. **A format that wants its
     cells edited has to define ``index_limit``** — the host refuses what a codec
     has not been asked about, so omitting it leaves the cell reference unsettable
@@ -140,6 +169,7 @@ _OPTIONAL: dict[Stage, dict[str, Any]] = {
         "index_limit": _params_last,
         "palette_row_limit": _params_last,
         "has_palette_rows": _params_last,
+        "palette_row_granularity": _params_last,
         "has_line_flag": _params_last,
         "size_pair": _params_last,
         "frames": _params_middle,
@@ -260,7 +290,10 @@ def adapt_format(fmt: Any, stage: Stage) -> tuple[Any, Preset]:
         name=fmt.info.name,
         stage=stage,
         engine_id=fmt.info.id,
-        params={},
+        # The format's declarations to the host, and nothing else — a copy, so a
+        # class-level default cannot be mutated through the registered preset
+        # (:class:`FormatInfo`).
+        params=dict(getattr(fmt.info, "declares", None) or {}),
         category=fmt.info.category,
     )
     return engine, preset

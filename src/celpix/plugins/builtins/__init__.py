@@ -19,11 +19,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
     import tomli as tomllib
 
 from celpix import resources
+from celpix.core.errors import Stage
 from celpix.plugins.discovery import (
     PRESET_FOLDER_STAGE,
     RESHAPE_ENGINES,
     preset_from_toml,
 )
+from celpix.plugins.formats import adapt_format
 
 from .byte_swap import ByteSwapReshape
 from .color_codec import ColorCodec
@@ -48,6 +50,7 @@ from .m7_vram import M7VramReshape
 from .md_sprite import MdSpriteCodec
 from .n64_rom import N64RomContainer
 from .nemesis import NemesisCompression
+from .nes_nametable import NesNametableFormat
 from .nibble_planar_codec import NibblePlanarCodec
 from .object_codec import ObjectCodec, ObzCodec, SprCodec
 from .packbits import PackBitsCompression
@@ -131,12 +134,25 @@ def register_builtins(reg: Registry) -> None:
         ColorCodec(),
         IndexedColorCodec(),
         TilemapCodec(),
-        ObjectCodec(),
-        ObzCodec(),
-        SprCodec(),
         MdSpriteCodec(),
     ):
         reg.register(plugin)
+
+    # The shipped **code formats**: a bespoke implementation of one codec rather
+    # than a parameterised engine, so there is no preset to author beside it and
+    # no example TOML that could teach anything (`plugins/formats.py`). What the
+    # host has to be told rides in the format's own `declares`. Registered as the
+    # engine-plus-preset pair `adapt_format` builds, which is the same pair a
+    # user's `register_format` call produces from a plugin folder.
+    for fmt, stage in (
+        (NesNametableFormat(), Stage.INTERPRET_TILEMAP),
+        (ObjectCodec(), Stage.INTERPRET_TILEMAP),
+        (ObzCodec(), Stage.INTERPRET_TILEMAP),
+        (SprCodec(), Stage.INTERPRET_TILEMAP),
+    ):
+        engine, preset = adapt_format(fmt, stage)
+        reg.register(engine)
+        reg.register_preset(preset)
 
     for preset in _shipped_presets():
         reg.register_preset(preset)

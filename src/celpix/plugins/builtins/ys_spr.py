@@ -156,7 +156,7 @@ class SprContainer:
         preserves_offsets=False,
         category="Nintendo",
     )
-    default_tilemap_preset = "preset.tilemap.ys-spr"
+    default_tilemap_preset = "format.tilemap.ys-spr"
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         sizes, records, trailer_at = _scan(source.data)

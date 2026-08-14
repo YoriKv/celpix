@@ -10,13 +10,15 @@
 #
 # WHICH ENGINE IS WHICH
 # ---------------------
-# This is the grid engine: cells in rows, one packed integer each. The other four
-# are sprite engines — records at signed pixel offsets, grouped into frames:
+# This is the grid engine: cells in rows, one packed integer each. What it is not
+# for is a **sprite** record — parts at signed pixel offsets grouped into frames
+# rather than laid out in rows. celPix reads four of those, and only one is an
+# engine you can write a preset for:
 #
-#   _object.toml     a packed sprite word; a size *bit* picks one of two sizes
-#   _obz.toml        one field per byte, a wider character number, X first
 #   _md-sprite.toml  a size *nibble* stating a rectangle, tiles down columns
-#   _ys-spr.toml     frames of different lengths, counted by the container
+#
+# The other three are formats rather than engines — one bespoke codec each, with
+# no parameters to supply — so a `.py` is how you add another (see _example.py).
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------

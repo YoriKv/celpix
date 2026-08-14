@@ -589,6 +589,54 @@ def test_the_subsprite_ring_goes_round_the_piece_and_not_its_square(qtbot) -> No
     assert panel._cell_rect(1) == QRect(48, 0, 48, 48)  # the square it sits in
 
 
+def test_sheet_captions_repaint_in_strips_exactly_as_in_one_pass(qtbot) -> None:
+    """Both sheets caption the exposed rows only, and must lose nothing by it.
+
+    A bank is thousands of squares and a scrolled view shows a dozen rows, so
+    the caption loops walk the band rather than the run (``_exposed_slots``).
+    The canvas's twin of this test says why it is worth pinning down; here it is
+    the two panels that draw a caption per square, from opposite edges of it —
+    the tile source panel's along the bottom, the subsprite panel's the same,
+    with the picked-tile rings on top.
+    """
+    from PySide6.QtCore import QPoint, QRect
+    from PySide6.QtGui import QImage, QRegion
+
+    from celpix.ui.subsprite_panel import SubspritePanel
+    from celpix.ui.tile_source_panel import TileSourcePanel
+
+    tiles = TileSourcePanel()
+    qtbot.addWidget(tiles)
+    tiles.set_zoom(4)  # a caption is dropped below LABEL_MIN_PX a square
+    tiles.set_sheet(
+        QImage(4 * 8, 6 * 8, QImage.Format.Format_ARGB32), list(range(24)), (8, 8), 4
+    )
+    tiles.set_labels({tile: chr(ord("A") + tile % 26) for tile in range(24)})
+    tiles.select_ids([5, 6, 7, 13])
+
+    pieces = SubspritePanel()
+    qtbot.addWidget(pieces)
+    pieces.set_zoom(4)
+    pieces.set_sheet(
+        QImage(3 * 16, 5 * 16, QImage.Format.Format_ARGB32),
+        [(frame, index) for frame in range(5) for index in range(3)],
+        [],
+        (16, 16),
+        3,
+    )
+    pieces.set_captions(True)
+
+    for panel in (tiles, pieces):
+        whole = QImage(panel.size(), QImage.Format.Format_ARGB32)
+        panel.render(whole, QPoint(), QRegion(panel.rect()))
+        strips = QImage(panel.size(), QImage.Format.Format_ARGB32)
+        step = 13  # narrow, and landing on no square's boundary
+        for top in range(0, panel.height(), step):
+            band = QRect(0, top, panel.width(), step)
+            panel.render(strips, QPoint(0, top), QRegion(band))
+        assert strips == whole
+
+
 def test_copying_a_rectangle_of_a_sprite_sheet_lifts_the_pixels_it_draws(
     qtbot, tmp_path
 ) -> None:
@@ -768,6 +816,76 @@ def test_a_screen_assembles_its_four_pages_and_edits_land_on_the_right_cell(
     panel, _ = _bound_tilemap(qtbot, tmp_path, [Cell(index=3)], maker=_pnl_file)
     assert panel._doc.pages == 0
     assert panel._columns.isEnabled()
+
+
+def test_a_dense_map_that_states_no_width_keeps_cols_live(qtbot, tmp_path) -> None:
+    """The other half of the lock above. A dense map's entries are one per stamp
+    and no filler — a plain rectangle — so its width is the same free preference
+    an ordinary tilemap's is, and the formats that come this way are slices lifted
+    out of a ROM or a disk image, with no container to read a header for them. Cols
+    is the only thing that can supply it, so it stays live.
+
+    What it does not stay is unconstrained: Cols counts drawn positions and the
+    resolution counts entries, so a width between two stamps floors, and the spin
+    is set back to what was actually drawn rather than leaving the user reading a
+    number the picture does not have."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.errors import Stage
+    from celpix.core.tilemap import Cell
+    from celpix.plugins.base import Preset
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    # A panel for the map to stamp: its header states the 2x2, which is the one
+    # half of this a dense format still reads off the source.
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1)])))
+    panel = window._workspace.current
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(panel)
+
+    path = tmp_path / "area.map"
+    path.write_bytes(bytes(range(24)))
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    entry = window._workspace.current
+    window._registry.register_preset(
+        Preset(
+            id="preset.tilemap.dense-stamps",
+            name="One byte per stamp, no stated width",
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id="codec.tilemap.packed",
+            params={
+                "bytes": 1,
+                "fields": "iiii iiii",
+                "indirect": True,
+                "stamp_dense": True,
+            },
+        )
+    )
+    entry.tilemap_preset_id = "preset.tilemap.dense-stamps"
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry=panel)
+    window._reload_tilemap(entry)
+
+    doc = window._doc
+    assert doc.chain is not None and doc.chain.dense
+    assert doc.stated_columns == 0  # nothing spoke for it, which is the point
+    assert window._columns.isEnabled()
+    # Two cells to a stamp across, so the keys move Cols by two — a step of one
+    # would floor straight back and read as a dead shortcut.
+    assert window._columns.singleStep() == 2
+
+    window._columns.setValue(8)
+    assert doc.stamp_columns == 4  # eight positions across is four entries
+    assert doc.drawn_columns == 8
+    assert len(doc.drawn_cells) == 24 * 4
+
+    # A width between two stamps draws the whole one below it, and says so.
+    window._columns.setValue(7)
+    assert doc.stamp_columns == 3
+    assert window._columns.value() == 6
 
 
 def test_a_binding_change_keeps_the_width_the_map_is_being_read_at(

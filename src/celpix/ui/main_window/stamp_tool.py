@@ -323,10 +323,21 @@ class StampToolMixin:
         entirely so) every click a silent no-op. It is also what the authoring
         tool does: `scr_map_cnv` sets the drawn byte on every block it registers
         (``scgcad-formats.md`` §4).
+
+        The **palette row stays behind** where the format stores one row for
+        several cells (an NES nametable's 2x2 quadrant,
+        :attr:`~celpix.core.document.Document.palette_row_granularity`). There
+        the row is not the cell's to carry: bringing it would recolour up to three
+        neighbours the user never pointed at, on a gesture whose whole meaning is
+        "put that tile *here*". Everything else the record carries still travels
+        — the row is the one field that is not this cell's to give.
         """
         held = self._source_cell
+        doc = self._doc
+        coarse = doc is not None and doc.palette_row_granularity != (1, 1)
         if held is not None and held.index == tile_id:
-            return replace(held, visible=True)
+            laid = replace(held, visible=True)
+            return replace(laid, palette_row=over.palette_row) if coarse else laid
         return replace(over, index=tile_id, visible=True)
 
     def _pick_tile_at(self, slot: int) -> None:

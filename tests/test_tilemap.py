@@ -320,16 +320,27 @@ def test_a_panel_cell_covers_one_tile_by_default() -> None:
 
 
 def test_every_shipped_tilemap_preset_resolves_to_a_working_engine() -> None:
+    """Every preset names a real engine, and decode and encode are inverses.
+
+    The probe is **grown to the first length the format accepts** rather than
+    assumed to be four cells: a cell stride is what most formats read at, but an
+    NES nametable reads a whole 1024-byte page or nothing — its two planes only
+    mean anything together — so a four-byte buffer is not a short map there, it
+    is not a map at all.
+    """
     registry = default_registry()
     presets = registry.presets(Stage.INTERPRET_TILEMAP)
     assert presets, "no tilemap presets registered"
     for preset in presets:
         engine, _ = registry.engine_for(preset.id)
-        ctx = PipelineContext()
         size = engine.bytes_per_cell(preset.params)
-        cells = engine.decode(bytes(size * 4), preset.params, ctx)
-        assert len(cells) == 4
-        assert engine.encode(cells, preset.params, ctx) == bytes(size * 4)
+        for length in (size * 4, 1024, 2048):
+            ctx = PipelineContext()
+            cells = engine.decode(bytes(length), preset.params, ctx)
+            if cells:
+                break
+        assert cells, f"{preset.id} decoded nothing at any probe length"
+        assert engine.encode(cells, preset.params, ctx) == bytes(length)
 
 
 # -- the containers --------------------------------------------------------
@@ -817,7 +828,7 @@ def test_a_format_answers_for_itself_which_transforms_it_can_do() -> None:
 
 
 # -- sprite objects --------------------------------------------------------
-OBJECT = "preset.tilemap.scgcad-object"
+OBJECT = "format.tilemap.scgcad-object"
 
 
 def _record(
@@ -871,13 +882,12 @@ def test_a_subsprite_record_round_trips_including_what_celpix_has_no_field_for()
     the next save."""
     from celpix.plugins.builtins.object_codec import ObjectCodec
 
-    registry = default_registry()
-    codec, params = ObjectCodec(), _params(registry, OBJECT)
+    codec = ObjectCodec()
     raw = _record(x=-8, y=100, tile=0x1FF, palette=5, large=True, group=3)
     ctx = PipelineContext()
-    (cell,) = codec.decode(raw, params, ctx)
+    (cell,) = codec.decode(raw, ctx)
     assert (cell.index, cell.palette_row) == (0x1FF, 5)
-    assert codec.encode([cell], params, ctx) == raw
+    assert codec.encode([cell], ctx) == raw
 
 
 def test_the_later_build_stores_its_attribute_word_the_other_way_round() -> None:
@@ -888,14 +898,13 @@ def test_the_later_build_stores_its_attribute_word_the_other_way_round() -> None
     from celpix.plugins.builtins.object_codec import ObjectCodec
     from celpix.plugins.builtins.scgcad import ObjContainer
 
-    registry = default_registry()
     raw = _record(tile=0x1FF, palette=0, order="little")
     ctx = PipelineContext()
     payload = ObjContainer().read(
         ReadSource(data=_obj_bytes(raw, marker=b"Ver1.11 930511 F")), ctx
     )
     assert ctx.get(KEY_TILEMAP_ENDIAN) == "little"
-    (cell,) = ObjectCodec().decode(payload[:6], _params(registry, OBJECT), ctx)
+    (cell,) = ObjectCodec().decode(payload[:6], ctx)
     assert cell.index == 0x1FF  # read big-endian it would be 0x1FE, palette 7
 
 
@@ -903,18 +912,19 @@ def test_undrawn_slots_are_dropped_and_trailing_empty_frames_with_them() -> None
     """A file has room for a fixed 32 frames of 64 subsprites and the artist filled
     almost none of it — 94% of the corpus's slots are empty — so a view that drew
     every slot would bury the sprite at the top of a blank sheet."""
+    from celpix.core.context import KEY_TILEMAP_SUBSPRITES_PER_FRAME
     from celpix.core.sprite import drawn_frames
     from celpix.plugins.builtins.object_codec import ObjectCodec
 
-    registry = default_registry()
-    params = dict(_params(registry, OBJECT))
-    params["subsprites_per_frame"] = 2
+    # Two slots a frame rather than 64, so the fixture is four records instead of
+    # 128. Published the way a real container publishes it, which is also the only
+    # way it can be said now the stride is the format's own constant.
+    ctx = PipelineContext()
+    ctx.set(KEY_TILEMAP_SUBSPRITES_PER_FRAME, 2)
     cells = ObjectCodec().decode(
-        _record(tile=1) + _record(drawn=False) + _record(drawn=False) * 2,
-        params,
-        PipelineContext(),
+        _record(tile=1) + _record(drawn=False) + _record(drawn=False) * 2, ctx
     )
-    frames = ObjectCodec().frames(cells, params, PipelineContext())
+    frames = ObjectCodec().frames(cells, ctx)
     assert [len(frame) for frame in frames] == [1, 0]
     assert len(drawn_frames(frames)) == 1
 
@@ -1183,7 +1193,7 @@ def test_a_sprite_object_is_view_only() -> None:
     assert _sprite_doc([Cell(index=1)], None).cells_editable
 
 
-OBZ = "preset.tilemap.scgcad-obz"
+OBZ = "format.tilemap.scgcad-obz"
 
 
 def _obz_record(
@@ -1297,15 +1307,14 @@ def test_a_transfer_record_puts_every_field_somewhere_else() -> None:
     object codec's layout, every one of these comes out different."""
     from celpix.plugins.builtins.object_codec import ObzCodec
 
-    registry = default_registry()
-    codec, params = ObzCodec(), _params(registry, OBZ)
+    codec = ObzCodec()
     raw = _obz_record(x=-8, y=100, tile=0x9EE, palette=5, large=True, group=3)
     ctx = PipelineContext()
-    (cell,) = codec.decode(raw, params, ctx)
+    (cell,) = codec.decode(raw, ctx)
     assert (cell.index, cell.palette_row) == (0x9EE, 5)  # 12-bit, past a sprite's 9
-    (sub,) = codec.frames([cell], params, ctx)[0]
+    (sub,) = codec.frames([cell], ctx)[0]
     assert (sub.x, sub.y, sub.group, sub.size()) == (-8, 100, 3, (2, 2))
-    assert codec.encode([cell], params, ctx) == raw
+    assert codec.encode([cell], ctx) == raw
 
 
 def test_a_transfer_record_carries_the_attribute_byte_bit_the_tool_never_uses() -> None:
@@ -1315,10 +1324,10 @@ def test_a_transfer_record_carries_the_attribute_byte_bit_the_tool_never_uses() 
     bit is zero is how a write corrupts the one file that disagrees."""
     from celpix.plugins.builtins.object_codec import ObzCodec
 
-    codec, params = ObzCodec(), _params(default_registry(), OBZ)
+    codec = ObzCodec()
     raw = bytes.fromhex("80 01 00 00 0b 00".replace(" ", ""))
     ctx = PipelineContext()
-    assert codec.encode(codec.decode(raw, params, ctx), params, ctx) == raw
+    assert codec.encode(codec.decode(raw, ctx), ctx) == raw
 
 
 def test_the_two_signature_less_members_are_claimed_by_length_alone(tmp_path) -> None:
@@ -1930,6 +1939,77 @@ def test_a_dense_stamped_map_fixes_its_own_width_and_restamps_by_the_stamp() -> 
         112,
         113,
     ]
+
+
+def test_a_dense_map_with_no_stated_width_takes_one_from_the_view() -> None:
+    """The width of a dense map is not the format's to state — its entries are a
+    plain rectangle with one per stamp — and a slice lifted out of a disk image
+    has no container to read a header for it either. So Cols supplies it, in whole
+    stamps, and the resolution follows the moment it moves.
+
+    A **sparse** map gets no such fallback: its entries sit where the stamps'
+    corners landed, so a width the user picked would snap to entries the format
+    never wrote."""
+    from celpix.core.document import CellChain, Document
+
+    source = [Cell(index=100 + at) for at in range(16)]
+    entries = [Cell(index=0), Cell(index=2), Cell(index=8), Cell(index=10)]
+
+    def dense_map(columns: int, *, dense: bool = True) -> Document:
+        doc = Document(
+            pixel_data=b"",
+            bytes_per_tile=32,
+            tile_width=8,
+            tile_height=8,
+            palette=None,
+            pixel_config=PathwayConfig(
+                source=FileRef(""), interpret_preset_id=SNES_BG, write_enabled=False
+            ),
+            palette_config=PathwayConfig(
+                source=FileRef(""), interpret_preset_id="", write_enabled=False
+            ),
+            cells=list(entries),
+            chain=CellChain(source, False, stamp=(2, 2), source_columns=4, dense=dense),
+        )
+        doc.view.columns = columns
+        return doc
+
+    # Four cells across on screen is two stamps across in the file, and the
+    # picture reads exactly as the stated-width case above: two stamps, then the
+    # second row of both.
+    doc = dense_map(4)
+    assert doc.stamp_columns == 2
+    assert doc.drawn_columns == 4
+    assert [cell.index for cell in doc.drawn_cells[:8]] == [
+        100, 101, 102, 103,
+        104, 105, 106, 107,
+    ]  # fmt: skip
+    # Not the file's own number, though, so Cols is still the user's to set.
+    assert not doc.columns_locked
+
+    # The whole point: moving Cols re-lays the picture, and the resolution
+    # follows without the entry being re-read. All four entries are one row now,
+    # so the top row is the four stamps' top halves.
+    doc.view.columns = 8
+    assert doc.stamp_columns == 4
+    assert [cell.index for cell in doc.drawn_cells[:8]] == [
+        100, 101, 102, 103,
+        108, 109, 110, 111,
+    ]  # fmt: skip
+    # And a click still reaches the entry the position it lands on came from.
+    assert [doc.cell_at(at) for at in (0, 2, 4, 6)] == [0, 1, 2, 3]
+
+    # A width between two stamps floors rather than shearing: 5 draws 4.
+    doc.view.columns = 5
+    assert doc.stamp_columns == 2
+    assert doc.drawn_columns == 4
+
+    # Sparse is the other answer, and the reason the fallback is not simply "the
+    # view where nothing is stated": nothing to snap against, so no expansion.
+    sparse = dense_map(8, dense=False)
+    assert sparse.stamp_columns == 0
+    assert sparse.drawn_columns == 0
+    assert len(sparse.drawn_cells) == len(entries)
 
 
 # -- panels ----------------------------------------------------------------
@@ -2571,7 +2651,7 @@ def test_a_sheet_tile_is_the_same_pixels_the_map_draws_for_that_cell() -> None:
 
 # -- Yoshi's Island sprite patterns (SPR) ---------------------------------------
 
-SPR = "preset.tilemap.ys-spr"
+SPR = "format.tilemap.ys-spr"
 
 
 def _spr_record(
@@ -2631,12 +2711,13 @@ def test_a_sprite_pattern_round_trips_with_its_counted_frames_re_interleaved() -
     buffer with no fixed cell stride. The container takes them out and states them
     instead, and the write puts them back — which is what makes all 122 corpus
     files re-encode byte-identically."""
-    from celpix.core.context import KEY_TILEMAP_FRAME_SIZES
+    from celpix.core.context import (
+        KEY_TILEMAP_FRAME_SIZES,
+    )
     from celpix.plugins.builtins.object_codec import SprCodec
     from celpix.plugins.builtins.ys_spr import SprContainer
 
-    registry = default_registry()
-    codec, params = SprCodec(), _params(registry, SPR)
+    codec = SprCodec()
     raw = _spr_bytes(
         [
             _spr_record(x=-8, y=21, tile=0x0F00, palette=6, large=True)
@@ -2650,11 +2731,11 @@ def test_a_sprite_pattern_round_trips_with_its_counted_frames_re_interleaved() -
     assert ctx.get(KEY_TILEMAP_FRAME_SIZES)[:4] == (2, 0, 1, 0)
     assert len(records) == 3 * 8  # the counts are gone and the records contiguous
 
-    cells = codec.decode(records, params, ctx)
+    cells = codec.decode(records, ctx)
     assert (cells[0].index, cells[0].palette_row) == (0x0F00, 6)
     assert (cells[2].flip_h, cells[2].priority) == (True, 2)
     written = SprContainer().write(
-        codec.encode(cells, params, ctx), WriteTarget(existing=raw), ctx
+        codec.encode(cells, ctx), WriteTarget(existing=raw), ctx
     )
     assert written == raw
 
@@ -2666,14 +2747,13 @@ def test_the_attribute_bytes_spare_bit_is_carried_and_never_recomputed() -> None
     rides in ``flags`` like the offsets beside it."""
     from celpix.plugins.builtins.object_codec import SprCodec
 
-    registry = default_registry()
-    codec, params = SprCodec(), _params(registry, SPR)
+    codec = SprCodec()
     ctx = PipelineContext()
     for tile, spare in ((0x0100, 0), (0x0042, 1)):  # both ways round the tool's rule
         raw = _spr_record(tile=tile, spare=spare)
-        (cell,) = codec.decode(raw, params, ctx)
+        (cell,) = codec.decode(raw, ctx)
         assert cell.index == tile
-        assert codec.encode([cell], params, ctx) == raw
+        assert codec.encode([cell], ctx) == raw
 
 
 def test_frames_are_cut_where_the_file_counted_them_not_at_a_fixed_stride() -> None:
@@ -2682,11 +2762,11 @@ def test_frames_are_cut_where_the_file_counted_them_not_at_a_fixed_stride() -> N
     to have read. Given none, there is no reading of a bare buffer at all, so it
     falls back to the fixed slots the other two sprite records use rather than
     inventing a third rule."""
+    from celpix.core.context import KEY_TILEMAP_SUBSPRITES_PER_FRAME
     from celpix.plugins.builtins.object_codec import SprCodec
     from celpix.plugins.builtins.ys_spr import SprContainer
 
-    registry = default_registry()
-    codec, params = SprCodec(), _params(registry, SPR)
+    codec = SprCodec()
     raw = _spr_bytes(
         [
             _spr_record(x=-8, y=21, large=True) + _spr_record(x=8, y=21, large=True),
@@ -2695,8 +2775,8 @@ def test_frames_are_cut_where_the_file_counted_them_not_at_a_fixed_stride() -> N
         ]
     )
     ctx = PipelineContext()
-    cells = codec.decode(SprContainer().read(ReadSource(data=raw), ctx), params, ctx)
-    frames = codec.frames(cells, params, ctx)
+    cells = codec.decode(SprContainer().read(ReadSource(data=raw), ctx), ctx)
+    frames = codec.frames(cells, ctx)
     assert [len(frame) for frame in frames[:4]] == [2, 0, 1, 0]
     # The geometry that rides in `flags` has to come back out with it.
     assert [(s.x, s.y, s.size()) for s in frames[0]] == [
@@ -2705,8 +2785,11 @@ def test_frames_are_cut_where_the_file_counted_them_not_at_a_fixed_stride() -> N
     ]
     assert frames[2][0].index == 9
 
-    bare = dict(params, subsprites_per_frame=2)
-    assert [len(f) for f in codec.frames(cells, bare, PipelineContext())] == [2, 1]
+    # With no counts published, the fallback slots the records at the fixed stride
+    # the other two sprite records use rather than inventing a third rule.
+    bare = PipelineContext()
+    bare.set(KEY_TILEMAP_SUBSPRITES_PER_FRAME, 2)
+    assert [len(f) for f in codec.frames(cells, bare)] == [2, 1]
 
 
 def test_a_pattern_saved_to_a_new_path_keeps_its_frame_boundaries() -> None:
@@ -2718,13 +2801,12 @@ def test_a_pattern_saved_to_a_new_path_keeps_its_frame_boundaries() -> None:
     from celpix.plugins.builtins.object_codec import SprCodec
     from celpix.plugins.builtins.ys_spr import SprContainer
 
-    registry = default_registry()
-    codec, params = SprCodec(), _params(registry, SPR)
+    codec = SprCodec()
     raw = _spr_bytes([_spr_record(tile=1) * 2, b"", _spr_record(tile=9)])
     ctx = PipelineContext()
-    cells = codec.decode(SprContainer().read(ReadSource(data=raw), ctx), params, ctx)
+    cells = codec.decode(SprContainer().read(ReadSource(data=raw), ctx), ctx)
 
-    encoded = codec.encode(cells, params, ctx)
+    encoded = codec.encode(cells, ctx)
     fresh = SprContainer().write(encoded, WriteTarget(existing=b""), ctx)
     back = PipelineContext()
     assert SprContainer().read(ReadSource(data=fresh), back) == encoded
@@ -2837,9 +2919,8 @@ def test_an_extended_object_frames_at_128_slots_not_64(tmp_path) -> None:
 
     ctx = PipelineContext()
     data = ObjContainer().read(ReadSource(data=bytes(blob), path=str(path)), ctx)
-    params = default_registry().preset(OBJECT).params
     codec = ObjectCodec()
-    frames = codec.frames(codec.decode(data, params, ctx), params, ctx)
+    frames = codec.frames(codec.decode(data, ctx), ctx)
 
     assert len(frames) == 64  # not 128
     assert len(frames[0]) == 1  # the record is frame 0's last slot, not frame 1's
@@ -2913,3 +2994,161 @@ def test_an_object_publishes_the_sequences_in_the_tail_it_cuts_away(tmp_path) ->
         assert len(groups) == sequences
         assert groups[0].steps == (Step(4, 2), Step(4, 6))
         assert not any(groups[1:])
+
+
+# -- NES nametables --------------------------------------------------------
+NAMETABLE = "format.tilemap.nes-nametable"
+
+
+def _nes_page(indices: bytes = b"", attrs: bytes = b"") -> bytes:
+    """A 1024-byte nametable page: 960 index bytes, then 64 attribute bytes.
+
+    Both arguments are cut to their plane's length, so a caller can hand over a
+    long filler run without it spilling into the plane after it — which is the
+    whole shape of the format's one trap.
+    """
+    page = bytearray(1024)
+    page[: min(len(indices), 960)] = indices[:960]
+    page[960 : 960 + min(len(attrs), 64)] = attrs[:64]
+    return bytes(page)
+
+
+def test_a_nametable_takes_each_cells_row_from_the_attribute_quadrant() -> None:
+    """The format this whole mechanism exists for: the colour is not in the cell.
+
+    One attribute byte covers a 4x4-tile block and splits it into four 2x2
+    quadrants of two bits — TL at bits 0-1, TR at 2-3, BL at 4-5, BR at 6-7
+    (``docs/rom-mapping/console-nes.md`` §4). Getting the shift wrong is the one
+    failure with no symptom but wrong colours, so the four quadrants of one byte
+    are asserted against hand-computed positions rather than against a
+    round trip, which would agree with itself whatever the packing.
+    """
+    registry = default_registry()
+    engine, _ = registry.engine_for(NAMETABLE)
+    params = _params(registry, NAMETABLE)
+    # Attribute byte 0 covers cells (0..3, 0..3): rows 1, 2, 3, 0 by quadrant.
+    page = _nes_page(bytes(range(256)) * 4, bytes([0b00_11_10_01]))
+    cells = engine.decode(page, params, PipelineContext())
+
+    assert len(cells) == 960
+    assert cells[3].index == 3  # the index plane is bare bytes
+    at = lambda x, y: cells[y * 32 + x].palette_row  # noqa: E731
+    assert at(0, 0) == 1 and at(1, 1) == 1  # TL quadrant, both diagonals of it
+    assert at(2, 0) == 2 and at(3, 1) == 2  # TR
+    assert at(0, 2) == 3 and at(1, 3) == 3  # BL
+    assert at(2, 2) == 0 and at(3, 3) == 0  # BR
+    assert at(4, 0) == 0  # the next byte along, which is zero
+    # A nametable byte is a tile number with no room for anything else, so every
+    # transform is refused rather than set and silently dropped by encode.
+    from celpix.core.tilemap import CellOp as Op
+
+    assert engine.transform_cell(cells[0], Op.FLIP_H, params) is None
+
+
+def test_a_nametable_page_round_trips_and_reads_whole_pages_only() -> None:
+    """Two rules that hold each other up.
+
+    The **spare bits** are the reason the first matters: a 30-row page's last
+    attribute row addresses tile rows 30 and 31, which do not exist, so four bits
+    of each of its eight bytes reach no cell. They are still bytes in the file,
+    so they ride in the carrier cell's ``flags`` and come back untouched — a save
+    that cleared them would quietly rewrite eight bytes of every screen.
+
+    The second is what keeps encode an exact inverse: a 960-byte nametable saved
+    without its attributes is a bare index run (``preset.tilemap.gb-bg``'s), and
+    reading it here would decode cells that could only be written back 64 bytes
+    longer than the file they came from.
+    """
+    registry = default_registry()
+    engine, _ = registry.engine_for(NAMETABLE)
+    params = _params(registry, NAMETABLE)
+    ctx = PipelineContext()
+    # Every attribute byte populated, the last row's unreachable half included.
+    page = _nes_page(bytes(range(256)) * 4, bytes(range(0x40, 0x80)))
+    cells = engine.decode(page, params, ctx)
+
+    assert engine.encode(cells, params, ctx) == page
+    assert cells[28 * 32].flags  # the carrier holds the bits no quadrant reaches
+    # Two pages back to back are two pages, and the second is not stitched onto
+    # the first's attribute plane.
+    assert len(engine.decode(page * 2, params, ctx)) == 1920
+    assert engine.encode(engine.decode(page * 2, params, ctx), params, ctx) == page * 2
+    # Short of a whole page there is nothing to read: the two planes only mean
+    # anything together.
+    assert engine.decode(page[:960], params, ctx) == []
+    assert engine.decode(page[:1023], params, ctx) == []
+
+
+def test_a_nametable_declares_the_four_cells_that_share_one_stored_row() -> None:
+    """The declaration, and what the codec does when cells disagree anyway.
+
+    ``palette_row_granularity`` is how the host knows to write whole quadrants
+    (``docs/design/tilemap-entry.md`` §4). Cells can still arrive disagreeing —
+    a paste carries the rows it was cut with — and the quadrant's **top-left**
+    cell wins, the same rule
+    :meth:`~celpix.core.document.Document.snapped_palette_rows` applies on the
+    way in. The two are asserted here because a drift between them is invisible
+    until a file is reloaded.
+    """
+    from dataclasses import replace
+
+    registry = default_registry()
+    engine, _ = registry.engine_for(NAMETABLE)
+    params = _params(registry, NAMETABLE)
+
+    assert engine.palette_row_granularity(params) == (2, 2)
+    assert engine.palette_row_limit(params) == 3
+    assert engine.index_limit(params) == 0xFF
+
+    cells = engine.decode(_nes_page(), params, PipelineContext())
+    for at, row in ((0, 1), (1, 2), (32, 3), (33, 3)):  # one quadrant, four rows
+        cells[at] = replace(cells[at], palette_row=row)
+    written = engine.encode(cells, params, PipelineContext())
+    assert written[960] & 0b11 == 1  # the top-left cell's, not the last writer's
+
+
+def test_a_row_group_is_the_quadrant_the_file_can_actually_hold() -> None:
+    """The host's half of the same arithmetic, and the reason it is the file's
+    width that resolves it.
+
+    A group computed at the view's Cols would name a different set of cells from
+    the one the codec packs, so a row assigned at one width would land somewhere
+    else on save. It is ``[index]`` for a format that states no width, and for
+    one storing a row per cell — both the safe direction, where writing what was
+    selected is at worst too narrow.
+    """
+    from celpix.core.document import Document
+
+    registry = default_registry()
+    engine, _ = registry.engine_for(NAMETABLE)
+    ctx = PipelineContext()
+    cells = engine.decode(_nes_page(), _params(registry, NAMETABLE), ctx)
+
+    def doc(context: PipelineContext, grain: tuple[int, int] = (2, 2)) -> Document:
+        return Document(
+            pixel_data=bytes(16),
+            bytes_per_tile=16,
+            tile_width=8,
+            tile_height=8,
+            palette=None,
+            pixel_config=None,
+            palette_config=None,
+            cells=list(cells),
+            tilemap_ctx=context,
+            palette_row_granularity=grain,
+        )
+
+    page = doc(ctx)
+    assert page.palette_row_group(33) == [0, 1, 32, 33]  # any member, one answer
+    assert page.palette_row_group(0) == page.palette_row_group(33)
+    last = 29 * 32 + 31  # the bottom-right quadrant, which is a whole one
+    assert page.palette_row_group(last) == [926, 927, 958, 959]
+    assert doc(PipelineContext()).palette_row_group(33) == [33]  # no stated width
+    assert doc(ctx, (1, 1)).palette_row_group(33) == [33]  # a row per cell
+
+    # The snap settles what a paste leaves disagreeing, by the codec's own rule.
+    mixed = list(cells)
+    mixed[33] = Cell(index=0, palette_row=2)
+    assert page.snapped_palette_rows(mixed)[33].palette_row == cells[0].palette_row
+    # Nothing to settle costs nothing: the same list comes back.
+    assert page.snapped_palette_rows(cells) is cells

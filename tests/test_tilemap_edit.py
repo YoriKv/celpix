@@ -2351,3 +2351,113 @@ def test_a_lifted_float_keeps_the_colours_the_pixels_were_shown_in(
     assert [float_image.pixel(x, y) for y in range(8) for x in range(8)] == [
         shown.pixel(x, y) for y in range(8) for x in range(8)
     ]
+
+
+def _bound_nametable(qtbot, tmp_path, attrs=b""):
+    """An NES nametable page bound to a tile bank, read under its own codec.
+
+    No container names the format for a bare `.nam`, so the entry is opened as
+    tilemap data and told which cell format it is — the same two steps the
+    format picker takes when a user points celPix at a carved region.
+    """
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import TileMode, TileSource
+    from uihelpers import _make_snes_file
+
+    page = bytearray(1024)
+    page[:960] = bytes((i * 7) & 0xFF for i in range(960))
+    page[960 : 960 + len(attrs)] = attrs[:64]
+    path = tmp_path / "title.nam"
+    path.write_bytes(bytes(page))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    entry = window._workspace.current
+    entry.tilemap_preset_id = "format.tilemap.nes-nametable"
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(entry)
+    return window, entry
+
+
+def test_setting_a_palette_row_writes_the_whole_quadrant_it_shares(
+    qtbot, tmp_path
+) -> None:
+    """The format whose colour is not in the cell, edited.
+
+    An NES nametable keeps its palette rows in a quarter-resolution plane, so one
+    two-bit field colours four cells. Writing only the selected cell would leave
+    the model showing something the file has no room for, and the other three
+    would follow silently on the next save — which is the failure the codec's
+    ``palette_row_granularity`` declaration exists to prevent. So the assignment
+    grows to the whole quadrant, in one undo step, and the status line says how
+    many cells that took.
+
+    The quadrant is the file's own, so the check goes all the way to the bytes:
+    what the cells say and what the re-encoded attribute plane says have to be
+    the same answer.
+    """
+    window, entry = _bound_nametable(qtbot, tmp_path)
+    doc = entry.doc
+    assert doc.palette_row_granularity == (2, 2)
+    assert all(cell.palette_row == 0 for cell in doc.cells)
+
+    window._select_tiles(0, 0)  # one cell, the top-left of its quadrant
+    window._subpalette.setValue(2)
+    window._pin_selection()
+
+    quadrant = [0, 1, 32, 33]
+    assert [entry.doc.cells[at].palette_row for at in quadrant] == [2, 2, 2, 2]
+    assert entry.doc.cells[2].palette_row == 0  # the next quadrant along is not
+    assert entry.doc.cells[64].palette_row == 0
+    assert "3 more cells" in window.statusBar().currentMessage()
+    # And the bytes agree: attribute byte 0's low field is the row that landed.
+    assert entry.doc.tilemap_data[960] & 0b11 == 2
+
+    # One undo step for the whole quadrant, not four.
+    window._undo_stack.undo()
+    assert all(entry.doc.cells[at].palette_row == 0 for at in quadrant)
+    window._undo_stack.redo()
+
+    # And it survives the round trip, which is the whole point: the picture read
+    # back off the disk has to be the picture that was on screen before the save.
+    from pathlib import Path
+
+    from celpix.core.context import PipelineContext
+    from celpix.plugins.registry import default_registry
+
+    window._write_current()
+    written = Path(entry.path).read_bytes()
+    assert len(written) == 1024  # the page keeps its length, plane and all
+
+    registry = default_registry()
+    engine, preset = registry.engine_for("format.tilemap.nes-nametable")
+    reread = engine.decode(written, preset.params, PipelineContext())
+    assert [reread[at].palette_row for at in quadrant] == [2, 2, 2, 2]
+    assert reread[2].palette_row == 0
+    assert [cell.index for cell in reread] == [cell.index for cell in entry.doc.cells]
+
+
+def test_a_stamp_leaves_the_row_behind_where_four_cells_share_one(
+    qtbot, tmp_path
+) -> None:
+    """An eyedropped cell normally lays down its whole record — the row, the
+    flips, everything the format round-trips — because "put *that* one here" is
+    what the gesture means.
+
+    Not the palette row on a format that stores one per 2x2 square: there the row
+    is not the cell's to give, and carrying it would recolour up to three
+    neighbours the user never pointed at. The tile still travels, which is the
+    half of the gesture that was asked for.
+    """
+    from celpix.core.tilemap import Cell
+
+    window, entry = _bound_nametable(qtbot, tmp_path)
+    window._source_cell = Cell(index=5, palette_row=3)
+
+    laid = window._stamp_cell(5, Cell(index=1, palette_row=0))
+    assert laid.index == 5  # the tile goes
+    assert laid.palette_row == 0  # the row stays behind

@@ -668,7 +668,7 @@ class ObjContainer:
         category="Authoring tools",
         preserves_offsets=True,
     )
-    default_tilemap_preset = "preset.tilemap.scgcad-object"
+    default_tilemap_preset = "format.tilemap.scgcad-object"
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         payload = _obj_payload(source.data)
@@ -788,7 +788,7 @@ class ObzContainer:
         category="Authoring tools",
         preserves_offsets=True,
     )
-    default_tilemap_preset = "preset.tilemap.scgcad-obz"
+    default_tilemap_preset = "format.tilemap.scgcad-obz"
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         ctx.set(KEY_TILEMAP_COLUMNS, OBJECT_COLUMNS)

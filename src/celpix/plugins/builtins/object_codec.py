@@ -42,22 +42,34 @@ is stated once, here, rather than split between a preset table and a resolver.
 
 from __future__ import annotations
 
-from typing import Any
-
 from celpix.core.context import (
     KEY_TILEMAP_ENDIAN,
     KEY_TILEMAP_FRAME_SIZES,
     KEY_TILEMAP_SUBSPRITES_PER_FRAME,
     PipelineContext,
 )
-from celpix.core.errors import Stage
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, Frame, Subsprite
 from celpix.core.tilemap import Cell
-from celpix.plugins.base import PluginInfo
+from celpix.plugins.formats import FormatInfo
 
-OBJECT_ENGINE = "codec.tilemap.scgcad-object"
-OBZ_ENGINE = "codec.tilemap.scgcad-obz"
-SPR_ENGINE = "codec.tilemap.ys-spr"
+OBJECT_FORMAT = "format.tilemap.scgcad-object"
+OBZ_FORMAT = "format.tilemap.scgcad-obz"
+SPR_FORMAT = "format.tilemap.ys-spr"
+
+# What all three tell the **host**, and the whole of what a preset for them ever
+# said that was not a codec parameter (:class:`~celpix.plugins.formats.FormatInfo`).
+#
+# `layout` says the cells are freely-placed subsprites grouped into frames rather
+# than positions in a grid, which decides how the entry is read before a byte is
+# decoded — so the bar can describe an object with nothing yet bound to it
+# (`docs/design/tilemap-entry.md` §6).
+#
+# `palette_row_base` says a sprite's 3-bit palette field counts from CGRAM row 8,
+# the console keeping OBJ palettes in the upper half (`snes-hardware-notes.md`
+# §6); without it an object draws through the background's colours. It is the
+# last word rather than the first — a bound bank that states its own base wins
+# (`scgcad-formats.md` §8.5).
+_SPRITE_DECLARES = {"layout": "sprite", "palette_row_base": 8}
 
 RECORD = 6  # bytes per subsprite
 SUBSPRITES_PER_FRAME = 64  # every frame has room for this many, used or not
@@ -66,21 +78,21 @@ _DRAWN = 0x80  # byte 0
 _LARGE = 0x01
 
 
-def _endian(params: dict[str, Any], ctx: PipelineContext) -> str:
+def _endian(default: str, ctx: PipelineContext) -> str:
     """Which way round the attribute word is, the file's answer preferred.
 
-    The container reads the build marker and publishes what it found; the preset
-    only says what to assume when nothing did. A wrong order here does not
+    The container reads the build marker and publishes what it found; ``default``
+    is only what to assume when nothing did. A wrong order here does not
     degrade — it turns every tile number and palette row into a different one —
     so the file's own statement has to win.
     """
-    order = str(ctx.get(KEY_TILEMAP_ENDIAN) or params.get("endian", "big"))
+    order = str(ctx.get(KEY_TILEMAP_ENDIAN) or default)
     if order not in ("little", "big"):
         raise ValueError(f"endian must be 'little' or 'big', got {order!r}")
     return order
 
 
-def size_pair(params: dict[str, Any]) -> tuple[int, int]:
+def size_pair(raw: object) -> tuple[int, int]:
     """The object's two subsprite sizes **in tiles**, which the file does not record.
 
     A game set this in a register, so a reader has to be told, and the corpus gives
@@ -89,10 +101,9 @@ def size_pair(params: dict[str, Any]) -> tuple[int, int]:
     what a subsprite is built from is a square of *tiles*, and saying so leaves the
     quantity meaningful against any tile size and any pair the user needs.
 
-    Non-positive or missing values fall back to the default rather than raising — a
-    hand-edited preset should draw something.
+    Non-positive or malformed values fall back to the default rather than
+    raising — a hand-edited pair should draw something.
     """
-    raw = params.get("subsprite_tiles", DEFAULT_SUBSPRITE_TILES)
     try:
         small, large = (int(raw[0]), int(raw[1]))
     except (TypeError, ValueError, IndexError, KeyError):
@@ -102,9 +113,7 @@ def size_pair(params: dict[str, Any]) -> tuple[int, int]:
     return small, large
 
 
-def subsprites_per_frame(
-    params: dict[str, Any], ctx: PipelineContext | None = None
-) -> int:
+def subsprites_per_frame(default: int, ctx: PipelineContext | None = None) -> int:
     """How many subsprite slots one frame holds, the file's answer preferred.
 
     The same shape as :func:`_endian`, and for a sharper reason. A sprite object
@@ -117,13 +126,13 @@ def subsprites_per_frame(
     byte-exact round trip never noticed.
 
     The container is what knows: deciding which form it is holding is how it found
-    the signature. So it publishes, and the preset only says what to assume when
+    the signature. So it publishes, and ``default`` is only what to assume when
     nothing did.
     """
     stated = ctx.get(KEY_TILEMAP_SUBSPRITES_PER_FRAME) if ctx is not None else None
     if stated:
         return max(1, int(stated))
-    return max(1, int(params.get("subsprites_per_frame", SUBSPRITES_PER_FRAME)))
+    return max(1, int(default))
 
 
 class _SubspriteCodec:
@@ -133,24 +142,34 @@ class _SubspriteCodec:
     the same way. Only :meth:`decode`, :meth:`encode` and ``_subsprite`` differ,
     which is the whole of the subclassing — plus, for the one format that counts
     its frames rather than slotting them, :meth:`frames`.
+
+    All three are **formats** rather than engines: each is one record layout and
+    not a parameterisation of anything (``docs/design/plugin-system.md``). What a
+    subclass would have taken as parameters is a class attribute below, and what
+    the *host* has to be told rides in :attr:`FormatInfo.declares`.
     """
 
-    def bytes_per_cell(self, params: dict[str, Any]) -> int:
+    #: Fallback stride when no container states one, and the pair a record's size
+    #: bit chooses between. Class attributes rather than preset parameters: they
+    #: are this record layout's own answers, and the file overrides both where it
+    #: can say (:func:`subsprites_per_frame`).
+    per_frame = SUBSPRITES_PER_FRAME
+    tile_pair = DEFAULT_SUBSPRITE_TILES
+
+    def bytes_per_cell(self) -> int:
         return RECORD
 
-    def cell_tiles(self, params: dict[str, Any]) -> tuple[int, int]:
+    def cell_tiles(self) -> tuple[int, int]:
         # A subsprite covers 1, 4, 16 or 64 tiles depending on its own size bit,
         # so there is no one answer; the frame renderer asks each of them instead.
         # One is the honest reply to a question about cells in general.
         return (1, 1)
 
-    def size_pair(self, params: dict[str, Any]) -> tuple[int, int]:
+    def size_pair(self) -> tuple[int, int]:
         """The two sizes a subsprite's own size bit chooses between."""
-        return size_pair(params)
+        return size_pair(self.tile_pair)
 
-    def frames(
-        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
-    ) -> list[Frame]:
+    def frames(self, cells: list[Cell], ctx: PipelineContext) -> list[Frame]:
         """The cells regrouped into frames of subsprites — what the view draws.
 
         The extra half of these engines, and the reason they are not the generic
@@ -170,8 +189,8 @@ class _SubspriteCodec:
         shape (:class:`~celpix.core.sprite.Subsprite`). Which is also why a
         change of pair is a re-read and not a repaint.
         """
-        per_frame = subsprites_per_frame(params, ctx)
-        pair = size_pair(params)
+        per_frame = subsprites_per_frame(self.per_frame, ctx)
+        pair = size_pair(self.tile_pair)
         return [
             tuple(
                 sub
@@ -192,16 +211,20 @@ class _SubspriteCodec:
 
 
 class ObjectCodec(_SubspriteCodec):
-    info = PluginInfo(
-        id=OBJECT_ENGINE,
-        name="Sprite object subsprite",
-        stage=Stage.INTERPRET_TILEMAP,
+    info = FormatInfo(
+        id=OBJECT_FORMAT,
+        name="Sprite object subsprite (OBJ/OBX)",
+        category="Authoring tools",
+        declares=_SPRITE_DECLARES,
     )
 
-    def decode(
-        self, data: bytes, params: dict[str, Any], ctx: PipelineContext
-    ) -> list[Cell]:
-        order = _endian(params, ctx)
+    #: Only the fallback: 26 of the corpus's 1,341 objects come from a later
+    #: build that stores the attribute word the other way round, and the
+    #: container reads that out of the file's own build marker (:func:`_endian`).
+    endian = "big"
+
+    def decode(self, data: bytes, ctx: PipelineContext) -> list[Cell]:
+        order = _endian(self.endian, ctx)
         cells: list[Cell] = []
         for at in range(0, len(data) - RECORD + 1, RECORD):
             record = data[at : at + RECORD]
@@ -218,10 +241,8 @@ class ObjectCodec(_SubspriteCodec):
             )
         return cells
 
-    def encode(
-        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
-    ) -> bytes:
-        order = _endian(params, ctx)
+    def encode(self, cells: list[Cell], ctx: PipelineContext) -> bytes:
+        order = _endian(self.endian, ctx)
         out = bytearray()
         for cell in cells:
             attr = (
@@ -297,15 +318,14 @@ class ObzCodec(_SubspriteCodec):
     frame grouping, which is in :class:`_SubspriteCodec`.
     """
 
-    info = PluginInfo(
-        id=OBZ_ENGINE,
-        name="Sprite object subsprite (transfer)",
-        stage=Stage.INTERPRET_TILEMAP,
+    info = FormatInfo(
+        id=OBZ_FORMAT,
+        name="Transfer object subsprite (OBZ)",
+        category="Authoring tools",
+        declares=_SPRITE_DECLARES,
     )
 
-    def decode(
-        self, data: bytes, params: dict[str, Any], ctx: PipelineContext
-    ) -> list[Cell]:
+    def decode(self, data: bytes, ctx: PipelineContext) -> list[Cell]:
         cells: list[Cell] = []
         for at in range(0, len(data) - RECORD + 1, RECORD):
             word = int.from_bytes(data[at : at + RECORD], "big")
@@ -321,9 +341,7 @@ class ObzCodec(_SubspriteCodec):
             )
         return cells
 
-    def encode(
-        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
-    ) -> bytes:
+    def encode(self, cells: list[Cell], ctx: PipelineContext) -> bytes:
         out = bytearray()
         for cell in cells:
             word = (
@@ -405,18 +423,17 @@ class SprCodec(_SubspriteCodec):
     back what was read.
     """
 
-    info = PluginInfo(
-        id=SPR_ENGINE,
-        name="Yoshi's Island sprite pattern subsprite",
-        stage=Stage.INTERPRET_TILEMAP,
+    info = FormatInfo(
+        id=SPR_FORMAT,
+        name="Yoshi's Island sprite pattern subsprite (SPR)",
+        category="Nintendo",
+        declares=_SPRITE_DECLARES,
     )
 
-    def bytes_per_cell(self, params: dict[str, Any]) -> int:
+    def bytes_per_cell(self) -> int:
         return SPR_RECORD
 
-    def decode(
-        self, data: bytes, params: dict[str, Any], ctx: PipelineContext
-    ) -> list[Cell]:
+    def decode(self, data: bytes, ctx: PipelineContext) -> list[Cell]:
         cells: list[Cell] = []
         for at in range(0, len(data) - SPR_RECORD + 1, SPR_RECORD):
             word = int.from_bytes(data[at : at + SPR_RECORD], "big")
@@ -432,9 +449,7 @@ class SprCodec(_SubspriteCodec):
             )
         return cells
 
-    def encode(
-        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
-    ) -> bytes:
+    def encode(self, cells: list[Cell], ctx: PipelineContext) -> bytes:
         out = bytearray()
         for cell in cells:
             word = (
@@ -448,13 +463,11 @@ class SprCodec(_SubspriteCodec):
             out += word.to_bytes(SPR_RECORD, "big")
         return bytes(out)
 
-    def index_limit(self, params: dict[str, Any]) -> int | None:
+    def index_limit(self) -> int | None:
         """The character number's own width — two whole bytes of it."""
         return 0xFFFF
 
-    def frames(
-        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
-    ) -> list[Frame]:
+    def frames(self, cells: list[Cell], ctx: PipelineContext) -> list[Frame]:
         """The cells cut into frames at the boundaries the file counted.
 
         The counts are the file's, so a frame here is however many subsprites the
@@ -470,8 +483,8 @@ class SprCodec(_SubspriteCodec):
         """
         sizes = ctx.get(KEY_TILEMAP_FRAME_SIZES)
         if not sizes:
-            return super().frames(cells, params, ctx)
-        pair = size_pair(params)
+            return super().frames(cells, ctx)
+        pair = size_pair(self.tile_pair)
         out: list[Frame] = []
         at = 0
         for size in sizes:

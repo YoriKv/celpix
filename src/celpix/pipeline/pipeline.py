@@ -343,6 +343,11 @@ class TilemapData(NamedTuple):
     the format's word, not this file's, so a screen whose cells all happen to sit
     on row 0 still reports True. What it gates is whether the view's subpalette
     applies at all (``docs/design/tilemap-entry.md`` §8).
+
+    ``row_granularity`` is how many cells share one *stored* row — ``(1, 1)``
+    unless the format keeps its rows in a plane coarser than its cells, which
+    an NES nametable does
+    (:meth:`~celpix.plugins.base.TilemapCodecPlugin.palette_row_granularity`).
     """
 
     cells: list[Cell]
@@ -355,6 +360,7 @@ class TilemapData(NamedTuple):
     palette_rows: bool = True
     index_mask: int = 0
     palette_row_base: int = 0
+    row_granularity: tuple[int, int] = (1, 1)
 
 
 def load_tilemap_data(
@@ -489,8 +495,32 @@ def load_tilemap_data(
         if stated is not None
         else int(preset.params.get("palette_row_base", 0) or 0)
     )
+    # How many cells one *stored* row covers. Probed like the rest of the
+    # optional half, and (1, 1) where the codec stays quiet — a format keeping a
+    # row per cell is every format but one, and inferring a coarser group for a
+    # codec that was never asked would recolour cells nobody selected.
+    grain = (1, 1)
+    ask = getattr(engine, "palette_row_granularity", None)
+    if ask is not None:
+        try:
+            pair = ask(preset.params)
+        except Exception:  # noqa: BLE001 — a probe must not fail the load
+            pair = None
+        if pair:
+            across, down = (int(pair[0]), int(pair[1]))
+            grain = (max(1, across), max(1, down))
     return TilemapData(
-        cells, cell_bytes, tiles, ctx, data, frames, size_pair, rows, mask, row_base
+        cells,
+        cell_bytes,
+        tiles,
+        ctx,
+        data,
+        frames,
+        size_pair,
+        rows,
+        mask,
+        row_base,
+        grain,
     )
 
 

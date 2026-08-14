@@ -999,9 +999,9 @@ def test_cell_overlays_repaint_in_strips_exactly_as_in_one_pass(qtbot) -> None:
 
     Under a **block** arrangement, where a slot does not sit where its number
     says and the band is a period of the mapping rather than a run of rows - and
-    under a **non-square pixel**, where a row boundary in device pixels is not
-    the row height times the zoom but a rounded edge either side of it, which is
-    the case the band's slack is there for.
+    under a **non-square pixel**, where a cell boundary in device pixels is not
+    its size times the zoom but a rounded edge either side of it, which is the
+    case the band's slack is there for.
     """
     from PySide6.QtCore import QPoint, QRect
     from PySide6.QtGui import QImage, QRegion
@@ -1013,15 +1013,23 @@ def test_cell_overlays_repaint_in_strips_exactly_as_in_one_pass(qtbot) -> None:
     canvas.set_tile_size(8, 8)
     canvas.set_zoom(4)  # big enough that the labels are drawn at all
     canvas.set_pixel_aspect((8, 7))
-    image = QImage(8 * 8, 8 * 8, QImage.Format.Format_RGB32)
+    # A width of 14 tiles is the point of this number: at 8:7 a device column is
+    # 32/7 image pixels, and 14 * 8 of them come to exactly 512 device columns.
+    # An extent that does *not* divide leaves the picture's last column half
+    # covered (``PanZoomSurface._scaled_size`` rounds the widget out to hold it),
+    # and whether an aliased scaled blit puts image ink or backdrop in a half
+    # column is decided per span from the clip's left edge - which makes it a
+    # property of the raster path rather than of anything this test is about, and
+    # differs between architectures.
+    image = QImage(14 * 8, 8 * 8, QImage.Format.Format_RGB32)
     image.fill(0xFF202020)
     canvas.set_image(image)
-    canvas.set_arrangement(2, 2, "row")  # 2x2 metatiles: 16 cells, 64 slots
+    canvas.set_arrangement(2, 2, "row")  # 2x2 metatiles: 28 cells, 112 slots
     # One id per cell (its first slot), a row on every slot, a line end on a
     # cell in the middle of the picture - each overlay drawn from a different
     # corner of its cell, which is what the band's slack has to cover.
-    canvas.set_tile_ids([slot if slot % 4 == 0 else None for slot in range(64)])
-    canvas.set_palette_rows([slot % 8 for slot in range(64)])
+    canvas.set_tile_ids([slot if slot % 4 == 0 else None for slot in range(112)])
+    canvas.set_palette_rows([slot % 8 for slot in range(112)])
     canvas.set_line_ends(frozenset({20, 40}))
     canvas.set_selection([12, 13], as_rect=True)
 

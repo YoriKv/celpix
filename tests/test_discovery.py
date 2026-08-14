@@ -443,10 +443,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         "reshape/_example.py",
         "tilemap/_example.py",
         "tilemap/_md-sprite.toml",
-        "tilemap/_object.toml",
-        "tilemap/_obz.toml",
         "tilemap/_packed.toml",
-        "tilemap/_ys-spr.toml",
     ]
 
     # A stale reference file is replaced rather than left behind, so the examples
@@ -500,10 +497,27 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     # Coverage is checked against a *clean* registry: `reg` also holds the code
     # formats the examples above registered, which are not preset engines.
     builtin = default_registry()
+
+    def preset_engines(stage: Stage) -> set:
+        """The engines an example TOML has to exist for — code formats excluded.
+
+        A **format** is behaviour in code with no parameters at all, so an example
+        preset for one would have an empty ``[params]`` and nothing to teach. It
+        is told apart by the invariant `adapt_format` establishes: a format
+        registers an engine *and* a preset under one id, so its engine id
+        resolving as a preset id of its own is the signature of the tier.
+        """
+        formats = {
+            preset.id
+            for preset in builtin.presets(stage)
+            if preset.engine_id == preset.id
+        }
+        return {plugin.info.id for plugin in builtin.plugins(stage)} - formats
+
     pixel_examples = toml_examples("pixel", Stage.INTERPRET_PIXEL)
-    assert {p.engine_id for p in pixel_examples} == {
-        plugin.info.id for plugin in builtin.plugins(Stage.INTERPRET_PIXEL)
-    }
+    assert {p.engine_id for p in pixel_examples} == preset_engines(
+        Stage.INTERPRET_PIXEL
+    )
     for preset in pixel_examples:
         engine = reg.plugin(Stage.INTERPRET_PIXEL, preset.engine_id)
         data = bytes(
@@ -529,9 +543,9 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert (tile.width, tile.height, len(tile.data)) == (8, 8, 64)
 
     palette_examples = toml_examples("palette", Stage.INTERPRET_PALETTE)
-    assert {p.engine_id for p in palette_examples} == {
-        plugin.info.id for plugin in builtin.plugins(Stage.INTERPRET_PALETTE)
-    }
+    assert {p.engine_id for p in palette_examples} == preset_engines(
+        Stage.INTERPRET_PALETTE
+    )
     for preset in palette_examples:
         engine = reg.plugin(Stage.INTERPRET_PALETTE, preset.engine_id)
         size = engine.bytes_per_entry(preset.params)
@@ -554,18 +568,22 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     )
 
     tilemap_examples = toml_examples("tilemap", Stage.INTERPRET_TILEMAP)
-    assert {p.engine_id for p in tilemap_examples} == {
-        plugin.info.id for plugin in builtin.plugins(Stage.INTERPRET_TILEMAP)
-    }
+    assert {p.engine_id for p in tilemap_examples} == preset_engines(
+        Stage.INTERPRET_TILEMAP
+    )
     for preset in tilemap_examples:
         engine = reg.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
-        data = bytes(
-            (i * 61 + 7) & 0xFF for i in range(engine.bytes_per_cell(preset.params) * 4)
-        )
-        assert (
-            engine.encode(engine.decode(data, preset.params, ctx), preset.params, ctx)
-            == data
-        )
+        # Grown to the first length the format accepts rather than assumed to be
+        # four cells: a cell stride is what most of them read at, but a format
+        # whose colour lives in a plane after its cells reads a whole page or
+        # nothing — the two planes mean nothing apart.
+        for length in (engine.bytes_per_cell(preset.params) * 4, 1024, 2048):
+            data = bytes((i * 61 + 7) & 0xFF for i in range(length))
+            cells = engine.decode(data, preset.params, ctx)
+            if cells:
+                break
+        assert cells, f"{preset.id} decoded nothing at any probe length"
+        assert engine.encode(cells, preset.params, ctx) == data
     # The code format too: a cell whose fields straddle bytes is exactly what the
     # engines cannot express, so its round trip is the one most worth checking.
     split = reg.plugin(Stage.INTERPRET_TILEMAP, "format.tilemap.example-split")
