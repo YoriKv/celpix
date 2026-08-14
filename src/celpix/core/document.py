@@ -874,25 +874,81 @@ class Document:
         return self.pages_across * columns if self.pages else 0
 
     @property
+    def row_plane_columns(self) -> int:
+        """The width a **coarse palette-row plane** is addressed at, or 0 for none.
+
+        The third reason a width stops being a preference, after a page assembly
+        and a dense stamp — and the one that is not about a shear. A format whose
+        rows live in a plane coarser than its cells
+        (:attr:`palette_row_granularity`) addresses that plane in the *file's*
+        own rows, which is what :meth:`palette_row_group` resolves a group
+        against. Laid out at any other width the 2x2 square on screen is not the
+        2x2 square the codec writes, so assigning a row recolours four cells the
+        user cannot see and leaves the four they pointed at alone.
+
+        A stated width is ordinarily **advisory** — a container's header seeds
+        Cols and the user owns it after — because a wrong one only lays the same
+        bytes out badly. Here the width decides which byte a row is packed into,
+        so the format states it over anything a container left and it is not a
+        setting at all (:func:`~celpix.plugins.builtins.nes_nametable
+        ._publish_geometry`). Which is why this asks the **granularity** and not
+        merely whether a width was stated: the coarse plane is what makes the
+        width the codec's rather than the reader's.
+
+        Independent of how many pages the file holds, unlike the assembly: a
+        single 1024-byte nametable page is as unreadable at 31 across as four of
+        them are.
+        """
+        across, down = self.palette_row_granularity
+        return self.stated_columns if across > 1 or down > 1 else 0
+
+    @property
+    def has_row_groups(self) -> bool:
+        """Whether one stored palette row covers more than one cell **here**.
+
+        The single answer to that question, and it is deliberately not the same
+        as "the format declared a coarse granularity". A format that declares one
+        and states no width to resolve it against has no group this host can
+        name: the plane is addressed in the file's own rows, and without the width
+        there is no arithmetic to reach the other cells of a square
+        (:attr:`row_plane_columns`). Both halves of the mechanism treat that as
+        having no group at all — :meth:`palette_row_group` hands back the one
+        cell and :meth:`snapped_palette_rows` settles nothing — which is the safe
+        direction, since writing exactly what was selected is at worst too narrow.
+
+        So every gesture that behaves differently under a shared row asks *this*,
+        not the granularity. Asking the granularity is a second, weaker predicate,
+        and the two disagreeing is how a document the app edits per cell
+        everywhere else acquires one gesture that does not: an eyedropped cell
+        whose colour is dropped on the way down, on a format with no group to
+        drop it for.
+        """
+        return bool(self.row_plane_columns)
+
+    @property
     def drawn_columns(self) -> int:
         """How many cells across the **file** fixes the picture at, or 0 for none.
 
         What the layout and the selection both take their width from, and the
         generalisation of :attr:`assembled_columns`: a page assembly is one reason
-        a width stops being a preference, and a **dense** stamp is the other. Its
-        entries are one per stamp, so the picture is ``across`` times wider than
-        the file's own row — laid out at anything else it shears exactly as a
-        misassembled page does, and for the same reason, the row breaking in a
-        place the file did not put it.
+        a width stops being a preference, a **coarse palette-row plane** is the
+        second (:attr:`row_plane_columns`) and a **dense** stamp is the third. A
+        dense map's entries are one per stamp, so the picture is ``across`` times
+        wider than the file's own row — laid out at anything else it shears
+        exactly as a misassembled page does, and for the same reason, the row
+        breaking in a place the file did not put it.
 
         Read here rather than where the two happen to meet, because a render can
         be asked for by something that never went through the UI at all (a bulk
         PNG export of entries that were loaded and never shown), so the layout
         takes the width from the document and the Cols spin is what mirrors it.
 
-        The assembly wins where a document somehow had both, which no format in
-        hand does: it is the coarser cut of the two, and a page split at the wrong
-        place misplaces whole rows rather than halves of one.
+        The assembly wins where a document has more than one of them — a paged
+        nametable has two: it is the coarsest cut of the three, and a page split
+        at the wrong place misplaces whole rows rather than halves of one. It
+        does not contradict the row plane either way, since a page is laid out at
+        the same width the plane is addressed in and the assembly only says how
+        many pages sit side by side.
 
         A dense map answers here **whether or not its format states a width**, and
         that is not the same claim as :attr:`columns_locked`. Where the width came
@@ -907,6 +963,9 @@ class Document:
         assembled = self.assembled_columns
         if assembled:
             return assembled
+        plane = self.row_plane_columns
+        if plane:
+            return plane
         chain = self.chain
         # The same condition :meth:`resolve` expands a dense map under: with no
         # width at all there is no stamped resolution to be wide, so there is no
@@ -921,13 +980,18 @@ class Document:
         """Whether :attr:`drawn_columns` is the **file's** number and not the view's.
 
         The two are different questions and the UI needs both: the width to draw
-        at, and whether Cols is still the user's to set. A page assembly and a
-        stated stamp width are facts about the file, so the spin mirrors them and
-        is disabled; a dense map whose format states nothing has a width only
-        because the user has one, and taking the spin away would leave no way to
-        supply it (``docs/design/tilemap-entry.md`` §3.1).
+        at, and whether Cols is still the user's to set. A page assembly, a coarse
+        palette-row plane and a stated stamp width are facts about the file, so
+        the spin mirrors them and is disabled; a dense map whose format states
+        nothing has a width only because the user has one, and taking the spin
+        away would leave no way to supply it (``docs/design/tilemap-entry.md``
+        §3.1).
+
+        The row plane locks at **any page count**, which the assembly cannot do:
+        a single nametable page holds one page and assembles nothing, and is as
+        unreadable at 31 across as four of them are (:attr:`row_plane_columns`).
         """
-        if self.assembled_columns:
+        if self.assembled_columns or self.row_plane_columns:
             return True
         chain = self.chain
         return chain is not None and chain.dense and bool(self.stated_columns)
@@ -1127,20 +1191,36 @@ class Document:
         The plane is addressed in the file's own rows, so a group computed at a
         width the user picked would name a different set of cells from the one
         the codec packs — and the picture would change under them on save. A
-        format declaring a coarse granularity therefore has to state its width;
-        one that has not is treated as having no group, which is the safe
+        format declaring a coarse granularity therefore has to state its width,
+        and to state it **over** whatever framed the bytes: this is the width its
+        own ``encode`` packs at, so it is not one a container's header can improve
+        on (:func:`~celpix.plugins.builtins.nes_nametable._publish_geometry`). One
+        that states nothing is treated as having no group, which is the safe
         direction (it writes exactly what was selected).
 
         Indices are in the file's own order, like :meth:`cell_at`'s answer, and
-        the group is **clipped to the cells that exist**: the last attribute row
-        of a 30-row nametable covers two rows the page does not have.
+        the group is **clipped twice** — at the right edge to ``columns``, and at
+        the end to the cells that exist, since the last attribute row of a 30-row
+        nametable covers two rows the page does not have.
+
+        :meth:`snapped_palette_rows` walks the same group geometry from the other
+        end — every anchor rather than one member's — and those two clips are
+        what the two have to keep saying alike. They are not the same walk and do
+        not share one: this one finds a group *from a member*, rounding its
+        anchor down and handing back a list because the caller wants the indices,
+        while the snap generates anchors and fuses membership with the comparison
+        so that a settled list costs no allocation at all. They also clip against
+        **different collections** — this one against :attr:`cells`, the snap
+        against whatever list it was handed, which is the point of its taking
+        one.
         """
         across, down = self.palette_row_granularity
         cells = self.cells
-        if cells is None or (across <= 1 and down <= 1):
-            return [index]
-        columns = self.stated_columns
-        if columns <= 0 or not (0 <= index < len(cells)):
+        # One question, asked in one place: a coarse granularity *and* a width to
+        # resolve it against (:attr:`has_row_groups`). The width comes back with
+        # the answer because it is the same number the group is walked at.
+        columns = self.row_plane_columns
+        if not columns or cells is None or not (0 <= index < len(cells)):
             return [index]
         first_col = (index % columns) // across * across
         first_row = (index // columns) // down * down
@@ -1163,36 +1243,74 @@ class Document:
         Left alone, the model would show four colours the file has room for one
         of, and the picture would change on the next reload.
 
-        So a group's row is settled here, on the way into the edit, by the same
-        rule the codec's ``encode`` follows: **the first cell of the group in
-        file order wins**. One rule in two places rather than a negotiation, and
-        the consequence is that what is on screen is what a reload would show.
+        So a group's row is settled here, by the same rule the codec's ``encode``
+        follows: **the first cell of the group in file order wins**. Applied on
+        the way *into* an edit, so the model never holds a picture the file has
+        no room for, and again on the way *out* (:attr:`settled_cells`), so that
+        what is stored does not depend on having come in that way.
+
+        **Idempotent, and that is what lets it sit on both.** A second pass over
+        a settled list finds every group already agreeing and hands the same list
+        straight back, so the two applications cost one walk and a comparison
+        rather than fighting each other.
 
         Returns ``cells`` itself where there is nothing to do — every format
         whose row is a field of the cell word, and any coarse one whose width
-        the format has not stated (:meth:`palette_row_group`).
+        the format has not stated (:attr:`has_row_groups`).
         """
         across, down = self.palette_row_granularity
-        columns = self.stated_columns
-        if (across <= 1 and down <= 1) or columns <= 0 or not cells:
+        columns = self.row_plane_columns  # the same one question as above
+        if not columns or not cells:
             return cells
         out: list[Cell] | None = None
-        rows = -(-len(cells) // columns)
+        rows = ceil_div(len(cells), columns)
+        # Anchors rather than members, which is the whole difference from
+        # :meth:`palette_row_group` — but the two clips inside are that method's
+        # and have to stay its: `across` columns from the anchor **or the right
+        # edge**, `down` rows **or the end of the list**. The membership walk is
+        # fused with the comparison rather than collecting a group first, so a
+        # list that is already settled — which is most of them, and every one a
+        # save re-checks — costs a scan and no allocation.
         for top in range(0, rows, down):
             for left in range(0, columns, across):
                 head = top * columns + left
                 if head >= len(cells):
                     continue
-                row = cells[head].palette_row
-                for r in range(top, top + down):
-                    for c in range(left, min(left + across, columns)):
-                        at = r * columns + c
-                        if at >= len(cells) or cells[at].palette_row == row:
+                # The group's first cell in file order wins, which is the rule
+                # the codec's own `encode` restates (:attr:`settled_cells`).
+                stored = cells[head].palette_row
+                for row in range(top, top + down):
+                    for col in range(left, min(left + across, columns)):
+                        at = row * columns + col
+                        if at >= len(cells) or cells[at].palette_row == stored:
                             continue
                         if out is None:
                             out = list(cells)
-                        out[at] = replace(out[at], palette_row=row)
+                        out[at] = replace(out[at], palette_row=stored)
         return cells if out is None else out
+
+    @property
+    def settled_cells(self) -> list[Cell]:
+        """:attr:`cells` as the file will store them — every row group agreed.
+
+        **What an encode is given**, and the reason the rule cannot drift. The
+        codec restates the same pick — the group's first cell in file order — and
+        it has to, because it is handed a flat buffer and no document; but fed
+        this list it never sees a group that disagrees, so which cell it would
+        have picked stops being able to matter. A rule stated twice that can only
+        be exercised once is a rule stated once.
+
+        That also takes the invariant off the edit funnel. Rows are settled on the
+        way into an edit so the model shows what the file can hold
+        (:meth:`snapped_palette_rows`), but "every write goes through that one
+        method" is a convention: a headless save of a document built in code, or a
+        gesture writing :attr:`cells` directly, would otherwise reach ``encode``
+        with a picture the file has no room for and store a different one.
+
+        Free on every document but the coarse ones, which return their own list
+        untouched, and free again on one already settled.
+        """
+        return self.snapped_palette_rows(self.cells or [])
 
     def cell_tile_indices(self, cell: Cell) -> list[int]:
         """The source tile indices ``cell`` draws, in the order they appear.

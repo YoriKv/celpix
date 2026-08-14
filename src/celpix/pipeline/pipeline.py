@@ -24,16 +24,17 @@ geometry — is :mod:`celpix.pipeline._stage`.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import NamedTuple
 
 from celpix.core.context import (
     KEY_SOURCE_FILES,
     KEY_SOURCE_OFFSET,
     KEY_SOURCE_PATH,
     KEY_TILEMAP_PALETTE_ROW_BASE,
+    KEY_TILEMAP_SUBSPRITE_TILES,
     PipelineContext,
 )
 from celpix.core.document import Document
@@ -50,6 +51,7 @@ from celpix.core.tilemap import Cell
 from celpix.pipeline._stage import (
     _acquire,
     _pixel_geometry,
+    _probe,
     _run,
     bitmap_params,
     tile_params,
@@ -329,6 +331,11 @@ class TilemapData(NamedTuple):
     pixel offsets no grid can express (:mod:`celpix.core.sprite`). None for every
     ordinary tilemap, which is drawn as the grid its cells already are.
 
+    ``size_pair`` is the subsprite size pair those frames were **built at** — the
+    caller's choice where it made one, else the format's own answer. One number
+    rather than two, so the bar reads back the pair the picture is in and cannot
+    show a setting the frames were not built with.
+
     ``index_mask`` is the ``index`` field's own width, so a multi-tile cell's
     neighbours wrap inside the field rather than running past the end
     (:attr:`~celpix.core.document.Document.index_mask`) — the codec's
@@ -364,7 +371,11 @@ class TilemapData(NamedTuple):
 
 
 def load_tilemap_data(
-    cfg: PathwayConfig, reg: Registry, live: bytes | None = None
+    cfg: PathwayConfig,
+    reg: Registry,
+    live: bytes | None = None,
+    *,
+    size_pair: tuple[int, int] | None = None,
 ) -> TilemapData:
     """Run the tilemap pathway forward: Read -> Decompress -> decode to cells.
 
@@ -382,6 +393,14 @@ def load_tilemap_data(
     cells has not moved any of that. Spliced on the rule the edit itself follows
     (:meth:`~celpix.ui.main_window.tilemap_edit.TilemapEditMixin._reencode_cells`),
     so whatever sits past the last cell stays as the file has it.
+
+    ``size_pair`` is the **entry's** subsprite size pair, the one thing about a
+    sprite object that neither its file nor its format knows
+    (``Entry.sprite_size_pair``). It arrives here rather than being applied to the
+    document afterwards because it is decoded geometry: a record holds a size
+    *bit*, and which two squares that bit picks between is settled while the
+    frames are built. ``None`` — no choice made — leaves the format's own answer
+    standing, and so does a pair with a non-positive side.
     """
     ctx = PipelineContext()
     data = _read_reshape_decompress(cfg, ctx, reg, Pathway.TILEMAP)
@@ -421,25 +440,38 @@ def load_tilemap_data(
     # counts between its records, so the container is the only thing that can have
     # read them (:data:`~celpix.core.context.KEY_TILEMAP_FRAME_SIZES`).
     frames = None
-    size_pair = DEFAULT_SUBSPRITE_TILES
+    pair = DEFAULT_SUBSPRITE_TILES
     if hasattr(engine, "frames"):
+        # Settled **before** the frames are built, because that is what builds
+        # them: a record holds a size bit and the codec resolves it into a
+        # rectangle while framing, so a pair applied to the document afterwards
+        # changes nothing (:data:`~celpix.core.context.KEY_TILEMAP_SUBSPRITE_TILES`).
+        #
+        # Asking `size_pair` at all is optional even among the sprite formats: it
+        # is the setting a size *bit* is resolved against, and a format whose
+        # record states its rectangle outright has nothing to resolve. Its
+        # subsprites arrive already sized, so there is no pair to publish and the
+        # bar hides the spins. A probe rather than part of the `frames` call
+        # below, whose answer *is* the picture.
+        if hasattr(engine, "size_pair"):
+            pair = _probe(
+                engine,
+                "size_pair",
+                preset.params,
+                lambda answer: (max(1, int(answer[0])), max(1, int(answer[1]))),
+                DEFAULT_SUBSPRITE_TILES,
+                ctx=ctx,
+                plugin=preset.id,
+            )
+            if size_pair is not None and min(size_pair) >= 1:
+                pair = (int(size_pair[0]), int(size_pair[1]))
+            ctx.set(KEY_TILEMAP_SUBSPRITE_TILES, pair)
         frames = _run(
             Stage.INTERPRET_TILEMAP,
             Pathway.TILEMAP,
             lambda: engine.frames(cells, preset.params, ctx),
             plugin=preset.id,
         )
-        # Optional even among the sprite formats: it is the setting a record
-        # holding a size *bit* is resolved against, and a format whose record
-        # states the rectangle outright has nothing to resolve. Its subsprites
-        # arrive already sized, so the default here is only what the bar shows.
-        if hasattr(engine, "size_pair"):
-            size_pair = _run(
-                Stage.INTERPRET_TILEMAP,
-                Pathway.TILEMAP,
-                lambda: engine.size_pair(preset.params),
-                plugin=preset.id,
-            )
         # Bounded here as well as at the allocation itself, because *this* is the
         # call the UI can take back: a read that fails leaves the binding on what
         # it was and says why, where a render that fails has already replaced the
@@ -452,33 +484,33 @@ def load_tilemap_data(
             len(frames) * box[2] * box[3],
             f"{len(frames)} frames of subsprites, {box[2]}x{box[3]} pixels each",
         )
-    # The other optional half: whether the format has a palette row for a cell to
-    # name. **True when the engine does not answer**, which is the safe
-    # direction — a format that does carry rows and stayed quiet must not have a
-    # view-wide row added on top of the ones its cells already state.
-    rows = True
-    if hasattr(engine, "has_palette_rows"):
-        rows = bool(
-            _run(
-                Stage.INTERPRET_TILEMAP,
-                Pathway.TILEMAP,
-                lambda: engine.has_palette_rows(preset.params),
-                plugin=preset.id,
-            )
-        )
+    # The optional metadata methods, all asked the same way and for one reason:
+    # each has a documented answer for a format that does not implement it, so a
+    # format that cannot answer is read as one that stayed quiet rather than
+    # costing the entry its load (:func:`~celpix.pipeline._stage._probe`). The
+    # fallback is a notice, not a silence.
+    #
+    # Whether the format has a palette row for a cell to name. **True when the
+    # engine does not answer**, which is the safe direction — a format that does
+    # carry rows and stayed quiet must not have a view-wide row added on top of
+    # the ones its cells already state.
+    rows = _probe(
+        engine, "has_palette_rows", preset.params, bool, True, ctx=ctx, plugin=preset.id
+    )
     # The index field's own width, straight off the codec
     # (:meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`) rather than a
     # second parameter that could disagree with the field table -- the mask *is*
-    # the highest value the field holds. Probed like the other optional methods:
-    # a format that cannot say leaves its references unbounded.
-    mask = 0
-    ask = getattr(engine, "index_limit", None)
-    if ask is not None:
-        try:
-            top = ask(preset.params)
-        except Exception:  # noqa: BLE001 — a probe must not fail the load
-            top = None
-        mask = top if top and top > 0 else 0
+    # the highest value the field holds. A format that cannot say leaves its
+    # references unbounded.
+    mask = _probe(
+        engine,
+        "index_limit",
+        preset.params,
+        lambda top: max(0, int(top or 0)),
+        0,
+        ctx=ctx,
+        plugin=preset.id,
+    )
     # Where the format's rows count from. Usually a plain preset parameter — a
     # sprite's 3-bit field counts from CGRAM row 8 whatever file it came from,
     # which is a fact about the console rather than about this map.
@@ -495,20 +527,19 @@ def load_tilemap_data(
         if stated is not None
         else int(preset.params.get("palette_row_base", 0) or 0)
     )
-    # How many cells one *stored* row covers. Probed like the rest of the
-    # optional half, and (1, 1) where the codec stays quiet — a format keeping a
-    # row per cell is every format but one, and inferring a coarser group for a
-    # codec that was never asked would recolour cells nobody selected.
-    grain = (1, 1)
-    ask = getattr(engine, "palette_row_granularity", None)
-    if ask is not None:
-        try:
-            pair = ask(preset.params)
-        except Exception:  # noqa: BLE001 — a probe must not fail the load
-            pair = None
-        if pair:
-            across, down = (int(pair[0]), int(pair[1]))
-            grain = (max(1, across), max(1, down))
+    # How many cells one *stored* row covers, and (1, 1) where the codec stays
+    # quiet — a format keeping a row per cell is every format but one, and
+    # inferring a coarser group for a codec that was never asked would recolour
+    # cells nobody selected.
+    grain = _probe(
+        engine,
+        "palette_row_granularity",
+        preset.params,
+        lambda pair: (max(1, int(pair[0])), max(1, int(pair[1]))),
+        (1, 1),
+        ctx=ctx,
+        plugin=preset.id,
+    )
     return TilemapData(
         cells,
         cell_bytes,
@@ -516,7 +547,7 @@ def load_tilemap_data(
         ctx,
         data,
         frames,
-        size_pair,
+        pair,
         rows,
         mask,
         row_base,
@@ -781,7 +812,7 @@ def _deposit(ref: FileRef, produce: Callable[[WriteTarget], bytes]) -> None:
             "would move, so nothing was written"
         )
     at = 0
-    for path, blob in zip(ref.paths, blobs):
+    for path, blob in zip(ref.paths, blobs, strict=True):
         chunk = result[at : at + len(blob)]
         at += len(blob)
         if chunk != blob:
@@ -927,15 +958,23 @@ def _save_tilemap(doc: Document, reg: Registry) -> None:
     The container's write half is what preserves everything around the payload:
     a screen's trailing metadata block, a panel's flag table. Nothing here has to
     know those exist.
+
+    What is encoded is :attr:`~celpix.core.document.Document.settled_cells` and
+    not the cells as they stand: on a format storing one palette row for several
+    cells the two differ, and a save that wrote the difference would store a
+    picture the model never showed. Settling here rather than trusting the edit
+    funnel is what makes that structural — this is where a headless save, and any
+    write that never went through the UI, both arrive.
     """
     cfg = doc.tilemap_config
     if cfg is None or not cfg.write_enabled:
         return
     engine, preset = reg.engine_for(cfg.interpret_preset_id, TilemapCodecPlugin)
+    cells = doc.settled_cells
     data = _run(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
-        lambda: engine.encode(doc.cells or [], preset.params, doc.tilemap_ctx),
+        lambda: engine.encode(cells, preset.params, doc.tilemap_ctx),
         "encode",
         plugin=preset.id,
     )

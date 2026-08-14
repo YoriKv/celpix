@@ -15,7 +15,10 @@ nametable takes it back: the page is 32x30 and nothing else — a run of these
 bytes read at any other width is not a nametable
 (``docs/rom-mapping/console-nes.md`` §4) — so the geometry is stated here as the
 console's own constant and published for the layout to use, the way a paged
-format publishes its pages.
+format publishes its pages. Unlike a paged format's, it is published **over**
+whatever a container left on the context rather than behind it: this width is
+what :meth:`~NesNametableFormat.encode` packs the plane at, so it is not a hint
+to be improved on (:func:`_publish_geometry`).
 
 **Four cells share one stored row**, which no other format here does. The cells
 still each carry the row they are drawn in — :class:`~celpix.core.tilemap.Cell`
@@ -23,11 +26,14 @@ is unchanged and the renderer asks nothing — but only one of the four can be
 written. That is what
 :meth:`~celpix.plugins.base.TilemapCodecPlugin.palette_row_granularity` exists to
 say, and the host writes whole quadrants because this says ``(2, 2)``
-(``docs/design/tilemap-entry.md`` §4). Where cells still reach :meth:`encode`
-disagreeing — a paste carries the rows it was cut with — the **quadrant's
-top-left cell wins**, which is the same rule
-:meth:`~celpix.core.document.Document.snapped_palette_rows` applies on the way
-in, stated in two places because they must not drift.
+(``docs/design/tilemap-entry.md`` §4). Should cells reach :meth:`encode`
+disagreeing, the **quadrant's top-left cell wins** — the same rule
+:meth:`~celpix.core.document.Document.snapped_palette_rows` applies. It is
+restated here because a codec is handed a flat buffer and no document, and it has
+to answer for itself; but the host settles the list before handing it over
+(:attr:`~celpix.core.document.Document.settled_cells`), so in practice this pick
+never sees a quadrant that disagrees. Two statements of one rule, only one of
+which can be exercised, which is what keeps them from drifting apart.
 
 **Nothing here is a parameter, which is why this is a *format* and not an
 engine.** Every number below is the console's, and a page shaped differently
@@ -56,24 +62,47 @@ bytes.
 
 The one thing a page holds that the cells cannot: for a 30-row page the last
 attribute row's upper half addresses tile rows 30 and 31, which do not exist.
-Those bits are real bytes in the file, so they ride in the ``flags`` of the
-attribute byte's own top-left cell and are written back untouched — the
-:attr:`~celpix.core.tilemap.Cell.flags` contract exactly
-(``docs/design/tilemap-entry.md`` §6, "Attribute bit 0 is carried, never
-recomputed").
+Those bits are real bytes in the file, and they belong to the **page** rather
+than to any cell — which is why they are not in
+:attr:`~celpix.core.tilemap.Cell.flags`, whose contract is bits of *that cell's
+own record* (``docs/design/tilemap-entry.md`` §6, "Attribute bit 0 is carried,
+never recomputed"). A cell travels: eyedrop the carrier and stamp it somewhere
+else and its bits would land on a block that has no room for them, over live
+colour fields, while the position they came from would save as zero. Both
+failures are silent, because the model agrees with itself either way.
+
+So they are preserved **by position**: :meth:`~NesNametableFormat.decode` leaves
+each page's attribute plane on the context and
+:meth:`~NesNametableFormat.encode` puts back, out of that plane, exactly the bits
+no cell of the page reaches — whatever the cells above them have become. An
+encode against a context that never read this page has nothing to put back, the
+same way one has no byte order to honour there
+(:data:`~celpix.core.context.KEY_TILEMAP_ENDIAN`); the save path passes the
+document's own (:func:`~celpix.pipeline.pipeline.encode_cells`).
 """
 
 from __future__ import annotations
 
+from celpix.core import ceil_div
 from celpix.core.context import (
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_PAGE_ROWS,
+    KEY_TILEMAP_PAGES_ACROSS,
     PipelineContext,
 )
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins.formats import FormatInfo
 
 NES_NAMETABLE_FORMAT = "format.tilemap.nes-nametable"
+
+# tuple[bytes, ...]: each decoded page's attribute plane, as the file had it.
+# Where decode leaves the bits encode has to put back positionally, since the
+# cells cannot carry them (module docstring). Namespaced to this format and kept
+# here rather than in :mod:`celpix.core.context`, because it is not a hint a
+# container states about a file for whoever is interested — it is one half of one
+# codec remembering what its other half read, and nothing else produces or reads
+# it.
+KEY_NES_ATTRIBUTE_PLANES = "tilemap.nes-nametable.attribute-planes"
 
 # The console's numbers, in the order each follows from the one above it. The PPU
 # reads one attribute byte per 4x4-tile block and splits it into four 2x2-tile
@@ -86,18 +115,14 @@ _COLUMNS = 32
 _ROWS = 30
 
 
-def _ceil_div(value: int, by: int) -> int:
-    return -(-value // by)
-
-
 # Derived rather than written out, so the arithmetic that produces them is the
 # documentation: the attribute plane's size *is* a function of the cell grid, and
 # a bare `8` and `64` here would be two numbers to check against a rule stated
 # nowhere. The plane covers 32 rows where the page has 30, which is the loose end
-# `_spare_bits` exists for.
+# `_spare_mask` exists for.
 _CELLS = _COLUMNS * _ROWS  # 960
-_ATTR_STRIDE = _ceil_div(_COLUMNS, _BLOCK)  # 8
-_ATTR_BYTES = _ATTR_STRIDE * _ceil_div(_ROWS, _BLOCK)  # 64
+_ATTR_STRIDE = ceil_div(_COLUMNS, _BLOCK)  # 8
+_ATTR_BYTES = _ATTR_STRIDE * ceil_div(_ROWS, _BLOCK)  # 64
 _PAGE = _CELLS + _ATTR_BYTES  # 1024
 
 
@@ -108,18 +133,19 @@ def _attr_at(x: int, y: int) -> tuple[int, int]:
     return at, shift
 
 
-def _spare_bits(attrs: bytes, x: int, y: int) -> int:
-    """The bits of ``x, y``'s attribute byte that no cell of the page reaches.
+def _spare_mask(x: int, y: int) -> int:
+    """Which bits of the attribute byte covering the block at ``x, y`` reach no cell.
 
-    Non-zero only on the byte's own top-left cell, and only where the page's rows
-    stop inside the 4x4 block it covers — the last attribute row of a 30-row
-    page, whose upper half addresses rows 30 and 31. Those are bytes in the file,
-    so something has to carry them; the alternative is a save that clears bits it
-    never asked about.
+    Non-zero only where the page's rows stop inside the 4x4 block the byte
+    covers — the last attribute row of a 30-row page, whose upper half addresses
+    rows 30 and 31. Those are bytes in the file, so something has to put them
+    back; the alternative is a save that clears bits it never asked about.
+
+    Stated as a mask rather than as the bits themselves because it is what
+    :meth:`~NesNametableFormat.encode` needs: the guarantee that what it ORs in
+    cannot be a field some cell of the page owns is this mask, and it holds
+    whatever the plane it draws from turns out to hold.
     """
-    if x % _BLOCK or y % _BLOCK:
-        return 0
-    byte, _ = _attr_at(x, y)
     spare = 0
     for dy in (0, _QUADRANT):
         for dx in (0, _QUADRANT):
@@ -127,7 +153,7 @@ def _spare_bits(attrs: bytes, x: int, y: int) -> int:
                 continue
             shift = (2 if dx else 0) + (4 if dy else 0)
             spare |= _ROW_MASK << shift
-    return attrs[byte] & spare
+    return spare
 
 
 class NesNametableFormat:
@@ -146,11 +172,19 @@ class NesNametableFormat:
         A page's two planes are read together because that is the only way either
         of them means anything: the indices alone are a grey picture, and the
         attribute plane alone is 64 bytes of nothing.
+
+        The planes are left on ``ctx`` as they were read, which is how the bits
+        no cell reaches survive a save (module docstring). Set on every decode
+        rather than only where something is there to keep, so a re-read replaces
+        what the read before it left instead of writing an older page's bits into
+        a newer one.
         """
         cells: list[Cell] = []
+        planes: list[bytes] = []
         for page in range(len(data) // _PAGE):
             base = page * _PAGE
             attrs = data[base + _CELLS : base + _PAGE]
+            planes.append(attrs)
             for at in range(_CELLS):
                 x, y = at % _COLUMNS, at // _COLUMNS
                 byte, shift = _attr_at(x, y)
@@ -158,13 +192,9 @@ class NesNametableFormat:
                     Cell(
                         index=data[base + at],
                         palette_row=(attrs[byte] >> shift) & _ROW_MASK,
-                        # The bits of this cell's attribute byte that no cell of
-                        # the page reaches — the last row's upper half. Kept on
-                        # the byte's own top-left cell, so there is exactly one
-                        # carrier and encode knows which.
-                        flags=_spare_bits(attrs, x, y),
                     )
                 )
+        ctx.set(KEY_NES_ATTRIBUTE_PLANES, tuple(planes))
         _publish_geometry(len(cells), ctx)
         return cells
 
@@ -172,15 +202,24 @@ class NesNametableFormat:
         """Cells back to whole pages — indices, then the plane they colour.
 
         The quadrant's **top-left cell** decides its two bits. Cells inside one
-        can disagree (a paste brings the rows it was cut with), and picking is
-        the same answer :meth:`~...tilemap_codec.TilemapCodec.encode` gives a
-        too-wide index: refusing would make a file unsaveable over one cell,
-        where picking loses what the format never had room for and saves the
-        rest. The host settles the same groups the same way before the edit
-        lands, so this is the backstop rather than the usual path.
+        could disagree — nothing in a flat buffer stops them — and picking is the
+        same answer :meth:`~...tilemap_codec.TilemapCodec.encode` gives a too-wide
+        index: refusing would make a file unsaveable over one cell, where picking
+        loses what the format never had room for and saves the rest. In practice
+        the host settles the groups on both sides of the edit, the way in and the
+        way out (:attr:`~celpix.core.document.Document.settled_cells`), so this is
+        a backstop that never fires rather than the usual path — which is exactly
+        what stops the two statements of the rule mattering separately.
+
+        The bits no cell reaches come back from the plane ``ctx`` was left,
+        **masked to the positions that have them** — so a page whose cells have
+        been rearranged, overwritten or pasted over still writes those bytes as
+        the file had them, and nothing can put a stray bit on top of a colour
+        field some cell does own.
         """
+        planes = tuple(ctx.get(KEY_NES_ATTRIBUTE_PLANES) or ())
         out = bytearray()
-        for page in range(_ceil_div(len(cells), _CELLS)):
+        for page in range(ceil_div(len(cells), _CELLS)):
             window = cells[page * _CELLS : (page + 1) * _CELLS]
             plane = bytearray(_CELLS)
             attrs = bytearray(_ATTR_BYTES)
@@ -193,15 +232,18 @@ class NesNametableFormat:
                         continue
                     byte, shift = _attr_at(x, y)
                     attrs[byte] |= (window[at].palette_row & _ROW_MASK) << shift
-            # The bits no quadrant of this page reaches, put back from wherever
-            # decode parked them. OR'd in after the modelled fields so a carried
-            # bit can never land on top of a row the user set.
+            # The bits no quadrant of this page reaches, put back from the plane
+            # this page was read as. The mask is what makes the OR safe — it
+            # leaves only the fields that address rows the page does not have, so
+            # the two never overlap however the cells have been edited. Keyed by
+            # the block's position and not by a cell, because that is whose bits
+            # they are.
+            spare = planes[page] if page < len(planes) else b""
             for y in range(0, _ROWS, _BLOCK):
                 for x in range(0, _COLUMNS, _BLOCK):
-                    at = y * _COLUMNS + x
-                    if at < len(window):
-                        byte, _ = _attr_at(x, y)
-                        attrs[byte] |= window[at].flags & 0xFF
+                    byte, _ = _attr_at(x, y)
+                    if byte < len(spare):
+                        attrs[byte] |= spare[byte] & _spare_mask(x, y)
             out += plane
             out += attrs
         return bytes(out)
@@ -254,18 +296,46 @@ def _publish_geometry(cells: int, ctx: PipelineContext) -> None:
 
     The same claim :func:`~...tilemap_codec._publish_pages` makes and for the same
     reason — a page read at the wrong width shears into diagonal stripes rather
-    than failing — with one difference: here the width is not only how the
-    picture is laid out but how the *attribute plane is addressed*, so the group
-    a palette-row assignment covers is resolved against it
-    (:meth:`~celpix.core.document.Document.palette_row_group`). A nametable read
-    at any width but its own is not a nametable, so this is claimed on every
-    whole page rather than only at the page counts a preset lists.
+    than failing — with one difference, and it is what makes this the one
+    geometry a container may not override.
 
-    The container still wins where it spoke, by construction: it has already run.
+    Everywhere else the width is **advisory**, and a header is the better
+    authority precisely because a wrong width only lays the same bytes out badly:
+    a packed cell holds its own attributes wherever it sits, so the picture
+    shears and the file still saves byte for byte. Here the width is how the
+    *attribute plane is addressed*. It decides which quadrant of which byte a
+    palette row lands in, and :meth:`~NesNametableFormat.encode` packs that plane
+    at :data:`_COLUMNS` and nothing else — so a width from anywhere else is not a
+    better answer to the same question, it is a different question. Left standing
+    it puts the host's row groups
+    (:meth:`~celpix.core.document.Document.palette_row_group`) on a grid the
+    codec does not write, and the edit on screen stops being what a reload shows.
+
+    So this is stated rather than offered, and on every whole page rather than
+    only at the page counts a preset lists: a nametable read at any width but its
+    own is not a nametable. A variant that genuinely carried its own geometry —
+    the arbitrary-size nametable one authoring tool wrote (module docstring) —
+    would have to be read *and written* at that width before publishing it could
+    be right, which is a codec that consults the context, not a publication that
+    steps aside for one.
+
+    **The geometry is stated whole**, all three keys of it, and the third is why:
+    a container that framed these bytes for its *own* format may have published
+    an assembly, and taking the width and the page height over while leaving that
+    standing is a page height from here beside an arrangement from somewhere
+    else. A screen file is the live case — 0x2000 of payload is eight whole
+    nametable pages, and its container states 2 across — so picking this format
+    for one would pin the picture to a shape nothing in these bytes claims, with
+    the spin locked against saying otherwise.
     """
     if not cells or cells % _CELLS:
         return
-    if not ctx.get(KEY_TILEMAP_COLUMNS):
-        ctx.set(KEY_TILEMAP_COLUMNS, _COLUMNS)
-    if not ctx.get(KEY_TILEMAP_PAGE_ROWS):
-        ctx.set(KEY_TILEMAP_PAGE_ROWS, _ROWS)
+    ctx.set(KEY_TILEMAP_COLUMNS, _COLUMNS)
+    ctx.set(KEY_TILEMAP_PAGE_ROWS, _ROWS)
+    # And **no** assembly, which is this format's answer rather than its silence:
+    # how a run of pages goes together is the cartridge's mirroring, not anything
+    # in the bytes, so the arrangement stays the user's. Zero is what every reader
+    # already takes for "none stated"
+    # (:data:`~celpix.core.context.KEY_TILEMAP_PAGES_ACROSS`), so saying it needs
+    # no way to unsay a key — which the bag deliberately has not got.
+    ctx.set(KEY_TILEMAP_PAGES_ACROSS, 0)

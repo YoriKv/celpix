@@ -21,9 +21,13 @@ Two rules keep the table honest, both checked by the tests:
 - **No alias may name an id that exists.** A live plugin shadowing an alias means
   the alias never fires, and the same string meaning two things at once is how a
   rename quietly half-lands.
-- **Every target must resolve**, following chains: rename something twice and the
-  first alias has to be re-pointed at the final name, not left aimed at the
-  middle one.
+- **Every target must resolve, and to a live id rather than to another retired
+  one.** Rename something twice and the first row has to be re-pointed at the
+  final name, not left aimed at the middle one. Both halves are one rule: a
+  target that is itself a key here still resolves — :func:`current_id` walks the
+  chain — but it reads as a pattern to copy, and it is the one shape a
+  single-hop reader of this dict would get wrong. So the table stays **flat**,
+  and the walk below is a backstop rather than the mechanism.
 
 Project files are also rewritten as they are re-saved
 (:func:`celpix.project.projectfile.current_ids`), so a project touched after an
@@ -47,9 +51,13 @@ RENAMED: dict[str, str] = {
     "codec.color-mask": "codec.palette.mask",
     "codec.color-indexed": "codec.palette.indexed",
     "codec.tilemap-packed": "codec.tilemap.packed",
-    "codec.scgcad-object": "codec.tilemap.scgcad-object",
-    "codec.scgcad-obz": "codec.tilemap.scgcad-obz",
-    "codec.ys-spr": "codec.tilemap.ys-spr",
+    # The three sprite records were renamed a second time in v0.5.10 (below), so
+    # these name what ended up with the behaviour rather than what v0.4.4 called
+    # it. Kept in this group because the *reason* they are here is still v0.4.4's
+    # — a row is reviewable by the change that retired its left-hand side.
+    "codec.scgcad-object": "format.tilemap.scgcad-object",
+    "codec.scgcad-obz": "format.tilemap.scgcad-obz",
+    "codec.ys-spr": "format.tilemap.ys-spr",
     # v0.4.4 — seven palette ids named a channel order their own masks
     # contradicted. Their filenames and display names already agreed with the
     # masks and only the id dissented, so the id is what moved: `argb8888` is
@@ -80,6 +88,12 @@ RENAMED: dict[str, str] = {
     # presets, a format is one codec written in code
     # (`docs/design/plugin-system.md`). Each was an engine with exactly one
     # preset, so both ids forward to the single name that replaced the pair.
+    #
+    # The `codec.` half forwards a name and nothing more. A format takes no
+    # parameters, so a user's own preset written for one of these engines cannot
+    # be *served* by what the name now reaches — it is refused at load instead,
+    # loudly, rather than decoded with the format's answers in place of its own
+    # (`discovery.check_engine_takes_params`).
     "preset.tilemap.scgcad-object": "format.tilemap.scgcad-object",
     "preset.tilemap.scgcad-obz": "format.tilemap.scgcad-obz",
     "preset.tilemap.ys-spr": "format.tilemap.ys-spr",
@@ -97,9 +111,11 @@ def current_id(plugin_id: str) -> str:
     degrade to its stage's pass-through, and telling the two apart is the
     caller's job.
 
-    The chain is walked with a seen-set rather than trusted to terminate: the
-    table is hand-edited, and a cycle here would otherwise hang the app on a
-    lookup rather than failing a test.
+    The table is kept **flat** — every row names a live id, which is checked —
+    so in practice this walks one hop. It walks at all, and with a seen-set
+    rather than trusting the table to terminate, because the table is hand-edited
+    and a build between the wrong edit and the test that catches it should open
+    files rather than hang on a lookup.
     """
     seen = {plugin_id}
     while (nxt := RENAMED.get(plugin_id)) is not None:

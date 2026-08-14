@@ -102,7 +102,7 @@ def gather(value: int, chunks: tuple[int, ...], sw: tuple[tuple[int, int], ...])
     what lets :func:`decode_tables` build the field one source byte at a time.
     """
     raw = 0
-    for chunk, (shift, width) in zip(chunks, sw):
+    for chunk, (shift, width) in zip(chunks, sw, strict=True):
         raw = (raw << width) | ((value & chunk) >> shift)
     return raw
 
@@ -111,7 +111,7 @@ def scatter(raw: int, chunks: tuple[int, ...], sw: tuple[tuple[int, int], ...]) 
     """Inverse of :func:`gather`: spread a field back over its chunks."""
     value = 0
     rest = _width(sw)
-    for chunk, (shift, width) in zip(chunks, sw):
+    for chunk, (shift, width) in zip(chunks, sw, strict=True):
         rest -= width
         value |= ((raw >> rest) << shift) & chunk
     return value

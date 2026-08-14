@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from functools import lru_cache
 
+from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout
 from celpix.core.tilerearrangement import TILE_FLIP_H, TILE_FLIP_V
 
@@ -358,8 +359,16 @@ def expand_stamps(
     How many positions come back is the one thing ``dense`` changes, and it
     follows from what the file holds. A **sparse** map already has a slot per
     drawn position, so the list is the same length as ``cells``. A **dense** one
-    holds a single entry per stamp, so it expands: ``across * down`` positions
-    per entry, over a picture that many times larger. Either way the list is in
+    holds a single entry per stamp, so it expands to ``across * down`` positions
+    per entry — but laid out in **whole rows of the picture**, which is the number
+    that has to be produced rather than the per-entry one. The list is row-major
+    at ``columns * across`` wide, so an entry row the entries do not fill is
+    padded out to the width instead of stopping short: cut short, the rows after
+    it would start in the wrong place and the last row's lower half would simply
+    not be emitted — the whole bottom of the picture missing, at every width that
+    does not divide the entry count. The padding is :data:`BLANK`, which is
+    already this walk's answer wherever a position's stamp points past the last
+    entry. Either way the list is in
     **drawn** order rather than file order, and everything that indexes the file
     (a save, the hex dump, a restamp) goes through
     :meth:`~celpix.core.document.Document.cell_at` instead, which is what keeps
@@ -382,8 +391,13 @@ def expand_stamps(
     """
     across, down = max(1, stamp[0]), max(1, stamp[1])
     stride = max(1, source_columns)
-    width = columns * across if dense else columns
-    positions = len(cells) * across * down if dense else len(cells)
+    entries = max(1, columns)
+    width = entries * across if dense else columns
+    # Whole entry rows rounded up, not a flat `entries x across x down` budget:
+    # the two agree wherever the width divides the entry count and part company
+    # everywhere else, and the flat one runs out mid-picture (see above).
+    rows = ceil_div(len(cells), entries)
+    positions = rows * down * width if dense else len(cells)
     out: list[Cell] = []
     for position in range(positions):
         at = stamp_origin(position, columns, (across, down), dense=dense)

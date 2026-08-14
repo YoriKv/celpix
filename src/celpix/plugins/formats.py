@@ -271,6 +271,19 @@ _ENGINES = {
 }
 
 
+def format_behind(engine: Any) -> Any | None:
+    """The format ``engine`` presents, or ``None`` if it is a real engine.
+
+    The two look alike from the registry — both sit in a stage's bucket and both
+    take ``params`` — and behave oppositely when handed any: an engine *is* its
+    parameters, and a format ignores them. So anything holding a preset that
+    names one has to be able to tell which it got, or it cannot know whether the
+    preset it is about to run means anything (:func:`adapt_format`,
+    :func:`celpix.plugins.discovery.check_engine_takes_params`).
+    """
+    return engine._fmt if isinstance(engine, tuple(_ENGINES.values())) else None
+
+
 def adapt_format(fmt: Any, stage: Stage) -> tuple[Any, Preset]:
     """Wrap a format as ``(engine, implicit preset)`` for registration.
 

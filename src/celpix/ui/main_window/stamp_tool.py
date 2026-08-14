@@ -324,20 +324,26 @@ class StampToolMixin:
         tool does: `scr_map_cnv` sets the drawn byte on every block it registers
         (``scgcad-formats.md`` §4).
 
-        The **palette row stays behind** where the format stores one row for
-        several cells (an NES nametable's 2x2 quadrant,
-        :attr:`~celpix.core.document.Document.palette_row_granularity`). There
-        the row is not the cell's to carry: bringing it would recolour up to three
-        neighbours the user never pointed at, on a gesture whose whole meaning is
-        "put that tile *here*". Everything else the record carries still travels
-        — the row is the one field that is not this cell's to give.
+        The **palette row stays behind** where the document stores one row for
+        several cells (an NES nametable's 2x2 quadrant). There the row is not the
+        cell's to carry: bringing it would recolour up to three neighbours the
+        user never pointed at, on a gesture whose whole meaning is "put that tile
+        *here*". Everything else the record carries still travels — the row is the
+        one field that is not this cell's to give.
+
+        Asked as :attr:`~celpix.core.document.Document.has_row_groups` and not as
+        "is the granularity coarse", because those are different questions on a
+        format that declares a group and states no width to resolve it against.
+        The host has no group it can name there and edits rows per cell
+        everywhere else, so a second, weaker predicate here would strip the
+        colour off a clone for a group that does not exist.
         """
         held = self._source_cell
         doc = self._doc
-        coarse = doc is not None and doc.palette_row_granularity != (1, 1)
+        grouped = doc is not None and doc.has_row_groups
         if held is not None and held.index == tile_id:
             laid = replace(held, visible=True)
-            return replace(laid, palette_row=over.palette_row) if coarse else laid
+            return replace(laid, palette_row=over.palette_row) if grouped else laid
         return replace(over, index=tile_id, visible=True)
 
     def _pick_tile_at(self, slot: int) -> None:

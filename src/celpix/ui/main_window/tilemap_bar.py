@@ -406,6 +406,14 @@ class TilemapBarMixin:
         box is, so the *frames* are built differently: it is decoded geometry rather
         than a render-time shift, and the entry has to load again to pick it up.
 
+        Which is the whole of the route, and worth naming because every hop of it
+        is somewhere else: this lands the pair on the entry, the re-read hands it
+        to :func:`~celpix.pipeline.pipeline.load_tilemap_data`, and that publishes
+        it for the codec to frame by
+        (:data:`~celpix.core.context.KEY_TILEMAP_SUBSPRITE_TILES`). A change that
+        stops short of the last hop is a spin that moves and a picture that does
+        not.
+
         Both spins arrive here, so a gesture on either lands the pair as it now
         stands rather than only the box that moved — they are two halves of one
         answer, and the format reads both.

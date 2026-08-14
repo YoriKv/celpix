@@ -639,7 +639,7 @@ def test_writes_stay_disjoint_so_a_scattered_edit_keeps_every_tile(
     spans = window._encode_spans(window._actual_runs(0, blanks), window._view_frame())
     assert len(spans) == 3
     ends = sorted((start, start + len(data)) for start, data in spans)
-    assert all(a[1] <= b[0] for a, b in zip(ends, ends[1:]))
+    assert all(a[1] <= b[0] for a, b in zip(ends, ends[1:], strict=False))
     window._apply_tile_edit(0, blanks, "blank three")
     assert window._decode_run(0, 3) == blanks
 

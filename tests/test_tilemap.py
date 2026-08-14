@@ -36,6 +36,7 @@ from celpix.plugins.builtins.scgcad import (
 from celpix.plugins.builtins.tilemap_codec import TilemapCodec
 from celpix.plugins.detect import detect_container
 from celpix.plugins.registry import default_registry
+from modelhelpers import decoded_at_probe_length
 
 SNES_BG = "preset.tilemap.snes-bg"
 SWAPPED = "preset.tilemap.snes-bg-swapped"
@@ -322,25 +323,19 @@ def test_a_panel_cell_covers_one_tile_by_default() -> None:
 def test_every_shipped_tilemap_preset_resolves_to_a_working_engine() -> None:
     """Every preset names a real engine, and decode and encode are inverses.
 
-    The probe is **grown to the first length the format accepts** rather than
-    assumed to be four cells: a cell stride is what most formats read at, but an
-    NES nametable reads a whole 1024-byte page or nothing — its two planes only
-    mean anything together — so a four-byte buffer is not a short map there, it
-    is not a map at all.
+    An **all-zero** probe, because this covers every shipped preset and several
+    of them leave bits unclaimed in their ``fields`` — a byte no field reads is
+    written back as zero, so only zeros can be byte-exact across the whole set
+    (:func:`~modelhelpers.decoded_at_probe_length`).
     """
     registry = default_registry()
     presets = registry.presets(Stage.INTERPRET_TILEMAP)
     assert presets, "no tilemap presets registered"
     for preset in presets:
         engine, _ = registry.engine_for(preset.id)
-        size = engine.bytes_per_cell(preset.params)
-        for length in (size * 4, 1024, 2048):
-            ctx = PipelineContext()
-            cells = engine.decode(bytes(length), preset.params, ctx)
-            if cells:
-                break
+        cells, data, ctx = decoded_at_probe_length(engine, preset.params, bytes)
         assert cells, f"{preset.id} decoded nothing at any probe length"
-        assert engine.encode(cells, preset.params, ctx) == bytes(length)
+        assert engine.encode(cells, preset.params, ctx) == data
 
 
 # -- the containers --------------------------------------------------------
@@ -906,6 +901,44 @@ def test_the_later_build_stores_its_attribute_word_the_other_way_round() -> None
     assert ctx.get(KEY_TILEMAP_ENDIAN) == "little"
     (cell,) = ObjectCodec().decode(payload[:6], ctx)
     assert cell.index == 0x1FF  # read big-endian it would be 0x1FE, palette 7
+
+
+def test_the_entrys_size_pair_reaches_the_frames_it_decides(tmp_path) -> None:
+    """The one thing about an object that neither its file nor its format knows.
+
+    The pair a size bit picks between was a register the scene set, so it is the
+    user's, per entry, kept in the project — and it has to arrive **before** the
+    frames are built, because the codec resolves the bit into a rectangle while
+    framing. Applied to the document afterwards it changes nothing: the picture
+    is already in whatever pair the format assumed, and the bar shows a number
+    that is not the one on screen.
+
+    So the load takes the choice and the context carries it, the same route the
+    file's own answers take. What comes back is the pair the frames were built
+    at, which is what the bar reads.
+    """
+    path = tmp_path / "o.OBJ"
+    path.write_bytes(_obj_bytes(_record(tile=1, large=True)))
+    registry = default_registry()
+    cfg = PathwayConfig(
+        source=FileRef(str(path)),
+        interpret_preset_id=OBJECT,
+        container_id="container.scgcad-obj",
+    )
+
+    def drawn(chosen):
+        loaded = load_tilemap_data(cfg, registry, size_pair=chosen)
+        subsprite = loaded.frames[0][0]
+        return loaded.size_pair, (subsprite.across, subsprite.down)
+
+    # Nothing chosen: the format's own commonest setting, and the record's size
+    # bit picks its larger square.
+    assert drawn(None) == ((1, 2), (2, 2))
+    # Chosen: the same record draws four tiles to a side instead of two.
+    assert drawn((1, 4)) == ((1, 4), (4, 4))
+    assert drawn((2, 3)) == ((2, 3), (3, 3))
+    # A pair with a side that cannot be drawn is no choice at all.
+    assert drawn((0, 0)) == ((1, 2), (2, 2))
 
 
 def test_undrawn_slots_are_dropped_and_trailing_empty_frames_with_them() -> None:
@@ -2012,6 +2045,62 @@ def test_a_dense_map_with_no_stated_width_takes_one_from_the_view() -> None:
     assert len(sparse.drawn_cells) == len(entries)
 
 
+def test_a_dense_map_at_a_width_that_does_not_divide_it_still_draws_whole() -> None:
+    """A picture is a rectangle, so a part-full last entry row is padded, not cut.
+
+    Budgeted per entry instead — ``entries x across x down`` positions laid
+    row-major at ``columns x across`` — the count runs out mid-picture the moment
+    the width stops dividing the entry count, and what goes missing is the
+    *bottom* of every stamp in the last row. Wide enough and that is the whole
+    map: four entries at Cols 46 spend all sixteen of their positions inside one
+    46-wide row, so every lower half is gone while the layout still claims two
+    rows and ``cell_at`` still maps clicks at 23 entries across.
+    """
+    from celpix.core.document import CellChain, Document
+
+    source = [Cell(index=100 + at) for at in range(64)]
+
+    def dense_map(cells: list[Cell], columns: int) -> Document:
+        doc = Document(
+            pixel_data=b"",
+            bytes_per_tile=32,
+            tile_width=8,
+            tile_height=8,
+            palette=None,
+            pixel_config=PathwayConfig(
+                source=FileRef(""), interpret_preset_id=SNES_BG, write_enabled=False
+            ),
+            palette_config=PathwayConfig(
+                source=FileRef(""), interpret_preset_id="", write_enabled=False
+            ),
+            cells=cells,
+            chain=CellChain(source, False, stamp=(2, 2), source_columns=8, dense=True),
+        )
+        doc.view.columns = columns
+        return doc
+
+    # Wider than the map: one entry row, and both halves of it have to be there.
+    doc = dense_map([Cell(index=at * 2) for at in range(4)], 46)
+    assert (doc.stamp_columns, doc.drawn_columns) == (23, 46)
+    assert doc.drawn_positions == 2 * 46
+    assert [cell.index for cell in doc.drawn_cells[:8]] == list(range(100, 108))
+    assert [cell.index for cell in doc.drawn_cells[46:54]] == list(range(108, 116))
+    # The rest of each row is padding rather than the next row wrapped into it.
+    assert all(cell == Cell() for cell in doc.drawn_cells[8:46])
+    # And a click under an entry reaches that entry, at the same entry-column
+    # count the picture was laid out at.
+    assert [doc.cell_at(at) for at in (46, 52)] == [0, 3]
+
+    # The everyday case of the same bug: three entry rows, the last part full,
+    # whose lower half was the one that fell off the end.
+    doc = dense_map([Cell(index=at * 2) for at in range(24)], 20)
+    assert (doc.stamp_columns, doc.drawn_columns) == (10, 20)
+    assert doc.drawn_positions == 3 * 2 * 20
+    assert [cell.index for cell in doc.drawn_cells[80:88]] == list(range(140, 148))
+    assert [cell.index for cell in doc.drawn_cells[100:108]] == list(range(148, 156))
+    assert [doc.cell_at(at) for at in (100, 107)] == [20, 23]
+
+
 # -- panels ----------------------------------------------------------------
 def _pnl_bytes(*, tile_size=0, width_exp=1, height_exp=1, body=b"") -> bytes:
     """A panel whose cell-size decoy and two stamp exponents are set as asked."""
@@ -3051,7 +3140,7 @@ def test_a_nametable_page_round_trips_and_reads_whole_pages_only() -> None:
     The **spare bits** are the reason the first matters: a 30-row page's last
     attribute row addresses tile rows 30 and 31, which do not exist, so four bits
     of each of its eight bytes reach no cell. They are still bytes in the file,
-    so they ride in the carrier cell's ``flags`` and come back untouched — a save
+    so encode puts them back off the plane decode left on the context — a save
     that cleared them would quietly rewrite eight bytes of every screen.
 
     The second is what keeps encode an exact inverse: a 960-byte nametable saved
@@ -3067,8 +3156,8 @@ def test_a_nametable_page_round_trips_and_reads_whole_pages_only() -> None:
     page = _nes_page(bytes(range(256)) * 4, bytes(range(0x40, 0x80)))
     cells = engine.decode(page, params, ctx)
 
+    assert page[1016] & 0b1111_0000  # the fixture really holds unreachable bits
     assert engine.encode(cells, params, ctx) == page
-    assert cells[28 * 32].flags  # the carrier holds the bits no quadrant reaches
     # Two pages back to back are two pages, and the second is not stitched onto
     # the first's attribute plane.
     assert len(engine.decode(page * 2, params, ctx)) == 1920
@@ -3077,6 +3166,36 @@ def test_a_nametable_page_round_trips_and_reads_whole_pages_only() -> None:
     # anything together.
     assert engine.decode(page[:960], params, ctx) == []
     assert engine.decode(page[:1023], params, ctx) == []
+
+
+def test_a_nametable_puts_its_unreachable_bits_back_by_position() -> None:
+    """Those bits are the page's, so they must not travel with a cell.
+
+    Both directions of that are silent corruption. A cell holding them, eyedropped
+    from (0, 28) and stamped at (0, 0), would set the BL/BR fields of the block
+    covering rows 2-3 — colours somebody owns — and the model would go on
+    reporting the row the user chose. Overwriting the position they came from
+    would save eight bytes of the file as zero, which is the "save that clears
+    bits it never asked about" this format exists to avoid.
+    """
+    registry = default_registry()
+    engine, _ = registry.engine_for(NAMETABLE)
+    params = _params(registry, NAMETABLE)
+    ctx = PipelineContext()
+    # Set only in the last attribute row, and only in the half no cell reaches.
+    page = _nes_page(attrs=bytes(56) + bytes([0xF0] * 8))
+    cells = engine.decode(page, params, ctx)
+
+    assert not any(cell.flags for cell in cells)  # nothing to travel in the first place
+
+    moved = list(cells)
+    moved[0] = cells[28 * 32]  # stamp the old carrier's position elsewhere...
+    moved[28 * 32] = cells[0]  # ...and paste an ordinary cell over it
+    written = engine.encode(moved, params, ctx)
+
+    assert written[960] == 0  # no stray bits on the block it was stamped onto
+    assert written[1016:] == bytes([0xF0] * 8)  # the file keeps its own
+    assert written == page
 
 
 def test_a_nametable_declares_the_four_cells_that_share_one_stored_row() -> None:
@@ -3152,3 +3271,246 @@ def test_a_row_group_is_the_quadrant_the_file_can_actually_hold() -> None:
     assert page.snapped_palette_rows(mixed)[33].palette_row == cells[0].palette_row
     # Nothing to settle costs nothing: the same list comes back.
     assert page.snapped_palette_rows(cells) is cells
+
+
+def test_a_save_settles_row_groups_however_the_cells_were_written(tmp_path) -> None:
+    """The rows a coarse format cannot store are settled by the *save*, not only
+    by the edit funnel that usually gets there first.
+
+    Left to the funnel the invariant is a convention — "every write goes through
+    ``_apply_cells``" — and this document is the counter-example it cannot cover:
+    built and edited in code, saved headless, never near the UI.
+
+    The codec below picks the group's **last** cell where the host picks its
+    first, which is the drift the two statements of one rule are exposed to and
+    which nothing but a comment guarded. Settled on the way out, that pick has
+    nothing left to decide — every group it is handed already agrees — so the
+    file holds what the host settled whichever cell the codec would have taken.
+    """
+    from celpix.core.context import KEY_TILEMAP_COLUMNS
+    from celpix.core.document import Document
+    from celpix.core.errors import Stage
+    from celpix.pipeline.pipeline import load_tilemap_data, save
+    from celpix.plugins import FormatInfo
+    from celpix.plugins.formats import adapt_format
+
+    class _CoarseLastWins:
+        """One byte a cell: index in the low bits, the group's row in the top two.
+
+        A deliberately **drifted** codec — it stores the last cell of each 2x2
+        rather than the first — so what reaches the file says which rule ran.
+        """
+
+        info = FormatInfo(id="format.tilemap.coarse-last", name="Coarse, last wins")
+        columns = 4
+
+        def decode(self, data, ctx):
+            # A coarse format states its width; the group is resolved against it.
+            ctx.set(KEY_TILEMAP_COLUMNS, self.columns)
+            return [
+                Cell(index=byte & 0x3F, palette_row=(byte >> 6) & 0x3) for byte in data
+            ]
+
+        def encode(self, cells, ctx):
+            out = bytearray()
+            for at, cell in enumerate(cells):
+                row, col = divmod(at, self.columns)
+                last = min((row | 1) * self.columns + (col | 1), len(cells) - 1)
+                out.append((cell.index & 0x3F) | ((cells[last].palette_row & 0x3) << 6))
+            return bytes(out)
+
+        def bytes_per_cell(self):
+            return 1
+
+        def cell_tiles(self):
+            return (1, 1)
+
+        def palette_row_granularity(self):
+            return (2, 2)
+
+    registry = default_registry()
+    engine, preset = adapt_format(_CoarseLastWins(), Stage.INTERPRET_TILEMAP)
+    registry.register(engine)
+    registry.register_preset(preset)
+
+    path = tmp_path / "coarse.bin"
+    path.write_bytes(bytes(8))
+    cfg = PathwayConfig(source=FileRef(str(path)), interpret_preset_id=preset.id)
+    loaded = load_tilemap_data(cfg, registry)
+    doc = Document(
+        pixel_data=b"",
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id=SNES_BG, write_enabled=False
+        ),
+        palette_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id="", write_enabled=False
+        ),
+        cells=loaded.cells,
+        tilemap_config=cfg,
+        tilemap_ctx=loaded.ctx,
+        tilemap_data=loaded.data,
+        palette_row_granularity=loaded.row_granularity,
+    )
+    # Straight onto the list, the way a headless caller or a preview write does:
+    # one quadrant left holding three different rows, the first of them 0.
+    for at, row in ((1, 1), (4, 2), (5, 3)):
+        doc.cells[at] = replace(doc.cells[at], palette_row=row)
+
+    settled = doc.settled_cells
+    assert [cell.palette_row for cell in settled[:2]] == [0, 0]  # the first won
+    assert doc.snapped_palette_rows(settled) is settled  # idempotent, so it may sit
+    assert doc.cells[5].palette_row == 3  # and nothing was written back to the model
+
+    save(doc, registry, palette=False)
+
+    # The codec would have stored 3 for the whole quadrant off its own pick; what
+    # the file holds is the row the host settled on.
+    reread = load_tilemap_data(cfg, registry)
+    assert [cell.palette_row for cell in reread.cells[:8]] == [0] * 8
+
+
+def test_a_nametable_states_its_width_over_one_a_container_left_behind() -> None:
+    """The one geometry hint a container does not get the last word on.
+
+    Every other width is advisory because a wrong one only lays the same bytes
+    out badly — a packed cell carries its own attributes wherever it sits. An
+    attribute plane is addressed in the page's own rows, so a width from anywhere
+    else puts the host's row groups on a grid the codec does not write: the
+    quadrant grows to ``[0, 1, 16, 17]`` at a stated 16 while ``encode`` still
+    reads the row off the top-left of ``[0, 1, 32, 33]``. What is on screen then
+    stops being what a reload shows, which is what this whole mechanism exists to
+    prevent.
+    """
+    from celpix.core.context import KEY_TILEMAP_COLUMNS
+    from celpix.core.document import Document
+
+    registry = default_registry()
+    engine, preset = registry.engine_for(NAMETABLE)
+    ctx = PipelineContext()
+    ctx.set(KEY_TILEMAP_COLUMNS, 16)  # whatever framed these bytes spoke first
+    cells = engine.decode(_nes_page(), preset.params, ctx)
+
+    assert ctx.get(KEY_TILEMAP_COLUMNS) == 32  # the console's, over the hint
+    page = Document(
+        pixel_data=bytes(16),
+        bytes_per_tile=16,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=None,
+        palette_config=None,
+        cells=list(cells),
+        tilemap_ctx=ctx,
+        palette_row_granularity=(2, 2),
+    )
+    assert page.palette_row_group(33) == [0, 1, 32, 33]
+
+    # The invariant under it: assign a row to a whole group, and the page a
+    # reload reads back is cell for cell the page that was on screen.
+    group = set(page.palette_row_group(33))
+    edited = [
+        replace(cell, palette_row=2) if at in group else cell
+        for at, cell in enumerate(cells)
+    ]
+    written = engine.encode(edited, preset.params, ctx)
+    reread = engine.decode(written, preset.params, ctx)
+    assert [c.palette_row for c in reread] == [c.palette_row for c in edited]
+
+
+def test_a_nametable_states_that_it_has_no_assembly_of_its_own() -> None:
+    """The third geometry key, and why a format takes the three over as a set.
+
+    This is a **format switch**: a screen file opens through its own container,
+    which states a 2x2 assembly along with the width and page height, and the
+    user then picks the nametable format for those bytes. The container is not
+    re-run any less for that — it published in the same load — so a codec that
+    takes over two of the three keys leaves its own page height standing beside
+    somebody else's arrangement.
+
+    A screen's payload is eight whole nametable pages, so the leftover divides
+    the page count and ``stated_pages_across`` accepts it: the picture is pinned
+    to a shape nothing in the bytes claims, with the spin locked against saying
+    otherwise. Stating "no assembly" is what makes the geometry whole.
+    """
+    from celpix.core.context import KEY_TILEMAP_PAGES_ACROSS
+    from celpix.core.document import Document
+
+    registry = default_registry()
+    ctx = PipelineContext()
+    payload = ScrContainer().read(ReadSource(data=_scr_bytes()), ctx)
+    assert ctx.get(KEY_TILEMAP_PAGES_ACROSS) == 2  # the container's own claim
+
+    engine, preset = registry.engine_for(NAMETABLE)
+    cells = engine.decode(payload, preset.params, ctx)
+    doc = Document(
+        pixel_data=bytes(16),
+        bytes_per_tile=16,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=None,
+        palette_config=None,
+        cells=cells,
+        tilemap_ctx=ctx,
+    )
+    assert doc.pages == 8  # eight whole pages, so an assembly is possible...
+    assert doc.stated_pages_across == 0  # ...and this format claims none of them
+    # Which leaves it the user's: a stored choice is honoured rather than
+    # overruled by a claim the format never made.
+    doc.view.pages_across = 4
+    assert doc.pages_across == 4
+
+
+def test_a_coarse_row_plane_locks_the_width_at_any_page_count() -> None:
+    """A single 1024-byte page is the common `.nam`, and it fixes its width too.
+
+    Keyed off the assembly, only a *multi-page* file locked: one page assembles
+    nothing, so Cols stayed live at a width the format does not have. A restored
+    project width of 31 then sheared the picture into diagonal stripes while
+    ``palette_row_group`` went on grouping at the stated 32 — so the 2x2 square a
+    palette-row edit wrote was not the one on screen. The plane is what makes the
+    width the codec's, and a plane does not care how many pages there are.
+    """
+    from celpix.core.document import Document
+
+    registry = default_registry()
+    engine, preset = registry.engine_for(NAMETABLE)
+
+    def page_doc(pages: int) -> Document:
+        ctx = PipelineContext()
+        cells = engine.decode(_nes_page() * pages, preset.params, ctx)
+        doc = Document(
+            pixel_data=bytes(16),
+            bytes_per_tile=16,
+            tile_width=8,
+            tile_height=8,
+            palette=None,
+            pixel_config=None,
+            palette_config=None,
+            cells=cells,
+            tilemap_ctx=ctx,
+            palette_row_granularity=(2, 2),
+        )
+        doc.view.columns = 31  # what a restored project would put there
+        return doc
+
+    one = page_doc(1)
+    assert one.pages == 0  # nothing to assemble, which is why it used to slip
+    assert one.row_plane_columns == 32
+    assert (one.drawn_columns, one.columns_locked) == (32, True)
+    # And the tie that matters: a group is a square at the width it is drawn at.
+    width = one.drawn_columns
+    assert one.palette_row_group(33) == [0, 1, width, width + 1]
+
+    # The assembly still answers for a paged one, and still locks.
+    two = page_doc(2)
+    assert (two.pages, two.drawn_columns, two.columns_locked) == (2, 32, True)
+
+    # A format storing a row per cell is untouched: its width is a preference.
+    ordinary = page_doc(1)
+    ordinary.palette_row_granularity = (1, 1)
+    assert (ordinary.row_plane_columns, ordinary.columns_locked) == (0, False)

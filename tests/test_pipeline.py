@@ -396,6 +396,77 @@ def test_a_code_format_carries_its_optional_codec_methods() -> None:
     assert pipeline.palette_entries_per_unit("format.palette.packed", reg) == 4
 
 
+def test_a_broken_optional_probe_degrades_instead_of_failing_the_load(
+    tmp_path,
+) -> None:
+    """A codec's optional metadata must not be able to cost the entry its load.
+
+    Each of these methods has a documented answer for a format that implements
+    none, so one that *cannot* answer is read as one that stayed quiet — and says
+    so in a notice rather than silently. The returns below are the shapes that
+    used to get past the guard and raise outside it: a pair unpacked after the
+    ``try`` is as good as no ``try``, and which of the methods was protected at
+    all was an accident of which neighbour had been copied.
+    """
+    from dataclasses import replace
+
+    from celpix.core.notices import notices
+    from celpix.core.tilemap import Cell
+    from celpix.plugins import FormatInfo
+    from celpix.plugins.formats import adapt_format
+
+    path = tmp_path / "cells.bin"
+    path.write_bytes(bytes(4))
+    reg = default_registry()
+
+    class _Odd:
+        info = FormatInfo(id="format.tilemap.odd", name="odd")
+
+        def decode(self, data, ctx):
+            return [Cell(index=byte) for byte in data]
+
+        def encode(self, cells, ctx):
+            return bytes(cell.index & 0xFF for cell in cells)
+
+        def bytes_per_cell(self):
+            return 1
+
+        def cell_tiles(self):
+            return (1, 1)
+
+    def loaded(method: str, give):
+        fmt = _Odd()
+        fmt.info = replace(_Odd.info, id=f"format.tilemap.odd-{loaded.n}")
+        loaded.n += 1
+        setattr(fmt, method, give)  # per instance, which is how adapt_format reads it
+        engine, preset = adapt_format(fmt, Stage.INTERPRET_TILEMAP)
+        reg.register(engine)
+        reg.register_preset(preset)
+        cfg = PathwayConfig(source=FileRef(str(path)), interpret_preset_id=preset.id)
+        return pipeline.load_tilemap_data(cfg, reg)
+
+    loaded.n = 0
+
+    # Four ways to answer "how many cells share a stored row" that are not a pair.
+    for answer in (2, (2,), "ab", {"x": 1}):
+        data = loaded("palette_row_granularity", lambda a=answer: a)
+        assert data.row_granularity == (1, 1)
+        note = notices(data.ctx)[0]
+        assert note.is_warning and "palette_row_granularity" in note.summary
+
+    # The sibling that crashed the same way through a comparison rather than an
+    # unpack, and the one that used to fail the load outright — one policy now.
+    assert loaded("index_limit", lambda: "ab").index_mask == 0
+    rows = loaded("has_palette_rows", lambda: 1 / 0)
+    assert rows.palette_rows is True
+    assert notices(rows.ctx)[0].is_warning
+
+    # A well-formed answer still comes through, and says nothing.
+    fine = loaded("palette_row_granularity", lambda: (2, 2))
+    assert fine.row_granularity == (2, 2)
+    assert not notices(fine.ctx)
+
+
 def test_missing_source_file_hard_stops(tmp_path) -> None:
     reg = default_registry()
     pixel_cfg = PathwayConfig(

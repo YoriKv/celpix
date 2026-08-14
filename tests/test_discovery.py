@@ -20,6 +20,7 @@ from celpix.plugins.bitswap import BitswapReshape
 from celpix.plugins.data_lut import DataLutReshape
 from celpix.plugins.registry import default_registry
 from celpix.plugins.trust import TrustStore
+from modelhelpers import decoded_at_probe_length
 
 # Auto-approve confirm callback for tests that aren't exercising the gate itself.
 _ALLOW = lambda pending: True  # noqa: E731
@@ -159,6 +160,15 @@ def _drop(root, folder: str, name: str, text: str) -> None:
     sub = root / folder
     sub.mkdir(parents=True, exist_ok=True)
     (sub / name).write_text(text, encoding="utf-8")
+
+
+def _probe_bytes(count: int) -> bytes:
+    """``count`` bytes that are not all alike, for a round trip to be a test.
+
+    Every example engine here models every bit it claims, so a field one forgot
+    to read is a byte that does not come back — which zeros would hide.
+    """
+    return bytes((i * 61 + 7) & 0xFF for i in range(count))
 
 
 def test_drop_in_preset_is_registered_and_usable(tmp_path) -> None:
@@ -403,6 +413,52 @@ def test_code_format_lands_in_picker_and_round_trips(tmp_path) -> None:
     assert engine.encode(tiles, preset.params, ctx) == data
 
 
+def test_a_preset_parameterising_a_code_format_is_refused(tmp_path) -> None:
+    """A format ignores `params`, so a preset that carries any for one is read
+    with the format's answers in place of its author's — silently, since the
+    rename table happily forwards a retired engine's name to the format that
+    replaced it. This is a user's own sprite-object preset from before that move:
+    its byte order would flip and its subsprite sizes change, every cell decoding
+    to a different tile, with nothing downstream able to tell.
+    """
+    _drop(
+        tmp_path,
+        "tilemap",
+        "object-le.toml",
+        'id = "preset.tilemap.object-le"\n'
+        'name = "Sprite object (little-endian)"\n'
+        'engine_id = "codec.tilemap.scgcad-object"\n'
+        "[params]\n"
+        'endian = "little"\n'
+        "subsprite_tiles = [2, 4]\n",
+    )
+    # …while one carrying only what the format declares to the *host* is just a
+    # second name for the same behaviour, and loads.
+    _drop(
+        tmp_path,
+        "tilemap",
+        "object-alias.toml",
+        'id = "preset.tilemap.object-alias"\n'
+        'name = "Sprite object (my name for it)"\n'
+        'engine_id = "codec.tilemap.scgcad-object"\n'
+        "[params]\n"
+        'layout = "sprite"\n',
+    )
+    reg = default_registry()
+
+    issues = discovery.load_directory(reg, str(tmp_path))
+    assert len(issues) == 1
+    assert "object-le.toml" in issues[0].path
+    assert "takes no parameters" in issues[0].message
+    assert "endian, subsprite_tiles" in issues[0].message
+
+    # Refused outright, so the entry naming it goes through the missing-format
+    # repair rather than opening on a wrong reading it could then save.
+    with pytest.raises(KeyError):
+        reg.preset("preset.tilemap.object-le")
+    assert reg.preset("preset.tilemap.object-alias")
+
+
 def test_underscore_files_are_ignored(tmp_path) -> None:
     # Inert-by-convention: _-prefixed files load nothing and report nothing,
     # even when their content is broken (that is what makes them safe examples).
@@ -463,6 +519,27 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert mine.read_text(encoding="utf-8") == "# mine\n"
     mine.unlink()
 
+    # A **retired** example is removed rather than left to rot. Replacement alone
+    # cannot reach one: a name celPix no longer ships is a name it no longer
+    # rewrites, so an upgraded folder would keep it — and its instructions —
+    # for ever.
+    retired = tmp_path / "tilemap" / "_object.toml"
+    retired.write_text("# a previous build's example\n", encoding="utf-8")
+    activated = tmp_path / "tilemap" / "object.toml"  # what copying one makes
+    activated.write_text("# mine\n", encoding="utf-8")
+    discovery.seed_examples(str(tmp_path))
+    assert not retired.exists()
+    assert activated.read_text(encoding="utf-8") == "# mine\n"
+    activated.unlink()
+
+    # And a retired name is never a shipped one, or seeding would remove it and
+    # write it straight back.
+    assert not set(seeded) & {
+        f"{folder}/{name}"
+        for folder, names in discovery.RETIRED_EXAMPLES.items()
+        for name in names
+    }
+
     # Activate every example (drop the underscore) and load for real.
     for path in tmp_path.rglob("_*"):
         path.rename(path.with_name(path.name[1:]))
@@ -520,9 +597,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     )
     for preset in pixel_examples:
         engine = reg.plugin(Stage.INTERPRET_PIXEL, preset.engine_id)
-        data = bytes(
-            (i * 61 + 7) & 0xFF for i in range(engine.bytes_per_tile(preset.params))
-        )
+        data = _probe_bytes(engine.bytes_per_tile(preset.params))
         again = engine.encode(
             engine.decode(data, preset.params, ctx), preset.params, ctx
         )
@@ -573,17 +648,11 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     )
     for preset in tilemap_examples:
         engine = reg.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
-        # Grown to the first length the format accepts rather than assumed to be
-        # four cells: a cell stride is what most of them read at, but a format
-        # whose colour lives in a plane after its cells reads a whole page or
-        # nothing — the two planes mean nothing apart.
-        for length in (engine.bytes_per_cell(preset.params) * 4, 1024, 2048):
-            data = bytes((i * 61 + 7) & 0xFF for i in range(length))
-            cells = engine.decode(data, preset.params, ctx)
-            if cells:
-                break
+        cells, data, cell_ctx = decoded_at_probe_length(
+            engine, preset.params, _probe_bytes
+        )
         assert cells, f"{preset.id} decoded nothing at any probe length"
-        assert engine.encode(cells, preset.params, ctx) == data
+        assert engine.encode(cells, preset.params, cell_ctx) == data
     # The code format too: a cell whose fields straddle bytes is exactly what the
     # engines cannot express, so its round trip is the one most worth checking.
     split = reg.plugin(Stage.INTERPRET_TILEMAP, "format.tilemap.example-split")

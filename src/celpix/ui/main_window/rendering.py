@@ -37,6 +37,7 @@ from celpix.ui.main_window.interpretation import (
     COLS_ASSEMBLED_TIP,
     COLS_CELLS_TIP,
     COLS_FRAMES_TIP,
+    COLS_ROW_PLANE_TIP,
     COLS_STAMPED_TIP,
     COLS_STAMPS_TIP,
     COLS_TIP,
@@ -290,15 +291,23 @@ class RenderingMixin:
         the picture into diagonal stripes
         (``docs/design/tilemap-entry.md`` §3.1, §6).
 
-        **A dense map whose format states no width is the other way round**, and
-        the reason this pass writes into the document instead of only reading it.
-        Its entries are a plain rectangle with one per stamp, so the width is the
-        same preference an ordinary tilemap's is, and nothing but Cols can supply
-        it — a slice lifted out of a disk image runs no container, and its header
-        is four bytes before where the entry starts. So the spin's value goes into
-        the view *first*, and what comes back is that value floored to whole
-        stamps: setting Cols to 47 on a 2x2 map draws 46, because a row that ends
-        halfway through a stamp puts the other half at the start of the next.
+        **A dense map whose format states no width is the other way round.** Its
+        entries are a plain rectangle with one per stamp, so the width is the same
+        preference an ordinary tilemap's is, and nothing but Cols can supply it —
+        a slice lifted out of a disk image runs no container, and its header is
+        four bytes before where the entry starts. There the document resolves its
+        width *through* ``view.columns``, so the spin's value has to be on the
+        view before this reads ``drawn_columns`` back. **The caller puts it
+        there**, immediately above the call (:meth:`_refresh_view`), because that
+        write leaves the view hybrid — one field ahead of the rest — until the
+        whole of ``ViewOptions`` is rebuilt a dozen lines later, and a lifetime
+        that short belongs where both ends of it are visible. Nothing here writes
+        to the document, so this pass is as safe to call twice, or from somewhere
+        else, as its bitmap sibling.
+
+        What comes back on such a map is the spin's value floored to whole stamps:
+        setting Cols to 47 on a 2x2 map draws 46, because a row that ends halfway
+        through a stamp puts the other half at the start of the next.
 
         **There is no assembly control.** Every paged format celPix reads states
         its own layout — a screen file's four quadrants are one 64x64 tilemap and
@@ -315,12 +324,6 @@ class RenderingMixin:
         choice either: it *is* the assembly (or the stamp), and the spin mirrors it.
         """
         doc = self._doc
-        if doc is not None and doc.is_tilemap and not doc.columns_locked:
-            # Before the width is read back, since on a view-driven dense map it
-            # is read *from* here. Harmless on everything else — the view is
-            # rewritten from the same spin a few lines later in `_refresh_view`,
-            # and only a stamped resolution reads the width at all.
-            doc.view.columns = self._columns.value()
         width = doc.drawn_columns if doc is not None else 0
         # The unit Cols moves in, which is the unit it is *read* in: a step of one
         # on a map that floors to whole stamps would land back where it started.
@@ -329,12 +332,15 @@ class RenderingMixin:
         # width was arrived at (:attr:`~...Document.stamp_columns`).
         entries = doc.stamp_columns if doc is not None else 0
         self._columns.setSingleStep(width // entries if width and entries else 1)
-        if not width or doc is None:
-            # Cols is left exactly as the bitmap-width pass set it: taking it over
-            # is the only thing this pass does to it, so there is nothing to hand
-            # back that the earlier owner has not already decided.
+        if not width:
+            # Nothing here fixes a width: an ordinary tilemap, a sprite object, or
+            # no document at all — `drawn_columns` is 0 for each. Cols is left
+            # exactly as the bitmap-width pass set it, since taking it over is the
+            # only thing this pass does to it and there is nothing to hand back
+            # that the earlier owner has not already decided.
             self._label_columns(locked=False)
             return
+        # A width means there is a document: the read above is what produced it.
         locked = doc.columns_locked
         if locked:
             self._columns.setEnabled(False)
@@ -365,14 +371,18 @@ class RenderingMixin:
         if locked:
             # Only a grid map gets here — a sprite object neither pages nor stamps
             # — so the locked wording speaks cells and needs no reading of its own.
-            # Which of the two took it over does have to be said, though: the user
-            # is being told why the spin is dead, and "pages" on a map that has
-            # none sends them looking for something that is not there.
-            tip = (
-                COLS_ASSEMBLED_TIP
-                if doc is not None and doc.pages
-                else COLS_STAMPED_TIP
-            )
+            # Which of the three took it over does have to be said, though: the
+            # user is being told why the spin is dead, and "pages" on a map that
+            # has none sends them looking for something that is not there. In the
+            # order :attr:`~...Document.drawn_columns` resolves them, since a
+            # paged nametable is locked by two things at once and the assembly is
+            # the one that decided the number.
+            if doc is not None and doc.pages:
+                tip = COLS_ASSEMBLED_TIP
+            elif doc is not None and doc.row_plane_columns:
+                tip = COLS_ROW_PLANE_TIP
+            else:
+                tip = COLS_STAMPED_TIP
         elif doc is None or not doc.is_tilemap:
             tip = COLS_TIP
         elif doc.is_sprite:
@@ -654,9 +664,17 @@ class RenderingMixin:
         # settle Cols - and whether the width applies at all - before anything
         # reads them.
         self._settle_bitmap_width_and_columns()
-        # And a paged tilemap's assembly owns it in turn, so it settles after: two
-        # passes can claim Cols and only the second can have the last word (see
-        # :meth:`_settle_tilemap_width`).
+        # A dense stamped map with no stated width resolves its own width *from*
+        # the view, so the spin's value goes there before the pass below reads it
+        # back (:attr:`~celpix.core.document.Document.stamp_columns`). This is the
+        # one field that runs ahead of the rest of `ViewOptions`, and the rebuild
+        # that brings the rest into step is the assignment at the end of this
+        # method — the whole lifetime of the hybrid, in one place.
+        if self._doc.is_tilemap and not self._doc.columns_locked:
+            self._doc.view.columns = self._columns.value()
+        # And a paged tilemap's assembly owns Cols in turn, so it settles after
+        # the bitmap pass: two passes can claim it and only the second can have
+        # the last word (see :meth:`_settle_tilemap_width`).
         self._settle_tilemap_width()
         cols = self._columns.value()
         # Rows is a free display-window height (bounded only by the spin's own 256

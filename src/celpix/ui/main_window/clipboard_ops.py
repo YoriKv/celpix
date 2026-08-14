@@ -178,7 +178,9 @@ class ClipboardOpsMixin:
             tiles = self._decode_run(first, count)
             if not tiles:
                 return 0
-            for blank, tile in zip(self._blank_tiles(len(selected)), selected):
+            for blank, tile in zip(
+                self._blank_tiles(len(selected)), selected, strict=True
+            ):
                 if tile - first < len(tiles):
                     tiles[tile - first] = blank
         written = self._apply_tile_edit(first, tiles, text)

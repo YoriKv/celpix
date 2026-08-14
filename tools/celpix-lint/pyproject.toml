@@ -1,0 +1,42 @@
+[project]
+name = "celpix-lint"
+version = "0.1.0"
+description = "Static checks for hand-edited .celpix project files."
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "Epi" }]
+# Deliberately none. The linter has to run against a project whose celPix build
+# is not installed — that is most of what it is for — so the schema it checks
+# against is stated here rather than imported, and the plugin ids it resolves
+# come from a snapshot that ships with it. Install the `registry` extra to
+# check against a live registry instead (see README).
+dependencies = []
+
+[project.optional-dependencies]
+# Resolves ids against the running celPix — the user's own plugins folder
+# included — instead of the shipped snapshot. Unpinned: whatever celPix is on
+# the path is the one whose ids matter.
+registry = ["celpix"]
+
+[project.scripts]
+celpix-lint = "celpix_lint.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/celpix_lint"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+src = ["src", "tests"]
+output-format = "concise"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

@@ -512,11 +512,14 @@ def test_which_cells_end_a_line_is_one_rule_for_the_text_and_the_picture() -> No
     body = alphabet.decode(codes, flags).body
     assert body == "A\n\nB[scroll break]C[end of string]"
 
-    marked = [alphabet.ends_line(code, flag) for code, flag in zip(codes, flags)]
+    marked = [
+        alphabet.ends_line(code, flag) for code, flag in zip(codes, flags, strict=True)
+    ]
     # The same fact read the other way: the piece a cell decodes to ends in a
     # newline exactly when that cell ends a line. Compared, not asserted twice.
     breaks = [
-        alphabet.decode([c], [f]).body.endswith("\n") for c, f in zip(codes, flags)
+        alphabet.decode([c], [f]).body.endswith("\n")
+        for c, f in zip(codes, flags, strict=True)
     ]
     assert marked == breaks == [True, True, False, False, False, False]
 

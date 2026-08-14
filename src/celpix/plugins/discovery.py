@@ -61,7 +61,7 @@ from celpix.plugins.base import (
 )
 from celpix.plugins.bitswap import BITSWAP_ENGINE, bitswap_from_spec
 from celpix.plugins.data_lut import DATA_LUT_ENGINE, data_lut_from_spec
-from celpix.plugins.formats import adapt_format
+from celpix.plugins.formats import adapt_format, format_behind
 from celpix.plugins.trust import (
     ConfirmCallback,
     PendingCodePlugin,
@@ -368,6 +368,24 @@ def load_user_plugins(
 # there inertly.
 PLUGIN_README = "README.md"
 
+# Reference files celPix used to seed and no longer ships, by folder. Retiring an
+# example is not the same as replacing one: a name that stops being shipped stops
+# being *rewritten*, so without this it sits in every upgraded folder for ever,
+# teaching whatever it taught the day it was written. These three taught a
+# parameterised sprite-record engine that no longer exists — copying one now
+# produces a preset the loader refuses (:func:`check_engine_takes_params`), which
+# is a worse first hour with the app than no example at all.
+#
+# **Names only, and only names celPix itself minted.** The ``_`` prefix is the
+# reserved namespace this function already writes into without asking; removing
+# one of its own retired names is the same promise as overwriting a live one, and
+# is why this needs no record of what was shipped when. A user's own work never
+# starts with ``_`` — that is what activating an example means — so nothing here
+# can reach it.
+RETIRED_EXAMPLES: dict[str, tuple[str, ...]] = {
+    "tilemap": ("_object.toml", "_obz.toml", "_ys-spr.toml"),
+}
+
 
 def seed_examples(directory: str) -> None:
     """Refresh the shipped reference material in the plugin root.
@@ -378,16 +396,27 @@ def seed_examples(directory: str) -> None:
 
     **A stale copy is replaced**, matched by filename, so the examples and the
     README describe the version actually running rather than whichever one first
-    created the folder. That cannot take a user's work with it: what they edit is
-    the activated copy under a different name, and this only ever writes the
-    reserved ``_`` names and the README. Files whose contents already match are
-    left alone, so an unchanged folder is not rewritten on every launch.
+    created the folder. A **retired** one is removed on the same rule
+    (:data:`RETIRED_EXAMPLES`), since a file that is no longer shipped is no
+    longer replaced either and would otherwise outlive the mechanism it teaches.
+    Neither can take a user's work with it: what they edit is the activated copy
+    under a different name, and both halves touch only the reserved ``_`` names
+    and the README. Files whose contents already match are left alone, so an
+    unchanged folder is not rewritten on every launch.
 
     Failures are swallowed — reference material is not worth blocking startup
     over. The ``.py`` examples ship as ``.py.txt`` because frozen-build data
     collection excludes ``.py`` files; the suffix is dropped here.
     """
     root = Path(directory)
+    # Ahead of the seeding and independent of it: a folder celPix no longer ships
+    # any example for still has to shed the ones it used to.
+    for folder, retired in RETIRED_EXAMPLES.items():
+        for name in retired:
+            try:
+                (root / folder / name).unlink(missing_ok=True)
+            except OSError:
+                pass
     _seed_file(resources.resource("data", "plugin-examples", PLUGIN_README), root)
     for folder in FOLDER_STAGE:
         try:
@@ -498,12 +527,57 @@ def _load_typed_dir(
             _load_module(reg, entry, folder, issues, trust, confirm)
 
 
+def check_engine_takes_params(reg: RegistryLike, preset: Preset) -> None:
+    """Refuse a preset whose engine is a self-contained format: one takes none.
+
+    A format *is* its own parameterisation, so the engine adapted from it ignores
+    the ``params`` every codec method carries (:mod:`celpix.plugins.formats`).
+    Nothing downstream can notice that: a preset written for an engine that has
+    since **become** a format still resolves — the rename table forwards the
+    name, which is all a name can do — and is then read with the format's own
+    answers in place of its author's. A byte order or a subsprite size quietly
+    substituted decodes every cell differently and re-encodes the file that way
+    on the next save, with the preset looking healthy the whole time
+    (:mod:`celpix.plugins.aliases`).
+
+    So the refusal is here, where the preset is still a file with a path to
+    report against, and the entry naming it is left to the ordinary
+    missing-format repair (:func:`~celpix.project.workspace.repair_presets`) —
+    which tells the user which format their entry wanted, rather than showing
+    them a wrong picture that saves.
+
+    Only params the format does not itself declare count: those are what a codec
+    would have read (:class:`~celpix.plugins.formats.FormatInfo`), and a preset
+    carrying nothing else is one more name for the same behaviour.
+    """
+    try:
+        engine = reg.plugin(preset.stage, preset.engine_id)
+    except KeyError:
+        # Not this check's business: an engine this build hasn't got is either a
+        # genuine miss, reported per entry when one names the preset, or a code
+        # plugin in the same folder that this scan has not reached yet.
+        return
+    fmt = format_behind(engine)
+    if fmt is None:
+        return
+    declares = getattr(fmt.info, "declares", None) or {}
+    ignored = sorted(set(preset.params) - set(declares))
+    if ignored:
+        raise ValueError(
+            f"engine_id {preset.engine_id!r} is {engine.info.name!r}, a code "
+            f"format, which takes no parameters — {', '.join(ignored)} would be "
+            f"silently ignored; delete this preset and pick that format directly"
+        )
+
+
 def _load_preset(
     reg: RegistryLike, path: Path, stage: Stage, issues: list[PluginLoadIssue]
 ) -> None:
     try:
         spec = tomllib.loads(path.read_text(encoding="utf-8"))
-        reg.register_preset(preset_from_spec(spec, stage))
+        preset = preset_from_spec(spec, stage)
+        check_engine_takes_params(reg, preset)
+        reg.register_preset(preset)
     except Exception as exc:  # noqa: BLE001 — report, don't abort startup
         issues.append(PluginLoadIssue(str(path), f"preset load failed: {exc}"))
 

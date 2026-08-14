@@ -1234,7 +1234,11 @@ class FontAlphabetWindow(QWidget):
                         below += 1
             past, outside = 0, len(glyphs) - aimed
         else:
-            for code, char in zip(codes, chars):
+            # Uneven on purpose, both ways: a short string fills part of the
+            # span and leaves the rest of it cleared, a long one stops at the
+            # span's end — and what it stopped short of is counted below rather
+            # than dropped quietly.
+            for code, char in zip(codes, chars, strict=False):
                 if place(code, char):
                     landed += 1
                 else:

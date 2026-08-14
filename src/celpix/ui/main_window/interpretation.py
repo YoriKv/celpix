@@ -109,11 +109,17 @@ COLS_CELLS_TIP = "Cells per row\nA cell may be a metatile of several tiles"
 COLS_FRAMES_TIP = "Frames per row\nLays out the strip of frames, not the tiles in one"
 # Says what has taken Cols over. There is no control to point at — a file that
 # fixes its width states it itself — so these name the *file* as the authority
-# rather than sending the user looking for a picker along some other row. Two
-# wordings because two different things do it, and the reason is the only part
-# the user can act on: one file assembles pages, the other draws a stamp per
-# entry (:attr:`~celpix.core.document.Document.drawn_columns`).
+# rather than sending the user looking for a picker along some other row. Three
+# wordings because three different things do it, and the reason is the only part
+# the user can act on: one file assembles pages, one stores its colours for
+# blocks of cells and has to be laid out on the grid it stores them in, and one
+# draws a stamp per entry
+# (:attr:`~celpix.core.document.Document.drawn_columns`).
 COLS_ASSEMBLED_TIP = "Cells per row\nFixed by how this file's pages assemble"
+COLS_ROW_PLANE_TIP = (
+    "Cells per row\nFixed by the format: it stores one palette row\n"
+    "per block of cells, counted in the file's own rows"
+)
 COLS_STAMPED_TIP = "Cells per row\nFixed by the stamp each of this file's entries draws"
 # And the dense map whose format states no width, where Cols is live: the number
 # is the user's, but it is theirs a stamp at a time, so say so before the spin

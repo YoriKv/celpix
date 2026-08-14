@@ -1,0 +1,444 @@
+{
+  "celpix_version": "0.5.9",
+  "plugins": {
+    "compression": {
+      "compression.enigma": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.gba-lz77": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.konami-fds-rle": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.konami-nes-rle": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.kosinski": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.lz1": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.lz1-improved": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.lz16": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.lz16-improved": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.lz2": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.lz2-improved": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.lzss-ring": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.nemesis": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.none": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.packbits": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.prs": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.pvr": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.slz16": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.slz24": [
+        "pixels",
+        "tilemap"
+      ]
+    },
+    "container": {
+      "container.copier-header": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.gb-rom": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.ines": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.n64-rom": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.raw-file": [
+        "pixels",
+        "tilemap",
+        "palette"
+      ],
+      "container.scgcad-cgx": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.scgcad-col": [
+        "palette"
+      ],
+      "container.scgcad-map": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.scgcad-obj": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.scgcad-obz": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.scgcad-pnl": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.scgcad-scr": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.scgcad-std": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.smd": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.snes-interleaved": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.tim": [
+        "pixels"
+      ],
+      "container.tim-clut": [
+        "palette"
+      ],
+      "container.tpl-palette": [
+        "palette"
+      ],
+      "container.ys-spr": [
+        "pixels",
+        "tilemap"
+      ]
+    },
+    "interpret-palette": {
+      "codec.palette.indexed": [
+        "pixels",
+        "tilemap"
+      ],
+      "codec.palette.mask": [
+        "pixels",
+        "tilemap"
+      ]
+    },
+    "interpret-pixel": {
+      "codec.pixel.direct-color": [
+        "pixels",
+        "tilemap"
+      ],
+      "codec.pixel.linear-bespoke": [
+        "pixels",
+        "tilemap"
+      ],
+      "codec.pixel.nibble-planar": [
+        "pixels",
+        "tilemap"
+      ],
+      "codec.pixel.packed": [
+        "pixels",
+        "tilemap"
+      ],
+      "codec.pixel.planar": [
+        "pixels",
+        "tilemap"
+      ]
+    },
+    "interpret-tilemap": {
+      "codec.tilemap.md-sprite": [
+        "pixels",
+        "tilemap"
+      ],
+      "codec.tilemap.packed": [
+        "pixels",
+        "tilemap"
+      ],
+      "format.tilemap.nes-nametable": [
+        "pixels",
+        "tilemap"
+      ],
+      "format.tilemap.scgcad-object": [
+        "pixels",
+        "tilemap"
+      ],
+      "format.tilemap.scgcad-obz": [
+        "pixels",
+        "tilemap"
+      ],
+      "format.tilemap.ys-spr": [
+        "pixels",
+        "tilemap"
+      ]
+    },
+    "reshape": {
+      "reshape.deinterleave-nibbles": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.none": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.reverse-byte-bits": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.reverse-nibble-bits": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.snes-m7-vram": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.split-planes-2": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.split-planes-3": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.split-planes-4": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.split-planes-5": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.split-planes-6": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.split-planes-8": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.split-words-2": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.split-words-4": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.swap-bytes-2": [
+        "pixels",
+        "tilemap"
+      ]
+    }
+  },
+  "presets": {
+    "compression": [],
+    "container": [],
+    "interpret-palette": [
+      "preset.palette.abgr8888",
+      "preset.palette.bgr444",
+      "preset.palette.bgr444-be",
+      "preset.palette.bgr555",
+      "preset.palette.bgr555-be",
+      "preset.palette.ega-indexed",
+      "preset.palette.gb-bgp",
+      "preset.palette.genesis-9bpp",
+      "preset.palette.grb333",
+      "preset.palette.grb333-be",
+      "preset.palette.msx-indexed",
+      "preset.palette.nes-indexed",
+      "preset.palette.ngp-gray",
+      "preset.palette.pce-grb333",
+      "preset.palette.rgb444",
+      "preset.palette.rgb555-split-be",
+      "preset.palette.rgb565",
+      "preset.palette.rgb565-be",
+      "preset.palette.rgb888",
+      "preset.palette.rgba8888",
+      "preset.palette.sms-6bpp",
+      "preset.palette.ws-gray"
+    ],
+    "interpret-pixel": [
+      "preset.pixel.1bpp-16x11-ff6",
+      "preset.pixel.1bpp-16x12-ff5",
+      "preset.pixel.1bpp-16x16",
+      "preset.pixel.1bpp-8x8",
+      "preset.pixel.3bpp-linear",
+      "preset.pixel.3bpp-planar",
+      "preset.pixel.3bpp-planar-separate",
+      "preset.pixel.4bpp-linear-16x16-lsb",
+      "preset.pixel.4bpp-linear-16x16-msb",
+      "preset.pixel.4bpp-linear-32x32-lsb",
+      "preset.pixel.4bpp-linear-32x32-msb",
+      "preset.pixel.4bpp-planar-16x16",
+      "preset.pixel.4bpp-planar-32x32",
+      "preset.pixel.5bpp-planar",
+      "preset.pixel.6bpp-linear",
+      "preset.pixel.6bpp-planar",
+      "preset.pixel.7bpp-planar",
+      "preset.pixel.8bpp-linear",
+      "preset.pixel.8bpp-linear-128x8",
+      "preset.pixel.8bpp-linear-256x128",
+      "preset.pixel.8bpp-planar",
+      "preset.pixel.atari-sy2-chars-2bpp",
+      "preset.pixel.atari-sy2-sprites-4bpp",
+      "preset.pixel.atari-sy2-tiles-4bpp",
+      "preset.pixel.dc-abgr1555",
+      "preset.pixel.dc-abgr1555-be",
+      "preset.pixel.dc-abgr8888",
+      "preset.pixel.dc-abgr8888-be",
+      "preset.pixel.dc-argb1555",
+      "preset.pixel.dc-argb1555-be",
+      "preset.pixel.dc-argb4444",
+      "preset.pixel.dc-argb4444-be",
+      "preset.pixel.dc-argb8888",
+      "preset.pixel.dc-argb8888-be",
+      "preset.pixel.dc-bbgggrrr",
+      "preset.pixel.dc-bgr555",
+      "preset.pixel.dc-bgr555-be",
+      "preset.pixel.dc-bgr565",
+      "preset.pixel.dc-bgr565-be",
+      "preset.pixel.dc-bgr888",
+      "preset.pixel.dc-bgr888-be",
+      "preset.pixel.dc-bgra5551",
+      "preset.pixel.dc-bgra5551-be",
+      "preset.pixel.dc-bgra8888",
+      "preset.pixel.dc-bgra8888-be",
+      "preset.pixel.dc-i8",
+      "preset.pixel.dc-ia16-be",
+      "preset.pixel.dc-ia8",
+      "preset.pixel.dc-rgb555",
+      "preset.pixel.dc-rgb555-be",
+      "preset.pixel.dc-rgb565",
+      "preset.pixel.dc-rgb565-be",
+      "preset.pixel.dc-rgb888",
+      "preset.pixel.dc-rgb888-be",
+      "preset.pixel.dc-rgba5551",
+      "preset.pixel.dc-rgba5551-be",
+      "preset.pixel.dc-rgba8888",
+      "preset.pixel.dc-rgba8888-be",
+      "preset.pixel.dc-snes-direct",
+      "preset.pixel.gb-2bpp",
+      "preset.pixel.gba-4bpp",
+      "preset.pixel.genesis-4bpp",
+      "preset.pixel.nes-2bpp",
+      "preset.pixel.ngp-2bpp",
+      "preset.pixel.ngp-2bpp-swapped",
+      "preset.pixel.pce-2bpp16",
+      "preset.pixel.pce-cg2-4bpp",
+      "preset.pixel.pce-sg-4bpp",
+      "preset.pixel.psx-4bpp",
+      "preset.pixel.psx-8bpp",
+      "preset.pixel.sms-4bpp",
+      "preset.pixel.snes-2bpp",
+      "preset.pixel.snes-3bpp",
+      "preset.pixel.snes-4bpp",
+      "preset.pixel.snes-8bpp",
+      "preset.pixel.snes-8bpp-bank",
+      "preset.pixel.vb-2bpp",
+      "preset.pixel.ws-2bpp"
+    ],
+    "interpret-tilemap": [
+      "format.tilemap.nes-nametable",
+      "format.tilemap.scgcad-object",
+      "format.tilemap.scgcad-obz",
+      "format.tilemap.ys-spr",
+      "preset.tilemap.gb-bg",
+      "preset.tilemap.gba-bg",
+      "preset.tilemap.gbc-bg",
+      "preset.tilemap.md-bg",
+      "preset.tilemap.md-sprite",
+      "preset.tilemap.ngp-bg",
+      "preset.tilemap.ngpc-bg",
+      "preset.tilemap.pce-bat",
+      "preset.tilemap.scgcad-map",
+      "preset.tilemap.scgcad-panel",
+      "preset.tilemap.scgcad-std",
+      "preset.tilemap.sms-bg",
+      "preset.tilemap.snes-bg",
+      "preset.tilemap.snes-bg-16x16",
+      "preset.tilemap.snes-bg-swapped",
+      "preset.tilemap.snes-mode7",
+      "preset.tilemap.text-16bit",
+      "preset.tilemap.text-16bit-be",
+      "preset.tilemap.text-8bit",
+      "preset.tilemap.text-8bit-flag",
+      "preset.tilemap.ws-bg"
+    ],
+    "reshape": []
+  },
+  "project_version": 1,
+  "renamed": {
+    "codec.color-indexed": "codec.palette.indexed",
+    "codec.color-mask": "codec.palette.mask",
+    "codec.direct-color": "codec.pixel.direct-color",
+    "codec.linear-bespoke": "codec.pixel.linear-bespoke",
+    "codec.nibble-planar": "codec.pixel.nibble-planar",
+    "codec.packed": "codec.pixel.packed",
+    "codec.planar": "codec.pixel.planar",
+    "codec.scgcad-object": "format.tilemap.scgcad-object",
+    "codec.scgcad-obz": "format.tilemap.scgcad-obz",
+    "codec.tilemap-packed": "codec.tilemap.packed",
+    "codec.tilemap.scgcad-object": "format.tilemap.scgcad-object",
+    "codec.tilemap.scgcad-obz": "format.tilemap.scgcad-obz",
+    "codec.tilemap.ys-spr": "format.tilemap.ys-spr",
+    "codec.ys-spr": "format.tilemap.ys-spr",
+    "preset.palette.argb8888": "preset.palette.rgba8888",
+    "preset.palette.argb8888-be": "preset.palette.abgr8888",
+    "preset.palette.r3g3b3": "preset.palette.grb333",
+    "preset.palette.r3g3b3-be": "preset.palette.grb333-be",
+    "preset.palette.r4g4b4": "preset.palette.bgr444",
+    "preset.palette.r4g4b4-be": "preset.palette.bgr444-be",
+    "preset.palette.r5g5b5-split-be": "preset.palette.rgb555-split-be",
+    "preset.pixel.1bpp16": "preset.pixel.1bpp-16x16",
+    "preset.pixel.1bpp16-ff5": "preset.pixel.1bpp-16x12-ff5",
+    "preset.pixel.1bpp16-ff6": "preset.pixel.1bpp-16x11-ff6",
+    "preset.pixel.1bpp8": "preset.pixel.1bpp-8x8",
+    "preset.pixel.chunky-8bpp": "preset.pixel.8bpp-linear",
+    "preset.pixel.chunky-8bpp-wide": "preset.pixel.8bpp-linear-256x128",
+    "preset.pixel.generic-3bpp": "preset.pixel.3bpp-planar-separate",
+    "preset.tilemap.scgcad-object": "format.tilemap.scgcad-object",
+    "preset.tilemap.scgcad-obz": "format.tilemap.scgcad-obz",
+    "preset.tilemap.ys-spr": "format.tilemap.ys-spr"
+  }
+}

@@ -69,6 +69,15 @@ KEY_PALETTE_PRESET = "palette.preset"
 # a panel are 32, a stamp layout 64. Without it the width is a guess the user
 # has to make, and a wrong guess shears the picture into diagonal stripes rather
 # than failing, which is the worst way to be wrong.
+#
+# A **codec** may state it too, for a payload that arrived with no container to
+# speak for it, and normally behind the container for the reason above. One
+# exception, and it is what marks the line: where the width decides which *byte*
+# a field is packed into rather than only how the cells are cut, it is not a hint
+# at all and the codec states it over anything already there. The NES attribute
+# plane is addressed in the page's own rows, so a width from elsewhere would put
+# the host's row groups on a grid `encode` does not write
+# (:mod:`celpix.plugins.builtins.nes_nametable`).
 KEY_TILEMAP_COLUMNS = "tilemap.columns"
 # tuple[int, int]: how many tiles one cell covers, when the header says. A screen
 # carries this as a tile-size byte and most real ones are 16x16, so a screen
@@ -116,11 +125,17 @@ KEY_TILEMAP_PAGE_ROWS = "tilemap.page-rows"
 # into a single array at row stride 64
 # (``docs/graphics-formats-reference/scgcad-asset-pipeline.md`` §2.7).
 #
-# Absent means the format does not state one, which leaves the layout the user's
-# to choose. That is the case this pair was first built for and it turned out not
-# to be the screen's; it is kept because "several maps end to end" and "and here
-# is how they go together" are genuinely two claims, and a format may make the
-# first without the second.
+# Absent — **or zero** — means the format does not state one, which leaves the
+# layout the user's to choose. That is the case this pair was first built for and
+# it turned out not to be the screen's; it is kept because "several maps end to
+# end" and "and here is how they go together" are genuinely two claims, and a
+# format may make the first without the second.
+#
+# The two spellings are the same answer because the readers coerce both, and the
+# zero is what lets a codec **state** the absence: one that takes the geometry
+# over from whatever framed the bytes has to answer for all three keys, or it
+# leaves its own page height beside somebody else's arrangement
+# (:mod:`celpix.plugins.builtins.nes_nametable`).
 KEY_TILEMAP_PAGES_ACROSS = "tilemap.pages-across"
 # "little" | "big": the byte order a container knows its cells are in, where that
 # is a property of the *file* rather than of its format. The S-CG-CAD sprite
@@ -150,6 +165,20 @@ KEY_TILEMAP_FRAME_SIZES = "tilemap.frame-sizes"
 # (``graphics-formats-reference/scgcad-formats.md`` §8.1). Advisory in the usual
 # way: absent means the preset's ``subsprites_per_frame`` stands.
 KEY_TILEMAP_SUBSPRITES_PER_FRAME = "tilemap.subsprites-per-frame"
+# tuple[int, int]: the two subsprite sizes **in tiles** a size bit picks between,
+# where the *reader* has settled them. The one thing on this list no file and no
+# format knows: the pair was a register the scene set, and the corpus gives no
+# way to recover it from the bytes (``scgcad-formats.md`` §8.2). So it is the
+# user's, per entry, kept in the project (``Entry.sprite_size_pair``) — and
+# published here because the codec is what resolves a record's size bit into a
+# rectangle, at decode time, which is well below anything that has heard of an
+# entry.
+#
+# Host-stated rather than container-stated, which makes it the tilemap twin of
+# :data:`KEY_DECOMPRESS_PARTIAL`: set on the way *in*, for the plugin to honour,
+# rather than reported on the way out. Absent means the format's own answer
+# stands, which is what a fresh entry gets and what a codec asked directly gets.
+KEY_TILEMAP_SUBSPRITE_TILES = "tilemap.subsprite-tiles"
 # tuple[Sequence, ...]: the order a sprite map's frames are meant to play in,
 # where the format carries such a table (:mod:`celpix.core.animation`). It lives
 # in the part of the file the container preserves opaquely — past the records, and

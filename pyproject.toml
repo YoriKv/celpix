@@ -1,7 +1,7 @@
 [project]
 name = "celpix"
 description = "A graphics and palette editor for retro-game data."
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Epi" }]
@@ -11,7 +11,7 @@ dynamic = ["version"]
 dependencies = [
     "PySide6>=6.8",
     # TOML reader for data-only plugin presets. Stdlib `tomllib` covers 3.11+;
-    # `tomli` (its backport) covers 3.9/3.10. Read-only — the app never writes TOML.
+    # `tomli` (its backport) covers 3.10. Read-only — the app never writes TOML.
     "tomli>=1.1.0; python_version < '3.11'",
 ]
 
@@ -48,7 +48,7 @@ packages = ["src/celpix"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py310"
 src = ["src", "tests"]
 # One line per finding, no echoed source. The full form re-prints whole import
 # blocks for a single sorting complaint, which is noise in a terminal and costly

@@ -36,17 +36,23 @@ all**, and the Cell spin and Edit Tiles simply refuse, with no error to read.
 Four of the five are below; ``has_line_flag`` is left out because this format
 ends no line on a bit.
 
-**What a format cannot say is anything about its cells' *kind*.** ``layout``
-(``"text"`` for a fontmap, ``"sprite"``), ``indirect`` and ``cell_tiles`` are
-preset parameters, and a ``FormatInfo`` is an id and a name. A code format that
-needs one ships a small preset naming it as the engine — the host reads the
-params, this engine ignores them:
+**What a format says about its cells' *kind* it declares.** ``layout``
+(``"text"`` for a fontmap, ``"sprite"`` for parts placed at pixel offsets rather
+than in a grid), ``indirect``, ``stamp_dense`` and ``cell_tiles`` are not
+parameters of the decode: they are facts celPix has to know *before* a byte is
+read — an object with no tiles bound to it is still an object — so they ride on
+the ``FormatInfo``:
 
-    id = "preset.tilemap.my-text"
-    name = "My text run"
-    engine_id = "format.tilemap.example-split"
-    [params]
-    layout = "text"
+    info = FormatInfo(
+        id="format.tilemap.my-text",
+        name="My text run",
+        declares={"layout": "text"},
+    )
+
+Keep ``declares`` to exactly that: what the **app** has to be told. Anything your
+own methods would read is a constant in the class instead, because a format takes
+no parameters at all — which is the whole difference between one and an engine,
+and why a format needs no companion preset.
 """
 
 from celpix.core.tilemap import Cell, CellOp
@@ -66,6 +72,8 @@ class SplitCell:
     """
 
     # The id doubles as the picker entry's stable identity; the name is shown.
+    # No `declares` here: these cells are an ordinary grid naming ordinary tiles,
+    # which is what celPix assumes of a tilemap that says nothing.
     info = FormatInfo(id="format.tilemap.example-split", name="Example split cell")
 
     def decode(self, data, ctx):
@@ -95,10 +103,10 @@ class SplitCell:
                     # `has_line_flag` too, or the text window reads those breaks
                     # and refuses to let one be typed.
                     #
-                    # Neither makes the map a **fontmap**: that is `layout`, and
-                    # `layout` — like `sprite`, `indirect` and `cell_tiles` — is
-                    # a *preset* parameter, which a format carries none of. See
-                    # the module docstring.
+                    # Neither makes the map a **fontmap**: that is `layout`,
+                    # which — like `indirect`, `stamp_dense` and `cell_tiles` —
+                    # is something the format *declares* to celPix rather than
+                    # reads. See `declares` in the module docstring.
                 )
             )
         return cells

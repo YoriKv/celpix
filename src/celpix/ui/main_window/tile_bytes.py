@@ -373,7 +373,7 @@ class TileBytesMixin:
             return [(first, tiles)]
         homes = tile_rearrangement.actual_run(first, len(tiles))
         runs: list[tuple[int, list]] = []
-        for index, tile in zip(homes, tiles):
+        for index, tile in zip(homes, tiles, strict=True):
             tile = unapply_orientation(tile, tile_rearrangement.orient_of(index))
             if runs and index == runs[-1][0] + len(runs[-1][1]):
                 runs[-1][1].append(tile)

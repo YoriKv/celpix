@@ -52,6 +52,13 @@ def test_the_rename_table_stays_honest() -> None:
     }
     assert not unresolved, unresolved
 
+    # ...and "re-pointed" is the half a chain-following check cannot see, so it
+    # is asserted directly: a target that is itself a retired name resolves today
+    # only because `current_id` walks, and reads as the pattern to copy for the
+    # next twice-rename.
+    midway = {old: new for old, new in RENAMED.items() if new in RENAMED}
+    assert not midway, midway
+
 
 def test_a_renamed_id_still_resolves() -> None:
     """The whole point: an id saved before a rename opens without the caller

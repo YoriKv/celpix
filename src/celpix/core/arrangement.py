@@ -413,7 +413,9 @@ def _compose_plain(
             datas[idx] if 0 <= idx < count else blank
             for idx in range(base, base + cols)
         ]
-        if previous is not None and all(a is b for a, b in zip(row_tiles, previous)):
+        if previous is not None and all(
+            a is b for a, b in zip(row_tiles, previous, strict=True)
+        ):
             dst[pos : pos + height] = dst[pos - height : pos]
             pos += height
             continue

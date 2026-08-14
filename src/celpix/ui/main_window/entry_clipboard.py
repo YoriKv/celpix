@@ -445,7 +445,7 @@ class EntryClipboardMixin:
                 record.entry.pieces = tuple(
                     replace(piece, entry=target_for(record, at, slot))
                     for slot, (piece, at) in enumerate(
-                        zip(record.entry.pieces, record.piece_sources)
+                        zip(record.entry.pieces, record.piece_sources, strict=True)
                     )
                 )
 

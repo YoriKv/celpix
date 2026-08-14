@@ -888,6 +888,73 @@ def test_a_dense_map_that_states_no_width_keeps_cols_live(qtbot, tmp_path) -> No
     assert window._columns.value() == 6
 
 
+def test_a_chained_map_keeps_its_own_row_grouping(qtbot, tmp_path) -> None:
+    """A chained document takes its drawing from the map it stamps and its **file**
+    facts from its own format, and the row grouping is one of the second kind.
+
+    How the source groups its rows says nothing about which of *this* file's
+    entries share a stored one, and what the grouping sizes is a write: an
+    assignment grows to the whole group and a paste is snapped back to it, both
+    against this entry's own cells. Built at the default (1, 1) the assignment
+    writes one cell, the snap does nothing, and the codec's own head-wins encode
+    recolours the other three on the next save — which the model would not show
+    until the file was read again.
+    """
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.context import KEY_TILEMAP_COLUMNS
+    from celpix.core.errors import Stage
+    from celpix.core.tilemap import Cell
+    from celpix.plugins import FormatInfo
+    from celpix.plugins.formats import adapt_format
+    from celpix.project.workspace import TileMode, TileSource
+
+    class _CoarseIndirect:
+        """One byte per cell, naming a source *cell*, one palette row per 2x2."""
+
+        info = FormatInfo(
+            id="format.tilemap.coarse-indirect",
+            name="Coarse rows over another map",
+            declares={"indirect": True},
+        )
+
+        def decode(self, data, ctx):
+            # A coarse format has to state its width: the plane is addressed in
+            # the file's own rows, so the group is resolved against it.
+            ctx.set(KEY_TILEMAP_COLUMNS, 4)
+            return [Cell(index=byte) for byte in data]
+
+        def encode(self, cells, ctx):
+            return bytes(cell.index & 0xFF for cell in cells)
+
+        def bytes_per_cell(self):
+            return 1
+
+        def cell_tiles(self):
+            return (1, 1)
+
+        def palette_row_granularity(self):
+            return (2, 2)
+
+    window, panel = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)], maker=_pnl_file)
+    engine, preset = adapt_format(_CoarseIndirect(), Stage.INTERPRET_TILEMAP)
+    window._registry.register(engine)
+    window._registry.register_preset(preset)
+
+    path = tmp_path / "coarse.bin"
+    path.write_bytes(bytes(8))
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    entry = window._workspace.current
+    entry.tilemap_preset_id = preset.id
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry=panel)
+    window._reload_tilemap(entry)
+
+    doc = window._doc
+    assert doc.chain is not None  # it really is the chained document
+    assert doc.palette_row_granularity == (2, 2)
+    # And the grouping that rests on it is live rather than a no-op.
+    assert doc.palette_row_group(5) == [0, 1, 4, 5]
+
+
 def test_a_binding_change_keeps_the_width_the_map_is_being_read_at(
     qtbot, tmp_path
 ) -> None:
@@ -2099,7 +2166,9 @@ def test_a_sprite_map_offers_a_size_pair_and_nothing_else_does(qtbot, tmp_path) 
     no parts and no size bit, so the control goes rather than greys."""
     window = MainWindow()
     qtbot.addWidget(window)
-    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
+    # The one part is a **large** one, so the spin below moves the square its
+    # size bit picks and the picture has somewhere to show the change.
+    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1, 0, True)])))
 
     assert not window._size_small.isHidden()
     assert not window._size_large.isHidden()
@@ -2113,9 +2182,13 @@ def test_a_sprite_map_offers_a_size_pair_and_nothing_else_does(qtbot, tmp_path) 
     # number itself - the change is remembered on the entry and reaches the
     # document, because it decides how the records decode, not how they are drawn.
     entry = window._workspace.current
+    assert window._doc.sprite_frames[0][0].across == 2  # the format's larger square
     window._size_large.setValue(4)
     assert entry.sprite_size_pair == (1, 4)
     assert window._doc.sprite_size_pair == (1, 4)
+    # And the re-read built the frames at it, which is the half of the loop the
+    # spin exists for: a pair the picture is not in is a control that does nothing.
+    assert window._doc.sprite_frames[0][0].across == 4
 
     # A grid tilemap has no parts to size, so the controls are not there at all.
     from celpix.core.capabilities import ContentKind

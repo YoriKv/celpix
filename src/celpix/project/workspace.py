@@ -39,10 +39,10 @@ activation. External changes to the file on disk are ignored.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from os.path import abspath, basename, exists, normcase, splitext
-from typing import Callable
 
 from celpix.core import ceil_div
 from celpix.core.address import format_hex
@@ -2030,17 +2030,27 @@ def path_is_palette_only(ws: Workspace, path: str) -> bool:
 
 
 def entry_notices(entry: Entry) -> tuple[Notice, ...]:
-    """What the stages said while reading ``entry`` — both pathways, pixel first.
+    """What the stages said while reading ``entry`` — every pathway, pixel first.
 
     Read off the live document rather than stored on the entry, because that is
     where they are already: a notice is produced by a load and the document *is*
     the result of one, so the two cannot fall out of step. An entry whose document
     has never been built has nothing to report, which is correct — nothing has
     been read yet.
+
+    **All three contexts**, since a notice is recorded by whichever pathway ran
+    and a tilemap entry's stages run on its own: a cell codec that had to assume
+    something, or one whose optional metadata could not be read
+    (:func:`~celpix.pipeline._stage._probe`), has the same claim on the row's
+    tooltip as a container that dropped a tail.
     """
     if entry.doc is None:
         return ()
-    return notices(entry.doc.pixel_ctx) + notices(entry.doc.palette_ctx)
+    return (
+        notices(entry.doc.pixel_ctx)
+        + notices(entry.doc.palette_ctx)
+        + notices(entry.doc.tilemap_ctx)
+    )
 
 
 @dataclass(frozen=True)

@@ -17,7 +17,8 @@ them up — no reinstall, no editing the app.
 Files starting with `_` are ignored. Every `_`-prefixed file here is a working
 reference: **copy one, drop the underscore, and edit it.** Press <kbd>F5</kbd> in
 celPix to reload the folder. celPix rewrites the `_` files at startup so they
-track the version you are running; yours never start with `_` and are never
+track the version you are running — and removes one it no longer ships, so an
+example never outlives what it taught. Yours never start with `_` and are never
 touched.
 
 ## Two kinds of plugin

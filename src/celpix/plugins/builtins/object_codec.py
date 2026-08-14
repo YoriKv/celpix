@@ -45,6 +45,7 @@ from __future__ import annotations
 from celpix.core.context import (
     KEY_TILEMAP_ENDIAN,
     KEY_TILEMAP_FRAME_SIZES,
+    KEY_TILEMAP_SUBSPRITE_TILES,
     KEY_TILEMAP_SUBSPRITES_PER_FRAME,
     PipelineContext,
 )
@@ -113,6 +114,24 @@ def size_pair(raw: object) -> tuple[int, int]:
     return small, large
 
 
+def subsprite_tiles(
+    default: object, ctx: PipelineContext | None = None
+) -> tuple[int, int]:
+    """The size pair to frame by, the **reader's** answer preferred.
+
+    The third of this module's "stated, or else assumed" reads, and the only one
+    whose statement comes from the user rather than from the file. Nothing in an
+    object records which two sizes its size bit picks between, so there is no
+    header for a container to read it out of and no parameter a format could
+    carry: it is per entry, kept in the project, and reaches here on the context
+    (:data:`~celpix.core.context.KEY_TILEMAP_SUBSPRITE_TILES`). ``default`` is the
+    format's own commonest setting, which is all there is to assume when nobody
+    has said (:data:`~celpix.core.sprite.DEFAULT_SUBSPRITE_TILES`).
+    """
+    stated = ctx.get(KEY_TILEMAP_SUBSPRITE_TILES) if ctx is not None else None
+    return size_pair(stated if stated else default)
+
+
 def subsprites_per_frame(default: int, ctx: PipelineContext | None = None) -> int:
     """How many subsprite slots one frame holds, the file's answer preferred.
 
@@ -177,20 +196,23 @@ class _SubspriteCodec:
         invisible ones: they are the file's empty slots, all 94% of them, and
         nothing downstream would have anything to do with them.
 
-        ``ctx`` carries the two things a *file* can settle about its own framing
-        that a preset cannot. A format whose frames are **not** a fixed stride
-        states their boundaries (:class:`SprCodec`); and a format with two forms
-        that slot the same payload differently states the stride
+        ``ctx`` carries the three things this codec cannot settle for itself. Two
+        are the *file's*: a format whose frames are **not** a fixed stride states
+        their boundaries (:class:`SprCodec`), and a format with two forms that
+        slot the same payload differently states the stride
         (:func:`subsprites_per_frame`), which is the sprite object's case and the
-        one that cannot be worked out from the byte count.
+        one that cannot be worked out from the byte count. The third is the
+        **user's** — the size pair, which no file records at all
+        (:func:`subsprite_tiles`).
 
-        The size **pair** is resolved here rather than carried to the renderer:
-        these records hold a size bit, and what a subsprite hands over is a
-        shape (:class:`~celpix.core.sprite.Subsprite`). Which is also why a
-        change of pair is a re-read and not a repaint.
+        The pair is resolved here rather than carried to the renderer: these
+        records hold a size bit, and what a subsprite hands over is a shape
+        (:class:`~celpix.core.sprite.Subsprite`). Which is also why a change of
+        pair is a re-read and not a repaint — the frames are built differently,
+        and this is where they are built.
         """
         per_frame = subsprites_per_frame(self.per_frame, ctx)
-        pair = size_pair(self.tile_pair)
+        pair = subsprite_tiles(self.tile_pair, ctx)
         return [
             tuple(
                 sub
@@ -484,7 +506,7 @@ class SprCodec(_SubspriteCodec):
         sizes = ctx.get(KEY_TILEMAP_FRAME_SIZES)
         if not sizes:
             return super().frames(cells, ctx)
-        pair = size_pair(self.tile_pair)
+        pair = subsprite_tiles(self.tile_pair, ctx)
         out: list[Frame] = []
         at = 0
         for size in sizes:

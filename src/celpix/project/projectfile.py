@@ -806,7 +806,7 @@ def _bind_tile_sources(raw_entries: list, parsed: list[Entry | None]) -> None:
     A position naming nothing leaves the map unbound, on the same rule the rest
     of this module follows: the map opens on placeholders and can be re-pointed.
     """
-    for raw, entry in zip(raw_entries, parsed):
+    for raw, entry in zip(raw_entries, parsed, strict=True):
         if entry is None or not isinstance(raw, dict):
             continue
         found = _tile_source(raw)
@@ -914,7 +914,7 @@ def _bind_composite_pieces(raw_entries: list, parsed: list[Entry | None]) -> Non
     has gone keeps its shape and every map indexing it still lands on the right
     tiles; the run is simply blank, and the load says so.
     """
-    for raw, entry in zip(raw_entries, parsed):
+    for raw, entry in zip(raw_entries, parsed, strict=True):
         if entry is None or entry.kind is not EntryKind.COMPOSITE:
             continue
         if not isinstance(raw, dict):

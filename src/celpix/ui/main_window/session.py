@@ -305,7 +305,9 @@ class SessionMixin:
         restored = entry.pending_view is not None
         cfg = self._tilemap_config(entry, self._tilemap_preset_id(entry))
         try:
-            loaded = pipeline.load_tilemap_data(cfg, self._registry, live)
+            loaded = pipeline.load_tilemap_data(
+                cfg, self._registry, live, size_pair=entry.sprite_size_pair
+            )
         except PipelineError as exc:
             if not quiet:
                 self._report(exc)
@@ -374,6 +376,17 @@ class SessionMixin:
                 cells_carry_palette_rows=(
                     through.cells_carry_palette_rows or loaded.palette_rows
                 ),
+                # **This entry's own**, unlike everything above it that comes off
+                # the source, and the two tilemap documents have to pass the same
+                # thing here. What it sizes is a *write*: a row assignment grows
+                # to the group the referrer's format stores one row for, snapped
+                # against the referrer's own cells and its own width
+                # (:meth:`~celpix.core.document.Document.palette_row_group`). How
+                # the source groups its rows has nothing to do with which of
+                # *this* file's entries share a stored one — and a construction
+                # site that left it out would write a single cell where the
+                # codec's encode then recolours the other three.
+                palette_row_granularity=loaded.row_granularity,
             )
             self._apply_restored_state(entry)
             self._apply_tilemap_columns(entry, restored=restored)
@@ -444,8 +457,13 @@ class SessionMixin:
                 entry.tile_source.base_index if entry.tile_source is not None else 0
             ),
             sprite_frames=loaded.frames,
-            sprite_size_pair=self._size_pair_for(entry, loaded.size_pair),
+            # The pair the frames above were **built at**, which the load settled
+            # from the entry's own choice: read back rather than re-derived, so
+            # the bar cannot show a setting the picture is not in.
+            sprite_size_pair=loaded.size_pair,
             cells_carry_palette_rows=loaded.palette_rows,
+            # The chained document above passes this too, and for the same
+            # reason: it is a fact about the format whose cells this entry holds.
             palette_row_granularity=loaded.row_granularity,
             text_layout=fontmap,
             font_alphabet=self._font_alphabet_for(entry, loaded.cell_bytes),
@@ -595,23 +613,6 @@ class SessionMixin:
         if stated or bank is None:
             return declared
         return bank
-
-    def _size_pair_for(
-        self, entry: Entry, declared: tuple[int, int]
-    ) -> tuple[int, int]:
-        """The sprite-size pair in force: the entry's choice, else the format's.
-
-        Both are (small, large) **in tiles**. ``declared`` is the preset's, which can
-        only be the commonest setting — the pair was a PPU register the scene set and
-        no sprite file records it
-        (``docs/graphics-formats-reference/scgcad-formats.md`` §8.2). So the entry
-        overrules it, and the document carries the pair **in force** the way it does
-        the two bases, leaving one answer for the render to read.
-        """
-        chosen = entry.sprite_size_pair
-        if chosen is None or chosen[0] < 1 or chosen[1] < 1:
-            return declared
-        return chosen
 
     def _tilemap_preset_id(self, entry: Entry) -> str:
         """The cell format ``entry``'s own file is read under.

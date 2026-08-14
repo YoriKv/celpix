@@ -86,7 +86,7 @@ def hex_rows(
     addresses = [addr_of(base) for base in starts]
     width = max((len(address) for address in addresses), default=0)
     rows: list[HexRow] = []
-    for address, base in zip(addresses, starts):
+    for address, base in zip(addresses, starts, strict=True):
         cells: list[str] = []
         chars: list[str] = []
         for col in range(per_row):

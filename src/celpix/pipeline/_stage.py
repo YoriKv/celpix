@@ -27,12 +27,15 @@ elsewhere — this module knows about a stage, not about the pipeline.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 from celpix.core.arrangement import bitmap_tile_size
+from celpix.core.context import PipelineContext
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
+from celpix.core.notices import warn
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef, PixelCodecPlugin, ReadSource, SourceFile
 from celpix.plugins.registry import Registry
@@ -67,6 +70,57 @@ def _run(
         raise
     except Exception as exc:  # noqa: BLE001 — deliberately funnel every failure
         raise PipelineError(stage, pathway, str(exc), action, plugin=plugin) from exc
+
+
+def _probe(
+    engine,  # noqa: ANN001 — any stage plugin, reached by getattr
+    name: str,
+    params: dict,
+    read: Callable[[object], T],
+    default: T,
+    *,
+    ctx: PipelineContext,
+    plugin: str = "",
+) -> T:
+    """Ask one **optional** codec method, so that a bad answer cannot cost the load.
+
+    The counterpart to :func:`_run`, and the two are the whole of how the host
+    calls into a plugin. ``_run`` is for the calls that *are* the result — a
+    decode, an encode, a container's read — where a failure has no fallback and
+    the honest end is a :class:`PipelineError` naming the plugin. This is for the
+    optional half of a stage protocol, where **absence is already defined**: a
+    codec that does not implement ``index_limit`` leaves its references
+    unbounded, one that says nothing about ``palette_row_granularity`` keeps a
+    row per cell, and one silent on ``has_palette_rows`` is taken as carrying
+    them (``docs/design/plugin-system.md`` §1).
+
+    So a method that *cannot answer* is treated as one that was never written.
+    Failing the load instead would lose the picture over a piece of metadata the
+    host already has a documented answer for — and it would make the policy
+    depend on which method a plugin happened to get wrong. What stops that being
+    silent is the notice: the fallback is recorded on the context and surfaced
+    against the entry, which is how the plugin's author finds out.
+
+    ``read`` is what turns the answer into the value the host uses, and it runs
+    **inside** the guard for the same reason the call does: a method that returns
+    ``2`` where a pair was asked for is exactly as broken as one that raises, and
+    unpacking it outside would put the crash back where the guard was meant to be.
+    """
+    ask = getattr(engine, name, None)
+    if ask is None:
+        return default
+    try:
+        return read(ask(params))
+    except Exception as exc:  # noqa: BLE001 — a probe must not fail the load
+        warn(
+            ctx,
+            f"The format could not answer {name}(), so its default was used",
+            f"{exc}\n"
+            f"Read as if the format had not defined {name},\n"
+            f"which is what a format staying quiet means.",
+            source=plugin,
+        )
+        return default
 
 
 def _with_tile_size(engine, params: dict, size: tuple[int, int]) -> dict:  # noqa: ANN001
@@ -163,7 +217,7 @@ def _acquire(ref: FileRef) -> tuple[ReadSource, tuple[SourceFile, ...]]:
         return source, (SourceFile(ref.path, 0, len(ref.data)),)
     blobs = [Path(path).read_bytes() for path in ref.paths]
     spans, at = [], 0
-    for path, blob in zip(ref.paths, blobs):
+    for path, blob in zip(ref.paths, blobs, strict=True):
         spans.append(SourceFile(path, at, len(blob)))
         at += len(blob)
     joined = b"".join(blobs)

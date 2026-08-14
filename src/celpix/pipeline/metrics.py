@@ -76,7 +76,7 @@ def palette_read_bytes(count: int, preset_id: str, reg: Registry) -> int:
     four shades in a Game Boy's palette byte.
     """
     per_unit = palette_entries_per_unit(preset_id, reg)
-    units = (max(0, count) + per_unit - 1) // per_unit
+    units = ceil_div(max(0, count), per_unit)
     return units * palette_entry_size(preset_id, reg)
 
 

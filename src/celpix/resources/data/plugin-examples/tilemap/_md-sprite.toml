@@ -28,8 +28,9 @@ engine_id = "codec.tilemap.md-sprite"
 layout = "sprite"
 
 # ...and records that **state** each part's rectangle, rather than choosing
-# between two squares. The alternative is to leave this out and give
-# `subsprite_tiles` the pair of sizes a size *bit* picks between.
+# between two squares. Leave it out for a record that holds a size *bit*: which
+# two squares that bit picks between is nobody's parameter — no file records it
+# — so the bar offers the pair per entry and the project keeps it.
 subsprite_size = "stated"
 
 # The X offset's width in bytes. 1 is a signed byte; 2 is a signed word.

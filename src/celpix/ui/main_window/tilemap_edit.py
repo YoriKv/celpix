@@ -320,27 +320,30 @@ class TilemapEditMixin:
             )
             return
         row = max(0, min(self._named_row_picked(), limit))
-        # Dict rather than set: the group is walked in file order and a cell can
-        # be reached from any of the several selected cells sharing its field.
-        spread: dict[int, None] = {}
-        for at in picked:
-            for member in doc.palette_row_group(at):
-                spread.setdefault(member, None)
-        indices = list(spread)
+        # Every distinct cell the selection reaches. **De-duplicated because it
+        # is counted**: on a format storing one row for several cells, two
+        # selected cells can share a field, and the group reached from both would
+        # otherwise report more cells changed than changed. A set and not the
+        # ordered dict :meth:`_selected_cells` builds, because nothing here reads
+        # an order — every write puts the same row in, and the status line
+        # reports a count.
+        spread = {member for at in picked for member in doc.palette_row_group(at)}
         cells = list(doc.cells)
-        for at in indices:
+        for at in spread:
             cells[at] = replace(cells[at], palette_row=row)
         if self._apply_cells(cells, "set cell palette row"):
             shown = self._drawn_palette_row(row)
             note = ""
-            if len(indices) > len(picked):
+            # `picked` has no repeats of its own and every cell of it is in its
+            # own group, so a difference here is the grouping and nothing else.
+            if len(spread) > len(picked):
                 across, down = doc.palette_row_granularity
                 note = (
                     f" This format colours {across}x{down} cells at a time,"
-                    f" so {counted(len(indices) - len(picked), 'more cell')} changed."
+                    f" so {counted(len(spread) - len(picked), 'more cell')} changed."
                 )
             self.statusBar().showMessage(
-                f"Set {counted(len(indices), 'cell')} to subpalette {shown}.{note}"
+                f"Set {counted(len(spread), 'cell')} to subpalette {shown}.{note}"
             )
 
     def _set_cell_index(self, value: int) -> None:
@@ -739,7 +742,10 @@ class TilemapEditMixin:
             return
         try:
             data = pipeline.encode_cells(
-                doc.cells or [],
+                # The same list a save would encode, so the buffer under the map
+                # and the file agree byte for byte
+                # (:attr:`~celpix.core.document.Document.settled_cells`).
+                doc.settled_cells,
                 doc.tilemap_config.interpret_preset_id,
                 self._registry,
                 doc.tilemap_ctx,

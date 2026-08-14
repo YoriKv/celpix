@@ -152,7 +152,7 @@ def signals_blocked(*widgets: QObject) -> Iterator[None]:
     try:
         yield
     finally:
-        for widget, was_blocked in zip(widgets, previous):
+        for widget, was_blocked in zip(widgets, previous, strict=True):
             widget.blockSignals(was_blocked)
 
 

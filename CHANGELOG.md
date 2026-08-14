@@ -2,12 +2,10 @@
 
 ## v0.5.10 - unreleased
 
+- Added a filter box in the files list
 - Added Pixel Aspect setting for rendering 2:1 and other pixel aspect ratios
 - New composite views to model composite VRAM
-- Some plugin format cleanup
 - Lots of fontmap work improvements and fixes
-- Added a filter box in the files list
-- Even more fontmap fixes
 
 ## v0.5.9 - 2026-08-12
 

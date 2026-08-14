@@ -2452,7 +2452,15 @@ def test_a_stamp_leaves_the_row_behind_where_four_cells_share_one(
     is not the cell's to give, and carrying it would recolour up to three
     neighbours the user never pointed at. The tile still travels, which is the
     half of the gesture that was asked for.
+
+    **Unless there is no group to leave it for**, which is the second half and the
+    one that had a predicate of its own: a format declaring a coarse granularity
+    and stating no width to resolve it against has no square the host can name, so
+    the grouping machinery treats it as one row per cell throughout. A stamp
+    asking a weaker question would be the single gesture that did not — dropping a
+    clone's colour for neighbours it could not have reached.
     """
+    from celpix.core.context import KEY_TILEMAP_COLUMNS
     from celpix.core.tilemap import Cell
 
     window, entry = _bound_nametable(qtbot, tmp_path)
@@ -2461,3 +2469,9 @@ def test_a_stamp_leaves_the_row_behind_where_four_cells_share_one(
     laid = window._stamp_cell(5, Cell(index=1, palette_row=0))
     assert laid.index == 5  # the tile goes
     assert laid.palette_row == 0  # the row stays behind
+
+    # Same document, width no longer stated: both halves have to change together.
+    window._doc.tilemap_ctx.set(KEY_TILEMAP_COLUMNS, 0)
+    assert not window._doc.has_row_groups
+    assert window._doc.palette_row_group(5) == [5]
+    assert window._stamp_cell(5, Cell(index=1, palette_row=0)).palette_row == 3
