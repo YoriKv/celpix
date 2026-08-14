@@ -16,7 +16,10 @@ the same run in two readings, and either can be clicked to select in the other.
 The top is what the sheet looks like; the bottom is what it says. A selection is
 one thing across both, however wide: picking a stretch of rows outlines that
 stretch of tiles, so what the clipboard buttons are about to act on is visible as
-a shape on the sheet and not only as a band of highlighted rows.
+a shape on the sheet and not only as a band of highlighted rows. Each tile is
+captioned with what it says, that being the reading the picture cannot give;
+**Characters** takes the captions off for the moment the letter shapes
+themselves are what is being judged.
 
 **The sheet magnifies and pans like every other one.** Ctrl+wheel zooms it and a
 space-drag moves it, over the grey around it as much as over the tiles
@@ -112,6 +115,7 @@ from PySide6.QtGui import QGuiApplication, QImage, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -166,6 +170,13 @@ ROLE_LABELS: tuple[tuple[GlyphRole, str], ...] = (
 # two-byte one as anybody types into by hand — past that the answer is a paste,
 # and an unbounded spin is a window that hangs on a mistyped digit.
 MAX_EXTRA_ROWS = 256
+
+# Room around the widest code label in its column (:func:`_code_column_width`) —
+# the cell margins a style puts either side of an item's text, which measuring
+# the string alone does not account for. Generous rather than exact: a code
+# column a few pixels wide of its text costs nothing, and one a few pixels short
+# clips the ``$`` off a row.
+CODE_COLUMN_PADDING = 16
 
 # What an unnamed break is called when the Role column makes it one. A break has
 # to read as *something* — a name is how the text spells the code back
@@ -313,7 +324,14 @@ class FontAlphabetWindow(QWidget):
             "else the game acts on, and reads as its own hex code"
         )
         header = self._table.horizontalHeader()
-        header.setSectionResizeMode(COL_CODE, QHeaderView.ResizeMode.ResizeToContents)
+        # Sized to its contents, but **when the table is rebuilt** rather than by
+        # the header itself (:meth:`_rebuild`). Left on ResizeToContents, Qt
+        # re-measures the column on every single cell written into it — and a
+        # kanji font is four thousand rows, each measurement scanning a thousand
+        # of them, which turned one press of the Base code spin into ten seconds.
+        # The width is the same either way; what changes is that it is computed
+        # once per redraw instead of once per row.
+        header.setSectionResizeMode(COL_CODE, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(COL_TEXT, QHeaderView.ResizeMode.Stretch)
         # Wide enough for the **combo** the delegate opens in it, not for the word
         # the cell shows: sized to contents the column fits "line break" exactly
@@ -489,6 +507,28 @@ class FontAlphabetWindow(QWidget):
         row.addWidget(self._append_spin)
         row.addStretch(1)
 
+        # What each tile *says*, written into its corner. On by default, because
+        # reading the sheet against the codes is the whole of what this window is
+        # for — and off for the moment the letter shapes themselves are what is
+        # being judged, which a caption sitting over a small glyph is in the way
+        # of. Presentation only: nothing is stored and no edit is made.
+        self._show_chars = QCheckBox("Characters")
+        self._show_chars.setChecked(True)
+        # Takes no focus, the subsprite window's rule for its overlay toggles:
+        # space is this window's pan gesture and is claimed window-wide
+        # (:meth:`eventFilter`), so a focused box could not toggle itself with it
+        # anyway — it would only wear a focus ring for nothing.
+        self._show_chars.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._show_chars.setToolTip(
+            "Caption each tile with the character it says\n"
+            "Off shows the letter shapes alone, which is what\n"
+            "judging the art against the codes wants\n"
+            "Dropped anyway where the tiles are drawn too small\n"
+            "to hold the text"
+        )
+        self._show_chars.toggled.connect(lambda _on: self._apply_labels())
+        row.addWidget(self._show_chars)
+
         self._fill_with = QPushButton("Fill with...")
         self._fill_with.setToolTip(
             "Fill the run with a common arrangement, as a first draft"
@@ -575,6 +615,15 @@ class FontAlphabetWindow(QWidget):
         """
         self._ids = list(ids)
         self._sheet.set_sheet(sheet, ids, cell_px, columns)
+
+    def set_pixel_aspect(self, aspect) -> None:  # noqa: ANN001 — a PixelAspect
+        """Draw at ``aspect`` — forwarded to the glyph sheet.
+
+        One name on every holder of a pixel surface, so the window applies the
+        project's setting with a loop rather than by reaching through each of them
+        (:meth:`~celpix.ui.main_window.view_menu.ViewMenuMixin._sync_pixel_aspect`).
+        """
+        self._sheet.set_pixel_aspect(aspect)
 
     def show_alphabet(
         self,
@@ -723,10 +772,14 @@ class FontAlphabetWindow(QWidget):
     def _rebuild(self) -> None:
         """Redraw both readings from the working copy.
 
-        Items are **reused** where the row set has not moved, which is every
-        redraw but the ones that follow the origin or a new sheet. Replacing
-        three thousand `QTableWidgetItem`s per keystroke is what made typing here
-        feel slow; setting text on the ones already there does not.
+        Items are **reused** wherever there is one to reuse — the Code cells
+        included, which change on every redraw that follows the origin: an item
+        is *made* only for a row the table has never had. Replacing three
+        thousand `QTableWidgetItem`s per keystroke is what made typing here feel
+        slow; writing over the ones already there does not.
+
+        The Code column's width is settled here, once, for the reason the header
+        is Fixed (:meth:`__init__`).
         """
         codes = self._rows()
         merged = self._merged()
@@ -740,23 +793,41 @@ class FontAlphabetWindow(QWidget):
                 text = _spelling(glyph)
                 label = _label_of(glyph.role if glyph else GlyphRole.TEXT)
                 name = self._table.item(row, COL_CODE)
-                if name is None or name.data(Qt.ItemDataRole.UserRole) != code:
-                    name = QTableWidgetItem(_code_label(code))
+                if name is None:
+                    name = QTableWidgetItem()
                     # Everything a cell ordinarily is, minus typing into it: the
                     # code is the tile's position and the only way to move it is
                     # the Base code spin.
                     name.setFlags(name.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    name.setData(Qt.ItemDataRole.UserRole, code)
                     self._table.setItem(row, COL_CODE, name)
+                if name.data(Qt.ItemDataRole.UserRole) != code:
+                    name.setText(_code_label(code))
+                    name.setData(Qt.ItemDataRole.UserRole, code)
                 _put(self._table, row, COL_TEXT, text)
                 _put(self._table, row, COL_ROLE, label)
         finally:
             self._table.blockSignals(False)
+        self._table.setColumnWidth(COL_CODE, _code_column_width(self._table, codes))
+        self._apply_labels(merged)
+
+    def _apply_labels(self, merged: dict[int, Glyph] | None = None) -> None:
+        """Caption the sheet's tiles with what they say — or leave them bare.
+
+        The **Characters** box is a view of the same merge the table shows, so it
+        is answered by re-captioning rather than by redrawing: the toggle changes
+        nothing about the rows, and rebuilding a thousand of them to hide a
+        caption is the cost the reuse in :meth:`_rebuild` exists to avoid. The
+        merge is handed in where the caller already built one, for that same
+        reason.
+        """
+        merged = self._merged() if merged is None else merged
         self._sheet.set_labels(
             {
                 tile: (glyph.text if (glyph := merged.get(self._base + at)) else "")
                 for at, tile in enumerate(self._ids)
             }
+            if self._show_chars.isChecked()
+            else {}
         )
 
     # -- editing -----------------------------------------------------------
@@ -990,7 +1061,7 @@ class FontAlphabetWindow(QWidget):
             else:
                 below += 1
         past = len(chars) - landed - below
-        badge = _dropped_badge(below, past)
+        badge = _dropped_badge(below=below, past=past)
         if not landed:
             self.set_status("Nothing filled in.", badge)
             return
@@ -1067,12 +1138,16 @@ class FontAlphabetWindow(QWidget):
         said (:func:`~celpix.core.font.split_params`).
 
         Codes that say nothing are left out rather than written as blanks: what
-        a run has not reached is not a glyph spelling the empty string.
+        a run has not reached is not a glyph spelling the empty string. So are
+        the **negative** ones a base dialled below zero puts the run on: the form
+        writes a code as hex and has no spelling for a sign, so such a line would
+        come back off the clipboard as no line at all — and nothing can be stored
+        there anyway (:meth:`_write`).
         """
         merged = self._merged()
         codes, _bounded = self._span()
         lines = []
-        for code in sorted(code for code in codes if code in merged):
+        for code in sorted(code for code in codes if code >= 0 and code in merged):
             glyph = merged[code]
             spelling = glyph.text if glyph.spells else f"[{_spelling(glyph)}]"
             lines.append(f"{code:02X}={spelling}\n")
@@ -1146,47 +1221,34 @@ class FontAlphabetWindow(QWidget):
                 named.append(Glyph(code, text, role, params=params))
             return True
 
-        landed = 0
+        landed = below = 0
         if glyphs:
             rows = set(self._rows())
+            aimed = 0
             for glyph in glyphs:
                 if glyph.code in span or (not bounded and glyph.code not in rows):
-                    landed += place(glyph.code, glyph.text, glyph.role, glyph.params)
-            lost, outside = 0, len(glyphs) - landed
+                    aimed += 1
+                    if place(glyph.code, glyph.text, glyph.role, glyph.params):
+                        landed += 1
+                    else:
+                        below += 1
+            past, outside = 0, len(glyphs) - aimed
         else:
             for code, char in zip(codes, chars):
-                landed += place(code, char)
-            lost, outside = len(chars) - landed, 0
+                if place(code, char):
+                    landed += 1
+                else:
+                    below += 1
+            past, outside = len(chars) - landed - below, 0
+        badge = _dropped_badge(below=below, past=past, outside=outside)
         if not landed:
-            self.set_status(
-                "Nothing pasted.",
-                Badge(
-                    "outside",
-                    "Every code on the clipboard falls outside the\n"
-                    "selected rows, so none of them was written.",
-                    warning=True,
-                ),
-            )
+            self.set_status("Nothing pasted.", badge)
             return
         self._chars = "".join(run).rstrip(HOLE)
         self._codes = tuple(sorted(named, key=lambda g: g.code))
         self._rebuild()
         self._emit(f"paste {landed} code{'s' if landed != 1 else ''}")
-        dropped = lost or outside
-        self.set_status(
-            f"{landed} codes pasted.",
-            Badge(
-                f"{dropped} dropped",
-                "The paste ran past the last row of the selection,\n"
-                "so those characters were not written."
-                if lost
-                else "Those codes fall outside the selected rows,\n"
-                "so they were not written.",
-                warning=True,
-            )
-            if dropped
-            else None,
-        )
+        self.set_status(f"{landed} codes pasted.", badge)
 
     def _on_base_changed(self, value: int) -> None:
         """Slide the run along the code space — its own step per settled value.
@@ -1210,20 +1272,20 @@ class FontAlphabetWindow(QWidget):
         its row, appended (:meth:`_rows`), because a code with an answer must
         stay reachable however the table is framed.
         """
-        self._on_extra_rows_changed("prepend", value)
+        if self._syncing or value == self._prepend:
+            return
+        self._prepend = value
+        self._extra_rows_changed("prepend", value)
 
     def _on_append_changed(self, value: int) -> None:
         """List ``value`` more rows above the sheet. :meth:`_on_prepend_changed`."""
-        self._on_extra_rows_changed("append", value)
-
-    def _on_extra_rows_changed(self, which: str, value: int) -> None:
-        held = self._prepend if which == "prepend" else self._append
-        if self._syncing or value == held:
+        if self._syncing or value == self._append:
             return
-        if which == "prepend":
-            self._prepend = value
-        else:
-            self._append = value
+        self._append = value
+        self._extra_rows_changed("append", value)
+
+    def _extra_rows_changed(self, which: str, value: int) -> None:
+        """The half the two spins share: redraw, and report the gesture once."""
         self._rebuild()
         self._emit(f"{which} {value} row{'s' if value != 1 else ''}")
 
@@ -1309,10 +1371,8 @@ class FontAlphabetWindow(QWidget):
             self._syncing = False
 
     def _on_zoom(self, steps: int, _at: object) -> None:
-        self._sheet.set_zoom(max(1, min(8, self._sheet_zoom() + steps)))
-
-    def _sheet_zoom(self) -> int:
-        return getattr(self._sheet, "_zoom", 2)
+        """Ctrl+wheel over the sheet, clamped to what the dock's own spin allows."""
+        self._sheet.set_zoom(max(1, min(8, self._sheet.zoom + steps)))
 
     def closeEvent(self, event) -> None:  # noqa: ANN001 — QCloseEvent
         """Closing says the user does not want this window, which is reported.
@@ -1327,29 +1387,38 @@ class FontAlphabetWindow(QWidget):
         super().closeEvent(event)
 
 
-def _dropped_badge(below: int, past: int) -> Badge | None:
-    """What a fill-down could not write, and which of the two reasons it was.
+# Why a character or a code the clipboard offered found no home, in the order
+# the sentences read. Each names a different fix — Base code, Append or picking
+# other rows — so reporting one as another sends the user to the wrong control,
+# and a paste that lost characters two ways says both.
+_DROP_REASONS: tuple[tuple[str, str], ...] = (
+    (
+        "below",
+        "Some rows are below code zero, so nothing\ncould be written to them.",
+    ),
+    (
+        "past",
+        "The paste ran past the last row it could\nreach, so those were not written.",
+    ),
+    (
+        "outside",
+        "Some codes fall outside the selected rows,\nso those were not written.",
+    ),
+)
 
-    Two ways a character finds no home and they want different sentences: a row
-    **below code zero** is one the user can fix by raising Base code, and a row
-    **past the end of the table** is one they can fix with Append. Reporting
-    either as the other sends them to the wrong spin.
+
+def _dropped_badge(*, below: int = 0, past: int = 0, outside: int = 0) -> Badge | None:
+    """What a paste could not write, and which of :data:`_DROP_REASONS` each was.
+
+    None where everything landed. The counts are kept apart all the way here
+    rather than summed at the call site, because the total is the caption and the
+    reasons are the sentence — and a paste is routinely refused two ways at once.
     """
-    if not below and not past:
+    counts = {"below": below, "past": past, "outside": outside}
+    why = [sentence for key, sentence in _DROP_REASONS if counts[key]]
+    if not why:
         return None
-    if below and not past:
-        why = "Those rows are below code zero, so nothing\ncould be written to them."
-    elif past and not below:
-        why = (
-            "The paste ran past the last row of the table,\n"
-            "so those characters were not written."
-        )
-    else:
-        why = (
-            "Some rows are below code zero and the paste ran\n"
-            "past the last row, so those were not written."
-        )
-    return Badge(f"{below + past} dropped", why, warning=True)
+    return Badge(f"{sum(counts.values())} dropped", "\n".join(why), warning=True)
 
 
 def _code_label(code: int) -> str:
@@ -1360,6 +1429,32 @@ def _code_label(code: int) -> str:
     negative row is ever saying.
     """
     return f"-${-code:02X}" if code < 0 else f"${code:02X}"
+
+
+def _code_column_width(table: QTableWidget, codes: Iterable[int]) -> int:
+    """How wide the Code column has to be to hold ``codes`` — and *all* of them.
+
+    Measured off the labels rather than asked of the header, which is the whole
+    reason that column is Fixed: `resizeColumnToContents` samples the rows near
+    the top and a font's codes get **longer** further down (``$121`` at the first
+    tile, ``$1121`` four thousand rows later), so a sampled width clips exactly
+    the rows nobody has scrolled to yet.
+
+    The longest label stands in for the widest one. They are hex digits in one
+    font, so the two differ by less than the padding either way — which is the
+    delegate's own margins, both sides, and is what a measured string alone does
+    not cover.
+    """
+    metrics = table.fontMetrics()
+    widest = max((_code_label(code) for code in codes), key=len, default="")
+    heading = table.horizontalHeaderItem(COL_CODE)
+    return (
+        max(
+            metrics.horizontalAdvance(widest),
+            metrics.horizontalAdvance(heading.text() if heading else ""),
+        )
+        + CODE_COLUMN_PADDING
+    )
 
 
 def _role_column_width() -> int:
@@ -1390,7 +1485,7 @@ def _fresh_break_name(glyphs: Iterable[Glyph]) -> str:
     Numbered rather than shared: a name is what the text writes the code as and
     what the user types to put it back, so two codes answering to one name would
     leave whichever came second unreachable — the reader takes the first
-    (:class:`~celpix.core.font.Font`).
+    (:meth:`~celpix.core.font.FontAlphabet.decode`).
     """
     taken = {glyph.text for glyph in glyphs}
     if BREAK_NAME not in taken:

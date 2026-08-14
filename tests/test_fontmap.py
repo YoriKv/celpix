@@ -1389,6 +1389,27 @@ def test_a_cell_picked_on_the_canvas_selects_its_code_in_the_editor(
     assert editor._sheet.selected_id() == 2
 
 
+def test_the_characters_box_takes_the_captions_off_the_sheet(qtbot, tmp_path) -> None:
+    """A view of the same merge the table shows, and nothing more.
+
+    Off leaves the letter shapes bare, which is what judging the art wants; on
+    puts back exactly what the codes say. Neither is an edit - the run and the
+    named codes are untouched either way, so no undo step is owed.
+    """
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
+    window._refresh_view()
+    editor = window._font_alphabet
+
+    assert editor._sheet._labels[0] == "A"
+
+    editor._show_chars.setChecked(False)
+    assert editor._sheet._labels == {}
+    assert bank.font_chars == UPPER
+
+    editor._show_chars.setChecked(True)
+    assert editor._sheet._labels[0] == "A"
+
+
 def test_picking_a_stretch_of_rows_picks_the_same_stretch_of_tiles(
     qtbot, tmp_path
 ) -> None:
@@ -1689,6 +1710,32 @@ def test_ctrl_z_takes_back_the_draft_before_it_reaches_the_stack(
     # is still one more Ctrl+Z away.
     assert window._text.body == "CAB[$F0]"
     assert [cell.index for cell in window._doc.cells] == [2, 0, 1, 0xF0]
+
+
+def test_taking_a_draft_back_leaves_the_next_keystroke_on_one_cell(
+    qtbot, tmp_path
+) -> None:
+    """A reverted draft puts the *unit map* back too, not only the string.
+
+    The map is one id per character, so a committed body restored under the
+    draft's map leaves every offset past the edit naming the wrong piece — and a
+    Backspace then reads two cells as one, blanking a letter nobody touched.
+    """
+    from PySide6.QtCore import Qt
+
+    window, _entry = _typing(qtbot, tmp_path, [2, 0, 1, 0xF0], 0)  # "CAB[$F0]"
+    field = window._text._edit
+    window._text.select_range(7, 7)  # inside "[$F0]", before the ]
+    qtbot.keyClick(field, Qt.Key.Key_Backspace)  # a draft, nothing written
+    qtbot.keyClick(field, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+
+    # Now type over the string as if the draft had never happened: the code is
+    # one piece and one cell, and blanking it must leave "CAB" standing.
+    window._text.select_range(8, 8)
+    qtbot.keyClick(field, Qt.Key.Key_Backspace)
+
+    assert window._text.body == "CAB "
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 1, 36]  # 36 is " "
 
 
 def test_each_row_settled_in_the_editor_is_its_own_undo_step(qtbot, tmp_path) -> None:
@@ -2142,4 +2189,7 @@ def test_the_clipboard_buttons_act_on_the_picked_rows(qtbot, tmp_path) -> None:
     QGuiApplication.clipboard().setText("00=Z\n")
     editor._paste_alphabet()
     assert bank.font_chars == "AxCyE"
-    assert "outside" in editor._badge.text()
+    # The caption counts, the tooltip says which of the three reasons it was -
+    # one vocabulary whether a paste lost everything or one character of it.
+    assert editor._badge.text() == "1 dropped"
+    assert "outside the selected rows" in editor._badge.toolTip()

@@ -483,14 +483,15 @@ def tilemap_tiles(
     (:attr:`~celpix.core.document.Document.laid_out_cells`). That is the one place
     an assembly reaches the picture; nothing downstream of here knows about it.
 
-    An assembled document's ``columns`` is **its own**, not the caller's: the width
+    A document that **fixes** its own width uses that, not the caller's: the width
     and the placement are one answer, and a picture laid out at any other width
-    interleaves the pages instead of putting them side by side
-    (:attr:`~celpix.core.document.Document.assembled_columns`). So the two cannot
+    interleaves an assembly's pages instead of putting them side by side, or
+    breaks a dense stamp's rows in the middle of a stamp
+    (:attr:`~celpix.core.document.Document.drawn_columns`). So the two cannot
     be passed in separately and disagree — which is what a render reached without
     going through the view would otherwise do.
     """
-    return expand_cells(doc, reg, doc.laid_out_cells, doc.assembled_columns or columns)
+    return expand_cells(doc, reg, doc.laid_out_cells, doc.drawn_columns or columns)
 
 
 def expand_cells(
@@ -633,7 +634,7 @@ def hidden_rects(doc: Document, columns: int) -> tuple[tuple[int, int, int, int]
         return ()
     across, down = doc.cell_tiles
     cell_w, cell_h = across * doc.tile_width, down * doc.tile_height
-    cols = max(1, doc.assembled_columns or columns)
+    cols = max(1, doc.drawn_columns or columns)
     rects: list[tuple[int, int, int, int]] = []
     # A row at a time, so a run can only merge within one: spanning the wrap would
     # paint a rectangle across the whole picture and blank the left of the next row.

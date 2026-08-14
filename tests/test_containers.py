@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from dataclasses import replace
 
 import pytest
 
@@ -782,3 +783,99 @@ def test_tpl_save_as_copies_the_header_it_cannot_invent() -> None:
 def test_tpl_rejects_a_format_byte_it_cannot_read() -> None:
     with pytest.raises(ValueError, match="format byte 7"):
         tpl_palette.parse(b"TPL\x07" + bytes(16))
+
+
+def test_a_container_that_moves_bytes_while_claiming_not_to_is_caught(
+    tmp_path,
+) -> None:
+    """``preserves_offsets`` is a claim nothing else in the pipeline can check.
+
+    Get it wrong and every slice of the entry seeks to its offset in the *file*
+    rather than reading through this payload, so it decodes bytes from somewhere
+    else entirely — while the entry the slices came from renders perfectly. The
+    read is the one place both buffers are in hand, so it is where the claim is
+    tested against what the container actually returned.
+    """
+    # Framing between the payload's chunks, not merely in front of them: the
+    # shape of every sector container, and what makes a position in the payload
+    # name nothing in the file.
+    body = bytes(range(256))
+    raw = b"".join(b"##" + body[at : at + 32] for at in range(0, 256, 32))
+    path = tmp_path / "framed.bin"
+    path.write_bytes(raw)
+
+    class _Compacting:
+        info = PluginInfo(
+            id="container.test-compacting",
+            name="framed chunks",
+            short_name="Framed",
+            stage=Stage.CONTAINER,
+            preserves_offsets=True,  # the lie under test — and not the default
+        )
+
+        def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
+            ctx.set(KEY_SOURCE_OFFSET, source.offset)
+            return b"".join(
+                source.data[at + 2 : at + 34] for at in range(0, len(source.data), 34)
+            )
+
+    def read_notices(plugin, container_id: str):
+        reg = default_registry()
+        reg.register(plugin)
+        _, ctx = pipeline.read_region(
+            PathwayConfig(
+                source=FileRef((str(path),)),
+                interpret_preset_id="",
+                container_id=container_id,
+            ),
+            reg,
+        )
+        return notices(ctx)
+
+    got = read_notices(_Compacting(), "container.test-compacting")
+    assert [n.source for n in got] == ["container.test-compacting"]
+    assert got[0].level is NoticeLevel.WARNING
+    assert "Drop the preserves_offsets=True" in got[0].detail
+
+    # Saying nothing is the honest answer here, and it is the default: the same
+    # read then goes unremarked. What is checked is the *claim*, not the
+    # reordering, which is perfectly legitimate.
+    honest = _Compacting()
+    honest.info = replace(
+        honest.info, id="container.test-honest", preserves_offsets=False
+    )
+    assert honest.info.preserves_offsets is PluginInfo("x", "y").preserves_offsets
+    assert read_notices(honest, "container.test-honest") == ()
+
+    # No false positive on the shape the claim exists for: a container that skips
+    # framing only at the front leaves every remaining byte where it was, and
+    # says so by publishing where it began.
+    class _Skipping:
+        info = PluginInfo(
+            id="container.test-skipping",
+            name="header skip",
+            stage=Stage.CONTAINER,
+            preserves_offsets=True,
+        )
+
+        def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
+            ctx.set(KEY_SOURCE_OFFSET, 34)
+            return source.data[34:]
+
+    assert read_notices(_Skipping(), "container.test-skipping") == ()
+
+    # Nor on one that pads past the end of the file: a byte the file does not
+    # have cannot be at the wrong position in it.
+    class _Padding:
+        info = PluginInfo(
+            id="container.test-padding",
+            name="pads to size",
+            stage=Stage.CONTAINER,
+            preserves_offsets=True,
+        )
+
+        def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
+            ctx.set(KEY_SOURCE_OFFSET, source.offset)
+            return source.data + bytes(64)
+
+    assert read_notices(_Padding(), "container.test-padding") == ()

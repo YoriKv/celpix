@@ -103,6 +103,16 @@ endian = "little"
 # is the only shipped preset that needs it.
 # indirect = true
 
+# Set when the file holds one entry per **stamp** instead of one per drawn
+# position. Only matters where the map this one draws through states a stamp size
+# bigger than 1x1 — then this says which of the two shapes the entries are in. A
+# stamp layout writes a slot for every position and means only the corners, so it
+# leaves this off; a map of 16x16 metatiles over an 8x8 bank writes one byte per
+# metatile and needs it on, or three quarters of the file is never drawn. Getting
+# it wrong is loud rather than subtle: the picture comes out at four times or a
+# quarter of its size.
+# stamp_dense = true
+
 # Set when the cells are **character codes** rather than tile numbers. The picture
 # is unchanged; what this adds is View > Text, where the run reads and is typed as
 # words. A cell format states no codes: what a value means is typed into the Font

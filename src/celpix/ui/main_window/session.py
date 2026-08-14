@@ -28,8 +28,10 @@ from typing import NamedTuple
 from PySide6.QtGui import QImage
 
 from celpix.core.arrangement import BlockLayout
+from celpix.core.aspect import parse as parse_aspect
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
+    KEY_PIXEL_ASPECT,
     KEY_PIXEL_PRESET,
     KEY_TILE_PALETTE_ROW_BASE,
     KEY_TILE_PALETTE_ROWS,
@@ -59,6 +61,7 @@ from celpix.project.workspace import (
     composite_preset_id,
     data_missing,
     record_composite_layout,
+    tilemap_config_for,
 )
 from celpix.ui.tools import EditMode
 from celpix.ui.widgets import select_combo_data, signals_blocked
@@ -331,12 +334,16 @@ class SessionMixin:
                 # The stamp size and the source's width come off the *source's*
                 # context, which is the only place either is stated: a PNL panel's
                 # header says how big a stamp its callers index in, and a layout's
-                # own file has no idea (`docs/design/tilemap-entry.md` §3.1).
+                # own file has no idea. Whether this file holds an entry per stamp
+                # or one per drawn position is the other way round — its own
+                # format's constant, so it is declared rather than published
+                # (`docs/design/tilemap-entry.md` §3.1).
                 chain=CellChain(
                     through.cells or [],
                     loaded.palette_rows,
                     stamp=self._stamp_tiles(through),
                     source_columns=through.stated_columns,
+                    dense=self._tilemap_is_dense(entry),
                 ),
                 # Writable, like any other tilemap: a cell edit here restamps, and
                 # what it writes back is this file's own entry table. The *pixel*
@@ -856,6 +863,25 @@ class SessionMixin:
         """
         return bool(self._tilemap_declares(entry, "indirect"))
 
+    def _tilemap_is_dense(self, entry: Entry) -> bool:
+        """Whether ``entry``'s **format** holds one entry per stamp.
+
+        The referring half of a stamped chain, and the only part of one that is
+        not the source's to answer (:attr:`~celpix.core.document.CellChain.dense`).
+        A stamp layout has a slot per drawn position and only its corners are read;
+        a map of 16x16 metatiles over an 8x8 bank has a slot per stamp and no
+        filler at all. Which shape a file is, is fixed by its format rather than by
+        anything in its bytes — every file of that format is the same shape — so it
+        is declared in the preset beside ``indirect`` rather than published on the
+        context the way the source's stamp size has to be.
+
+        False for a format that declares nothing, which is every one in the shipped
+        tree: a stamped chain stays the sparse reading it has always been unless a
+        format asks for the other, and a wrong guess here would expand a map to
+        four times its size.
+        """
+        return bool(self._tilemap_declares(entry, "stamp_dense"))
+
     def _binding_target(self, source: TileSource) -> Entry | None:
         """The open entry ``source`` names, or None when it names nothing usable.
 
@@ -1357,21 +1383,16 @@ class SessionMixin:
     def _tilemap_config(self, entry: Entry, preset_id: str) -> PathwayConfig:
         """The pathway that reads ``entry``'s own file as cells.
 
-        Built from the entry's own container and reshape — the map *is* this
-        file — where the pixel config a tilemap carries points somewhere else
-        entirely. The two configs on a tilemap document address different files,
-        which is the point.
+        The map *is* this file, where the pixel config a tilemap carries points
+        somewhere else entirely: the two configs on a tilemap document address
+        different files, which is the point.
+
+        Through the workspace, like every other config this window builds, and
+        for the reason :func:`~celpix.project.workspace.tilemap_config_for`
+        gives — a slice's offset names bytes in its **parent's** buffer, not in
+        the file, wherever the parent's container does more than skip a header.
         """
-        return PathwayConfig(
-            source=FileRef(entry.paths, entry.slice_offset, entry.slice_length),
-            interpret_preset_id=preset_id,
-            container_id=entry.container_id,
-            reshape_id=entry.reshape_id,
-            compression_id=entry.compression_id,
-            # A map's cells are this entry's own data, so a compressed one meets
-            # the same slot with the same room to spare as a pixel slice does.
-            slot_fill=entry.slot_fill,
-        )
+        return tilemap_config_for(entry, preset_id, self._registry, self._workspace)
 
     def _tile_source_config(self, entry: Entry, source: TileSource) -> PathwayConfig:
         """The pathway that reads the tiles ``source`` points at.
@@ -1431,6 +1452,34 @@ class SessionMixin:
         source, entry.pending_palette = entry.pending_palette, None
         if source is not None:
             self._restore_palette_source(entry, source)
+        self._seed_pixel_aspect(doc)
+
+    def _seed_pixel_aspect(self, doc: Document) -> None:
+        """Take a container's stated pixel shape as the project's, once.
+
+        Here because this is where all three load paths meet and where a project's
+        own stored answers are consumed — and the aspect is the same kind of
+        thing, one hop further out: a hint the file offers, which stands only
+        while nothing has been said.
+
+        **Only while the project has never answered.** The setting is one for the
+        whole project (:attr:`~celpix.project.workspace.Workspace.pixel_aspect`),
+        so a second entry publishing a different ratio must not move it under the
+        first — and a user who has chosen must not be overruled by opening a file.
+        That makes this a *seed*, the same shape as a tilemap's stated width
+        seeding Cols (:meth:`~...rendering.RenderingMixin._apply_tilemap_columns`).
+
+        A ratio that is not one goes in the bin rather than on the screen: a
+        container is a plugin, and the one thing a display setting must not do is
+        fail to draw.
+        """
+        if self._workspace.pixel_aspect is not None:
+            return
+        stated = parse_aspect(doc.pixel_ctx.get(KEY_PIXEL_ASPECT))
+        if stated is None:
+            return
+        self._workspace.pixel_aspect = stated
+        self._sync_pixel_aspect()
 
     def _seed_session(self, entry: Entry) -> EntrySession:
         """A new entry's starting UI state, seeded from the live toolbar so a

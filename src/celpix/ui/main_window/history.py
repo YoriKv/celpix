@@ -20,6 +20,11 @@ Recorded in
 rather than at the activation call sites: every way the view can move - the list,
 a jump action, an undo, a close landing on a neighbour - ends there, and it is the
 only place that is true of.
+
+**Find Entry** rides along here, though it keeps no state. It is the third way to
+move between *entries* rather than within one, it heads the same menu beside
+Back and Forward, and like them it has to be a window-level action: at the moment
+it is wanted the focus is on the canvas, which a row selection put there.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QApplication, QMenu
 
 from celpix.project.workspace import Entry
+from celpix.ui.file_list_panel import FILTER_KEY
 
 # Deep enough that a session's worth of hopping stays retraceable, bounded so a
 # long one doesn't pin every entry it ever showed. The oldest visit falls off.
@@ -73,13 +79,41 @@ class HistoryMixin:
         self._forward_action = QAction("Forw&ard", self)
         self._forward_action.setShortcut(QKeySequence("Alt+Right"))
         self._forward_action.triggered.connect(lambda: self._history_step(1))
+        # Ctrl+F reaches the Files dock's filter field, and is the window's
+        # rather than the panel's for the same reason Back/Forward are actions
+        # rather than panel keys: this is a move between *entries*, and focus at
+        # the moment it is wanted is on the canvas — a selection hands it there.
+        # An ordinary shortcut, unlike the nav keys, since Ctrl+F is not a key
+        # any text input in the window spends.
+        # Mnemonic "y": "f" is First page and "e" is Next tile, both already in
+        # the Navigate menu this joins.
+        self._find_entry_action = QAction("Find Entr&y", self)
+        self._find_entry_action.setShortcut(FILTER_KEY)
+        self._find_entry_action.setToolTip(
+            "Filter the Files list to the rows matching\n"
+            "what you type - by name, in any word order."
+        )
+        self._find_entry_action.triggered.connect(self._find_entry)
         self._sync_history_actions()
+
+    def _find_entry(self) -> None:
+        """Navigate ▸ Find Entry — put the cursor in the Files filter.
+
+        The dock is shown first: closed, the field it focuses is not on screen,
+        and a shortcut that silently did nothing is worse than one that brings
+        back the panel it belongs to.
+        """
+        self._files_dock.show()
+        self._files_dock.raise_()
+        self._files_panel.focus_filter()
 
     # -- the actions ---------------------------------------------------------
     def _add_history_actions(self, menu: QMenu) -> None:
-        """Put Back/Forward at the head of ``menu`` (Navigate), then a separator."""
+        """Put Back/Forward and Find at the head of ``menu`` (Navigate), then a
+        separator — the three that move between entries rather than within one."""
         menu.addAction(self._back_action)
         menu.addAction(self._forward_action)
+        menu.addAction(self._find_entry_action)
         menu.addSeparator()
 
     def _sync_history_actions(self) -> None:

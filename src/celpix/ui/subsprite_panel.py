@@ -167,15 +167,15 @@ class SubspritePanel(PanZoomSurface, QWidget):
 
     def _update_size(self) -> None:
         cw, ch = self._cell_px
-        self.setFixedSize(
-            self._columns * cw * self._zoom, self._rows() * ch * self._zoom
-        )
+        self.setFixedSize(*self._scaled_size(self._columns * cw, self._rows() * ch))
         self.update()
 
     def _cell_rect(self, slot: int) -> QRect:
         """Where the ``slot``-th square sits — the grid geometry, in one place."""
-        cw, ch = self._cell_px[0] * self._zoom, self._cell_px[1] * self._zoom
-        return QRect((slot % self._columns) * cw, (slot // self._columns) * ch, cw, ch)
+        cw, ch = self._cell_px
+        return self._scaled_rect(
+            (slot % self._columns) * cw, (slot // self._columns) * ch, cw, ch
+        )
 
     def _piece_rect(self, slot: int) -> QRect:
         """Where the ``slot``-th record's *art* sits — what the ring goes round.
@@ -187,9 +187,7 @@ class SubspritePanel(PanZoomSurface, QWidget):
         """
         if slot >= len(self._boxes):
             return self._cell_rect(slot)
-        x, y, w, h = self._boxes[slot]
-        z = self._zoom
-        return QRect(x * z, y * z, w * z, h * z)
+        return self._scaled_rect(*self._boxes[slot])
 
     # -- interaction ---------------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
@@ -218,7 +216,7 @@ class SubspritePanel(PanZoomSurface, QWidget):
         if not self._sheet.isNull():
             # Nearest-neighbour: pixel art must stay crisp when magnified.
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-            painter.scale(self._zoom, self._zoom)
+            painter.scale(self._zoom_x, self._zoom_y)
             painter.drawImage(0, 0, self._sheet)
             painter.resetTransform()
             self._paint_grid(painter, event.rect())
@@ -249,16 +247,22 @@ class SubspritePanel(PanZoomSurface, QWidget):
         Lines outside the exposed band are skipped: a long object read at 8x is
         mostly off screen.
         """
-        cw, ch = self._cell_px[0] * self._zoom, self._cell_px[1] * self._zoom
-        if cw <= 0 or ch <= 0:
+        # Stepped in the sheet's own pixels and scaled at the point of drawing —
+        # see the tile source panel's lattice for why a fractional device step
+        # cannot be walked directly.
+        step_x, step_y = self._cell_px
+        if step_x <= 0 or step_y <= 0:
             return
+        img_w, img_h = self._columns * step_x, self._rows() * step_y
         color = QColor(GRID_FINE_COLOR)
         color.setAlpha(GRID_COARSE_ALPHA)
         painter.setPen(color)
-        for x in range(cw, self.width(), cw):
+        for gx in range(step_x, img_w, step_x):
+            x = round(gx * self._zoom_x)
             if exposed.left() <= x <= exposed.right():
                 painter.drawLine(x, exposed.top(), x, exposed.bottom())
-        for y in range(ch, self.height(), ch):
+        for gy in range(step_y, img_h, step_y):
+            y = round(gy * self._zoom_y)
             if exposed.top() <= y <= exposed.bottom():
                 painter.drawLine(exposed.left(), y, exposed.right(), y)
 
@@ -280,14 +284,24 @@ class SubspritePanel(PanZoomSurface, QWidget):
         """
         if not self._captions:
             return
-        cw, ch = self._cell_px[0] * self._zoom, self._cell_px[1] * self._zoom
+        cw = self._cell_px[0] * self._zoom_x
+        ch = self._cell_px[1] * self._zoom_y
         if min(cw, ch) < LABEL_MIN_PX:
             return
         font = painter.font()
-        font.setPixelSize(max(7, min(ch // 4, cw // 4)))
+        font.setPixelSize(max(7, int(min(ch // 4, cw // 4))))
         painter.setFont(font)
         height = painter.fontMetrics().height()
-        for slot, (at, index) in enumerate(self._records):
+        # The exposed rows only. An object runs to thousands of pieces and a
+        # scrolled view shows a dozen rows of them, and a caption skipped by
+        # testing its square still costs the square (:meth:`~celpix.ui.widgets.
+        # PanZoomSurface._exposed_rows`).
+        first, stop = self._exposed_rows(exposed, self._cell_px[1])
+        count = len(self._records)
+        for slot in range(
+            min(first * self._columns, count), min(stop * self._columns, count)
+        ):
+            at, index = self._records[slot]
             square = self._cell_rect(slot)
             if not square.intersects(exposed):
                 continue

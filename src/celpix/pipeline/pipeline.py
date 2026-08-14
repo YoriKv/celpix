@@ -31,6 +31,7 @@ from typing import Callable, NamedTuple
 
 from celpix.core.context import (
     KEY_SOURCE_FILES,
+    KEY_SOURCE_OFFSET,
     KEY_SOURCE_PATH,
     KEY_TILEMAP_PALETTE_ROW_BASE,
     PipelineContext,
@@ -112,6 +113,7 @@ from celpix.plugins.base import (
     CompressionPlugin,
     ContainerPlugin,
     FileRef,
+    ReadSource,
     ReshapePlugin,
     TilemapCodecPlugin,
     WriteTarget,
@@ -756,6 +758,60 @@ def _deposit(ref: FileRef, produce: Callable[[WriteTarget], bytes]) -> None:
             Path(path).write_bytes(chunk)
 
 
+def _offsets_survived(source: ReadSource, payload: bytes, recorded: int) -> bool:
+    """Is ``payload`` the file's own bytes from ``recorded`` on — the claim a
+    container makes when it says ``preserves_offsets``?
+
+    That claim is what lets a slice of the entry seek straight to its offset in
+    the file instead of reading through the parent's buffer, so a container that
+    gets it wrong is not a cosmetic mistake: every slice of it decodes bytes from
+    somewhere else entirely, and nothing else in the pipeline is in a position to
+    notice. Here both buffers are already in hand, which makes the claim one
+    comparison to check.
+
+    Only the **overlap** is compared, so a container that pads its payload past
+    the end of the file is not accused: a byte the file does not have cannot be at
+    the wrong position in it. An empty overlap under a non-empty payload is still
+    a miss — nothing in the file backs those bytes at all. Both buffers are viewed
+    rather than sliced, since copying a multi-megabyte ROM to compare it would
+    cost more than the comparison.
+    """
+    start = max(0, recorded - source.base)
+    window = memoryview(source.data)[start : start + len(payload)]
+    if payload and not window:
+        return False
+    return memoryview(payload)[: len(window)] == window
+
+
+def _check_offsets_preserved(
+    plugin: ContainerPlugin, source: ReadSource, payload: bytes, ctx: PipelineContext
+) -> None:
+    """Warn when a container's payload contradicts its ``preserves_offsets``.
+
+    Aimed at whoever can act on it — the author of the container, who is often the
+    same person building the project it is for — but written to be readable by the
+    user who only sees the damage: slices that render as garbage while the file
+    they came from renders fine.
+    """
+    if not plugin.info.preserves_offsets or plugin.info.id == RAW_CONTAINER:
+        return
+    if _offsets_survived(source, payload, int(ctx.get(KEY_SOURCE_OFFSET, 0) or 0)):
+        return
+    warn(
+        ctx,
+        f"{plugin.info.short_name or plugin.info.name} moves bytes it says it keeps",
+        "This container's payload is not the file's own bytes from\n"
+        "the payload offset on, but it declares that positions\n"
+        "survive its read. Anything resolving an offset against\n"
+        "this entry - a slice of it, an Offset palette - will go to\n"
+        "the file and land on the wrong bytes, while this entry\n"
+        "itself looks right.\n"
+        "Drop the preserves_offsets=True from the plugin: the\n"
+        "default reads through this container's own bytes.",
+        plugin.info.id,
+    )
+
+
 def _read_reshape_decompress(
     cfg: PathwayConfig, ctx: PipelineContext, reg: Registry, pathway: Pathway
 ) -> bytes:
@@ -782,9 +838,12 @@ def _read_reshape_decompress(
         # was assembled can read KEY_SOURCE_FILES while assembling it.
         ctx.set(KEY_SOURCE_PATH, source.path)
         ctx.set(KEY_SOURCE_FILES, files)
-        return reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin).read(
-            source, ctx
-        )
+        plugin = reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin)
+        payload = plugin.read(source, ctx)
+        # After the read, because the offset the check is against is one the
+        # container publishes while running.
+        _check_offsets_preserved(plugin, source, payload, ctx)
+        return payload
 
     raw = _run(Stage.CONTAINER, pathway, read, "read", plugin=cfg.container_id)
     # The reshape sits between the container and the decompressor so that a

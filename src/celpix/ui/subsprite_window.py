@@ -230,6 +230,15 @@ class SubspriteWindow(QWidget):
         self._panel.set_captions(self._frames.isChecked() and self._numbers.isChecked())
 
     # -- presenting ----------------------------------------------------------
+    def set_pixel_aspect(self, aspect) -> None:  # noqa: ANN001 — a PixelAspect
+        """Draw at ``aspect`` — forwarded to the sheet of records.
+
+        One name on every holder of a pixel surface, so the window applies the
+        project's setting with a loop rather than by reaching through each of them
+        (:meth:`~celpix.ui.main_window.view_menu.ViewMenuMixin._sync_pixel_aspect`).
+        """
+        self._panel.set_pixel_aspect(aspect)
+
     def show_sheet(
         self,
         sheet: QImage,

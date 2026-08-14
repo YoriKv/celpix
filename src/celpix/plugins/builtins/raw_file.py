@@ -35,6 +35,7 @@ class RawFileContainer:
         name="Raw binary file",
         stage=Stage.CONTAINER,
         content_kinds=tuple(ContentKind),
+        preserves_offsets=True,
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

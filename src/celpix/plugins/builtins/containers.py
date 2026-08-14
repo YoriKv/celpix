@@ -99,6 +99,7 @@ class INesContainer:
         magic=((0, _INES_MAGIC),),
         short_name="iNES",
         category="Nintendo",
+        preserves_offsets=True,
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
@@ -382,6 +383,7 @@ class CopierHeaderContainer:
         min_size=COPIER_MIN_SIZE,
         short_name="Header",
         category="Generic",
+        preserves_offsets=True,
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

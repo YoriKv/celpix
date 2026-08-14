@@ -683,9 +683,11 @@ class TilemapBarMixin:
         # and this one may not be the one on screen by the time it is asked. Only
         # a pixels entry can be a font: a stamp layout's chained tilemap has no
         # tiles of its own to spell.
-        if not self._tilemap_is_fontmap(entry) or bound.is_font_sheet:
-            return True
-        if bound.content_kind is not ContentKind.PIXELS:
+        if (
+            not self._tilemap_is_fontmap(entry)
+            or bound.is_font_sheet
+            or bound.content_kind is not ContentKind.PIXELS
+        ):
             return True
         if not self._confirm(
             f"{entry.name} reads its cells as text, and {bound.name} is not "

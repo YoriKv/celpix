@@ -58,6 +58,8 @@ from PySide6.QtWidgets import (
 
 from celpix import APP_NAME
 from celpix.core import ceil_div
+from celpix.core.aspect import SQUARE, PixelAspect
+from celpix.core.aspect import scale as aspect_scale
 
 _EnumT = TypeVar("_EnumT", bound=Enum)
 
@@ -652,6 +654,131 @@ class PanZoomSurface:
     #: (:meth:`claim_background`) — the one other widget the gestures answer over.
     _backing: QWidget | None = None
 
+    #: The magnification, in the surface's own units — an integer level on the
+    #: sheets, a :data:`ZOOM_LEVELS` multiplier on the canvas. Held here because
+    #: the pixel aspect below is only meaningful against it: what reaches the
+    #: screen is the two multiplied, and every surface has to multiply them the
+    #: same way. Each subclass still owns its own range, through its ``set_zoom``.
+    _zoom: float = 1.0
+    #: The shape of one pixel (:mod:`celpix.core.aspect`) — one project-wide
+    #: setting, pushed onto every surface by the window.
+    _pixel_aspect: PixelAspect = SQUARE
+    #: :func:`~celpix.core.aspect.scale` of the above, kept rather than recomputed:
+    #: the per-cell geometry helpers below are called inside paint loops that run
+    #: once per cell of a window holding thousands.
+    _aspect_scale: tuple[float, float] = (1.0, 1.0)
+
+    @property
+    def _zoom_x(self) -> float:
+        """Image pixels to device pixels, horizontally — zoom times the aspect.
+
+        The pair below is what every surface draws, measures and hit-tests
+        through. They are equal on a square pixel, which is every existing view,
+        so a surface that reads both is unchanged wherever nothing has been set.
+        """
+        return self._zoom * self._aspect_scale[0]
+
+    @property
+    def _zoom_y(self) -> float:
+        """Image pixels to device pixels, vertically — see :attr:`_zoom_x`."""
+        return self._zoom * self._aspect_scale[1]
+
+    def set_pixel_aspect(self, aspect: PixelAspect) -> None:
+        """Draw one image pixel at ``aspect``'s shape from now on.
+
+        The one entry point for the setting, so a surface added later is aspect-
+        aware by inheriting rather than by remembering to be. Resizes through the
+        subclass's own ``_update_size``, which is what puts the new geometry in
+        front of the scroll area that holds it.
+        """
+        aspect = tuple(aspect)  # a list, off a project file, is the same shape
+        if aspect == self._pixel_aspect:
+            return
+        self._pixel_aspect = aspect
+        self._aspect_scale = aspect_scale(aspect)
+        self._update_size()
+        self.update()
+
+    def _update_size(self) -> None:
+        """Re-fit the widget to its content at the current zoom and aspect.
+
+        Every surface has one already — it is how each answers its scroll area —
+        and naming it here is what lets :meth:`set_pixel_aspect` be the whole of
+        the setting rather than four copies of it.
+        """
+
+    def _scaled_size(self, width: int, height: int) -> tuple[int, int]:
+        """``width`` x ``height`` image pixels as whole device pixels.
+
+        What every surface's ``_update_size`` measures with. Rounded rather than
+        truncated so a 7:8 pixel does not lose a device row off the bottom, and
+        floored at 1 so an empty picture still has a widget.
+        """
+        return (
+            max(1, round(width * self._zoom_x)),
+            max(1, round(height * self._zoom_y)),
+        )
+
+    def _scaled_rect(self, x: int, y: int, width: int, height: int) -> QRect:
+        """An image-pixel rectangle in device pixels.
+
+        Each edge is rounded on its own — right edge from ``x + width``, not from
+        a rounded width — so abutting rectangles keep abutting under a fractional
+        aspect instead of leaving a seam between every pair.
+        """
+        left, top = round(x * self._zoom_x), round(y * self._zoom_y)
+        right, bottom = (
+            round((x + width) * self._zoom_x),
+            round((y + height) * self._zoom_y),
+        )
+        return QRect(left, top, right - left, bottom - top)
+
+    def _exposed_rows(self, exposed: QRect, row_height: int) -> tuple[int, int]:
+        """Which rows of ``row_height`` image pixels ``exposed`` touches.
+
+        A half-open ``(first, stop)`` in rows, for the per-cell overlays every
+        surface draws — captions, ids, marks. Those loops are written per *cell*
+        and a scrolled view exposes a sliver of a picture that is thousands of
+        them: testing each cell against the exposed rectangle still costs a
+        rectangle per cell, which is what made a repaint of a metatile map with
+        its ids on take an eighth of a second. Turning the band into a row range
+        first makes the cost the band's rather than the picture's.
+
+        **One row of slack either side.** A caption sits at the top or the bottom
+        of its cell, so the row above and the row below can each put ink inside
+        the exposed band without their cell reaching into it.
+        """
+        step = row_height * self._zoom_y
+        if step <= 0:
+            return 0, 0
+        return (
+            max(0, int(exposed.top() // step) - 1),
+            int(exposed.bottom() // step) + 2,
+        )
+
+    def _exposed_columns(self, exposed: QRect, column_width: int) -> tuple[int, int]:
+        """:meth:`_exposed_rows` the other way — the columns ``exposed`` touches.
+
+        The slack matters more across than down: a caption is drawn *rightward*
+        from its cell's left edge, so a cell one column left of the band can put
+        several characters inside it.
+        """
+        step = column_width * self._zoom_x
+        if step <= 0:
+            return 0, 0
+        return (
+            max(0, int(exposed.left() // step) - 1),
+            int(exposed.right() // step) + 2,
+        )
+
+    def _image_pixel(self, pos: QPointF) -> tuple[int, int]:
+        """The image pixel under a device position — the inverse of the above.
+
+        Floored, so the answer is the pixel the point is *inside*. Callers decide
+        what to do about a point outside the picture; this only undoes the scale.
+        """
+        return (int(pos.x() // self._zoom_x), int(pos.y() // self._zoom_y))
+
     def set_pan_mode(self, on: bool) -> None:
         """Arm/disarm space-drag panning (the window drives this off the space key).
 
@@ -883,7 +1010,7 @@ def confirm_destructive(
 def grid_slot_at(
     x_px: float,
     y_px: float,
-    cell: tuple[int, int],
+    cell: tuple[float, float],
     columns: int,
     count: int,
     *,
@@ -904,7 +1031,10 @@ def grid_slot_at(
     show at all.
     """
     cell_w, cell_h = cell
-    col, row = int(x_px) // cell_w, int(y_px) // cell_h
+    # A cell is fractional wherever a non-square pixel is in force
+    # (:mod:`celpix.core.aspect`), so the floor division is taken back to an int
+    # here rather than at each call site — a slot indexes a list.
+    col, row = int(int(x_px) // cell_w), int(int(y_px) // cell_h)
     if not clamp:
         slot = row * columns + col
         return slot if 0 <= col < columns and 0 <= slot < count else None

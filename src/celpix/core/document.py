@@ -32,7 +32,7 @@ from celpix.core.context import (
     KEY_TILEMAP_PAGES_ACROSS,
     PipelineContext,
 )
-from celpix.core.font import FontAlphabet
+from celpix.core.font import FontAlphabet, Text
 from celpix.core.palette import Palette, palette_row_count
 from celpix.core.paletteregions import PaletteRegions
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, drawn_frames
@@ -258,12 +258,22 @@ class CellChain:
     the layout's file does not know it, so the same layout draws differently
     against a differently divided panel. ``(1, 1)`` is the ordinary chain, where
     one coordinate names one cell and there is no stamp to expand.
+
+    ``dense`` is the **referrer's**, and it is the one field here that is not the
+    source's answer — which is why it is a field set from the referring format
+    rather than another value read off the source's context. It says whether this
+    file holds one entry per *stamp* or one per drawn position, and no source
+    could know: the same panel is stamped by a layout with a slot per position,
+    and would be stamped by a metatile map with a slot per stamp, and the panel's
+    header says nothing about either. It is a constant of the referring format,
+    so the format's preset declares it (``docs/design/tilemap-entry.md`` §3.1).
     """
 
     source: list[Cell]
     carry_rows: bool = True
     stamp: tuple[int, int] = (1, 1)
     source_columns: int = 0
+    dense: bool = False
 
 
 @dataclass
@@ -414,7 +424,7 @@ class Document:
     # the cell list *object* and the alphabet — so a hit is two identity checks.
     # Excluded from equality and repr for the reason above it: derived, not part
     # of what a document is.
-    text_cache: tuple[object, object, object] | None = field(
+    text_cache: tuple[list[Cell], FontAlphabet | None, Text] | None = field(
         default=None, compare=False, repr=False
     )
     # And the last answer :meth:`_drawn_layout` gave, keyed the same way. Derived
@@ -437,11 +447,12 @@ class Document:
 
         A **stamped** chain resolves per drawn position rather than per entry
         (:func:`~celpix.core.tilemap.expand_stamps`): one coordinate names a stamp
-        of source cells, so the list that comes back is in drawn order and the
-        entries between two stamps are never read. It needs the referrer's own
-        width to know where a row ends, so a stamp the file states but a width it
-        does not falls back to the plain chain — resolving a grid whose shape is a
-        guess would lay a shear on top of one.
+        of source cells, so the list that comes back is in drawn order, and it is
+        longer than :attr:`cells` on a dense map and the same length with three
+        quarters of the entries unread on a sparse one. It needs the referrer's
+        own width to know where a row ends, so a stamp the file states but a width
+        it does not falls back to the plain chain — resolving a grid whose shape
+        is a guess would lay a shear on top of one.
         """
         # The one call every cell edit makes, so it is also where the decoded
         # text is dropped: :attr:`text` is the same cells read a second way, and
@@ -462,6 +473,7 @@ class Document:
                 chain.stamp,
                 chain.source_columns,
                 carry_rows=chain.carry_rows,
+                dense=chain.dense,
             )
             return
         self.resolved_cells = [
@@ -524,7 +536,7 @@ class Document:
         return self.is_tilemap and self.text_layout
 
     @property
-    def text(self):  # -> Text
+    def text(self) -> Text:
         """This fontmap's cells as readable text, with each character's cell.
 
         **Decoded once per cell list**, and kept only against the two things it
@@ -540,11 +552,8 @@ class Document:
         without checking first — and hex for one whose font has no alphabet,
         which is the honest reading of codes nothing has explained.
         """
-        from celpix.core.font import FontAlphabet as _Alphabet
-        from celpix.core.font import Text as _Text
-
         if not self.is_fontmap:
-            return _Text("", ())
+            return Text("", ())
         cells = self.cells or []
         cached = self.text_cache
         if (
@@ -553,7 +562,7 @@ class Document:
             and cached[1] is self.font_alphabet
         ):
             return cached[2]
-        alphabet = self.font_alphabet or _Alphabet(
+        alphabet = self.font_alphabet or FontAlphabet(
             code_digits=max(1, self.cell_bytes * 2)
         )
         text = alphabet.decode(
@@ -801,6 +810,42 @@ class Document:
         return self.pages_across * columns if self.pages else 0
 
     @property
+    def drawn_columns(self) -> int:
+        """How many cells across the **file** fixes the picture at, or 0 for none.
+
+        What the layout and the selection both take their width from, and the
+        generalisation of :attr:`assembled_columns`: a page assembly is one reason
+        a width stops being a preference, and a **dense** stamp is the other. Its
+        entries are one per stamp, so the picture is ``across`` times wider than
+        the file's own row — laid out at anything else it shears exactly as a
+        misassembled page does, and for the same reason, the row breaking in a
+        place the file did not put it.
+
+        Read here rather than where the two happen to meet, because a render can
+        be asked for by something that never went through the UI at all (a bulk
+        PNG export of entries that were loaded and never shown), so the layout
+        takes the width from the document and the Cols spin is what mirrors it.
+
+        The assembly wins where a document somehow had both, which no format in
+        hand does: it is the coarser cut of the two, and a page split at the wrong
+        place misplaces whole rows rather than halves of one.
+
+        0 on everything that fixes no width, which is most documents — the
+        ordinary tilemap, whose width really is a preference.
+        """
+        assembled = self.assembled_columns
+        if assembled:
+            return assembled
+        chain = self.chain
+        columns = self.stated_columns
+        # The same two conditions :meth:`resolve` expands under: without a stated
+        # width there is no stamped resolution to be wide, so there is no width to
+        # fix either.
+        if chain is None or not chain.dense or not columns:
+            return 0
+        return columns * max(1, chain.stamp[0])
+
+    @property
     def cell_order(self) -> tuple[int, ...] | None:
         """Which cell each drawn position holds — None when the two are the same.
 
@@ -977,7 +1022,7 @@ class Document:
         columns = self.stated_columns
         if chain is None or chain.stamp == (1, 1) or not columns:
             return position
-        return stamp_origin(position, columns, chain.stamp)
+        return stamp_origin(position, columns, chain.stamp, dense=chain.dense)
 
     def cell_tile_indices(self, cell: Cell) -> list[int]:
         """The source tile indices ``cell`` draws, in the order they appear.

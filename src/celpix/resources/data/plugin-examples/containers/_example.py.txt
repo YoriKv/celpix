@@ -67,6 +67,15 @@ class ExampleContainer:
         # write for a palette wrapper is
         # `content_kinds=(ContentKind.PALETTE,)`.
         content_kinds=(ContentKind.PIXELS, ContentKind.TILEMAP),
+        # This container only *skips* a header, so every byte it hands on is
+        # still where the file has it and a slice of the entry can seek straight
+        # to its offset. Say so and celPix holds you to it: the read compares
+        # what you returned against the file and warns if they disagree.
+        # Leave it out — the default — and offsets are treated as this
+        # container's own address space, which is the right answer for anything
+        # that *moves* bytes: a deinterleaver, or a sector image whose framing
+        # sits between the chunks rather than in front of them (see _tiff.py).
+        preserves_offsets=True,
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

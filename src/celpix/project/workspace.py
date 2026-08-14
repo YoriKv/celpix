@@ -46,6 +46,7 @@ from typing import Callable
 
 from celpix.core import ceil_div
 from celpix.core.address import format_hex
+from celpix.core.aspect import PixelAspect
 from celpix.core.capabilities import Capability, ContentKind, supports
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
@@ -833,6 +834,18 @@ class Workspace:
         # pixel-format filter is view-only — which codecs the Pixel dropdown
         # lists — so it rides on the workspace root rather than any one entry.
         self.hidden_pixel_presets: set[str] = set()
+        # The shape one pixel is drawn at, for every surface in the window
+        # (:mod:`celpix.core.aspect`). Here rather than on an entry because it is
+        # a fact about the *screen* the project is being read on: a machine has
+        # one, and two entries of the same project drawn at two shapes would be
+        # two different claims about the same monitor.
+        #
+        # **None means nobody has answered yet**, which is not the same as
+        # square: it is what leaves the question open for a container's hint to
+        # settle on first load (:data:`~celpix.core.context.KEY_PIXEL_ASPECT`).
+        # Once anything has answered — a hint or the user — the answer stands and
+        # is what the project stores.
+        self.pixel_aspect: PixelAspect | None = None
         self.on_added: list[Callable[[Entry], None]] = []
         self.on_removed: list[Callable[[Entry], None]] = []
         # Fired instead of per-entry removals when the whole list is swapped —
@@ -1298,6 +1311,12 @@ _TYPE_ORDER: dict[str, int] = {
     ContentKind.PALETTE.value: 4,
 }
 
+#: Where bookmarks land in that order: after every kind of content, as one block.
+#: A bookmark is a position rather than a region, so its content kind is whatever
+#: it was built with (nothing sets one) and ranking it by that scatters the marks
+#: through the pixel slices — which is the opposite of what a sort is asked for.
+_BOOKMARK_RANK = max(_TYPE_ORDER.values()) + 1
+
 
 def sorted_entries(
     entries: list[Entry],
@@ -1340,11 +1359,15 @@ def sorted_entries(
 def _type_rank(entry: Entry, layout: Callable[[Entry], str] | None) -> int:
     """Where ``entry`` sits in :data:`_TYPE_ORDER`.
 
-    A tilemap is asked what its format lays its cells out as; everything else is
-    its content kind and nothing more. An unknown answer either way ranks with
-    the plain reading of the kind it belongs to, since a map celPix has no format
-    for is still a map and sorting is not the place to say otherwise.
+    A bookmark is ranked by being one (:data:`_BOOKMARK_RANK`) rather than by its
+    content kind, which it never had a reason to set. A tilemap is asked what its
+    format lays its cells out as; everything else is its content kind and nothing
+    more. An unknown answer either way ranks with the plain reading of the kind it
+    belongs to, since a map celPix has no format for is still a map and sorting is
+    not the place to say otherwise.
     """
+    if entry.kind is EntryKind.BOOKMARK:
+        return _BOOKMARK_RANK
     if entry.content_kind is ContentKind.TILEMAP and layout is not None:
         declared = layout(entry)
         if declared in _TYPE_ORDER:
@@ -1481,6 +1504,57 @@ def pixel_config_for(
         write_enabled=writable,
         writes_through_parent=parent is not None,
         missing_plugins=missing,
+    )
+
+
+def tilemap_config_for(
+    entry: Entry,
+    preset_id: str,
+    registry: Registry,
+    workspace: Workspace | None = None,
+) -> PathwayConfig:
+    """The tilemap pathway config that reads (and writes back) ``entry``'s cells.
+
+    :func:`pixel_config_for`'s rule applied to the other pathway, and it has to
+    be: **a slice carries no container of its own**, so its offset only names the
+    right bytes in the *parent's* buffer — the one the parent's container already
+    produced. Built as a plain window onto the files instead, a map inside a
+    container whose offsets do not survive its read (:func:`reorders_bytes`) is
+    handed the wrapper's bytes at the slice's offset. Those decode as perfectly
+    ordinary cells and draw as noise, which is the failure this exists to stop:
+    a `.d88` floppy strips a 0x2B0 header *and* a 16-byte ID before every sector,
+    so nothing after the first sector is where the file says it is.
+
+    Whole-file tilemaps keep their own container, exactly as on the pixel side —
+    there is no parent to read through, and the file's own read is the answer.
+    """
+    if entry.kind is EntryKind.FILE:
+        return PathwayConfig(
+            source=FileRef(entry.paths),
+            interpret_preset_id=preset_id,
+            container_id=resolved_container_id(registry, entry.container_id),
+            reshape_id=entry.reshape_id,
+        )
+    parent = workspace.find_file(entry.path) if workspace is not None else None
+    reordered = parent is not None and reorders_bytes(parent, registry)
+    live, live_base = _parent_view_bytes(entry, parent, reordered, registry, preset_id)
+    return PathwayConfig(
+        source=FileRef(
+            entry.paths,
+            offset=entry.slice_offset,
+            length=entry.slice_length,
+            data=live,
+            data_base=live_base,
+        ),
+        # The slice's own bounds bound the splice, and the parent performs the
+        # delivery — the same routing a pixel slice gets, so a restamp lands
+        # where the cells were read from rather than at a raw file position.
+        dest=FileRef(entry.paths, offset=entry.slice_offset, length=entry.slice_length),
+        interpret_preset_id=preset_id,
+        reshape_id=entry.reshape_id,
+        compression_id=entry.compression_id,
+        slot_fill=entry.slot_fill,
+        writes_through_parent=parent is not None,
     )
 
 

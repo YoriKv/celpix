@@ -214,6 +214,11 @@ class EntriesMixin:
         ):
             return
         self._workspace.hidden_pixel_presets = set()
+        # Back to unanswered rather than to square: a new project's first file is
+        # entitled to have its container seed the shape, exactly as a loaded one's
+        # is (:attr:`~celpix.project.workspace.Workspace.pixel_aspect`).
+        self._workspace.pixel_aspect = None
+        self._sync_pixel_aspect()
         # The previous project's own plugins go with it - they were part of that
         # project, not of the app (:meth:`_load_project_plugins`).
         if self._project_path is not None:
@@ -334,6 +339,12 @@ class EntriesMixin:
         # project's filter. A rebuild also happens explicitly below for a project
         # with no shown entry.
         self._workspace.hidden_pixel_presets = set(loaded.hidden_pixel_presets)
+        # Before the replace for the same reason the filter is: showing the
+        # restored current entry draws it, and drawing it at the previous
+        # project's pixel shape would flash the wrong geometry and re-lay the
+        # scroll area a moment later.
+        self._workspace.pixel_aspect = loaded.pixel_aspect
+        self._sync_pixel_aspect()
         self._workspace.replace(loaded.entries, loaded.current)
         self._fill_pixel_combo(self._pixel_preset_id())
         # The one entry-lifecycle change that bypasses the undo stack: older

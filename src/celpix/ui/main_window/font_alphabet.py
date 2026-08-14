@@ -460,6 +460,13 @@ class FontAlphabetMixin:
         the one on screen: the alphabet is the font's, so a second string bound to
         the same sheet is just as wrong until it picks the change up.
 
+        The re-read goes through the **load path's own** builder
+        (:meth:`~...session.SessionMixin._font_alphabet_for`) rather than calling
+        the pipeline a second time here. It is the same question — what does this
+        string read its codes through — and asking it twice is how the two came to
+        disagree about whether an untick is read off ``use_as_font`` or off
+        :attr:`~celpix.project.workspace.Entry.is_font_sheet`.
+
         Nothing here touches bytes, so no document is reloaded — an alphabet is a
         reading of cells that are already decoded, and what changes is only what
         they are read as.
@@ -482,13 +489,7 @@ class FontAlphabetMixin:
             source = entry.tile_source
             if source is None or self._binding_target(source) is not font:
                 continue
-            doc.font_alphabet = pipeline.load_font_alphabet(
-                font.font_chars if font.use_as_font else "",
-                font.font_codes if font.use_as_font else (),
-                code_digits=max(1, doc.cell_bytes) * 2,
-                base=font.font_base,
-                flag_break=self._tilemap_flag_break(entry),
-            )
+            doc.font_alphabet = self._font_alphabet_for(entry, doc.cell_bytes)
         # **Not** ``_refresh_view``, which is the whole window and, on a tilemap,
         # a recompose of the entire map. Nothing here can move a pixel of it: an
         # alphabet is a reading of cells that are already decoded, so the picture,

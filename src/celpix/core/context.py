@@ -193,6 +193,20 @@ KEY_TILE_PALETTE_ROWS = "pixel.tile-palette-rows"
 # (``docs/graphics-formats-reference/scgcad-formats.md`` §8.5) — and the bank
 # itself opens on it, its own pinned rows counting from the same origin.
 KEY_TILE_PALETTE_ROW_BASE = "pixel.palette-row-base"
+# tuple[int, int]: the shape of one **pixel** on the hardware this file was drawn
+# for, as a width:height ratio (:mod:`celpix.core.aspect`). A 200-line screen at
+# 640 across draws a pixel twice as tall as it is wide, so its art is a squashed
+# rectangle at 1:1 and nothing in the bytes says so — the machine knows, and a
+# container that knows which machine it is reading is the only thing in the
+# pipeline that can pass it on.
+#
+# Unlike its neighbours here this one is **not per entry**: what it seeds is a
+# project-wide display setting (``docs/design/pixel-aspect.md``), since a screen
+# has one shape and every surface in the window is drawing to it. So it seeds
+# and does not govern — the first entry to publish one answers the project's
+# question, and the user owns it afterwards, exactly as a tilemap's stated width
+# seeds Cols.
+KEY_PIXEL_ASPECT = "pixel.aspect"
 # A font's alphabet is deliberately **not** a context key. It is the user's own
 # project data on the pixels entry, gated by Use as Font
 # (``docs/design/fontmap-entry.md`` §4): a container stating one would be read
@@ -301,6 +315,13 @@ HINT_INFO: dict[str, tuple[str, str]] = {
         "The palette row this bank's tiles count their own row 0\n"
         "from, as its header states it. A tilemap bound to the\n"
         "bank counts from here too, unless its own file says.",
+    ),
+    KEY_PIXEL_ASPECT: (
+        "Pixel aspect",
+        "The shape of one pixel on the machine this file was\n"
+        "drawn for, when the container knows which machine that\n"
+        "is. It seeds View > Pixel Aspect, which is a setting for\n"
+        "the whole project; you own the choice after that.",
     ),
     KEY_PALETTE_PRESET: (
         "Color format",

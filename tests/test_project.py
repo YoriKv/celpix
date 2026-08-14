@@ -1037,3 +1037,50 @@ def test_a_one_file_entry_stores_no_file_list(tmp_path) -> None:
         "extra_paths"
         not in json.loads(project.read_text(encoding="utf-8"))["entries"][0]
     )
+
+
+def test_pixel_aspect_round_trips_and_stays_absent_until_answered(tmp_path) -> None:
+    """The project's pixel shape, and the difference between "square" and "unasked".
+
+    The two are one value in the file's absence and two in the reader's hands: an
+    omitted key leaves a container's hint free to seed it on the next load, where
+    a stored ``[1, 1]`` is an answer that stops the seeding
+    (``docs/design/pixel-aspect.md`` §3).
+    """
+    ws = Workspace()
+    ws.open_file(str(tmp_path / "rom.bin"))
+    path = str(tmp_path / "p.celpix")
+
+    # Never answered: the key is not written at all, so a project predating the
+    # setting re-saves byte-identical.
+    assert "pixel_aspect" not in project_dict(ws, path)
+    save_project(ws, path)
+    assert load_project(path).pixel_aspect is None
+
+    # Answered square: written, and read back as an answer rather than as nothing.
+    ws.pixel_aspect = (1, 1)
+    save_project(ws, path)
+    assert json.loads(open(path, encoding="utf-8").read())["pixel_aspect"] == [1, 1]
+    assert load_project(path).pixel_aspect == (1, 1)
+
+    # And a real ratio survives as a tuple, not the list JSON holds it as.
+    ws.pixel_aspect = (1, 2)
+    save_project(ws, path)
+    assert load_project(path).pixel_aspect == (1, 2)
+
+
+def test_a_malformed_pixel_aspect_degrades_to_unanswered(tmp_path) -> None:
+    """A hand-edited ratio that is not one must not reach a painter.
+
+    Every shape below would either fail to draw or divide by zero, and the
+    project still has to open — the reader's rule for every other key.
+    """
+    path = tmp_path / "p.celpix"
+    for stored in ([0, 1], [2], "2:1", [1, -1], {"w": 1}, None):
+        path.write_text(
+            json.dumps(
+                {"version": PROJECT_VERSION, "entries": [], "pixel_aspect": stored}
+            ),
+            encoding="utf-8",
+        )
+        assert load_project(str(path)).pixel_aspect is None, stored

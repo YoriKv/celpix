@@ -77,6 +77,7 @@ class GbRomContainer:
         magic=((_LOGO_AT, _LOGO_HEAD),),
         short_name="GB",
         category="Nintendo",
+        preserves_offsets=True,
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

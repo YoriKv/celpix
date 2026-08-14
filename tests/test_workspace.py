@@ -41,6 +41,7 @@ from celpix.project.workspace import (
     repair_presets,
     retarget_files,
     sorted_entries,
+    tilemap_config_for,
 )
 
 
@@ -119,6 +120,56 @@ def test_close_cascades_bookmarks_and_repointing_skips_them(tmp_path) -> None:
     removed = ws.close(file_b)
     assert set(removed) == {file_b, bookmark_b}
     assert ws.entries == [] and ws.current is None
+
+
+def test_tilemap_config_for_slice_reads_through_a_reordering_parent(tmp_path) -> None:
+    """A tilemap slice reads its parent's buffer, not a raw window into the file.
+
+    The pixel pathway has always done this; the tilemap one built a plain FileRef
+    at the slice's offset and so read the *wrapper's* bytes wherever the parent's
+    container does more than skip a header. Those decode as perfectly ordinary
+    cells and draw as noise, which is what makes it worth a test: nothing raises,
+    and the picture is merely wrong.
+    """
+    reg = default_registry()
+    # .smd again: 512-byte header, then the odd bytes and then the even ones, so
+    # a file offset names nothing in the deinterleaved buffer.
+    body = bytearray(16384)
+    body[0], body[8192] = 0x11, 0x22
+    smd = tmp_path / "rom.smd"
+    smd.write_bytes(bytes(512) + bytes(body))
+
+    ws = Workspace()
+    parent = ws.open_file(str(smd))
+    parent.container_id = "container.smd"
+    assert reorders_bytes(parent, reg)
+    sl = ws.add_slice(parent.path, "map", 512, 0x10)
+    sl.content_kind = ContentKind.TILEMAP
+
+    cfg = tilemap_config_for(sl, "preset.tilemap.snes-bg", reg, ws)
+    # The parent's joined buffer, rebased onto its window - not the file.
+    assert cfg.source.data is not None
+    assert cfg.source.data_base == 512
+    assert cfg.source.data[:2] == b"\x22\x11"
+    # And a restamp is routed through the parent rather than deposited at a raw
+    # file position the offset never named.
+    assert cfg.writes_through_parent is True
+    # Without a workspace there is no parent to read through, which is the
+    # caller-beware form the pixel factory has too.
+    assert tilemap_config_for(sl, "preset.tilemap.snes-bg", reg).source.data is None
+
+
+def test_tilemap_config_for_whole_file_keeps_its_own_container(tmp_path) -> None:
+    """A file-kind tilemap has no parent, so its own container is the answer."""
+    reg = default_registry()
+    rom = tmp_path / "map.smd"
+    rom.write_bytes(bytes(512) + bytes(16384))
+    ws = Workspace()
+    entry = ws.open_file(str(rom))
+    entry.container_id = "container.smd"
+    cfg = tilemap_config_for(entry, "preset.tilemap.snes-bg", reg, ws)
+    assert cfg.container_id == "container.smd"
+    assert cfg.source.offset == 0 and cfg.source.data is None
 
 
 def test_pixel_config_for_slice_bounds_source_and_derives_compressor(tmp_path) -> None:
@@ -826,6 +877,19 @@ def test_sorting_by_type_ranks_the_map_readings_and_leaves_ties_alone(tmp_path) 
         aardvark,
         screen,
         colors,
+    ]
+
+    # Bookmarks are ranked by being bookmarks: nothing sets a mark's content kind,
+    # so ranking one by that would scatter the marks through the pixel slices
+    # instead of gathering them, which is the whole of what the sort is for.
+    marks = [
+        Entry(name=name, kind=EntryKind.BOOKMARK, path=rom, slice_offset=offset)
+        for name, offset in (("0x400", 0x400), ("0x100", 0x100))
+    ]
+    assert sorted_entries([marks[0], colors, marks[1], art], SortKey.TYPE) == [
+        art,
+        colors,
+        *marks,
     ]
 
 

@@ -94,6 +94,7 @@ PANEL_KEYS: tuple[tuple[str, str], ...] = (
     ("Cut / copy / paste a Files row", "Ctrl+X / Ctrl+C / Ctrl+V"),
     ("Duplicate a Files row", "Ctrl+D"),
     ("Remove a Files entry", "Del"),
+    ("Filter the Files list", "Ctrl+F"),
 )
 
 # The floating windows — Text, Font Alphabet, Subsprites, Animation. They carry

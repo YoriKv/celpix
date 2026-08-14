@@ -351,3 +351,21 @@ def _close_discards_edits(monkeypatch):
         lambda self, event: QMainWindow.closeEvent(self, event),
         raising=False,
     )
+
+
+@pytest.fixture(autouse=True)
+def _pixel_aspect_dialog_never_blocks(monkeypatch):
+    """Make the pixel-aspect popup's ``exec()`` return Rejected instead of blocking.
+
+    Reachable by triggering View ▸ Pixel Aspect…, and the same rule as
+    :func:`_container_dialog_never_blocks`: offscreen, ``exec()`` never returns.
+    Rejected is the safe default — the caller reads it as a cancel and leaves the
+    project's ratio alone, so a test that lands here by accident does not silently
+    redraw everything at another shape. Construction still happens, so a test can
+    build the popup and assert on the rows it laid out. Guarded like
+    :func:`captured_alerts` so headless suites stay Qt-free.
+    """
+    module = sys.modules.get("celpix.ui.pixel_aspect_dialog")
+    if module is None:
+        return
+    monkeypatch.setattr(module.PixelAspectDialog, "exec", lambda self: 0, raising=False)

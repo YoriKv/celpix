@@ -28,6 +28,13 @@ and shared by every project: how you want to look at pixels is a property of the
 person looking, and carrying it in the ``.celpix`` would mean opening someone
 else's project rearranged your view.
 
+**Pixel Aspect is the one exception, and it is one for the opposite reason.**
+What shape a pixel is is a fact about the machine the file was drawn for, not
+about the person looking at it (``docs/design/pixel-aspect.md``) — a 640x200
+screen is twice as tall per pixel on anybody's monitor. So it lives in the
+project, where a container's own reading of the file can seed it, and opening
+someone else's project rearranged is exactly what should happen.
+
 What is not here: the window arrangement, which is Panels' and
 :mod:`celpix.ui.window_layout`'s; the interpretation bars' own controls, which
 state what the bytes *are* rather than how they are shown
@@ -43,6 +50,8 @@ from PySide6.QtGui import (
     QKeySequence,
 )
 
+from celpix.core.aspect import SQUARE, PixelAspect
+from celpix.core.aspect import name as aspect_name
 from celpix.core.capabilities import Capability
 from celpix.core.document import GridMode
 from celpix.ui.canvas import GridStyle
@@ -51,6 +60,7 @@ from celpix.ui.main_window.interpretation import (
     ROWS_TIP,
     ROWS_WHOLE_TIP,
 )
+from celpix.ui.pixel_aspect_dialog import PixelAspectDialog
 from celpix.ui.theme import THEME_KEY, Theme, apply_theme
 from celpix.ui.widgets import (
     add_enum_action_group,
@@ -102,6 +112,10 @@ class ViewMenuMixin:
         # and how large" - Entire File sizes the window, zoom sizes the pixels.
         self._build_entire_file_action(menu)
         self._build_zoom_actions(menu)
+        # Last of the "how large" group, and one step out from the zoom: the zoom
+        # says how much bigger, this says what shape the thing being made bigger
+        # is.
+        self._build_pixel_aspect_action(menu)
         menu.addSeparator()
         self._build_animation_action(menu)
         self._build_subsprites_action(menu)
@@ -274,6 +288,71 @@ class ViewMenuMixin:
         if not self._entire_file.isChecked():
             self._snap_offset_to_selection()
         self._on_view_change()
+
+    def _build_pixel_aspect_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
+        """View ▸ Pixel Aspect… — what shape one pixel is drawn at.
+
+        A popup rather than a submenu of ratios, because the choice needs saying
+        as well as making: "2:1" in a menu is a number, where the popup's rows can
+        say which machine each ratio belongs to
+        (:class:`~celpix.ui.pixel_aspect_dialog.PixelAspectDialog`). It is also
+        the rarest thing in this menu — set once per project, usually seeded by
+        the container before anyone looks — so it earns no permanent shelf space.
+
+        Ungated by content kind. Every surface in the window draws image pixels
+        and the setting is the project's, so there is no document for which the
+        question does not apply — including no document at all, which is a
+        perfectly good moment to set it before opening anything.
+        """
+        self._pixel_aspect_action = QAction("Pixel As&pect…", self)
+        self._pixel_aspect_action.setToolTip(
+            "The shape one pixel is drawn at, for the whole project\n"
+            "A 640x200 screen's pixel is twice as tall as it is wide"
+        )
+        self._pixel_aspect_action.triggered.connect(self._on_pixel_aspect)
+        view_menu.addAction(self._pixel_aspect_action)
+
+    def _on_pixel_aspect(self) -> None:
+        """Ask for a ratio and apply it to the project and every surface."""
+        chosen = PixelAspectDialog.ask(self, self._pixel_aspect())
+        if chosen is None or chosen == self._workspace.pixel_aspect:
+            return
+        self._workspace.pixel_aspect = chosen
+        self._sync_pixel_aspect()
+        # A project setting, so the title's unsaved marker has to notice — the
+        # same refresh a view move makes.
+        self._refresh_project_modified()
+        self.statusBar().showMessage(f"Pixel aspect: {aspect_name(chosen)}.")
+
+    def _pixel_aspect(self) -> PixelAspect:
+        """The ratio in force — square while nobody has answered.
+
+        The one place the "never asked" state (:attr:`~celpix.project.workspace.
+        Workspace.pixel_aspect`) is turned into something to draw with, so no
+        surface has to know that ``None`` and square mean the same thing on
+        screen and different things to the file.
+        """
+        return self._workspace.pixel_aspect or SQUARE
+
+    def _sync_pixel_aspect(self) -> None:
+        """Push the ratio onto every surface that draws image pixels.
+
+        The whole of the setting's reach, in one loop. Each target either *is* a
+        magnifying surface (:class:`~celpix.ui.widgets.PanZoomSurface`) or is a
+        tool window that forwards to the one it holds, so adding a surface later
+        means inheriting the base and appearing in this list — not finding the
+        places that scale.
+        """
+        aspect = self._pixel_aspect()
+        for target in (
+            self._canvas,
+            self._tile_source_panel,
+            self._overlay,
+            self._animation,
+            self._subsprites,
+            self._font_alphabet,
+        ):
+            target.set_pixel_aspect(aspect)
 
     def _sync_entire_file(self) -> None:
         """Lock the Rows control (and its caption) to match the toggle.

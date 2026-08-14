@@ -295,15 +295,31 @@ def resolve_cell(
     )
 
 
-def stamp_origin(position: int, columns: int, stamp: tuple[int, int]) -> int:
+def stamp_origin(
+    position: int, columns: int, stamp: tuple[int, int], *, dense: bool = False
+) -> int:
     """Which entry the drawn position ``position`` takes its stamp from.
 
-    A stamped map's entries are **not** one per position: an entry names a whole
-    ``stamp``-sized rectangle of source cells, and the positions between two
-    entries hold whatever the file last had there. So a position reads the entry
-    at its stamp's top-left corner, and the three-quarters of a 2x2 map that were
-    never written are never read either
-    (``docs/graphics-formats-reference/scgcad-formats.md`` §4).
+    A stamped map's entries are not one per drawn position, and there are **two
+    ways a file can hold fewer**. Which one it is, is the referring format's
+    answer (:attr:`~celpix.core.document.CellChain.dense`), and it is the only
+    thing that differs between the two branches here:
+
+    - **Sparse** — the file still has a slot per drawn position and only the
+      stamp corners are meaningful, the rest holding whatever it last had there.
+      So a position reads the entry at its stamp's top-left corner, and the
+      three-quarters of a 2x2 map that were never written are never read either
+      (``docs/graphics-formats-reference/scgcad-formats.md`` §4).
+    - **Dense** — the file has exactly one entry per stamp and no filler at all,
+      which is what a map of 16x16 metatiles over an 8x8 tile bank looks like on
+      most hardware. The entry grid is then a *different shape* from the drawn
+      one: dividing the position by the stamp is the whole of the answer, with
+      nothing to snap.
+
+    ``columns`` is the width the **file** states, counted in entries either way,
+    so the drawn grid is that many stamps across when dense and that many
+    positions across when sparse. Taking the file's number in both is what lets
+    the two callers below pass the same thing.
 
     The same snap answers both directions, which is why it is one function: it
     picks the entry a position *draws*, and the entry a click on that position
@@ -311,7 +327,10 @@ def stamp_origin(position: int, columns: int, stamp: tuple[int, int]) -> int:
     inside a stamp changes the one entry that stamp came from.
     """
     across, down = max(1, stamp[0]), max(1, stamp[1])
-    x, y = position % columns, position // columns
+    width = columns * across if dense else columns
+    x, y = position % width, position // width
+    if dense:
+        return y // down * columns + x // across
     return (y - y % down) * columns + (x - x % across)
 
 
@@ -323,20 +342,25 @@ def expand_stamps(
     source_columns: int,
     *,
     carry_rows: bool,
+    dense: bool = False,
 ) -> list[Cell]:
     """Resolve a stamped map into one source cell per **drawn position**.
 
     The referring map is a grid of stamps and the source is a grid of cells, and
-    this is the one place the two shapes meet: the entry at a stamp's corner
-    names the source cell that corner draws, and the rest of the stamp walks the
-    source's *own* rows from there — offset ``x % across + (y % down) *
-    source_columns``. That last term is why ``source_columns`` is a parameter and
-    not the referrer's width: a stamp is a rectangle cut out of the source, so
-    stepping down a row inside it is a step of the source's width.
+    this is the one place the two shapes meet: the entry a position's stamp comes
+    from (:func:`stamp_origin`) names the source cell that stamp's corner draws,
+    and the rest of the stamp walks the source's *own* rows from there — offset
+    ``x % across + (y % down) * source_columns``. That last term is why
+    ``source_columns`` is a parameter and not the referrer's width: a stamp is a
+    rectangle cut out of the source, so stepping down a row inside it is a step
+    of the source's width.
 
-    One entry in, ``across * down`` positions out — so the list that comes back
-    is the same length as ``cells`` whenever the map divides evenly, and it is in
-    **drawn** order rather than file order. Everything that indexes the file
+    How many positions come back is the one thing ``dense`` changes, and it
+    follows from what the file holds. A **sparse** map already has a slot per
+    drawn position, so the list is the same length as ``cells``. A **dense** one
+    holds a single entry per stamp, so it expands: ``across * down`` positions
+    per entry, over a picture that many times larger. Either way the list is in
+    **drawn** order rather than file order, and everything that indexes the file
     (a save, the hex dump, a restamp) goes through
     :meth:`~celpix.core.document.Document.cell_at` instead, which is what keeps
     the two orders from being confused for each other.
@@ -358,14 +382,16 @@ def expand_stamps(
     """
     across, down = max(1, stamp[0]), max(1, stamp[1])
     stride = max(1, source_columns)
+    width = columns * across if dense else columns
+    positions = len(cells) * across * down if dense else len(cells)
     out: list[Cell] = []
-    for position in range(len(cells)):
-        at = stamp_origin(position, columns, (across, down))
+    for position in range(positions):
+        at = stamp_origin(position, columns, (across, down), dense=dense)
         if not 0 <= at < len(cells):
             out.append(BLANK)
             continue
         entry = cells[at]
-        offset = position % columns % across + position // columns % down * stride
+        offset = position % width % across + position // width % down * stride
         out.append(
             resolve_cell(entry, source, carry_rows=carry_rows, at=entry.index + offset)
         )

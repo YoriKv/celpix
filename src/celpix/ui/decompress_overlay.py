@@ -72,6 +72,15 @@ class DecompressOverlay(QWidget):
         # window move below is for a window nobody has put anywhere yet.
         self._positioned = self._layout_memory.restore()
 
+    def set_pixel_aspect(self, aspect) -> None:  # noqa: ANN001 — a PixelAspect
+        """Draw at ``aspect`` — forwarded to the canvas it holds.
+
+        One name on every holder of a pixel surface, so the window applies the
+        project's setting with a loop rather than by reaching through each of them
+        (:meth:`~celpix.ui.main_window.view_menu.ViewMenuMixin._sync_pixel_aspect`).
+        """
+        self._canvas.set_pixel_aspect(aspect)
+
     def show_result(
         self,
         image: QImage,

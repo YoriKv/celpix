@@ -256,6 +256,7 @@ class TimContainer:
         short_name="TIM",
         content_kinds=(ContentKind.PIXELS,),
         category="Sony",
+        preserves_offsets=True,
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
@@ -344,6 +345,7 @@ class TimClutContainer:
         short_name="TIM CLUT",
         content_kinds=(ContentKind.PALETTE,),
         category="Sony",
+        preserves_offsets=True,
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

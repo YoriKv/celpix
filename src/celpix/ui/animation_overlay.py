@@ -134,9 +134,7 @@ class AnimationFrame(PanZoomSurface, QWidget):
     def _update_size(self) -> None:
         """Size to the object's frame box, whatever this step happens to draw."""
         size = self._frame_size or self._source.size()
-        self.setFixedSize(
-            max(1, size.width() * self._zoom), max(1, size.height() * self._zoom)
-        )
+        self.setFixedSize(*self._scaled_size(size.width(), size.height()))
 
     # -- painting ------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: ANN001 — Qt override
@@ -147,7 +145,7 @@ class AnimationFrame(PanZoomSurface, QWidget):
         painter = QPainter(self)
         # No smoothing: this is pixel art, and the magnification has to show the
         # pixels rather than average them.
-        painter.scale(self._zoom, self._zoom)
+        painter.scale(self._zoom_x, self._zoom_y)
         painter.drawImage(QPoint(0, 0), self._strip, self._source)
         painter.end()
 
@@ -308,6 +306,15 @@ class AnimationOverlay(QWidget):
             app.installEventFilter(self)
 
     # -- presenting ----------------------------------------------------------
+    def set_pixel_aspect(self, aspect) -> None:  # noqa: ANN001 — a PixelAspect
+        """Draw at ``aspect`` — forwarded to the frame it plays.
+
+        One name on every holder of a pixel surface, so the window applies the
+        project's setting with a loop rather than by reaching through each of them
+        (:meth:`~celpix.ui.main_window.view_menu.ViewMenuMixin._sync_pixel_aspect`).
+        """
+        self._frame.set_pixel_aspect(aspect)
+
     def show_object(
         self,
         strip: QImage,

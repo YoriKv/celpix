@@ -159,6 +159,16 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
             self._zoom = max(1, zoom)
             self._update_size()
 
+    @property
+    def zoom(self) -> int:
+        """The magnification on show, for a caller with no spin of its own.
+
+        The dock drives this panel from a spin box and so already knows the
+        answer; the font alphabet window has only the wheel, and stepping it
+        needs the value it is stepping from.
+        """
+        return self._zoom
+
     def _has_content(self) -> bool:
         return not self._sheet.isNull()
 
@@ -249,7 +259,7 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
     def _update_size(self) -> None:
         cw, ch = self._cell_px
         self.setFixedSize(
-            self._columns * cw * self._zoom, self._rows() * ch * self._zoom
+            *self._scaled_size(self._columns * cw, self._rows() * ch),
         )
         self.update()
 
@@ -264,7 +274,7 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         slot = grid_slot_at(
             x_px,
             y_px,
-            (cell_w * self._zoom, cell_h * self._zoom),
+            (cell_w * self._zoom_x, cell_h * self._zoom_y),
             self._columns,
             len(self._ids),
             clamp=clamp,
@@ -277,13 +287,30 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         In slots rather than IDs because the run may step over the IDs between
         two units, so only the list can say which square a number is in.
         """
-        cw, ch = self._cell_px[0] * self._zoom, self._cell_px[1] * self._zoom
-        return QRect((slot % self._columns) * cw, (slot // self._columns) * ch, cw, ch)
+        cw, ch = self._cell_px
+        return self._scaled_rect(
+            (slot % self._columns) * cw, (slot // self._columns) * ch, cw, ch
+        )
 
     def _slot_of(self, tile_id: int) -> int:
         """Which square ``tile_id`` sits in. Only asked of an ID on the sheet —
         both rings drop an ID the run does not hold before they get here."""
         return self._ids.index(tile_id)
+
+    def _exposed_slots(self, exposed: QRect) -> range:
+        """The squares ``exposed`` covers — whole rows of the sheet.
+
+        What the per-square overlays loop over, instead of the whole run: a bank
+        is thousands of squares and a scrolled view shows a dozen rows of them
+        (:meth:`~celpix.ui.widgets.PanZoomSurface._exposed_rows`). Whole rows
+        because the grid is filled left to right, so a row's slots are contiguous
+        and the columns are few enough not to be worth trimming.
+        """
+        first, stop = self._exposed_rows(exposed, self._cell_px[1])
+        count = len(self._ids)
+        return range(
+            min(first * self._columns, count), min(stop * self._columns, count)
+        )
 
     # -- interaction ---------------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
@@ -353,7 +380,7 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         if not self._sheet.isNull():
             # Nearest-neighbour: tiles must stay crisp when magnified.
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-            painter.scale(self._zoom, self._zoom)
+            painter.scale(self._zoom_x, self._zoom_y)
             painter.drawImage(0, 0, self._sheet)
             painter.resetTransform()
             self._paint_grid(painter, event.rect())
@@ -368,10 +395,10 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
                 self._cell_rect(self._slot_of(self._marked)),
                 color=GRID_STRUCTURE_COLOR,
             )
-        self._paint_selection(painter)
+        self._paint_selection(painter, event.rect())
         painter.end()
 
-    def _paint_selection(self, painter: QPainter) -> None:
+    def _paint_selection(self, painter: QPainter, exposed: QRect) -> None:
         """Outline the picked tiles, one ring per contiguous run of a row.
 
         The canvas's rule for a multi-tile selection (:meth:`~celpix.ui.canvas.
@@ -382,14 +409,20 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
 
         Inset a pixel and slightly soft, so a tile that is also *marked* still
         reads as two rings rather than one thick one.
+
+        The **exposed rows only**, which costs no ring: a run never crosses a
+        row and the band starts on a row boundary, so a row outside it is a row
+        whose rings would be drawn entirely off the repainted band anyway.
         """
         if not self._picked:
             return
         slots = [
-            slot for slot, tile_id in enumerate(self._ids) if tile_id in self._picked
+            slot
+            for slot in self._exposed_slots(exposed)
+            if self._ids[slot] in self._picked
         ]
         runs: list[tuple[int, int]] = []
-        for slot in slots:  # ascending, since they come out of `enumerate`
+        for slot in slots:  # ascending, the band being a range
             # A slot in column 0 starts a row and so starts a run, whatever sat
             # before it: the square before it on the sheet is the far end of the
             # line above, and one ring around both would enclose the whole width.
@@ -415,17 +448,25 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         of it, which is the rule the canvas's lattice follows too. Lines outside
         the exposed band are skipped: a bank read at 8x is mostly off screen.
         """
-        cw, ch = self._cell_px[0] * self._zoom, self._cell_px[1] * self._zoom
-        if cw <= 0 or ch <= 0:
+        # Stepped in the sheet's own pixels and scaled at the point of drawing,
+        # which is what keeps the lines on the cell boundaries under a non-square
+        # pixel: the device step is fractional there, and stepping by a rounded
+        # one would drift a pixel further from the art every few cells.
+        step_x = self._cell_px[0] * GRID_STEP_TILES
+        step_y = self._cell_px[1] * GRID_STEP_TILES
+        if step_x <= 0 or step_y <= 0:
             return
-        width, height = self.width(), self.height()
+        img_w = self._columns * self._cell_px[0]
+        img_h = self._rows() * self._cell_px[1]
         color = QColor(GRID_STRUCTURE_COLOR)
         color.setAlpha(GRID_COARSE_ALPHA)
         painter.setPen(color)
-        for x in range(cw * GRID_STEP_TILES, width, cw * GRID_STEP_TILES):
+        for gx in range(step_x, img_w, step_x):
+            x = round(gx * self._zoom_x)
             if exposed.left() <= x <= exposed.right():
                 painter.drawLine(x, exposed.top(), x, exposed.bottom())
-        for y in range(ch * GRID_STEP_TILES, height, ch * GRID_STEP_TILES):
+        for gy in range(step_y, img_h, step_y):
+            y = round(gy * self._zoom_y)
             if exposed.top() <= y <= exposed.bottom():
                 painter.drawLine(exposed.left(), y, exposed.right(), y)
 
@@ -446,15 +487,16 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         """
         if not self._labels:
             return
-        cw, ch = self._cell_px[0] * self._zoom, self._cell_px[1] * self._zoom
+        cw = self._cell_px[0] * self._zoom_x
+        ch = self._cell_px[1] * self._zoom_y
         if min(cw, ch) < LABEL_MIN_PX:
             return
         font = painter.font()
-        font.setPixelSize(max(7, min(ch // 3, cw // 2)))
+        font.setPixelSize(max(7, int(min(ch // 3, cw // 2))))
         painter.setFont(font)
         height = painter.fontMetrics().height()
-        for slot, tile_id in enumerate(self._ids):
-            caption = self._labels.get(tile_id)
+        for slot in self._exposed_slots(exposed):
+            caption = self._labels.get(self._ids[slot])
             if not caption:
                 continue
             cell = self._cell_rect(slot)

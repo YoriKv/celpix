@@ -406,11 +406,23 @@ class PluginInfo:
     prefix — leaves every remaining byte where it was, so a view position is
     still a file offset once the recorded start is added back. One that
     **reorders** (``.smd``'s odd/even split, an interleaved SNES image, an N64
-    byte-order normalisation) makes its output a different address space from the
-    file, so a position in one names nothing in the other. An Offset palette
-    resolves against the container's *output* either way, but only a
-    position-preserving container can also write an edit back through a plain
-    file offset (``docs/design/palette-editing.md`` §2).
+    byte-order normalisation, a sector image with framing *between* its chunks)
+    makes its output a different address space from the file, so a position in
+    one names nothing in the other. An Offset palette resolves against the
+    container's *output* either way, but only a position-preserving container can
+    also write an edit back through a plain file offset
+    (``docs/design/palette-editing.md`` §2).
+
+    It **defaults to False**, which is the safe half of the claim rather than the
+    common one. Saying nothing then costs a slice of the entry a read through the
+    parent's buffer instead of a seek into the file, and costs an Offset palette
+    on it the plain-file-offset write — both visible, neither wrong. Getting it
+    wrong the other way is silent: every slice of the entry decodes bytes from
+    somewhere else while the entry itself renders perfectly, which is a bug that
+    survives being looked at. A container that really is a window into the file
+    says ``preserves_offsets=True`` and is held to it — the read checks the claim
+    against what it returned, and warns
+    (:func:`~celpix.pipeline.pipeline._check_offsets_preserved`).
 
     ``category`` is the heading a picker files this plugin under
     (:data:`CATEGORIES`) — presentation only, and empty means "no heading".
@@ -427,7 +439,7 @@ class PluginInfo:
     exact_size: int = 0
     short_name: str = ""
     content_kinds: tuple[ContentKind, ...] = (ContentKind.PIXELS, ContentKind.TILEMAP)
-    preserves_offsets: bool = True
+    preserves_offsets: bool = False
     category: str = ""
 
 

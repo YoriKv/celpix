@@ -19,6 +19,13 @@ an entry *holds*; the tree's nesting stays the other question, "a window into
 that file's bytes" (``docs/design/tilemap-entry.md`` §2). The two are allowed to
 disagree — a tilemap slice of a ROM appears under Tilemaps, nested beneath a
 pixel file that sits under Pixels.
+
+A **filter field** sits under the list, matching the same way the format pickers'
+search does (:func:`~celpix.ui.searchable_combo.matches_search`) — every word
+typed, in any order. A mapped ROM runs to hundreds of rows, and scrolling for one
+slice is what it replaces. Rows are *hidden*, never re-ordered or removed: the
+order is the user's (:meth:`FileListPanel.add_entry`) and a filter is a way of
+looking at the list, not a change to it.
 """
 
 from __future__ import annotations
@@ -32,9 +39,11 @@ from PySide6.QtGui import (
     QKeySequence,
     QPalette,
     QPixmap,
+    QShortcut,
 )
 from PySide6.QtWidgets import (
     QHeaderView,
+    QLineEdit,
     QMenu,
     QTreeWidget,
     QTreeWidgetItem,
@@ -58,6 +67,7 @@ from celpix.project.workspace import (
     palette_missing,
 )
 from celpix.ui import clipboard
+from celpix.ui.searchable_combo import matches_search
 from celpix.ui.widgets import (
     ShortcutIsland,
     icon_cache_key,
@@ -106,6 +116,11 @@ _STATUS_W = _ICON_W + 8  # the icon box plus breathing room from the name
 # Ctrl+D is what every list-of-things editor spells it as. Named here because the
 # tree matches the key and the context menu labels it, and the two must agree.
 DUPLICATE_KEY = QKeySequence("Ctrl+D")
+
+# Jump to the filter field. Bound by the *window* (Navigate ▸ Find Entry), for
+# the reason given where the field is built, and named here because the field is
+# what it lands on and its tooltip advertises it.
+FILTER_KEY = QKeySequence.StandardKey.Find
 
 
 class _EntryTree(ShortcutIsland, QTreeWidget):
@@ -378,9 +393,40 @@ class FileListPanel(QWidget):
         )
         self._tree.reorder_dropped.connect(self.reorder_requested)
 
+        # The filter, and the expansion it is holding open. A project's rows run
+        # to the hundreds — the melroon sample is 417 — and finding one slice in
+        # that by scrolling is the gesture this replaces.
+        self._filter = QLineEdit()
+        self._filter.setPlaceholderText("Filter")
+        self._filter.setClearButtonEnabled(True)
+        self._filter.setToolTip(
+            "Show only the rows matching every word typed,\n"
+            "in any order - so 'object disk a' finds a slice\n"
+            "named '003 Object tiles - disk A trk 24'.\n"
+            "A matching slice brings its file along, so what\n"
+            "is left still says where each row came from.\n"
+            "Escape clears the filter."
+        )
+        self._filter.textChanged.connect(self._apply_filter)
+        # Only while a filter is up: what the tree's expansion was before it
+        # opened rows to reveal the matches, so clearing it puts back the shape
+        # the user had arranged rather than leaving every file spread open.
+        self._expanded_before: dict[Entry, bool] | None = None
+
+        # Escape gets out of a filter, which is where a user who has found
+        # nothing reaches first. Scoped to the field, so it is inert the moment
+        # focus is anywhere else and never competes for the key. The way *in*
+        # (Ctrl+F) is the window's, not this panel's: selecting a row hands focus
+        # to the canvas, so a shortcut scoped here would be dead exactly when it
+        # is wanted - see MainWindow._init_history.
+        cancel = QShortcut(QKeySequence.StandardKey.Cancel, self._filter)
+        cancel.setContext(Qt.ShortcutContext.WidgetShortcut)
+        cancel.activated.connect(self._filter.clear)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._tree)
+        layout.addWidget(self._filter)
 
     def is_key_navigating(self) -> bool:
         """True while a selection change is being driven by the arrow keys — the
@@ -431,6 +477,9 @@ class FileListPanel(QWidget):
         parent_item.setExpanded(True)
         self._items[entry] = item
         self._refresh_item(entry, item)
+        # A row added under a live filter has to face it like the rest, or a new
+        # slice appears in a list that is supposed to be showing only matches.
+        self._refilter()
 
     def move_item(self, entry: Entry, before: Entry | None) -> None:
         """Re-place ``entry``'s row in front of ``before``'s — the view side of
@@ -524,6 +573,12 @@ class FileListPanel(QWidget):
         self._items.clear()
         self._current = None
         self._editing = None
+        # The filter named rows that no longer exist. Left standing it would
+        # hand the project being swapped in the last one's search — blocked,
+        # since there is nothing left for a re-filter to walk.
+        with signals_blocked(self._filter):
+            self._filter.clear()
+        self._expanded_before = None
 
     def remove_entry(self, entry: Entry) -> None:
         item = self._items.pop(entry, None)
@@ -549,6 +604,10 @@ class FileListPanel(QWidget):
                             del self._sections[kind]
             else:
                 self._tree.takeTopLevelItem(self._tree.indexOfTopLevelItem(item))
+        # The removed row may have been the only *visible* one under its
+        # section, which the header-drop above cannot see: its siblings are
+        # still there, merely filtered out.
+        self._refilter()
 
     def next_sibling(self, entry: Entry) -> Entry | None:
         """The row after ``entry``'s among its own siblings — where a reorder has
@@ -660,6 +719,105 @@ class FileListPanel(QWidget):
         item = self._items.get(entry)
         if item is not None:
             self._refresh_item(entry, item)
+            # A rename is the label the filter matches on, so the row may have
+            # just stopped matching — or started.
+            self._refilter()
+
+    # -- filtering -----------------------------------------------------------
+    def focus_filter(self) -> None:
+        """Put the cursor in the filter field with its text selected — Ctrl+F.
+
+        Selected rather than appended to, so a second search is typed over the
+        first instead of having to be cleared out of the way.
+        """
+        self._filter.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._filter.selectAll()
+
+    def is_filtered(self) -> bool:
+        """Whether a filter is narrowing the list — so a caller that counts rows
+        knows the list is not the whole project."""
+        return bool(self._filter.text().strip())
+
+    def _apply_filter(self) -> None:
+        """Re-hide every row for the filter as it now stands.
+
+        The whole tree each time rather than a delta, because a filter is edited
+        a keystroke at a time and each one both hides and *un*-hides: narrowing
+        "obj" to "object" drops rows, and going back adds them, and there is no
+        cheaper answer than the walk for a list this size.
+        """
+        needles = self._filter.text().lower().split()
+        if needles and self._expanded_before is None:
+            # Entering filter mode. The expansion about to be forced open to
+            # reveal matches is the user's own arrangement, and taking it now is
+            # the only moment it is still there to take.
+            self._expanded_before = {
+                entry: item.isExpanded() for entry, item in self._items.items()
+            }
+        # Hiding the row the highlight sits on makes Qt move the highlight, and
+        # that reads as the user picking another entry — which would load it.
+        # So the walk is silent and the highlight is put back by hand after it.
+        with signals_blocked(self._tree):
+            for i in range(self._tree.topLevelItemCount()):
+                section = self._tree.topLevelItem(i)
+                kept = [
+                    self._filter_subtree(section.child(j), needles)
+                    for j in range(section.childCount())
+                ]
+                # A section heading is never matched on its own text: it has no
+                # entry behind it, so "Pixels" as a hit would show the user a
+                # heading standing over nothing.
+                section.setHidden(not any(kept))
+            if not needles:
+                self._restore_expansion()
+            shown = self._items.get(self._current) if self._current else None
+            self._tree.setCurrentItem(
+                shown if shown is not None and not shown.isHidden() else None
+            )
+
+    def _filter_subtree(self, item: QTreeWidgetItem, needles: list[str]) -> bool:
+        """Hide ``item`` unless it or a descendant matches; True when it stays.
+
+        Both halves of the rule are here. A row is kept for its **own** text, and
+        also for a **descendant's** — so a slice found by name brings its file
+        along and the answer still says which file each match came from. The
+        reverse deliberately does not hold: matching a file does not drag its
+        slices back in, which would answer a search with the list it was asked to
+        narrow.
+        """
+        kept = [
+            self._filter_subtree(item.child(i), needles)
+            for i in range(item.childCount())
+        ]
+        # Built as a list rather than folded into the ``any`` below: the walk is
+        # what *sets* each descendant's hidden flag, and short-circuiting it
+        # would leave every row after the first match wearing the last search's.
+        descendant = any(kept)
+        item.setHidden(not (descendant or matches_search(item.text(0), needles)))
+        if descendant:
+            item.setExpanded(True)  # or the matches it was kept for stay unseen
+        return not item.isHidden()
+
+    def _restore_expansion(self) -> None:
+        """Put back the expansion the filter opened — see :attr:`_expanded_before`.
+
+        Rows added while the filter was up aren't in the snapshot and keep what
+        they have: they were never part of the arrangement being restored.
+        """
+        was, self._expanded_before = self._expanded_before, None
+        for entry, expanded in (was or {}).items():
+            item = self._items.get(entry)
+            if item is not None:
+                item.setExpanded(expanded)
+
+    def _refilter(self) -> None:
+        """Re-run the filter after a change to the rows, when one is up.
+
+        Guarded on the text rather than run unconditionally because the common
+        case is no filter at all, and then there is nothing for a walk to do.
+        """
+        if self._filter.text():
+            self._apply_filter()
 
     # -- presentation --------------------------------------------------------
     def _container_hint(self, entry: Entry) -> str:

@@ -34,6 +34,8 @@ from os.path import (
 )
 
 from celpix.core.arrangement import BLOCK_ORDERS
+from celpix.core.aspect import PixelAspect
+from celpix.core.aspect import parse as parse_aspect
 from celpix.core.capabilities import ContentKind
 from celpix.core.document import ViewOptions
 from celpix.core.errors import Stage
@@ -117,6 +119,10 @@ class LoadedProject:
     entries: list[Entry]
     current: Entry | None
     hidden_pixel_presets: set[str] = field(default_factory=set)
+    #: The stored pixel shape, or ``None`` where the file names none — see
+    #: :attr:`~celpix.project.workspace.Workspace.pixel_aspect` for why the two
+    #: are different answers.
+    pixel_aspect: PixelAspect | None = None
 
 
 # -- saving ----------------------------------------------------------------
@@ -141,6 +147,13 @@ def project_dict(ws: Workspace, path: str) -> dict[str, object]:
     # project minimal.
     if ws.hidden_pixel_presets:
         document["hidden_pixel_presets"] = sorted(ws.hidden_pixel_presets)
+    # The other project-wide view setting: the shape one pixel is drawn at. A
+    # list of two, so the file says ``[1, 2]`` rather than a float nobody can read
+    # back as a ratio. Omitted while nothing has answered, which is what keeps the
+    # question open for a container's hint on the next load — and keeps every
+    # project written before this existed byte-identical.
+    if ws.pixel_aspect is not None:
+        document["pixel_aspect"] = list(ws.pixel_aspect)
     return document
 
 
@@ -554,6 +567,9 @@ def load_project(path: str) -> LoadedProject:
         entries=[entry for entry in parsed if entry is not None],
         current=current,
         hidden_pixel_presets=hidden,
+        # None for a missing or malformed ratio, which is the same state a
+        # project that has never been asked is in: the hint gets to answer.
+        pixel_aspect=parse_aspect(data.get("pixel_aspect")),
     )
 
 

@@ -66,13 +66,19 @@ MAX_VISIBLE_ROWS = 16
 SEARCH_THRESHOLD = 8
 
 
-def _matches(text: str, needles: Sequence[str]) -> bool:
+def matches_search(text: str, needles: Sequence[str]) -> bool:
     """Whether ``text`` contains every word of the search, in any order.
 
     Word-wise rather than one substring so "snes 4" finds "SNES 4bpp (8x8)":
     these names put the machine, the depth and the tile size in an order the user
     has no reason to have memorised, and a literal-substring search makes the
     user reproduce it.
+
+    Shared with the files dock's filter
+    (:class:`~celpix.ui.file_list_panel.FileListPanel`), so the one search
+    gesture in the app means the same thing wherever it is typed — a slice named
+    "003 Object tiles ($4000) - disk A trk 24" is found by "object disk a" for
+    exactly the reason a format is.
     """
     lowered = text.lower()
     return all(needle in lowered for needle in needles)
@@ -230,7 +236,7 @@ class SearchableComboBox(CompactComboBox):
             if self.is_heading(row):
                 pending = row
                 continue
-            if not _matches(self.itemText(row), needles):
+            if not matches_search(self.itemText(row), needles):
                 continue
             if pending >= 0:
                 model.appendRow(self._popup_heading(self.itemText(pending)))

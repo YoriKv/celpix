@@ -229,7 +229,15 @@ class TextWindow(QWidget):
         # of it belongs to. They agree except while a code is being composed or a
         # write has been refused, which is the one state ``show_text`` must not
         # overwrite (see :attr:`_drafting`).
+        #
+        # The **committed** string keeps its own unit map beside it, because a
+        # draft is taken back by putting both of them back at once
+        # (:meth:`_revert`): the map is one id per character of the body, and a
+        # body restored under the draft's map is a field where every offset past
+        # the edit names the wrong piece — one Backspace then reads two cells as
+        # one and blanks a letter nobody touched.
         self._committed = ""
+        self._committed_units: tuple[int, ...] = ()
         self._body = ""
         self._units: tuple[int, ...] = ()
         self._drafting = False
@@ -260,6 +268,10 @@ class TextWindow(QWidget):
 
         self._guide = _CommandGrid(3, self)
         self._guide_row = self._guide.layout_
+        # The captions, tokens and descriptions the row was last built from, so a
+        # refresh that says the same thing leaves the buttons standing
+        # (:meth:`_build_guide`).
+        self._commands: list[tuple[str, str, str]] = []
 
         self._wrap = QCheckBox("Wrap")
         self._wrap.setToolTip(
@@ -322,7 +334,7 @@ class TextWindow(QWidget):
         title: str,
         body: str,
         units: tuple[int, ...],
-        commands: list[tuple[str, str]],
+        commands: list[tuple[str, str, str]],
         status: str,
         badge: Badge | None = None,
         *,
@@ -377,7 +389,7 @@ class TextWindow(QWidget):
                 self._syncing = False
             self._note_span()
             self._fresh = True
-        self._committed = body
+        self._committed, self._committed_units = body, units
         if not self.isVisible():
             if not self._positioned and self.parentWidget() is not None:
                 anchor = self.parentWidget().frameGeometry().topRight()
@@ -793,7 +805,7 @@ class TextWindow(QWidget):
         user may be reaching for is worse than the comparison costs.
         """
         wanted = commands[:MAX_COMMAND_BUTTONS]
-        if wanted == getattr(self, "_commands", None):
+        if wanted == self._commands:
             return
         self._commands = wanted
         buttons = []
@@ -832,7 +844,14 @@ class TextWindow(QWidget):
         self.undo_requested.emit()
 
     def _revert(self) -> None:
-        """Put the file's own string back in the field, discarding the draft."""
+        """Put the file's own string back in the field, discarding the draft.
+
+        **The unit map goes back with it.** It is one id per character, so a
+        committed body left under the draft's map is a field whose every offset
+        past the edit names the wrong piece: the next Backspace reads two cells
+        as one and blanks a letter nobody touched
+        (:attr:`_committed_units`).
+        """
         at = self._edit.textCursor().position()
         self._syncing = True
         try:
@@ -843,7 +862,8 @@ class TextWindow(QWidget):
         finally:
             self._syncing = False
         self._note_span()
-        self._body, self._drafting, self._fresh = self._committed, False, True
+        self._body, self._units = self._committed, self._committed_units
+        self._drafting, self._fresh = False, True
 
     def _insert(self, code: str) -> None:
         """Put a named command at the caret, as a step of its own.

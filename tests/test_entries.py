@@ -3352,3 +3352,123 @@ def test_a_binding_survives_the_rows_being_rearranged_between_copy_and_paste(
     assert copy is not view
     assert copy.tile_source is not None
     assert copy.tile_source.entry is bank  # not `other`, which now sits where it did
+
+
+def test_filter_narrows_the_list_to_matches_and_the_files_they_came_from(
+    qtbot, tmp_path
+) -> None:
+    """The files dock's filter: hide everything but the hits and their parents.
+
+    The gesture a mapped ROM needs — hundreds of slices under a handful of files,
+    and one of them wanted by name. What it must *not* do is disturb the list: the
+    order is the user's, and a filter is a way of looking rather than an edit.
+    """
+    a = _make_snes_file(tmp_path)
+    b = tmp_path / "b.4bpp.sfc"
+    b.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(32 * 8)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(a))
+    window._load_pixel(str(b))
+    file_a, file_b = window._workspace.entries
+    hero = window._workspace.add_slice(str(a), "hero walk frames", 32, 32)
+    boss = window._workspace.add_slice(str(a), "boss idle", 64, 32)
+    tiles_b = window._workspace.add_slice(str(b), "hero portrait", 32, 32)
+    panel = window._files_panel
+    window._activate_entry(boss)
+    loaded = window._workspace.current
+
+    def shown():
+        """Every entry row the user can actually see, in on-screen order."""
+        out = []
+
+        def walk(item) -> None:
+            for i in range(item.childCount()):
+                child = item.child(i)
+                if child.isHidden():
+                    continue
+                out.append(child.text(0))
+                walk(child)
+
+        tree = panel._tree
+        for i in range(tree.topLevelItemCount()):
+            section = tree.topLevelItem(i)
+            if not section.isHidden():
+                walk(section)  # the section row itself is a heading, not an entry
+        return out
+
+    # Words in any order, like the format pickers: the match is on the label.
+    panel._filter.setText("walk hero")
+    assert shown() == [file_a.name, hero.name]
+    # The file is here because its slice is - and it brought only that slice,
+    # not the rest of its children.
+    assert panel._items[boss].isHidden()
+    assert panel._items[file_b].isHidden()
+    assert panel._items[hero].parent() is panel._items[file_a]
+
+    # A hit under each file brings both files, and each keeps its own hit only.
+    panel._filter.setText("hero")
+    assert shown() == [file_a.name, hero.name, file_b.name, tiles_b.name]
+
+    # Hiding the highlighted row must not read as the user choosing another one:
+    # the shown entry is still the one that was loaded, unfiltered by the filter.
+    assert window._workspace.current is loaded is boss
+
+    # A section with nothing left to show stops advertising itself.
+    panel._filter.setText("nothing matches this")
+    assert shown() == []
+    assert all(section.isHidden() for section in panel._sections.values())
+
+    # Cleared, the whole list is back - in the order it was always in.
+    panel._filter.clear()
+    assert shown() == [
+        file_a.name,
+        hero.name,
+        boss.name,
+        file_b.name,
+        tiles_b.name,
+    ]
+    assert not any(section.isHidden() for section in panel._sections.values())
+
+
+def test_ctrl_f_reaches_the_files_filter_from_the_canvas(qtbot, tmp_path) -> None:
+    """The key has to work from where the user actually is.
+
+    Selecting a row hands focus to the canvas, so a Ctrl+F scoped to the files
+    panel is dead in the one situation it exists for — hence a window action
+    (Navigate ▸ Find Entry) rather than a panel shortcut. A closed dock is
+    reopened by it too: a shortcut that silently focused an off-screen field
+    would look just as broken.
+    """
+    from PySide6.QtCore import Qt
+
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window._load_pixel(str(px))
+    panel = window._files_panel
+
+    window._canvas.setFocus()
+    qtbot.waitUntil(lambda: window._canvas.hasFocus())
+    qtbot.keyClick(window, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+    assert panel._filter.hasFocus()
+
+    # Typed over rather than appended to, so a second search replaces the first.
+    panel._filter.setText("stale")
+    window._canvas.setFocus()
+    qtbot.waitUntil(lambda: window._canvas.hasFocus())
+    qtbot.keyClick(window, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+    assert panel._filter.selectedText() == "stale"
+
+    # Escape gets back out of the filter, and takes the filter with it.
+    qtbot.keyClick(panel._filter, Qt.Key.Key_Escape)
+    assert panel._filter.text() == ""
+
+    # A closed dock comes back rather than the key doing nothing visible.
+    window._files_dock.hide()
+    window._canvas.setFocus()
+    qtbot.waitUntil(lambda: window._canvas.hasFocus())
+    qtbot.keyClick(window, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+    assert window._files_dock.isVisible()
+    assert panel._filter.hasFocus()

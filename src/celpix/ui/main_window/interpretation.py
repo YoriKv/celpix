@@ -95,7 +95,7 @@ SUBPAL_CELLS_TIP = (
 )
 
 # The Cols control's tooltip, and what it reads while a paged tilemap's assembly
-# owns the width (see MainWindow._settle_tilemap_assembly). Locked rather than
+# owns the width (see MainWindow._settle_tilemap_width). Locked rather than
 # left free because an assembly *is* a width: any other column count cuts the
 # pages at the wrong place and shears the picture.
 COLS_TIP = "Tiles per row"
@@ -107,10 +107,14 @@ COLS_TIP = "Tiles per row"
 # sit at the offsets the file gives them whatever the strip is doing.
 COLS_CELLS_TIP = "Cells per row\nA cell may be a metatile of several tiles"
 COLS_FRAMES_TIP = "Frames per row\nLays out the strip of frames, not the tiles in one"
-# Says what has taken Cols over. There is no control to point at — a paged file
-# states its own layout — so this names the *file* as the authority rather than
-# sending the user looking for a picker along some other row.
+# Says what has taken Cols over. There is no control to point at — a file that
+# fixes its width states it itself — so these name the *file* as the authority
+# rather than sending the user looking for a picker along some other row. Two
+# wordings because two different things do it, and the reason is the only part
+# the user can act on: one file assembles pages, the other draws a stamp per
+# entry (:attr:`~celpix.core.document.Document.drawn_columns`).
 COLS_ASSEMBLED_TIP = "Cells per row\nFixed by how this file's pages assemble"
+COLS_STAMPED_TIP = "Cells per row\nFixed by the stamp each of this file's entries draws"
 
 # The Block W×H spins' width. Wide enough for the one digit every arrangement in
 # hand uses, with room to read a two-digit value typed into Custom — the range
@@ -335,15 +339,15 @@ class InterpretationMixin:
         # derives this: a 4096-px bitmap of 8-px tiles is 512 columns.
         self._columns = value_spin(1, 512, 16, self._on_view_change)
         # The caption is kept for the same reason Rows' and Subpal's are: an
-        # assembled tilemap locks the pair and has to say what locked it
-        # (:meth:`~...rendering.RenderingMixin._settle_tilemap_assembly`).
+        # tilemap that fixes its own width locks the pair and has to say what
+        # locked it (:meth:`~...rendering.RenderingMixin._settle_tilemap_width`).
         self._columns_label = add_labelled(view, "Cols:", self._columns, COLS_TIP)
 
-        # A paged tilemap's assembly takes Cols over and has **no control at all**:
-        # every paged format celPix reads states its own layout, so there was never
-        # a choice to offer. That is why the caption above has to say what locked
-        # it (:data:`COLS_ASSEMBLED_TIP`) — there is nothing on screen to infer it
-        # from.
+        # A paged assembly and a dense stamp each take Cols over and have **no
+        # control at all**: every format that does either states its own layout, so
+        # there was never a choice to offer. That is why the caption above has to
+        # say what locked it (:data:`COLS_ASSEMBLED_TIP`,
+        # :data:`COLS_STAMPED_TIP`) — there is nothing on screen to infer it from.
 
         # How many tile-rows the window shows - the "render N rows" view setting.
         # Kept on self with its caption because View > Entire File locks the pair

@@ -347,3 +347,31 @@ def test_a_pan_drag_started_on_the_claimed_backing_moves_the_view(qtbot) -> None
 
     assert moved == [(20, 10)]
     assert viewport.cursor().shape() == Qt.CursorShape.OpenHandCursor
+
+
+def test_pixel_aspect_popup_offers_the_presets_and_keeps_an_unlisted_ratio(
+    qtbot,
+) -> None:
+    """Opening the popup must not silently re-answer the question.
+
+    A project can carry a ratio no preset lists — an older or newer build, or a
+    hand-edited file — and it still draws correctly. So the popup opens with
+    nothing selected there, and closing it on OK gives that same ratio back
+    rather than snapping to a preset the user never picked.
+    """
+    from celpix.core.aspect import PRESETS
+    from celpix.ui.pixel_aspect_dialog import PixelAspectDialog
+
+    listed = PixelAspectDialog((1, 2))
+    qtbot.addWidget(listed)
+    assert listed.chosen() == (1, 2)
+    assert len(listed._group.buttons()) == len(PRESETS)
+
+    unlisted = PixelAspectDialog((3, 5))
+    qtbot.addWidget(unlisted)
+    assert unlisted._group.checkedButton() is None
+    assert unlisted.chosen() == (3, 5)
+
+    # And picking a row is what changes the answer.
+    unlisted._group.buttons()[1].setChecked(True)
+    assert unlisted.chosen() == PRESETS[1][0]

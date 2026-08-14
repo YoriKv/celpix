@@ -895,7 +895,7 @@ class PixelEditMixin:
                 self._view_rows() * doc.tile_height,
             )
         across, down = grid.cell_tiles
-        cols = max(1, grid.assembled_columns or self._tilemap_columns())
+        cols = max(1, grid.drawn_columns or self._tilemap_columns())
         rows = ceil_div(len(grid.laid_out_cells), cols)
         return (cols * across * doc.tile_width, rows * down * doc.tile_height)
 

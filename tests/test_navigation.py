@@ -558,7 +558,7 @@ def test_grid_menu_applies_and_persists_as_a_local_preference(qtbot, tmp_path) -
         True,
     )
     assert reopened._grid_mode() is GridMode.PIXEL
-    assert reopened._canvas._grid_levels(4)[0][0] == (1, 1)  # drawing at that scale
+    assert reopened._canvas._grid_levels(4, 4)[0][0] == (1, 1)  # drawing at that scale
 
 
 def test_theme_menu_repaints_the_app_and_persists(qtbot, tmp_path) -> None:
@@ -797,10 +797,10 @@ def test_grid_levels_follow_the_mode_the_block_and_the_zoom(qtbot) -> None:
     c = _canvas_with_3x2_red(qtbot)  # 8x8 tiles
 
     def steps(z: int) -> list[tuple[int, int]]:
-        return [step for step, _color in c._grid_levels(z)]
+        return [step for step, _color in c._grid_levels(z, z)]
 
     def alphas(z: int) -> list[int]:
-        return [color.alpha() for _step, color in c._grid_levels(z)]
+        return [color.alpha() for _step, color in c._grid_levels(z, z)]
 
     # The fine (grey) level is the unit being worked in; the structural (blue)
     # one is what it sits inside — the 8-tile square at tile scale, the tile at
@@ -836,13 +836,13 @@ def test_grid_levels_follow_the_mode_the_block_and_the_zoom(qtbot) -> None:
 
     # And the levels are told apart by hue, not opacity alone — by role, so the
     # tile level is the grey one in tile mode and the blue one in pixel mode.
-    fine, coarse = (color for _step, color in c._grid_levels(16))
+    fine, coarse = (color for _step, color in c._grid_levels(16, 16))
     assert (fine.rgb(), coarse.rgb()) == (
         canvas_mod.GRID_FINE_COLOR.rgb(),
         canvas_mod.GRID_STRUCTURE_COLOR.rgb(),
     )
     c.set_grid(True, GridMode.TILE)
-    assert c._grid_levels(16)[0][1].rgb() == canvas_mod.GRID_FINE_COLOR.rgb()
+    assert c._grid_levels(16, 16)[0][1].rgb() == canvas_mod.GRID_FINE_COLOR.rgb()
 
 
 def test_arrangement_controls_reach_the_view_and_canvas(qtbot, tmp_path) -> None:
@@ -986,6 +986,58 @@ def test_canvas_paints_past_end_slots_as_background(qtbot) -> None:
     assert img_out.pixelColor(4, 4).rgb() != CANVAS_BACKGROUND.rgb()
 
 
+def test_cell_overlays_repaint_in_strips_exactly_as_in_one_pass(qtbot) -> None:
+    """The overlays draw the exposed band, so a strip must hold its whole share.
+
+    Every per-cell overlay - ids, palette rows, line ends - now loops the slots
+    the exposed rectangle covers rather than the window's (``Canvas.
+    _exposed_slots``), which is what keeps a repaint of a metatile map the cost
+    of what is on screen. The band is where that can go wrong: a label written
+    from a cell just outside the strip still puts ink inside it, so scrolling
+    would leave numbers behind. Repainting in strips has to come out pixel-for-
+    pixel identical to repainting the lot.
+
+    Under a **block** arrangement, where a slot does not sit where its number
+    says and the band is a period of the mapping rather than a run of rows - and
+    under a **non-square pixel**, where a row boundary in device pixels is not
+    the row height times the zoom but a rounded edge either side of it, which is
+    the case the band's slack is there for.
+    """
+    from PySide6.QtCore import QPoint, QRect
+    from PySide6.QtGui import QImage, QRegion
+
+    from celpix.ui.canvas import Canvas
+
+    canvas = Canvas()
+    qtbot.addWidget(canvas)
+    canvas.set_tile_size(8, 8)
+    canvas.set_zoom(4)  # big enough that the labels are drawn at all
+    canvas.set_pixel_aspect((8, 7))
+    image = QImage(8 * 8, 8 * 8, QImage.Format.Format_RGB32)
+    image.fill(0xFF202020)
+    canvas.set_image(image)
+    canvas.set_arrangement(2, 2, "row")  # 2x2 metatiles: 16 cells, 64 slots
+    # One id per cell (its first slot), a row on every slot, a line end on a
+    # cell in the middle of the picture - each overlay drawn from a different
+    # corner of its cell, which is what the band's slack has to cover.
+    canvas.set_tile_ids([slot if slot % 4 == 0 else None for slot in range(64)])
+    canvas.set_palette_rows([slot % 8 for slot in range(64)])
+    canvas.set_line_ends(frozenset({20, 40}))
+    canvas.set_selection([12, 13], as_rect=True)
+
+    whole = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+    canvas.render(whole, QPoint(), QRegion(canvas.rect()))
+
+    strips = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+    step = 13  # narrow, and no multiple of it lands on a cell boundary
+    for top in range(0, canvas.height(), step):
+        for left in range(0, canvas.width(), step):
+            band = QRect(left, top, step, step)
+            canvas.render(strips, QPoint(left, top), QRegion(band))
+
+    assert strips == whole
+
+
 def test_entire_file_still_locks_rows_on_a_pixel_entry(qtbot, tmp_path) -> None:
     """The temporary reason and the permanent one stay distinguishable."""
     window = MainWindow()
@@ -996,3 +1048,112 @@ def test_entire_file_still_locks_rows_on_a_pixel_entry(qtbot, tmp_path) -> None:
     # tests (``conftest._fresh_settings``), so it goes no further than this one.
     assert not window._rows.isEnabled()
     assert "Entire File" in window._rows.toolTip()
+
+
+def test_pixel_aspect_stretches_the_canvas_without_moving_a_pixel(qtbot) -> None:
+    """A non-square pixel is a display scale and nothing more.
+
+    The picture grows on one axis and the hit test still answers in the image's
+    own pixels — which is the whole contract the rest of the app relies on, since
+    a selection, an edit and an export all address those
+    (``docs/design/pixel-aspect.md`` §1).
+    """
+    from PySide6.QtCore import QPointF
+
+    c = _canvas_with_3x2_red(qtbot)  # 8x8 tiles, so a 24x16 image
+    c.set_zoom(3)
+    square = (c.size().width(), c.size().height())
+
+    # 1:2 — a pixel twice as tall as it is wide. The *taller* axis moves, so
+    # nothing is ever drawn at less than the zoom asked for.
+    c.set_pixel_aspect((1, 2))
+    assert (c.size().width(), c.size().height()) == (square[0], square[1] * 2)
+    c.set_pixel_aspect((2, 1))
+    assert (c.size().width(), c.size().height()) == (square[0] * 2, square[1])
+
+    # The hit test divides the stretch back out: under 1:2 at zoom 3 a pixel is
+    # 3 device pixels wide and 6 tall.
+    c.set_pixel_aspect((1, 2))
+    assert c._pixel_at(QPointF(3, 5)) == (1, 0)
+    assert c._pixel_at(QPointF(3, 7)) == (1, 1)
+    assert c._pixel_at(QPointF(7, 13)) == (2, 2)
+
+    # And square puts it back exactly, rather than to something that rounds to it.
+    c.set_pixel_aspect((1, 1))
+    assert (c.size().width(), c.size().height()) == square
+
+
+def test_pixel_aspect_reaches_every_surface_that_draws_pixels(qtbot, tmp_path) -> None:
+    """One project setting, one loop, every magnifying surface.
+
+    Named surfaces rather than a walk of the widget tree, because the point of
+    the check is that a surface cannot be *left out* of the sync — which is
+    exactly what a tree walk would hide.
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+
+    window._workspace.pixel_aspect = (1, 2)
+    window._sync_pixel_aspect()
+    surfaces = (
+        window._canvas,
+        window._tile_source_panel,
+        window._overlay._canvas,
+        window._animation._frame,
+        window._subsprites._panel,
+        window._font_alphabet._sheet,
+    )
+    for surface in surfaces:
+        assert surface._pixel_aspect == (1, 2), surface
+        assert (surface._zoom_x, surface._zoom_y) == (surface._zoom, surface._zoom * 2)
+
+
+def test_a_container_hint_seeds_the_pixel_aspect_but_only_once(qtbot, tmp_path) -> None:
+    """The hint answers a question nobody has answered, and never overrules one.
+
+    Both halves matter: the setting is one for the whole project, so the second
+    file to state a shape must not move it under the first — and a user who has
+    chosen must not be overruled by opening a file
+    (``docs/design/pixel-aspect.md`` §4).
+    """
+    from celpix.core.context import KEY_PIXEL_ASPECT, PipelineContext
+    from celpix.core.errors import Stage
+    from celpix.plugins.base import PluginInfo, ReadSource
+    from celpix.plugins.registry import default_registry
+
+    class _Machine:
+        """A container that knows which machine it is reading."""
+
+        info = PluginInfo(
+            id="container.tall-pixels", name="Tall", stage=Stage.CONTAINER
+        )
+
+        def read(self, src: ReadSource, ctx: PipelineContext) -> bytes:
+            ctx.set(KEY_PIXEL_ASPECT, (1, 2))
+            return src.window()
+
+    registry = default_registry()
+    registry.register(_Machine())
+    window = MainWindow(registry=registry)
+    qtbot.addWidget(window)
+
+    first = _make_snes_file(tmp_path)
+    window._load_pixel(str(first))
+    entry = window._workspace.entries[0]
+    assert window._workspace.pixel_aspect is None  # plain bytes state nothing
+
+    # Re-read through the container that does state one: the project takes it.
+    entry.container_id = "container.tall-pixels"
+    window._workspace.drop_document(entry)
+    window._load_entry(entry)
+    window._activate_entry(entry)
+    assert window._workspace.pixel_aspect == (1, 2)
+    assert window._canvas._pixel_aspect == (1, 2)
+
+    # A second file stating the same kind of thing does not get to re-answer,
+    # and neither does the container once the user has chosen.
+    window._workspace.pixel_aspect = (2, 1)
+    window._workspace.drop_document(entry)
+    window._load_entry(entry)
+    assert window._workspace.pixel_aspect == (2, 1)

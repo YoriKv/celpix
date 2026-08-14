@@ -289,7 +289,7 @@ def test_a_block_flip_reorders_the_cells_and_flips_each(qtbot, tmp_path) -> None
     from celpix.ui.main_window.selection import SelectionShape
 
     # A panel, so the block can be a 2x2 at two columns: a screen file's four
-    # pages own the column count (:meth:`_settle_tilemap_assembly`).
+    # pages own the column count (:meth:`_settle_tilemap_width`).
     window, _ = _bound_tilemap(
         qtbot,
         tmp_path,

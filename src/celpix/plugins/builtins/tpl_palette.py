@@ -110,6 +110,7 @@ class TplPaletteContainer:
         short_name="TPL",
         content_kinds=(ContentKind.PALETTE,),
         category="Authoring tools",
+        preserves_offsets=True,
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:

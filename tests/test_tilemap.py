@@ -1854,6 +1854,84 @@ def test_a_stamped_layout_resolves_and_restamps_by_the_block(tmp_path) -> None:
     ]
 
 
+def test_a_dense_stamped_chain_expands_every_entry_into_a_stamp() -> None:
+    """The other file shape: one entry per stamp and no filler, so every entry is
+    read and the picture is four times the file rather than the same size. Read as
+    sparse it would draw every other entry at a quarter of the map's size, and
+    three quarters of the file would be unreachable."""
+    from celpix.core.tilemap import expand_stamps
+
+    source = [Cell(index=100 + at) for at in range(16)]
+    # Two entries across, two down — a quarter of the sparse case's file for the
+    # same picture, because nothing here is filler.
+    cells = [Cell(index=0), Cell(index=2), Cell(index=8), Cell(index=10)]
+    out = expand_stamps(cells, source, 2, (2, 2), 4, carry_rows=False, dense=True)
+    assert len(out) == len(cells) * 4
+    assert [cell.index for cell in out] == [
+        100, 101, 102, 103,
+        104, 105, 106, 107,
+        108, 109, 110, 111,
+        112, 113, 114, 115,
+    ]  # fmt: skip
+
+    # The arrangement this exists for: a map byte selecting a **packed record** of
+    # four tile indices, which is a 2-wide source, so one stamp is two whole rows
+    # of it and the four offsets are 0, 1, 2, 3 — the record's own bytes, in the
+    # order the hardware draws them (top-left, top-right, bottom-left, bottom-
+    # right). The codec is what turns the byte into the record's first cell.
+    table = [Cell(index=at) for at in range(8)]
+    records = [Cell(index=0), Cell(index=4)]
+    packed = expand_stamps(records, table, 1, (2, 2), 2, carry_rows=False, dense=True)
+    assert [cell.index for cell in packed] == [0, 1, 2, 3, 4, 5, 6, 7]
+
+
+def test_a_dense_stamped_map_fixes_its_own_width_and_restamps_by_the_stamp() -> None:
+    """The document end: the file's width counts entries, so the picture is wider
+    than the file states and the layout has to take that from the document rather
+    than from the Cols spin. A click still edits the one entry its stamp came from
+    — the same rule as the sparse case, over a different entry grid."""
+    from celpix.core.context import KEY_TILEMAP_COLUMNS
+    from celpix.core.document import CellChain, Document
+
+    ctx = PipelineContext()
+    ctx.set(KEY_TILEMAP_COLUMNS, 2)  # two *stamps* across, not two positions
+    source = [Cell(index=100 + at) for at in range(16)]
+    doc = Document(
+        pixel_data=b"",
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id=SNES_BG, write_enabled=False
+        ),
+        palette_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id="", write_enabled=False
+        ),
+        cells=[Cell(index=0), Cell(index=2), Cell(index=8), Cell(index=10)],
+        chain=CellChain(source, False, stamp=(2, 2), source_columns=4, dense=True),
+        tilemap_ctx=ctx,
+    )
+    # Four entries, sixteen positions, and a picture four cells across where the
+    # file says two — laid out at the file's own number it would shear.
+    assert doc.drawn_positions == 16
+    assert doc.drawn_columns == 4
+    assert doc.drawn_cells[5].index == 105
+    assert [doc.cell_at(at) for at in (0, 1, 4, 5)] == [0, 0, 0, 0]
+    assert [doc.cell_at(at) for at in (2, 7, 8, 15)] == [1, 1, 2, 3]
+
+    doc.cells[doc.cell_at(5)] = Cell(index=8)
+    doc.resolve()
+    assert [cell.index for cell in doc.drawn_cells[:6]] == [
+        108,
+        109,
+        102,
+        103,
+        112,
+        113,
+    ]
+
+
 # -- panels ----------------------------------------------------------------
 def _pnl_bytes(*, tile_size=0, width_exp=1, height_exp=1, body=b"") -> bytes:
     """A panel whose cell-size decoy and two stamp exponents are set as asked."""

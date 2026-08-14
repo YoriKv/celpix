@@ -125,9 +125,11 @@ class TiffContainer:
         magic=((0, _LITTLE), (0, _BIG)),
         # The tag the Files list shows beside a filename: "board.tif (TIFF)".
         short_name="TIFF",
-        # The strips are joined end to end, so a position in the result names
-        # no position in the file. Set it on any container whose read reorders,
-        # and slicing and offset palettes stop being offered.
+        # The strips are joined end to end, so a position in the result names no
+        # position in the file. This is the default and is spelled out because it
+        # is the interesting fact about this container: a slice of it and an
+        # offset palette on it resolve against these bytes rather than the file's.
+        # The declaration to think twice about is the other one — see _example.py.
         preserves_offsets=False,
     )
 

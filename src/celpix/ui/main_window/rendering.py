@@ -37,6 +37,7 @@ from celpix.ui.main_window.interpretation import (
     COLS_ASSEMBLED_TIP,
     COLS_CELLS_TIP,
     COLS_FRAMES_TIP,
+    COLS_STAMPED_TIP,
     COLS_TIP,
     SUBPAL_CELLS_TIP,
     SUBPAL_TIP,
@@ -216,10 +217,11 @@ class RenderingMixin:
         at 1, and above by the cell count — a width past the map is the same
         picture with empty space beside it, worth avoiding but not refusing.
 
-        An **assembled** document is the exception, and the same one the renderer
-        makes: its width is fixed by how its pages are laid out, so it comes from
-        the document rather than the spin
-        (:attr:`~celpix.core.document.Document.assembled_columns`). Asking the same
+        A document that **fixes** its own width is the exception, and the same one
+        the renderer makes: an assembly's pages and a dense map's stamps both cut
+        the row at a place the file decided, so the number comes from the document
+        rather than the spin
+        (:attr:`~celpix.core.document.Document.drawn_columns`). Asking the same
         authority is what keeps the selection reading the canvas off the grid the
         picture was actually placed on, instead of relying on a sync pass having
         already pushed that number into the spin.
@@ -230,7 +232,7 @@ class RenderingMixin:
         # takes a position of its own
         # (:attr:`~celpix.core.document.Document.drawn_positions`).
         count = self._doc.drawn_positions
-        columns = self._doc.assembled_columns or self._columns.value()
+        columns = self._doc.drawn_columns or self._columns.value()
         return max(1, min(columns, count or 1))
 
     def _sprite_sheet(self):  # noqa: ANN201 - a pipeline.SpriteSheet
@@ -263,26 +265,29 @@ class RenderingMixin:
         width = self._tilemap_columns_hint(entry)
         if width and not restored:
             doc = entry.doc
-            # A paged file's width is its assembly's, not one page's — and the
-            # document is where that is decided, so this seeds Cols with the same
-            # number the layout is about to use rather than one page's worth of it.
-            if doc is not None and doc.assembled_columns:
-                width = doc.assembled_columns
+            # A file that fixes its own width states it in its own unit — one
+            # page, one row of stamps — and the document is where that is turned
+            # into the width the picture is laid out at, so this seeds Cols with
+            # the same number the layout is about to use rather than that unit.
+            if doc is not None and doc.drawn_columns:
+                width = doc.drawn_columns
             with signals_blocked(self._columns):
                 self._columns.setValue(width)
             if doc is not None:
                 doc.view.columns = width
 
-    def _settle_tilemap_assembly(self) -> None:
-        """Let a paged tilemap's assembly own Cols while it applies.
+    def _settle_tilemap_width(self) -> None:
+        """Let a tilemap that fixes its own width own Cols while it applies.
 
         The tilemap counterpart of :meth:`_settle_bitmap_width_and_columns`, and
         it runs after that one for the same reason it exists: both take the column
-        count over, and the last word has to be one of them. A paged tilemap wins
-        because its width is not a preference at all — pages are cut at a fixed
-        size, so any column count but ``pages_across × page width`` splits them at
-        the wrong place and shears the picture into diagonal stripes
-        (``docs/design/tilemap-entry.md`` §6).
+        count over, and the last word has to be one of them. A tilemap wins
+        wherever its width is not a preference at all
+        (:attr:`~celpix.core.document.Document.drawn_columns`) — pages are cut at
+        a fixed size and a dense map's entries are one per stamp, so any column
+        count but the one the file implies breaks the row at the wrong place and
+        shears the picture into diagonal stripes
+        (``docs/design/tilemap-entry.md`` §3.1, §6).
 
         **There is no assembly control.** Every paged format celPix reads states
         its own layout — a screen file's four quadrants are one 64x64 tilemap and
@@ -296,11 +301,11 @@ class RenderingMixin:
         the widget, not the mechanism.
 
         What is left here is the width, which is not a choice either: it *is* the
-        assembly, and the spin mirrors it.
+        assembly (or the stamp), and the spin mirrors it.
         """
         doc = self._doc
-        pages = doc.pages if doc is not None else 0
-        if not pages or doc is None:
+        width = doc.drawn_columns if doc is not None else 0
+        if not width or doc is None:
             # Cols is left exactly as the bitmap-width pass set it: taking it over
             # is the only thing this pass does to it, so there is nothing to hand
             # back that the earlier owner has not already decided.
@@ -311,7 +316,6 @@ class RenderingMixin:
         # The spin **mirrors** the width rather than setting it: the layout and the
         # selection both take it from the document, so this is what puts the number
         # where the user can read it (and where a project stores it).
-        width = doc.assembled_columns
         if self._columns.value() != width:
             with signals_blocked(self._columns):
                 self._columns.setValue(width)
@@ -332,10 +336,16 @@ class RenderingMixin:
         """
         doc = self._doc
         if locked:
-            # Only a paged grid map gets here — a sprite object is never paged
-            # (:attr:`~celpix.core.document.Document.pages`) — so the locked
-            # wording speaks cells and needs no reading of its own.
-            tip = COLS_ASSEMBLED_TIP
+            # Only a grid map gets here — a sprite object neither pages nor stamps
+            # — so the locked wording speaks cells and needs no reading of its own.
+            # Which of the two took it over does have to be said, though: the user
+            # is being told why the spin is dead, and "pages" on a map that has
+            # none sends them looking for something that is not there.
+            tip = (
+                COLS_ASSEMBLED_TIP
+                if doc is not None and doc.pages
+                else COLS_STAMPED_TIP
+            )
         elif doc is None or not doc.is_tilemap:
             tip = COLS_TIP
         else:
@@ -615,8 +625,8 @@ class RenderingMixin:
         self._settle_bitmap_width_and_columns()
         # And a paged tilemap's assembly owns it in turn, so it settles after: two
         # passes can claim Cols and only the second can have the last word (see
-        # :meth:`_settle_tilemap_assembly`).
-        self._settle_tilemap_assembly()
+        # :meth:`_settle_tilemap_width`).
+        self._settle_tilemap_width()
         cols = self._columns.value()
         # Rows is a free display-window height (bounded only by the spin's own 256
         # cap), not by the data. Asking for more rows than the file fills just
