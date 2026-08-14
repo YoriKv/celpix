@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.10 - unreleased
+## v0.5.10 - 2026-08-14
 
 - Added a filter box in the files list
 - Added Pixel Aspect setting for rendering 2:1 and other pixel aspect ratios
