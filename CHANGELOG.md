@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.11 - unreleased
+
+- Fixes
+
 ## v0.5.10 - 2026-08-14
 
 - Added a filter box in the files list

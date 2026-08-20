@@ -225,6 +225,41 @@ def test_rectangle_drag_selects_a_block_and_shape_switch_collapses(
     assert window._canvas._selection_as_rect
 
 
+def test_select_all_makes_a_rectangle_in_rectangle_shape(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Select All takes the window in the shape the picker is on. A run instead
+    would be a selection none of the rectangle-only edits (a block transform, a
+    cell paste, a stamp) could act on - and the user asked for a rectangle."""
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
+    window._columns.setValue(8)
+    window._rows.setValue(4)
+    _rect_shape(window, tmp_path)
+
+    window._select_all()
+    assert window._rect_size == (8, 4)  # the whole window, as one block
+    assert window._selection_tiles() == list(range(32))
+    assert window._canvas._selection_as_rect
+
+    # And under a 2x2 block arrangement, where a row of blocks is two canvas rows
+    # deep: the rectangle is still the window, only its tiles arrive block by
+    # block rather than row by row.
+    window._block_cols.setValue(2)
+    window._block_rows.setValue(2)
+    window._select_all()
+    assert window._rect_size == (8, 4)
+    assert sorted(window._selection_tiles()) == list(range(32))
+
+    # Scoped to the window, not the file: the rectangle starts where the view is.
+    window._block_cols.setValue(1)
+    window._block_rows.setValue(1)
+    window._nav_rows(6)
+    assert window._offset == 32
+    window._select_all()
+    assert window._rect_size == (8, 4)
+    assert window._selection_tiles() == list(range(32, 64))
+
+
 def test_rectangle_collapses_when_the_view_reshuffles_its_tiles(
     qtbot, tmp_path, monkeypatch
 ) -> None:

@@ -1148,6 +1148,12 @@ class SelectionMixin:
         and selecting a multi-megabyte ROM would mean decoding and rendering the
         whole thing onto the clipboard. On a tilemap the window *is* the file —
         it is always drawn entire — so this takes every cell.
+
+        In the shape the picker is on, as a drag over the whole window would make
+        it: a rectangle selection is what everything downstream of one on a
+        tilemap acts on (the cell clipboard, a block flip, a stamp), so handing
+        those a run because the selection happened to be made by keystroke would
+        make Select All the one gesture they can't act on.
         """
         if self._doc is None:
             return
@@ -1157,7 +1163,28 @@ class SelectionMixin:
         count = min(self._window_slots(), self._selection_extent() - self._offset)
         if count <= 0:
             return
+        if self._selection_shape.currentData() is SelectionShape.RECT:
+            self._select_all_rect(count)
+            return
         self._select_tiles(self._offset, self._offset + count - 1)
+
+    def _select_all_rect(self, count: int) -> None:
+        """The window's first ``count`` slots as one rectangle of cells.
+
+        Sized from where the slots actually *land* rather than from the column
+        count, because under a block arrangement the two differ: a partial-width
+        block column places no tiles, and a row of blocks is several canvas rows
+        deep. Taking the extent of the positions gets the rectangle that encloses
+        exactly what is drawn, whatever the arrangement placed it.
+        """
+        layout = self._view_layout()
+        positions = [layout.slot_to_pos(slot) for slot in range(count)]
+        cols = max(x for x, _ in positions) + 1
+        rows = max(y for _, y in positions) + 1
+        tiles = self._rect_tiles_for(0, cols, rows)
+        if not tiles:
+            return
+        self._set_rect_selection((cols, rows), tiles)
 
     def _show_canvas_menu(self, pos: QPoint) -> None:
         """The canvas's right-click menu - the same QActions the Edit, Palette
