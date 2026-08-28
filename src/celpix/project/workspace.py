@@ -1106,9 +1106,9 @@ class Workspace:
     def reorder(self, entry: Entry, before: Entry | None) -> bool:
         """Move ``entry`` so it sits immediately in front of ``before``.
 
-        The single reordering primitive, behind both the drag gesture and
-        Shift+Up/Down: every kind's order is the user's, and one operation says
-        so for all of them. ``before`` is the entry the moved row lands in front
+        The single reordering primitive, behind the drag gesture, Alt+Up/Down and
+        the sorts: every kind's order is the user's, and one operation says so for
+        all of them. ``before`` is the entry the moved row lands in front
         of, ``None`` for last in its own group. False when nothing moved.
 
         A **file takes its slices and bookmarks with it**. They are matched by

@@ -20,6 +20,14 @@ that file's bytes" (``docs/design/tilemap-entry.md`` §2). The two are allowed t
 disagree — a tilemap slice of a ROM appears under Tilemaps, nested beneath a
 pixel file that sits under Pixels.
 
+**Several rows can be selected at once** — Shift for a range, Ctrl for one more
+— and the *first* of them stays the open document: extending a selection never
+switches the view, so the picture on the canvas is still the row the user opened.
+Only the two operations that mean something over a set of rows act on the whole
+selection (Remove, and the one-step Move Up/Down); everything else here is about
+one entry, and goes dead while more than one is picked. The window's own
+entry-scoped menu rows do the same (``MainWindow._sync_entry_scope``).
+
 A **filter field** sits under the list, matching the same way the format pickers'
 search does (:func:`~celpix.ui.searchable_combo.matches_search`) — every word
 typed, in any order. A mapped ROM runs to hundreds of rows, and scrolling for one
@@ -32,6 +40,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QSize, Qt, Signal
 from PySide6.QtGui import (
+    QAction,
     QBrush,
     QColor,
     QIcon,
@@ -123,6 +132,27 @@ DUPLICATE_KEY = QKeySequence("Ctrl+D")
 FILTER_KEY = QKeySequence.StandardKey.Find
 
 
+def _stepped(group: list[Entry], picked: set[Entry], delta: int) -> list[Entry]:
+    """``group`` with every row in ``picked`` moved one place ``delta``.
+
+    Each picked row is swapped past its unpicked neighbour, working from the end
+    the rows are moving *towards*. Two things fall out of that order rather than
+    needing a rule of their own: a run of picked rows travels as a block, because
+    by the time the second of them is reached the first has already vacated the
+    slot behind it; and a run that has run into the end of the group pins the rows
+    behind it, because their neighbour is picked too and no swap applies. So a
+    selection keeps both its own order and its shape, and a Move Up repeated at
+    the top of a list is a no-op rather than a slow collapse.
+    """
+    order = list(group)
+    step = -1 if delta < 0 else 1
+    span = range(1, len(order)) if step < 0 else range(len(order) - 2, -1, -1)
+    for at in span:
+        if order[at] in picked and order[at + step] not in picked:
+            order[at], order[at + step] = order[at + step], order[at]
+    return order
+
+
 class _EntryTree(ShortcutIsland, QTreeWidget):
     """A tree that records when a selection change is driven by the keyboard,
     and owns the Delete key while it has focus.
@@ -147,15 +177,18 @@ class _EntryTree(ShortcutIsland, QTreeWidget):
     bound nowhere else in the window, so it arrives as an ordinary press and only
     has to be recognised before the base class sees it.
 
-    Shift+arrows reach it the same way the editing keys do, and it claims the
-    vertical pair to reorder rows (they resize the view window everywhere else) —
-    the keyboard spelling of the drag. Selection is single-item here, so nothing
-    is lost: Shift+Up/Down would otherwise be a second way to spell the bare
-    arrows.
+    Selection is **extended**: Shift for a range, Ctrl for one more row, and
+    Shift+arrows for a range from the keyboard — which is what those keys mean in
+    every list, and so is what they mean here. Reordering rows has no such
+    convention to borrow, and takes **Alt+Up/Down**. That reaches this widget for
+    the same reason Alt+Left/Right reach the window's Back and Forward: the
+    app-wide navigation filter declines anything carrying Alt
+    (``NavigationMixin._handle_nav_key``), so the key arrives here as an ordinary
+    press.
     """
 
-    delete_pressed = Signal()  # Delete with the list focused - remove the entry
-    move_pressed = Signal(int)  # Shift+Up/Down - reorder by -1 / +1
+    delete_pressed = Signal()  # Delete with the list focused - remove the entries
+    move_pressed = Signal(int)  # Alt+Up/Down - reorder by -1 / +1
     cut_pressed = Signal()
     copy_pressed = Signal()
     paste_pressed = Signal()
@@ -167,6 +200,10 @@ class _EntryTree(ShortcutIsland, QTreeWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.key_navigating = False
+        # Shift for a range, Ctrl for one more row - what a user reaches for to
+        # remove or move a handful of entries in one gesture. What a multi-row
+        # selection then *means* is the panel's question, not the tree's.
+        self.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         # Rows are dragged to reorder them and nothing else, so the drag never
         # leaves the widget and never carries a payload of its own: the drop
         # handler below reads the dragged row off the tree and reports a position
@@ -198,7 +235,7 @@ class _EntryTree(ShortcutIsland, QTreeWidget):
             self.duplicate_pressed.emit()
             event.accept()
             return
-        if event.modifiers() == Qt.KeyboardModifier.ShiftModifier and event.key() in (
+        if event.modifiers() == Qt.KeyboardModifier.AltModifier and event.key() in (
             Qt.Key.Key_Up,
             Qt.Key.Key_Down,
         ):
@@ -217,6 +254,12 @@ class _EntryTree(ShortcutIsland, QTreeWidget):
         # data: the drag never leaves this widget, so the item itself is the
         # honest handle, and Qt's default encoding would only give it back as a
         # row number in a tree that is about to change shape.
+        # A drag moves the one row it started on, so it has nothing to say about
+        # a set of them: refused outright rather than quietly moving the row
+        # under the cursor and leaving the rest behind. Move Up/Down is what
+        # reorders a multi-row selection.
+        if len(self.selectedItems()) > 1:
+            return
         self._dragged = self.currentItem()
         # Qt accepts a drop *between* two rows only when their **parent** is a
         # drop target, so the group being rearranged is opened for the length of
@@ -300,10 +343,14 @@ class _EntryTree(ShortcutIsland, QTreeWidget):
 
 class FileListPanel(QWidget):
     entry_activated = Signal(object)  # Entry — the user selected it in the list
-    remove_requested = Signal(object)  # Entry — take it out of the list
+    # The rows selected changed — the window re-decides its one-entry menu rows.
+    selection_changed = Signal()
+    remove_requested = Signal(object)  # list[Entry] — take them out of the list
     # Entry, and the row it should land in front of (None — last among its
-    # siblings). One signal behind both the drag and Shift+Up/Down.
+    # siblings). The drag's signal, and what one row's Move Up/Down comes down to.
     reorder_requested = Signal(object, object)
+    # list[Entry], -1 / +1 — step every selected row one place within its group.
+    move_requested = Signal(object, int)
     # Entry, SortKey — put the group this row sits in into that order.
     sort_requested = Signal(object, object)
     copy_requested = Signal(object)  # Entry — put it and its children on the clipboard
@@ -350,9 +397,11 @@ class FileListPanel(QWidget):
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._show_menu)
         # Selection *is* activation: a single click switches the active view,
-        # like every file-switcher sidebar. Programmatic syncs (set_current)
-        # block signals so only user selection emits.
-        self._tree.currentItemChanged.connect(self._on_current_item_changed)
+        # like every file-switcher sidebar — but only while the click leaves one
+        # row picked, so extending a selection never moves the view off the entry
+        # it started from. Programmatic syncs (set_current) block signals so only
+        # user selection emits.
+        self._tree.itemSelectionChanged.connect(self._on_selection_changed)
         # Inline rename (slices only): double-click or the context menu opens
         # the tree's item editor. The editable flag is set just for the edit —
         # a permanently editable item would also open on stray clicks.
@@ -378,8 +427,8 @@ class FileListPanel(QWidget):
         # Delete removes the highlighted entry - handled by the tree itself (see
         # _EntryTree) rather than a QShortcut, so it wins the key over the
         # canvas's window-wide Clear/Delete instead of overloading with it.
-        self._tree.delete_pressed.connect(self._remove_current)
-        self._tree.move_pressed.connect(self._move_current)
+        self._tree.delete_pressed.connect(self._remove_selected)
+        self._tree.move_pressed.connect(self._move_selected)
         self._tree.cut_pressed.connect(lambda: self._for_current(self.cut_requested))
         self._tree.copy_pressed.connect(lambda: self._for_current(self.copy_requested))
         self._tree.duplicate_pressed.connect(
@@ -387,10 +436,9 @@ class FileListPanel(QWidget):
         )
         # The one row action that means something with nothing highlighted, and
         # with the highlight on a section header: a paste with no target lands
-        # where the payload itself says it belongs.
-        self._tree.paste_pressed.connect(
-            lambda: self.paste_requested.emit(self._current_entry())
-        )
+        # where the payload itself says it belongs. Still one row's action, so a
+        # multi-row selection has no target to offer it (see _single_entry).
+        self._tree.paste_pressed.connect(self._paste_at_current)
         self._tree.reorder_dropped.connect(self.reorder_requested)
 
         # The filter, and the expansion it is holding open. A project's rows run
@@ -486,12 +534,14 @@ class FileListPanel(QWidget):
         :meth:`~celpix.project.workspace.Workspace.reorder`.
 
         A file's row carries its nested slices and bookmarks with it, since they
-        are its item's children. Expansion and the highlight live in the *view*
+        are its item's children. Expansion and the *selection* live in the view
         rather than on the item, so a row taken out comes back collapsed and
-        unhighlighted — both are put back explicitly. The highlight is restored to
-        whatever it was on, which need not be the moved row itself: reordering a
-        file while one of its slices is the shown entry takes that row out of the
-        tree too, and it must come back current.
+        unpicked — both are put back explicitly. The selection is restored whole,
+        and to whatever it was on, which need not be the moved row itself:
+        reordering a file while one of its slices is the shown entry takes that
+        row out of the tree too, and it must come back current; and a Move Up over
+        several picked rows re-places them one at a time, so each step has to hand
+        the others' highlight back or the next would find nothing selected.
         """
         found = self._placed(entry)
         if found is None:
@@ -513,13 +563,18 @@ class FileListPanel(QWidget):
         if target == index:
             return
         was_current = self._tree.currentItem()
+        was_selected = self._tree.selectedItems()
         was_expanded = item.isExpanded()
         with signals_blocked(self._tree):  # a take/re-insert must not re-activate
             parent_item.takeChild(index)
             parent_item.insertChild(target, item)
             item.setExpanded(was_expanded)
+            # Current first: setting it clears the selection down to that one row
+            # (the tree selects extended), so the rest go back after it.
             if was_current is not None:
                 self._tree.setCurrentItem(was_current)
+            for picked in was_selected:
+                picked.setSelected(True)
 
     def _section_root(self, kind: ContentKind) -> QTreeWidgetItem:
         """The section header for ``kind``, created on first use.
@@ -671,6 +726,15 @@ class FileListPanel(QWidget):
         return True, self._step_sibling(entry, delta + (1 if delta > 0 else 0))
 
     def set_current(self, entry: Entry | None) -> None:
+        """Point the highlight at the entry the canvas is showing.
+
+        Setting the current row also narrows the selection to it, which is the
+        right answer: the view moved, so whatever set of rows was picked before
+        was picked around a different document. The change is announced by hand —
+        the tree's own signal is blocked here so a programmatic sync cannot read
+        as a user's activation, and the window still has to re-decide the menu
+        rows a multi-row selection had switched off.
+        """
         previous, self._current = self._current, entry
         with signals_blocked(self._tree):
             self._tree.setCurrentItem(self._items.get(entry) if entry else None)
@@ -680,6 +744,68 @@ class FileListPanel(QWidget):
             item = self._items.get(changed) if changed is not None else None
             if item is not None:
                 self._refresh_item(changed, item)
+        self.selection_changed.emit()
+
+    # -- what is selected ----------------------------------------------------
+    def selected_entries(self) -> list[Entry]:
+        """Every selected row's entry, in the order the rows are shown.
+
+        Walked rather than read off ``selectedItems``, which answers in selection
+        order and includes rows the **filter** is hiding: a Shift-range spans the
+        model, so it picks up whatever the filter took out of the middle of it,
+        and a Remove over that would take entries the user could not see it name.
+        A hidden row is not part of what was picked.
+
+        Section headers are not selectable and so never appear; a rename in
+        flight yields nothing, for the reason :meth:`_current_entry` gives.
+        """
+        if self._editing is not None:
+            return []
+        picked: list[Entry] = []
+
+        def visit(item: QTreeWidgetItem) -> None:
+            for at in range(item.childCount()):
+                child = item.child(at)
+                entry = child.data(0, Qt.ItemDataRole.UserRole)
+                if entry is not None and child.isSelected() and not child.isHidden():
+                    picked.append(entry)
+                visit(child)
+
+        for at in range(self._tree.topLevelItemCount()):
+            visit(self._tree.topLevelItem(at))
+        return picked
+
+    def has_multi_selection(self) -> bool:
+        """Whether more than one row is picked — the state that switches off
+        every action about a single entry, here and in the window's menus."""
+        return len(self.selected_entries()) > 1
+
+    def move_orders(self, entries: list[Entry], delta: int) -> list[list[Entry]]:
+        """The new order of each on-screen group a one-step move of ``entries``
+        would rearrange; the groups that cannot move are left out.
+
+        A selection can straddle groups — a palette and a file sit under different
+        headings — so the answer is one order per group rather than one list. Each
+        is the whole group in its new order, which is what a reorder command
+        takes: a move of several rows is not a sequence of independent nudges (the
+        rows in front of them have to shuffle the other way), and an order says
+        the result without having to describe the shuffling.
+
+        Empty is the honest "nothing to do": every picked row in every group has
+        already run into the end it is moving towards.
+        """
+        picked = set(entries)
+        orders: list[list[Entry]] = []
+        heads: list[Entry] = []  # the groups already answered for, by first row
+        for entry in entries:
+            group = self.sibling_entries(entry)
+            if not group or any(group[0] is head for head in heads):
+                continue
+            heads.append(group[0])
+            order = _stepped(group, picked, delta)
+            if order != group:  # Entry is eq=False, so this compares identity
+                orders.append(order)
+        return orders
 
     def set_has_selection(self, active: bool) -> None:
         """Mirror whether the canvas has a tile selection (gates the
@@ -1183,12 +1309,23 @@ class FileListPanel(QWidget):
         )
 
     # -- interaction ---------------------------------------------------------
-    def _on_current_item_changed(self, item: QTreeWidgetItem | None, _prev) -> None:
-        # The Palettes header carries no entry — keyboard navigation can still
-        # land on it, and that must not read as an activation.
-        entry = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
-        if entry is not None:
-            self.entry_activated.emit(entry)
+    def _on_selection_changed(self) -> None:
+        """A row selection the *user* made — activate it, if it names one entry.
+
+        Driven by the selection rather than by the current row, which is what
+        keeps the first-picked row on screen while a Shift- or Ctrl-click extends
+        around it: Qt moves the current row to whatever was last clicked, so a
+        handler reading that would switch the view on every extension. One
+        selected row is the whole of what activation means here.
+
+        The Palettes header carries no entry and is not selectable, so it cannot
+        arrive as one; a row already on screen re-selecting itself is not an
+        activation either, and the window would ignore it anyway.
+        """
+        selected = self.selected_entries()
+        self.selection_changed.emit()
+        if len(selected) == 1 and selected[0] is not self._current:
+            self.entry_activated.emit(selected[0])
 
     def _current_entry(self) -> Entry | None:
         """The highlighted row's entry — None for nothing, a section header, or
@@ -1198,30 +1335,49 @@ class FileListPanel(QWidget):
             return None
         return item.data(0, Qt.ItemDataRole.UserRole)
 
+    def _single_entry(self) -> Entry | None:
+        """The one selected row's entry, or None while several are — the gate in
+        front of every action that has an answer for exactly one entry.
+
+        Read off the *selection* rather than off :meth:`_current_entry`, so the
+        row a key acts on is the row the user can see is picked.
+        """
+        selected = self.selected_entries()
+        return selected[0] if len(selected) == 1 else None
+
     def _for_current(self, signal) -> None:  # noqa: ANN001 — a Signal to emit
-        """Fire a one-entry row signal for the highlighted row, if there is one."""
-        entry = self._current_entry()
+        """Fire a one-entry row signal for the selected row, if there is just one."""
+        entry = self._single_entry()
         if entry is not None:
             signal.emit(entry)
 
-    def _remove_current(self) -> None:
-        """The Delete shortcut: request removal of the highlighted entry."""
-        self._for_current(self.remove_requested)
+    def _paste_at_current(self) -> None:
+        """The Paste shortcut: land the clipboard beside the one selected row.
 
-    def _move_current(self, delta: int) -> None:
-        """The Shift+Up/Down shortcut: reorder the highlighted row.
-
-        Every kind, unlike the file-only move this replaced: the order of the
-        whole list is the user's now, so a slice moves among its parent's
-        children and a palette among the palettes, each within the group its row
-        sits in.
+        Fires with *nothing* selected too — a paste with no target lands where the
+        payload itself says it belongs — but not with several, which name no one
+        place to put it.
         """
-        entry = self._current_entry()
-        if entry is None:
-            return
-        can_move, before = self.move_target(entry, delta)
-        if can_move:
-            self.reorder_requested.emit(entry, before)
+        if not self.has_multi_selection():
+            self.paste_requested.emit(self._current_entry())
+
+    def _remove_selected(self) -> None:
+        """The Delete shortcut: request removal of every selected entry."""
+        entries = self.selected_entries()
+        if entries:
+            self.remove_requested.emit(entries)
+
+    def _move_selected(self, delta: int) -> None:
+        """The Alt+Up/Down shortcut: step every selected row one place.
+
+        Every kind, unlike the file-only move this grew out of: the order of the
+        whole list is the user's, so a slice moves among its parent's children and
+        a palette among the palettes, each within the group its row sits in — and
+        a selection spanning two groups moves in both.
+        """
+        entries = self.selected_entries()
+        if entries:
+            self.move_requested.emit(entries, delta)
 
     def _on_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         # A bookmark's or palette's double-click is its primary action — jump
@@ -1291,7 +1447,7 @@ class FileListPanel(QWidget):
         *args: object,
         enabled: bool = True,
         shortcut=None,  # noqa: ANN001 — QKeySequence | StandardKey
-    ) -> None:
+    ) -> QAction:
         """One row of an entry's context menu: label, what it does, whether it is
         live.
 
@@ -1312,6 +1468,9 @@ class FileListPanel(QWidget):
         if shortcut is not None:
             action.setShortcut(shortcut)
         action.setEnabled(enabled)
+        # Returned so a caller can name it to :meth:`_only_these_live` — which is
+        # the only reason, so most call sites drop it.
+        return action
 
     def _add_container_info_action(self, menu: QMenu, entry: Entry) -> None:
         """What the container read, under the action that chooses which one.
@@ -1343,16 +1502,23 @@ class FileListPanel(QWidget):
             enabled=entry.doc is not None and entry.doc.pixel_config.write_enabled,
         )
 
-    def _add_order_actions(self, menu: QMenu, entry: Entry) -> None:
+    def _add_order_actions(
+        self, menu: QMenu, entry: Entry, moving: list[Entry]
+    ) -> list[QAction]:
         """Move Up / Move Down and the Sort submenu, on every kind of row.
+
+        ``moving`` is what the two move rows act on — the clicked row, or the
+        whole selection when the click landed inside one. They are two of the
+        three rows a multi-row selection leaves live, so they are handed back for
+        :meth:`_only_these_live` to spare.
 
         Every row's place in the list is the user's, so every row can be moved —
         within its own group, which is what all of these are gated on. The keys go
         in the label after a tab, which Qt renders in the shortcut column, rather
-        than being registered as the actions' shortcuts: Shift+Up/Down resize the
-        view window window-wide, and a real binding here would fire from anywhere
-        in the app. The working one is the tree's own key handling, which the
-        navigation filter already defers to while the list has focus.
+        than being registered as the actions' shortcuts: a real binding here would
+        fire from anywhere in the app, and reordering rows is a thing the *list*
+        does. The working one is the tree's own key handling, which the app-wide
+        navigation filter defers to while the list has focus.
 
         Sorting rearranges the **group** the clicked row is in rather than the
         whole list — the files of one section, or one file's children — since that
@@ -1376,15 +1542,20 @@ class FileListPanel(QWidget):
         disabled one.
         """
         menu.addSeparator()
-        for label, delta in (("M&ove Up\tShift+Up", -1), ("Move &Down\tShift+Down", 1)):
-            can_move, before = self.move_target(entry, delta)
-            self._entry_action(
-                menu,
-                label,
-                self.reorder_requested.emit,
-                entry,
-                before,
-                enabled=can_move,
+        live = []
+        for label, delta in (("M&ove Up\tAlt+Up", -1), ("Move &Down\tAlt+Down", 1)):
+            live.append(
+                self._entry_action(
+                    menu,
+                    label,
+                    self.move_requested.emit,
+                    moving,
+                    delta,
+                    # Live while *any* of the rows has somewhere to go: a
+                    # selection whose top row is already at the head of its group
+                    # still moves the rest (see :func:`_stepped`).
+                    enabled=bool(self.move_orders(moving, delta)),
+                )
             )
         # A group of one has no order to put right — a dead submenu, not a missing
         # one: the same rows with a second sibling would sort.
@@ -1396,6 +1567,7 @@ class FileListPanel(QWidget):
             self._entry_action(
                 sort, "&Offset", self.sort_requested.emit, entry, SortKey.OFFSET
             )
+        return live
 
     def _add_clipboard_actions(self, menu: QMenu, entry: Entry) -> None:
         """Cut / Copy / Paste / Duplicate, on every kind of row.
@@ -1450,6 +1622,30 @@ class FileListPanel(QWidget):
             shortcut=DUPLICATE_KEY,
         )
 
+    @staticmethod
+    def _only_these_live(menu: QMenu, live: list[QAction]) -> None:
+        """Grey out every row of ``menu`` (and of its submenus) except ``live``.
+
+        The multi-row selection gate. Applied over a finished menu rather than
+        threaded through the twenty builders above, because the question it asks
+        is not any one row's — it is "does this action name one entry?", and the
+        answer is yes for all of them but the three handed in. Written the other
+        way round, every builder would carry a copy of the same clause and a new
+        row would join the menu live by default, which is the wrong default.
+
+        Greyed, not dropped: each of these *is* a thing the clicked row could do,
+        just not while it is one of several — the same distinction
+        :meth:`_add_order_actions` draws between an absent row and a dead one. A
+        submenu goes dead as a whole, its rows with it, so the user is not invited
+        to open something with nothing live inside.
+        """
+        for action in menu.actions():
+            submenu = action.menu()
+            if submenu is not None:
+                FileListPanel._only_these_live(submenu, live)
+            if not any(action is spared for spared in live):
+                action.setEnabled(False)
+
     def _show_menu(self, pos) -> None:
         item = self._tree.itemAt(pos)
         if item is None:
@@ -1457,6 +1653,15 @@ class FileListPanel(QWidget):
         entry: Entry | None = item.data(0, Qt.ItemDataRole.UserRole)
         if entry is None:  # the Palettes header has no actions
             return
+        # A right-click inside a multi-row selection keeps it (Qt's own rule), and
+        # then the menu is about the set: Remove and the two moves act on all of
+        # it, and every other row goes dead. A click *outside* the selection has
+        # already collapsed it onto the clicked row by the time this runs, so the
+        # ordinary one-entry menu falls out of the same two lines.
+        selected = self.selected_entries()
+        picked = [e for e in selected if e is entry]
+        acting = selected if len(selected) > 1 and picked else [entry]
+        multi = len(acting) > 1
         # "&" marks the keyboard mnemonic - the letter that picks the entry once
         # the menu is open. It matches the action's shortcut letter where one is
         # free (Write/Ctrl+W, Edit File Container/Ctrl+E). Each entry kind builds
@@ -1580,7 +1785,7 @@ class FileListPanel(QWidget):
             menu.addSeparator()
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
             menu.addSeparator()
-        self._add_order_actions(menu, entry)
+        live = self._add_order_actions(menu, entry, acting)
         self._add_clipboard_actions(menu, entry)
         if entry.kind.has_document:
             # Import is the mirror of Export ▸ As PNG…, and lands the image at
@@ -1618,13 +1823,18 @@ class FileListPanel(QWidget):
                 entry,
             )
             menu.addSeparator()
-        # The Delete hint is display-only: the working binding is the
-        # tree-focused QShortcut.
-        self._entry_action(
-            menu,
-            "&Remove",
-            self.remove_requested.emit,
-            entry,
-            shortcut=QKeySequence.StandardKey.Delete,
+        # The Delete hint is display-only: the working binding is the tree's own
+        # key handling. Counted in the label when it is about several rows, so the
+        # confirmation that follows is not the first the user hears of it.
+        live.append(
+            self._entry_action(
+                menu,
+                f"&Remove {len(acting)} Entries" if multi else "&Remove",
+                self.remove_requested.emit,
+                acting,
+                shortcut=QKeySequence.StandardKey.Delete,
+            )
         )
+        if multi:
+            self._only_these_live(menu, live)
         menu.exec(self._tree.viewport().mapToGlobal(pos))

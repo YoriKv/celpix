@@ -604,8 +604,8 @@ class EntriesMixin:
         slice_entry.pending_palette = palette_source_for(parent)
         # Only the subpalette row and the arrangement: the rest of the geometry
         # is left at the defaults a fresh slice gets anyway, since the parent's
-        # window size and zoom describe a different region than the one being
-        # carved out. (Columns is the exception the bitmap width owns - it is
+        # window size describes a different region than the one being carved
+        # out. (Columns is the exception the bitmap width owns - it is
         # re-derived from the width on the render path.)
         view = parent.doc.view if parent.doc is not None else parent.pending_view
         if view is not None:
@@ -1301,8 +1301,11 @@ class EntriesMixin:
             slice_offset=offset,
             session=replace(entry.session),
             # The offset carries the position; the view snapshot keeps the
-            # geometry (columns/rows/zoom/grid/subpalette) with the origin
-            # zeroed, since the jump lands it byte-exactly itself.
+            # geometry (columns/rows/subpalette/arrangement) with the origin
+            # zeroed, since the jump lands it byte-exactly itself. Not the zoom:
+            # it is app-wide, so a jump leaves it where the user is standing
+            # rather than pulling them back to where they were when they marked
+            # the spot (:class:`~celpix.core.document.ViewOptions`).
             pending_view=replace(self._doc.view, tile_offset=0, byte_nudge=0),
             pending_palette=palette_source_for(entry),
         )
@@ -1428,47 +1431,155 @@ class EntriesMixin:
 
     # -- removal -------------------------------------------------------------
     def _remove_entry(self, entry: Entry, *, confirm: bool = True) -> None:
-        """Remove ``entry`` from the list (a file takes its slices and
-        bookmarks with it), confirming first - Remove is also on the Delete key,
-        and a slip there costs the entry's whole session setup.
+        """Remove one entry — :meth:`_remove_entries` for a list of one."""
+        self._remove_entries([entry], confirm=confirm)
+
+    def _remove_entries(self, entries: list[Entry], *, confirm: bool = True) -> None:
+        """Remove every entry in ``entries`` (a file takes its slices and
+        bookmarks with it), confirming once for the lot - Remove is also on the
+        Delete key, and a slip there costs each entry's whole session setup.
 
         ``confirm=False`` is **Cut**, which has already said where the row is
         going: it is on the clipboard before this runs, so the question the
-        prompt asks has an answer the gesture itself gave. The palette branch
-        below still asks either way — re-homing the graphics that render it is a
-        change to *those* entries, which no clipboard holds.
+        prompt asks has an answer the gesture itself gave. A palette that graphics
+        render still asks either way — re-homing them is a change to *those*
+        entries, which no clipboard holds.
+
+        Several rows are removed as a **macro** over the one-entry commands rather
+        than by one command that knows about lists. Each is built and pushed in
+        turn, so each captures the list positions it is actually removing from,
+        and undo unwinds them in reverse and puts every row back where it was.
+        A palette in the set keeps its own command, which is what carries the
+        re-homing; the macro is the only thing that has to know they belong
+        together.
         """
-        if entry.kind is EntryKind.PALETTE:
-            # The current graphic's palette mode is only written to its session on
-            # a switch, so snapshot it first - otherwise a palette in use *right
-            # now* looks unused and would be dropped without re-homing it.
+        roots = self._removal_roots(entries)
+        if not roots:
+            return
+        # The current graphic's palette mode is only written to its session on a
+        # switch, so snapshot it first - otherwise a palette in use *right now*
+        # looks unused and would be dropped without re-homing it.
+        if any(root.kind is EntryKind.PALETTE for root in roots):
             self._capture_session()
-            users = self._workspace.palette_consumers(entry)
-            if users:
-                self._remove_palette_with_consumers(entry, users)
-                return
-        victims = [entry, *self._workspace.children_of(entry)]
-        dirty = [e.name for e in victims if e.pixel_dirty or e.palette_dirty]
-        message = f"Remove {entry.name}?"
+        going = {
+            e for root in roots for e in (root, *self._workspace.children_of(root))
+        }
+        # Only the graphics that are *staying* need re-homing: one being removed
+        # in the same gesture would be re-pointed at a custom palette on its way
+        # out of the project.
+        rehomed: dict[Entry, list[Entry]] = {}
+        for root in roots:
+            if root.kind is not EntryKind.PALETTE:
+                continue
+            staying = [
+                c for c in self._workspace.palette_consumers(root) if c not in going
+            ]
+            if staying:
+                rehomed[root] = staying
+        if not self._confirm_removal(roots, rehomed, confirm=confirm):
+            return
+        if len(roots) == 1:
+            self._push_removal(roots[0], rehomed.get(roots[0]))
+            return
+        self._undo_stack.beginMacro(f"remove {len(roots)} entries")
+        try:
+            for root in roots:
+                self._push_removal(root, rehomed.get(root))
+        finally:
+            self._undo_stack.endMacro()
+
+    def _removal_roots(self, entries: list[Entry]) -> list[Entry]:
+        """``entries`` in list order, minus every row a selected *parent* already
+        takes with it — a file picked along with two of its own slices is one
+        removal, not three.
+        """
+        chosen = set(entries)
+        return [
+            entry
+            for entry in self._workspace.entries
+            if entry in chosen and self._workspace.parent_of(entry) not in chosen
+        ]
+
+    def _confirm_removal(
+        self,
+        roots: list[Entry],
+        rehomed: dict[Entry, list[Entry]],
+        *,
+        confirm: bool,
+    ) -> bool:
+        """Ask before removing ``roots``; True to go ahead.
+
+        One prompt however many rows are going, naming what travels with them:
+        the slices and bookmarks a file takes, the unsaved edits that are
+        discarded, and the graphics a palette leaves needing colors of their own.
+
+        A palette with consumers is asked about **even when ``confirm`` is
+        False**: the caller that skips the question is Cut, and re-homing a
+        graphic is a change to that graphic, which the clipboard is not holding.
+        """
+        victims = [(root, self._workspace.children_of(root)) for root in roots]
+        if len(roots) == 1:
+            root = roots[0]
+            message = f"Remove {root.name}?"
+        else:
+            names = ", ".join(root.name for root in roots)
+            message = f"Remove {len(roots)} entries ({names})?"
         parts = []
         counts = [
             f"{n} {label}(s)"
             for label, n in (
-                ("slice", sum(e.kind is EntryKind.SLICE for e in victims[1:])),
-                ("bookmark", sum(e.kind is EntryKind.BOOKMARK for e in victims[1:])),
+                ("slice", self._kind_count(victims, EntryKind.SLICE)),
+                ("bookmark", self._kind_count(victims, EntryKind.BOOKMARK)),
             )
             if n
         ]
         if counts:
-            parts.append(f"removes its {' and '.join(counts)}")
+            whose = "its " if len(roots) == 1 else ""
+            parts.append(f"removes {whose}{' and '.join(counts)}")
+        dirty = [
+            e.name
+            for root, children in victims
+            for e in (root, *children)
+            if e.pixel_dirty or e.palette_dirty
+        ]
         if dirty:
             parts.append(f"discards unsaved changes ({', '.join(dirty)})")
+        users = sorted({c.name for consumers in rehomed.values() for c in consumers})
+        if users:
+            parts.append(
+                f"leaves {len(users)} graphic(s) ({', '.join(users)}) keeping "
+                "these colors as their own custom palette, stored in the project"
+            )
         if parts:
-            message = f"Remove {entry.name}? This also " + " and ".join(parts) + "."
-        if confirm:
-            answer = QMessageBox.question(self, "celPix - remove", message)
-            if answer != QMessageBox.StandardButton.Yes:
-                return
+            message += " This also " + " and ".join(parts) + "."
+        if not confirm and not rehomed:
+            return True
+        answer = QMessageBox.question(self, "celPix - remove", message)
+        return answer == QMessageBox.StandardButton.Yes
+
+    @staticmethod
+    def _kind_count(victims: list[tuple[Entry, list[Entry]]], kind: EntryKind) -> int:
+        """How many rows of ``kind`` come along as *children* of what is going."""
+        return sum(e.kind is kind for _root, children in victims for e in children)
+
+    def _push_removal(self, entry: Entry, rehomed: list[Entry] | None) -> None:
+        """Push the command that takes ``entry`` out — no questions asked.
+
+        ``rehomed`` is the graphics still rendering it, for a file palette; each
+        keeps its colors as a Custom copy so none is left showing a palette that
+        is gone, and the whole thing is one undo step.
+        """
+        if rehomed:
+            self._push_command(
+                RemovePaletteWithConsumersCommand(
+                    self,
+                    entry,
+                    index=self._workspace.entries.index(entry),
+                    consumers=[self._consumer_link(entry, c) for c in rehomed],
+                )
+            )
+            return
+        victims = [entry, *self._workspace.children_of(entry)]
         entries = self._workspace.entries
         self._push_command(
             RemoveEntriesCommand(
@@ -1479,46 +1590,20 @@ class EntriesMixin:
             )
         )
 
-    def _remove_palette_with_consumers(
-        self, palette: Entry, consumers: list[Entry]
-    ) -> None:
-        """Confirm, then remove a file palette that graphics render - re-homing
-        each onto a Custom copy so none is left showing a palette that's gone.
-
-        The user is told exactly where it is used before the colors are frozen into
-        each graphic's own Custom palette. Undoable as one step.
-        """
-        names = ", ".join(c.name for c in consumers)
-        answer = QMessageBox.question(
-            self,
-            "celPix - remove palette",
-            f"Remove {palette.name}? It is used by {len(consumers)} "
-            f"graphic(s): {names}.\n\nEach keeps these colors as its own custom "
-            "palette, stored in the project.",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        index = self._workspace.entries.index(palette)
-        links = []
-        for consumer in consumers:
-            src = palette_source_for(consumer)
-            links.append(
-                PaletteConsumerLink(
-                    entry=consumer,
-                    path=src.path if src and src.path else palette.path,
-                    offset=src.offset if src else 0,
-                    preset_id=(
-                        consumer.session.palette_preset_id
-                        if consumer.session is not None
-                        else self._palette_preset_id()
-                    ),
-                    loaded=consumer.doc is not None,
-                )
-            )
-        self._push_command(
-            RemovePaletteWithConsumersCommand(
-                self, palette, index=index, consumers=links
-            )
+    def _consumer_link(self, palette: Entry, consumer: Entry) -> PaletteConsumerLink:
+        """``consumer``'s File-mode link to ``palette``, captured before the
+        re-home so undo can point it back at the palette it had."""
+        src = palette_source_for(consumer)
+        return PaletteConsumerLink(
+            entry=consumer,
+            path=src.path if src and src.path else palette.path,
+            offset=src.offset if src else 0,
+            preset_id=(
+                consumer.session.palette_preset_id
+                if consumer.session is not None
+                else self._palette_preset_id()
+            ),
+            loaded=consumer.doc is not None,
         )
 
     def _apply_remove_palette_to_custom(

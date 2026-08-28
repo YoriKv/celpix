@@ -56,10 +56,21 @@ from celpix.ui.widgets import (
     ZoomSpinBox,
     add_labelled,
     funnel_icon,
+    load_float_setting,
+    save_float_setting,
     select_combo_data,
     signals_blocked,
     value_spin,
+    zoom_level_after,
 )
+
+# How close the user is standing, kept **app-wide** rather than per entry: it is
+# not a fact about any one file, and a list of entries that each sprang back to
+# their own magnification would make switching between them a jolt. Stored in
+# QSettings beside the grid (``view_menu.GRID_SHOWN_KEY``), which is app-wide for
+# the same reason, and deliberately not in the project file
+# (``docs/design/project-format.md`` §7).
+ZOOM_KEY = "view/zoom"
 
 # The Rows control's tooltip, in its two states: it is the window height until
 # View > Entire File takes that over, and a locked input has to say what locked
@@ -373,13 +384,19 @@ class InterpretationMixin:
 
         # The one view spin that isn't ``_spin``: its levels include a fractional
         # one, so it steps through a list rather than counting (ZoomSpinBox).
-        self._zoom = ZoomSpinBox()
-        self._zoom.valueChanged.connect(self._on_view_change)
+        # Seeded from the app-wide preference, and snapped on the way in: a level
+        # this build has no member for - an older settings file, or one edited by
+        # hand - would otherwise sit in the box as a value the arrows step away
+        # from and can never return to.
+        self._zoom = ZoomSpinBox(zoom_level_after(load_float_setting(ZOOM_KEY, 4.0), 0))
+        self._zoom.valueChanged.connect(self._on_zoom_change)
         add_labelled(
             view,
             "Zoom:",
             self._zoom,
-            "Screen pixels per image pixel\n0.5 halves it, to read a whole map at once",
+            "Screen pixels per image pixel\n"
+            "0.5 halves it, to read a whole map at once\n"
+            "Shared by every entry, and remembered between sessions",
         )
 
         # Range 255: enough rows for a 512-entry palette under a 2-color (1bpp)
@@ -525,6 +542,18 @@ class InterpretationMixin:
         # The default view is Linear (the first preset), so start with the block
         # controls locked until Custom is picked.
         self._apply_pattern_lock()
+
+    def _on_zoom_change(self, value: float) -> None:
+        """The Zoom spin moved: remember it app-wide, then re-render.
+
+        Written on every change rather than at shutdown, so a session that ends
+        badly does not take the zoom with it — the store is the same one the grid
+        writes to on each toggle, for the same reason. It is *not* a project
+        change: the zoom is not in the project file, so moving it must leave a
+        saved session reading clean (:meth:`MainWindow._project_is_dirty`).
+        """
+        save_float_setting(ZOOM_KEY, value)
+        self._on_view_change()
 
     @property
     def _arrangement_controls(self) -> tuple[QWidget, ...]:

@@ -370,11 +370,11 @@ def test_new_children_arrive_in_offset_order_and_then_stay_put(
     assert rows()[2] == ("b", 200)
 
 
-def test_shift_arrows_reorder_the_rows_and_undo_puts_them_back(qtbot, tmp_path) -> None:
-    # Shift+Up/Down resize the view window everywhere else; with the list focused
-    # they reorder the rows instead (the navigation filter defers to the tree).
-    # Both the model list and the tree rows have to move, and a file's slices
-    # have to stay nested under it rather than being left behind.
+def test_alt_arrows_reorder_the_rows_and_undo_puts_them_back(qtbot, tmp_path) -> None:
+    # Alt+Up/Down reorder the rows with the list focused (the navigation filter
+    # declines anything carrying Alt, so the key reaches the tree). Both the model
+    # list and the tree rows have to move, and a file's slices have to stay nested
+    # under it rather than being left behind.
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
@@ -402,7 +402,7 @@ def test_shift_arrows_reorder_the_rows_and_undo_puts_them_back(qtbot, tmp_path) 
     tree.setCurrentItem(panel._items[a])
     tree.setFocus()
 
-    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
+    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier)
     # Both slices travelled along, and stayed in their own order.
     assert window._workspace.entries == [b, a, cut, other_cut]
     assert file_rows() == [b.name, a.name]
@@ -411,7 +411,7 @@ def test_shift_arrows_reorder_the_rows_and_undo_puts_them_back(qtbot, tmp_path) 
 
     # Already last: the key does nothing rather than pushing an empty undo step.
     depth = window._undo_stack.count()
-    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
+    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier)
     assert window._undo_stack.count() == depth
     assert file_rows() == [b.name, a.name]
 
@@ -423,7 +423,7 @@ def test_shift_arrows_reorder_the_rows_and_undo_puts_them_back(qtbot, tmp_path) 
     # user's now, and the drag has a keyboard spelling.
     tree.setCurrentItem(panel._items[cut])
     tree.setFocus()
-    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
+    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier)
     assert window._workspace.entries == [a, other_cut, cut, b]
     window._undo_stack.undo()
     assert window._workspace.entries == [a, cut, other_cut, b]
@@ -431,7 +431,7 @@ def test_shift_arrows_reorder_the_rows_and_undo_puts_them_back(qtbot, tmp_path) 
     # ...but never out of its parent's group: the last sibling has nowhere to go.
     tree.setCurrentItem(panel._items[other_cut])
     depth = window._undo_stack.count()
-    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
+    qtbot.keyClick(tree, Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier)
     assert window._undo_stack.count() == depth
 
     # The context-menu path, with a slice still the shown row: it leaves the tree
@@ -441,6 +441,169 @@ def test_shift_arrows_reorder_the_rows_and_undo_puts_them_back(qtbot, tmp_path) 
     assert window._workspace.entries == [b, a, cut, other_cut]
     assert panel._items[cut].parent() is panel._items[a]
     assert tree.currentItem() is panel._items[cut]
+
+
+def _open_files(qtbot, tmp_path, *names):
+    """A window with one pixel file open per name, and the entries in order."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    for name in names:
+        path = tmp_path / f"{name}.4bpp.sfc"
+        path.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(32 * 8)))
+        window._load_pixel(str(path))
+    return window, list(window._workspace.entries)
+
+
+def _pick(panel, *entries) -> None:
+    """Select exactly these rows, the first of them current — what a click
+    followed by Shift- or Ctrl-clicks leaves behind."""
+    panel._tree.setCurrentItem(panel._items[entries[0]])
+    for entry in entries[1:]:
+        panel._items[entry].setSelected(True)
+
+
+def test_extending_the_files_selection_leaves_the_open_document_alone(
+    qtbot, tmp_path
+) -> None:
+    # The promise multi-select is built on: Shift/Ctrl add rows without switching
+    # the view, so the picture on screen is still the row the user opened. Qt
+    # moves the *current* row to whatever was clicked last, which is why the
+    # panel activates off the selection instead.
+    window, (first, second, third) = _open_files(qtbot, tmp_path, "a", "b", "c")
+    panel = window._files_panel
+
+    _pick(panel, first)
+    assert window._workspace.current is first
+
+    _pick(panel, first, second, third)
+    assert window._workspace.current is first
+    assert panel.selected_entries() == [first, second, third]
+    assert panel.has_multi_selection()
+
+    # ...and every menu row that names one entry goes dead with it, including the
+    # ones carrying real shortcuts (a disabled action refuses its key too).
+    dead = [name for name in window._ENTRY_SCOPED_ACTIONS]
+    assert not any(getattr(window, name).isEnabled() for name in dead)
+
+    # Back to one row: the owners re-arm what they own - the veto only ever takes
+    # away, so nothing may be left switched off behind it.
+    _pick(panel, second)
+    assert window._workspace.current is second
+    assert window._write_action.isEnabled()
+    assert window._container_info_action.isEnabled()
+    assert window._new_slice_action.isEnabled()
+
+
+def test_alt_arrows_move_a_whole_selection_within_each_group(qtbot, tmp_path) -> None:
+    # A block of picked rows travels together and keeps its own order; a block
+    # that has reached the end of its group pins the rows behind it rather than
+    # letting them close up. Both groups a selection straddles move, as one step.
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    window, (a, b, c, d) = _open_files(qtbot, tmp_path, "a", "b", "c", "d")
+    panel = window._files_panel
+    window.show()
+    QApplication.setActiveWindow(window)
+    tree = panel._tree
+
+    _pick(panel, c, d)
+    tree.setFocus()
+    qtbot.keyClick(tree, Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier)
+    assert window._workspace.entries == [a, c, d, b]
+    assert panel.selected_entries() == [c, d]  # ...and they are still picked
+    qtbot.keyClick(tree, Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier)
+    assert window._workspace.entries == [c, d, a, b]
+
+    # The head of the group has nowhere to go, and holds the row behind it there.
+    depth = window._undo_stack.index()
+    qtbot.keyClick(tree, Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier)
+    assert window._workspace.entries == [c, d, a, b]
+    assert window._undo_stack.index() == depth  # no empty step pushed
+
+    # A slice moves among its parent's children, so a selection spanning a file
+    # and one of its slices moves in two groups at once - and undoes as one step.
+    window._undo_stack.undo()
+    window._undo_stack.undo()
+    assert window._workspace.entries == [a, b, c, d]
+    path = a.path
+    first = window._workspace.add_slice(path, "one", 64, 64)
+    second = window._workspace.add_slice(path, "two", 128, 64)
+    _pick(panel, b, second)
+    depth = window._undo_stack.index()
+    panel._move_selected(-1)
+    assert window._workspace.entries == [b, a, second, first, c, d]
+    assert window._undo_stack.index() == depth + 1  # two groups, one step
+    window._undo_stack.undo()
+    assert window._workspace.entries == [a, first, second, b, c, d]
+
+
+def test_removing_a_multi_selection_asks_once_and_undoes_in_one_step(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # Delete over several rows is one question, one undo step, and one removal
+    # per *root*: a file picked alongside its own slice takes that slice with it
+    # rather than being asked about twice.
+    from PySide6.QtWidgets import QMessageBox
+
+    window, (a, b, c) = _open_files(qtbot, tmp_path, "a", "b", "c")
+    panel = window._files_panel
+    carved = window._workspace.add_slice(a.path, "cut", 64, 64)
+
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda _parent, _title, text, *a, **k: (
+            asked.append(text) or QMessageBox.StandardButton.Yes
+        ),
+    )
+    _pick(panel, a, carved, b)
+    depth = window._undo_stack.index()
+    panel._remove_selected()
+
+    assert len(asked) == 1
+    assert "Remove 2 entries" in asked[0]  # the file and b; the slice rides along
+    assert "1 slice(s)" in asked[0]
+    assert window._workspace.entries == [c]
+    assert window._undo_stack.index() == depth + 1
+
+    window._undo_stack.undo()
+    assert window._workspace.entries == [a, carved, b, c]
+
+
+def test_a_multi_row_context_menu_leaves_only_remove_and_the_moves_live(
+    qtbot, tmp_path, opened_menus
+) -> None:
+    # Every other row is about one entry, so it is greyed rather than dropped -
+    # each is a thing the clicked row could do, just not while it is one of
+    # several. Submenus go dead as a whole.
+    window, (a, b, c) = _open_files(qtbot, tmp_path, "a", "b", "c")
+    panel = window._files_panel
+    tree = panel._tree
+    window.show()
+
+    # a and c, so both moves have somewhere to go: the block is not against
+    # either end of its group.
+    _pick(panel, a, c)
+    panel._show_menu(tree.visualItemRect(panel._items[a]).center())
+    live = {
+        action.text()
+        for action in opened_menus[-1].actions()
+        if action.isEnabled() and not action.isSeparator()
+    }
+    assert live == {"M&ove Up\tAlt+Up", "Move &Down\tAlt+Down", "&Remove 2 Entries"}
+
+    # A right-click on a row *outside* the selection collapses onto it (Qt's own
+    # rule), and the ordinary one-entry menu comes back.
+    tree.setCurrentItem(panel._items[b])
+    panel._show_menu(tree.visualItemRect(panel._items[b]).center())
+    live = {
+        action.text()
+        for action in opened_menus[-1].actions()
+        if action.isEnabled() and not action.isSeparator()
+    }
+    assert "Re&name…" in live and "&Remove" in live
 
 
 def test_arrow_key_browsing_keeps_focus_on_file_list(qtbot, tmp_path) -> None:
@@ -1054,7 +1217,8 @@ def test_remove_entry_always_confirms(qtbot, tmp_path, monkeypatch) -> None:
         QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.Yes
     )
     # Through the panel's Delete-shortcut slot, so the wiring is covered too.
-    window._files_panel._remove_current()
+    window._files_panel._tree.setCurrentItem(window._files_panel._items[entry])
+    window._files_panel._remove_selected()
     assert window._workspace.entries == []
 
 
@@ -1395,7 +1559,6 @@ def test_project_save_and_load_restores_session(qtbot, tmp_path) -> None:
     window._load_pixel(str(px))
     window._columns.setValue(4)
     window._rows.setValue(1)
-    window._zoom.setValue(2)
     window._nav_rows(1)
     assert window._offset == 4
     window._load_palette_at_offset(0x20)  # palette out of the pixel file
@@ -1420,10 +1583,46 @@ def test_project_save_and_load_restores_session(qtbot, tmp_path) -> None:
     other._activate_entry(entries[0])
     assert other._doc.tile_count == 8
     assert (other._columns.value(), other._rows.value()) == (4, 1)
-    assert other._zoom.value() == 2
     assert other._offset == 4
     assert other._palette_mode == "offset"
     assert other._doc.palette == saved_palette
+
+
+def test_the_zoom_is_one_app_wide_setting_not_the_entrys(qtbot, tmp_path) -> None:
+    # Zoom is how close the user is standing, not a fact about the entry: it
+    # stays put across an entry switch, is absent from the project file, and is
+    # remembered between sessions like the grid.
+    from celpix.ui.main_window.interpretation import ZOOM_KEY
+    from celpix.ui.widgets import load_float_setting
+
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    first = window._workspace.current
+    carved = window._workspace.add_slice(str(px), "tail", 0xC0, 0x40)
+
+    window._zoom.setValue(8)
+    window._activate_entry(carved)
+    assert window._zoom.value() == 8  # ...and the switch left it alone
+    window._zoom.setValue(2)
+    window._activate_entry(first)
+    assert window._zoom.value() == 2
+    assert window._canvas._zoom == 2  # the canvas follows, via the render bundle
+
+    # Not in the project file, and so not something a zoom change makes unsaved.
+    project = tmp_path / "session.celpix"
+    window._save_project_to(str(project))
+    stored = json.loads(project.read_text())["entries"]
+    assert all("zoom" not in entry["view"] for entry in stored)
+    window._zoom.setValue(6)
+    assert not window.isWindowModified()
+
+    # Remembered app-wide instead, so the next window opens where this one is.
+    assert load_float_setting(ZOOM_KEY, 4.0) == 6
+    later = MainWindow()
+    qtbot.addWidget(later)
+    assert later._zoom.value() == 6
 
 
 def test_bookmark_snapshots_live_view_and_jump_restores_it(qtbot, tmp_path) -> None:
@@ -2073,15 +2272,20 @@ def test_window_title_names_project_and_marks_it_unsaved(qtbot, tmp_path):
     assert not window.isWindowModified()
 
     # A view change is part of what a project stores, so it goes unsaved...
-    window._zoom.setValue(window._zoom.value() + 1)
+    window._columns.setValue(window._columns.value() + 1)
     assert window.isWindowModified()
     # ...and putting it back clears the marker: "modified" is the live session
     # compared against the file, not a flag that only ever goes one way.
-    window._zoom.setValue(window._zoom.value() - 1)
+    window._columns.setValue(window._columns.value() - 1)
     assert not window.isWindowModified()
 
-    window._zoom.setValue(window._zoom.value() + 1)
+    window._columns.setValue(window._columns.value() + 1)
     window._save_project_to(str(project))
+    assert not window.isWindowModified()
+
+    # The zoom is app-wide rather than the project's, so moving it leaves a
+    # saved session reading clean - the same as the grid.
+    window._zoom.setValue(window._zoom.value() + 1)
     assert not window.isWindowModified()
 
     # A tile selection is not part of what a project stores, so clicking around
@@ -2175,7 +2379,8 @@ def test_loading_over_an_unsaved_project_offers_to_save_it(
     other.write_bytes(project.read_bytes())
 
     # Unsaved session changes; cancelling the prompt leaves the load undone.
-    window._zoom.setValue(window._zoom.value() + 3)
+    window._columns.setValue(window._columns.value() + 3)
+    changed = window._columns.value()
     _click_message_box(monkeypatch, QMessageBox.ButtonRole.RejectRole)
     window._load_project(str(other))
     assert window._project_path == str(project)
@@ -2187,9 +2392,7 @@ def test_loading_over_an_unsaved_project_offers_to_save_it(
     window._load_project(str(other))
     assert window._project_path == str(other)
     assert not window.isWindowModified()
-    assert json.loads(project.read_text())["entries"][0]["view"]["zoom"] == (
-        window._zoom.value() + 3
-    )
+    assert json.loads(project.read_text())["entries"][0]["view"]["columns"] == changed
 
 
 def test_export_dialog_defaults_to_project_dir(qtbot, tmp_path, monkeypatch):

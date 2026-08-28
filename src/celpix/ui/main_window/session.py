@@ -1559,12 +1559,15 @@ class SessionMixin:
         spins = (
             (self._columns, view.columns),
             (self._rows, view.rows),
-            (self._zoom, view.zoom),
             (self._subpalette, view.subpalette_row),
             (self._bitmap_width, view.bitmap_width),
         )
-        # The grid is deliberately absent: it is project-wide, so an entry switch
-        # leaves it exactly where the user set it.
+        # The grid and the **zoom** are deliberately absent: both are app-wide
+        # rather than the entry's, so a switch leaves each exactly where the user
+        # set it (``ViewOptions.zoom``, ``main_window/interpretation.py``). The
+        # entry's stored zoom is still overwritten by the render that follows this
+        # - the view options are one bundle and the window's own value is what
+        # goes into it - so nothing here has to clear it.
         with signals_blocked(*(w for w, _ in spins)):
             for spin, value in spins:
                 spin.setValue(value)
@@ -1638,6 +1641,7 @@ class SessionMixin:
             self._container_info_action,
         ):
             action.setEnabled(enabled)
+        self._sync_entry_scope()  # a veto that runs after every owner
 
     def _clear_document_view(self) -> None:
         """Blank the canvas and disable every document-bound action - shared by

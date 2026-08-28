@@ -66,7 +66,7 @@ def test_round_trip_preserves_entries_sessions_and_state(tmp_path) -> None:
     ws = Workspace()
     file_entry = ws.open_file(str(rom))
     file_entry.session = _session(palette_mode="file", selected_tile=3)
-    file_view = ViewOptions(columns=8, rows=4, zoom=2, tile_offset=16)
+    file_view = ViewOptions(columns=8, rows=4, tile_offset=16)
     file_entry.doc = _doc(FileRef(str(pal), offset=4), file_view)
 
     slice_entry = ws.add_slice(str(rom), "title GFX", 0x100, None, "compression.lz2")
@@ -140,7 +140,7 @@ def test_bookmark_round_trips_and_current_index_at_bookmark_degrades(tmp_path) -
         path=str(rom),
         slice_offset=0x140,
         session=_session(palette_mode="offset", selected_tile=5),
-        pending_view=ViewOptions(columns=8, rows=4, zoom=3),
+        pending_view=ViewOptions(columns=8, rows=4),
         pending_palette=PaletteSource(offset=0x140),
     )
     ws.insert(bookmark, len(ws.entries))
@@ -231,7 +231,7 @@ def test_inline_colors_survive_without_activation(tmp_path) -> None:
     entry.session = _session()
     # A never-activated entry restored from a project keeps its pending state
     # through the next save — nothing may be lost by not clicking it.
-    entry.pending_view = ViewOptions(zoom=8)
+    entry.pending_view = ViewOptions(columns=8)
     entry.pending_palette = PaletteSource(colors=[0xFF000000, 0xFFFFFFFF, 0x80FF00FF])
 
     project = tmp_path / "p.celpix"
@@ -244,7 +244,7 @@ def test_inline_colors_survive_without_activation(tmp_path) -> None:
     ]
     loaded = load_project(str(project))
     assert loaded.entries[0].pending_palette == entry.pending_palette
-    assert loaded.entries[0].pending_view == ViewOptions(zoom=8)
+    assert loaded.entries[0].pending_view == ViewOptions(columns=8)
 
 
 def test_a_project_written_before_a_rename_still_opens_and_is_rewritten(

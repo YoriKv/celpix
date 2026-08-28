@@ -129,6 +129,9 @@ class ViewOptions:
     geometry — so it is resolved on the load path, and only for codecs whose
     tile size is a parameter at all.
 
+    ``zoom`` is display state of a third sort again: an **app-wide** preference
+    rather than either an entry's or a project's, described at the field.
+
     ``palette_regions`` pins regions of the picture to their own subpalette row,
     overriding ``subpalette_row`` for the tiles inside them — so a bank whose art
     is drawn under several hardware palettes can be read at once instead of one
@@ -169,6 +172,14 @@ class ViewOptions:
     # Screen pixels per image pixel. A float for the sake of the one reducing
     # level the view offers (a half-size read of a file too big for the window);
     # every other level is a whole number.
+    #
+    # A **local preference** like ``show_palette_regions`` below, and here for the
+    # same reason: rendering and export read the view options as one bundle. It is
+    # how close the user is standing, not a fact about the entry — switching files
+    # to find one drawn at a different magnification is a jolt, and every file in
+    # a project tends to want the same one anyway. So the window carries one zoom
+    # across every entry, keeps it in QSettings beside the grid
+    # (``main_window/interpretation.py``), and the project file does not store it.
     zoom: float = 4.0
     subpalette_row: int = 0
     tile_offset: int = 0  # top-left tile index into the pixel bytes

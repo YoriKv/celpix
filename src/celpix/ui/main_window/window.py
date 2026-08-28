@@ -128,9 +128,9 @@ from celpix.ui.subsprite_window import SubspriteWindow
 from celpix.ui.text_window import TextWindow
 from celpix.ui.tools import EditMode
 from celpix.ui.undo_commands import (
+    GroupOrderCommand,
     RenameEntryCommand,
     ReorderEntryCommand,
-    SortEntriesCommand,
 )
 from celpix.ui.widgets import (
     counted,
@@ -522,8 +522,10 @@ class MainWindow(
         """The left-side open-files dock, mirroring the workspace model."""
         self._files_panel = FileListPanel(self._registry)
         self._files_panel.entry_activated.connect(self._activate_entry)
-        self._files_panel.remove_requested.connect(self._remove_entry)
+        self._files_panel.selection_changed.connect(self._sync_entry_scope)
+        self._files_panel.remove_requested.connect(self._remove_entries)
         self._files_panel.reorder_requested.connect(self._reorder_entry)
+        self._files_panel.move_requested.connect(self._move_entries)
         self._files_panel.sort_requested.connect(self._sort_entries)
         self._files_panel.copy_requested.connect(self._copy_entry)
         self._files_panel.cut_requested.connect(self._cut_entry)
@@ -676,7 +678,8 @@ class MainWindow(
             self._refresh_window_title()
 
     def _reorder_entry(self, entry: Entry, before: Entry | None) -> None:
-        """Move a row so it sits in front of ``before`` — a drop, or Shift+Up/Down.
+        """Move a row so it sits in front of ``before`` — a drop, or a one-row
+        Alt+Up/Down (:meth:`_move_entries`).
 
         Where it came *from* is asked of the panel rather than of the workspace,
         and that is the point of asking at all: the list is flat and the rows are
@@ -695,6 +698,50 @@ class MainWindow(
     def _apply_reorder_entry(self, entry: Entry, before: Entry | None) -> None:
         if self._workspace.reorder(entry, before):
             self._files_panel.move_item(entry, before)
+
+    def _move_entries(self, entries: list[Entry], delta: int) -> None:
+        """Step every row in ``entries`` one place — Alt+Up/Down, or Move Up/Down.
+
+        One row is spelled as the neighbour move a drag makes, so the keyboard and
+        the drag stay one model operation and one undo step. Several are spelled
+        as **orders**: the rows they pass have to shuffle the other way, and a
+        group laid out in a given order says the result without having to describe
+        the shuffling. The panel works out both, since the groups are what is on
+        screen rather than anything the flat workspace list knows
+        (:meth:`~celpix.ui.file_list_panel.FileListPanel.move_orders`).
+
+        A selection can straddle groups — a palette and a file sit under different
+        headings — so it can come back as several orders, which go on the stack as
+        one macro: the user made one gesture.
+        """
+        if self._applying_undo:
+            return
+        if len(entries) == 1:
+            can_move, before = self._files_panel.move_target(entries[0], delta)
+            if can_move:
+                self._reorder_entry(entries[0], before)
+            return
+        orders = self._files_panel.move_orders(entries, delta)
+        if not orders:
+            return
+        text = f"move {len(entries)} entries"
+        macro = len(orders) > 1
+        if macro:
+            self._undo_stack.beginMacro(text)
+        try:
+            for order in orders:
+                self._push_command(
+                    GroupOrderCommand(
+                        self,
+                        order[0],
+                        text,
+                        before=self._files_panel.sibling_entries(order[0]),
+                        after=order,
+                    )
+                )
+        finally:
+            if macro:
+                self._undo_stack.endMacro()
 
     def _sort_entries(self, entry: Entry, key: SortKey) -> None:
         """Put the group ``entry`` sits in into ``key`` order — a context-menu sort.
@@ -719,7 +766,7 @@ class MainWindow(
             return
         what = key.value
         self._push_command(
-            SortEntriesCommand(self, entry, f"sort by {what}", before=was, after=order)
+            GroupOrderCommand(self, entry, f"sort by {what}", before=was, after=order)
         )
 
     def _apply_entry_order(self, order: list[Entry]) -> None:
@@ -752,6 +799,50 @@ class MainWindow(
         self._write_action.setEnabled(
             writable or self._linked_palette_entry() is not None
         )
+        self._sync_entry_scope()  # a veto that runs after every owner
+
+    # The menu rows that act on **the entry** — the current one, or the file
+    # behind it. Every one of them names exactly one, so a Files selection of
+    # several has no answer to give them; Write All and Export All are not here,
+    # since they are about the project rather than about a row.
+    _ENTRY_SCOPED_ACTIONS = (
+        "_new_slice_action",
+        "_new_slice_from_view_action",
+        "_new_slice_from_selection_action",
+        "_new_bookmark_action",
+        "_change_container_action",
+        "_container_info_action",
+        "_write_action",
+        "_import_png_action",
+        "_export_png_action",
+        "_export_raw_action",
+        "_export_slices_action",
+    )
+
+    def _sync_entry_scope(self) -> None:
+        """Switch off the one-entry menu rows while the Files list holds several.
+
+        A **veto and never a grant**, the same contract
+        :mod:`~celpix.ui.main_window.capability_sync` runs under and for the same
+        reason: these rows have owners that each weigh their own conditions, and
+        this pass knows only that the question they answer has stopped having one
+        answer. So it takes away and never gives back — the owner re-arming on the
+        way out of the multi-row selection is what turns them on again, which is
+        why every one of them ends by calling this.
+
+        The rows carry real shortcuts (Ctrl+W, Ctrl+E), so it is not enough to
+        grey them as the menu opens: a disabled QAction refuses its key too, and
+        that is the half of "disabled" a user actually notices here.
+        """
+        # getattr, not the attribute: several of the owners below run while the
+        # window is still being assembled, before the Files dock exists.
+        panel = getattr(self, "_files_panel", None)
+        if panel is None or not panel.has_multi_selection():
+            return
+        for name in self._ENTRY_SCOPED_ACTIONS:
+            action = getattr(self, name, None)
+            if action is not None:
+                action.setEnabled(False)
 
     def _refresh_current_entry_row(self) -> None:
         """Re-render the current entry's row in the files list.

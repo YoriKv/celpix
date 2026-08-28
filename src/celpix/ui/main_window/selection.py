@@ -399,6 +399,7 @@ class SelectionMixin:
             has_doc and self._can(Capability.IMPORT_IMAGE)
         )
         self._select_all_action.setEnabled(has_doc)
+        self._sync_entry_scope()  # a veto that runs after every owner
 
     # -- tile selection ----------------------------------------------------
     def _grid_tilemap(self):  # noqa: ANN201 - a Document
@@ -1022,6 +1023,7 @@ class SelectionMixin:
             and not (self._doc is not None and self._doc.is_tilemap)
         )
         self._new_slice_from_selection_action.setEnabled(has and can_slice)
+        self._sync_entry_scope()  # a veto that runs after every owner
         self._files_panel.set_has_selection(has)
 
     # -- what the selection is, to the edits over it ------------------------

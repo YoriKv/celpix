@@ -2,6 +2,8 @@
 
 ## v0.5.11 - unreleased
 
+- Files list multi-select for move up/down and delete
+- Canvas zoom is app-wide instead of per file
 - Fixes
 
 ## v0.5.10 - 2026-08-14

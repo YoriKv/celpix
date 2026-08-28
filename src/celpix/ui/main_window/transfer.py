@@ -112,6 +112,7 @@ class TransferMixin:
             and bool(self._workspace.slices_of(current))
         )
         self._export_all_action.setEnabled(bool(exportable_entries(self._workspace)))
+        self._sync_entry_scope()  # a veto that runs after every owner
 
     # -- drag & drop -------------------------------------------------------
     @staticmethod

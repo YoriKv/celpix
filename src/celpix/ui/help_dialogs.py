@@ -90,10 +90,12 @@ PANEL_KEYS: tuple[tuple[str, str], ...] = (
     ("Step the tile pick", "Arrow keys"),
     ("Tile Source columns", "Shift+Left / Shift+Right"),
     ("Zoom / pan the tile sheet", "Ctrl + Scroll / Space + drag"),
-    ("Reorder a Files row", "Shift+Up / Shift+Down"),
+    ("Extend the Files selection", "Shift+click / Shift+Up / Shift+Down"),
+    ("Add or drop one Files row", "Ctrl+click"),
+    ("Reorder the selected Files rows", "Alt+Up / Alt+Down"),
     ("Cut / copy / paste a Files row", "Ctrl+X / Ctrl+C / Ctrl+V"),
     ("Duplicate a Files row", "Ctrl+D"),
-    ("Remove a Files entry", "Del"),
+    ("Remove the selected Files entries", "Del"),
     ("Filter the Files list", "Ctrl+F"),
 )
 

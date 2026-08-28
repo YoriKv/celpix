@@ -279,13 +279,13 @@ def _entry_dict(
     # still hold state a previous load restored into its pending fields.
     view = entry.doc.view if entry.doc is not None else entry.pending_view
     if view is not None:
+        # No ``zoom``: it is an app-wide preference rather than the entry's, and
+        # lives in QSettings (§7 of ``docs/design/project-format.md``). A project
+        # written before that carries one, and it is read back as nothing - the
+        # key simply stops being answered for.
         data["view"] = {
             "columns": view.columns,
             "rows": view.rows,
-            # Written as an int wherever the level is a whole number, which is
-            # every level but one: a project whose zoom the user never touched
-            # stays byte-identical to how earlier builds wrote it.
-            "zoom": _plain(view.zoom),
             "subpalette_row": view.subpalette_row,
             "offset": view.tile_offset,
             "byte_nudge": view.byte_nudge,
@@ -725,7 +725,6 @@ def _view_from(raw: object) -> ViewOptions | None:
     return ViewOptions(
         columns=_int(raw.get("columns"), defaults.columns),
         rows=_int(raw.get("rows"), defaults.rows),
-        zoom=_number(raw.get("zoom"), defaults.zoom),
         subpalette_row=_int(raw.get("subpalette_row"), defaults.subpalette_row),
         tile_offset=_int(raw.get("offset"), defaults.tile_offset),
         byte_nudge=_int(raw.get("byte_nudge"), defaults.byte_nudge),
@@ -1015,25 +1014,6 @@ def _palette_from(raw: object, base_dir: str) -> PaletteSource | None:
 def _int(value: object, default: int | None) -> int | None:
     # bool is an int subclass; a stray `true` must not become a count of 1.
     return value if isinstance(value, int) and not isinstance(value, bool) else default
-
-
-def _plain(value: float) -> int | float:
-    """``value`` as an int when it holds a whole number — TOML tells the two
-    apart, and a fraction is the exception rather than the rule."""
-    return int(value) if float(value).is_integer() else value
-
-
-def _number(value: object, default: float) -> float:
-    """A stored int *or* float — for the one view setting that can be fractional.
-
-    A project written before the reducing zoom level (or by hand) holds a bare
-    integer, and TOML keeps the two types apart, so both spellings have to read.
-    """
-    return (
-        float(value)
-        if isinstance(value, (int, float)) and not isinstance(value, bool)
-        else default
-    )
 
 
 def _str(value: object, default: str) -> str:

@@ -915,7 +915,7 @@ class ContainerEditCommand(_InPlaceCommand):
 
 
 class ReorderEntryCommand(_InPlaceCommand):
-    """Moving a row in the files pane — dragged, or Shift+Up/Down.
+    """Moving one row in the files pane — dragged, or Alt+Up/Down.
 
     The state either way is **the row this one sits in front of** (``None`` for
     last in its group), which is what makes one command cover both a one-step
@@ -942,14 +942,21 @@ class ReorderEntryCommand(_InPlaceCommand):
         self._window._apply_reorder_entry(self._entry, state)
 
 
-class SortEntriesCommand(_InPlaceCommand):
-    """Sorting one group of rows in the files pane.
+class GroupOrderCommand(_InPlaceCommand):
+    """Laying one group of rows in the files pane out in a given order — a sort,
+    or a Move Up/Down over several selected rows at once.
 
-    The state is the **whole group in order**, not a neighbour: a sort moves most
-    of a group at once, and the arrangement it replaced is not something the rows
-    left behind can describe between them. Both directions are then the same
-    operation — lay this list of rows out in this order — so an undone sort
-    restores a hand-made arrangement exactly rather than approximately.
+    The state is the **whole group in order**, not a neighbour: both of those
+    move most of a group at once, and the arrangement they replaced is not
+    something the rows left behind can describe between them (nor, for a move,
+    can the rows that travelled: the ones they passed shuffled the other way).
+    Both directions are then the same operation — lay this list of rows out in
+    this order — so an undone sort restores a hand-made arrangement exactly
+    rather than approximately.
+
+    One row moving is not this shape and stays :class:`ReorderEntryCommand`: it
+    has a neighbour to name, and naming it is what lets the keyboard and the drag
+    be one operation.
 
     The lists hold the same entries by identity, so a redo after later edits still
     names the rows it moved; a command that removed one of them would be undone

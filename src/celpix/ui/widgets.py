@@ -1377,6 +1377,26 @@ def save_bool_setting(key: str, value: bool) -> None:
     settings().setValue(key, value)
 
 
+def load_float_setting(key: str, default: float) -> float:
+    """An app-wide numeric preference out of QSettings.
+
+    Through Qt's conversion for the reason :func:`load_bool_setting` gives — the
+    INI backend hands back the string it wrote — and falling back to ``default``
+    when the stored text is not a number at all, since a settings file edited by
+    hand is not a reason to fail to start.
+    """
+    stored = settings().value(key, default)
+    try:
+        return float(stored)
+    except (TypeError, ValueError):
+        return default
+
+
+def save_float_setting(key: str, value: float) -> None:
+    """Persist an app-wide numeric preference (see :func:`load_float_setting`)."""
+    settings().setValue(key, value)
+
+
 # The recently opened projects, newest first. App-wide rather than per-project:
 # the list is how you get *back* to a project, so it cannot live inside one. Ten
 # is deep enough to reach last week's work while the menu stays a menu.
