@@ -6,9 +6,9 @@
 # character number above 255 did not survive the conversion either.
 # See docs/graphics-formats-reference/scgcad-formats.md §10.
 id = "preset.tilemap.scgcad-std"
-name = "Converted screen cell (8-bit, index only)"
+name = "Converted screen (STD, index only)"
 engine_id = "codec.tilemap.packed"
-category = "Authoring tools"
+category = "S-CG-CAD"
 
 [params]
 bytes = 1

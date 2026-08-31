@@ -100,6 +100,7 @@ CATEGORIES: tuple[str, ...] = (
     "Sony",
     "Bandai",
     "Arcade",
+    "S-CG-CAD",
     "Authoring tools",
     "Text",
     "Generic planar",

@@ -19,9 +19,9 @@
 # names — most are 2x2, and then only one entry in four is ever read.
 # See docs/graphics-formats-reference/scgcad-formats.md §4.
 id = "preset.tilemap.scgcad-map"
-name = "Stamp layout entry (panel coordinate)"
+name = "Panel coordinates (MAP)"
 engine_id = "codec.tilemap.packed"
-category = "Authoring tools"
+category = "S-CG-CAD"
 
 [params]
 # The cells are coordinates into a panel, not tile references: the host reads

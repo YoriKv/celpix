@@ -236,7 +236,7 @@ class ObjectCodec(_SubspriteCodec):
     info = FormatInfo(
         id=OBJECT_FORMAT,
         name="Sprite object subsprite (OBJ/OBX)",
-        category="Authoring tools",
+        category="S-CG-CAD",
         declares=_SPRITE_DECLARES,
     )
 
@@ -343,7 +343,7 @@ class ObzCodec(_SubspriteCodec):
     info = FormatInfo(
         id=OBZ_FORMAT,
         name="Transfer object subsprite (OBZ)",
-        category="Authoring tools",
+        category="S-CG-CAD",
         declares=_SPRITE_DECLARES,
     )
 
