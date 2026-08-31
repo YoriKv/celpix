@@ -900,6 +900,23 @@ class TilemapCodecPlugin(Plugin, Protocol):
         """
         ...
 
+    def has_visibility(self, params: dict[str, Any]) -> bool:
+        """Whether this format gives a cell a **drawn** bit to clear.
+
+        Optional, and about the format: a stamp layout's entry says whether its
+        position is drawn at all, and one with the bit cleared paints the
+        background rather than its cell (``docs/design/tilemap-entry.md`` §4).
+        What it decides is what **Clear cells** means — where the format can
+        store "nothing here", clearing writes it, making the gesture the stamp
+        tool's inverse; where it cannot, the flag is left alone.
+
+        A plugin that omits this method is taken not to have the bit, which is
+        the safe direction: hiding a cell on a format with nowhere to store it
+        would blank the position on screen while :meth:`encode` drops the
+        change — the picture lying against the bytes it claims to show.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class Preset:

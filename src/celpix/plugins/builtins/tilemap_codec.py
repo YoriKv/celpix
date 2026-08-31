@@ -390,6 +390,15 @@ class TilemapCodec:
         """
         return _field(params, "palette") is not None
 
+    def has_visibility(self, params: dict[str, Any]) -> bool:
+        """Whether the preset places a ``drawn`` bit — the field table answers.
+
+        :meth:`has_palette_rows` for the visibility flag, off the same table: a
+        preset placing no ``drawn`` describes a format whose every position is
+        drawn, and clearing a cell there has no "nothing here" to write.
+        """
+        return _field(params, "drawn") is not None
+
     def transform_cell(
         self, cell: Cell, op: CellOp, params: dict[str, Any]
     ) -> Cell | None:

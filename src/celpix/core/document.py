@@ -753,19 +753,26 @@ class Document:
 
     @property
     def stamp_cells(self) -> tuple[int, int]:
-        """How many source cells one pickable stamp covers — ``(1, 1)`` for none.
+        """How many drawn cells one pickable stamp covers — ``(1, 1)`` for none.
 
-        The chain's stamp with one condition on it: the source's own cells must be
-        single tiles. A stamp is placed as one layout block — a rectangle of
+        The chain's stamp with two conditions on it. The source's own cells must
+        be single tiles: a stamp is placed as one layout block — a rectangle of
         consecutive tiles — and a stamp of *metatile* cells interleaves two
         rectangles no single block can express, so a format that stamped metatiles
         would preview stamp by stamp here and draw correctly on the map either
         way. No format in hand does: the only one that stamps is a PNL panel,
         whose word is one 8x8 tile in every file of the corpus
         (``docs/graphics-formats-reference/scgcad-formats.md`` §3.1).
+
+        And the picture must actually be **stamp-resolved** — the condition
+        :meth:`resolve` expands under and :meth:`cell_at` snaps under, which a
+        sparse map with no stated width fails (:attr:`stamp_columns`). There the
+        drawn picture is the plain chain, one cell per entry, so a unit wider
+        than that would size the sheet's tiles, the pick rectangle and the
+        preview to stamps the render never lays out.
         """
         chain = self.chain
-        if chain is None or self.cell_tiles != (1, 1):
+        if chain is None or self.cell_tiles != (1, 1) or not self.stamp_columns:
             return (1, 1)
         return chain.stamp
 

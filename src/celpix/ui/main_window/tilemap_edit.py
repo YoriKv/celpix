@@ -285,6 +285,27 @@ class TilemapEditMixin:
             return None
         return top if top and top > 0 else None
 
+    def _cells_have_visibility(self) -> bool:
+        """Whether this entry's own cells carry a drawn bit — Clear's question.
+
+        The same probe protocol as :meth:`_cell_palette_row_limit` and refusing
+        on the same terms: a codec that does not answer
+        (:meth:`~celpix.plugins.base.TilemapCodecPlugin.has_visibility`) has no
+        bit invented for it, since a hide the encode drops would leave the
+        picture lying against the bytes.
+        """
+        found = self._tilemap_engine()
+        if found is None:
+            return False
+        engine, preset = found
+        ask = getattr(engine, "has_visibility", None)
+        if ask is None:
+            return False
+        try:
+            return bool(ask(preset.params))
+        except Exception:  # noqa: BLE001 — a probe must not break the gesture
+            return False
+
     def _assign_cell_palette_row(self) -> None:
         """The tilemap reading of the pin gesture: write the row into the cells.
 
@@ -453,6 +474,18 @@ class TilemapEditMixin:
         A rectangle so a paste can put it back with its shape; a linear
         selection copies as one row, which is what it looks like on screen.
 
+        The rectangle is read in **placed units** — the reading the right
+        drag's pick gives its sweep
+        (:meth:`~...stamp_tool.StampToolMixin._on_stamp_area_picked`), and for
+        its reason. On a stamped chain several drawn positions share one entry,
+        so a lift per position would hold every stamp once per position it
+        covers, and the paste, laying those back a position apart, would write
+        the same stamps over a wider area than was copied. So the rectangle
+        grows out to the stamp lattice and holds one record per stamp — what
+        was swept over, once each — and :meth:`_paste_cells` steps by the same
+        unit. On every other map the unit is one cell and this is the per-cell
+        lift it reads as.
+
         A **sprite object** copies its pixels instead. Its cells are not what is
         on screen — a canvas position there is a *subsprite* through an overlap
         order,
@@ -470,10 +503,16 @@ class TilemapEditMixin:
         width = self._cells_per_row()
         if rect is not None and rect[0] > 0 and rect[1] > 0:
             cols, rows, x0, y0 = rect
-            lifted = CellGrid(cols, rows)
-            for dy in range(rows):
-                for dx in range(cols):
-                    at = doc.cell_at((y0 + dy) * width + (x0 + dx))
+            # Out to the lattice and one record per stamp, the area pick's
+            # geometry to the letter — a no-op wherever the unit is one cell.
+            unit_w, unit_h = doc.stamp_cells
+            x1, y1 = x0 + cols - 1, y0 + rows - 1
+            x0 -= x0 % unit_w
+            y0 -= y0 % unit_h
+            lifted = CellGrid((x1 - x0) // unit_w + 1, (y1 - y0) // unit_h + 1)
+            for dy in range(lifted.height):
+                for dx in range(lifted.width):
+                    at = doc.cell_at((y0 + dy * unit_h) * width + (x0 + dx * unit_w))
                     if 0 <= at < len(doc.cells):
                         lifted.set(dx, dy, doc.cells[at])
         else:
@@ -485,7 +524,8 @@ class TilemapEditMixin:
             )
         self._cell_clipboard = lifted
         self._sync_edit_actions()
-        self.statusBar().showMessage(f"Copied {counted(len(lifted), 'cell')}.")
+        what = "stamp" if doc.is_indirect else "cell"
+        self.statusBar().showMessage(f"Copied {counted(len(lifted), what)}.")
         return True
 
     def _copy_sprite_pixels(self) -> bool:
@@ -545,7 +585,8 @@ class TilemapEditMixin:
             self._clear_cells("cut cells")
 
     def _clear_cells(self, text: str = "clear cells") -> None:
-        """Blank the selected cells — index 0, no attributes.
+        """Blank the selected cells — index 0, no attributes, and where the
+        format can say so, **not drawn**.
 
         A tilemap has a fixed extent, so clearing is writing the empty cell
         rather than removing anything: there is no shorter map to leave behind.
@@ -562,13 +603,22 @@ class TilemapEditMixin:
         if not indices:
             return
         cells = list(doc.cells)
+        # Hidden too, where the format has a drawn bit to store it: on a stamp
+        # layout "cell $0 drawn" and "nothing here" are different words that
+        # label the same $0 and look nothing alike, and delete means the second.
+        # That makes Clear the stamp tool's inverse - stamping sets the bit
+        # (`_stamp_cell`), clearing takes it back. Where the format has no such
+        # bit the flag stays as it was rather than being invented: the encode
+        # would drop the hide and the picture would lie against the bytes.
+        hide = self._cells_have_visibility()
         for index in indices:
-            # The format's own bits stay: `visible` says whether the *position* is
-            # drawn and `flags` carries what celPix does not model, neither of
-            # which is content this is being asked to clear. Writing a bare `Cell`
-            # made clearing the only way to un-hide a position, and did it while
-            # silently dropping bit 15 of a stamp layout's entry.
-            cells[index] = Cell(visible=cells[index].visible, flags=cells[index].flags)
+            # `flags` stays either way - it carries what celPix does not model,
+            # which is not content a clear was asked to remove (bit 15 of a
+            # stamp layout's entry rides there).
+            cells[index] = Cell(
+                visible=False if hide else cells[index].visible,
+                flags=cells[index].flags,
+            )
         if self._apply_cells(cells, text):
             self.statusBar().showMessage(f"Cleared {counted(len(indices), 'cell')}.")
 
@@ -577,6 +627,15 @@ class TilemapEditMixin:
 
         Overwrite and clipped, never inserting: the map's extent is the file's,
         so a paste replaces exactly as many cells as there is room for.
+
+        Stepped in **placed units**, the stamp brush's landing to the letter
+        (:meth:`~...stamp_tool.StampToolMixin._stamp_into`): the buffer holds
+        one record per unit (:meth:`_copy_cells`), so on a stamped chain each
+        record steps a whole stamp and lands on exactly one — an unaligned
+        anchor snaps to the stamp holding it through
+        :meth:`~celpix.core.document.Document.cell_at`, instead of a
+        per-position lay writing each entry into every stamp its cells graze,
+        which pastes a wider block than was copied.
         """
         doc = self._doc
         copied = getattr(self, "_cell_clipboard", None)
@@ -589,12 +648,13 @@ class TilemapEditMixin:
         positions = self._selected_positions()
         start = positions[0] if positions else 0
         width = self._cells_per_row()
+        unit_w, unit_h = doc.stamp_cells
         x0, y0 = start % width, start // width
         cells = list(doc.cells)
         written = 0
         for dy in range(copied.height):
             for dx in range(copied.width):
-                x, y = x0 + dx, y0 + dy
+                x, y = x0 + dx * unit_w, y0 + dy * unit_h
                 at = doc.cell_at(y * width + x)
                 if x < width and 0 <= at < len(cells):
                     cells[at] = copied.get(dx, dy)
@@ -605,7 +665,8 @@ class TilemapEditMixin:
         if self._apply_cells(cells, "paste cells"):
             clipped = len(copied) - written
             note = f" ({clipped} clipped)" if clipped else ""
-            self.statusBar().showMessage(f"Pasted {counted(written, 'cell')}{note}.")
+            what = "stamp" if doc.is_indirect else "cell"
+            self.statusBar().showMessage(f"Pasted {counted(written, what)}{note}.")
 
     def _has_cell_clipboard(self) -> bool:
         """Whether a cell paste would have anything to put down."""

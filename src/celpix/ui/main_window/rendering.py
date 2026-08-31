@@ -789,6 +789,16 @@ class RenderingMixin:
         else:
             block = (view.block_columns, view.block_rows, view.block_order)
         self._canvas.set_arrangement(*block)
+        # The stamp gestures place in a different unit from the block exactly on
+        # a stamped chain — a press lays a whole stamp while the block stays one
+        # cell — and the canvas has to be told, so the pick rectangle, the
+        # click-vs-drag test and the hover preview anchor all snap to what a
+        # press actually places. (0, 0) leaves the block deciding, which is
+        # right everywhere stamping is not offered.
+        if self._doc.is_tilemap and not self._doc.is_sprite:
+            self._canvas.set_stamp_unit(*self._doc.stamp_tiles)
+        else:
+            self._canvas.set_stamp_unit(0, 0)
         self._canvas.set_filled_tiles(filled)
         # The labels are their own switch: a row can be shown without the
         # recolour and either without the other (`palette_regions.py`). One

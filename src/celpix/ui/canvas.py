@@ -33,10 +33,14 @@ displace.
 The **stamp tool** (:meth:`Canvas.set_stamping`) sits beside it, the same modal
 flag checked ahead of the same split, and is a tilemap's tool as the rearrange
 one is a pixel document's. It claims **both** buttons through the ``stamp_*``
-signals — left lays a tile into the cell under the cursor and keeps laying it
-through a drag, right picks the one already there — so unlike the rearrange tool
-it leaves no button for selection. It paints no overlay of its own: what a stamp
-changes is the picture itself, and the controller re-renders it.
+signals — left lays the held tiles into the cell under the cursor and keeps
+laying them through a drag; right picks what is already there, a click taking
+one cell and a drag taking a rectangle of them — so unlike the rearrange tool it
+leaves no button for selection. What a stamp changes is the picture itself and
+the controller re-renders it, but two overlays are the tool's own: the held
+tiles previewed over the hovered cell (:meth:`Canvas.set_stamp_preview`, the pen
+preview's idiom at cell scale), and the outline of a right drag while the
+rectangle is being chosen.
 """
 
 from __future__ import annotations
@@ -265,6 +269,11 @@ class Canvas(PanZoomSurface, QWidget):
     stamp_pressed = Signal(int, object)  # slot, Qt.MouseButton
     stamp_moved = Signal(int)  # slot dragged over, left button held
     stamp_finished = Signal()  # the left drag ended
+    # A right *drag* while the stamp tool is armed: the two corner slots of the
+    # rectangle of cells it swept. The single-cell right click stays a
+    # ``stamp_pressed`` — which one it was is only knowable on release, so the
+    # pick reports there rather than on the press.
+    stamp_area_picked = Signal(int, int)  # anchor slot, far slot
     # A space-drag pan step, in device pixels: how far to shift the view. The
     # window feeds it to the scroll bars, which clamp it so the image can't be
     # dragged off screen. Emitted in either edit mode.
@@ -356,6 +365,23 @@ class Canvas(PanZoomSurface, QWidget):
         self._stamping = False
         self._stamp_drag = False
         self._stamp_slot: int | None = None
+        # The right button's pick drag: the pressed slot and the one last swept
+        # to. Whether it was a click (one cell) or an area is decided on release,
+        # so nothing is emitted until then; while it is open the covered
+        # rectangle is outlined instead of the preview below.
+        self._stamp_picking = False
+        self._stamp_pick_anchor: int | None = None
+        self._stamp_pick_slot: int | None = None
+        # The held tiles rendered ready to land, shown over the hovered cell
+        # while the stamp tool is armed — the pen preview at cell scale. The
+        # controller renders it (only it knows the colours a stamp lands in);
+        # the canvas only anchors it on the cell under the pointer.
+        self._stamp_preview: QImage | None = None
+        # The stamp gestures' snapping unit in tiles, where it is not the
+        # arrangement's block — a stamped chain places whole stamps while its
+        # block stays one cell (:meth:`set_stamp_unit`). (0, 0) falls back to
+        # the block, which is every other document.
+        self._stamp_unit: tuple[int, int] = (0, 0)
         # Where a rearrange drag would land, and whether it may: the controller
         # decides (a drop that would overlap its own source is refused), the
         # canvas only draws it.
@@ -582,6 +608,10 @@ class Canvas(PanZoomSurface, QWidget):
         if not on and self._stamp_drag:
             self._end_stamp_drag()
             self.stamp_finished.emit()
+        if not on:
+            # A half-made pick drag dies with the tool; it was never reported.
+            self._stamp_picking = False
+            self._stamp_pick_anchor = self._stamp_pick_slot = None
         self._drag_anchor = self._drag_slot = None
         self._apply_cursor()
         self.update()
@@ -589,6 +619,35 @@ class Canvas(PanZoomSurface, QWidget):
     def _end_stamp_drag(self) -> None:
         self._stamp_drag = False
         self._stamp_slot = None
+
+    def set_stamp_preview(self, image: QImage | None) -> None:
+        """Arm the stamp preview: ``image`` shown over the hovered cell.
+
+        The controller passes the held tiles already rendered — it alone knows
+        which tiles are held and what colours they land in — so the canvas only
+        anchors the picture on the cell under the pointer (``None`` disarms it).
+        """
+        self._stamp_preview = None if (image is None or image.isNull()) else image
+        if self._stamp_preview is None and self._preview_color is None:
+            self._hover_pixel = None
+        self.update()
+
+    def set_stamp_unit(self, across: int, down: int) -> None:
+        """Size the stamp gestures' unit: ``across`` x ``down`` **tiles**.
+
+        What one press places and one pick rectangle counts in. It is the
+        arrangement's block on every ordinary tilemap — pass ``(0, 0)`` and the
+        block answers — but a stamped chain places whole stamps while its block
+        stays one cell, and the three gestures that speak in units have to say
+        the stamp: the pick rectangle snaps to it, a drag inside one is a click
+        on it, and the hover preview anchors on its corner. The controller says
+        which, because only it knows the format (``stamp_tool.py`` reads the
+        same unit for what a release lifts and a press lays).
+        """
+        unit = (max(0, across), max(0, down))
+        if unit != self._stamp_unit:
+            self._stamp_unit = unit
+            self.update()
 
     def set_drop_target(
         self, slots: Iterable[int] | None, *, valid: bool = True
@@ -645,9 +704,16 @@ class Canvas(PanZoomSurface, QWidget):
             self._hover_pixel = None
             self.update()
 
+    def _wants_hover(self) -> bool:
+        """Whether anything on screen follows the pointer between clicks —
+        the pen preview's colour, or the stamp tool's held tiles."""
+        return self._preview_color is not None or (
+            self._stamping and self._stamp_preview is not None
+        )
+
     def _track_hover(self, pos: QPointF) -> None:
-        """Follow the pixel under the pointer while the preview is armed."""
-        pixel = None if self._preview_color is None else self._pixel_at(pos)
+        """Follow the pixel under the pointer while a preview is armed."""
+        pixel = self._pixel_at(pos) if self._wants_hover() else None
         if pixel != self._hover_pixel:
             self._hover_pixel = pixel
             self.update()
@@ -940,13 +1006,13 @@ class Canvas(PanZoomSurface, QWidget):
         self.update()
 
     def _stamp_press(self, event) -> None:  # noqa: ANN001 — Qt event
-        """Lay a tile down (left), or pick the one under the cursor (right).
+        """Lay tiles down (left), or start picking what is there (right).
 
-        Both are reported as one signal carrying the button, because they are
-        one gesture on one target and splitting them would let the two disagree
-        about which cell that is. Only the left one opens a drag: picking is a
-        discrete act, and sweeping it would spray the tile source panel with every
-        tile crossed — the reading the palette grid's eyedropper already takes.
+        The left press is reported at once — laying keeps pace with the pointer.
+        The right one is not: a click picks the one cell under it and a drag
+        picks the rectangle it sweeps, and which of those the press begins is
+        only knowable on release, so the press just opens the gesture and the
+        release reports it (:meth:`_stamp_release`).
         """
         slot = self._slot_at(event.position())
         if slot is None:
@@ -954,12 +1020,23 @@ class Canvas(PanZoomSurface, QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self._stamp_drag = True
             self._stamp_slot = slot
-        elif event.button() != Qt.MouseButton.RightButton:
-            return
-        self.stamp_pressed.emit(slot, event.button())
+            self.stamp_pressed.emit(slot, event.button())
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._stamp_picking = True
+            self._stamp_pick_anchor = self._stamp_pick_slot = slot
+            self.update()
 
     def _stamp_move(self, event) -> None:  # noqa: ANN001 — Qt event
-        if not (self._stamp_drag and event.buttons() & Qt.MouseButton.LeftButton):
+        buttons = event.buttons()
+        if self._stamp_picking and buttons & Qt.MouseButton.RightButton:
+            # The pick drag: nothing is emitted until release, so all a move
+            # does is grow the outlined rectangle.
+            slot = self._slot_at(event.position(), clamp=True)
+            if slot is not None and slot != self._stamp_pick_slot:
+                self._stamp_pick_slot = slot
+                self.update()
+            return
+        if not (self._stamp_drag and buttons & Qt.MouseButton.LeftButton):
             return
         # Clamped, like every other drag here: sliding off the edge keeps aiming
         # at the boundary cell rather than dropping the stroke.
@@ -969,10 +1046,50 @@ class Canvas(PanZoomSurface, QWidget):
             self.stamp_moved.emit(slot)
 
     def _stamp_release(self, event) -> None:  # noqa: ANN001 — Qt event
+        if event.button() == Qt.MouseButton.RightButton:
+            if not self._stamp_picking:
+                return
+            anchor, swept = self._stamp_pick_anchor, self._stamp_pick_slot
+            self._stamp_picking = False
+            self._stamp_pick_anchor = self._stamp_pick_slot = None
+            self.update()
+            if anchor is None:
+                return
+            # A drag that stayed inside one *cell* is a click: on a metatile map
+            # the press and release slots can differ without the pointer ever
+            # leaving the cell that both name.
+            if swept is None or self._stamp_cell_of(swept) == self._stamp_cell_of(
+                anchor
+            ):
+                self.stamp_pressed.emit(anchor, Qt.MouseButton.RightButton)
+            else:
+                self.stamp_area_picked.emit(anchor, swept)
+            return
         if event.button() != Qt.MouseButton.LeftButton or not self._stamp_drag:
             return
         self._end_stamp_drag()
         self.stamp_finished.emit()
+
+    def _stamp_unit_tiles(self) -> tuple[int, int]:
+        """The stamp gestures' unit in tiles — the stated one, or the block.
+
+        The fallback is what makes :meth:`set_stamp_unit` optional: the
+        arrangement's block is one cell on a tilemap (the window sets it so),
+        and the cell is the placed unit everywhere a stamped chain has not said
+        otherwise.
+        """
+        across, down = self._stamp_unit
+        return across or max(1, self._block_cols), down or max(1, self._block_rows)
+
+    def _stamp_cell_of(self, slot: int) -> tuple[int, int]:
+        """Which placed **unit** ``slot`` is inside, in unit coordinates.
+
+        A division of the slot's drawn position by :meth:`_stamp_unit_tiles`,
+        which is all the canvas has to know about the format.
+        """
+        tile_x, tile_y = self._layout().slot_to_pos(slot)
+        unit_w, unit_h = self._stamp_unit_tiles()
+        return tile_x // unit_w, tile_y // unit_h
 
     def _pixel_press(self, event) -> None:  # noqa: ANN001 — Qt event
         """Begin a pixel gesture: report the pressed pixel and its button.
@@ -1142,7 +1259,9 @@ class Canvas(PanZoomSurface, QWidget):
         The float goes down first (a lifted image the user is dragging), then its
         outline. Both pixel editing and the rearrange tool put something in the
         air, so the float is painted for either; the marquee and pen preview
-        belong to pixel editing alone, and the drop target to the rearrange.
+        belong to pixel editing alone, the drop target to the rearrange, and the
+        stamp tool's pair — the held tiles over the hovered cell, the pick drag's
+        rectangle — to that tool's own armed flag.
 
         Gated on the mode rather than trusting the overlays to be ``None`` there:
         undo steps through pixel-mode selections wherever the history is walked,
@@ -1162,6 +1281,10 @@ class Canvas(PanZoomSurface, QWidget):
                 self._scaled_rect(*self._pick_outline.getRect()),
                 color=GRID_STRUCTURE_COLOR,
             )
+        if self._stamping:
+            self._paint_stamp_pick(painter)
+            self._paint_stamp_preview(painter)
+            return
         pixel_mode = self._edit_mode is EditMode.PIXEL
         if not (pixel_mode or self._rearranging):
             return
@@ -1234,6 +1357,67 @@ class Canvas(PanZoomSurface, QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         # adjusted(): a 1px pen straddles the path, so inset to keep it inside.
         painter.drawRect(rect.adjusted(0, 0, -1, -1))
+
+    def _paint_stamp_preview(self, painter: QPainter) -> None:
+        """The held tiles over the cell they would land on — the pen preview at
+        cell scale.
+
+        Anchored on the hovered **unit**'s own corner, so what is shown is where
+        a press would put it: the unit under the pointer — a cell, or a stamped
+        chain's whole stamp (:meth:`_stamp_unit_tiles`) — takes the picture's
+        top-left and the rest extends right and down, clipped by the widget
+        exactly as the landing is clipped by the map. Suppressed while panning
+        (the hand is moving the view) and while a pick drag is choosing a new
+        stamp — previewing the old one under the rectangle being picked would
+        show two different answers to "what is held".
+        """
+        if (
+            self._stamp_preview is None
+            or self._hover_pixel is None
+            or self._panning
+            or self._stamp_picking
+        ):
+            return
+        x, y = self._hover_pixel
+        unit_w, unit_h = self._stamp_unit_tiles()
+        cell_w = self._tile_w * unit_w
+        cell_h = self._tile_h * unit_h
+        rect = self._scaled_rect(
+            x // cell_w * cell_w,
+            y // cell_h * cell_h,
+            self._stamp_preview.width(),
+            self._stamp_preview.height(),
+        )
+        painter.drawImage(rect, self._stamp_preview)
+        pen = QPen(PREVIEW_OUTLINE_COLOR)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(rect.adjusted(0, 0, -1, -1))
+
+    def _paint_stamp_pick(self, painter: QPainter) -> None:
+        """Outline the cells a right drag has swept so far.
+
+        The selection outline's own language, because that is what the gesture
+        is making: the rectangle that will be held when the button comes up.
+        Snapped to whole units for the reason the pick itself is — a stamp lays
+        whole units (a cell, or a stamped chain's whole stamp), so a rectangle
+        cutting one in half would promise a pick the release cannot deliver.
+        """
+        if not self._stamp_picking or self._stamp_pick_anchor is None:
+            return
+        swept = self._stamp_pick_slot
+        ax, ay = self._stamp_cell_of(self._stamp_pick_anchor)
+        bx, by = self._stamp_cell_of(
+            self._stamp_pick_anchor if swept is None else swept
+        )
+        x0, x1 = min(ax, bx), max(ax, bx)
+        y0, y1 = min(ay, by), max(ay, by)
+        across, down = self._stamp_unit_tiles()
+        rect = self._cell_rect(
+            x0 * across, y0 * down, (x1 - x0 + 1) * across, (y1 - y0 + 1) * down
+        )
+        paint_selection_outline(painter, rect)
 
     def _grid_levels(
         self, zx: float, zy: float

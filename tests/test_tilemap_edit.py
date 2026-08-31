@@ -99,6 +99,12 @@ def test_clicking_a_sprite_picks_the_subsprite_and_rings_the_tile_it_names(
     )
     assert window._picked_subsprite is None
     assert canvas._pick_outline is None and panel._marked is None
+    # With no record to answer, the sheet reads in the Subpal row taken back
+    # through the base — the named row an assignment would store. A sprite's base
+    # opens on 8, so the raw spin value would compose the bank half a palette
+    # above the row on show.
+    window._subpalette.setValue(window._doc.palette_row_base + 1)
+    assert window._tile_source_row() == 1
 
     # And the pick belongs to the document: opening another one drops it, or its
     # outline would sit over a picture it says nothing about.
@@ -356,6 +362,39 @@ def test_cutting_cells_copies_then_blanks_them(qtbot, tmp_path) -> None:
     window._set_linear_selection(1, 1)
     window._paste()
     assert window._doc.cells[1] == Cell(index=7)
+
+
+def test_clearing_hides_the_cell_only_where_the_format_has_a_drawn_bit(
+    qtbot, tmp_path
+) -> None:
+    """On a stamp layout "cell $0 drawn" and "nothing here" label the same $0 and
+    look nothing alike, so delete has to mean the second — which is what makes
+    Clear the stamp tool's inverse. A format with nowhere to store the bit must
+    not have one invented for it: the encode would drop the hide and the picture
+    would lie against the bytes. ``flags`` is content celPix does not model, not
+    something a clear was asked to remove, so it survives either way.
+    """
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    # Unbound: clearing a cell asks the format, not the tile source.
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=5, flags=1)])))
+    assert window._cells_have_visibility()  # "fdii iiii iiii iiii"
+
+    window._select_tiles(0, 0)
+    window._clear_cells()
+    assert window._doc.cells[0] == Cell(index=0, visible=False, flags=1)
+    window._undo_stack.undo()
+    assert window._doc.cells[0] == Cell(index=5, flags=1)
+
+    # A panel's word has no drawn bit, so the cell stays drawn where it was.
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=3)])))
+    assert not window._cells_have_visibility()
+
+    window._select_tiles(0, 0)
+    window._clear_cells()
+    assert window._doc.cells[0] == Cell(index=0, visible=True)
 
 
 def test_an_edit_that_changes_nothing_adds_no_undo_step(qtbot, tmp_path) -> None:
@@ -1018,6 +1057,53 @@ def test_the_sheet_reads_in_the_selected_cells_palette_row(qtbot, tmp_path) -> N
     assert window._tile_source_panel._sheet != row0
 
 
+def test_the_sheet_previews_the_row_a_stamp_would_land(qtbot, tmp_path) -> None:
+    """With nothing selected the sheet is an offer, so the row it is composed in
+    has to be the row a stamp puts in the cell — anything else and the panel
+    shows colours no gesture on it can produce.
+
+    Two ways the raw Subpal value misses that. It is the *palette grid's*
+    pointer, so it ranges over every row the palette serves while a cell's field
+    is 3 bits wide: Subpal 9 previewed a row the stamp then clamped to 7. And it
+    is a **drawn** row, while the sheet's synthetic cells are expanded like real
+    ones with the palette row base folded in — so under a base the sheet composed
+    one base above the map. The answer to both is the number the stamp itself
+    writes: the named row, clamped to what the field can hold.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(qtbot, tmp_path, [Cell(index=1, palette_row=2)])
+    assert window._doc.cells_carry_palette_rows
+    assert window._cell_palette_row_limit() == 7  # a 3-bit field
+    # The bug needs a palette longer than the field can name, or Subpal itself
+    # would be clamped before it ever reached the sheet.
+    assert window._max_subpalette_row() >= 9
+    window._clear_selection()
+
+    window._subpalette.setValue(9)
+    window._refresh_tile_source()
+    assert window._tile_source_row() == 7
+
+    # ...and that is what a stamp lands, which is the whole promise: the offer on
+    # the sheet and the cell it makes are one row.
+    window._tile_source_panel.select_id(5)
+    window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    assert window._doc.cells[0].palette_row == 7
+
+    # A base in force: Subpal 3 is named row 1, which the compose folds back
+    # through the base as drawn row 3 — Subpal, where the user is looking. The
+    # drawn value here would be applied twice and compose through row 5.
+    window._clear_selection()
+    window._row_base.setValue(2)
+    window._subpalette.setValue(3)
+    window._refresh_tile_source()
+    assert window._tile_source_row() == 1
+    assert window._drawn_palette_row(window._tile_source_row()) == 3
+
+
 def test_ctrl_wheel_zooms_the_sheet_and_a_plain_wheel_is_left_to_scroll(
     qtbot, tmp_path
 ) -> None:
@@ -1294,11 +1380,13 @@ def test_a_stamp_drag_is_one_undoable_step(qtbot, tmp_path) -> None:
     assert [c.index for c in window._doc.cells[:4]] == [1, 2, 3, 4]
 
 
-def test_a_stamp_keeps_the_cell_s_own_attributes(qtbot, tmp_path) -> None:
-    """Pointing a cell at another tile is not rebuilding the cell: its palette
-    row, flips and carried ``flags`` are as likely to be what the user set up as
-    what they meant to replace, so only the index moves — the rule the Cell spin
-    already follows."""
+def test_a_sheet_stamp_keeps_flips_and_lands_in_the_shown_row(qtbot, tmp_path) -> None:
+    """Pointing a cell at another tile is not rebuilding the cell: its flips and
+    carried ``flags`` are as likely to be what the user set up as what they meant
+    to replace, so they stay — the rule the Cell spin already follows. The
+    palette row is the exception: it follows Subpal, the row the tile source
+    sheet and the stamp preview are drawn in, so the cell lands in the colours
+    that were on show rather than whatever row the target happened to hold."""
     from dataclasses import replace
 
     from PySide6.QtCore import Qt
@@ -1307,14 +1395,15 @@ def test_a_stamp_keeps_the_cell_s_own_attributes(qtbot, tmp_path) -> None:
 
     window, _ = _stamping(qtbot, tmp_path, [Cell(index=1, palette_row=3, flip_h=True)])
     # Read back rather than assumed: what the file carries is the format's
-    # answer, and only the index moving is this test's.
+    # answer, and only the index and row moving is this test's.
     before = window._doc.cells[0]
     assert (before.index, before.palette_row, before.flip_h) == (1, 3, True)
+    window._subpalette.setValue(1)
 
     window._tile_source_panel.select_id(5)
     window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
     window._on_stamp_finished()
-    assert window._doc.cells[0] == replace(before, index=5)
+    assert window._doc.cells[0] == replace(before, index=5, palette_row=1)
 
 
 def test_right_click_picks_the_tile_the_cell_names(qtbot, tmp_path) -> None:
@@ -1375,14 +1464,52 @@ def test_the_eyedropper_takes_the_cells_palette_row_with_it(qtbot, tmp_path) -> 
     assert window._subpalette.value() == 2 + base
 
 
+def test_an_eyedrop_outside_the_tile_source_clears_the_pick(qtbot, tmp_path) -> None:
+    """A cell can name a tile the bound source does not reach, and a pick off one
+    can never be stamped — the span test every stamp passes through refuses it.
+
+    So the refusal has to happen at pick time rather than at stamp time: held
+    anyway, the number would leave the panel ringing the *previous* pick beside
+    a readout describing it and a status line describing this one, and every
+    later click refusing for a reason set several gestures ago. Subpal stays
+    where it is on the same refusal — a sample that found nothing has no row to
+    recolour the sheet with.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    # The bound bank holds eight tiles; 0x300 is nowhere near it.
+    window, _ = _stamping(
+        qtbot,
+        tmp_path,
+        [Cell(index=1, palette_row=2), Cell(index=0x300, palette_row=5)],
+    )
+    assert window._doc.cells[1].index == 0x300  # the format round-trips it
+
+    window._on_stamp_pressed(0, Qt.MouseButton.RightButton)
+    assert window._source_tile_id == 1
+    assert window._source_cell is not None
+    assert window._subpalette.value() == 2
+
+    window._on_stamp_pressed(1, Qt.MouseButton.RightButton)
+    assert window._source_tile_id is None
+    assert window._source_cell is None
+    assert window._tile_source_panel.selected_id() is None
+    assert "No tile selected" in window._tile_source_details.text()
+    assert "not in the tile source" in window.statusBar().currentMessage()
+    assert window._subpalette.value() == 2  # the failed pick moved no row
+
+
 def test_a_stamp_lays_down_the_whole_cell_the_eyedropper_took(qtbot, tmp_path) -> None:
-    """ "Put that one here" means the cell, not just its tile number: the row, the
-    flips and the priority the codec carries all travel with the pick.
+    """ "Put that one here" means the cell, not just its tile number: the flips
+    and the priority the codec carries travel with the pick, and the row lands
+    too because the pick puts it into Subpal, which is the row a stamp writes.
 
     A tile picked in the **sheet** has no such record behind it, so that path
-    still sets the index and leaves the target's own attributes alone — and
-    reaching for the sheet after an eyedrop drops the held record rather than
-    stamping a stale one.
+    still sets the index and leaves the target's flips alone — and reaching for
+    the sheet after an eyedrop drops the held record rather than stamping a
+    stale one.
     """
     from dataclasses import replace
 
@@ -1451,6 +1578,543 @@ def test_stamping_with_nothing_held_says_so(qtbot, tmp_path) -> None:
     window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
     assert window._doc.cells[0].index == 1
     assert "Tile Source" in window.statusBar().currentMessage()
+
+
+def test_a_right_click_picks_a_cell_and_a_right_drag_picks_an_area(qtbot) -> None:
+    """Which gesture the right button made is only knowable on **release**, so
+    the canvas reports nothing on the press and decides there.
+
+    A click has to keep meaning what it did — one cell, one ``stamp_pressed`` —
+    while a drag reports the swept rectangle instead and must not also fire the
+    single pick, or the eyedropper would overwrite the brush the drag just made.
+    "Stayed in one cell" is asked in **cells** and not in slots: on a metatile
+    map the pointer crosses several slots without ever leaving the cell both
+    name, and asked in slots every such wobble would come back an area.
+    """
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QImage, QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from celpix.ui.canvas import Canvas
+
+    canvas = Canvas()
+    qtbot.addWidget(canvas)
+    image = QImage(32, 16, QImage.Format.Format_RGB32)
+    image.fill(0)
+    canvas.set_image(image)
+    canvas.set_tile_size(8, 8)
+    canvas.set_zoom(1.0)
+    canvas.set_arrangement(2, 2, "row")  # 2x2-tile cells, as a metatile map has
+    canvas.set_stamping(True)
+    canvas.resize(64, 32)
+
+    pressed: list[tuple[int, object]] = []
+    areas: list[tuple[int, int]] = []
+    canvas.stamp_pressed.connect(lambda slot, button: pressed.append((slot, button)))
+    canvas.stamp_area_picked.connect(lambda a, b: areas.append((a, b)))
+
+    right = Qt.MouseButton.RightButton
+
+    def send(kind, x, y, button, buttons):
+        pos = QPointF(x, y)
+        QApplication.sendEvent(
+            canvas,
+            QMouseEvent(
+                kind,
+                pos,
+                canvas.mapToGlobal(pos),
+                button,
+                buttons,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+
+    # A click, wobbling across slot 0 into slot 1 — both inside cell (0, 0).
+    send(QEvent.Type.MouseButtonPress, 1, 1, right, right)
+    assert not pressed and not areas  # the press commits to nothing
+    send(QEvent.Type.MouseMove, 9, 1, Qt.MouseButton.NoButton, right)
+    assert not pressed and not areas
+    send(QEvent.Type.MouseButtonRelease, 9, 1, right, Qt.MouseButton.NoButton)
+    assert pressed == [(0, right)]  # the anchor slot, once, on release
+    assert not areas
+
+    # A drag out of that cell into the next one: the area, and no second pick.
+    pressed.clear()
+    send(QEvent.Type.MouseButtonPress, 1, 1, right, right)
+    send(QEvent.Type.MouseMove, 17, 1, Qt.MouseButton.NoButton, right)
+    send(QEvent.Type.MouseButtonRelease, 17, 1, right, Qt.MouseButton.NoButton)
+    assert areas == [(0, 4)]  # anchor slot, far slot
+    assert not pressed
+
+
+def test_a_picked_area_becomes_the_brush_a_press_lays_down(qtbot, tmp_path) -> None:
+    """A right drag's rectangle is held as the stamp, and one left press puts the
+    whole of it down with its top-left cell under the cursor.
+
+    The records travel whole, as the single eyedrop's does — a block copied
+    without its flips comes back facing the wrong way — and the landing is one
+    gesture, so it undoes as one however many cells it wrote. At the row's end
+    the brush is **clipped**, not wrapped: the geometry is a paste's, and a
+    column that ran on onto the next row would scatter the block.
+    """
+    from dataclasses import replace
+
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    # Two rows' worth, so the picked rectangle is 2x2 and not a strip.
+    cells = [Cell(index=i + 1) for i in range(34)]
+    cells[1] = replace(cells[1], flip_h=True)
+    cells[33] = replace(cells[33], flip_v=True)
+    window, _ = _stamping(qtbot, tmp_path, cells)
+    width = window._cells_per_row()
+    assert width == 32 and window._doc.tiles_per_cell == 1  # slot == cell here
+
+    window._on_stamp_area_picked(0, width + 1)  # the 2x2 block at the corner
+    brush = window._stamp_brush
+    assert (brush.width, brush.height) == (2, 2)
+    source = [window._doc.cells[at] for at in (0, 1, width, width + 1)]
+    assert [brush.get(x, y) for y in (0, 1) for x in (0, 1)] == source
+    assert window._source_tile_id == source[0].index  # and it picks like one cell
+
+    target, edge = 3 * width + 4, width - 1  # the second anchor is the row's end
+    landing = (target, target + 1, target + width, target + width + 1)
+    clipped = (edge, edge + width)
+    was = [window._doc.cells[at] for at in landing + clipped + (width,)]
+    depth = window._undo_stack.count()
+
+    window._on_stamp_pressed(target, Qt.MouseButton.LeftButton)
+    window._on_stamp_moved(edge)
+    window._on_stamp_finished()
+    assert window._undo_stack.count() == depth + 1  # one step for the whole stroke
+    assert [window._doc.cells[at] for at in landing] == [
+        replace(cell, visible=True) for cell in source
+    ]
+    # Clipped at the row's end: the brush's second column has nowhere to go and
+    # is dropped, rather than wrapping onto the first cell of the next row.
+    assert [window._doc.cells[at] for at in clipped] == [
+        replace(source[0], visible=True),
+        replace(source[2], visible=True),
+    ]
+    assert window._doc.cells[width] == was[-1]  # the wrapped column never landed
+
+    window._undo_stack.undo()  # and one Ctrl+Z takes every cell back
+    assert [window._doc.cells[at] for at in landing + clipped + (width,)] == was
+
+
+def test_a_right_drag_on_a_stamped_chain_picks_by_the_stamp(qtbot, tmp_path) -> None:
+    """The unit the right drag reads and the left press lays is the **stamp**,
+    not the drawn position it sweeps.
+
+    On a stamped chain one entry covers a 2x2 block of drawn positions, so a
+    sweep lifted per position holds every entry once per position its stamp
+    covers — the same six entries over and over at one-tile offsets — and laying
+    that brush back steps by one position too, writing the same stamps again a
+    tile apart. In stamps the sweep is what was swept over: it grows out to the
+    lattice, holds one record per stamp it touched, and the press puts them on
+    the stamps under the cursor — what that many single clicks would re-point.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    panel_cells = [Cell(index=i % 8) for i in range(128)]
+    window._load_pixel(str(_pnl_file(tmp_path, panel_cells)))
+    panel = window._workspace.entries[1]
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(panel)
+
+    # A layout is 64 positions wide and sparse: the entry at drawn corner (x, y)
+    # is y*64 + x, and the three positions its stamp covers are never read. Six
+    # distinguishable coordinates at the corners of stamps x in {0, 2, 4} and
+    # y in {0, 2} — the block an unaligned sweep over (1, 1)..(4, 3) touches.
+    coords = (11, 22, 33, 44, 55, 66)
+    corners = (0, 2, 4, 128, 130, 132)
+    entries = [Cell()] * 133
+    for at, coord in zip(corners, coords, strict=True):
+        entries[at] = Cell(index=coord)
+    window._load_pixel(str(_map_file(tmp_path, entries)))
+    layout = window._workspace.current
+    layout.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[1]
+    )
+    window._reload_tilemap(layout)
+
+    doc = window._doc
+    assert doc.stamp_cells == (2, 2)
+    assert window._cells_per_row() == 64
+    window._set_stamping(True)
+
+    window._on_stamp_area_picked(1 * 64 + 1, 3 * 64 + 4)
+    brush = window._stamp_brush
+    assert (brush.width, brush.height) == (3, 2)  # stamps, not the 4x3 of tiles
+    assert [
+        brush.get(x, y).index for y in range(brush.height) for x in range(brush.width)
+    ] == list(coords)
+    assert "3x2 stamps" in window.statusBar().currentMessage()
+
+    # A press mid-stamp, well clear of the source: the anchor snaps to the stamp
+    # holding it and each record steps a whole stamp from there.
+    window._on_stamp_pressed(11 * 64 + 11, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    cells = window._doc.cells
+    landed = [
+        cells[window._doc.cell_at((10 + dy * 2) * 64 + 10 + dx * 2)].index
+        for dy in range(2)
+        for dx in range(3)
+    ]
+    assert landed == list(coords)
+    # ...and the canvas measures the gesture in the same unit the tool does.
+    assert window._canvas._stamp_unit_tiles() == (2, 2)
+
+
+def test_copy_and_paste_on_a_stamped_chain_go_by_the_stamp(qtbot, tmp_path) -> None:
+    """The clipboard speaks the unit the right drag's pick does: stamps.
+
+    Lifted per drawn position, a rectangle over a stamped chain holds every
+    entry once per position its stamp covers, and a paste stepping by one
+    position writes those repeats into every stamp they graze — a block wider
+    than the one copied, and the same entries several times over. So the copy
+    reads its rectangle as the area pick does — out to the lattice, one record
+    per stamp — and the paste steps by the stamp, each record landing on
+    exactly one.
+    """
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+    from celpix.ui.main_window.selection import SelectionShape
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(
+        str(_pnl_file(tmp_path, [Cell(index=i % 8) for i in range(128)]))
+    )
+    panel = window._workspace.entries[1]
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(panel)
+
+    # The pick test's sparse layout: six distinguishable coordinates at the
+    # corners of the 3x2 block of stamps an unaligned sweep over (1, 1)..(4, 3)
+    # touches.
+    coords = (11, 22, 33, 44, 55, 66)
+    corners = (0, 2, 4, 128, 130, 132)
+    entries = [Cell()] * 133
+    for at, coord in zip(corners, coords, strict=True):
+        entries[at] = Cell(index=coord)
+    window._load_pixel(str(_map_file(tmp_path, entries)))
+    layout = window._workspace.current
+    layout.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[1]
+    )
+    window._reload_tilemap(layout)
+    doc = window._doc
+    assert doc.stamp_cells == (2, 2) and doc.tiles_per_cell == 1
+
+    select_combo_data(window._selection_shape, SelectionShape.RECT)
+    window._on_slots_selected(1 * 64 + 1, 3 * 64 + 4)  # unaligned, over 3x2 stamps
+    assert window._copy_selection()
+    copied = window._cell_clipboard
+    assert (copied.width, copied.height) == (3, 2)  # stamps, not the 4x3 of cells
+    assert [
+        copied.get(x, y).index
+        for y in range(copied.height)
+        for x in range(copied.width)
+    ] == list(coords)
+    assert "6 stamps" in window.statusBar().currentMessage()
+
+    # Paste mid-stamp, well clear of the source: the anchor snaps to the stamp
+    # holding it and each record steps a whole stamp from there.
+    beyond = doc.cell_at(10 * 64 + 16)  # the stamp past the block's right edge
+    was = doc.cells[beyond]
+    window._on_slots_selected(11 * 64 + 11, 11 * 64 + 11)
+    window._paste()
+    cells = window._doc.cells
+    landed = [
+        cells[doc.cell_at((10 + dy * 2) * 64 + 10 + dx * 2)].index
+        for dy in range(2)
+        for dx in range(3)
+    ]
+    assert landed == list(coords)
+    # The block is the copied one and no wider: the neighbouring stamp was
+    # never written.
+    assert cells[beyond] == was
+    assert "6 stamps" in window.statusBar().currentMessage()
+
+
+def test_a_right_drag_over_the_sheet_sweeps_a_rectangle_of_tiles(qtbot) -> None:
+    """The tile source sheet's twin of the canvas's area pick, and it divides the
+    gesture the same way: the press is an ordinary single pick whatever follows
+    it, and only a drag that *left* its anchor square reports an area.
+
+    The rows carry a hole where the sweep overhung the empty tail of a short last
+    row. What is being reported is a rectangle to stamp, so the shape has to
+    survive the gap — collapsing it would shear the block by a square.
+
+    A drag that narrows back onto the tile it started on still announces the
+    pick. The current tile has not moved, but the *set* has, and the dock reads
+    that signal to drop the wide brush the sweep was building — silent, it would
+    keep stamping a rectangle the user has just taken back.
+    """
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QImage, QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from celpix.ui.tile_source_panel import TileSourcePanel
+
+    panel = TileSourcePanel()
+    qtbot.addWidget(panel)
+    # Ten tiles four across, so the last row is two squares short — and numbered
+    # from $100, so a slot and the ID in it are never the same number.
+    panel.set_zoom(1)
+    sheet = QImage(4 * 8, 3 * 8, QImage.Format.Format_ARGB32)
+    panel.set_sheet(sheet, range(0x100, 0x10A), (8, 8), 4)
+
+    picks: list[int] = []
+    areas: list[list] = []
+    panel.tile_selected.connect(picks.append)
+    panel.area_selected.connect(areas.append)
+
+    right = Qt.MouseButton.RightButton
+    none = Qt.MouseButton.NoButton
+
+    def send(kind, x, y, button, buttons):
+        pos = QPointF(x, y)
+        QApplication.sendEvent(
+            panel,
+            QMouseEvent(
+                kind,
+                pos,
+                panel.mapToGlobal(pos),
+                button,
+                buttons,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+
+    # Press on slot 6 (row 1, column 2), then drag off the bottom-right corner:
+    # the far end clamps onto the last tile there, slot 9 of row 2.
+    send(QEvent.Type.MouseButtonPress, 17, 9, right, right)
+    assert picks == [0x106] and not areas  # an ordinary single pick, said at once
+    send(QEvent.Type.MouseMove, 999, 999, none, right)
+    assert picks == [0x106, 0x105]  # the rectangle's top-left is current
+    assert panel.selected_ids() == frozenset({0x105, 0x106, 0x109})
+    send(QEvent.Type.MouseButtonRelease, 999, 999, right, none)
+    # Slot 10 is past the end of the run, and reads as the hole it is.
+    assert areas == [[[0x105, 0x106], [0x109, None]]]
+
+    # A drag that comes back to the square it started on is the click its press
+    # already made: no area — but every step of it is still announced.
+    picks.clear()
+    areas.clear()
+    send(QEvent.Type.MouseButtonPress, 17, 9, right, right)
+    send(QEvent.Type.MouseMove, 25, 9, none, right)  # out to slot 7...
+    send(QEvent.Type.MouseMove, 17, 9, none, right)  # ...and back onto slot 6
+    assert picks == [0x106, 0x106, 0x106]
+    assert panel.selected_ids() == frozenset({0x106})
+    send(QEvent.Type.MouseButtonRelease, 17, 9, right, none)
+    assert not areas
+
+
+def test_a_sheet_brush_lays_indices_and_leaves_the_targets_their_own(
+    qtbot, tmp_path
+) -> None:
+    """A rectangle swept off the *sheet* is not one swept off the canvas.
+
+    A canvas pick carries whole cell records — flips, priority, the format's
+    uninterpreted ``flags`` — because the gesture is "put those ones here". A
+    sheet holds tiles and nothing else, so each square of its brush lands the way
+    a single sheet pick does: the index, with the target keeping the attributes
+    it already had. Laid as records the block would blank every flip under it, on
+    a gesture that only ever named four tile numbers.
+    """
+    from dataclasses import replace
+
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    cells = [Cell(index=i % 8) for i in range(70)]
+    width = 32  # a panel's, asserted below rather than trusted
+    at = width + 3  # a 2x2 landing on the second row, clear of the row's end
+    landing = (at, at + 1, at + width, at + width + 1)
+    flips = ({"flip_h": True}, {"flip_v": True}, {"flip_h": True, "flip_v": True}, {})
+    for target, flip in zip(landing, flips, strict=True):
+        cells[target] = replace(cells[target], **flip)
+
+    window, _ = _stamping(qtbot, tmp_path, cells)
+    assert window._cells_per_row() == width and window._doc.tiles_per_cell == 1
+    # Read back rather than assumed: that the format carries these at all is its
+    # answer, and only the index and the row moving is this test's.
+    before = [window._doc.cells[target] for target in landing]
+    assert [(cell.flip_h, cell.flip_v) for cell in before] == [
+        (True, False),
+        (False, True),
+        (True, True),
+        (False, False),
+    ]
+    window._subpalette.setValue(1)
+
+    window._on_tile_source_area_picked([[4, 5], [6, 7]])
+    brush = window._stamp_brush
+    assert (brush.width, brush.height) == (2, 2)
+    # Bare index records, and no cell held beside them — which is what tells the
+    # stamp this brush came off the sheet rather than off the map.
+    assert [brush.get(x, y) for y in (0, 1) for x in (0, 1)] == [
+        Cell(index=tile) for tile in (4, 5, 6, 7)
+    ]
+    assert window._source_tile_id == 4 and window._source_cell is None
+
+    window._on_stamp_pressed(at, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    assert [window._doc.cells[target] for target in landing] == [
+        replace(cell, index=tile, palette_row=1, visible=True)
+        for cell, tile in zip(before, (4, 5, 6, 7), strict=True)
+    ]
+
+
+def test_a_pick_in_the_sheet_drops_a_held_brush_and_an_echo_does_not(
+    qtbot, tmp_path
+) -> None:
+    """Every pick made *in* the sheet replaces what is held; every pick pushed
+    *into* it is only the sheet catching up with a pick made elsewhere.
+
+    Both arrive at the dock over the one ``tile_selected`` signal, so they can be
+    told apart only by which side raised the gesture. Unmarked, the push that
+    follows a canvas sweep — and the re-select a recompose needs — reports back
+    as a fresh single pick and throws away the very brush it is echoing, leaving
+    the tool holding one tile a gesture after the user swept a rectangle.
+
+    The other direction is where a sheet pick that *narrows* one matters: it
+    names the tile already current, so nothing downstream of the signal changes —
+    but it is the rectangle being taken back to one square, and the brush has to
+    go with it.
+    """
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(qtbot, tmp_path, [Cell(index=i % 8) for i in range(70)])
+    panel = window._tile_source_panel
+    width = window._cells_per_row()
+    corner = window._doc.cells[0].index
+
+    # The sheet is looking somewhere else when a canvas sweep lands, so the push
+    # that follows it moves the pick and is reported back.
+    panel.select_id(3)
+    assert window._stamp_brush is None and panel.selected_id() == 3 != corner
+    window._on_stamp_area_picked(0, width + 1)
+    assert panel.selected_id() == corner  # the echo landed...
+    assert window._stamp_brush is not None and window._source_cell is not None
+
+    # ...and so does the refresh's, which re-states the held ID after a recompose
+    # dropped the panel's own selection.
+    panel.clear_selection()
+    window._refresh_tile_source()
+    assert panel.selected_id() == corner
+    assert window._stamp_brush is not None
+
+    step = panel._cell_px[0] * panel._zoom
+    right = Qt.MouseButton.RightButton
+    none = Qt.MouseButton.NoButton
+
+    def send(kind, x, button, buttons):
+        pos = QPointF(x, step // 2)
+        QApplication.sendEvent(
+            panel,
+            QMouseEvent(
+                kind,
+                pos,
+                panel.mapToGlobal(pos),
+                button,
+                buttons,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+
+    # A right drag across the first two tiles of the sheet: the held brush becomes
+    # the sheet's kind, with no record behind it.
+    send(QEvent.Type.MouseButtonPress, step // 2, right, right)
+    send(QEvent.Type.MouseMove, step + step // 2, none, right)
+    send(QEvent.Type.MouseButtonRelease, step + step // 2, right, none)
+    assert (window._stamp_brush.width, window._stamp_brush.height) == (2, 1)
+    assert window._source_cell is None and window._source_tile_id == panel._ids[0]
+
+    # And one click in the sheet drops it - this one included, which picks the
+    # tile that is already current.
+    qtbot.mouseClick(panel, Qt.MouseButton.LeftButton, pos=QPoint(step // 2, step // 2))
+    assert window._source_tile_id == panel._ids[0]
+    assert window._stamp_brush is None
+
+
+def test_a_stamp_lands_in_the_subpalette_being_shown(qtbot, tmp_path) -> None:
+    """Moving Subpal after a pick recolours the stamp, not just its previews.
+
+    The eyedrop puts the picked cell's row into Subpal, which is what keeps "put
+    that one here" true — but the row is Subpal's from then on, because Subpal is
+    the row the tile source sheet and the canvas preview are both drawn in. Held
+    on the picked record instead, moving Subpal repainted the sheet and the
+    preview in the new row and then laid down the old one: what landed was a
+    colour no longer on screen anywhere.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(
+        qtbot,
+        tmp_path,
+        [Cell(index=6, palette_row=5, flip_h=True), Cell(index=1, palette_row=0)],
+    )
+    assert window._doc.cells_carry_palette_rows
+
+    window._on_stamp_pressed(0, Qt.MouseButton.RightButton)
+    assert window._subpalette.value() == 5  # the pick moved it
+    window._subpalette.setValue(2)  # ...and the user moved it again
+
+    window._on_stamp_pressed(1, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    landed = window._doc.cells[1]
+    assert landed.palette_row == 2  # the row on show, not the picked one
+    assert (landed.index, landed.flip_h) == (6, True)  # the rest of the pick stands
+
+
+def test_the_canvas_preview_follows_the_held_stamp(qtbot, tmp_path) -> None:
+    """What a left press would lay is shown over the hovered cell, so the preview
+    has to say the same thing the landing does — including its **shape**, which a
+    picked area changes. With nothing held or the tool down there is nothing to
+    show, and a stale picture left behind would advertise a stamp no click makes.
+    """
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(qtbot, tmp_path, [Cell(index=i + 1) for i in range(4)])
+    doc = window._doc
+    cell_w = doc.tile_width * doc.stamp_tiles[0]
+    cell_h = doc.tile_height * doc.stamp_tiles[1]
+    assert window._canvas._stamp_preview is None  # nothing picked yet
+
+    window._tile_source_panel.select_id(7)
+    preview = window._canvas._stamp_preview
+    assert preview is not None and not preview.isNull()
+    assert (preview.width(), preview.height()) == (cell_w, cell_h)
+
+    window._on_stamp_area_picked(0, 1)  # two cells across
+    wide = window._canvas._stamp_preview
+    assert wide is not None
+    assert (wide.width(), wide.height()) == (cell_w * 2, cell_h)
+
+    window._stamp_action.setChecked(False)
+    assert window._canvas._stamp_preview is None
 
 
 # -- pixel editing through a tilemap ---------------------------------------
@@ -2444,12 +3108,12 @@ def test_setting_a_palette_row_writes_the_whole_quadrant_it_shares(
 def test_a_stamp_leaves_the_row_behind_where_four_cells_share_one(
     qtbot, tmp_path
 ) -> None:
-    """An eyedropped cell normally lays down its whole record — the row, the
-    flips, everything the format round-trips — because "put *that* one here" is
-    what the gesture means.
+    """An eyedropped cell normally lays down its whole record in Subpal's row —
+    the flips and flags the format round-trips travel with it, and the row is
+    the one on show, because "put *that* one here" means what the previews say.
 
     Not the palette row on a format that stores one per 2x2 square: there the row
-    is not the cell's to give, and carrying it would recolour up to three
+    is not the cell's to give, and writing it would recolour up to three
     neighbours the user never pointed at. The tile still travels, which is the
     half of the gesture that was asked for.
 
@@ -2457,14 +3121,15 @@ def test_a_stamp_leaves_the_row_behind_where_four_cells_share_one(
     one that had a predicate of its own: a format declaring a coarse granularity
     and stating no width to resolve it against has no square the host can name, so
     the grouping machinery treats it as one row per cell throughout. A stamp
-    asking a weaker question would be the single gesture that did not — dropping a
-    clone's colour for neighbours it could not have reached.
+    asking a weaker question would be the single gesture that did not — refusing
+    the shown row for neighbours it could not have reached.
     """
     from celpix.core.context import KEY_TILEMAP_COLUMNS
     from celpix.core.tilemap import Cell
 
     window, entry = _bound_nametable(qtbot, tmp_path)
     window._source_cell = Cell(index=5, palette_row=3)
+    window._subpalette.setValue(3)  # a real eyedrop moves Subpal to the pick's row
 
     laid = window._stamp_cell(5, Cell(index=1, palette_row=0))
     assert laid.index == 5  # the tile goes

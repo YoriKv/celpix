@@ -7,12 +7,21 @@ looking, and this puts a chosen tile into the cell under the cursor.
 
 Edit Tiles is a **modal tool over tile mode**, the shape the rearrange tool
 already has and for the same reason: it wants both mouse buttons, so it cannot
-share the canvas with the selection drag. While armed, a left press lays the tile
-source panel's picked tile into the cell under the cursor and a left drag keeps
-laying it — a pencil over cells — while a right press picks the tile a cell
-already names *and the palette row it is drawn in*, which is the eyedropper. It
-is offered only on a tilemap, because only a tilemap has cells that name tiles
-(`Capability.STAMP`).
+share the canvas with the selection drag. While armed, a left press lays the
+held tiles into the cell under the cursor and a left drag keeps laying them — a
+pencil over cells — while the right button is the eyedropper: a click picks the
+tile a cell already names *and the palette row it is drawn in*, and a **drag**
+picks a whole rectangle of cells that the next left press lays down as one
+block, its top-left cell landing under the cursor. On a **stamped chain** the
+gesture's unit is the whole stamp: the sweep grows out to the stamp lattice and
+the brush holds one entry per stamp (:meth:`StampToolMixin._on_stamp_area_picked`).
+It is offered only on a
+tilemap, because only a tilemap has cells that name tiles (`Capability.STAMP`).
+
+**What is held is previewed on the canvas.** The held tiles are rendered in the
+colours they would land in and shown over the hovered cell — the pixel pen's
+one-pixel preview at cell scale (:meth:`StampToolMixin._sync_stamp_preview`,
+:meth:`~celpix.ui.canvas.Canvas.set_stamp_preview`).
 
 **A stroke is one undoable step.** A drag across forty cells is one gesture and
 has to undo as one, so the drag is previewed on the live document and committed
@@ -21,16 +30,23 @@ the cells as they stood at the press restored underneath it first. That is the
 pixel pen's arrangement (paint into a working copy, commit the stroke) at cell
 scale.
 
-**What a stamp writes is what the pick carried.** An eyedropped tile brings the
-whole cell it was taken off — palette row, flips, priority, the format's
-uninterpreted `flags` — because the gesture is "put *that* one here", and a copy
-that kept only the tile number lays down a cell the user can see is the wrong
-colour. A tile picked in the **tile source sheet** has no such record behind it:
-a sheet holds tiles, and a tile has no palette row, so only the index lands and
-the target keeps the attributes it had, exactly as the Cell spin does. One rule,
-two pickers, and the difference is what each of them knows
-(:meth:`StampToolMixin._stamp_cell`). On a chained map the referrer's attributes
-are moot either way — they come from the source cell (§3.1).
+**What a stamp writes is what the pick carried, in the colours on show.** An
+eyedropped cell — and every cell of a picked area — brings its whole record:
+flips, priority, the format's uninterpreted `flags`, because the gesture is
+"put *that* one here" and a copy that kept only the tile number lays down a cell
+the user can see is facing the wrong way. A tile picked in the **tile source
+sheet** has no such record behind it — a sheet holds tiles — so only the index
+lands and the target keeps its other attributes, exactly as the Cell spin does;
+a rectangle right-dragged there (:class:`~celpix.ui.tile_source_panel.
+TileSourcePanel`) is the same pick widened, one bare index per square, and each
+lands on the same terms.
+The **palette row** is the one field that follows neither pick: it is Subpal's,
+the row the tile source sheet and the canvas preview are both drawn in, so what
+lands is always the colours being shown — a pick sets Subpal to the picked row,
+which is what keeps "put that one here" true, and moving Subpal afterwards
+recolours the next stamp along with its preview
+(:meth:`StampToolMixin._settle_stamp_row`). On a chained map the referrer's
+attributes are moot either way — they come from the source cell (§3.1).
 """
 
 from __future__ import annotations
@@ -41,16 +57,15 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
 
 from celpix.core.capabilities import Capability
-from celpix.core.tilemap import Cell
+from celpix.core.errors import PipelineError
+from celpix.core.tilemap import Cell, CellGrid, resolve_cell
 from celpix.pipeline import pipeline
 from celpix.ui.tools import EditMode
 from celpix.ui.widgets import counted, signals_blocked
 
 STAMP_TIP = (
-    "Lay the picked tile into a cell (T)\n"
-    "Left click or drag stamps; right click picks a tile\n"
-    "A picked cell carries its palette row and flips; a tile\n"
-    "picked in the Tile Source panel sets the tile alone"
+    "Draw tiles/stamps with left click. "
+    "Select a tile or drag select a stamp with right click (T)"
 )
 # Why the tool is off where it looks like it should apply. A format whose cells
 # have no index field has nothing for a stamp to set - the same answer that hides
@@ -75,10 +90,19 @@ class StampToolMixin:
         self._stamping = False
         # The stroke in progress: the cells as they stood at the press (what the
         # committed step undoes to), the working list being painted, and which
-        # positions it has already reached so a drag re-crossing one is free.
+        # drawn positions the pointer has already anchored a stamp on, so a drag
+        # re-crossing one is free.
         self._stamp_before: list | None = None
         self._stamp_cells: list | None = None
         self._stamp_touched: set[int] = set()
+        # The rectangle a right drag picked — the brush a left press lays down,
+        # its top-left cell landing under the cursor. Whole cell records when
+        # swept off the canvas, bare index records when swept off the tile
+        # source sheet (told apart by `_source_cell`, which only a canvas pick
+        # carries). None while the held stamp is the single picked tile; any
+        # single pick drops it
+        # (:meth:`~...tile_source_dock.TileSourceDockMixin._set_source_tile`).
+        self._stamp_brush: CellGrid | None = None
 
     def _build_stamp_actions(self, bar) -> None:  # noqa: ANN001 — a QToolBar
         """The tool's two actions: the toolbar button and the Edit menu row.
@@ -114,6 +138,7 @@ class StampToolMixin:
         self._canvas.stamp_pressed.connect(self._on_stamp_pressed)
         self._canvas.stamp_moved.connect(self._on_stamp_moved)
         self._canvas.stamp_finished.connect(self._on_stamp_finished)
+        self._canvas.stamp_area_picked.connect(self._on_stamp_area_picked)
 
     # -- arming --------------------------------------------------------------
     def _stamp_available(self) -> bool:
@@ -187,6 +212,11 @@ class StampToolMixin:
         tip = STAMP_BLOCKED_TIP if blocked else STAMP_TIP
         self._stamp_action.setToolTip(tip)
         self._toggle_stamp_action.setToolTip(tip)
+        # The preview follows everything this pass follows — arming, the entry,
+        # the format — plus the render inputs the refresh brings it here for: a
+        # palette edit or a Subpal move recolours what the held tiles would land
+        # as, and this pass is on the refresh path.
+        self._sync_stamp_preview()
 
     # -- the gestures --------------------------------------------------------
     def _stamp_cell_at(self, slot: int) -> int | None:
@@ -259,7 +289,7 @@ class StampToolMixin:
         """
         before, cells = self._stamp_before, self._stamp_cells
         self._stamp_before = self._stamp_cells = None
-        touched, self._stamp_touched = self._stamp_touched, set()
+        self._stamp_touched = set()
         doc = self._doc
         if doc is None or before is None or cells is None:
             return
@@ -271,27 +301,80 @@ class StampToolMixin:
             # below has been drawing the painted list.
             self._refresh_view()
             return
-        self.statusBar().showMessage(f"Stamped {counted(len(touched), 'cell')}.")
+        # The cells that actually changed, not the positions crossed: a brush
+        # writes several per anchor and a re-cross writes none, so the anchor
+        # count is the wrong number in both directions.
+        changed = sum(1 for was, now in zip(before, cells, strict=True) if was != now)
+        self.statusBar().showMessage(f"Stamped {counted(changed, 'cell')}.")
 
     def _stamp_into(self, slot: int, tile_id: int) -> None:
-        """Point the cell under ``slot`` at ``tile_id`` and show it immediately.
+        """Lay the held stamp with its top-left cell under ``slot``, and show it.
 
         Previewed on the live document rather than pushed per cell: a drag is one
         gesture and undoes as one (:meth:`_on_stamp_finished`), but it still has
         to be *visible* as it is made, and the map's own render is the only thing
         that can show a cell drawing a different tile.
+
+        The anchor is a **drawn** position and the brush extends over drawn
+        neighbours, clipped at the row's end rather than wrapped: laying a
+        rectangle is :meth:`~...tilemap_edit.TilemapEditMixin._paste_cells`'
+        geometry, and each landing cell is resolved through
+        :meth:`~celpix.core.document.Document.cell_at` for the reason a paste's
+        is — on an assembled map the drawn position is not the file's own.
+
+        On a **stamped chain** the brush holds one entry per stamp
+        (:meth:`_on_stamp_area_picked`), so the neighbours step by the stamp —
+        each landing position falls inside a different stamp and ``cell_at``
+        snaps it to that stamp's entry, which is exactly what a single click on
+        the same position would have re-pointed.
         """
         doc, cells = self._doc, self._stamp_cells
         if doc is None or cells is None:
             return
-        at = self._stamp_cell_at(slot)
-        if at is None or at in self._stamp_touched:
+        anchor = slot // doc.tiles_per_cell
+        if anchor in self._stamp_touched:
             return
-        self._stamp_touched.add(at)
-        landing = self._stamp_cell(tile_id, cells[at])
-        if cells[at] == landing:
+        self._stamp_touched.add(anchor)
+        brush = self._stamp_brush
+        width = self._cells_per_row()
+        unit_w, unit_h = doc.stamp_cells
+        x0, y0 = anchor % width, anchor // width
+        laying = (
+            [(0, 0, None)]
+            if brush is None or not len(brush)
+            else [
+                (dx, dy, brush.get(dx, dy))
+                for dy in range(brush.height)
+                for dx in range(brush.width)
+            ]
+        )
+        changed = False
+        for dx, dy, record in laying:
+            x = x0 + dx * unit_w
+            if x >= width:
+                continue
+            at = doc.cell_at((y0 + dy * unit_h) * width + x)
+            if not 0 <= at < len(cells):
+                continue
+            if record is None:
+                landing = self._stamp_cell(tile_id, cells[at])
+            elif self._source_cell is None:
+                # A brush swept off the tile source sheet - the one area pick
+                # with no record behind it (`_source_cell` is only ever held by
+                # a canvas pick). The sheet holds tiles, not cells, so each
+                # square lands as a single sheet pick does: the index, with the
+                # target keeping its own attributes (:meth:`_stamp_cell` with
+                # nothing held).
+                landing = self._stamp_cell(record.index, cells[at])
+            else:
+                landing = self._settle_stamp_row(
+                    replace(record, visible=True), cells[at]
+                )
+            if cells[at] != landing:
+                cells[at] = landing
+                changed = True
+        if not changed:
             return  # already this exactly; nothing to draw and nothing to undo
-        cells[at] = landing
         doc.cells = list(cells)
         doc.resolve()
         self._refresh_view()
@@ -299,17 +382,19 @@ class StampToolMixin:
     def _stamp_cell(self, tile_id: int, over: Cell) -> Cell:
         """The record a stamp lays into ``over`` — **what the pick carried**.
 
-        An **eyedropped** tile brings its whole cell: the palette row, the flips,
-        the priority and the uninterpreted ``flags`` the format round-trips. The
-        gesture is "put *that* one here", and a copy that kept only the number
-        would put down a cell the user can see is the wrong colour or facing the
-        wrong way — the attributes are as much what they pointed at as the tile
-        is. Everything the codec reads travels, so a new field a format grows is
-        carried without this method learning its name.
+        An **eyedropped** tile brings its whole cell: the flips, the priority and
+        the uninterpreted ``flags`` the format round-trips. The gesture is "put
+        *that* one here", and a copy that kept only the number would put down a
+        cell the user can see is facing the wrong way — the attributes are as
+        much what they pointed at as the tile is. Everything the codec reads
+        travels, so a new field a format grows is carried without this method
+        learning its name.
 
         A tile picked in the **sheet** has no such record behind it — the sheet
-        holds tiles, and a tile has no palette row — so only the index lands and
-        the target keeps its own attributes.
+        holds tiles — so only the index lands and the target keeps its own other
+        attributes. The **palette row** follows neither pick but the Subpal spin,
+        which is the row every preview of the stamp is drawn in
+        (:meth:`_settle_stamp_row`).
 
         The guard is against a **stale** record: the held ID is re-validated
         against the map on every stamp (:meth:`_held_tile_id`) and a rebind can
@@ -323,28 +408,69 @@ class StampToolMixin:
         entirely so) every click a silent no-op. It is also what the authoring
         tool does: `scr_map_cnv` sets the drawn byte on every block it registers
         (``scgcad-formats.md`` §4).
-
-        The **palette row stays behind** where the document stores one row for
-        several cells (an NES nametable's 2x2 quadrant). There the row is not the
-        cell's to carry: bringing it would recolour up to three neighbours the
-        user never pointed at, on a gesture whose whole meaning is "put that tile
-        *here*". Everything else the record carries still travels — the row is the
-        one field that is not this cell's to give.
-
-        Asked as :attr:`~celpix.core.document.Document.has_row_groups` and not as
-        "is the granularity coarse", because those are different questions on a
-        format that declares a group and states no width to resolve it against.
-        The host has no group it can name there and edits rows per cell
-        everywhere else, so a second, weaker predicate here would strip the
-        colour off a clone for a group that does not exist.
         """
         held = self._source_cell
-        doc = self._doc
-        grouped = doc is not None and doc.has_row_groups
         if held is not None and held.index == tile_id:
             laid = replace(held, visible=True)
-            return replace(laid, palette_row=over.palette_row) if grouped else laid
-        return replace(over, index=tile_id, visible=True)
+        else:
+            laid = replace(over, index=tile_id, visible=True)
+        return self._settle_stamp_row(laid, over)
+
+    def _settle_stamp_row(self, laid: Cell, over: Cell) -> Cell:
+        """``laid`` with the palette row a stamp actually writes into ``over``.
+
+        The row is **Subpal's**, not the record's or the target's, wherever the
+        format gives this file's cells a row of their own to hold: Subpal is the
+        row the tile source sheet and the canvas preview are drawn in, so it is
+        the one number that keeps "what you see is what lands" true. A pick sets
+        Subpal to the picked row, which is what makes the eyedrop still mean
+        "put *that* one here" — and moving Subpal after the pick recolours the
+        stamp along with its previews instead of laying down the colours of a
+        preview no longer on screen. Clamped to what the field can hold, the
+        rule every cell-row writer follows
+        (:meth:`~...tilemap_edit.TilemapEditMixin._assign_cell_palette_row`).
+
+        The **target's row stays** where the document stores one row for several
+        cells (an NES nametable's 2x2 quadrant). There the row is not this
+        cell's to change: writing it would recolour up to three neighbours the
+        user never pointed at, on a gesture whose whole meaning is "put that
+        tile *here*". Asked as
+        :attr:`~celpix.core.document.Document.has_row_groups` and not as "is the
+        granularity coarse", because those are different questions on a format
+        that declares a group and states no width to resolve it against — the
+        host has no group it can name there and edits rows per cell everywhere
+        else.
+
+        And nothing is written where the format's cells hold **no row at all** —
+        :meth:`_stamp_row_override` answers ``None`` for both refusals, and a
+        chained map lands there too: its own words are coordinates whose row
+        field is not a row (§3.1).
+        """
+        doc = self._doc
+        if doc is not None and doc.has_row_groups:
+            return replace(laid, palette_row=over.palette_row)
+        row = self._stamp_row_override()
+        return laid if row is None else replace(laid, palette_row=row)
+
+    def _stamp_row_override(self) -> int | None:
+        """The **named** row a stamp writes — Subpal's — or None to leave rows be.
+
+        None on the same terms every cell-row writer refuses: a format whose
+        cells state no row limit has no field for the number to land in
+        (:meth:`~...tilemap_edit.TilemapEditMixin._cell_palette_row_limit`), and
+        a row-group format's row is not one cell's to set
+        (:meth:`_settle_stamp_row` keeps the target's there). The value is the
+        Subpal row taken back through the base, because a cell stores a *named*
+        row and the base is applied again on the way out
+        (:meth:`~...palette_regions.PaletteRegionsMixin._named_row_picked`).
+        """
+        doc = self._doc
+        if doc is None or not doc.cells_carry_palette_rows or doc.has_row_groups:
+            return None
+        limit = self._cell_palette_row_limit()
+        if limit is None:
+            return None
+        return max(0, min(self._named_row_picked(), limit))
 
     def _pick_tile_at(self, slot: int) -> None:
         """The eyedropper: take the **whole cell** under ``slot``.
@@ -364,12 +490,27 @@ class StampToolMixin:
         from the row the stamp writes (:meth:`_pick_palette_row_at`). A pick is
         the tool's way of saying "this one", and the same thing said by a
         left-click selection in tile mode moves the row everywhere it is read.
+
+        A cell pointing **outside the tile source** clears the pick instead —
+        the span test every stamp passes through (:meth:`_held_tile_id`), asked
+        at pick time. There is no tile there to take: holding the number anyway
+        would leave the panel ringing the *previous* pick against a readout and
+        a status line describing this one, and every later stamp refusing for a
+        reason set several gestures ago. The row stays out of Subpal on the same
+        refusal — a sample that found nothing has nothing to recolour the sheet
+        with.
         """
         doc = self._doc
         at = self._stamp_cell_at(slot)
         if doc is None or doc.cells is None or at is None:
             return
         index = doc.cells[at].index
+        if index not in pipeline.tile_source_span(doc, self._cell_index_limit()):
+            self._clear_source_tile()
+            self.statusBar().showMessage(
+                f"Tile ${index:X} is not in the tile source - nothing picked."
+            )
+            return
         self._set_source_tile(index, doc.cells[at])
         row = self._pick_palette_row_at(slot)
         picked = f"Picked tile ${index:X}"
@@ -410,6 +551,150 @@ class StampToolMixin:
         row = self._drawn_palette_row(cells[at].palette_row)
         self._subpalette.setValue(row)
         return row
+
+    def _on_stamp_area_picked(self, anchor: int, far: int) -> None:
+        """A right drag's pick: hold the swept rectangle of cells as the stamp.
+
+        The rectangle in **drawn** positions, resolved to file cells through
+        :meth:`~celpix.core.document.Document.cell_at` — the pair every
+        rectangle gesture here uses, so an area picked off an assembled screen
+        holds the cells actually under it. Records travel whole, as the single
+        eyedrop's does, and the top-left cell doubles as an ordinary pick — the
+        panel's ring, the readout and Subpal all follow it, so the area pick
+        answers every question a single one does plus the shape.
+
+        On a **stamped chain** the placed unit is the whole stamp, so the sweep
+        is read in stamps: the rectangle grows out to the stamp lattice — every
+        stamp it touches, whole — and the brush holds **one entry per stamp**,
+        found at each stamp's corner. Per drawn position it would hold every
+        entry once per position it covers, and laying that back would write the
+        same stamps again a tile apart. The lattice sits on the resolved grid
+        (:meth:`~celpix.core.document.Document.cell_at` snaps to the same one),
+        so a sweep and a click cannot disagree about which entry a position is.
+
+        A click never lands here: the canvas reports a drag that stayed inside
+        one unit as the single-cell ``stamp_pressed`` it is.
+        """
+        doc = self._doc
+        if doc is None or doc.cells is None:
+            return
+        width = self._cells_per_row()
+        unit_w, unit_h = doc.stamp_cells
+        a, b = anchor // doc.tiles_per_cell, far // doc.tiles_per_cell
+        x0, x1 = sorted((a % width, b % width))
+        y0, y1 = sorted((a // width, b // width))
+        # Out to the lattice: the corner floors onto it, and counting the units
+        # from there to the far edge is the round *up* — a rectangle that enters
+        # a stamp holds all of it.
+        x0 -= x0 % unit_w
+        y0 -= y0 % unit_h
+        lifted = CellGrid((x1 - x0) // unit_w + 1, (y1 - y0) // unit_h + 1)
+        for dy in range(lifted.height):
+            for dx in range(lifted.width):
+                at = doc.cell_at((y0 + dy * unit_h) * width + (x0 + dx * unit_w))
+                if 0 <= at < len(doc.cells):
+                    lifted.set(dx, dy, doc.cells[at])
+        corner = doc.cell_at(y0 * width + x0)
+        if not 0 <= corner < len(doc.cells):
+            return
+        record = doc.cells[corner]
+        self._set_source_tile(record.index, record, area=lifted)
+        self._pick_palette_row_at((y0 * width + x0) * doc.tiles_per_cell)
+        what = "stamps" if doc.is_indirect else "cells"
+        self.statusBar().showMessage(
+            f"Picked {lifted.width}x{lifted.height} {what} - "
+            "left click stamps them from the top-left."
+        )
+
+    # -- the preview ---------------------------------------------------------
+    def _sync_stamp_preview(self) -> None:
+        """Converge the canvas's stamp preview with what a left press would lay.
+
+        Rendered through the same machinery as the map itself —
+        :func:`~celpix.pipeline.pipeline.expand_cells` over the landing records,
+        then this document's own colour-table rule
+        (:meth:`~...rendering.RenderingMixin._tilemap_grid_image`) — so the
+        preview and the landing cannot come out looking different; that promise
+        is the whole point of it. Cleared with the tool down or nothing held.
+
+        A stroke in progress skips the recompose: nothing the preview depends on
+        can change mid-stroke, and this runs on the refresh path the stroke's
+        every step re-enters.
+        """
+        if self._stamp_cells is not None:
+            return
+        if not self._stamping or self._doc is None:
+            self._canvas.set_stamp_preview(None)
+            return
+        held = self._held_stamp_cells()
+        if held is None:
+            self._canvas.set_stamp_preview(None)
+            return
+        cells, columns = held
+        try:
+            tiles, layout = pipeline.expand_cells(
+                self._doc, self._registry, cells, columns, self._doc.stamp_tiles
+            )
+            grid = pipeline.compose_tiles(tiles, layout, None)
+        except (KeyError, PipelineError):
+            self._canvas.set_stamp_preview(None)
+            return
+        self._canvas.set_stamp_preview(self._tilemap_grid_image(grid))
+
+    def _held_stamp_cells(self) -> tuple[list[Cell], int] | None:
+        """The cells a left press would lay, ready to compose, and their width
+        in placed units — or None with nothing usable held.
+
+        Each unit's records go through the row rule the landing goes through
+        (:meth:`_settle_stamp_row`), against a blank target: the one divergence
+        that leaves is the row-group format, whose landing keeps a row only the
+        target knows — a preview has no target yet, and the record's own row is
+        the closest honest answer there.
+        """
+        brush = self._stamp_brush
+        if brush is not None and len(brush):
+            units = [
+                self._settle_stamp_row(replace(brush.get(x, y), visible=True), Cell())
+                for y in range(brush.height)
+                for x in range(brush.width)
+            ]
+            width = brush.width
+        else:
+            held = self._held_tile_id()
+            if held is None:
+                return None
+            record = self._source_cell
+            picked = record if record is not None and record.index == held else Cell()
+            laid = replace(picked, index=held, visible=True)
+            units = [self._settle_stamp_row(laid, Cell())]
+            width = 1
+        return [cell for unit in units for cell in self._stamp_unit_cells(unit)], width
+
+    def _stamp_unit_cells(self, cell: Cell) -> list[Cell]:
+        """What ``cell`` draws as, one record per composed cell.
+
+        ``cell`` itself for every ordinary map. On a **chained** map a held ID
+        is a position in the map being drawn through, so the unit is that
+        stamp's source cells resolved — tile and attributes both, the walk
+        :func:`~celpix.pipeline.pipeline.tile_source_image` takes for its own
+        preview of the same thing (§3.1).
+        """
+        doc = self._doc
+        chain = doc.chain if doc is not None else None
+        if doc is None or chain is None:
+            return [cell]
+        across, down = doc.stamp_cells
+        stride = max(1, chain.source_columns)
+        return [
+            resolve_cell(
+                Cell(index=cell.index),
+                chain.source,
+                carry_rows=chain.carry_rows,
+                at=cell.index + dx + dy * stride,
+            )
+            for dy in range(down)
+            for dx in range(across)
+        ]
 
     def _refuse_stamp(self) -> None:
         """Say why a click laid nothing down, rather than doing nothing silently.

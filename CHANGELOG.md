@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.12 - unreleased
+
+- Edit tiles previews the selected tile or stamp
+- Right click drag in edit tile mode to select a stamp for placement. Works in both the canvas and tile source
+- Fixes for stamp based tilemaps
+
 ## v0.5.11 - 2026-08-28
 
 - Files list multi-select for move up/down and delete

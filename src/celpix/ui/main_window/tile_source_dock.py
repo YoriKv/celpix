@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix.core.tilemap import Cell, resolve_cell
+from celpix.core.tilemap import Cell, CellGrid, resolve_cell
 from celpix.pipeline import pipeline
 from celpix.project.workspace import TileSource
 from celpix.ui import render_bridge
@@ -79,6 +79,7 @@ class TileSourceDockMixin:
         """
         self._tile_source_panel = TileSourcePanel()
         self._tile_source_panel.tile_selected.connect(self._on_tile_source_selected)
+        self._tile_source_panel.area_selected.connect(self._on_tile_source_area_picked)
         self._tile_source_panel.zoom_requested.connect(self._on_tile_source_wheel_zoom)
         self._tile_source_panel.pan_requested.connect(self._pan_tile_source)
         # Which palette row the sheet was last composed through, so a selection
@@ -96,6 +97,11 @@ class TileSourceDockMixin:
         # holds tiles and knows nothing about palette rows or flips. A stamp
         # writes what the pick carried (:meth:`_set_source_tile`).
         self._source_cell: Cell | None = None
+        # Raised while a pick is being *pushed into* the panel, so the echo it
+        # reports back is told apart from a pick made there: a pick made in
+        # the sheet drops the record and brush an earlier gesture left held,
+        # and an echo must not throw away what it is echoing.
+        self._tile_source_pushing = False
 
         holder = QScrollArea()
         holder.setWidget(self._tile_source_panel)
@@ -283,18 +289,24 @@ class TileSourceDockMixin:
 
     def _on_tile_source_selected(self, tile_id: int) -> None:
         # A pick made in the sheet carries an ID and nothing else, so it drops
-        # whatever record an earlier eyedrop left held - but only when it names a
-        # *different* tile. The panel is driven from this side too: every pick is
-        # pushed into it (`_set_source_tile`) and the refresh re-selects the held
-        # ID after a recompose dropped it, both of which come back through here.
-        # Those echoes must not throw away the record they are echoing.
-        if tile_id != self._source_tile_id:
+        # whatever record or area brush an earlier gesture left held - even one
+        # naming the same tile, since a click that collapsed a swept rectangle
+        # to one square arrives as exactly that. The panel is driven from this
+        # side too: every pick is pushed into it (`_set_source_tile`) and the
+        # refresh re-selects the held ID after a recompose dropped it, both of
+        # which come back through here - `_tile_source_pushing` marks those
+        # echoes, which must not throw away the record they are echoing.
+        if not self._tile_source_pushing:
             self._source_cell = None
+            self._stamp_brush = None
         self._source_tile_id = tile_id
         self._refresh_tile_source_details()
         self._sync_set_base_tile()
+        self._sync_stamp_preview()
 
-    def _set_source_tile(self, tile_id: int, cell: Cell | None = None) -> None:
+    def _set_source_tile(
+        self, tile_id: int, cell: Cell | None = None, *, area: CellGrid | None = None
+    ) -> None:
         """Hold ``tile_id`` as the tile a stamp would place, from anywhere.
 
         The panel is one source of the pick and the stamp tool's eyedropper is
@@ -310,12 +322,83 @@ class TileSourceDockMixin:
         what the pick carried**: a tile taken off a cell lays that cell down
         whole, and one taken off the sheet sets an index and leaves the rest of
         the target alone (:meth:`~...stamp_tool.StampToolMixin._stamp_cell`).
+
+        ``area`` is a right drag's rectangle of records, and defaulting it is
+        what makes every *single* pick drop a held area — so a stale brush
+        cannot outlive the pick that replaced it. The canvas's area pick comes
+        through here (:meth:`~...stamp_tool.StampToolMixin.
+        _on_stamp_area_picked`); the sheet's own writes the same fields in
+        :meth:`_on_tile_source_area_picked`, which cannot push its pick back
+        into the panel it was made in.
         """
         self._source_tile_id = tile_id
         self._source_cell = cell
-        self._tile_source_panel.select_id(tile_id)
+        self._stamp_brush = area
+        self._tile_source_pushing = True
+        try:
+            self._tile_source_panel.select_id(tile_id)
+        finally:
+            self._tile_source_pushing = False
         self._refresh_tile_source_details()
         self._sync_set_base_tile()
+        self._sync_stamp_preview()
+
+    def _on_tile_source_area_picked(self, rows: list) -> None:
+        """A right drag over the sheet: hold the swept rectangle as the stamp.
+
+        The canvas gesture's twin (:meth:`~...stamp_tool.StampToolMixin.
+        _on_stamp_area_picked`), made where the tiles are *offered* rather than
+        where they are placed. The brush holds bare index records — a sheet
+        holds tiles, not cells — so each one lands as a single sheet pick
+        does: the index, with the target keeping its own attributes
+        (:meth:`~...stamp_tool.StampToolMixin._stamp_into`, told apart there
+        by ``_source_cell`` being empty). A square the sweep overhung past the
+        run's end stays the grid's blank fill, the same filler an area picked
+        off the map's edge holds.
+
+        The fields are written directly rather than through
+        :meth:`_set_source_tile`: this pick was *made in* the panel, which is
+        already ringing the whole rectangle, and the push-back there would
+        collapse the ring to the corner tile. The current tile is the
+        top-left — the corner a stamp lays from — which the panel made
+        current as it swept, so what is converged here is everything that
+        follows the held pick rather than the panel itself. Subpal is left
+        alone on the sheet pick's usual grounds: a sheet tile has no row of
+        its own to sample.
+        """
+        grid = CellGrid(len(rows[0]), len(rows))
+        for y, row in enumerate(rows):
+            for x, tile_id in enumerate(row):
+                if tile_id is not None:
+                    grid.set(x, y, Cell(index=tile_id))
+        self._source_tile_id = rows[0][0]
+        self._source_cell = None
+        self._stamp_brush = grid
+        self._refresh_tile_source_details()
+        self._sync_set_base_tile()
+        self._sync_stamp_preview()
+        self.statusBar().showMessage(
+            f"Picked {grid.width}x{grid.height} tiles - "
+            "left click stamps them from the top-left."
+        )
+
+    def _clear_source_tile(self) -> None:
+        """Hold nothing — the mirror of :meth:`_set_source_tile`, same fields.
+
+        For the pick that *fails*: the eyedropper landing on a cell whose tile
+        the source cannot offer (:meth:`~...stamp_tool.StampToolMixin.
+        _pick_tile_at`). Keeping the previous pick there would leave the panel
+        ringing a tile the user just pointed away from, and the readout claiming
+        a pick the last gesture did not make — so the sheet stays up and the
+        readout says "No tile selected", which is the true state.
+        """
+        self._source_tile_id = None
+        self._source_cell = None
+        self._stamp_brush = None
+        self._tile_source_panel.clear_selection()
+        self._refresh_tile_source_details()
+        self._sync_set_base_tile()
+        self._sync_stamp_preview()
 
     def _point_source_at_pixel(self, x: int, y: int) -> None:
         """Pick the tile canvas pixel ``(x, y)`` was drawn from, if a cell drew it.
@@ -425,15 +508,33 @@ class TileSourceDockMixin:
         )
         # The pick survives a recompose where the ID is still on offer - a
         # palette edit, a Cols change, an edit to the art - and is dropped by the
-        # panel where it is not. Either way the readout has to follow.
-        if self._source_tile_id is not None:
-            self._tile_source_panel.select_id(self._source_tile_id)
+        # panel where it is not. Either way the readout has to follow. Marked as
+        # a push, so the echo does not drop a held record or brush - and made
+        # only where the panel actually lost the pick, because a swept
+        # rectangle that survived would otherwise be collapsed to its corner
+        # by a pick the user never made.
+        if (
+            self._source_tile_id is not None
+            and self._tile_source_panel.selected_id() != self._source_tile_id
+        ):
+            self._tile_source_pushing = True
+            try:
+                self._tile_source_panel.select_id(self._source_tile_id)
+            finally:
+                self._tile_source_pushing = False
         self._sync_tile_source_marker()
         self._refresh_tile_source_details()
         self._sync_set_base_tile()
 
     def _tile_source_row(self) -> int:
-        """Which palette row to read the sheet's tiles in.
+        """Which palette row to read the sheet's tiles in — a **named** row.
+
+        Named, not drawn, because that is what the answer becomes: it lands in
+        the synthetic cells' own row field, and
+        :func:`~celpix.pipeline.pipeline.expand_cells` folds the palette row
+        base in exactly as it does for a real cell's. A drawn row here would
+        have the base applied twice, and the sheet would sit one base above the
+        map for as long as the base was nonzero.
 
         **The selected cell's**, when there is one and the format gives cells a
         row to have. A bank is indices until a row is chosen for it, and the row
@@ -442,10 +543,19 @@ class TileSourceDockMixin:
         the panel answer "what else could this cell have named" rather than
         "what would these tiles look like in row 0".
 
-        Otherwise the **Subpal row**, which is the palette dock's selected row:
-        clicking a swatch there sets this spin
-        (``PalettePanel.subpalette_row_selected``), so the two are one value and
-        the sheet follows whichever the user last said.
+        Otherwise **the row a stamp would land**: the Subpal row taken back
+        through the base and clamped to what a cell can hold, the number
+        :meth:`~...stamp_tool.StampToolMixin._stamp_row_override` writes. The
+        panel's promise is that what is on offer is what will land, and a full
+        CGRAM serves rows a 3-bit cell field cannot name — followed verbatim,
+        Subpal 9 would preview colours no gesture can place while the stamp
+        landed row 7 (Subpal is also the palette grid's pointer, so its range
+        is rightly the palette's rather than the field's).
+
+        Where the format gives cells **no row** the clamp has nothing to ask and
+        the base is never live (:meth:`~...palette_dock.PaletteDockMixin.
+        _sync_row_base`), so the Subpal value itself is the answer, exactly as
+        the map's own colour table reads it.
 
         Read off the file's own cells rather than the resolved ones, because a
         chained map's resolved rows are its *source's* and the sheet keeps those
@@ -454,16 +564,22 @@ class TileSourceDockMixin:
         On a **sprite object** the picked subsprite answers instead of a cell,
         which is the same rule reached through the thing that document selects in
         (``sprite_select.py``): a subsprite carries its own row, and the sheet
-        shows what else the picked one could have drawn.
+        shows what else the picked one could have drawn. With none picked the
+        Subpal row answers through the base like the stamp fallback — a sprite's
+        base opens on 8, so the raw spin value would read the bank half a
+        palette above the row on show.
         """
         doc = self._doc
         if doc is not None and doc.is_sprite:
             sub = self._picked_subsprite_record()
-            return sub.palette_row if sub is not None else self._subpalette.value()
+            return sub.palette_row if sub is not None else self._named_row_picked()
         if doc is not None and doc.cells and doc.cells_carry_palette_rows:
             cells = self._selected_cells()
             if cells:
                 return doc.cells[cells[0]].palette_row
+            row = self._named_row_picked()
+            limit = self._cell_palette_row_limit()
+            return row if limit is None else max(0, min(row, limit))
         return self._subpalette.value()
 
     def _tile_source_note(self) -> str | None:

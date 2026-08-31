@@ -36,12 +36,17 @@ marks structure rather than choice everywhere else. Two rings in one white on
 one small square read as one ring drawn twice.
 
 **The selection is a set of tiles with one of them current.** Clicking or
-dragging here picks one, which is all a stamp can place; a caller that already
-holds a wider pick — the font alphabet window's table, where a stretch of rows is
-a stretch of tiles (:mod:`celpix.ui.font_alphabet_window`) — states the whole set
-with :meth:`~TileSourcePanel.select_ids`. It is drawn as the canvas draws a
-multi-tile selection: one outline per contiguous run of a display row, so a
-picked block reads as a block and a scattered pick does not claim to be one.
+dragging here picks one; a **right drag** sweeps a rectangle of them instead,
+reported whole through ``area_selected`` for the stamp tool to hold as a block —
+the same gesture, with the same meaning, as the right drag over the canvas's
+cells (``stamp_tool.py``). A caller that already holds a wider pick — the font
+alphabet window's table, where a stretch of rows is a stretch of tiles
+(:mod:`celpix.ui.font_alphabet_window`) — states the whole set with
+:meth:`~TileSourcePanel.select_ids`. A set-shaped pick is drawn as the canvas
+draws a multi-tile selection — one outline per contiguous run of a display row,
+so a scattered pick does not claim to be a block — while the sweep keeps its
+own shape and rings as the one rectangle it is
+(:meth:`~TileSourcePanel._paint_selection`).
 
 **A lattice every 16 tiles** marks where the numbering rolls over — the page a
 bank is addressed in, not the tile boundaries, which are already visible here
@@ -101,6 +106,12 @@ LABEL_COLOR = QColor(255, 255, 255)
 
 class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
     tile_selected = Signal(int)  # the ID of the newly selected tile
+    # A right drag's rectangle, as rows of IDs top to bottom — ``None`` where
+    # the sweep overhung the empty tail of a short last row, so the shape
+    # survives where the run ran out. Emitted on release, and only for a sweep
+    # that left its anchor square: a right click is an ordinary pick and has
+    # already said so through ``tile_selected``.
+    area_selected = Signal(object)  # list[list[int | None]]
     zoom_requested = Signal(int, object)  # steps, QPointF cursor pos (widget)
     pan_requested = Signal(int, int)  # dx, dy
 
@@ -117,6 +128,16 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         # what is outlined, and which tile a stamp places and the arrows step from.
         self._picked: frozenset[int] = frozenset()
         self._marked: int | None = None
+        # A right drag in flight: the anchor slot its press landed on, and the
+        # far slot it last swept over. Slots rather than IDs, because the
+        # rectangle is a shape on the lattice and the run may step over the
+        # IDs between two units — only slots can say what sits next to what.
+        self._area_anchor: int | None = None
+        self._area_far: int | None = None
+        # The shape of the pick, where the pick *has* one: the swept rectangle
+        # in cell coordinates (x0, y0, x1, y1), outlasting the drag so the ring
+        # stays one box. None for every set-shaped pick, which draws per run.
+        self._picked_rect: tuple[int, int, int, int] | None = None
         self._labels: dict[int, str] = {}
         # ClickFocus, the canvas and palette grid's idiom: clicking a tile also
         # arms the arrow-key stepping below.
@@ -142,6 +163,11 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         different tile. Dropped silently — the dock re-reads the readout right
         after, and re-emitting here would announce a pick the user did not make.
         """
+        # The pick's rectangle is a shape on the *old* lattice: it survives a
+        # recompose that kept the run and the width (a palette edit), and is
+        # dropped with anything else, where its slots would name other tiles.
+        if list(ids) != list(self._ids) or max(1, columns) != self._columns:
+            self._picked_rect = None
         self._sheet = sheet
         self._ids = ids
         self._cell_px = (max(1, cell_px[0]), max(1, cell_px[1]))
@@ -152,6 +178,9 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         self._picked &= on_sheet
         if self._marked is not None and self._marked not in ids:
             self._marked = None
+        # A sweep in flight is anchored to a slot of the *old* run; the new one
+        # may not reach it, so the drag is dropped with the selection.
+        self._area_anchor = self._area_far = None
         self._update_size()
 
     def set_zoom(self, zoom: int) -> None:
@@ -233,23 +262,58 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         if picked:
             self._pick(frozenset(picked), picked[0])
 
-    def _select(self, tile_id: int) -> None:
-        self._pick(frozenset({tile_id}), tile_id)
+    def clear_selection(self) -> None:
+        """Drop the pick, leaving the sheet up — nothing is selected now.
 
-    def _pick(self, picked: frozenset[int], current: int) -> None:
+        Silent, like the drop :meth:`set_sheet` makes for an ID no longer on
+        offer: the caller unpicking is about to re-read the readout itself, and
+        an emit would announce a pick the user did not make.
+        """
+        if self._selected is None and not self._picked:
+            return
+        self._picked, self._selected = frozenset(), None
+        self._picked_rect = None
+        self.update()
+
+    def _select(self, tile_id: int, *, announce: bool = False) -> None:
+        self._pick(frozenset({tile_id}), tile_id, announce=announce)
+
+    def _pick(
+        self,
+        picked: frozenset[int],
+        current: int,
+        *,
+        announce: bool = False,
+        rect: tuple[int, int, int, int] | None = None,
+    ) -> None:
         """Land a selection, reporting only a change of the *current* tile.
 
         Widening a pick that still has the same tile current is not a new tile
         being picked — everything downstream of the signal (the canvas, the Cell
         spin, the ring in the dock) speaks of one tile, and would be told the
-        same one again.
+        same one again. ``announce`` is the user gestures' exception, in the
+        other direction: a click that *narrows* a wider pick keeps the same
+        tile current, but the dock must still hear it — a held area brush
+        describes the pick it was swept from, and this is the pick replacing
+        it (``tile_source_dock.py``). A pick that changed nothing at all is
+        never emitted either way.
+
+        ``rect`` is the pick's *shape*, where it has one — the sweep's
+        rectangle in cell coordinates — and defaulting it is what keeps the
+        shape honest: every other pick is a set, so any of them landing drops
+        the rectangle and the ring falls back to per-run outlines.
         """
         if picked == self._picked and current == self._selected:
+            if rect == self._picked_rect:
+                return
+            self._picked_rect = rect
+            self.update()
             return
         moved = current != self._selected
         self._picked, self._selected = picked, current
+        self._picked_rect = rect
         self.update()
-        if moved:
+        if moved or announce:
             self.tile_selected.emit(current)
 
     # -- geometry ------------------------------------------------------------
@@ -263,15 +327,15 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         )
         self.update()
 
-    def _id_at(self, x_px: float, y_px: float, *, clamp: bool = False) -> int | None:
-        """The ID under a widget position — or, ``clamp``ed, the nearest one.
+    def _slot_at(self, x_px: float, y_px: float, *, clamp: bool = False) -> int | None:
+        """The slot under a widget position — or, ``clamp``ed, the nearest one.
 
         The clamped reading is what a drag wants, so scrubbing off an edge (or
         past the last, partly filled row) keeps the pick following the pointer.
         ``None`` for a click on nothing, or with the sheet empty.
         """
         cell_w, cell_h = self._cell_px
-        slot = grid_slot_at(
+        return grid_slot_at(
             x_px,
             y_px,
             (cell_w * self._zoom_x, cell_h * self._zoom_y),
@@ -279,6 +343,10 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
             len(self._ids),
             clamp=clamp,
         )
+
+    def _id_at(self, x_px: float, y_px: float, *, clamp: bool = False) -> int | None:
+        """The ID under a widget position, on :meth:`_slot_at`'s terms."""
+        slot = self._slot_at(x_px, y_px, clamp=clamp)
         return None if slot is None else self._ids[slot]
 
     def _cell_rect(self, slot: int) -> QRect:
@@ -318,28 +386,87 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         # over selecting and painting on the canvas.
         if self._pan_press(event):
             return
-        if event.button() == Qt.MouseButton.LeftButton:
-            tile_id = self._id_at(event.position().x(), event.position().y())
-            if tile_id is not None:
-                self._select(tile_id)
+        if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
+            slot = self._slot_at(event.position().x(), event.position().y())
+            if slot is not None:
+                self._select(self._ids[slot], announce=True)
+                if event.button() == Qt.MouseButton.RightButton:
+                    # The press is an ordinary pick either way; whether it
+                    # grows into an area is the drag's to say.
+                    self._area_anchor = self._area_far = slot
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        """Drag to scrub the pick across the sheet, edges included."""
+        """Drag to scrub the pick across the sheet, edges included — or, with
+        the right button, to sweep a rectangle of tiles."""
         if self._pan_move(event):
             return
-        if not event.buttons() & Qt.MouseButton.LeftButton:
+        buttons = event.buttons()
+        anchor = self._area_anchor
+        if buttons & Qt.MouseButton.RightButton and anchor is not None:
+            slot = self._slot_at(event.position().x(), event.position().y(), clamp=True)
+            if slot is not None and slot != self._area_far:
+                self._area_far = slot
+                rows = self._area_rows(anchor, slot)
+                ids = [tid for row in rows for tid in row if tid is not None]
+                # The top-left is current — the corner a stamp lays from. It is
+                # always a real tile: only the last row can end short, and the
+                # rectangle's top-left sits no later than either swept corner.
+                corner = rows[0][0]
+                assert corner is not None
+                self._pick(
+                    frozenset(ids),
+                    corner,
+                    announce=True,
+                    rect=self._area_span(anchor, slot),
+                )
+            event.accept()
+            return
+        if not buttons & Qt.MouseButton.LeftButton:
             super().mouseMoveEvent(event)
             return
         tile_id = self._id_at(event.position().x(), event.position().y(), clamp=True)
         if tile_id is not None:
-            self._select(tile_id)
+            self._select(tile_id, announce=True)
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         if self._pan_release(event):
             return
+        anchor, far = self._area_anchor, self._area_far
+        if event.button() == Qt.MouseButton.RightButton and anchor is not None:
+            self._area_anchor = self._area_far = None
+            # A drag that never left its anchor square is the click its press
+            # already made — the canvas's rule for the same gesture.
+            if far is not None and far != anchor:
+                self.area_selected.emit(self._area_rows(anchor, far))
+            event.accept()
+            return
         super().mouseReleaseEvent(event)
+
+    def _area_span(self, anchor: int, far: int) -> tuple[int, int, int, int]:
+        """The rectangle between two slots, as cell coordinates (x0, y0, x1, y1)."""
+        x0, x1 = sorted((anchor % self._columns, far % self._columns))
+        y0, y1 = sorted((anchor // self._columns, far // self._columns))
+        return x0, y0, x1, y1
+
+    def _area_rows(self, anchor: int, far: int) -> list[list[int | None]]:
+        """The IDs in the rectangle between two slots, as rows top to bottom.
+
+        ``None`` where a slot holds no entry — the rectangle can overhang the
+        empty tail of a short last row — so the shape survives the gap: what
+        is being reported is a rectangle to stamp, and collapsing the holes
+        would shear it.
+        """
+        x0, y0, x1, y1 = self._area_span(anchor, far)
+        count = len(self._ids)
+        return [
+            [
+                self._ids[slot] if (slot := y * self._columns + x) < count else None
+                for x in range(x0, x1 + 1)
+            ]
+            for y in range(y0, y1 + 1)
+        ]
 
     def keyPressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         """Arrows step the pick — Left/Right by one square (crossing display
@@ -366,7 +493,7 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         if abs(delta) == self._columns and not 0 <= target < len(self._ids):
             event.accept()
             return
-        self._select(self._ids[min(max(0, target), len(self._ids) - 1)])
+        self._select(self._ids[min(max(0, target), len(self._ids) - 1)], announce=True)
         event.accept()
 
     # -- painting ------------------------------------------------------------
@@ -407,6 +534,14 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         the sheet steps over the IDs between two units and only the list can say
         which squares sit next to each other.
 
+        A pick with a **shape** — the right drag's sweep — draws that shape
+        instead: one box around the whole rectangle, because that is the one
+        thing the user chose and the brush holds, and a stack of row rings
+        would claim it is several stretches. Squares past the run's end stay
+        inside it — they are part of the swept stamp — and the paint is left
+        to Qt's own clip, one rectangle being cheaper than asking what is
+        exposed.
+
         Inset a pixel and slightly soft, so a tile that is also *marked* still
         reads as two rings rather than one thick one.
 
@@ -414,6 +549,13 @@ class TileSourcePanel(ShortcutIsland, PanZoomSurface, QWidget):
         row and the band starts on a row boundary, so a row outside it is a row
         whose rings would be drawn entirely off the repainted band anyway.
         """
+        if self._picked_rect is not None:
+            x0, y0, x1, y1 = self._picked_rect
+            rect = self._cell_rect(y0 * self._columns + x0).united(
+                self._cell_rect(y1 * self._columns + x1)
+            )
+            paint_selection_outline(painter, rect.adjusted(1, 1, -1, -1), alpha=230)
+            return
         if not self._picked:
             return
         slots = [
