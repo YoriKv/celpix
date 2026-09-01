@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.15 - unreleased
+## v0.5.15 - 2026-08-31
 
 - Performance improvements on large projects
 
