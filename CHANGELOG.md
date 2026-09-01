@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.16 - unreleased
+## v0.5.16 - 2026-09-01
 
 - Added SNES RLE1 and RLE 2 compression algorithms
 - Cleaned up pixel and tilemap format names
