@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.17 - unreleased
+## v0.5.17 - 2026-09-01
 
 - Improved hex viewer
 - Added README screenshots
