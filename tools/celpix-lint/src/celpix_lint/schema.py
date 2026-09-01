@@ -22,7 +22,7 @@ from __future__ import annotations
 
 #: The reader's own :data:`celpix.project.projectfile.PROJECT_VERSION`. A file
 #: claiming more than this is one a newer celPix wrote.
-KNOWN_PROJECT_VERSION = 1
+KNOWN_PROJECT_VERSION = 2
 
 # -- enumerations (celpix.project.workspace, celpix.core) ------------------
 #: ``EntryKind`` — how an entry is *bounded*.
@@ -143,7 +143,7 @@ VIEW_KEYS = frozenset(
         "columns",
         "rows",
         "zoom",
-        "subpalette_row",
+        "palette_row",
         "offset",
         "byte_nudge",
         "block_columns",
@@ -161,6 +161,9 @@ VIEW_KEYS = frozenset(
         # Read but never written: the key `tile_rearrangement` was stored under
         # before the type was renamed.
         "tile_map",
+        # Likewise: `palette_row` under its version-1 spelling. A project the
+        # reader migrates is still a project this may be pointed at.
+        "subpalette_row",
     }
 )
 
@@ -168,7 +171,7 @@ VIEW_KEYS = frozenset(
 VIEW_INT_MINIMUMS = {
     "columns": 1,
     "rows": 1,
-    "subpalette_row": 0,
+    "palette_row": 0,
     "offset": 0,
     "byte_nudge": 0,
     "block_columns": 1,

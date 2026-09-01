@@ -1,0 +1,19 @@
+# Alias of `snes-4bpp` that files the format under the NEC block too (its own
+# entry names it as a Nintendo console format). Same codec/params, a distinct id
+# so both listings coexist — this is the VDC's own character format, and the one
+# most PC Engine backgrounds use, so a reader who knows only their machine finds
+# it under their machine. The unusual PCE readings are `pce-4bpp-flat-planes` and
+# `pce-4bpp-sprite`; see snes-4bpp.toml for the layout.
+id = "preset.pixel.pce-4bpp"
+name = "PC Engine 4bpp background (8x8, same as SNES)"
+engine_id = "codec.pixel.planar"
+category = "NEC"
+
+[params]
+bpp = 4
+planes = [
+  { base = 0, stride = 2 },
+  { base = 1, stride = 2 },
+  { base = 16, stride = 2 },
+  { base = 17, stride = 2 },
+]

@@ -63,11 +63,11 @@ class Capability(Enum):
     # -- pixel-side editing
     PIXEL_EDIT = auto()  # the tools panel: pen, fill, the pixel selection
     PALETTE_EDIT = auto()  # the color editor and eyedropper
-    PALETTE_REGIONS = auto()  # pinned subpalette rows over spans of the picture
+    PALETTE_REGIONS = auto()  # pinned palette rows over spans of the picture
     TILE_REARRANGE = auto()  # the display-only permutation (tile-rearrange.md)
 
     # -- shared, but implemented per content kind
-    PALETTE_ROW = auto()  # give the selection a named subpalette row of its own
+    PALETTE_ROW = auto()  # give the selection a named palette row of its own
     TILE_SELECT = auto()  # select a tile or a rectangle of them
     CLIPBOARD = auto()  # copy / cut / paste
     CELL_FLIP = auto()  # mirror a tile or a selection of them

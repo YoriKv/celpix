@@ -23,7 +23,7 @@ def _shift(bias: int) -> bytes:
     """The 256-byte translation map that adds ``bias`` to an index, saturating.
 
     Cached because a window holds at most a handful of distinct biases (one per
-    pinned subpalette row on screen) and rebuilding the map per tile would cost
+    pinned palette row on screen) and rebuilding the map per tile would cost
     more than the translate it feeds.
 
     Saturating at **both** ends. Past 255 is unreachable once the row is clamped
@@ -62,7 +62,7 @@ class IndexGrid(PixelGrid):
     def shifted(self, bias: int) -> IndexGrid:
         """A new grid with every index moved up by ``bias``.
 
-        How a pinned subpalette reaches the screen: the render bridge builds one
+        How a pinned palette row reaches the screen: the render bridge builds one
         colour table for the *whole* image, so a tile that must render through a
         different palette row cannot be given its own table — the row moves into
         the indices instead (``docs/design/palette-editing.md``). Purely a

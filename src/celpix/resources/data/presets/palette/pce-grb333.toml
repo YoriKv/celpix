@@ -6,7 +6,7 @@
 # console packs, the tile editor pads. See
 # docs/graphics-formats-reference/tile-converter-formats.md §3.3.
 id = "preset.palette.pce-grb333"
-name = "GRB333 (9-bit packed, PC Engine VCE)"
+name = "GRB333 (9-bit, packed - PC Engine VCE)"
 engine_id = "codec.palette.mask"
 category = "NEC"
 

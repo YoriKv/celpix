@@ -45,8 +45,8 @@ class ColorEditingMixin:
     def _refresh_color_details(self) -> None:
         """Render the panel's selected color into the details readout.
 
-        The position reads as subpalette + color-within-it (the pixel format's
-        index space sizes the subpalette), matching how tiles actually reference
+        The position reads as palette row + color-within-it (the pixel format's
+        index space sizes the palette row), matching how tiles actually reference
         the entry - not as a flat palette index.
         """
         index = self._palette_panel.selected_index()
@@ -54,14 +54,14 @@ class ColorEditingMixin:
         if index is None or index >= len(palette):
             text = "No color selected"
         else:
-            subpal, color = divmod(index, self._index_space())
+            row, color = divmod(index, self._index_space())
             argb = palette.color(index)
             a = (argb >> 24) & 0xFF
             r = (argb >> 16) & 0xFF
             g = (argb >> 8) & 0xFF
             b = argb & 0xFF
             text = (
-                f"Subpal {subpal} · Color {color} (${color:X}) · #{argb:08X}\n"
+                f"Palette Row {row} · Color {color} (${color:X}) · #{argb:08X}\n"
                 f"R {r}  G {g}  B {b}  A {a}"
             )
         # Runs on every view refresh (navigation included) - skip the label
@@ -124,8 +124,8 @@ class ColorEditingMixin:
             dialog.editor.set_color(color, mark_original=retarget)
 
     def _color_entry_label(self, index: int) -> str:
-        subpal, color = divmod(index, self._index_space())
-        return f"entry {index} (subpal {subpal}, color {color})"
+        row, color = divmod(index, self._index_space())
+        return f"entry {index} (palette row {row}, color {color})"
 
     def _palette_stores_alpha(self) -> bool:
         """Whether the editor should offer an alpha input for this palette.
@@ -265,15 +265,15 @@ class ColorEditingMixin:
         self._set_pick_mode(False)
 
     # -- clipboard --------------------------------------------------------
-    def _active_subpalette(self) -> tuple[int, int]:
-        """``(start, count)`` of the subpalette the view is indexing right now.
+    def _active_palette_row(self) -> tuple[int, int]:
+        """``(start, count)`` of the palette row the view is indexing right now.
 
         The window into the palette a tile's indices actually reference — the
-        subpalette row times the format's index space — the unit Copy/Paste
-        Subpalette work on.
+        palette row times the format's index space — the unit Copy/Paste
+        Palette row work on.
         """
         count = self._index_space()
-        return self._subpalette.value() * count, count
+        return self._palette_row.value() * count, count
 
     def _copy_palette_color(self) -> None:
         """Copy the selected swatch's color to the system clipboard.
@@ -290,22 +290,22 @@ class ColorEditingMixin:
         clipboard.put_colors([color])
         self.statusBar().showMessage(f"Copied color {clipboard.color_text(color)}.")
 
-    def _copy_subpalette(self) -> None:
-        """Copy the whole active subpalette's colors to the clipboard."""
-        start, count = self._active_subpalette()
+    def _copy_palette_row(self) -> None:
+        """Copy the whole active palette row's colors to the clipboard."""
+        start, count = self._active_palette_row()
         palette = self._shown_palette()
         n = max(0, min(count, len(palette) - start))
         if n == 0:
-            self.statusBar().showMessage("No subpalette colors to copy.")
+            self.statusBar().showMessage("No palette row colors to copy.")
             return
         clipboard.put_colors([palette.color(start + k) for k in range(n)])
-        self.statusBar().showMessage(f"Copied subpalette ({n} colors).")
+        self.statusBar().showMessage(f"Copied palette row ({n} colors).")
 
     def _paste_palette_color(self) -> None:
         """Write the clipboard's color onto the selected swatch, as one undo step.
 
         A run of clipboard colors pastes only its first here: the grid selects
-        one entry at a time (Paste Subpalette fills a range).
+        one entry at a time (Paste Palette row fills a range).
         """
         if self._palette_doc() is None or self._applying_undo:
             return
@@ -324,19 +324,19 @@ class ColorEditingMixin:
         else:
             self.statusBar().showMessage("Clipboard color matches the selection.")
 
-    def _paste_subpalette(self) -> None:
-        """Fill the active subpalette with the clipboard's colors, as one undo step."""
+    def _paste_palette_row(self) -> None:
+        """Fill the active palette row with the clipboard's colors, as one undo step."""
         if self._palette_doc() is None or self._applying_undo:
             return
         colors = clipboard.take_colors()
         if not colors:
             self.statusBar().showMessage("No colors on the clipboard to paste.")
             return
-        start, count = self._active_subpalette()
-        if self._paste_colors_at(start, colors, count, "subpalette"):
-            self.statusBar().showMessage("Pasted colors into the subpalette.")
+        start, count = self._active_palette_row()
+        if self._paste_colors_at(start, colors, count, "palette row"):
+            self.statusBar().showMessage("Pasted colors into the palette row.")
         else:
-            self.statusBar().showMessage("Clipboard colors match the subpalette.")
+            self.statusBar().showMessage("Clipboard colors match the palette row.")
 
     def _paste_colors_at(
         self, start: int, colors: list[int], limit: int, label: str
@@ -380,12 +380,12 @@ class ColorEditingMixin:
         return True
 
     def _show_palette_menu(self, pos) -> None:  # noqa: ANN001 — Qt supplies a QPoint
-        """The palette grid's right-click menu: copy/paste a color or the subpalette.
+        """The palette grid's right-click menu: copy/paste a color or the palette row.
 
         Built on demand (like the canvas menu) so Paste reflects the live
         clipboard. The shortcuts shown mirror what the grid handles itself, and
         "&" marks each entry's mnemonic - the Copy/Paste pair takes the letter of
-        its own shortcut, the subpalette pair what is left.
+        its own shortcut, the palette row pair what is left.
         Copying works off whatever is displayed; pasting needs a palette that
         can hold the colors, which the read-only idle default is not.
         """
@@ -407,8 +407,8 @@ class ColorEditingMixin:
                 has_selection and can_paste,
             ),
             (None, None, None, None),  # separator
-            ("Copy &Subpalette", self._copy_subpalette, "Ctrl+Shift+C", True),
-            ("Paste Su&bpalette", self._paste_subpalette, "Ctrl+Shift+V", can_paste),
+            ("Copy Palette &Row", self._copy_palette_row, "Ctrl+Shift+C", True),
+            ("Paste Palette Ro&w", self._paste_palette_row, "Ctrl+Shift+V", can_paste),
         ):
             if label is None:
                 menu.addSeparator()

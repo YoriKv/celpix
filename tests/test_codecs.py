@@ -74,7 +74,7 @@ def test_pixel_preset_round_trips(preset_id: str) -> None:
 
     Pins each preset's parameters — a wrong plane count / nibble order / tile size
     breaks the identity or the reported geometry — across planar, packed, chunky,
-    bespoke-linear and the wide/odd tile codecs.
+    straddling-field and the wide/odd tile codecs.
     """
     engine, params = _pixel_engine(preset_id)
     tile_bytes = engine.bytes_per_tile(params)
@@ -704,6 +704,7 @@ _INTENTIONAL_PIXEL_ALIASES = frozenset(
         frozenset({"preset.pixel.dc-bgr888", "preset.pixel.dc-rgb888-be"}),
         frozenset({"preset.pixel.dc-bgr888-be", "preset.pixel.dc-rgb888"}),
         frozenset({"preset.pixel.dc-bbgggrrr", "preset.pixel.dc-snes-direct"}),
+        frozenset({"preset.pixel.pce-4bpp", "preset.pixel.snes-4bpp"}),
         frozenset(
             {"preset.pixel.gb-2bpp", "preset.pixel.snes-2bpp", "preset.pixel.ws-2bpp"}
         ),

@@ -2525,7 +2525,7 @@ def _cgx_banks():
 
 
 def test_a_tile_banks_row_table_comes_out_as_a_hint() -> None:
-    """One byte per tile, each the subpalette row that tile is meant to be read
+    """One byte per tile, each the palette row that tile is meant to be read
     under - which is what pinned regions otherwise have to be told by hand.
 
     The rows come out **relative**, with what they count from published beside

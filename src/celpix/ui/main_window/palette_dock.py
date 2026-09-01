@@ -239,7 +239,7 @@ class PaletteDockMixin:
         row_base_row = _dock_row()
         self._row_base_label = add_labelled(
             row_base_row,
-            "Base (Offset) Palette Row:",
+            "Base Palette Row:",
             self._row_base,
             "Which palette row a named row 0 draws through\n"
             "A map's cells, a sprite's parts and a bank's pinned\n"
@@ -265,12 +265,12 @@ class PaletteDockMixin:
         # grid as well as the canvas.
         self._palette_panel.edit_requested.connect(self._open_color_editor)
         self._palette_panel.color_picked.connect(self._on_color_picked)
-        # Copy/paste the selected color (Ctrl+C/V) or the active subpalette
+        # Copy/paste the selected color (Ctrl+C/V) or the active palette row
         # (Ctrl+Shift+C/V) while the grid has focus, or from its right-click menu.
         self._palette_panel.copy_requested.connect(self._copy_palette_color)
         self._palette_panel.paste_requested.connect(self._paste_palette_color)
-        self._palette_panel.copy_subpalette_requested.connect(self._copy_subpalette)
-        self._palette_panel.paste_subpalette_requested.connect(self._paste_subpalette)
+        self._palette_panel.copy_palette_row_requested.connect(self._copy_palette_row)
+        self._palette_panel.paste_palette_row_requested.connect(self._paste_palette_row)
         self._palette_panel.customContextMenuRequested.connect(self._show_palette_menu)
 
         # Get the colors on screen out as a file of their own. Armed only in the
@@ -444,8 +444,8 @@ class PaletteDockMixin:
 
         Hidden on a tilemap whose format gives a cell no palette row: nothing
         there names a row for a base to shift, and the colours are the view's
-        Subpal to choose instead — the two are never both live
-        (:meth:`~...rendering.RenderingMixin._sync_subpalette`). Shown on every
+        Palette Row to choose instead — the two are never both live
+        (:meth:`~...rendering.RenderingMixin._sync_palette_row`). Shown on every
         pixel entry, whose pinned rows count from it whether or not any are
         pinned yet; hidden with no document at all, a palette shown on its own
         having nothing to be a base *for*.

@@ -831,10 +831,10 @@ class TilemapCodecPlugin(Plugin, Protocol):
 
         What it decides is who picks the colours. Where a format has rows, the
         file has answered and the row travels in the indices; the view's
-        subpalette is switched off there, because a second row on top would
+        palette row is switched off there, because a second row on top would
         shift a map that is already in the colours it was authored in. Where a
         format has none, nothing has answered and the picture still has to be
-        read under some row, so the subpalette control supplies it exactly as it
+        read under some row, so the palette row control supplies it exactly as it
         does on a pixel document (``docs/design/tilemap-entry.md`` §8).
 
         A plugin that omits this method is taken to have rows. That is the safe

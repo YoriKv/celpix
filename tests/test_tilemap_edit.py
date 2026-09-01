@@ -99,11 +99,11 @@ def test_clicking_a_sprite_picks_the_subsprite_and_rings_the_tile_it_names(
     )
     assert window._picked_subsprite is None
     assert canvas._pick_outline is None and panel._marked is None
-    # With no record to answer, the sheet reads in the Subpal row taken back
+    # With no record to answer, the sheet reads in the Palette Row taken back
     # through the base — the named row an assignment would store. A sprite's base
     # opens on 8, so the raw spin value would compose the bank half a palette
     # above the row on show.
-    window._subpalette.setValue(window._doc.palette_row_base + 1)
+    window._palette_row.setValue(window._doc.palette_row_base + 1)
     assert window._tile_source_row() == 1
 
     # And the pick belongs to the document: opening another one drops it, or its
@@ -1042,7 +1042,7 @@ def test_a_subsprite_counts_as_a_user_of_every_tile_it_draws(qtbot, tmp_path) ->
 def test_the_sheet_reads_in_the_selected_cells_palette_row(qtbot, tmp_path) -> None:
     """A bank is indices until a row is chosen for it, so the panel showing row 0
     while the cell you clicked draws in row 2 is the right art in the wrong
-    colours. With nothing selected the Subpal row answers, which is the row the
+    colours. With nothing selected the Palette Row answers, which is the row the
     palette dock's own selection sets."""
     from celpix.core.tilemap import Cell
 
@@ -1050,7 +1050,7 @@ def test_the_sheet_reads_in_the_selected_cells_palette_row(qtbot, tmp_path) -> N
         qtbot, tmp_path, [Cell(index=1, palette_row=2), Cell(index=1)]
     )
     assert window._doc.cells_carry_palette_rows
-    window._subpalette.setValue(0)
+    window._palette_row.setValue(0)
     window._clear_selection()
     window._refresh_tile_source()
     assert window._tile_source_row() == 0
@@ -1068,17 +1068,17 @@ def test_the_sheet_reads_in_the_selected_cells_palette_row(qtbot, tmp_path) -> N
     assert window._tile_source_row_shown == 0
     assert window._tile_source_panel._sheet == row0
 
-    # No selection: the Subpal row, wherever the user last set it.
+    # No selection: the Palette Row, wherever the user last set it.
     window._clear_selection()
-    window._subpalette.setValue(3)
+    window._palette_row.setValue(3)
     window._refresh_tile_source()
     assert window._tile_source_row() == 3
     assert window._tile_source_panel._sheet != row0
 
 
-def test_arming_edit_tiles_recolours_the_sheet_to_subpals_row(qtbot, tmp_path) -> None:
+def test_arming_edit_tiles_recolours_the_sheet_to_the_row(qtbot, tmp_path) -> None:
     """Arming the tool clears the selection, so the sheet's row falls back from
-    the departed cell's to Subpal's — the row the stamp ghost is drawn in. Left
+    the departed cell's to Palette Row's — the row the stamp ghost is drawn in. Left
     composed in the old row, the sheet and the ghost beside it would offer the
     same tiles in two different palettes."""
     from celpix.core.tilemap import Cell
@@ -1086,7 +1086,7 @@ def test_arming_edit_tiles_recolours_the_sheet_to_subpals_row(qtbot, tmp_path) -
     window, _ = _shown_tile_source(
         qtbot, tmp_path, [Cell(index=1, palette_row=2), Cell(index=1)]
     )
-    window._subpalette.setValue(0)
+    window._palette_row.setValue(0)
     window._select_tiles(0, 0)  # cell 0 draws in row 2, and the sheet follows
     assert window._tile_source_row_shown == 2
 
@@ -1094,7 +1094,7 @@ def test_arming_edit_tiles_recolours_the_sheet_to_subpals_row(qtbot, tmp_path) -
     assert window._stamping
     assert window._tile_source_row_shown == 0
 
-    # Disarming changes nothing: the selection is gone either way, and Subpal
+    # Disarming changes nothing: the selection is gone either way, and Palette Row
     # keeps answering until a cell is picked again.
     window._stamp_action.setChecked(False)
     assert window._tile_source_row_shown == 0
@@ -1105,9 +1105,9 @@ def test_the_sheet_previews_the_row_a_stamp_would_land(qtbot, tmp_path) -> None:
     has to be the row a stamp puts in the cell — anything else and the panel
     shows colours no gesture on it can produce.
 
-    Two ways the raw Subpal value misses that. It is the *palette grid's*
+    Two ways the raw Palette Row value misses that. It is the *palette grid's*
     pointer, so it ranges over every row the palette serves while a cell's field
-    is 3 bits wide: Subpal 9 previewed a row the stamp then clamped to 7. And it
+    is 3 bits wide: Palette Row 9 previewed a row the stamp then clamped to 7. And it
     is a **drawn** row, while the sheet's synthetic cells are expanded like real
     ones with the palette row base folded in — so under a base the sheet composed
     one base above the map. The answer to both is the number the stamp itself
@@ -1120,12 +1120,12 @@ def test_the_sheet_previews_the_row_a_stamp_would_land(qtbot, tmp_path) -> None:
     window, _ = _stamping(qtbot, tmp_path, [Cell(index=1, palette_row=2)])
     assert window._doc.cells_carry_palette_rows
     assert window._cell_palette_row_limit() == 7  # a 3-bit field
-    # The bug needs a palette longer than the field can name, or Subpal itself
+    # The bug needs a palette longer than the field can name, or Palette Row itself
     # would be clamped before it ever reached the sheet.
-    assert window._max_subpalette_row() >= 9
+    assert window._max_palette_row() >= 9
     window._clear_selection()
 
-    window._subpalette.setValue(9)
+    window._palette_row.setValue(9)
     window._refresh_tile_source()
     assert window._tile_source_row() == 7
 
@@ -1136,12 +1136,12 @@ def test_the_sheet_previews_the_row_a_stamp_would_land(qtbot, tmp_path) -> None:
     window._on_stamp_finished()
     assert window._doc.cells[0].palette_row == 7
 
-    # A base in force: Subpal 3 is named row 1, which the compose folds back
-    # through the base as drawn row 3 — Subpal, where the user is looking. The
+    # A base in force: Palette Row 3 is named row 1, which the compose folds back
+    # through the base as drawn row 3 — Palette Row, where the user is looking. The
     # drawn value here would be applied twice and compose through row 5.
     window._clear_selection()
     window._row_base.setValue(2)
-    window._subpalette.setValue(3)
+    window._palette_row.setValue(3)
     window._refresh_tile_source()
     assert window._tile_source_row() == 1
     assert window._drawn_palette_row(window._tile_source_row()) == 3
@@ -1427,7 +1427,7 @@ def test_a_sheet_stamp_lays_the_rows_settings_in_the_shown_row(qtbot, tmp_path) 
     """A sheet pick lays the property row's settings whole — exactly what a
     canvas-swept brush lays, so the two picks agree about what a press
     writes: the target's own flip goes under the stamp's (default off) rather
-    than surviving it. The palette row travels separately: it follows Subpal,
+    than surviving it. The palette row travels separately: it follows Palette Row,
     the row the tile source sheet and the stamp preview are drawn in, so the
     cell lands in the colours that were on show rather than whatever row the
     target happened to hold."""
@@ -1442,7 +1442,7 @@ def test_a_sheet_stamp_lays_the_rows_settings_in_the_shown_row(qtbot, tmp_path) 
     # answer, and only the index, row and flip moving is this test's.
     before = window._doc.cells[0]
     assert (before.index, before.palette_row, before.flip_h) == (1, 3, True)
-    window._subpalette.setValue(1)
+    window._palette_row.setValue(1)
 
     window._tile_source_panel.select_id(5)
     window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
@@ -1476,10 +1476,10 @@ def test_right_click_picks_the_tile_the_cell_names(qtbot, tmp_path) -> None:
 
 
 def test_the_eyedropper_takes_the_cells_palette_row_with_it(qtbot, tmp_path) -> None:
-    """A tile picked without its row stamps back in whatever colours Subpal was
+    """A tile picked without its row stamps back in whatever colours Palette Row was
     left on — so the pick moves the row the way a left-click selection does.
 
-    Subpal is the drawn row, so what lands is the row the palette grid rings and
+    Palette Row is the drawn row, so what lands is the row the palette grid rings and
     the tile sheet is read in: the file's number with the entry's base applied.
     """
     from PySide6.QtCore import Qt
@@ -1495,17 +1495,17 @@ def test_the_eyedropper_takes_the_cells_palette_row_with_it(qtbot, tmp_path) -> 
     window._row_base.setValue(4)  # a base, so "stored" and "drawn" differ
     base = window._doc.palette_row_base
     assert base == 4
-    window._subpalette.setValue(0)
+    window._palette_row.setValue(0)
 
     window._on_stamp_pressed(1, Qt.MouseButton.RightButton)
     assert window._source_tile_id == 6
-    assert window._subpalette.value() == 5 + base
+    assert window._palette_row.value() == 5 + base
     assert f"palette row {5 + base}" in window.statusBar().currentMessage()
 
     # The neighbouring cell answers with its own, so the row tracks the pick
     # rather than being set once and left.
     window._on_stamp_pressed(0, Qt.MouseButton.RightButton)
-    assert window._subpalette.value() == 2 + base
+    assert window._palette_row.value() == 2 + base
 
 
 def test_an_eyedrop_outside_the_tile_source_clears_the_pick(qtbot, tmp_path) -> None:
@@ -1515,7 +1515,7 @@ def test_an_eyedrop_outside_the_tile_source_clears_the_pick(qtbot, tmp_path) -> 
     So the refusal has to happen at pick time rather than at stamp time: held
     anyway, the number would leave the panel ringing the *previous* pick beside
     a readout describing it and a status line describing this one, and every
-    later click refusing for a reason set several gestures ago. Subpal stays
+    later click refusing for a reason set several gestures ago. Palette Row stays
     where it is on the same refusal — a sample that found nothing has no row to
     recolour the sheet with.
     """
@@ -1534,7 +1534,7 @@ def test_an_eyedrop_outside_the_tile_source_clears_the_pick(qtbot, tmp_path) -> 
     window._on_stamp_pressed(0, Qt.MouseButton.RightButton)
     assert window._source_tile_id == 1
     assert window._source_cell is not None
-    assert window._subpalette.value() == 2
+    assert window._palette_row.value() == 2
 
     window._on_stamp_pressed(1, Qt.MouseButton.RightButton)
     assert window._source_tile_id is None
@@ -1542,13 +1542,13 @@ def test_an_eyedrop_outside_the_tile_source_clears_the_pick(qtbot, tmp_path) -> 
     assert window._tile_source_panel.selected_id() is None
     assert "No tile selected" in window._tile_source_details.text()
     assert "not in the tile source" in window.statusBar().currentMessage()
-    assert window._subpalette.value() == 2  # the failed pick moved no row
+    assert window._palette_row.value() == 2  # the failed pick moved no row
 
 
 def test_a_stamp_lays_down_the_whole_cell_the_eyedropper_took(qtbot, tmp_path) -> None:
     """ "Put that one here" means the cell, not just its tile number: the flips
     and the priority the codec carries travel with the pick, and the row lands
-    too because the pick puts it into Subpal, which is the row a stamp writes.
+    too because the pick puts it into Palette Row, which is the row a stamp writes.
 
     A tile picked in the **sheet** has no such record behind it, so that path
     still sets the index and leaves the target's flips alone — and reaching for
@@ -2000,7 +2000,7 @@ def test_a_sheet_brush_lays_indices_with_the_rows_settings(qtbot, tmp_path) -> N
         (True, True),
         (False, False),
     ]
-    window._subpalette.setValue(1)
+    window._palette_row.setValue(1)
 
     window._on_tile_source_area_picked([[4, 5], [6, 7]])
     brush = window._stamp_brush
@@ -2100,15 +2100,15 @@ def test_a_pick_in_the_sheet_drops_a_held_brush_and_an_echo_does_not(
     assert window._stamp_brush is None
 
 
-def test_a_stamp_lands_in_the_subpalette_being_shown(qtbot, tmp_path) -> None:
-    """Moving Subpal after a pick recolours the stamp, not just its previews.
+def test_a_stamp_lands_in_the_palette_row_being_shown(qtbot, tmp_path) -> None:
+    """Moving Palette Row after a pick recolours the stamp, not just its previews.
 
-    The eyedrop puts the picked cell's row into Subpal, which is what keeps "put
-    that one here" true — but the row is Subpal's from then on, because Subpal is
-    the row the tile source sheet and the canvas preview are both drawn in. Held
-    on the picked record instead, moving Subpal repainted the sheet and the
-    preview in the new row and then laid down the old one: what landed was a
-    colour no longer on screen anywhere.
+    The eyedrop puts the picked cell's row into Palette Row, which is what keeps
+    "put that one here" true — but the row is Palette Row's from then on, because
+    that is the row the tile source sheet and the canvas preview are both drawn
+    in. Held on the picked record instead, moving Palette Row repainted the sheet
+    and the preview in the new row and then laid down the old one: what landed
+    was a colour no longer on screen anywhere.
     """
     from PySide6.QtCore import Qt
 
@@ -2122,8 +2122,8 @@ def test_a_stamp_lands_in_the_subpalette_being_shown(qtbot, tmp_path) -> None:
     assert window._doc.cells_carry_palette_rows
 
     window._on_stamp_pressed(0, Qt.MouseButton.RightButton)
-    assert window._subpalette.value() == 5  # the pick moved it
-    window._subpalette.setValue(2)  # ...and the user moved it again
+    assert window._palette_row.value() == 5  # the pick moved it
+    window._palette_row.setValue(2)  # ...and the user moved it again
 
     window._on_stamp_pressed(1, Qt.MouseButton.LeftButton)
     window._on_stamp_finished()
@@ -2760,7 +2760,7 @@ def test_the_eyedropper_on_a_row_bearing_cell_arms_the_pen_with_what_it_picked(
 ) -> None:
     """The sampled value already carries the cell's palette row - that is what
     makes it equal the composed picture - so the eyedropper must not add the row a
-    second time. Counted twice it selected the swatch two rows on, dragged Subpal
+    second time. Counted twice it selected the swatch two rows on, dragged Palette Row
     to double the cell's row, and, once the palette is only as long as the file
     needs, ran off the end: select_index matched nothing and the pen fell back to
     index 0, so the next stroke painted with colour 0.
@@ -2812,7 +2812,7 @@ def test_the_eyedropper_points_both_panels_at_the_pixel_it_sampled(
     assert window._source_tile_id == 2
     assert window._source_cell == window._doc.cells[1]
     assert window._tile_source_panel.selected_id() == 2
-    assert window._subpalette.value() == 2
+    assert window._palette_row.value() == 2
     assert window._palette_panel.selected_index() // 16 == 2
 
     # A pixel document has no cells for a pick to name, and the sheet keeps
@@ -2831,7 +2831,7 @@ def test_the_eyedropper_points_both_panels_at_the_pixel_it_sampled(
     assert window._source_cell is None
     # Through the entry's own row base, which an object file has (its rows are
     # named in the sprite half of the hardware's palette).
-    assert window._subpalette.value() == window._drawn_palette_row(2)
+    assert window._palette_row.value() == window._drawn_palette_row(2)
 
 
 def test_unbinding_a_map_being_painted_on_leaves_pixel_mode(qtbot, tmp_path) -> None:
@@ -2976,7 +2976,7 @@ def test_pasting_pixels_into_a_map_lands_the_colours_that_were_copied(
     qtbot, tmp_path
 ) -> None:
     """A map's picture is composed in *absolute* indices — every cell's own
-    palette row folded in — so fitting a paste into one subpalette row quantized
+    palette row folded in — so fitting a paste into one palette row quantized
     every colour off that row onto the nearest one on it, and a copy of the map's
     own pixels came back a different picture."""
     window, _ = _painting_tilemap(qtbot, tmp_path)
@@ -2985,7 +2985,7 @@ def test_pasting_pixels_into_a_map_lands_the_colours_that_were_copied(
     window._doc.palette.colors[:] = [0xFF000000 | i * 0x040404 for i in range(64)]
     base = window._window_grid()
     # Four cells across, one per palette row — so the copy spans rows the view's
-    # own subpalette window does not reach.
+    # own palette row window does not reach.
     window._marquee = QRect(0, 0, 32, 8)
     assert len({base.get(x, 0) // 16 for x in range(32)}) > 1
     window._pixel_copy()
@@ -3041,13 +3041,13 @@ def test_a_lifted_float_keeps_the_colours_the_pixels_were_shown_in(
 ) -> None:
     """A float is the picture's own pixels lifted off it, so the overlay has to
     resolve them through the table the base was drawn with. Rendering them through
-    the view's Subpal instead shifted the selection by however many rows the spin
+    the view's Palette Row instead shifted the selection by however many rows the spin
     sat on — which on a map whose cells carry rows is a row to *assign*, not one
     to draw through — and left index 0 opaque where the base has it clear.
     """
     window, _ = _painting_tilemap(qtbot, tmp_path)
     window._transparent_zero_box.setChecked(True)
-    window._subpalette.setValue(2)  # a row to assign; the picture must not move
+    window._palette_row.setValue(2)  # a row to assign; the picture must not move
     window._refresh_view()
     shown = window._canvas._image
 
@@ -3113,7 +3113,7 @@ def test_setting_a_palette_row_writes_the_whole_quadrant_it_shares(
     assert all(cell.palette_row == 0 for cell in doc.cells)
 
     window._select_tiles(0, 0)  # one cell, the top-left of its quadrant
-    window._subpalette.setValue(2)
+    window._palette_row.setValue(2)
     window._pin_selection()
 
     quadrant = [0, 1, 32, 33]
@@ -3151,7 +3151,7 @@ def test_setting_a_palette_row_writes_the_whole_quadrant_it_shares(
 def test_a_stamp_leaves_the_row_behind_where_four_cells_share_one(
     qtbot, tmp_path
 ) -> None:
-    """An eyedropped cell normally lays down its whole record in Subpal's row —
+    """An eyedropped cell normally lays down its whole record in Palette Row's row —
     the flips and flags the format round-trips travel with it, and the row is
     the one on show, because "put *that* one here" means what the previews say.
 
@@ -3172,7 +3172,8 @@ def test_a_stamp_leaves_the_row_behind_where_four_cells_share_one(
 
     window, entry = _bound_nametable(qtbot, tmp_path)
     window._source_cell = Cell(index=5, palette_row=3)
-    window._subpalette.setValue(3)  # a real eyedrop moves Subpal to the pick's row
+    # A real eyedrop moves Palette Row to the pick's row.
+    window._palette_row.setValue(3)
 
     laid = window._stamp_cell(5, Cell(index=1, palette_row=0))
     assert laid.index == 5  # the tile goes

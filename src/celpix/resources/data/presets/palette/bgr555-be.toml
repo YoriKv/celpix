@@ -2,7 +2,7 @@
 # The SNES CGRAM and GBC/GBA palette RAM are little-endian: that is the plain preset.
 # See docs/graphics-formats-reference/implementation-guide.md §4 (packed color formats).
 id = "preset.palette.bgr555-be"
-name = "BGR555 (big-endian)"
+name = "BGR555 (15-bit, big-endian)"
 engine_id = "codec.palette.mask"
 category = "Generic"
 

@@ -317,7 +317,7 @@ def paint_selection_outline(
     """The app's shared selection outline: a white ring over a black one.
 
     One outline language for every "this is the active thing" highlight (the
-    canvas's tile selection, the palette panel's active subpalette). Two 1px
+    canvas's tile selection, the palette panel's active palette row). Two 1px
     layers rather than one line: whichever color the art under the edge happens
     to be, the other layer still shows, so the outline never disappears into it.
     Both are fixed colors — the highlight stays put whatever the theme is and

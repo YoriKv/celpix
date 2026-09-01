@@ -7,7 +7,7 @@ pixels (full 32-bit color, arbitrary size) and has to answer two questions the
 pipeline never asks:
 
 1. **Which index is this color?** An indexed target can only reference the
-   entries of its active subpalette, so every incoming color is fitted to the
+   entries of its active palette row, so every incoming color is fitted to the
    nearest one (:mod:`celpix.core.quantize`). A direct-color target skips this —
    it stores colors, and its codec's masks do the narrowing.
 2. **Where do the tiles start and stop?** The image is one rectangle; the model
@@ -43,7 +43,7 @@ from celpix.core.quantize import ColorMatcher, QuantizeReport
 class ImportTarget:
     """The shape incoming pixels must be fitted into: one document's format.
 
-    ``colors`` is the candidate palette **window** — the active subpalette, so a
+    ``colors`` is the candidate palette **window** — the active palette row, so a
     produced index is exactly what a tile stores. It is empty for a
     ``direct_color`` target, which keeps ARGB pixels and lets its codec's masks
     do the narrowing.

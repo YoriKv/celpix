@@ -1318,10 +1318,10 @@ def test_binding_seeds_the_maps_palette_from_the_entry_it_binds_to(
     assert entry.doc.palette.colors == reds
 
 
-def test_an_index_only_tilemap_is_read_through_subpal(qtbot, tmp_path) -> None:
+def test_an_index_only_tilemap_is_read_through_the_palette_row(qtbot, tmp_path) -> None:
     """A format with no palette field says nothing about which colours its tiles
     index — a Game Boy map entry is a bare tile number — so the palette panel's
-    own row is the only answer there is, and Subpal works exactly as it does on a
+    own row is the only answer there is, and Palette Row works exactly as it does on a
     pixel document."""
     from celpix.core.tilemap import Cell
 
@@ -1332,14 +1332,14 @@ def test_an_index_only_tilemap_is_read_through_subpal(qtbot, tmp_path) -> None:
     combo.setCurrentIndex(combo.findData("preset.tilemap.gb-bg"))
     window._on_tilemap_preset_change(combo.currentIndex())
     assert not window._doc.cells_carry_palette_rows
-    assert window._subpalette.isEnabled()
+    assert window._palette_row.isEnabled()
     before = window._canvas._image.copy()
-    window._subpalette.setValue(1)
+    window._palette_row.setValue(1)
     window._refresh_view()
     assert window._canvas._image != before
 
 
-def test_a_format_with_palette_rows_ignores_subpal_even_at_row_zero(
+def test_a_format_with_cell_rows_ignores_the_view_row_even_at_row_zero(
     qtbot, tmp_path
 ) -> None:
     """The other half, and the case that makes it a *format* question: a console
@@ -1351,16 +1351,16 @@ def test_a_format_with_palette_rows_ignores_subpal_even_at_row_zero(
     difference: it is the row being *picked*, which is what the assignment
     gesture writes into those cells. Only the render ignores it."""
     from celpix.core.tilemap import Cell
-    from celpix.ui.main_window.interpretation import SUBPAL_CELLS_TIP
+    from celpix.ui.main_window.interpretation import PALETTE_ROW_CELLS_TIP
 
     window, _bank, _entry = _bound_screen(
         qtbot, tmp_path, [Cell(index=1), Cell(index=0)]
     )
     assert window._doc.cells_carry_palette_rows
-    assert window._subpalette.isEnabled()
-    assert window._subpalette.toolTip() == SUBPAL_CELLS_TIP
+    assert window._palette_row.isEnabled()
+    assert window._palette_row.toolTip() == PALETTE_ROW_CELLS_TIP
     before = window._canvas._image.copy()
-    window._subpalette.setValue(1)
+    window._palette_row.setValue(1)
     window._refresh_view()
     assert window._canvas._image == before
 
@@ -1605,12 +1605,12 @@ def test_a_cell_edit_reaches_the_bytes_the_dump_and_export_raw_read(
     assert window._doc.tilemap_data[:2] == b"\x01\x00"
 
 
-def test_a_tilemaps_subpalette_is_sized_by_the_bound_entrys_format(
+def test_a_tilemaps_palette_row_is_sized_by_the_bound_entrys_format(
     qtbot, tmp_path
 ) -> None:
     """A tilemap has no pixel format of its own and the picker is hidden on it, so
     the combo holds whatever the toolbar showed when the map was opened. The row
-    size has to come from the format the *tiles* are read under, or Subpal steps
+    size has to come from the format the *tiles* are read under, or Palette Row steps
     in blocks of a bit depth nothing on screen is using."""
     from celpix.core.tilemap import Cell
     from celpix.project.workspace import TileMode, TileSource
@@ -1834,7 +1834,7 @@ def test_the_base_row_moves_a_map_onto_the_palette_that_was_loaded(
     assert window._doc.palette_row_base == 0  # and it outlives the re-read
 
     # A format with no palette row field has no row for a base to shift: the
-    # colours are the view's Subpal there, and the two are never both live.
+    # colours are the view's Palette Row there, and the two are never both live.
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
     combo = window._tilemap_preset
     combo.setCurrentIndex(combo.findData("preset.tilemap.scgcad-std"))
@@ -1842,7 +1842,7 @@ def test_the_base_row_moves_a_map_onto_the_palette_that_was_loaded(
     assert not window._doc.cells_carry_palette_rows
     assert window._row_base.isHidden()
     assert window._row_base_label.isHidden()
-    assert window._subpalette.isEnabled()
+    assert window._palette_row.isEnabled()
 
 
 def test_a_bank_that_states_a_row_base_beats_the_sprite_preset(qtbot, tmp_path) -> None:

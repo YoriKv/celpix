@@ -29,6 +29,7 @@ from celpix.plugins.builtins import (
     packbits,
     prs,
     slz,
+    snes_rle,
 )
 from celpix.plugins.builtins._lz import MatchFinder
 from celpix.plugins.builtins.gba_lz77 import GbaLz77Compression
@@ -43,6 +44,7 @@ from celpix.plugins.builtins.lzss_ring import LzssRingCompression
 from celpix.plugins.builtins.packbits import PackBitsCompression
 from celpix.plugins.builtins.prs import PrsCompression
 from celpix.plugins.builtins.slz import Slz16Compression, Slz24Compression
+from celpix.plugins.builtins.snes_rle import Rle1Compression, Rle2Compression
 
 # -- LZ1/LZ2 command stream -------------------------------------------------
 
@@ -662,6 +664,133 @@ def test_packbits_output_cap_stops_an_unbounded_read() -> None:
 # adds nothing over test_konami_plugins_record_size_and_round_trip. The FDS-only
 # decode behaviour is guarded by test_konami_variant_flag_switches_control_
 # semantics and test_konami_fds_round_trip.
+
+
+# -- RLE1 / RLE2 (SNES tilemap RLE) ------------------------------------------
+
+
+def test_rle1_decode_known_vector() -> None:
+    # Hand-assembled from the format description: a 3-byte literal (0x02 = L+1),
+    # a 5-run (0x84 = C set, L+1 = 5), a 1-byte literal, then the $FF $FF end.
+    # Guards the L+1 arithmetic and pins that $FF is only an end marker at a
+    # *header* position — the 5-run's value byte here is $FF and must not end it.
+    stream = bytes.fromhex("02 41 42 43 84 ff 00 7a ff ff")
+    out, consumed, complete = snes_rle.decompress(stream, terminated=True)
+    assert out == b"ABC" + b"\xff" * 5 + b"\x7a"
+    assert consumed == len(stream)
+    assert complete is True
+    # The same bytes without the terminator are RLE2, and one byte shorter.
+    out2, consumed2, complete2 = snes_rle.decompress(stream[:-2], terminated=False)
+    assert out2 == out
+    assert consumed2 == len(stream) - 2
+    assert complete2 is False
+
+
+def test_rle_round_trip() -> None:
+    rng = random.Random(11)
+    payloads = [
+        b"",
+        b"\x42",
+        b"\x42\x42",  # a bare pair: a run packet from 2 up, unlike PackBits
+        b"\x55" * 300,  # long run: 128 + 128 + a 44 tail
+        b"\xab" * 128,  # exactly one full run packet
+        b"\xab" * 129,  # a full packet plus a lone byte (a literal)
+        bytes(range(128)),  # exactly one full literal packet
+        bytes(range(129)),
+        bytes(range(256)),  # all distinct: literal-only
+        b"\xff" * 127,  # the $FF run bracketing the terminator collision
+        b"\xff" * 128,
+        b"\xff" * 129,
+        b"\x01\x02" + b"\xff" * 128 + b"\x03",  # the same collision mid-stream
+        b"AB" * 5 + b"C" * 10 + b"D" + b"EFG" + b"H" * 200,
+        bytes(rng.randrange(256) for _ in range(2000)),
+        bytes(rng.choice(b"\x00\xff") for _ in range(1500)),  # tilemap-shaped
+    ]
+    for terminated in (True, False):
+        for data in payloads:
+            packed = snes_rle.compress(data, terminated=terminated)
+            out, consumed, complete = snes_rle.decompress(packed, terminated=terminated)
+            assert out == data
+            assert consumed == len(packed)
+            assert complete is terminated
+            # Worst case is a 1-byte literal alternating with a 2-run — 4 bytes
+            # of packet per 3 of output — since taking a run at 2 can split a
+            # literal for no gain. That is the price of the original packer's
+            # threshold; incompressible data in practice sits near 1.01x.
+            assert len(packed) <= (4 * len(data) + 2) // 3 + 2
+
+
+def test_rle1_never_writes_its_own_terminator() -> None:
+    # 128 copies of $FF would encode as the run header $FF followed by the value
+    # $FF — which *is* the end marker, truncating the stream where it stands. The
+    # encoder caps a run of that one byte at 127 under the terminated framing and
+    # lets the rest ride along, so no header/value pair spells $FF $FF.
+    packed = snes_rle.compress(b"\xff" * 128, terminated=True)
+    assert packed[:2] == b"\xfe\xff"  # a 127-run, not a 128-run
+    # $FF $FF ends the stream only where a *header* is read, so walk the headers
+    # and check none but the last starts one. (The pair does occur inside this
+    # stream, at the literal payload preceding the terminator, and is inert.)
+    headers, i = [], 0
+    while i < len(packed) - 2:
+        headers.append(i)
+        i += 2 if packed[i] & 0x80 else packed[i] + 2
+    assert i == len(packed) - 2  # the walk lands exactly on the terminator
+    assert all(packed[h : h + 2] != b"\xff\xff" for h in headers)
+    # RLE2 has no terminator to collide with, so its runs fill the packet.
+    assert snes_rle.compress(b"\xff" * 128, terminated=False) == b"\xff\xff"
+
+
+def test_rle1_truncated_stream_needs_the_partial_flag() -> None:
+    # No terminator inside the buffer is how RLE1 says "this is not an RLE1
+    # stream", which is what makes it worth scanning for; a bounded view window
+    # cuts real streams short the same way, so `partial` downgrades it to the
+    # prefix decoded so far.
+    data = bytes(range(200))
+    packed = snes_rle.compress(data, terminated=True)
+    cut = packed[: len(packed) - 30]
+    with pytest.raises(ValueError):
+        snes_rle.decompress(cut, terminated=True)
+    out, consumed, complete = snes_rle.decompress(cut, terminated=True, partial=True)
+    assert complete is False
+    assert consumed <= len(cut)
+    assert 0 < len(out) < len(data)
+    assert data[: len(out)] == out
+
+
+def test_rle1_plugin_reports_the_structure_extent() -> None:
+    # The terminator bounds the read, so trailing bytes past it — themselves
+    # valid headers — are neither decoded nor counted, and the size reported is
+    # the slot a save-back must fit.
+    data = b"\x00" * 50 + bytes(range(30)) + b"\xff" * 40
+    packed = Rle1Compression().compress(data, PipelineContext())
+    ctx = PipelineContext()
+    assert Rle1Compression().decompress(packed + b"\x5a" * 6, ctx) == data
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+
+
+def test_rle2_plugin_records_size_but_never_complete() -> None:
+    # RLE2 has no end marker: reaching the end of the buffer is "the buffer ran
+    # out", not "the structure ended". Reporting complete would let a slice with
+    # no length backfill its extent as the whole rest of the file — the same rule
+    # PackBits follows, and why both declare self_delimiting False.
+    data = b"\x00" * 50 + bytes(range(30)) + b"\xff" * 40
+    packed = Rle2Compression().compress(data, PipelineContext())
+    ctx = PipelineContext()
+    assert Rle2Compression().decompress(packed, ctx) == data
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is False
+    assert Rle2Compression.info.self_delimiting is False
+
+
+def test_rle2_stops_at_the_output_cap() -> None:
+    # With no terminator, an unbounded read over a whole file would expand at up
+    # to 64x. The decode stops at one SNES bank of output, on a packet boundary.
+    bomb = b"\xff\x00" * 0x10000  # 128-runs, 2 bytes each
+    out, consumed, complete = snes_rle.decompress(bomb, terminated=False)
+    assert len(out) == 0x10000
+    assert consumed == 2 * (0x10000 // 128) < len(bomb)
+    assert complete is False
 
 
 # -- LZSS, 4 KiB ring, size-prefixed ----------------------------------------

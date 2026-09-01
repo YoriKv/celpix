@@ -417,7 +417,7 @@ def test_palette_preset_switch_refloors_from_selection_window(
     assert doc.palette_config.write_enabled is True  # still edited in place
 
 
-def test_palette_panel_click_maps_to_subpalette(qtbot, tmp_path, monkeypatch) -> None:
+def test_palette_panel_click_maps_to_palette_row(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtCore import QPoint, Qt
 
     from celpix.ui.palette_panel import SWATCH_SIZE, PalettePanel
@@ -425,11 +425,11 @@ def test_palette_panel_click_maps_to_subpalette(qtbot, tmp_path, monkeypatch) ->
     panel = PalettePanel()
     qtbot.addWidget(panel)
     panel.set_colors(list(range(256)))
-    panel.set_active_range(8, 4)  # 2bpp: 4-entry subpalettes, a quarter-row range
+    panel.set_active_range(8, 4)  # 2bpp: 4-entry palette rows, a quarter-row range
     got: list[int] = []
-    panel.subpalette_row_selected.connect(got.append)
-    # Swatch 40 = display row 2, col 8; with 4-entry subpalettes that's
-    # subpalette 10 — the index space sizes the mapping, not the 16-wide display.
+    panel.palette_row_selected.connect(got.append)
+    # Swatch 40 = display row 2, col 8; with 4-entry palette rows that's
+    # palette row 10 — the index space sizes the mapping, not the 16-wide display.
     qtbot.mouseClick(
         panel,
         Qt.MouseButton.LeftButton,
@@ -437,13 +437,13 @@ def test_palette_panel_click_maps_to_subpalette(qtbot, tmp_path, monkeypatch) ->
     )
     assert got == [10]
 
-    # Window-level wiring: the panel's signal drives the subpalette spin. Needs
+    # Window-level wiring: the panel's signal drives the palette row spin. Needs
     # a palette that actually has row 5 (the view clamps rows to the palette).
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
     window._on_slots_selected(0, 0)
     window._load_palette_from_selection()  # 128 colors = rows 0..7
-    window._palette_panel.subpalette_row_selected.emit(5)
-    assert window._subpalette.value() == 5
+    window._palette_panel.palette_row_selected.emit(5)
+    assert window._palette_row.value() == 5
 
 
 def test_palette_mode_starts_default_and_default_restores_fallback(
@@ -899,7 +899,7 @@ def test_palette_offset_box_follows_address_format(
     assert window._palette_offset_edit.text() == "$00:8020"
 
 
-def test_palette_panel_arrows_move_selection_and_subpalette_follows(
+def test_palette_panel_arrows_move_selection_and_palette_row_follows(
     qtbot, tmp_path, monkeypatch
 ) -> None:
     from PySide6.QtCore import Qt
@@ -909,15 +909,15 @@ def test_palette_panel_arrows_move_selection_and_subpalette_follows(
 
     panel = PalettePanel()
     qtbot.addWidget(panel)
-    panel.set_colors(list(range(64)))  # 4 subpalettes of 16
+    panel.set_colors(list(range(64)))  # 4 palette rows of 16
     panel.set_active_range(16, 16)  # row 1 active
     got: list[int] = []
-    panel.subpalette_row_selected.connect(got.append)
+    panel.palette_row_selected.connect(got.append)
 
-    # Up/Down move the *selection* one display row; the subpalette follows it.
+    # Up/Down move the *selection* one display row; the palette row follows it.
     # With no selection yet, movement starts from the active range's first entry.
-    qtbot.keyClick(panel, Qt.Key.Key_Down)  # selects 32 -> subpalette 2
-    qtbot.keyClick(panel, Qt.Key.Key_Up)  # selects 16 -> subpalette 1
+    qtbot.keyClick(panel, Qt.Key.Key_Down)  # selects 32 -> palette row 2
+    qtbot.keyClick(panel, Qt.Key.Key_Up)  # selects 16 -> palette row 1
     assert (panel.selected_index(), got) == (16, [2, 1])
 
     # No display row above/below: the selection (and its column) stays put.
@@ -983,7 +983,7 @@ def test_palette_panel_color_selection_click_and_arrows(qtbot) -> None:
     picked: list[int] = []
     panel.color_selected.connect(picked.append)
 
-    # Click selects the color (and still selects its subpalette — separate signal).
+    # Click selects the color (and still selects its palette row — separate signal).
     qtbot.mouseClick(
         panel,
         Qt.MouseButton.LeftButton,
@@ -1008,10 +1008,10 @@ def test_palette_panel_color_selection_click_and_arrows(qtbot) -> None:
     qtbot.keyClick(panel, Qt.Key.Key_Right)  # palette end: no change
     assert panel.selected_index() == 31
 
-    # (Up/Down movement + the subpalette following the selection are covered by
-    # test_palette_panel_arrows_move_selection_and_subpalette_follows.)
+    # (Up/Down movement + the palette row following the selection are covered by
+    # test_palette_panel_arrows_move_selection_and_palette_row_follows.)
 
-    # With no selection, Right starts from the active subpalette's first entry.
+    # With no selection, Right starts from the active palette row's first entry.
     fresh = PalettePanel()
     qtbot.addWidget(fresh)
     fresh.set_colors(list(range(32)))
@@ -1039,8 +1039,8 @@ def test_palette_panel_drag_scrubs_selection_and_clamps(qtbot) -> None:
     picked: list[int] = []
     panel.color_selected.connect(picked.append)
     rows: list[int] = []
-    panel.subpalette_row_selected.connect(rows.append)
-    panel.set_active_range(0, 4)  # 4-wide subpalettes, so a drag crosses several
+    panel.palette_row_selected.connect(rows.append)
+    panel.set_active_range(0, 4)  # 4-wide palette rows, so a drag crosses several
 
     device = QPointingDevice.primaryPointingDevice()
 
@@ -1068,7 +1068,7 @@ def test_palette_panel_drag_scrubs_selection_and_clamps(qtbot) -> None:
     drag_to(9 * SWATCH_SIZE + 1, 1)  # → swatch 9
     assert panel.selected_index() == 9
     assert picked == [2, 5, 9]
-    assert rows == [0, 1, 2]  # subpalette (index // 4) follows the drag
+    assert rows == [0, 1, 2]  # palette row (index // 4) follows the drag
 
     # Off the right/bottom edge clamps to the nearest real swatch, never None:
     # past the last (short) row lands on the final color.
@@ -1121,13 +1121,13 @@ def test_palette_panel_copy_paste_keys_emit(qtbot) -> None:
     events: list[str] = []
     panel.copy_requested.connect(lambda: events.append("copy"))
     panel.paste_requested.connect(lambda: events.append("paste"))
-    panel.copy_subpalette_requested.connect(lambda: events.append("copy-sub"))
-    panel.paste_subpalette_requested.connect(lambda: events.append("paste-sub"))
+    panel.copy_palette_row_requested.connect(lambda: events.append("copy-sub"))
+    panel.paste_palette_row_requested.connect(lambda: events.append("paste-sub"))
     ctrl = Qt.KeyboardModifier.ControlModifier
     ctrl_shift = ctrl | Qt.KeyboardModifier.ShiftModifier
     qtbot.keyClick(panel, Qt.Key.Key_C, ctrl)
     qtbot.keyClick(panel, Qt.Key.Key_V, ctrl)
-    qtbot.keyClick(panel, Qt.Key.Key_C, ctrl_shift)  # Ctrl+Shift → subpalette
+    qtbot.keyClick(panel, Qt.Key.Key_C, ctrl_shift)  # Ctrl+Shift → palette row
     qtbot.keyClick(panel, Qt.Key.Key_V, ctrl_shift)
     assert events == ["copy", "paste", "copy-sub", "paste-sub"]
 
@@ -1179,22 +1179,22 @@ def test_palette_copy_paste_color_and_undo(qtbot, tmp_path, monkeypatch) -> None
     assert window._doc.palette.color(2) == 0xFF123456
 
 
-def test_palette_copy_paste_subpalette_and_undo(qtbot, tmp_path, monkeypatch) -> None:
+def test_palette_copy_paste_palette_row_and_undo(qtbot, tmp_path, monkeypatch) -> None:
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
     window._on_slots_selected(1, 1)
     window._load_palette_from_selection()  # Offset mode: editable in place
     space = window._index_space()
 
-    # Copy subpalette 0, paste it over subpalette 1.
-    window._subpalette.setValue(0)
+    # Copy palette row 0, paste it over palette row 1.
+    window._palette_row.setValue(0)
     source = [window._doc.palette.color(k) for k in range(space)]
-    window._copy_subpalette()
-    window._subpalette.setValue(1)
+    window._copy_palette_row()
+    window._palette_row.setValue(1)
     before = [window._doc.palette.color(space + k) for k in range(space)]
     assert before != source  # the test only means something if they differ
 
     base = window._undo_stack.count()
-    window._paste_subpalette()
+    window._paste_palette_row()
     assert [window._doc.palette.color(space + k) for k in range(space)] == source
     # The whole range is one undo step (a macro), not one per color.
     assert window._undo_stack.count() - base == 1
@@ -1208,8 +1208,8 @@ def test_mode_switch_resets_row_and_selection_into_palette(
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
     # The generated default runs the full 256, so it is the *longest* palette a
     # session sees - which is what leaves a row to clamp on the way to any other.
-    assert len(window._doc.palette) == 256  # 16 subpalette rows at 4bpp
-    window._subpalette.setValue(12)
+    assert len(window._doc.palette) == 256  # 16 palette rows at 4bpp
+    window._palette_row.setValue(12)
     window._palette_panel._select(200)
 
     # Switching to a shorter palette (128 colors = rows 0..7) has to pull both
@@ -1217,41 +1217,41 @@ def test_mode_switch_resets_row_and_selection_into_palette(
     window._on_slots_selected(0, 0)
     window._load_palette_from_selection()
     assert len(window._doc.palette) == 128
-    assert window._subpalette.value() == 7
-    assert window._doc.view.subpalette_row == 7
+    assert window._palette_row.value() == 7
+    assert window._doc.view.palette_row == 7
     assert window._palette_panel.selected_index() == 127
-    assert "Subpal 7 · Color 15" in window._color_details.text()
+    assert "Palette Row 7 · Color 15" in window._color_details.text()
 
 
-def test_pixel_mode_switch_reanchors_subpalette_on_selection(
+def test_pixel_mode_switch_reanchors_palette_row_on_selection(
     qtbot, tmp_path, monkeypatch
 ) -> None:
-    # The subpalette row index is relative to the format's color count, so a
+    # The palette row index is relative to the format's color count, so a
     # preset switch recomputes it from the selected color: entry 20 is row 1
     # under 4bpp (16-entry rows) but row 5 under 2bpp (4-entry rows).
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
     window._on_slots_selected(0, 0)
     window._load_palette_from_selection()  # 128 colors
     window._palette_panel._select(20)
-    window._subpalette.setValue(1)
+    window._palette_row.setValue(1)
     window._pixel_preset.setCurrentIndex(
         window._pixel_preset.findData("preset.pixel.gb-2bpp")
     )
-    assert window._subpalette.value() == 5
+    assert window._palette_row.value() == 5
     window._pixel_preset.setCurrentIndex(
         window._pixel_preset.findData("preset.pixel.snes-4bpp")
     )
-    assert window._subpalette.value() == 1
+    assert window._palette_row.value() == 1
 
     # Without a color selection the old base anchors instead, so the view
     # keeps showing the same palette region.
     window._palette_panel.set_colors([])  # drops the selection
     window._palette_panel.set_colors(window._doc.palette.colors)
-    window._subpalette.setValue(2)  # base 32 under 4bpp
+    window._palette_row.setValue(2)  # base 32 under 4bpp
     window._pixel_preset.setCurrentIndex(
         window._pixel_preset.findData("preset.pixel.gb-2bpp")
     )
-    assert window._subpalette.value() == 8  # base 32 under 2bpp
+    assert window._palette_row.value() == 8  # base 32 under 2bpp
 
 
 def test_color_details_show_selected_color(qtbot, tmp_path, monkeypatch) -> None:
@@ -1259,10 +1259,10 @@ def test_color_details_show_selected_color(qtbot, tmp_path, monkeypatch) -> None
     assert window._color_details.text() == "No color selected"
 
     # Fallback palette entry 1 is white; selecting it fills the readout. The
-    # position reads as subpalette + color-within-it (4bpp: 16-entry rows).
+    # position reads as palette row + color-within-it (4bpp: 16-entry rows).
     window._palette_panel._select(1)
     assert "#FFFFFFFF" in window._color_details.text()
-    assert "Subpal 0 · Color 1 ($1)" in window._color_details.text()
+    assert "Palette Row 0 · Color 1 ($1)" in window._color_details.text()
     assert "R 255  G 255  B 255  A 255" in window._color_details.text()
 
     # A palette reload recolors the same index; the readout follows on refresh.
@@ -1963,9 +1963,9 @@ def test_default_palette_is_full_length_so_the_gray_ramp_is_reachable(
 ) -> None:
     """The generated default runs the full 256 whatever the format's index space.
 
-    Sized to one subpalette instead (16 at 4bpp), the generator's second row —
+    Sized to one palette row instead (16 at 4bpp), the generator's second row —
     the grayscale ramp that makes single-channel data readable — is never
-    produced at all, and the subpalette spin has nowhere to step to.
+    produced at all, and the palette row spin has nowhere to step to.
     """
     from celpix.core.palette import FULL_PALETTE_COUNT
 
@@ -1977,8 +1977,8 @@ def test_default_palette_is_full_length_so_the_gray_ramp_is_reachable(
     assert len(window._doc.palette) == FULL_PALETTE_COUNT
     # ...and row 1 is reachable: the spin clamps to the palette's real rows.
     # What the ramp itself looks like is test_palette's business.
-    window._subpalette.setValue(1)
-    assert window._subpalette.value() == 1
+    window._palette_row.setValue(1)
+    assert window._palette_row.value() == 1
 
 
 # -- pinned palette regions (docs/design/palette-editing.md) ----------------
@@ -1999,21 +1999,21 @@ def test_a_pinned_region_renders_through_its_own_row(qtbot, tmp_path) -> None:
 
     # Pin the second half of the sheet to row 2; the first half keeps row 0.
     window._set_linear_selection(4, 7)
-    window._subpalette.setValue(2)
+    window._palette_row.setValue(2)
     window._pin_selection()
-    window._subpalette.setValue(0)
+    window._palette_row.setValue(0)
     pinned = window._canvas._image
 
     # Tiles 0-3 are untouched, tiles 4-7 recolour.
     assert pinned.pixelColor(4, 4) == unpinned.pixelColor(4, 4)
     assert pinned.pixelColor(36, 4) != unpinned.pixelColor(36, 4)
     # And the pinned half shows exactly what row 2 would show everywhere.
-    window._subpalette.setValue(2)
+    window._palette_row.setValue(2)
     all_row_2 = window._canvas._image
     assert pinned.pixelColor(36, 4) == all_row_2.pixelColor(36, 4)
 
     # The toggle takes it back out without discarding it.
-    window._subpalette.setValue(0)
+    window._palette_row.setValue(0)
     window._show_palette_regions_action.setChecked(False)
     assert window._canvas._image.pixelColor(36, 4) == unpinned.pixelColor(36, 4)
     assert not window._palette_regions.is_empty()
@@ -2032,7 +2032,7 @@ def test_a_pinned_region_follows_the_picture_across_a_bit_depth_switch(
     qtbot.addWidget(window)
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._set_linear_selection(2, 3)
-    window._subpalette.setValue(1)
+    window._palette_row.setValue(1)
     window._pin_selection()
 
     window._apply_pixel_config("preset.pixel.nes-2bpp", 0)
@@ -2054,9 +2054,9 @@ def test_export_honours_pinned_regions_and_widens_its_table(qtbot, tmp_path) -> 
     qtbot.addWidget(window)
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._set_linear_selection(4, 7)
-    window._subpalette.setValue(2)
+    window._palette_row.setValue(2)
     window._pin_selection()
-    window._subpalette.setValue(0)
+    window._palette_row.setValue(0)
 
     image = export.document_image(window._doc, window._registry)
     # Rows 0..2 are reachable, so three 16-entry blocks - not 16 and not 256.
@@ -2100,7 +2100,7 @@ def test_a_tile_banks_rows_seed_pinned_palette_regions(qtbot, tmp_path) -> None:
         for r in doc.view.palette_regions.regions
     ]
     # Runs collapse, and row 0 is pinned like any other: the file named it, so
-    # leaving it out would let those tiles drift with the subpalette selector
+    # leaving it out would let those tiles drift with the palette row selector
     # while the tiles beside them stayed put.
     assert pinned[:3] == [(0, 2, 0), (2, 3, 3), (5, 1, 5)]
 
@@ -2138,7 +2138,7 @@ def test_a_tile_banks_row_base_carries_its_pinned_rows(qtbot, tmp_path) -> None:
 
 
 def test_pinning_lands_on_the_colours_that_were_selected(qtbot, tmp_path) -> None:
-    """Pin takes the row from Subpal, and Subpal names a row of the palette on
+    """Pin takes the row from Palette Row, and Palette Row names a row of the palette on
     screen — so under a base the *stored* row is that one counted back, and what
     the pin draws is the colours the user was looking at when they pinned.
 
@@ -2153,17 +2153,17 @@ def test_pinning_lands_on_the_colours_that_were_selected(qtbot, tmp_path) -> Non
     area = window._doc.tile_width * window._doc.tile_height
 
     window._row_base.setValue(8)
-    window._subpalette.setValue(11)
+    window._palette_row.setValue(11)
     all_row_11 = window._canvas._image.copy()
 
     window._set_linear_selection(4, 7)
     window._pin_selection()
     assert window._palette_regions.row_at(4 * area, 0) == 3  # 11, counted back
-    assert "subpalette 11" in window.statusBar().currentMessage()  # said as shown
+    assert "palette row 11" in window.statusBar().currentMessage()  # said as shown
 
     # The pinned half keeps row 11's colours when the view moves off it, and the
     # unpinned half does not.
-    window._subpalette.setValue(0)
+    window._palette_row.setValue(0)
     pinned = window._canvas._image
     assert pinned.pixelColor(36, 4) == all_row_11.pixelColor(36, 4)
     assert pinned.pixelColor(4, 4) != all_row_11.pixelColor(4, 4)
@@ -2171,7 +2171,7 @@ def test_pinning_lands_on_the_colours_that_were_selected(qtbot, tmp_path) -> Non
     # A row the base takes below the palette's first is stored as the plain
     # difference, negative and all: what the pin has to mean is "draws through the
     # row that was picked", and that holds under either reading of the ends.
-    window._subpalette.setValue(2)
+    window._palette_row.setValue(2)
     window._set_linear_selection(0, 3)
     window._pin_selection()
     assert window._palette_regions.row_at(0, 0) == 2 - 8
@@ -2275,7 +2275,7 @@ def test_wrapping_the_palette_row_base_is_off_until_asked_for(qtbot, tmp_path) -
     window._columns.setValue(8)
     window._rows.setValue(1)
     window._set_linear_selection(0, 3)
-    window._subpalette.setValue(1)
+    window._palette_row.setValue(1)
     window._pin_selection()
     # Base -3 takes the pinned row below the palette. Off, it stops at row 0.
     window._row_base.setValue(-3)
@@ -2296,7 +2296,7 @@ def test_wrapping_the_palette_row_base_is_off_until_asked_for(qtbot, tmp_path) -
 
 def test_the_row_labels_mark_the_pinned_tiles_and_not_the_view(qtbot, tmp_path) -> None:
     """ "Show Pinned Palette Rows" is about what is *pinned*, so an unpinned tile
-    carries no number whatever Subpal happens to be — including when it is not 0,
+    carries no number whatever Palette Row happens to be — including when it is not 0,
     where the view's own row is otherwise indistinguishable from a pin to it."""
     window = MainWindow()
     qtbot.addWidget(window)
@@ -2308,9 +2308,9 @@ def test_the_row_labels_mark_the_pinned_tiles_and_not_the_view(qtbot, tmp_path) 
     # Pin the second half to row 2, then read the sheet through row 3 - a view row
     # that is neither 0 nor the pinned one.
     window._set_linear_selection(4, 7)
-    window._subpalette.setValue(2)
+    window._palette_row.setValue(2)
     window._pin_selection()
-    window._subpalette.setValue(3)
+    window._palette_row.setValue(3)
 
     assert window._canvas._palette_rows[:8] == [None] * 4 + [2] * 4
     # The recolour is unaffected: an unpinned tile still draws through the view's
@@ -2337,9 +2337,9 @@ def test_the_palette_grid_marks_the_row_the_selection_is_pinned_to(
     panel = window._palette_panel
 
     window._set_linear_selection(4, 7)
-    window._subpalette.setValue(2)
+    window._palette_row.setValue(2)
     window._pin_selection()
-    window._subpalette.setValue(0)
+    window._palette_row.setValue(0)
     assert panel._marked_row == 2  # the pin, not the view's row
 
     # A selection spanning two rows has no one row to mark, and neither has one
@@ -2463,7 +2463,7 @@ def test_the_pin_gesture_writes_a_tilemap_cells_own_palette_row(
         qtbot, tmp_path, [Cell(index=1), Cell(index=2)]
     )
     window._select_tiles(0, 0)
-    window._subpalette.setValue(3)
+    window._palette_row.setValue(3)
     window._pin_selection()
     assert window._doc.cells[0].palette_row == 3
     assert window._doc.cells[1].palette_row == 0  # only what was selected
@@ -2472,7 +2472,7 @@ def test_the_pin_gesture_writes_a_tilemap_cells_own_palette_row(
     # Stored as a *named* row, so the base is taken back off on the way in and
     # put on again on the way out - the colours picked are the colours landed on.
     window._row_base.setValue(4)
-    window._subpalette.setValue(6)
+    window._palette_row.setValue(6)
     window._pin_selection()
     assert window._doc.cells[0].palette_row == 2
     assert window._palette_panel._marked_row == 6
@@ -2480,7 +2480,7 @@ def test_the_pin_gesture_writes_a_tilemap_cells_own_palette_row(
 
     # Clamped to the field: a console BG cell spends three bits on the row, so
     # row 9 would come back as 1 if encode were left to mask it down.
-    window._subpalette.setValue(9)
+    window._palette_row.setValue(9)
     window._pin_selection()
     assert window._doc.cells[0].palette_row == 7
 

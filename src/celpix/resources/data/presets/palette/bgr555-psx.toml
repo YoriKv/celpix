@@ -1,0 +1,13 @@
+# Alias of `bgr555` that files the layout under Sony too. Same fifteen bits, but
+# bit 15 on a PlayStation is the GPU's semi-transparency flag rather than spare;
+# it decodes identically because a flag is not color, and the TIM container is
+# what carries it over on save. See bgr555.toml for the hardware notes.
+id = "preset.palette.bgr555-psx"
+name = "PlayStation CLUT (BGR555)"
+engine_id = "codec.palette.mask"
+category = "Sony"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"
+fields = ".bbb bbgg gggr rrrr"

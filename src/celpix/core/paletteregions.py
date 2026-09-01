@@ -1,9 +1,9 @@
-"""Pixel regions pinned to a subpalette row: showing a bank the way the game draws it.
+"""Pixel regions pinned to a palette row: showing a bank the way the game draws it.
 
 A ROM's tile bank is rarely one palette's worth of art — the status bar sits at
 palette 0, the player at 3, the enemies at 5 — because the hardware takes the row
 from tilemap/OAM attributes that never travel with the pixel data. celPix has one
-global :attr:`~celpix.core.document.ViewOptions.subpalette_row`, so such a bank can
+global :attr:`~celpix.core.document.ViewOptions.palette_row`, so such a bank can
 only be read a group at a time. A :class:`PaletteRegions` records "these pixels
 render through row *n*" so the whole sheet can be read at once.
 
@@ -59,7 +59,7 @@ Span = tuple[int, int]
 
 @dataclass(frozen=True)
 class PaletteRegion:
-    """``length`` pixels from ``start``, rendered through subpalette ``row``."""
+    """``length`` pixels from ``start``, rendered through palette row ``row``."""
 
     start: int
     length: int
@@ -132,7 +132,7 @@ class PaletteRegions:
         return region if pixel < region.end else None
 
     def row_at(self, pixel: int, default: int) -> int:
-        """The subpalette row ``pixel`` renders through, or ``default``."""
+        """The palette row ``pixel`` renders through, or ``default``."""
         region = self.region_at(pixel)
         return default if region is None else region.row
 

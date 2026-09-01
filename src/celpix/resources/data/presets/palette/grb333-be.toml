@@ -2,7 +2,7 @@
 # The id keeps its historic spelling (see grb333.toml).
 # See docs/graphics-formats-reference/implementation-guide.md §4.
 id = "preset.palette.grb333-be"
-name = "GRB333 (9-bit, big-endian)"
+name = "GRB333 (9-bit, nibble-spaced, big-endian)"
 engine_id = "codec.palette.mask"
 category = "Generic"
 

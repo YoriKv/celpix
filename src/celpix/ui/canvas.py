@@ -251,7 +251,7 @@ class Canvas(PanZoomSurface, QWidget):
     pixel_picked = Signal(int, int)  # x, y — image pixels
     # ARGB sampled under the cursor while the eyedropper is armed. The rendered
     # image is sampled rather than the palette, so the value is right for any
-    # view — indexed through a subpalette, or a direct-color codec with no
+    # view — indexed through a palette row, or a direct-color codec with no
     # palette at all. ``object``, not ``int``: Qt's int is 32-bit *signed*, and
     # any ARGB with alpha >= 0x80 overflows it.
     color_picked = Signal(object)
@@ -322,7 +322,7 @@ class Canvas(PanZoomSurface, QWidget):
         self._grid_mode = GridMode.TILE
         self._block_grid = False
         self._grid_style = GridStyle.LINE
-        # One subpalette row per visible slot, or None when the labels are
+        # One palette row per visible slot, or None when the labels are
         # off. Set by the render cycle from the same rows the pinned-colour
         # biases are built from, so the number and the recolour can never
         # disagree about which row a tile is on.
@@ -469,7 +469,7 @@ class Canvas(PanZoomSurface, QWidget):
         self.update()
 
     def set_palette_rows(self, rows: list[int | None] | None) -> None:
-        """Label each slot with the subpalette row it **names**, or stop
+        """Label each slot with the palette row it **names**, or stop
         labelling.
 
         Indexed by slot, like the selection: slot 0 is the window's first tile. A
@@ -1732,7 +1732,7 @@ class Canvas(PanZoomSurface, QWidget):
         return pixmap
 
     def _paint_palette_rows(self, painter: QPainter, exposed: QRect) -> None:
-        """Number each labelled tile with its subpalette row, bottom-left corner.
+        """Number each labelled tile with its palette row, bottom-left corner.
 
         In the grid's own colour, because it is the same kind of thing: an
         annotation laid over the art rather than part of it, and one the eye

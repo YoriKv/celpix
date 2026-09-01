@@ -371,10 +371,12 @@ PLUGIN_README = "README.md"
 # Reference files celPix used to seed and no longer ships, by folder. Retiring an
 # example is not the same as replacing one: a name that stops being shipped stops
 # being *rewritten*, so without this it sits in every upgraded folder for ever,
-# teaching whatever it taught the day it was written. These three taught a
-# parameterised sprite-record engine that no longer exists — copying one now
-# produces a preset the loader refuses (:func:`check_engine_takes_params`), which
-# is a worse first hour with the app than no example at all.
+# teaching whatever it taught the day it was written. The three tilemap names
+# taught a parameterised sprite-record engine that no longer exists — copying one
+# now produces a preset the loader refuses (:func:`check_engine_takes_params`),
+# which is a worse first hour with the app than no example at all. The pixel name
+# is a rename rather than a removal: it is `_packed-straddling.toml` now, and a
+# copy of it left behind would teach the engine's retired id.
 #
 # **Names only, and only names celPix itself minted.** The ``_`` prefix is the
 # reserved namespace this function already writes into without asking; removing
@@ -383,6 +385,7 @@ PLUGIN_README = "README.md"
 # starts with ``_`` — that is what activating an example means — so nothing here
 # can reach it.
 RETIRED_EXAMPLES: dict[str, tuple[str, ...]] = {
+    "pixel": ("_linear-bespoke.toml",),
     "tilemap": ("_object.toml", "_obz.toml", "_ys-spr.toml"),
 }
 

@@ -3,7 +3,7 @@
 External art arrives as full 32-bit color — a paste from an image editor, an
 imported PNG — but the pixel model is *indices* into a palette the hardware
 fixes. This module is the bridge: given the candidate colors an interpretation
-can actually reference (the active subpalette window), it maps every incoming
+can actually reference (the active palette row), it maps every incoming
 ARGB to the closest one.
 
 The distance is a perceptually weighted RGB metric (the standard "redmean"
@@ -57,8 +57,8 @@ class ColorMatcher:
     """Maps ARGB colors onto the indices of a fixed candidate palette.
 
     ``colors`` is the window of entries the target interpretation can reference
-    — for an indexed codec, the active subpalette (``2**bpp`` entries starting at
-    the subpalette row); the returned index is **relative to that window**, which
+    — for an indexed codec, the active palette row (``2**bpp`` entries starting at
+    the palette row); the returned index is **relative to that window**, which
     is exactly what a tile stores.
 
     Results are memoised per source color: real art reuses a handful of colors

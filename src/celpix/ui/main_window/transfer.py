@@ -4,7 +4,7 @@ Export renders an entry through its own codec and palette, and can act on an
 entry that was never shown - the window loads it on demand. Import is the
 reverse and shares the clipboard's pathway
 (:mod:`celpix.pipeline.importer`), so an image arrives identically whether it
-came off disk or through a paste: quantized to the active subpalette, cut on the
+came off disk or through a paste: quantized to the active palette row, cut on the
 view's arrangement, stamped as a block.
 
 Drag-and-drop lives here because a drop is a transfer too, and it decides *what
@@ -424,7 +424,7 @@ class TransferMixin:
 
         The same import pathway a cross-application paste uses, so an image
         arrives identically whether it came through the clipboard or off disk:
-        quantized to the active subpalette, cut on the tile grid in reading
+        quantized to the active palette row, cut on the tile grid in reading
         order, and stamped as the picture it shows - the view's arrangement
         decides which stored tile each cell of it lands in, as if the pixels
         had been painted by hand. Pixels the image doesn't cover - the

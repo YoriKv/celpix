@@ -163,7 +163,7 @@ class SplitCell:
         """Whether the format gives a cell a row at all — about *reading*, where
         the safe default is the other way round: omit this and celPix assumes
         rows, so a format that carries them is not shifted by a view-wide row on
-        top. False for a bare tile number, and the subpalette control supplies
+        top. False for a bare tile number, and the palette row control supplies
         the colours instead."""
         return True
 

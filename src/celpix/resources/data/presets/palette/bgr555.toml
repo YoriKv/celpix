@@ -9,7 +9,7 @@
 # not got (alpha here) simply never appears in it.
 # See docs/graphics-formats-reference/implementation-guide.md §4.
 id = "preset.palette.bgr555"
-name = "BGR555 (SNES/GBC/GBA/PSX)"
+name = "BGR555 (15-bit)"
 engine_id = "codec.palette.mask"
 category = "Generic"
 

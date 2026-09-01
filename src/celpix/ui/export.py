@@ -7,7 +7,7 @@ never targets the source file; it produces new, self-contained files for use in
 other tools.
 
 The PNG is a genuine **indexed** (color-type-3) image: the render bridge builds
-a ``Format_Indexed8`` QImage whose color table is exactly the active subpalette,
+a ``Format_Indexed8`` QImage whose color table is exactly the active palette row,
 and Qt's PNG writer turns that into a palette PNG — so an exported sheet opens in
 a sprite editor as an indexed image, with the palette and index identity intact.
 Colors
@@ -73,7 +73,7 @@ def _palette_biases(
     ]
     return [
         (
-            view.subpalette_row
+            view.palette_row
             if row is None
             else pipeline.drawn_palette_row(row, doc.palette_row_base, wrap)
         )
@@ -94,12 +94,12 @@ def _tilemap_image(doc: Document, registry: Registry, columns: int) -> QImage:
 
     Straight through :func:`~celpix.pipeline.pipeline.tilemap_image`, the same
     call the canvas makes, so the two cannot disagree. The colour table has to
-    span every palette row the map uses rather than one subpalette: a cell names
+    span every palette row the map uses rather than one palette row: a cell names
     its own row, the row is folded into the indices upstream, and one image
     carries one table.
 
     Where the **format** has no palette row to give, the map indexes a single
-    range of the palette like a pixel document and the view's subpalette row says
+    range of the palette like a pixel document and the view's palette row says
     which — the same fallback the canvas takes, so the file still matches the
     screen (``rendering.RenderingMixin._render_tilemap``).
     """
@@ -108,7 +108,7 @@ def _tilemap_image(doc: Document, registry: Registry, columns: int) -> QImage:
         256, 1 << pipeline.pixel_bpp(doc.pixel_config.interpret_preset_id, registry)
     )
     top = min(256, drawn.palette_rows * index_space)
-    base = 0 if doc.cells_carry_palette_rows else doc.view.subpalette_row * index_space
+    base = 0 if doc.cells_carry_palette_rows else doc.view.palette_row * index_space
     return render_bridge.paint_hidden(
         render_bridge.indexed_image(
             drawn.grid, [doc.palette.color(base + i) for i in range(top)]
@@ -121,10 +121,10 @@ def document_image(doc: Document, registry: Registry) -> QImage:
     """Render every tile of ``doc`` to one QImage, laid out per its view options.
 
     The full-file analogue of the windowed live view: it honors the columns, the
-    block/2D arrangement and the active subpalette row, so the export matches what
+    block/2D arrangement and the active palette row, so the export matches what
     the canvas shows — just the whole file rather than the visible window. An
     indexed codec yields a ``Format_Indexed8`` image whose color table is exactly
-    the active subpalette window (index 0 transparent), so Qt writes a compact
+    the active palette row (index 0 transparent), so Qt writes a compact
     indexed PNG; a direct-color codec yields ``Format_ARGB32``.
 
     A tilemap entry takes a route of its own (:func:`_tilemap_image`): what it
@@ -158,13 +158,13 @@ def document_image(doc: Document, registry: Registry) -> QImage:
     if biases is not None:
         # Pinned regions: the row is already in the indices, so the table cannot
         # offset again — and it has to span every row on screen rather than one
-        # subpalette. Sized to the highest row actually used, not blindly to 256,
+        # palette row. Sized to the highest row actually used, not blindly to 256,
         # so a two-palette sheet exports a two-row table.
         top = (max(biases) // index_space + 1) * index_space
         return render_bridge.indexed_image(
             grid, [doc.palette.color(i) for i in range(top)]
         )
-    base = view.subpalette_row * index_space
+    base = view.palette_row * index_space
     # Exactly one entry per index the format can produce, in celPix order — no
     # minimizing, which editors do on load and which would renumber unused
     # leading colors. Every

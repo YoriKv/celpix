@@ -1372,9 +1372,9 @@ def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
     window._pixel_preset.setCurrentIndex(idx)
     assert window._load_palette_at_offset(32)
     assert window._palette_mode == "offset"
-    # A non-default subpalette row: it picks which colors the tiles index, so a
+    # A non-default palette row: it picks which colors the tiles index, so a
     # slice that opened back on row 0 would render in the wrong ones.
-    window._subpalette.setValue(3)
+    window._palette_row.setValue(3)
     # A non-default arrangement, likewise: it decides which bytes make up each
     # tile, so a slice back on Linear would show the same region scrambled.
     window._pattern.setCurrentIndex(
@@ -1412,10 +1412,10 @@ def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
     assert slice_entry.session.pixel_preset_id == "preset.pixel.snes-2bpp"
     assert slice_entry.session.palette_mode == "offset"
     assert slice_entry.session.preview_compression_id == "compression.none"
-    # The subpalette row and the arrangement ride on the view options rather than
+    # The palette row and the arrangement ride on the view options rather than
     # the session, so they take a hand-off of their own to come across.
-    assert slice_entry.doc.view.subpalette_row == 3
-    assert window._subpalette.value() == 3
+    assert slice_entry.doc.view.palette_row == 3
+    assert window._palette_row.value() == 3
     view = slice_entry.doc.view
     assert (view.block_columns, view.block_rows, view.block_order) == (2, 2, "column")
     assert window._pattern.currentData().id == "genesis-sprite"
@@ -2168,7 +2168,7 @@ def test_export_png_is_indexed_and_round_trips_to_disk(qtbot, tmp_path, monkeypa
     # 8 tiles at the default 16 columns fit one row, narrowed to 8 tiles wide.
     assert (image.width(), image.height()) == (64, 8)
     table = image.colorTable()
-    assert len(table) == 16  # exactly the 4bpp subpalette, not a padded 256
+    assert len(table) == 16  # exactly the 4bpp palette row, not a padded 256
     # Every entry keeps its own (opaque) alpha — index 0 is not forced transparent.
     assert table[0] >> 24 == 0xFF
     assert table[1] >> 24 == 0xFF

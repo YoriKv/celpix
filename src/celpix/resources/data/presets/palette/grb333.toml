@@ -6,7 +6,7 @@
 # low-bits-up spelling: ids are stable, project files reference them.
 # See docs/graphics-formats-reference/implementation-guide.md §4.
 id = "preset.palette.grb333"
-name = "GRB333 (9-bit; green in the high nibble)"
+name = "GRB333 (9-bit, nibble-spaced)"
 engine_id = "codec.palette.mask"
 category = "Generic"
 

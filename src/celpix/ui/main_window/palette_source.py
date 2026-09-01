@@ -1001,7 +1001,7 @@ class PaletteSourceMixin:
         A fork off the **default** also expands to a full 16 rows: the default
         is only ever generated at the current format's index space (16 colors
         at 4bpp), and a custom palette the user is going to edit should offer
-        every subpalette row, not just the one the format happens to index.
+        every palette row, not just the one the format happens to index.
 
         The Custom palette *carries* a color format (shown read-only in the
         dock). A fork off a source that decodes raw bytes keeps that source's
@@ -1241,11 +1241,11 @@ class PaletteSourceMixin:
     def _fallback_palette(self) -> Palette:
         """The generated palette shown until a real one is loaded — full length.
 
-        Sized to the whole 256 rather than one subpalette's worth: the generator
+        Sized to the whole 256 rather than one palette row's worth: the generator
         puts a contrasting row first, a **grayscale ramp second** and distinct
         colors after, none of which exists at all if only the format's index
         space is asked for (a 4bpp view would stop at 16 — one row, no ramp).
-        At full length every subpalette the row spin can reach is populated, so
+        At full length every palette row the row spin can reach is populated, so
         single-channel data can be read as a ramp by stepping to row 1, and
         forking Default → Custom keeps the palette exactly the size it was.
         """

@@ -2,7 +2,7 @@
 # See docs/graphics-formats-reference/implementation-guide.md §3 (direct-color tiles).
 # 15 significant bits in a 2-byte pixel.
 id = "preset.pixel.dc-rgb555-be"
-name = "Direct RGB555 (8x8, big-endian)"
+name = "Direct RGB555 (big-endian)"
 engine_id = "codec.pixel.direct-color"
 category = "Direct color"
 

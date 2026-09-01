@@ -42,7 +42,7 @@ from .gba_lz77 import GbaLz77Compression
 from .indexed_codec import IndexedColorCodec
 from .konami_rle import KonamiFdsRle, KonamiNesRle
 from .kosinski import KosinskiCompression
-from .linear_codec import LinearBespokeCodec
+from .linear_codec import PackedStraddlingCodec
 from .lz16 import Lz16Compression, Lz16ImprovedCompression
 from .lz_command import Lz1, Lz1Improved, Lz2, Lz2Improved
 from .lzss_ring import LzssRingCompression
@@ -71,6 +71,7 @@ from .scgcad import (
     StdContainer,
 )
 from .slz import Slz16Compression, Slz24Compression
+from .snes_rle import Rle1Compression, Rle2Compression
 from .split_planes import split_part_plugins
 from .tilemap_codec import TilemapCodec
 from .tim import TimClutContainer, TimContainer
@@ -110,6 +111,8 @@ def register_builtins(reg: Registry) -> None:
         PassthroughCompression(),
         KonamiNesRle(),
         KonamiFdsRle(),
+        Rle1Compression(),
+        Rle2Compression(),
         Lz1(),
         Lz1Improved(),
         Lz2(),
@@ -129,7 +132,7 @@ def register_builtins(reg: Registry) -> None:
         PlanarCodec(),
         PackedCodec(),
         NibblePlanarCodec(),
-        LinearBespokeCodec(),
+        PackedStraddlingCodec(),
         DirectColorCodec(),
         ColorCodec(),
         IndexedColorCodec(),

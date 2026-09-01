@@ -425,7 +425,7 @@ class EntrySession:
 
     Plain data (project-file material). Only the state that is *not*
     already carried by the entry's :class:`Document` lives here: view geometry,
-    offset/nudge and subpalette are in ``Document.view``, and the palette
+    offset/nudge and palette row are in ``Document.view``, and the palette
     itself plus both pathway configs are on the document.
     """
 

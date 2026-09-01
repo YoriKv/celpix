@@ -1,4 +1,4 @@
-"""Giving part of the picture a subpalette row of its own.
+"""Giving part of the picture a palette row of its own.
 
 **One gesture, two stores.** Selecting something and saying "these draw through
 row *n*" is one question, and the answer is kept wherever the document already
@@ -10,7 +10,7 @@ _assign_cell_palette_row`). The row picked, the base it is stored through, the
 number over a tile and the ring in the palette grid are shared — only the store
 differs. The rest of this module is the pinned half.
 
-celPix renders everything through one global subpalette row, but a ROM's tile bank
+celPix renders everything through one global palette row, but a ROM's tile bank
 usually isn't drawn under one palette: the status bar sits at palette 0, the player
 at 3, the enemies at 5, because the hardware reads the row from tilemap or OAM
 attributes that never travel with the pixel data. This tool records "these pixels
@@ -25,10 +25,10 @@ means everywhere else. That asymmetry is deliberate: the row is a property of ho
 the game draws these bytes, not of the bytes, so baking it into an edit would be
 inventing data.
 
-**The gesture takes the row from the Subpal spinbox** rather than asking for it.
+**The gesture takes the row from the Palette Row spinbox** rather than asking for it.
 The row is already on screen and already selectable four ways — the spinbox, a
 swatch click, the arrow keys, a drag across the grid — so a dialog would be a
-worse way to say a thing the user has just finished saying. Set Subpal, select the
+worse way to say a thing the user has just finished saying. Set Palette Row, select the
 tiles, pin.
 
 What is **stored** is that row taken back through the entry's palette row base
@@ -120,7 +120,7 @@ class PaletteRegionsMixin:
         self._build_pin_actions()
 
     def _palette_row_count(self) -> int:
-        """How many subpalette rows the loaded palette serves at this bit depth.
+        """How many palette rows the loaded palette serves at this bit depth.
 
         One more than the highest row anything may pin to. At 8bpp it is 1 for
         any ordinary palette, which is the honest answer rather than a special
@@ -130,7 +130,7 @@ class PaletteRegionsMixin:
             return 1
         return self._doc.palette_rows(self._index_space())
 
-    def _max_subpalette_row(self) -> int:
+    def _max_palette_row(self) -> int:
         """The highest row the loaded palette can serve — the bound
         :meth:`~celpix.core.paletteregions.PaletteRegions.bounded` trims to."""
         return self._palette_row_count() - 1
@@ -170,7 +170,7 @@ class PaletteRegionsMixin:
         doc = self._doc
         return self._palette_regions.bounded(
             doc.tile_count * doc.tile_width * doc.tile_height,
-            self._max_subpalette_row(),
+            self._max_palette_row(),
         )
 
     # -- the view toggle ---------------------------------------------------
@@ -194,7 +194,7 @@ class PaletteRegionsMixin:
             "S&how Pinned Palette Colors",
             self._set_show_palette_regions,
             tip="Draw pinned regions through their own rows (Shift+P)\n"
-            "Off draws the whole view in one subpalette",
+            "Off draws the whole view in one palette row",
             shortcut=QKeySequence("Shift+P"),
             context=Qt.ShortcutContext.WidgetShortcut,
             checkable=True,
@@ -214,7 +214,7 @@ class PaletteRegionsMixin:
             self,
             "Show Palette &Rows",
             self._set_show_palette_rows,
-            tip="Number each tile with the subpalette row it names\n"
+            tip="Number each tile with the palette row it names\n"
             "A pinned row on a pixel view, a cell's own on a tilemap\n"
             "Drawn in the grid's own color, in the tile's bottom-left",
             checkable=True,
@@ -254,17 +254,17 @@ class PaletteRegionsMixin:
         # to New Slice, which shares the canvas menu with both.
         self._pin_palette_action = make_action(
             self,
-            "Pin &Selection to Subpalette",
+            "Pin &Selection to Palette Row",
             self._pin_selection,
             tip="Render the selected tiles through the current\n"
-            "Subpal row, whatever the view is set to",
+            "Palette Row, whatever the view is set to",
         )
         self._pin_palette_action.setIconText("Pin")
         self._unpin_palette_action = make_action(
             self,
             "&Unpin Selection",
             self._unpin_selection,
-            tip="Return the selected tiles to the view's own subpalette",
+            tip="Return the selected tiles to the view's own palette row",
         )
         self._unpin_palette_action.setIconText("Unpin")
         # Mnemonic "l": "a" is Paste's in the canvas menu these three also sit in.
@@ -273,7 +273,7 @@ class PaletteRegionsMixin:
             "Unpin A&ll",
             self._unpin_all,
             tip="Drop every pinned region, returning the whole\n"
-            "picture to the view's own subpalette",
+            "picture to the view's own palette row",
         )
 
     def _set_show_palette_rows(self, on: bool) -> None:
@@ -330,15 +330,15 @@ class PaletteRegionsMixin:
         if doc is not None and doc.is_tilemap:
             text, short = "Set &Selection's Palette Row", "Set Row"
             tip = (
-                "Write the current Subpal row into the selected\n"
+                "Write the current Palette Row into the selected\n"
                 "cells, which is where this format keeps it"
             )
             writable = self._cell_palette_row_limit() is not None
         else:
-            text, short = "Pin &Selection to Subpalette", "Pin"
+            text, short = "Pin &Selection to Palette Row", "Pin"
             tip = (
                 "Render the selected tiles through the current\n"
-                "Subpal row, whatever the view is set to"
+                "Palette Row, whatever the view is set to"
             )
             writable = True
         self._pin_palette_action.setText(text)
@@ -350,7 +350,7 @@ class PaletteRegionsMixin:
         self._show_palette_rows_action.setEnabled(self._has_named_palette_rows())
 
     def _has_named_palette_rows(self) -> bool:
-        """Whether anything on screen can name a subpalette row of its own.
+        """Whether anything on screen can name a palette row of its own.
 
         What the row labels answer, and the one predicate for both stores: a
         pixel document always can (a pin is a gesture away, and none yet is a
@@ -453,7 +453,7 @@ class PaletteRegionsMixin:
         # None as the default, so an unpinned tile takes the view's row *without*
         # the base: the view's row is already a row of the loaded palette, and
         # only a pinned one is named relative to the file's own numbering.
-        view_row = self._subpalette.value()
+        view_row = self._palette_row.value()
         rows = regions.rows_for(self._tile_first_pixels(tiles), None)
         return [
             (view_row if row is None else self._drawn_palette_row(row)) * space
@@ -563,7 +563,7 @@ class PaletteRegionsMixin:
         another bakes the difference into the file.
 
         **Zero where the format has no row field.** Nothing is folded in there;
-        the map is composed row-relative and read under the view's own Subpal at
+        the map is composed row-relative and read under the view's own Palette Row at
         the colour table, exactly as a pixel document is
         (``docs/design/tilemap-entry.md`` §8) — so the pen writes what it always
         wrote and there is nothing to take back off.
@@ -634,7 +634,7 @@ class PaletteRegionsMixin:
         What the eyedropper has to sample against. The window grid it reads holds
         the stored index, which is deliberately unbiased — pinning never changes
         what an edit stores — so resolving that index against the view's own
-        subpalette would name the swatch the pixel *would* have had, not the one
+        palette row would name the swatch the pixel *would* have had, not the one
         the user just clicked on. Inside a pinned region those are different
         colours, which is the whole point of the region.
 
@@ -668,7 +668,7 @@ class PaletteRegionsMixin:
         return self._palette_base() if biases is None else biases[0]
 
     def _named_row_picked(self) -> int:
-        """The Subpal row as a **named** row — what an assignment stores.
+        """The Palette Row as a **named** row — what an assignment stores.
 
         The row taken back through the base, because both stores keep a *named*
         row and the base is applied again on the way out
@@ -689,12 +689,12 @@ class PaletteRegionsMixin:
         the same place (:meth:`_pin_selection`).
         """
         assert self._doc is not None
-        row = self._subpalette.value() - self._doc.palette_row_base
+        row = self._palette_row.value() - self._doc.palette_row_base
         wrap = self._doc.palette_row_wrap(self._index_space())
         return row % wrap if wrap else row
 
     def _pin_selection(self) -> None:
-        """Give the selection a subpalette row of its own — the Subpal spin's.
+        """Give the selection a palette row of its own — the Palette Row spin's.
 
         **One gesture, two stores.** A pixel document has nothing in its bytes
         that could say a row, so the answer is a pinned region held in the
@@ -724,18 +724,18 @@ class PaletteRegionsMixin:
             PaletteRegionsCommand(
                 self,
                 self._workspace.current,
-                f"pin subpalette {shown}",
+                f"pin palette row {shown}",
                 self._palette_regions,
                 after,
             )
         )
         count = len(self._selection_tiles())
         self.statusBar().showMessage(
-            f"Pinned {counted(count, 'tile')} to subpalette {shown}."
+            f"Pinned {counted(count, 'tile')} to palette row {shown}."
         )
 
     def _unpin_selection(self) -> None:
-        """Return the selection to the view's own subpalette row."""
+        """Return the selection to the view's own palette row."""
         if self._doc is None or self._applying_undo:
             return
         spans = self._selection_spans()
@@ -748,7 +748,7 @@ class PaletteRegionsMixin:
             PaletteRegionsCommand(
                 self,
                 self._workspace.current,
-                "unpin subpalette",
+                "unpin palette row",
                 self._palette_regions,
                 after,
             )
@@ -770,7 +770,7 @@ class PaletteRegionsMixin:
             PaletteRegionsCommand(
                 self,
                 self._workspace.current,
-                "unpin all subpalettes",
+                "unpin all palette rows",
                 self._palette_regions,
                 PaletteRegions(),
             )

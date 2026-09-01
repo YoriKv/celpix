@@ -418,7 +418,7 @@ class NavigationMixin:
 
     # Input widgets that use the arrow keys themselves; while one of these has focus
     # the navigation keys are left alone so it can cycle options / move the cursor.
-    # The palette panel is one: focused (clicked), its Up/Down step subpalettes.
+    # The palette panel is one: focused (clicked), its Up/Down step palette rows.
     # The files tree is another: its arrows walk the open-entries list (selection
     # is activation, so Up/Down switch the shown file/slice). The hex dump's text
     # area (a QTextEdit) keeps its arrows on the text cursor. These same panels

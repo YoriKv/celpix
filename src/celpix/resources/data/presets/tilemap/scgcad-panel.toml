@@ -7,7 +7,7 @@
 # equivalent field *is* real, which is why the screen container reads its own.
 # See docs/graphics-formats-reference/scgcad-formats.md §3.1.
 id = "preset.tilemap.scgcad-panel"
-name = "Panel map (PNL, byte-swapped)"
+name = "Panel tiles (PNL, byte-swapped)"
 engine_id = "codec.tilemap.packed"
 category = "S-CG-CAD"
 

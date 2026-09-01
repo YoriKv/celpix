@@ -373,7 +373,7 @@ class SessionMixin:
                 # Rows are stated if *either* side states them — the referrer's
                 # win where its format has the field, the source's come through
                 # where it does not (:func:`_resolve_through`). Either way the
-                # view must not add a subpalette row over the top.
+                # view must not add a palette row over the top.
                 cells_carry_palette_rows=(
                     through.cells_carry_palette_rows or loaded.palette_rows
                 ),
@@ -527,7 +527,7 @@ class SessionMixin:
         """Turn a bank's per-tile palette rows into pinned palette regions.
 
         The file is saying what pinned regions otherwise have to be told by hand
-        — which subpalette row each tile is meant to be read under — so it seeds
+        — which palette row each tile is meant to be read under — so it seeds
         them and they behave like any other pin from there: visible, editable,
         and saved with the project.
 
@@ -545,7 +545,7 @@ class SessionMixin:
         through the same base-plus-attribute arithmetic as rows 1-7, and a
         surveyed 4bpp bank uses all eight values with 0 the commonest at 39% of
         tiles. Leaving it out would let exactly those tiles drift with the view's
-        subpalette selector while their neighbours stayed put, so the picture
+        palette row selector while their neighbours stayed put, so the picture
         stops matching the file the moment the view is not on row 0.
         """
         doc = entry.doc
@@ -1626,7 +1626,7 @@ class SessionMixin:
         spins = (
             (self._columns, view.columns),
             (self._rows, view.rows),
-            (self._subpalette, view.subpalette_row),
+            (self._palette_row, view.palette_row),
             (self._bitmap_width, view.bitmap_width),
         )
         # The grid and the **zoom** are deliberately absent: both are app-wide

@@ -1,4 +1,4 @@
-"""Bespoke linear-packed pixel codecs — 3bpp and 6bpp.
+"""Packed pixel codecs whose fields straddle bytes — 3bpp and 6bpp.
 
 These depths do not divide 8, so their index fields straddle byte boundaries in a
 fixed pattern no shared kernel expresses
@@ -19,12 +19,12 @@ from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._tile import check_tile_size, require_whole_tiles
 
 
-class LinearBespokeCodec:
+class PackedStraddlingCodec:
     """3bpp/6bpp linear codec; ``bpp`` selects the fixed packing."""
 
     info = PluginInfo(
-        id="codec.pixel.linear-bespoke",
-        name="Bespoke linear codec (3bpp/6bpp)",
+        id="codec.pixel.packed-straddling",
+        name="Packed codec (3bpp/6bpp, fields straddle bytes)",
         stage=Stage.INTERPRET_PIXEL,
     )
 
@@ -34,7 +34,7 @@ class LinearBespokeCodec:
     def _bpp(cls, params: dict[str, Any]) -> int:
         bpp = int(params["bpp"])
         if bpp not in (3, 6):
-            raise ValueError(f"linear-bespoke codec supports bpp 3 or 6, got {bpp}")
+            raise ValueError(f"packed-straddling codec supports bpp 3 or 6, got {bpp}")
         return bpp
 
     def bytes_per_tile(self, params: dict[str, Any]) -> int:

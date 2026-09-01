@@ -7,7 +7,7 @@ bits grows two checkboxes, one with a priority bit grows a third, and a bare
 index map grows nothing and the row hides — the bar's rule that a control
 meaning nothing here is not a feature switched off. The index and the palette
 row are deliberately not in it: each already has an editor with semantics of
-its own (the Cell spin beside it; Subpal and the pin gesture), and a second
+its own (the Cell spin beside it; Palette Row and the pin gesture), and a second
 control over the same field would fight the first.
 
 **One row, two targets.** In tile mode it reads and writes the *selection*:
@@ -36,7 +36,7 @@ holds decides what an edit means:
   pair's :meth:`~...stamp_tool.StampToolMixin._stamp_transform_block`), so
   every gesture stays reachable.
 
-Stamp-mode edits are session state like Subpal — no undo step; the stroke
+Stamp-mode edits are session state like Palette Row — no undo step; the stroke
 that lands them is the step — and every one re-renders the stamp preview, so
 what the ghost shows is what a press lays. Every declared field stays on the
 row while the tool is armed: Edit Tiles is where a stamp layout's editing

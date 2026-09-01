@@ -380,7 +380,7 @@ class TileSourceDockMixin:
         collapse the ring to the corner tile. The current tile is the
         top-left — the corner a stamp lays from — which the panel made
         current as it swept, so what is converged here is everything that
-        follows the held pick rather than the panel itself. Subpal is left
+        follows the held pick rather than the panel itself. Palette Row is left
         alone on the sheet pick's usual grounds: a sheet tile has no row of
         its own to sample.
         """
@@ -567,18 +567,18 @@ class TileSourceDockMixin:
         the panel answer "what else could this cell have named" rather than
         "what would these tiles look like in row 0".
 
-        Otherwise **the row a stamp would land**: the Subpal row taken back
+        Otherwise **the row a stamp would land**: the Palette Row taken back
         through the base and clamped to what a cell can hold, the number
         :meth:`~...stamp_tool.StampToolMixin._stamp_row_override` writes. The
         panel's promise is that what is on offer is what will land, and a full
         CGRAM serves rows a 3-bit cell field cannot name — followed verbatim,
-        Subpal 9 would preview colours no gesture can place while the stamp
-        landed row 7 (Subpal is also the palette grid's pointer, so its range
+        Palette Row 9 would preview colours no gesture can place while the stamp
+        landed row 7 (Palette Row is also the palette grid's pointer, so its range
         is rightly the palette's rather than the field's).
 
         Where the format gives cells **no row** the clamp has nothing to ask and
         the base is never live (:meth:`~...palette_dock.PaletteDockMixin.
-        _sync_row_base`), so the Subpal value itself is the answer, exactly as
+        _sync_row_base`), so the Palette Row value itself is the answer, exactly as
         the map's own colour table reads it.
 
         Read off the file's own cells rather than the resolved ones, because a
@@ -589,7 +589,7 @@ class TileSourceDockMixin:
         which is the same rule reached through the thing that document selects in
         (``sprite_select.py``): a subsprite carries its own row, and the sheet
         shows what else the picked one could have drawn. With none picked the
-        Subpal row answers through the base like the stamp fallback — a sprite's
+        Palette Row answers through the base like the stamp fallback — a sprite's
         base opens on 8, so the raw spin value would read the bank half a
         palette above the row on show.
         """
@@ -604,7 +604,7 @@ class TileSourceDockMixin:
             row = self._named_row_picked()
             limit = self._cell_palette_row_limit()
             return row if limit is None else max(0, min(row, limit))
-        return self._subpalette.value()
+        return self._palette_row.value()
 
     def _tile_source_note(self) -> str | None:
         """Why there is no sheet to show, or ``None`` when there is one.
@@ -660,7 +660,7 @@ class TileSourceDockMixin:
         # Before the marker, and on every path with a sheet up (``row_shown`` is
         # None exactly when there is none): the pick *leaving* moves the row too.
         # Arming Edit Tiles clears the selection, and the row falls back from the
-        # departed cell's to Subpal's — the row the stamp ghost is drawn in — so
+        # departed cell's to Palette Row's — the row the stamp ghost is drawn in — so
         # a sheet left composed in the old row would disagree with the ghost
         # beside it.
         if (

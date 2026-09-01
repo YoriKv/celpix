@@ -42,8 +42,8 @@ from celpix.ui.main_window.interpretation import (
     COLS_STAMPED_TIP,
     COLS_STAMPS_TIP,
     COLS_TIP,
-    SUBPAL_CELLS_TIP,
-    SUBPAL_TIP,
+    PALETTE_ROW_CELLS_TIP,
+    PALETTE_ROW_TIP,
 )
 from celpix.ui.widgets import signals_blocked
 
@@ -120,7 +120,7 @@ class RenderingMixin:
         )
         if biases is not None:
             return render_bridge.render_pinned(grid, self._doc.palette), filled
-        base = self._doc.view.subpalette_row * self._index_space()
+        base = self._doc.view.palette_row * self._index_space()
         return render_bridge.render(grid, self._doc.palette, base), filled
 
     def _window_palette_rows(self, cols: int, rows: int) -> list[int | None] | None:
@@ -132,14 +132,14 @@ class RenderingMixin:
         base — a pinned row is a *named* row, so the number that comes back is a
         row of the palette on screen and not of the file's own numbering.
 
-        A slot in no region answers ``None`` rather than the view's own subpalette
+        A slot in no region answers ``None`` rather than the view's own palette row
         row, because the two callers want different things from it and only one of
         them can substitute. :meth:`_window_biases` puts the view's row back, since
         the picture has to be drawn through *something*; the row **labels** must not,
         or every unpinned tile in the window is numbered with the view's row — which
         is what the overlay is meant to distinguish the pinned few from
         (:meth:`~celpix.ui.canvas.TileCanvas.set_palette_rows`). Reading the label
-        off the recolour hid that for as long as Subpal was 0, where the two agree.
+        off the recolour hid that for as long as Palette Row was 0, where the two agree.
 
         Returning **None for the whole list** on an unpinned document is
         load-bearing, and a different statement from the per-slot one: it is what
@@ -208,7 +208,7 @@ class RenderingMixin:
         if per_row is None:
             return None
         space = self._index_space()
-        view_row = self._doc.view.subpalette_row if self._doc is not None else 0
+        view_row = self._doc.view.palette_row if self._doc is not None else 0
         return [(view_row if row is None else row) * space for row in per_row]
 
     def _tilemap_columns(self) -> int:
@@ -451,7 +451,7 @@ class RenderingMixin:
         edits them. Where the format has no such field (a Game Boy map's bare
         tile number, a converted screen's low byte) nothing has answered, and the
         map indexes one block of the palette exactly as a pixel document does —
-        Subpal picks which.
+        Palette Row picks which.
         """
         assert self._doc is not None
         drawn = pipeline.tilemap_image(
@@ -485,7 +485,7 @@ class RenderingMixin:
         zeros are the file's answer and stand until something edits them. Where
         the format has no such field (a Game Boy map's bare tile number, a
         converted screen's low byte) nothing has answered, and the map indexes one
-        block of the palette exactly as a pixel document does — Subpal picks which.
+        block of the palette exactly as a pixel document does — Palette Row picks which.
 
         Split out because the **live preview** of a stroke has to pick the same
         way (:meth:`~...pixel_edit.PixelEditMixin._render_preview`): a preview
@@ -500,7 +500,7 @@ class RenderingMixin:
                 grid, self._doc.palette, self._index_space(), transparent_zero=clear
             )
         else:
-            base = self._doc.view.subpalette_row * self._index_space()
+            base = self._doc.view.palette_row * self._index_space()
             image = render_bridge.render(
                 grid, self._doc.palette, base, transparent_zero=clear
             )
@@ -617,7 +617,7 @@ class RenderingMixin:
         """The row to number each canvas slot with — the overlay, for both stores.
 
         One switch over two answers, because it is one question: which slots name
-        a subpalette row of their own, and which row. A pixel document's named
+        a palette row of their own, and which row. A pixel document's named
         rows are its pinned regions (:meth:`_window_palette_rows`); a tilemap's
         are its cells (:meth:`_cell_palette_rows`). Both come back as rows of the
         palette on screen, taken through the base, so the number over a tile and
@@ -645,7 +645,7 @@ class RenderingMixin:
         (:meth:`~celpix.core.document.Document.resolve`).
 
         None where the format gives a cell no row — there the whole map is read
-        under Subpal and a number over every cell would repeat one control — and
+        under Palette Row and a number over every cell would repeat one control — and
         None for a sprite object, whose subsprites sit at pixel offsets rather
         than in slots.
         """
@@ -659,8 +659,8 @@ class RenderingMixin:
             labels.extend([None] * (per_cell - 1))
         return labels
 
-    def _sync_subpalette(self) -> None:
-        """Say what Subpal means here — the view's row, or the row being picked.
+    def _sync_palette_row(self) -> None:
+        """Say what Palette Row means here — the view's row, or the row being picked.
 
         A cell that has a palette row to name is the format's word on which
         colours the map is read in, whatever this file's cells set it to: a
@@ -683,8 +683,8 @@ class RenderingMixin:
         """
         assert self._doc is not None
         view_row = not (self._doc.is_tilemap and self._doc.cells_carry_palette_rows)
-        tip = SUBPAL_TIP if view_row else SUBPAL_CELLS_TIP
-        for widget in (self._subpalette, self._subpalette_label):
+        tip = PALETTE_ROW_TIP if view_row else PALETTE_ROW_CELLS_TIP
+        for widget in (self._palette_row, self._palette_row_label):
             widget.setToolTip(tip)
 
     def _render_rearranged(self, layout: BlockLayout, rows: int):
@@ -708,7 +708,7 @@ class RenderingMixin:
         grid = pipeline.compose_tiles(tiles, layout, rows, biases)
         if biases is not None:
             return render_bridge.render_pinned(grid, self._doc.palette), len(tiles)
-        base = view.subpalette_row * self._index_space()
+        base = view.palette_row * self._index_space()
         return render_bridge.render(grid, self._doc.palette, base), len(tiles)
 
     def _refresh_view(self) -> None:
@@ -741,7 +741,7 @@ class RenderingMixin:
         self._offset = self._doc.clamp_tile_offset(
             self._offset, cols, rows, self._nudge
         )
-        self._clamp_subpalette(self._doc.palette)
+        self._clamp_palette_row(self._doc.palette)
         self._doc.view = ViewOptions(
             columns=cols,
             # The *setting*, not the height above: under View ▸ Entire File the
@@ -749,7 +749,7 @@ class RenderingMixin:
             # switch restores - saving a file-sized row count would overwrite it.
             rows=self._rows.value(),
             zoom=self._zoom.value(),
-            subpalette_row=self._subpalette.value(),
+            palette_row=self._palette_row.value(),
             tile_offset=self._offset,
             byte_nudge=self._nudge,
             block_columns=self._block_cols.value(),
@@ -873,7 +873,7 @@ class RenderingMixin:
         self._refresh_float_preview(composed)
         # And the floating pixels themselves, for the other half of the same rule:
         # the overlay carries its own rendered image, so anything that recolours
-        # the base — a palette edit, a Subpal move, the Transparent 0 box — leaves
+        # the base — a palette edit, a Palette Row move, the Transparent 0 box — leaves
         # a float in the air showing the colours of the render before last. A
         # no-op with nothing up, and never more than the float's own rectangle.
         self._show_float()
@@ -898,7 +898,7 @@ class RenderingMixin:
         # decides which of them the entry has controls for at all.
         self._sync_tilemap_bar()
         # The pen's colour can move under the preview without the pen itself
-        # changing (a palette edit, another subpalette row, a new format).
+        # changing (a palette edit, another palette row, a new format).
         self._sync_paint_preview()
         self._refresh_overlay()
         # Beside the decompression overlay, and for the same reason: both are tool
@@ -923,9 +923,9 @@ class RenderingMixin:
         # Rows owns its own enabled state (two different reasons to have no row
         # count to set), so it is refreshed here rather than gated below.
         self._sync_entire_file()
-        # Subpal likewise, and for a reason the capability table cannot hold: it
+        # Palette Row likewise, and for a reason the capability table cannot hold: it
         # is the cell *format* that decides, not the content kind.
-        self._sync_subpalette()
+        self._sync_palette_row()
         # The clipboard and transform actions read the *document* as well as the
         # selection - whether its cells are editable, and which transforms its
         # format has a bit for - and both of those move without the selection
@@ -943,8 +943,8 @@ class RenderingMixin:
         # Everything above landed in doc.view, which a project save writes out.
         self._refresh_project_modified()
 
-    def _clamp_subpalette(self, palette: Palette) -> int:
-        """Hold the subpalette row inside ``palette``; returns the row size.
+    def _clamp_palette_row(self, palette: Palette) -> int:
+        """Hold the palette row inside ``palette``; returns the row size.
 
         Switching to a shorter palette - a File palette holding a single row,
         say - must not leave the view pointing past it. Signals are blocked
@@ -953,9 +953,9 @@ class RenderingMixin:
         """
         group = self._index_space()
         max_row = max(0, len(palette) - 1) // group
-        if self._subpalette.value() > max_row:
-            with signals_blocked(self._subpalette):
-                self._subpalette.setValue(max_row)
+        if self._palette_row.value() > max_row:
+            with signals_blocked(self._palette_row):
+                self._palette_row.setValue(max_row)
         return group
 
     def _refresh_palette_dock(self) -> None:
@@ -967,14 +967,14 @@ class RenderingMixin:
         the selected entry is picked up in all three.
         """
         palette = self._shown_palette()
-        group = self._clamp_subpalette(palette)
+        group = self._clamp_palette_row(palette)
         # Before the grid: the base decides which rows the marks below land on,
         # and it is shown or hidden by the same document that sizes them.
         self._sync_row_base()
         self._palette_panel.set_colors(palette.colors)
-        self._palette_panel.set_active_range(self._subpalette.value() * group, group)
+        self._palette_panel.set_active_range(self._palette_row.value() * group, group)
         # After the range, which sizes the mark: the panel counts a pinned row in
-        # whole subpalettes of the same index space. Here as well as on the
+        # whole palette rows of the same index space. Here as well as on the
         # selection path because pinning, unpinning and hiding the pinned render
         # all move the mark without moving the selection.
         self._sync_marked_palette_row()

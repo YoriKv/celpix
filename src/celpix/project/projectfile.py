@@ -18,6 +18,7 @@ the result with :meth:`~celpix.project.workspace.Workspace.replace`.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from os import listdir
@@ -66,20 +67,19 @@ from celpix.project.workspace import (
     path_exists,
 )
 
-# While celPix is in alpha the schema is expected to change often, and carries
-# no upgrade shims: a bump means "this reader may not understand that file",
-# nothing more. Projects are cheap to recreate (they hold references and
-# settings, never bytes), so the version buys the warning on a newer file and
-# the ordinary key-level tolerance below covers the rest. Once the format
-# settles, bumps start earning migrations — and a history of what each one
-# changed.
+# A bump means "the schema changed shape", and every bump earns a migration in
+# :data:`_MIGRATIONS` below, so an older project opens as the file it would be
+# if it had been written today. Key-level tolerance still covers everything a
+# migration does not: unknown keys are ignored and missing ones take defaults.
+# A *newer* file has no migration to run — the reader can only fall back on that
+# tolerance, which is what the version buys the UI its warning for.
 #
-# Renamed plugin and preset **ids** are the exception, and are translated at
-# every version (:func:`_plugin_id`). They are not a schema detail: an id names
-# what an entry was opened *with*, so a rename with no forwarding address resets
-# that entry to pass-through, which reads as data loss. That mapping lives in
-# `plugins/aliases.py` and is independent of this number.
-PROJECT_VERSION = 1
+# Renamed plugin and preset **ids** are handled outside this number, and are
+# translated at every version (:func:`_plugin_id`). They are not a schema
+# detail: an id names what an entry was opened *with*, so a rename with no
+# forwarding address resets that entry to pass-through, which reads as data
+# loss. That mapping lives in `plugins/aliases.py`.
+PROJECT_VERSION = 2
 PROJECT_EXTENSION = ".celpix"
 
 # The two alphabet presets celPix used to ship, by the id an older project names
@@ -114,17 +114,86 @@ class LoadedProject:
 
     ``version`` is the file's own claim — the UI compares it against
     :data:`PROJECT_VERSION` to warn that saving a newer file will rewrite it
-    at this version.
+    at this version. An *older* claim needs no warning: it was migrated on the
+    way in (:func:`_migrated`), and ``migrated_from`` names the version it came
+    from so the UI can say the next save rewrites the file at the new one.
     """
 
     version: int
     entries: list[Entry]
     current: Entry | None
+    #: The version the file was written at, when a migration ran; ``None`` when
+    #: it was already current.
+    migrated_from: int | None = None
     hidden_pixel_presets: set[str] = field(default_factory=set)
     #: The stored pixel shape, or ``None`` where the file names none — see
     #: :attr:`~celpix.project.workspace.Workspace.pixel_aspect` for why the two
     #: are different answers.
     pixel_aspect: PixelAspect | None = None
+
+
+# -- migrations -----------------------------------------------------------
+#
+# One entry per version bump, keyed by the version it *reads*: ``_MIGRATIONS[n]``
+# takes a document written at version ``n`` and returns it at ``n + 1``. They run
+# in sequence, so a version-1 file opened by a version-5 build is walked forward
+# one step at a time and no migration ever has to know about more than the bump
+# it was written for.
+#
+# A migration only ever rewrites what a *rename or reshape* moved. It is not the
+# place for a defaulted key or a widened range: reading those is already the
+# tolerance in :func:`_view_from` and its neighbours, and duplicating it here
+# would leave two answers to maintain for the same question.
+
+
+#: The v1 spelling of a view's :attr:`~celpix.core.document.ViewOptions.palette_row`.
+#: A migration is the one place an *old* name has to survive verbatim, so it is
+#: named here rather than typed inline — a project-wide rename of the current
+#: spelling would otherwise quietly turn the migration below into a no-op.
+_V1_PALETTE_ROW_KEY = "subpalette_row"
+
+
+def _migrate_1_to_2(data: dict[str, object]) -> dict[str, object]:
+    """v1 → v2: a view's ``subpalette_row`` is spelled ``palette_row``.
+
+    The UI settled on one noun for the row a view draws through — the same
+    "palette row" a cell, a sprite piece and the base offset already used — and
+    the stored key followed it. Same meaning, same range: only the spelling
+    moved, so an untouched v1 project opens exactly as it was left.
+    """
+    for entry in data.get("entries", []):
+        if not isinstance(entry, dict):
+            continue
+        view = entry.get("view")
+        if isinstance(view, dict) and _V1_PALETTE_ROW_KEY in view:
+            # setdefault, not an unconditional write: a hand-edited file holding
+            # both spellings is answered by the new one, which is what the reader
+            # would have used anyway.
+            view.setdefault("palette_row", view[_V1_PALETTE_ROW_KEY])
+            del view[_V1_PALETTE_ROW_KEY]
+    return data
+
+
+_MIGRATIONS: dict[int, Callable[[dict[str, object]], dict[str, object]]] = {
+    1: _migrate_1_to_2,
+}
+
+
+def _migrated(data: dict[str, object]) -> tuple[dict[str, object], int | None]:
+    """``data`` walked forward to :data:`PROJECT_VERSION`, and where it started.
+
+    The second element is the version the file claimed when it needed migrating,
+    and ``None`` when it did not — which is also the answer for a file from the
+    future, since there is nothing to walk it forward *with*. Its own version
+    survives on the document for the caller to report.
+    """
+    stated = _int(data.get("version"), 1)
+    version = stated
+    while (migration := _MIGRATIONS.get(version)) is not None:
+        data = migration(data)
+        version += 1
+        data["version"] = version
+    return data, stated if version != stated else None
 
 
 # -- saving ----------------------------------------------------------------
@@ -294,7 +363,7 @@ def _entry_dict(
         data["view"] = {
             "columns": view.columns,
             "rows": view.rows,
-            "subpalette_row": view.subpalette_row,
+            "palette_row": view.palette_row,
             "offset": view.tile_offset,
             "byte_nudge": view.byte_nudge,
             "block_columns": view.block_columns,
@@ -544,6 +613,11 @@ def load_project(path: str) -> LoadedProject:
     if not isinstance(data, dict) or not isinstance(data.get("entries", []), list):
         raise ProjectError(f"Not a celPix project: {path}")
 
+    # Before anything reads a key: every parser below is written against the
+    # current schema, so an older file is walked forward first and the rest of
+    # this function never learns there was more than one spelling.
+    data, migrated_from = _migrated(data)
+
     base_dir = dirname(abspath(path))
     # Parse positionally (None for a skipped entry) so the stored `current`
     # index still names the right entry when earlier ones were dropped.
@@ -571,9 +645,13 @@ def load_project(path: str) -> LoadedProject:
         else set()
     )
     return LoadedProject(
+        # The migrated document's version, so a walked-forward file reads as
+        # current; a file from the future kept the version it claimed, which is
+        # what the UI warns on.
         version=_int(data.get("version"), 1),
         entries=[entry for entry in parsed if entry is not None],
         current=current,
+        migrated_from=migrated_from,
         hidden_pixel_presets=hidden,
         # None for a missing or malformed ratio, which is the same state a
         # project that has never been asked is in: the hint gets to answer.
@@ -733,7 +811,7 @@ def _view_from(raw: object) -> ViewOptions | None:
     return ViewOptions(
         columns=_int(raw.get("columns"), defaults.columns),
         rows=_int(raw.get("rows"), defaults.rows),
-        subpalette_row=_int(raw.get("subpalette_row"), defaults.subpalette_row),
+        palette_row=_int(raw.get("palette_row"), defaults.palette_row),
         tile_offset=_int(raw.get("offset"), defaults.tile_offset),
         byte_nudge=_int(raw.get("byte_nudge"), defaults.byte_nudge),
         block_columns=_int(raw.get("block_columns"), defaults.block_columns),

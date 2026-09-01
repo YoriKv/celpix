@@ -1,0 +1,13 @@
+# Alias of `bgr555` that files the layout under Nintendo too (its own entry names
+# it by its bit layout, for a reader who knows the bits and not the machine).
+# Same codec/params, a distinct id so both listings coexist — SNES CGRAM and
+# GBC/GBA palette RAM are this format. See bgr555.toml for the hardware notes.
+id = "preset.palette.bgr555-snes"
+name = "SNES palette (BGR555, also GBC/GBA)"
+engine_id = "codec.palette.mask"
+category = "Nintendo"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"
+fields = ".bbb bbgg gggr rrrr"

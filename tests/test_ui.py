@@ -19,11 +19,11 @@ def test_render_bridge_maps_indices_to_palette(qtbot) -> None:
     assert image.pixel(1, 0) & 0xFFFFFFFF == 0xFF000000  # black
 
 
-def test_render_bridge_subpalette_offset(qtbot) -> None:
+def test_render_bridge_palette_row_offset(qtbot) -> None:
     grid = IndexGrid(1, 1, bytearray([0]))
     palette = Palette([0xFF111111, 0xFF222222])
     # base=1 shifts index 0 to palette entry 1.
-    image = render_bridge.render(grid, palette, subpalette_base=1)
+    image = render_bridge.render(grid, palette, palette_base=1)
     assert image.pixel(0, 0) & 0xFFFFFFFF == 0xFF222222
 
 

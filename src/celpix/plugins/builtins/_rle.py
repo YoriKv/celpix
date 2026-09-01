@@ -25,6 +25,7 @@ def pack_runs(
     max_packet: int,
     min_run: int,
     spill_pair_as_run: bool,
+    run_limit: Callable[[int], int] | None = None,
 ) -> None:
     """Append ``data`` to ``out`` as run and literal packets.
 
@@ -44,6 +45,12 @@ def pack_runs(
     two bytes costs three where a run costs two, so PackBits emits the short run
     instead. The Konami encoder declines the trade, staying inside the subset every
     variant of that format decodes alike.
+
+    ``run_limit(value)`` narrows ``max_packet`` for a run of one particular byte,
+    for the scheme whose *terminator* a full-length run of that byte would spell —
+    SMW's RLE1, where 128 copies of ``$FF`` write the ``$FF $FF`` that ends the
+    stream. The bytes the cap leaves over re-enter the loop as an ordinary short
+    run or literal, so the only cost is the packet the cap declined to fill.
     """
     literals = bytearray()
 
@@ -66,8 +73,9 @@ def pack_runs(
 
         if run >= min_run:
             flush_literals()
+            cap = max_packet if run_limit is None else min(max_packet, run_limit(value))
             while run >= min_run:
-                take = min(run, max_packet)
+                take = min(run, cap)
                 out.append(run_header(take))
                 out.append(value)
                 run -= take

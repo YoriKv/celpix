@@ -1,0 +1,13 @@
+# Alias of `sms-6bpp` that files the layout under Generic too (its own entry names
+# the machine). Same codec/params, a distinct id so both listings coexist — 6-bit
+# BGR, one byte an entry, two bits a component: 00BBGGRR.
+# See sms-6bpp.toml for the hardware notes.
+id = "preset.palette.bgr222"
+name = "BGR222 (6-bit)"
+engine_id = "codec.palette.mask"
+category = "Generic"
+
+[params]
+bytes_per_entry = 1
+byte_order = "little"
+fields = "..bb ggrr"

@@ -27,8 +27,8 @@ def _window(qtbot, tmp_path, tiles: int = 8):
     qtbot.addWidget(window)
     window._load_pixel(str(px))
     window._set_edit_mode(EditMode.PIXEL)
-    window._subpalette.setValue(0)
-    window._palette_panel.select_index(5)  # pen = index 5 (within the subpalette)
+    window._palette_row.setValue(0)
+    window._palette_panel.select_index(5)  # pen = index 5 (within the palette row)
     return window
 
 
@@ -1052,7 +1052,7 @@ def test_eyedropper_inside_a_pinned_region_picks_that_rows_color(qtbot, tmp_path
     had unpinned.
 
     The window grid holds the *stored* index — pinning deliberately never changes
-    that — so resolving it against the view's own subpalette would hand back a
+    that — so resolving it against the view's own palette row would hand back a
     colour that is nowhere on screen. Selecting through the pinned row also makes
     it the drawing row, which is what keeps the pen's index equal to what was
     picked.
@@ -1061,11 +1061,11 @@ def test_eyedropper_inside_a_pinned_region_picks_that_rows_color(qtbot, tmp_path
     window._columns.setValue(8)
     window._rows.setValue(1)
 
-    # Pin the second half of the row to subpalette 2, then go back to row 0.
+    # Pin the second half of the row to palette row 2, then go back to row 0.
     window._set_linear_selection(4, 7)
-    window._subpalette.setValue(2)
+    window._palette_row.setValue(2)
     window._pin_selection()
-    window._subpalette.setValue(0)
+    window._palette_row.setValue(0)
 
     tile_w, _ = window._pixel_tile_size()
     x, y = tile_w * 4 + 1, 1  # inside the pinned half
@@ -1074,11 +1074,11 @@ def test_eyedropper_inside_a_pinned_region_picks_that_rows_color(qtbot, tmp_path
 
     space = window._index_space()
     assert window._palette_panel.selected_index() == 2 * space + stored
-    assert window._subpalette.value() == 2  # the picked row became the drawing row
+    assert window._palette_row.value() == 2  # the picked row became the drawing row
     assert window._pen_value() == stored  # ...so the pen still writes what was picked
 
     # Outside the region the old behaviour is untouched.
-    window._subpalette.setValue(0)
+    window._palette_row.setValue(0)
     stored = window._window_grid().get(1, 1)
     window._eyedrop_at(1, 1)
     assert window._palette_panel.selected_index() == stored

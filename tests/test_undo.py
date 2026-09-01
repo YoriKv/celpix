@@ -451,7 +451,7 @@ def test_pinning_a_selection_is_one_undoable_step_that_leaves_bytes_clean(
     before = stack.count()
 
     window._set_linear_selection(4, 7)
-    window._subpalette.setValue(3)
+    window._palette_row.setValue(3)
     window._pin_selection()
 
     assert stack.count() == before + 1
@@ -513,7 +513,7 @@ def test_unpin_all_drops_every_region_and_arms_with_the_pinning(
     assert not window._unpin_all_action.isEnabled()
 
     window._set_linear_selection(0, 3)
-    window._subpalette.setValue(2)
+    window._palette_row.setValue(2)
     window._pin_selection()
     pinned = window._palette_regions
     # Nothing about the selection changed, so a stale sync would leave these grey.
@@ -536,7 +536,7 @@ def test_unpinning_only_clears_the_selected_tiles(qtbot, tmp_path) -> None:
     """The interval split has to survive the round trip through the gesture."""
     window, _ = _open(qtbot, tmp_path)
     window._set_linear_selection(0, 7)
-    window._subpalette.setValue(2)
+    window._palette_row.setValue(2)
     window._pin_selection()
 
     window._set_linear_selection(2, 3)

@@ -1130,14 +1130,14 @@ class SelectionMixin:
     def _import_target(self) -> importer.ImportTarget:
         """The shape incoming pixels have to be fitted into: this view's format.
 
-        The candidate colors are the **active subpalette window** - exactly the
+        The candidate colors are the **active palette row** - exactly the
         entries a tile can reference here - so a pasted color lands on an index
         that renders as that color in the view the user is looking at.
         """
         assert self._doc is not None
         direct = self._is_direct_color()
         space = self._index_space()
-        base = self._subpalette.value() * space
+        base = self._palette_row.value() * space
         return importer.ImportTarget(
             tile_width=self._doc.tile_width,
             tile_height=self._doc.tile_height,

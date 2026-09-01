@@ -222,8 +222,8 @@ class PixelEditMixin:
     def _pen_value(self) -> int:
         """The value the pen writes into the working grid.
 
-        Indexed views store an index *within the active subpalette* (0..space-1),
-        so the pen is the selected swatch minus the subpalette base; direct-color
+        Indexed views store an index *within the active palette row* (0..space-1),
+        so the pen is the selected swatch minus the palette base; direct-color
         views store an ARGB — a picked one, else the selected swatch's color.
         """
         assert self._doc is not None
@@ -233,7 +233,7 @@ class PixelEditMixin:
                 return self._pen_argb
             return self._doc.palette.color(selected if selected is not None else 0)
         space = self._index_space()
-        base = self._subpalette.value() * space
+        base = self._palette_row.value() * space
         if selected is None:
             return 0
         return max(0, min(selected - base, space - 1))
@@ -259,7 +259,7 @@ class PixelEditMixin:
         """The ARGB the pen would write — what the preview shows.
 
         Direct-colour views carry the ARGB in the pen value itself; indexed views
-        carry an index *within* the active subpalette, so it is rebased to an
+        carry an index *within* the active palette row, so it is rebased to an
         absolute palette index before the lookup.
         """
         assert self._doc is not None
@@ -426,7 +426,7 @@ class PixelEditMixin:
         A tilemap goes through the **renderer's own** colour-table chooser
         (:meth:`~...rendering.RenderingMixin._tilemap_grid_image`) rather than a
         copy of it, so the stroke under the cursor is drawn exactly the way the
-        committed result will be. A pixel document keeps the view's Subpal, which
+        committed result will be. A pixel document keeps the view's Palette Row, which
         is what its finished render uses too.
         """
         assert self._doc is not None
@@ -753,7 +753,7 @@ class PixelEditMixin:
         # A pixel of a tilemap belongs to a tile as much as to a colour, and the
         # two panels answer one question each: the tile sheet picks the tile it
         # was drawn from, the palette grid the colour - and, with it, the
-        # subpalette row that colour sits in, which on a map whose cells carry
+        # palette row that colour sits in, which on a map whose cells carry
         # rows is the row the cell is drawn through
         # (:meth:`~...palette_regions.PaletteRegionsMixin._cell_paint_base` folded
         # it into the value, and ``select_index`` reads it back out).
@@ -771,13 +771,13 @@ class PixelEditMixin:
             # whose cells carry rows, :meth:`_sampled_value` has folded the cell's
             # row in — that is what makes it equal the composed picture — and
             # `_pinned_palette_base` answers with that same row, so adding it here
-            # counted it twice: the swatch two rows further on, Subpal dragged to
+            # counted it twice: the swatch two rows further on, Palette Row dragged to
             # double the cell's row, and, once the palette is only as long as the
             # file needs, an index off the end that selects nothing and leaves the
             # pen at 0. Zero on every other document, where `_cell_paint_base` is
             # itself zero and this base is the only one applied.
             base = 0 if self._folds_palette_rows() else self._pinned_palette_base(x, y)
-            # select_index moves the active subpalette to the entry it selects, so
+            # select_index moves the active palette row to the entry it selects, so
             # picking inside a pinned region also makes that row the drawing row —
             # which keeps the pen's stored index (selected - base) equal to the
             # value that was picked.
@@ -1388,7 +1388,7 @@ class PixelEditMixin:
     def _pixel_import_target(self) -> importer.ImportTarget:
         """The colours an incoming pixel region is fitted to.
 
-        The view's own subpalette window
+        The view's own palette row
         (:meth:`~...selection.SelectionMixin._import_target`) everywhere but a map
         whose cells carry palette rows. There the picture is composed in
         **absolute** indices spanning every row, so fitting a paste into one row
@@ -1405,7 +1405,7 @@ class PixelEditMixin:
             return target
         # At least one row's worth, so a palette shorter than the format's index
         # space still yields candidates (the missing entries render as the sentinel,
-        # exactly as the subpalette window does).
+        # exactly as the palette row does).
         count = min(256, max(len(self._doc.palette), self._index_space()))
         return replace(
             target, colors=tuple(self._doc.palette.color(i) for i in range(count))
@@ -1508,7 +1508,7 @@ class PixelEditMixin:
         (:meth:`~...rendering.RenderingMixin._tilemap_grid_image` makes the same
         choice for the base). On a map whose cells carry palette rows the composed
         indices are **absolute** — :func:`~celpix.pipeline.pipeline.expand_cells`
-        folded the row in — so offsetting them by the view's Subpal on top of that
+        folded the row in — so offsetting them by the view's Palette Row on top of that
         renders the region however many rows further on the spin happens to sit,
         which on such a map is a row to *assign* rather than one to draw through.
 

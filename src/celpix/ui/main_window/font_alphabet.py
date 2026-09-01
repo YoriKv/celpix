@@ -206,7 +206,7 @@ class FontAlphabetMixin:
                 self._registry,
                 FONT_SHEET_COLUMNS,
                 grouped,
-                doc.view.subpalette_row,
+                doc.view.palette_row,
             )
             if not source.ids:
                 return None

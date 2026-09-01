@@ -90,9 +90,9 @@ class GridMode(str, Enum):
 class ViewOptions:
     """How the tiles are laid out and rendered — pure display state.
 
-    ``subpalette_row`` selects which ``2^bpp`` window of a larger palette a tile
+    ``palette_row`` selects which ``2^bpp`` window of a larger palette a tile
     renders through (``base = row * 2**bpp`` — the pixel format's index space
-    sizes the subpalette); the sample ``.pal``s are 256-color CGRAM dumps, so
+    sizes the palette row); the sample ``.pal``s are 256-color CGRAM dumps, so
     this matters even for viewing.
 
     Large files are viewed through a fixed **window**: ``rows`` tile-rows starting
@@ -132,8 +132,8 @@ class ViewOptions:
     ``zoom`` is display state of a third sort again: an **app-wide** preference
     rather than either an entry's or a project's, described at the field.
 
-    ``palette_regions`` pins regions of the picture to their own subpalette row,
-    overriding ``subpalette_row`` for the tiles inside them — so a bank whose art
+    ``palette_regions`` pins regions of the picture to their own palette row,
+    overriding ``palette_row`` for the tiles inside them — so a bank whose art
     is drawn under several hardware palettes can be read at once instead of one
     group at a time. A pinned row is a **named** row like a cell's, so it counts
     from :attr:`Document.palette_row_base` rather than being absolute. It changes
@@ -181,7 +181,7 @@ class ViewOptions:
     # across every entry, keeps it in QSettings beside the grid
     # (``main_window/interpretation.py``), and the project file does not store it.
     zoom: float = 4.0
-    subpalette_row: int = 0
+    palette_row: int = 0
     tile_offset: int = 0  # top-left tile index into the pixel bytes
     byte_nudge: int = 0  # sub-tile byte shift of the whole grid
     block_columns: int = 1  # tiles per block, horizontally
@@ -195,7 +195,7 @@ class ViewOptions:
     show_rearranged: bool = (
         True  # apply tile_rearrangement, or show the file's true order
     )
-    # Byte regions pinned to their own subpalette row, overriding subpalette_row
+    # Byte regions pinned to their own palette row, overriding palette_row
     # for the tiles inside them (:mod:`celpix.core.paletteregions`).
     palette_regions: PaletteRegions = PaletteRegions()
     show_palette_regions: bool = True  # apply them, or render everything at the row
@@ -259,7 +259,7 @@ class CellChain:
     :meth:`~celpix.plugins.base.TilemapCodecPlugin.has_palette_rows`, which is not
     the same question as :attr:`Document.cells_carry_palette_rows` — that one is
     true if either side of the chain states rows, because it gates the view's
-    subpalette. This one says whose row wins per cell.
+    palette row. This one says whose row wins per cell.
 
     ``stamp`` and ``source_columns`` are the **source's** shape, not the
     referrer's: how many source cells one coordinate names, and how wide the
@@ -328,7 +328,7 @@ class Document:
     # wraps a row it pushes past either end
     # (:func:`~celpix.pipeline.pipeline.drawn_palette_row`).
     #
-    # It never touches the view's own subpalette row, which is a row the user
+    # It never touches the view's own palette row, which is a row the user
     # picked in the palette that is loaded and so already absolute.
     palette_row_base: int = 0
 
@@ -399,7 +399,7 @@ class Document:
     # A property of the format and not of this file: a screen whose cells all sit
     # on row 0 is still True, because the zeros are its cells' own answer. False
     # only where there is no field at all — a bare tile number — and that is what
-    # hands the choice of colours back to the view's subpalette row
+    # hands the choice of colours back to the view's palette row
     # (``docs/design/tilemap-entry.md`` §8).
     cells_carry_palette_rows: bool = True
     # How many cells ``(across, down)`` share one *stored* palette row, as the
@@ -1472,7 +1472,7 @@ class Document:
         return self.tile_count if layout is None else layout.blocks(self.tile_count)
 
     def palette_rows(self, index_space: int) -> int:
-        """How many subpalette rows this document's palette holds.
+        """How many palette rows this document's palette holds.
 
         Asked of the document so the one place that copes with a document
         carrying no palette at all is here — a render with nothing loaded still

@@ -348,7 +348,7 @@ class TilemapData(NamedTuple):
 
     ``palette_rows`` is whether the *format* gives a cell a palette row to name —
     the format's word, not this file's, so a screen whose cells all happen to sit
-    on row 0 still reports True. What it gates is whether the view's subpalette
+    on row 0 still reports True. What it gates is whether the view's palette row
     applies at all (``docs/design/tilemap-entry.md`` §8).
 
     ``row_granularity`` is how many cells share one *stored* row — ``(1, 1)``

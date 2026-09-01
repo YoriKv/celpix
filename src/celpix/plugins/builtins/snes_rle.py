@@ -1,0 +1,210 @@
+"""RLE1 and RLE2 — the SNES tilemap RLE, in its two framings.
+
+The smallest scheme celPix carries after PackBits: one control byte, no
+backreferences, and nothing but runs and literals. It is what Super Mario World
+uses for the Map16 index maps its levels and its overworld draw from, and the
+reason tilemaps rather than tile sheets is that a tilemap is mostly the same cell
+repeated — the very shape a run encodes for two bytes.
+
+A stream is a sequence of packets, each a one-byte header ``CLLLLLLL``:
+
+| header | meaning |
+|---|---|
+| ``0x00``–``0x7F`` (C=0) | **literal**: copy the next ``L + 1`` bytes verbatim |
+| ``0x80``–``0xFF`` (C=1) | **run**: repeat the next byte ``L + 1`` times |
+
+Both kinds carry 1–128 output bytes, so a run always pays for itself from two
+bytes up: two bytes of packet against the two the same bytes cost inside a
+literal, plus the literal's amortised header.
+
+**The two framings differ only in where the stream ends**, and that difference is
+the whole of the split between the two plugins here:
+
+- **RLE1** ends on ``$FF $FF`` *at a header position* — a header that says "run of
+  128" followed by a value that is also ``$FF``. The stream finds its own extent,
+  so a slice needs no length.
+- **RLE2** has no end marker at all. Its decoder stops on an output byte count it
+  already knows (the size of the buffer it is filling), which is what
+  ``self_delimiting = False`` says and why an RLE2 slice carries an explicit
+  length.
+
+Provenance: the cartridge's own decoders — ``SMW_BufferBGTilemap_Main`` in bank
+``$05`` for the terminated framing, ``CODE_04DABA``/``$04:DD57`` for the
+unterminated one — cross-checked against the format descriptions at
+<https://sneslab.net/wiki/RLE1> and <https://sneslab.net/wiki/RLE2>, which agree
+on the header layout, the ``$FF $FF`` terminator and the missing one.
+
+**128 copies of ``$FF`` cannot be encoded**, because the header ``$FF`` and the
+value ``$FF`` spell the terminator. :func:`compress` caps a run of that one byte
+at 127 under the terminated framing and lets the remainder ride along as a short
+run or a literal; the wiki notes the same limitation and the same way out. Under
+RLE2 there is no terminator and no cap.
+
+**What the decoder writes is a buffer, and a game addresses that buffer in
+rectangles** — SMW's Layer 2 backgrounds are screens of 16x27 laid side by side,
+its overworld 32x32 pages in the quartering the SNES applies to a 64x64 tilemap.
+That walk is a property of the *structure*, not of the codec, and belongs to a
+plugin that knows which structure it is reading; nothing here reorders a byte.
+``sample-projects/smw/plugins/compression/smw_rle.py`` is the worked example,
+layering each walk over these two functions.
+
+**Compressor.** A run for every stretch of two or more equal bytes, everything
+else packed into literals, both capped at 128. That threshold is the original
+packer's rather than the optimal one — taking a run at three instead reproduces
+the cartridge's bytes for 2 of its 19 shipped streams where taking it at two
+reproduces 16, and matching the cartridge is what keeps an unedited structure
+byte-identical, and certain to still fit its slot.
+
+The three streams that do *not* come back byte-identical say something about the
+original packer rather than about this one, and both differences leave our output
+**smaller**, so a save-back still fits:
+
+- Two of them carry long incompressible stretches, where the original emits a
+  stray **run of 1** after every full 128-byte literal — a packet that costs two
+  bytes to say what one byte of literal says. It is a quirk of that packer's
+  literal flush and is not reproduced.
+- The third is the overworld's, where the original never lets a packet cross a
+  4096-byte boundary because each submap was compressed *separately* and the
+  streams concatenated. An encoder handed the concatenation cannot know where the
+  seams were.
+"""
+
+from __future__ import annotations
+
+from celpix.core.errors import Stage
+from celpix.plugins.base import PartialDecompression, PluginInfo
+from celpix.plugins.builtins._rle import pack_runs
+
+# Output bytes one packet can carry, literal or run: (L + 1) over a 7-bit L.
+_MAX_PACKET = 128
+# Shortest run worth its own packet — the original packer's threshold; see the
+# module docstring on why it is 2 and not 3.
+_MIN_RUN = 2
+# The terminated framing's end marker: a full 128-run of $FF, read as an end
+# rather than as a packet, which is exactly why the encoder may not write one.
+_TERMINATOR = b"\xff\xff"
+_MAX_RUN_OF_TERMINATOR_BYTE = 127
+# Memory guard for a read with no length behind it, and one SNES bank — the
+# conventional cap on an uncompressed structure and past any tilemap buffer a
+# cartridge fills. Hitting it stops the decode at the last packet boundary, which
+# for RLE1 then reads as "no terminator": a stream that expands this far without
+# ending is not one.
+_MAX_OUT = 0x10000
+
+
+def decompress(
+    data: bytes, *, terminated: bool, partial: bool = False
+) -> tuple[bytes, int, bool]:
+    """Decode one stream at ``data[0]``; returns ``(output, consumed, complete)``.
+
+    ``terminated`` selects the RLE1 framing: stop at ``$FF $FF`` and report the
+    structure's true extent. Without it (RLE2) there is no end to find — the
+    decode runs until the buffer or the output cap is exhausted and ``complete``
+    is always false, since "the buffer ran out" is not "the structure ended" and
+    claiming otherwise would let a slice created without a length backfill its
+    extent as the whole rest of the file.
+
+    Under ``terminated``, a buffer that ends before the terminator raises unless
+    ``partial`` is set — a bounded view window routinely cuts a stream short, and
+    the prefix it did decode is what the overlay wants to show.
+
+    ``consumed`` counts through the terminator for a complete RLE1 read, making it
+    the structure's true length — the slot a save-back must fit. Otherwise it is
+    the end of the last *whole* packet, the only boundary a cut-short buffer
+    offers; a half-delivered literal still contributes the bytes that did arrive.
+    """
+    out = bytearray()
+    i, n = 0, len(data)
+    consumed = 0
+    complete = False
+    while i < n and len(out) < _MAX_OUT:
+        if terminated and data[i : i + 2] == _TERMINATOR:
+            i += 2
+            consumed = i
+            complete = True
+            break
+        header = data[i]
+        if header & 0x80:  # run: the next byte, (L + 1) times
+            if i + 1 >= n:  # buffer ended before the value byte
+                break
+            out += bytes([data[i + 1]]) * ((header & 0x7F) + 1)
+            i += 2
+        else:  # literal: the next (L + 1) bytes
+            count = header + 1
+            chunk = data[i + 1 : i + 1 + count]
+            out += chunk
+            i += 1 + count
+            if len(chunk) < count:  # buffer ended inside the literal
+                break
+        consumed = i
+
+    if terminated and not complete and not partial:
+        raise ValueError("no $FF $FF terminator — not an RLE1 stream")
+    return bytes(out), consumed, complete
+
+
+def _run_limit(value: int) -> int:
+    """How long a run of ``value`` may be under the terminated framing.
+
+    128 copies of ``$FF`` write the header ``$FF`` and the value ``$FF`` — the end
+    marker — so that one byte stops a packet short and the remainder rides along
+    behind it. Every other byte fills the packet.
+    """
+    return _MAX_RUN_OF_TERMINATOR_BYTE if value == 0xFF else _MAX_PACKET
+
+
+def compress(data: bytes, *, terminated: bool) -> bytes:
+    """Encode raw bytes as an RLE1 (``terminated``) or RLE2 stream."""
+    out = bytearray()
+    pack_runs(
+        data,
+        out,
+        literal_header=lambda count: count - 1,
+        run_header=lambda count: 0x80 | (count - 1),
+        max_packet=_MAX_PACKET,
+        min_run=_MIN_RUN,
+        # A pair is already worth its own run packet here (_MIN_RUN is 2), so the
+        # trade PackBits makes for one never arises.
+        spill_pair_as_run=False,
+        # RLE2 has no terminator for a run to collide with, so no cap.
+        run_limit=_run_limit if terminated else None,
+    )
+    if terminated:
+        out += _TERMINATOR
+    return bytes(out)
+
+
+class _SnesRle(PartialDecompression):
+    """Shared base: the two plugins differ only in ``_terminated``."""
+
+    _terminated: bool
+
+    def _decode(self, data: bytes, *, partial: bool) -> tuple[bytes, int, bool]:
+        return decompress(data, terminated=self._terminated, partial=partial)
+
+    def _encode(self, data: bytes) -> bytes:
+        return compress(data, terminated=self._terminated)
+
+
+class Rle1Compression(_SnesRle):
+    info = PluginInfo(
+        id="compression.rle1",
+        name="RLE1 (SMW, $FF $FF terminated)",
+        stage=Stage.COMPRESSION,
+        self_delimiting=True,
+        category="Nintendo",
+    )
+    _terminated = True
+
+
+class Rle2Compression(_SnesRle):
+    info = PluginInfo(
+        id="compression.rle2",
+        name="RLE2 (SMW, no terminator)",
+        stage=Stage.COMPRESSION,
+        # No end marker: the extent comes from the slice, as for PackBits. The
+        # overlay phrases its status as plain fact rather than as a cut-short read.
+        self_delimiting=False,
+        category="Nintendo",
+    )
+    _terminated = False

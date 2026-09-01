@@ -272,8 +272,8 @@ def test_pixel_write_optional(tmp_path) -> None:
         # Wide/odd-tile codecs fix their geometry intrinsically and carry NO bpp
         # param — reading params["bpp"] used to KeyError. Deriving from the tile
         # geometry is the fix these guard, and their bpp isn't the naive tile
-        # width either (e.g. pce-sg is 4bpp over a 16-wide tile).
-        ("preset.pixel.pce-sg-4bpp", 4),
+        # width either (e.g. the PC Engine sprite is 4bpp over a 16-wide tile).
+        ("preset.pixel.pce-4bpp-sprite", 4),
         ("preset.pixel.pce-2bpp16", 2),
         ("preset.pixel.1bpp-16x16", 1),
         # Ordinary param-driven codecs: the derived value must equal declared bpp.

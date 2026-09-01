@@ -40,10 +40,10 @@ lands and the target keeps its other attributes, exactly as the Cell spin does;
 a rectangle right-dragged there (:class:`~celpix.ui.tile_source_panel.
 TileSourcePanel`) is the same pick widened, one bare index per square, and each
 lands on the same terms.
-The **palette row** is the one field that follows neither pick: it is Subpal's,
+The **palette row** is the one field that follows neither pick: it is Palette Row's,
 the row the tile source sheet and the canvas preview are both drawn in, so what
-lands is always the colours being shown — a pick sets Subpal to the picked row,
-which is what keeps "put that one here" true, and moving Subpal afterwards
+lands is always the colours being shown — a pick sets Palette Row to the picked row,
+which is what keeps "put that one here" true, and moving Palette Row afterwards
 recolours the next stamp along with its preview
 (:meth:`StampToolMixin._settle_stamp_row`). On a chained map the referrer's
 attributes are moot either way — they come from the source cell (§3.1).
@@ -108,7 +108,7 @@ class StampToolMixin:
         # per-field values, the format's defaults where never touched
         # (:meth:`~...cell_props_bar.CellPropsMixin._stamp_attr_value`), landed
         # whole so a sheet pick and a canvas brush agree about what a press
-        # writes. Session state like Subpal: no undo step, it outlives sheet
+        # writes. Session state like Palette Row: no undo step, it outlives sheet
         # picks so "set flip H once, paint many tiles" is one gesture per tile,
         # and a pick that displaces a held record takes that record's values
         # over (:meth:`~...cell_props_bar.CellPropsMixin._seed_stamp_attrs`).
@@ -240,7 +240,7 @@ class StampToolMixin:
         self._toggle_stamp_action.setToolTip(tip)
         # The preview follows everything this pass follows — arming, the entry,
         # the format — plus the render inputs the refresh brings it here for: a
-        # palette edit or a Subpal move recolours what the held tiles would land
+        # palette edit or a Palette Row move recolours what the held tiles would land
         # as, and this pass is on the refresh path.
         self._sync_stamp_preview()
 
@@ -423,7 +423,7 @@ class StampToolMixin:
         (:meth:`~...cell_props_bar.CellPropsMixin._stamp_sheet_attrs`), exactly
         as a canvas-swept brush lays its records, so the two picks cannot
         disagree about what a press writes. The **palette row** follows neither
-        pick but the Subpal spin, which is the row every preview of the stamp
+        pick but the Palette Row spin, which is the row every preview of the stamp
         is drawn in (:meth:`_settle_stamp_row`).
 
         The guard is against a **stale** record: the held ID is re-validated
@@ -472,12 +472,12 @@ class StampToolMixin:
     def _settle_stamp_row(self, laid: Cell, over: Cell) -> Cell:
         """``laid`` with the palette row a stamp actually writes into ``over``.
 
-        The row is **Subpal's**, not the record's or the target's, wherever the
-        format gives this file's cells a row of their own to hold: Subpal is the
+        The row is **Palette Row's**, not the record's or the target's, wherever the
+        format gives this file's cells a row of their own to hold: Palette Row is the
         row the tile source sheet and the canvas preview are drawn in, so it is
         the one number that keeps "what you see is what lands" true. A pick sets
-        Subpal to the picked row, which is what makes the eyedrop still mean
-        "put *that* one here" — and moving Subpal after the pick recolours the
+        Palette Row to the picked row, which is what makes the eyedrop still mean
+        "put *that* one here" — and moving Palette Row after the pick recolours the
         stamp along with its previews instead of laying down the colours of a
         preview no longer on screen. Clamped to what the field can hold, the
         rule every cell-row writer follows
@@ -506,14 +506,14 @@ class StampToolMixin:
         return laid if row is None else replace(laid, palette_row=row)
 
     def _stamp_row_override(self) -> int | None:
-        """The **named** row a stamp writes — Subpal's — or None to leave rows be.
+        """The **named** row a stamp writes — Palette Row's — or None to leave rows be.
 
         None on the same terms every cell-row writer refuses: a format whose
         cells state no row limit has no field for the number to land in
         (:meth:`~...tilemap_edit.TilemapEditMixin._cell_palette_row_limit`), and
         a row-group format's row is not one cell's to set
         (:meth:`_settle_stamp_row` keeps the target's there). The value is the
-        Subpal row taken back through the base, because a cell stores a *named*
+        Palette Row taken back through the base, because a cell stores a *named*
         row and the base is applied again on the way out
         (:meth:`~...palette_regions.PaletteRegionsMixin._named_row_picked`).
         """
@@ -539,7 +539,7 @@ class StampToolMixin:
         (:meth:`_stamp_cell`). Nothing on screen reads it; it is what makes the
         gesture a copy of the cell rather than of its tile number.
 
-        The **row goes into Subpal**, which is the *displayed* half and separate
+        The **row goes into Palette Row**, which is the *displayed* half and separate
         from the row the stamp writes (:meth:`_pick_palette_row_at`). A pick is
         the tool's way of saying "this one", and the same thing said by a
         left-click selection in tile mode moves the row everywhere it is read.
@@ -549,7 +549,7 @@ class StampToolMixin:
         at pick time. There is no tile there to take: holding the number anyway
         would leave the panel ringing the *previous* pick against a readout and
         a status line describing this one, and every later stamp refusing for a
-        reason set several gestures ago. The row stays out of Subpal on the same
+        reason set several gestures ago. The row stays out of Palette Row on the same
         refusal — a sample that found nothing has nothing to recolour the sheet
         with.
         """
@@ -572,17 +572,17 @@ class StampToolMixin:
         )
 
     def _pick_palette_row_at(self, slot: int) -> int | None:
-        """Take the picked cell's palette row into Subpal; the row, or None.
+        """Take the picked cell's palette row into Palette Row; the row, or None.
 
         The row **shown**, not the row stamped: what a stamp writes travels in the
-        held record (:meth:`_stamp_cell`) and needs no control to carry it. Subpal
+        held record (:meth:`_stamp_cell`) and needs no control to carry it. Palette Row
         is where the row is read from by everything a selection would have moved
         — the palette grid's outlined block, the colours the tile sheet is drawn
         in, and the row Set Selection's Palette Row writes into cells
-        (:meth:`~...rendering.RenderingMixin._sync_subpalette`). The tool clears
+        (:meth:`~...rendering.RenderingMixin._sync_palette_row`). The tool clears
         the selection and acts on the cell under the cursor instead, so none of
         that follows a pick unless the row lands here, and the user is left
-        looking at the tile they picked in whichever row Subpal was on.
+        looking at the tile they picked in whichever row Palette Row was on.
 
         The **drawn** row at the **drawn** position, which is the pair
         :meth:`~...palette_regions.PaletteRegionsMixin._selection_palette_row`
@@ -590,7 +590,7 @@ class StampToolMixin:
         coordinates whose row field is a 0 nobody chose, and the row that reaches
         the screen is the source cell's.
 
-        Nothing to take where the format gives a cell no row — Subpal there is
+        Nothing to take where the format gives a cell no row — Palette Row there is
         the *view's* row, which the render obeys, so writing a cell's into it
         would recolour the map on a gesture that is supposed to sample it.
         """
@@ -602,7 +602,7 @@ class StampToolMixin:
         if not 0 <= at < len(cells):
             return None
         row = self._drawn_palette_row(cells[at].palette_row)
-        self._subpalette.setValue(row)
+        self._palette_row.setValue(row)
         return row
 
     def _on_stamp_area_picked(self, anchor: int, far: int) -> None:
@@ -613,7 +613,7 @@ class StampToolMixin:
         rectangle gesture here uses, so an area picked off an assembled screen
         holds the cells actually under it. Records travel whole, as the single
         eyedrop's does, and the top-left cell doubles as an ordinary pick — the
-        panel's ring, the readout and Subpal all follow it, so the area pick
+        panel's ring, the readout and Palette Row all follow it, so the area pick
         answers every question a single one does plus the shape.
 
         On a **stamped chain** the placed unit is the whole stamp, so the sweep

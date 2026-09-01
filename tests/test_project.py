@@ -77,7 +77,7 @@ def test_round_trip_preserves_entries_sessions_and_state(tmp_path) -> None:
     # round-trip assertion below covers their persistence.
     slice_view = ViewOptions(
         byte_nudge=3,
-        subpalette_row=2,
+        palette_row=2,
         block_columns=2,
         block_rows=2,
         block_order="column",
@@ -794,6 +794,52 @@ def test_a_rearrangement_stored_under_the_old_key_still_loads(tmp_path) -> None:
     view = load_project(str(project)).entries[0].pending_view
     assert view is not None
     assert view.tile_rearrangement.actual(0) == 3
+
+
+def test_a_version_1_project_is_walked_forward_to_the_current_schema(tmp_path) -> None:
+    """v1 stored the view's row as ``subpalette_row``; v2 spells it
+    ``palette_row``. The migration is the only thing standing between an older
+    project and every view in it reopening at row 0 — a silent recolour of the
+    whole file, which is why the walk is asserted end to end rather than at the
+    key."""
+    (tmp_path / "x.bin").write_bytes(b"\x00" * 0x400)
+    document = {
+        "version": 1,
+        "current": 0,
+        "entries": [{"path": "x.bin", "view": {"columns": 8, "subpalette_row": 3}}],
+    }
+    project = tmp_path / "p.celpix"
+    project.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = load_project(str(project))
+    assert loaded.migrated_from == 1
+    # Reported as current, not as written: the file was walked forward, so the
+    # UI has nothing to warn about.
+    assert loaded.version == PROJECT_VERSION
+    view = loaded.entries[0].pending_view
+    assert view is not None
+    assert view.palette_row == 3
+
+    # And the next save writes it at the new version, under the new key - the
+    # upgrade is only finished when it reaches the disk.
+    ws = Workspace()
+    ws.replace(loaded.entries, loaded.current)
+    raw = project_dict(ws, str(project))
+    assert raw["version"] == PROJECT_VERSION
+    stored = raw["entries"][0]["view"]
+    assert stored["palette_row"] == 3
+    assert "subpalette_row" not in stored
+
+
+def test_a_current_project_reports_no_migration(tmp_path) -> None:
+    """``migrated_from`` is what tells the UI the file on disk is now behind the
+    workspace, so it must stay ``None`` for a file that was already current."""
+    (tmp_path / "x.bin").write_bytes(b"\x00" * 0x400)
+    document = {"version": PROJECT_VERSION, "entries": [{"path": "x.bin"}]}
+    project = tmp_path / "p.celpix"
+    project.write_text(json.dumps(document), encoding="utf-8")
+
+    assert load_project(str(project)).migrated_from is None
 
 
 def test_unreadable_or_non_project_file_raises(tmp_path) -> None:

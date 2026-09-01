@@ -81,10 +81,10 @@ ROWS_LOCKED_TIP = "Tile rows shown\nLocked by View > Entire File"
 # setting being held — there is no window to set the height of.
 ROWS_WHOLE_TIP = "Tile rows shown\nA tilemap is always shown whole"
 
-# The Subpal control's tooltip, in its two states. It picks the range of palette
+# The Palette Row control's tooltip, in its two states. It picks the range of palette
 # entries the picture indexes into — except on a tilemap whose cells name a row
 # each, where the file has already answered and a second answer would shift a map
-# that is in the right colours (see MainWindow._sync_subpalette).
+# that is in the right colours (see MainWindow._sync_palette_row).
 # The Tile size readout's two states. On a tilemap the unit the user points at,
 # selects and edits is the cell — which may be a 2x2 metatile — so both the
 # caption and the number follow it (see MainWindow._refresh_tile_size).
@@ -96,13 +96,13 @@ TILE_SIZE_STAMP_TIP = (
     "Size of one stamp in pixels\nSelections and edits work a stamp at a time"
 )
 
-SUBPAL_TIP = "Which range of palette entries tiles index into"
+PALETTE_ROW_TIP = "Which range of palette entries tiles index into"
 # On a tilemap whose cells carry rows the spin does not recolour anything - the
 # file has answered that, and a view-wide row on top would shift a map already in
 # its authored colours. It is still the row being *pointed at*: the palette grid
 # outlines it, the tile sheet is read in it, and Set Selection's Palette Row
 # writes it into the cells. So it stays live and says which of the two it is.
-SUBPAL_CELLS_TIP = (
+PALETTE_ROW_CELLS_TIP = (
     "Which palette row the next assignment uses\n"
     "This map draws through its cells' own rows; Palette >\n"
     "Set Selection's Palette Row writes this one into them"
@@ -363,7 +363,7 @@ class InterpretationMixin:
         # Ranged well past a screenful of 8-px tiles because a bitmap width
         # derives this: a 4096-px bitmap of 8-px tiles is 512 columns.
         self._columns = value_spin(1, 512, 16, self._on_view_change)
-        # The caption is kept for the same reason Rows' and Subpal's are: an
+        # The caption is kept for the same reason Rows' and Palette Row's are: an
         # tilemap that fixes its own width locks the pair and has to say what
         # locked it (:meth:`~...rendering.RenderingMixin._settle_tilemap_width`).
         self._columns_label = add_labelled(view, "Cols:", self._columns, COLS_TIP)
@@ -404,17 +404,17 @@ class InterpretationMixin:
 
         # Range 255: enough rows for a 512-entry palette under a 2-color (1bpp)
         # index space; the view refresh clamps to the loaded palette anyway.
-        self._subpalette = value_spin(0, 255, 0, self._on_view_change)
-        # The caption is kept because _sync_subpalette retooltips the pair
+        self._palette_row = value_spin(0, 255, 0, self._on_view_change)
+        # The caption is kept because _sync_palette_row retooltips the pair
         # together on a tilemap whose cells carry their own rows, where the spin
         # picks a row to *assign* rather than one to draw through - and a label
         # is as likely to be hovered as the input
         # (:func:`~celpix.ui.widgets.add_labelled`).
-        self._subpalette_label = add_labelled(
+        self._palette_row_label = add_labelled(
             view,
-            "Subpal:",
-            self._subpalette,
-            SUBPAL_TIP,
+            "Palette Row:",
+            self._palette_row,
+            PALETTE_ROW_TIP,
         )
 
         # Whether these tiles are *letters* — the declaration a fontmap bound to
@@ -777,16 +777,16 @@ class InterpretationMixin:
         return pipeline.pixel_bpp(self._pixel_preset_id(), self._registry)
 
     def _palette_base(self) -> int:
-        """The first palette index the active subpalette row addresses.
+        """The first palette index the active palette row addresses.
 
         A tile stores an index into a window of the palette, so every render of
         decoded pixels needs this to turn those indices into colors. One
         definition, because the row and the window size are separate controls.
         """
-        return self._subpalette.value() * self._index_space()
+        return self._palette_row.value() * self._index_space()
 
     def _index_space(self, preset_id: str | None = None) -> int:
-        """The pixel format's color count - the subpalette row size.
+        """The pixel format's color count - the palette row size.
 
         Capped at 256: a direct-color preset's bpp can be up to 32, and both
         the palette maths and the fallback palette top out at 256 entries. The
@@ -1077,7 +1077,7 @@ class InterpretationMixin:
         The view offset is a tile index, so it maps to a different *byte*
         position under a new bytes-per-tile - ``byte_position`` re-lands the
         view exactly, with the sub-tile remainder becoming the byte nudge. The
-        subpalette row is likewise re-anchored: the same row index means a
+        palette row is likewise re-anchored: the same row index means a
         different palette base under the new color count, so it is recomputed
         from the selected color (or the old base) to keep pointing at the
         same palette entries.
@@ -1103,10 +1103,10 @@ class InterpretationMixin:
         self._offset, self._nudge = divmod(byte_position, px.bytes_per_tile)
         anchor = self._palette_panel.selected_index()
         if anchor is None:
-            anchor = self._subpalette.value() * old_group
+            anchor = self._palette_row.value() * old_group
         # Signals blocked: _refresh_view below re-renders (and re-clamps) once.
-        with signals_blocked(self._subpalette):
-            self._subpalette.setValue(anchor // self._index_space())
+        with signals_blocked(self._palette_row):
+            self._palette_row.setValue(anchor // self._index_space())
         self._clear_selection()  # the same tile index covers different bytes now
         self._refresh_view()
         return True

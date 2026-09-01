@@ -1,8 +1,8 @@
-# Master System / Game Gear name table entry — 16-bit little-endian: index 0-8,
+# Master System / Game Gear nametable entry — 16-bit little-endian: index 0-8,
 # H flip 9, V flip 10, palette select 11 (sprite bank vs background bank),
 # priority 12.
 id = "preset.tilemap.sms-bg"
-name = "Master System name table (16-bit, also Game Gear)"
+name = "Master System nametable (16-bit, also Game Gear)"
 engine_id = "codec.tilemap.packed"
 category = "Sega"
 
@@ -10,5 +10,5 @@ category = "Sega"
 bytes = 2
 endian = "little"
 fields = "...o pvhi iiii iiii"
-# No page geometry: the visible name table is 32 columns by 24 or 28 rows
+# No page geometry: the visible nametable is 32 columns by 24 or 28 rows
 # depending on the display mode, so a cell count does not name one shape.

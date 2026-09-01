@@ -1,8 +1,9 @@
-# 6bpp linear bespoke packing, reversed row bytes.
+# 6bpp linear packing, reversed row bytes — a 6-bit field does not divide a byte,
+# so pixels straddle.
 # See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.6bpp-linear"
 name = "6bpp linear (8x8)"
-engine_id = "codec.pixel.linear-bespoke"
+engine_id = "codec.pixel.packed-straddling"
 category = "Generic linear"
 
 [params]

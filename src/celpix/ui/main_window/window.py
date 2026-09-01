@@ -5,7 +5,7 @@ left column is the Files dock over the Palette and Tile Source docks, which shar
 a tab bar between them; the right is the editing surface: four bars stacked over a
 scrollable :class:`~celpix.ui.canvas.Canvas` - codecs (pixel format,
 compression), arrangement (Pattern presets, block grouping, fill order, 2D),
-view (columns, rows, zoom, subpalette row - the palette format lives in the
+view (columns, rows, zoom, palette row - the palette format lives in the
 palette dock) and transform - with the canvas showing a windowed view with
 tile-range selection and a navigation bar under it carrying the address/bank
 readout. None of those bars is a QMainWindow toolbar: that area spans the whole
@@ -333,7 +333,7 @@ class MainWindow(
         # armed flag _set_edit_mode reads on its way past.
         self._init_stamp()
         # And the pinned palette regions, for the same reason: _refresh_view asks
-        # them for every slot's subpalette row before it can draw anything.
+        # them for every slot's palette row before it can draw anything.
         self._init_palette_regions()
         # Whether a sprite map shows its empty frame slots. Here rather than with
         # the binding bar that owns the box, because _refresh_view's view capture
@@ -496,7 +496,7 @@ class MainWindow(
         self._build_toolbar()
         # Both after _build_toolbar: the spins exist only then. setValue clamps to
         # the spin's range and re-renders through _on_view_change.
-        self._palette_panel.subpalette_row_selected.connect(self._subpalette.setValue)
+        self._palette_panel.palette_row_selected.connect(self._palette_row.setValue)
         self._sync_entire_file()  # apply the restored View > Entire File to Rows
         self._build_nav_keys()
         self._sync_nav()

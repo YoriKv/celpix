@@ -1,5 +1,5 @@
 {
-  "celpix_version": "0.5.9",
+  "celpix_version": "0.5.15",
   "plugins": {
     "compression": {
       "compression.enigma": [
@@ -67,6 +67,14 @@
         "tilemap"
       ],
       "compression.pvr": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.rle1": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.rle2": [
         "pixels",
         "tilemap"
       ],
@@ -169,15 +177,15 @@
         "pixels",
         "tilemap"
       ],
-      "codec.pixel.linear-bespoke": [
-        "pixels",
-        "tilemap"
-      ],
       "codec.pixel.nibble-planar": [
         "pixels",
         "tilemap"
       ],
       "codec.pixel.packed": [
+        "pixels",
+        "tilemap"
+      ],
+      "codec.pixel.packed-straddling": [
         "pixels",
         "tilemap"
       ],
@@ -276,10 +284,14 @@
     "container": [],
     "interpret-palette": [
       "preset.palette.abgr8888",
+      "preset.palette.bgr222",
+      "preset.palette.bgr333",
       "preset.palette.bgr444",
       "preset.palette.bgr444-be",
       "preset.palette.bgr555",
       "preset.palette.bgr555-be",
+      "preset.palette.bgr555-psx",
+      "preset.palette.bgr555-snes",
       "preset.palette.ega-indexed",
       "preset.palette.gb-bgp",
       "preset.palette.genesis-9bpp",
@@ -365,8 +377,9 @@
       "preset.pixel.ngp-2bpp",
       "preset.pixel.ngp-2bpp-swapped",
       "preset.pixel.pce-2bpp16",
-      "preset.pixel.pce-cg2-4bpp",
-      "preset.pixel.pce-sg-4bpp",
+      "preset.pixel.pce-4bpp",
+      "preset.pixel.pce-4bpp-flat-planes",
+      "preset.pixel.pce-4bpp-sprite",
       "preset.pixel.psx-4bpp",
       "preset.pixel.psx-8bpp",
       "preset.pixel.sms-4bpp",
@@ -407,14 +420,15 @@
     ],
     "reshape": []
   },
-  "project_version": 1,
+  "project_version": 2,
   "renamed": {
     "codec.color-indexed": "codec.palette.indexed",
     "codec.color-mask": "codec.palette.mask",
     "codec.direct-color": "codec.pixel.direct-color",
-    "codec.linear-bespoke": "codec.pixel.linear-bespoke",
+    "codec.linear-bespoke": "codec.pixel.packed-straddling",
     "codec.nibble-planar": "codec.pixel.nibble-planar",
     "codec.packed": "codec.pixel.packed",
+    "codec.pixel.linear-bespoke": "codec.pixel.packed-straddling",
     "codec.planar": "codec.pixel.planar",
     "codec.scgcad-object": "format.tilemap.scgcad-object",
     "codec.scgcad-obz": "format.tilemap.scgcad-obz",
@@ -437,6 +451,8 @@
     "preset.pixel.chunky-8bpp": "preset.pixel.8bpp-linear",
     "preset.pixel.chunky-8bpp-wide": "preset.pixel.8bpp-linear-256x128",
     "preset.pixel.generic-3bpp": "preset.pixel.3bpp-planar-separate",
+    "preset.pixel.pce-cg2-4bpp": "preset.pixel.pce-4bpp-flat-planes",
+    "preset.pixel.pce-sg-4bpp": "preset.pixel.pce-4bpp-sprite",
     "preset.tilemap.scgcad-object": "format.tilemap.scgcad-object",
     "preset.tilemap.scgcad-obz": "format.tilemap.scgcad-obz",
     "preset.tilemap.ys-spr": "format.tilemap.ys-spr"

@@ -340,9 +340,10 @@ class EntriesMixin:
             self._alert(str(exc), title="celPix - project")
             return None
         if loaded.version > projectfile.PROJECT_VERSION:
-            # No upgrade shims while the format is in alpha, so a file written at
-            # a version this build doesn't know opens on key-level tolerance
-            # alone - and says so, since what it loses it loses silently.
+            # A newer file is the one case with no migration to run: it opens on
+            # key-level tolerance alone - and says so, since what it loses it
+            # loses silently. An *older* file needed no dialog; it was walked
+            # forward on the way in, and the status line below mentions it.
             self._alert(
                 f"This project is at format version {loaded.version}, which this "
                 f"build doesn't know (it writes version "
@@ -380,15 +381,25 @@ class EntriesMixin:
         remember_recent_project(path)
         # Baseline *after* the replace has settled: showing the restored entry
         # runs its session through the live widgets, which legitimately clamps
-        # (an offset past a shrunken file, a subpalette row past the palette).
+        # (an offset past a shrunken file, a palette row past the palette).
         # Snapshotting before that would leave the project reading dirty the
         # instant it opened, for changes the user never made.
         self._saved_project = self._project_snapshot()
         # The replace above titled the window from the restored entry (no project
         # path was set yet); now that one is, retitle to name the project file.
         self._refresh_window_title()
+        # An upgrade is worth a line but not a dialog: nothing was lost, and the
+        # only thing the user can act on is that the next save rewrites the file
+        # at the new version - which is what makes it worth saying at all.
+        upgraded = (
+            ""
+            if loaded.migrated_from is None
+            else f" Upgraded from format version {loaded.migrated_from}"
+            f" - saving writes version {projectfile.PROJECT_VERSION}."
+        )
         self.statusBar().showMessage(
-            f"Loaded project {Path(path).name} ({len(loaded.entries)} entries)."
+            f"Loaded project {Path(path).name} "
+            f"({len(loaded.entries)} entries).{upgraded}"
         )
         # Referenced files may have moved since the project was saved: arm the
         # menu for later, and hand the worklist back so the caller can offer the
@@ -601,7 +612,7 @@ class EntriesMixin:
         consumed on that load. If the parent isn't open (or was never
         activated) there's nothing to copy - the toolbar seed then applies.
 
-        The **subpalette row** and the **arrangement** (the Pattern picker's
+        The **palette row** and the **arrangement** (the Pattern picker's
         block size/order/2D, and the bitmap width that belongs to 2D) ride along
         too. Both are part of how the bytes are read rather than merely where the
         window sits: the row picks which colors the tiles index (with a 4bpp
@@ -627,7 +638,7 @@ class EntriesMixin:
             preview_compression_id=NO_COMPRESSION,
         )
         slice_entry.pending_palette = palette_source_for(parent)
-        # Only the subpalette row and the arrangement: the rest of the geometry
+        # Only the palette row and the arrangement: the rest of the geometry
         # is left at the defaults a fresh slice gets anyway, since the parent's
         # window size describes a different region than the one being carved
         # out. (Columns is the exception the bitmap width owns - it is
@@ -635,7 +646,7 @@ class EntriesMixin:
         view = parent.doc.view if parent.doc is not None else parent.pending_view
         if view is not None:
             slice_entry.pending_view = ViewOptions(
-                subpalette_row=view.subpalette_row,
+                palette_row=view.palette_row,
                 block_columns=view.block_columns,
                 block_rows=view.block_rows,
                 block_order=view.block_order,
@@ -1326,7 +1337,7 @@ class EntriesMixin:
             slice_offset=offset,
             session=replace(entry.session),
             # The offset carries the position; the view snapshot keeps the
-            # geometry (columns/rows/subpalette/arrangement) with the origin
+            # geometry (columns/rows/palette row/arrangement) with the origin
             # zeroed, since the jump lands it byte-exactly itself. Not the zoom:
             # it is app-wide, so a jump leaves it where the user is standing
             # rather than pulling them back to where they were when they marked

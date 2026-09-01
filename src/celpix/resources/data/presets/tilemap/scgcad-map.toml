@@ -19,7 +19,7 @@
 # names — most are 2x2, and then only one entry in four is ever read.
 # See docs/graphics-formats-reference/scgcad-formats.md §4.
 id = "preset.tilemap.scgcad-map"
-name = "Panel coordinates (MAP)"
+name = "Stamp layout (MAP)"
 engine_id = "codec.tilemap.packed"
 category = "S-CG-CAD"
 

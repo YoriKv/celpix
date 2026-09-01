@@ -2,10 +2,10 @@
 
 Lives in a dock under the Files list. It shows every color the palette pathway decoded
 (not just the slice the current bit depth can index) so embedded palettes can be
-inspected at a glance, and outlines the active subpalette range. Selecting a
-swatch — by click or arrow keys — selects that color *and* the subpalette row
+inspected at a glance, and outlines the active palette row range. Selecting a
+swatch — by click or arrow keys — selects that color *and* the palette row
 containing it — the panel
-emits the *row* and the main window feeds it to the existing subpalette spin, so
+emits the *row* and the main window feeds it to the existing palette row spin, so
 the panel never owns view state. The color selection itself (which swatch is
 being inspected) is the panel's own, announced via :attr:`color_selected` for
 the details readout below the grid.
@@ -16,15 +16,15 @@ sampling surfaces, and while armed a click reports the swatch's color instead
 of selecting it — the selected swatch is the one being *edited*, so moving it
 would retarget the editor mid-pick (``docs/design/palette-editing.md``).
 Copy/Paste — from the keyboard (Ctrl+C/V for the selected color, Ctrl+Shift+C/V
-for the whole active subpalette) or a right-click menu — move colors through the
+for the whole active palette row) or a right-click menu — move colors through the
 system clipboard as hex text. The panel only reports the intent (the
 ``*_requested`` signals and ``customContextMenuRequested``); the window owns the
 clipboard, the menu, and the undoable write-back.
 
-The display is always 16 swatches wide, purely a wrap — the *subpalette row* is
+The display is always 16 swatches wide, purely a wrap — the *palette row* is
 the active range (:meth:`set_active_range`), sized by the pixel format's index
 space (``2^bpp``): stepping, click mapping and the outline all use it, so a
-2bpp view works in 4-entry subpalettes (four per display row) and an 8bpp view
+2bpp view works in 4-entry palette rows (four per display row) and an 8bpp view
 in one 256-entry block.
 
 **Three marks, and they answer three questions.** The active range is the row the
@@ -57,19 +57,19 @@ SWATCH_COLUMNS = 16
 
 
 class PalettePanel(ShortcutIsland, QWidget):
-    subpalette_row_selected = Signal(int)  # clicked entry index // subpalette size
+    palette_row_selected = Signal(int)  # clicked entry index // palette row size
     color_selected = Signal(int)  # entry index of the newly selected color
     edit_requested = Signal(int)  # double-clicked entry index — open the editor
     # ARGB sampled while the eyedropper is armed. ``object``, not ``int``: Qt's
     # int is 32-bit *signed*, and any ARGB with alpha >= 0x80 overflows it.
     color_picked = Signal(object)
-    # Copy/paste the selected color (Ctrl+C/V) or the whole active subpalette
+    # Copy/paste the selected color (Ctrl+C/V) or the whole active palette row
     # (Ctrl+Shift+C/V), when the grid holds focus. The panel just reports intent;
     # the window owns the clipboard and the undoable write-back.
     copy_requested = Signal()
     paste_requested = Signal()
-    copy_subpalette_requested = Signal()
-    paste_subpalette_requested = Signal()
+    copy_palette_row_requested = Signal()
+    paste_palette_row_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -137,19 +137,19 @@ class PalettePanel(ShortcutIsland, QWidget):
         self._update_size()
 
     def set_active_range(self, start: int, count: int) -> None:
-        """Outline entries [start, start+count) — the applied subpalette."""
+        """Outline entries [start, start+count) — the applied palette row."""
         start, count = max(0, start), max(1, count)
         if (start, count) != (self._start, self._count):  # skip repaint otherwise
             self._start, self._count = start, count
             self.update()
 
     def set_marked_row(self, row: int | None) -> None:
-        """Mark subpalette ``row`` as the one the canvas selection draws through.
+        """Mark palette row ``row`` as the one the canvas selection draws through.
 
         ``None`` when nothing is selected, when nothing the selection covers
         names a row of its own, or when it spans rows that disagree — a mark that
         names one row cannot answer for several. Sized like the active range, in
-        whole subpalettes of the pixel format's index space.
+        whole palette rows of the pixel format's index space.
         """
         if row != self._marked_row:
             self._marked_row = row
@@ -160,16 +160,16 @@ class PalettePanel(ShortcutIsland, QWidget):
         return self._selected
 
     def select_index(self, index: int) -> None:
-        """Select entry ``index`` and move the active subpalette to it.
+        """Select entry ``index`` and move the active palette row to it.
 
         The programmatic equivalent of clicking a swatch — used by the pixel
         eyedropper to make the picked color the active drawing color. Emits the
-        same ``color_selected`` / ``subpalette_row_selected`` signals a click does, so
+        same ``color_selected`` / ``palette_row_selected`` signals a click does, so
         the readout and the view follow. Ignored for an out-of-range index.
         """
         if 0 <= index < len(self._colors):
             self._select(index)
-            self.subpalette_row_selected.emit(index // self._count)
+            self.palette_row_selected.emit(index // self._count)
 
     def _select(self, index: int) -> None:
         if index != self._selected:
@@ -206,15 +206,15 @@ class PalettePanel(ShortcutIsland, QWidget):
                     event.accept()
                     return
                 self._select(index)
-                self.subpalette_row_selected.emit(index // self._count)
+                self.palette_row_selected.emit(index // self._count)
         elif event.button() == Qt.MouseButton.RightButton and not self._eyedropper:
-            # Move the selection (and the active subpalette with it) onto the
+            # Move the selection (and the active palette row with it) onto the
             # right-clicked swatch, so the menu that follows acts on it — the
             # file-manager rule the canvas uses. An already-selected swatch stays.
             index = self._grid_slot(event.position().x(), event.position().y())
             if index is not None and index != self._selected:
                 self._select(index)
-                self.subpalette_row_selected.emit(index // self._count)
+                self.palette_row_selected.emit(index // self._count)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
@@ -232,7 +232,7 @@ class PalettePanel(ShortcutIsland, QWidget):
         index = self._grid_slot(event.position().x(), event.position().y(), clamp=True)
         if index is not None and index != self._selected:
             self._select(index)
-            self.subpalette_row_selected.emit(index // self._count)
+            self.palette_row_selected.emit(index // self._count)
         event.accept()
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001 — Qt override
@@ -250,23 +250,23 @@ class PalettePanel(ShortcutIsland, QWidget):
     def keyPressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         """Copy/paste the selected color, and arrows move the color selection
         through the grid — Left/Right by one entry (crossing display rows),
-        Up/Down by one display row — with the active subpalette *following the
+        Up/Down by one display row — with the active palette row *following the
         selection* (the same signal a swatch click emits), rather than the
-        selection riding a subpalette step. All movement clamps to the loaded
+        selection riding a palette row step. All movement clamps to the loaded
         colors."""
         # Copy/Paste reach here as key presses because the island claimed their
         # shortcut override; the window does the actual clipboard + write-back.
-        # Ctrl+Shift+C/V (whole subpalette) aren't standard sequences, so they're
+        # Ctrl+Shift+C/V (whole palette row) aren't standard sequences, so they're
         # matched by hand; check them first, as they subsume the plain ones.
         ctrl_shift = (
             Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
         )
         if event.modifiers() == ctrl_shift and event.key() == Qt.Key.Key_C:
-            self.copy_subpalette_requested.emit()
+            self.copy_palette_row_requested.emit()
             event.accept()
             return
         if event.modifiers() == ctrl_shift and event.key() == Qt.Key.Key_V:
-            self.paste_subpalette_requested.emit()
+            self.paste_palette_row_requested.emit()
             event.accept()
             return
         if event.matches(QKeySequence.StandardKey.Copy):
@@ -290,7 +290,7 @@ class PalettePanel(ShortcutIsland, QWidget):
         if delta is None:
             super().keyPressEvent(event)
             return
-        # No selection yet: start from the active subpalette's first entry.
+        # No selection yet: start from the active palette row's first entry.
         base = self._selected if self._selected is not None else self._start
         target = base + delta
         if abs(delta) == SWATCH_COLUMNS and not 0 <= target < len(self._colors):
@@ -300,7 +300,7 @@ class PalettePanel(ShortcutIsland, QWidget):
             return
         target = min(max(0, target), len(self._colors) - 1)
         self._select(target)
-        self.subpalette_row_selected.emit(target // self._count)
+        self.palette_row_selected.emit(target // self._count)
         event.accept()
 
     def paintEvent(self, event) -> None:  # noqa: ARG002 — Qt supplies the event
@@ -328,9 +328,9 @@ class PalettePanel(ShortcutIsland, QWidget):
         )
 
     def _range_rect(self, start: int) -> QRect:
-        """The swatches of one subpalette, from entry ``start``.
+        """The swatches of one palette row, from entry ``start``.
 
-        ``count`` is a power of two, so a subpalette is either a segment within
+        ``count`` is a power of two, so a palette row is either a segment within
         one display row (count <= 16, e.g. a 2bpp quarter row) or a whole block
         of rows (count > 16, e.g. 8bpp = 16 rows) — never a ragged wrap.
         """

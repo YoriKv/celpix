@@ -7,13 +7,13 @@ happens (``docs/design/overview.md`` §4).
 
 An index grid renders to a ``QImage.Format_Indexed8`` whose color table *is* the
 palette window: the stored index byte maps straight to a color, so a palette or
-subpalette change is just a new color table, no re-rasterization. A direct-color
+palette row change is just a new color table, no re-rasterization. A direct-color
 grid (:class:`~celpix.core.argb_grid.ArgbGrid`) skips the palette entirely — its
 buffer is already ``Format_ARGB32``'s layout, so it is wrapped, not converted.
 
 One image carries one colour table, so a view with **pinned palette regions**
 (:mod:`celpix.core.paletteregions`) — where different tiles render through
-different subpalette rows — cannot express the row in the table. There the row
+different palette rows — cannot express the row in the table. There the row
 travels in the indices instead and the table is the plain palette:
 :func:`render_pinned`.
 """
@@ -58,26 +58,26 @@ def _clear_zeros(table: list[int], stride: int) -> list[int]:
 def render(
     grid,
     palette: Palette,
-    subpalette_base: int = 0,
+    palette_base: int = 0,
     *,
     transparent_zero: bool = False,
 ) -> QImage:
     """Rasterize ``grid`` to a QImage.
 
-    An index grid resolves through ``palette`` (offset by ``subpalette_base``, so a
+    An index grid resolves through ``palette`` (offset by ``palette_base``, so a
     tile drawn for palette row *n* renders correctly, ``base = n * 2**bpp``). A
     direct-color :class:`~celpix.core.argb_grid.ArgbGrid` already carries ARGB and
     is blitted straight to ``Format_ARGB32``, ignoring the palette.
 
     ``transparent_zero`` clears index 0 (:func:`_clear_zeros`). Only entry 0 is
     cleared here: the whole table is already one palette row, offset by
-    ``subpalette_base``, so index 0 of *this* row is the only index 0 there is.
+    ``palette_base``, so index 0 of *this* row is the only index 0 there is.
     """
     if grid.bytes_per_pixel == 4:
         return _render_argb(grid)
     # QRgb is 0xAARRGGBB — exactly what Palette stores — so colors pass straight
     # through. A too-short palette yields the magenta sentinel per Palette.color.
-    table = [palette.color(subpalette_base + i) for i in range(256)]
+    table = [palette.color(palette_base + i) for i in range(256)]
     if transparent_zero:
         table = _clear_zeros(table, 256)
     return indexed_image(grid, table)
@@ -90,7 +90,7 @@ def render_pinned(
     *,
     transparent_zero: bool = False,
 ) -> QImage:
-    """Rasterize ``grid`` when its indices already carry their subpalette row.
+    """Rasterize ``grid`` when its indices already carry their palette row.
 
     The counterpart of :func:`render` for a view with pinned palette regions
     (:mod:`celpix.core.paletteregions`). There the row cannot live in the colour
@@ -119,7 +119,7 @@ def render_pinned(
 def indexed_image(grid, color_table: list[int]) -> QImage:
     """Build a ``Format_Indexed8`` QImage from an index grid + ARGB color table.
 
-    The seam :func:`render` uses for the live view (a 256-entry subpalette table)
+    The seam :func:`render` uses for the live view (a 256-entry palette row table)
     and export reuses for a compact, exactly-sized table (one entry per index the
     format can produce). ``color_table`` is a list of ``0xAARRGGBB`` ints; any
     entry with alpha < 255 makes Qt emit a ``tRNS`` chunk when the image is saved

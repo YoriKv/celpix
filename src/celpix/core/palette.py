@@ -21,7 +21,7 @@ MISSING_COLOR = 0xFFFF00FF  # opaque magenta
 
 # A full editable palette: 16 rows of the 16-wide swatch grid. Forking a Custom
 # palette off the generated default expands to this, so the user gets every
-# subpalette row to edit rather than only the current format's index space
+# palette row to edit rather than only the current format's index space
 # (docs/design/palette-editing.md).
 FULL_PALETTE_COUNT = 256
 
@@ -91,9 +91,9 @@ def _default_color(i: int) -> int:
 
 
 def palette_row_count(colors: int, index_space: int) -> int:
-    """How many subpalette rows ``colors`` colours hold at ``index_space``.
+    """How many palette rows ``colors`` colours hold at ``index_space``.
 
-    One number, asked by everything that counts rows: the Subpal clamp, the
+    One number, asked by everything that counts rows: the Palette Row clamp, the
     highest row a region may pin to, and the modulus a palette row base wraps
     against (:func:`~celpix.pipeline.pipeline.drawn_palette_row`). A trailing
     partial row counts — half a row of colours is still somewhere to point.

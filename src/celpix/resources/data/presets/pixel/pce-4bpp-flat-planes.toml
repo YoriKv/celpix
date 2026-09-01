@@ -1,0 +1,17 @@
+# PC Engine 4bpp background, four flat 8-byte planes — the reading that is *not*
+# the VDC's own (that is `pce-4bpp`); both hold 32 bytes and disagree about where
+# the planes are, so both give a picture and only one is right.
+# See docs/graphics-formats-reference/implementation-guide.md §2 (planar plane-offset table).
+id = "preset.pixel.pce-4bpp-flat-planes"
+name = "PC Engine 4bpp, four flat planes (8x8)"
+engine_id = "codec.pixel.planar"
+category = "NEC"
+
+[params]
+bpp = 4
+planes = [
+  { base = 0, stride = 1 },
+  { base = 8, stride = 1 },
+  { base = 16, stride = 1 },
+  { base = 24, stride = 1 },
+]

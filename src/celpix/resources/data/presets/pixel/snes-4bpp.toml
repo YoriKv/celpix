@@ -1,7 +1,9 @@
-# SNES / PCE-CG 4bpp tiles — two interleaved plane-pairs, pairs 16 bytes apart.
-# Matches *.4bpp.sfc sheets. See docs/graphics-formats-reference/implementation-guide.md §2.
+# SNES / PC Engine 4bpp tiles — two interleaved plane-pairs, pairs 16 bytes apart.
+# Matches *.4bpp.sfc sheets. Also the PC Engine VDC's own character format, listed
+# a second time as `pce-4bpp` so it is findable under NEC.
+# See docs/graphics-formats-reference/implementation-guide.md §2.
 id = "preset.pixel.snes-4bpp"
-name = "SNES 4bpp (8x8, also PCE)"
+name = "SNES 4bpp (8x8, same as PC Engine)"
 engine_id = "codec.pixel.planar"
 category = "Nintendo"
 

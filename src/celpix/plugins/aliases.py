@@ -46,7 +46,7 @@ RENAMED: dict[str, str] = {
     "codec.planar": "codec.pixel.planar",
     "codec.packed": "codec.pixel.packed",
     "codec.nibble-planar": "codec.pixel.nibble-planar",
-    "codec.linear-bespoke": "codec.pixel.linear-bespoke",
+    "codec.linear-bespoke": "codec.pixel.packed-straddling",
     "codec.direct-color": "codec.pixel.direct-color",
     "codec.color-mask": "codec.palette.mask",
     "codec.color-indexed": "codec.palette.indexed",
@@ -100,6 +100,18 @@ RENAMED: dict[str, str] = {
     "codec.tilemap.scgcad-object": "format.tilemap.scgcad-object",
     "codec.tilemap.scgcad-obz": "format.tilemap.scgcad-obz",
     "codec.tilemap.ys-spr": "format.tilemap.ys-spr",
+    # v0.5.16 — "bespoke" named the engine tier this codec sits in rather than
+    # anything about the bytes, and it was the only word telling it apart from
+    # `codec.pixel.packed`. The real difference is the depth: a 3- or 6-bit field
+    # does not divide a byte, so pixels straddle one. The row above for
+    # `codec.linear-bespoke` was re-pointed here in the same change, the table
+    # naming live ids only.
+    "codec.pixel.linear-bespoke": "codec.pixel.packed-straddling",
+    # v0.5.16 — "CG2" and "SG" were another editor's format codes, not PC Engine
+    # vocabulary, so neither told a reader what the bytes do nor could be searched
+    # for. Named by mechanism and by use instead.
+    "preset.pixel.pce-cg2-4bpp": "preset.pixel.pce-4bpp-flat-planes",
+    "preset.pixel.pce-sg-4bpp": "preset.pixel.pce-4bpp-sprite",
 }
 
 

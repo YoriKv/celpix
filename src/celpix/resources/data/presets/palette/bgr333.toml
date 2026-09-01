@@ -1,0 +1,13 @@
+# Alias of `genesis-9bpp` that files the layout under Generic too (its own entry
+# names the machine). Same codec/params, a distinct id so both listings coexist —
+# 9-bit BGR, big-endian u16, each component in bits 3-1 of its nibble:
+# 0000 BBB0 GGG0 RRR0. See genesis-9bpp.toml for the hardware notes.
+id = "preset.palette.bgr333"
+name = "BGR333 (9-bit)"
+engine_id = "codec.palette.mask"
+category = "Generic"
+
+[params]
+bytes_per_entry = 2
+byte_order = "big"
+fields = ".... bbb. ggg. rrr."

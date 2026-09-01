@@ -281,7 +281,7 @@ def decode_and_compose(
     view, the whole file for export, a decompressed scratch for the overlay).
     ``max_rows`` caps the composed height (the live view's fixed window); ``None``
     sizes to the data (export and the overlay show every tile). ``biases`` shifts
-    each slot's indices for a pinned subpalette (see :func:`compose_tiles`).
+    each slot's indices for a pinned palette row (see :func:`compose_tiles`).
     Returns ``(grid, filled)`` — an index or direct-color grid, and the count of
     real tiles (excluding any 2D-reflow / partial-tile padding) so a caller can
     background the rest.
@@ -334,7 +334,7 @@ def compose_tiles(
     (the live view's fixed window); ``None`` sizes to the data.
 
     ``biases`` is one index shift per slot, the last step of rendering a pinned
-    subpalette region (:mod:`celpix.core.paletteregions`): the composed image
+    palette row region (:mod:`celpix.core.paletteregions`): the composed image
     carries a single colour table, so a tile that must render through another
     palette row has the row folded into its indices instead. It applies here
     because this is where both render routes meet and where slot *k* is still

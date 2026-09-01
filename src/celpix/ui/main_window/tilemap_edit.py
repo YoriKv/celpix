@@ -486,7 +486,7 @@ class TilemapEditMixin:
                     f" so {counted(len(spread) - len(picked), 'more cell')} changed."
                 )
             self.statusBar().showMessage(
-                f"Set {counted(len(spread), 'cell')} to subpalette {shown}.{note}"
+                f"Set {counted(len(spread), 'cell')} to palette row {shown}.{note}"
             )
 
     def _set_cell_index(self, value: int) -> None:

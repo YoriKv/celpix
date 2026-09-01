@@ -1630,7 +1630,7 @@ def test_the_sheet_reads_in_the_selected_palette_row(qtbot, tmp_path) -> None:
     offset again — applied twice, a bank picked in row 5 draws in row 10."""
     window, _bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1])
     window._activate_entry(entry)
-    window._subpalette.setValue(2)
+    window._palette_row.setValue(2)
     window._refresh_view()
 
     sheet = window._font_sheet()

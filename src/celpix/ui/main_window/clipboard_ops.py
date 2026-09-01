@@ -10,7 +10,7 @@ Two things run through all of it. A copy leaves **both representations** on the
 clipboard (see :mod:`celpix.ui.clipboard`): the tiles themselves, so a paste back
 into celPix is lossless whatever palette either view renders through, and a
 rendered picture, so every other program sees an ordinary image. A paste reads
-them back in that order of fidelity, quantizing into the active subpalette only
+them back in that order of fidelity, quantizing into the active palette row only
 when nothing better arrived.
 
 And every write is an **overwrite, clipped at the end of the data**. The bytes
@@ -321,9 +321,9 @@ class ClipboardOpsMixin:
            palette either view happens to render through.
         2. A celPix copy that doesn't fit (a 4bpp run into a 2bpp view) - its
            own palette turns the indices back into colors, which are re-matched
-           into this view's subpalette.
+           into this view's palette row.
         3. Anything else on the clipboard that is an image - the import pathway
-           (:mod:`celpix.pipeline.importer`), quantized to the subpalette. This
+           (:mod:`celpix.pipeline.importer`), quantized to the palette row. This
            is the cross-application case, shared with PNG import.
 
         The first two carry whole tiles, so they report no partial coverage; only

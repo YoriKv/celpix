@@ -36,7 +36,7 @@ every parameter it takes.
 - `_packed.toml` — a pixel is a field stored whole: sub-byte (Genesis, GBA, …) or
   one whole byte per pixel at 8bpp
 - `_nibble-planar.toml` — one byte holds four pixels, a bitplane to each nibble
-- `_linear-bespoke.toml` — the 3bpp and 6bpp packings, whose fields straddle bytes
+- `_packed-straddling.toml` — the 3bpp and 6bpp packings, whose fields straddle bytes
 - `_direct-color.toml` — the pixel carries its own colour, no palette
 - `_color-mask.toml` — a palette entry's channels as a bit layout (RGB555, …)
 - `_color-indexed.toml` — palette bytes index a table baked into the hardware

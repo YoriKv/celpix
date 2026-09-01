@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.5.16 - unreleased
+
+- Added SNES RLE1 and RLE 2 compression algorithms
+- Cleaned up pixel and tilemap format names
+- Unified naming of subpalette/palette row to just palette row everywhere
+- Project version migration added
+
 ## v0.5.15 - 2026-08-31
 
 - Performance improvements on large projects

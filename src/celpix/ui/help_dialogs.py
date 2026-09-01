@@ -86,7 +86,7 @@ CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
 # sheet's own width while the sheet is the thing being typed into.
 PANEL_KEYS: tuple[tuple[str, str], ...] = (
     ("Copy / paste a color", "Ctrl+C / Ctrl+V"),
-    ("Copy / paste a subpalette", "Ctrl+Shift+C / Ctrl+Shift+V"),
+    ("Copy / paste a palette row", "Ctrl+Shift+C / Ctrl+Shift+V"),
     ("Move the color selection", "Arrow keys"),
     ("Step the tile pick", "Arrow keys"),
     ("Sweep tiles as one stamp (Tile Source)", "Right-drag"),
