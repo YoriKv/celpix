@@ -297,6 +297,11 @@ class TileSourceDockMixin:
         # which come back through here - `_tile_source_pushing` marks those
         # echoes, which must not throw away the record they are echoing.
         if not self._tile_source_pushing:
+            if self._source_cell is not None:
+                # A sheet pick displacing a held record takes its attributes
+                # over as the row's settings (`_set_source_tile` seeds the
+                # same way; this path cannot route through it).
+                self._seed_stamp_attrs(self._source_cell)
             self._source_cell = None
             self._stamp_brush = None
         self._source_tile_id = tile_id
@@ -321,8 +326,8 @@ class TileSourceDockMixin:
         ``cell`` is the record the tile was taken *off* — the eyedropper's, the
         one path that has one. It is held beside the ID because **a stamp writes
         what the pick carried**: a tile taken off a cell lays that cell down
-        whole, and one taken off the sheet sets an index and leaves the rest of
-        the target alone (:meth:`~...stamp_tool.StampToolMixin._stamp_cell`).
+        whole, and one taken off the sheet lays the index with the property
+        row's settings (:meth:`~...stamp_tool.StampToolMixin._stamp_cell`).
 
         ``area`` is a right drag's rectangle of records, and defaulting it is
         what makes every *single* pick drop a held area — so a stale brush
@@ -332,14 +337,20 @@ class TileSourceDockMixin:
         :meth:`_on_tile_source_area_picked`, which cannot push its pick back
         into the panel it was made in.
         """
+        if cell is not None:
+            # A record-carrying pick says "put *that* one here" — and here
+            # *drawn*: the eraser disarms so the pick places rather than
+            # clears. The other settings stay; a record landing ignores them,
+            # and the next sheet pick re-seeds them from the record anyway.
+            self._stamp_attrs.pop("visible", None)
+        elif self._source_cell is not None:
+            # A sheet pick displacing a held record takes its attributes over
+            # as the row's settings, so the setup made on that record carries
+            # (:meth:`~...cell_props_bar.CellPropsMixin._seed_stamp_attrs`).
+            self._seed_stamp_attrs(self._source_cell)
         self._source_tile_id = tile_id
         self._source_cell = cell
         self._stamp_brush = area
-        if cell is not None:
-            # A record-carrying pick says "put *that* one here", and the record
-            # already states its attributes — overrides stacked on top would
-            # make the eyedrop lay something other than what it took.
-            self._stamp_attrs.clear()
         self._tile_source_pushing = True
         try:
             self._tile_source_panel.select_id(tile_id)
@@ -357,7 +368,7 @@ class TileSourceDockMixin:
         _on_stamp_area_picked`), made where the tiles are *offered* rather than
         where they are placed. The brush holds bare index records — a sheet
         holds tiles, not cells — so each one lands as a single sheet pick
-        does: the index, with the target keeping its own attributes
+        does: the index, with the property row's settings
         (:meth:`~...stamp_tool.StampToolMixin._stamp_into`, told apart there
         by ``_source_cell`` being empty). A square the sweep overhung past the
         run's end stays the grid's blank fill, the same filler an area picked
@@ -378,6 +389,10 @@ class TileSourceDockMixin:
             for x, tile_id in enumerate(row):
                 if tile_id is not None:
                     grid.set(x, y, Cell(index=tile_id))
+        if self._source_cell is not None:
+            # Displacing a held record: its attributes become the settings
+            # every square of this sweep lands with, as on any sheet pick.
+            self._seed_stamp_attrs(self._source_cell)
         self._source_tile_id = rows[0][0]
         self._source_cell = None
         self._stamp_brush = grid

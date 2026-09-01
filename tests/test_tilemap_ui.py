@@ -2242,22 +2242,21 @@ def test_leaving_a_tilemap_gives_the_pixel_controls_back(qtbot, tmp_path) -> Non
 
 
 def test_a_tilemap_can_be_flipped_but_not_turned(qtbot, tmp_path) -> None:
-    """Squareness is about the tile; the capability is about the document. A
-    hardware cell carries mirror bits and no transpose bit, so both conditions
-    are needed and neither implies the other."""
-    from celpix.core.capabilities import Capability, ContentKind, supports
+    """The kind admits both transforms, but the format has the last word per
+    operation: a hardware BG cell carries mirror bits and no transpose bit, so
+    the codec probe leaves the rotate buttons disabled while the flips arm."""
+    from celpix.core.capabilities import Capability
     from celpix.core.tilemap import Cell
 
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
-    assert supports(ContentKind.TILEMAP, Capability.CELL_FLIP)
     assert window._can(Capability.CELL_FLIP)
-    # Rotate is designed *out*: a hardware cell has no transpose bit.
-    assert not supports(ContentKind.TILEMAP, Capability.CELL_ROTATE)
-    assert not window._can(Capability.CELL_ROTATE)
+    assert window._can(Capability.CELL_ROTATE)
 
     window._set_linear_selection(0, 0)
+    for action in window._tile_group.flips:
+        assert action.isEnabled()
     for action in window._tile_group.rotates:
         assert not action.isEnabled()
 

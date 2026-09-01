@@ -157,10 +157,13 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # tiles — and takes the compression picker with it, leaving the cell format
     # in the place the pixel format has on a pixel entry.
     #
-    # CELL_ROTATE is the one that justifies splitting the transforms in two: a
-    # hardware cell carries mirror bits and no transpose bit, so a tilemap can be
-    # flipped and cannot be turned. One CELL_TRANSFORM capability would have had
-    # to lie about one of the two.
+    # CELL_ROTATE is declared even though no shipped cell format has a rotation
+    # bit. Whether a cell can be turned varies by *format* — the axis the flips
+    # already vary on — so the kind admits the operation and the codec has the
+    # last word, per operation, through the same probe the flips answer to
+    # (``transform_cell``; ``docs/design/tilemap-entry.md`` §4). Every built-in
+    # codec refuses the rotations, so the buttons stay disabled today; a format
+    # that grows the bit enables them without this table moving.
     #
     # TILE_ARRANGEMENT is the last of the six, and the plainest: the Pattern picker
     # and the block/order/2D axes beneath it say how a *linear run of bytes* is
@@ -183,6 +186,7 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
         Capability.TILE_SELECT,
         Capability.CLIPBOARD,
         Capability.CELL_FLIP,
+        Capability.CELL_ROTATE,
         Capability.CELL_LABELS,
         Capability.EXPORT_IMAGE,
         Capability.TILEMAP_CODEC,

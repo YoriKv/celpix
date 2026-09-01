@@ -36,7 +36,10 @@ disagree about what "rotate right" means.
 **Shift** picks the Block group — so four letters cover whichever pair is on the
 bar, and a key never means one thing in tile mode and another in pixel mode
 (:meth:`_transform_key`). The letters and the button order come from
-:data:`~celpix.ui.tools.TRANSFORM_SPECS`, which the F1 guide reads too.
+:data:`~celpix.ui.tools.TRANSFORM_SPECS`, which the F1 guide reads too. While
+**Edit Tiles** is armed the Tile and Block buttons keep their meanings but act
+on the **held stamp** — the tool cleared the selection they otherwise read —
+so the letters follow them there for free (``stamp_tool.py``).
 
 Each button decodes the selection's enclosing run, transforms it, and re-encodes
 through :meth:`~celpix.ui.main_window.tile_bytes.TileBytesMixin._apply_tile_edit`,
@@ -59,7 +62,6 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QLabel, QSizePolicy, QToolBar, QWidget
 
 from celpix.core import transform
-from celpix.core.capabilities import Capability
 from celpix.core.tilemap import CellOp
 from celpix.core.tilerearrangement import (
     TILE_FLIP_H,
@@ -466,15 +468,13 @@ class TransformMixin:
         A disabled button still swallows the key: the selection simply doesn't
         support that transform — non-square tiles have no rotation, whichever
         group is showing — and letting the letter fall through to something else
-        would be a surprise.
+        would be a surprise. Edit Tiles needs no branch here: while it is armed
+        the Tile/Block buttons themselves act on the held stamp
+        (:meth:`~...stamp_tool.StampToolMixin._stamp_transform_tiles`), so the
+        letters press them exactly as they do over a selection.
         """
         if ctrl or self._doc is None:
             return False
-        # Edit Tiles cleared the selection the buttons act on, so while it is
-        # armed the letters act on the held stamp instead
-        # (:meth:`~...stamp_tool.StampToolMixin._stamp_transform_key`).
-        if self._stamping:
-            return self._stamp_transform_key(KEY_FIELDS.get(key), shift)
         action = self._transform_key_actions(shift).get(key)
         if action is None:
             return False
@@ -508,14 +508,19 @@ class TransformMixin:
         if self._edit_mode is EditMode.PIXEL:
             self._sync_pixel_transform_actions()
             return
+        if self._stamping:
+            # Edit Tiles cleared the selection this pass reads, so while it is
+            # armed the groups arm for the held stamp instead — the same
+            # retargeting the property row makes
+            # (:meth:`~...stamp_tool.StampToolMixin._sync_stamp_transform_actions`).
+            self._sync_stamp_transform_actions()
+            return
         has = self._doc is not None and self._selected_tile is not None
-        # Squareness is about the *tile*; the capability is about the document.
-        # A tilemap's tiles may be perfectly square and its cells still cannot be
-        # turned — a hardware cell carries mirror bits and no transpose bit — so
-        # the two conditions are both needed and neither implies the other.
-        square_tiles = (
-            has and self._square_tiles() and self._can(Capability.CELL_ROTATE)
-        )
+        # Squareness is about the *tile*; whether the cells can be turned at all
+        # is about the *format*, which ``allows`` asks per operation — a
+        # tilemap's tiles may be perfectly square and its cells still carry
+        # mirror bits and no transpose bit, so a rotate stays disabled there.
+        square_tiles = has and self._square_tiles()
         allows = self._transform_allowed
         self._arm_transform_group(self._tile_group, has, square_tiles, allows)
         geom = self._block_geometry()
@@ -629,7 +634,14 @@ class TransformMixin:
         Tile-mode only — the Tile group is hidden in pixel mode, where the Pixel
         group drives :meth:`_transform_pixel_region` instead.
         """
-        if self._doc is None or self._selected_tile is None:
+        if self._doc is None:
+            return
+        if self._stamping:
+            # No selection to act on while Edit Tiles is armed: each unit of
+            # the held stamp is transformed in place instead.
+            self._stamp_transform_tiles(op)
+            return
+        if self._selected_tile is None:
             return
         if (transform_cells := self._kind_handler(Gesture.TRANSFORM_TILES)) is not None:
             # Same button, different document: a cell's mirror is an attribute
@@ -652,6 +664,11 @@ class TransformMixin:
         cell set onto itself, so every tile stays within the run.
         """
         if self._doc is None:
+            return
+        if self._stamping:
+            # The block over a held stamp is the swept brush, mirrored whole —
+            # positions permuted and each record transformed.
+            self._stamp_transform_block(op)
             return
         if (transform_block := self._kind_handler(Gesture.TRANSFORM_BLOCK)) is not None:
             transform_block(op)

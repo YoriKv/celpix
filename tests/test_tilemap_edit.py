@@ -1423,13 +1423,14 @@ def test_a_stamp_drag_is_one_undoable_step(qtbot, tmp_path) -> None:
     assert [c.index for c in window._doc.cells[:4]] == [1, 2, 3, 4]
 
 
-def test_a_sheet_stamp_keeps_flips_and_lands_in_the_shown_row(qtbot, tmp_path) -> None:
-    """Pointing a cell at another tile is not rebuilding the cell: its flips and
-    carried ``flags`` are as likely to be what the user set up as what they meant
-    to replace, so they stay — the rule the Cell spin already follows. The
-    palette row is the exception: it follows Subpal, the row the tile source
-    sheet and the stamp preview are drawn in, so the cell lands in the colours
-    that were on show rather than whatever row the target happened to hold."""
+def test_a_sheet_stamp_lays_the_rows_settings_in_the_shown_row(qtbot, tmp_path) -> None:
+    """A sheet pick lays the property row's settings whole — exactly what a
+    canvas-swept brush lays, so the two picks agree about what a press
+    writes: the target's own flip goes under the stamp's (default off) rather
+    than surviving it. The palette row travels separately: it follows Subpal,
+    the row the tile source sheet and the stamp preview are drawn in, so the
+    cell lands in the colours that were on show rather than whatever row the
+    target happened to hold."""
     from dataclasses import replace
 
     from PySide6.QtCore import Qt
@@ -1438,7 +1439,7 @@ def test_a_sheet_stamp_keeps_flips_and_lands_in_the_shown_row(qtbot, tmp_path) -
 
     window, _ = _stamping(qtbot, tmp_path, [Cell(index=1, palette_row=3, flip_h=True)])
     # Read back rather than assumed: what the file carries is the format's
-    # answer, and only the index and row moving is this test's.
+    # answer, and only the index, row and flip moving is this test's.
     before = window._doc.cells[0]
     assert (before.index, before.palette_row, before.flip_h) == (1, 3, True)
     window._subpalette.setValue(1)
@@ -1446,7 +1447,7 @@ def test_a_sheet_stamp_keeps_flips_and_lands_in_the_shown_row(qtbot, tmp_path) -
     window._tile_source_panel.select_id(5)
     window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
     window._on_stamp_finished()
-    assert window._doc.cells[0] == replace(before, index=5, palette_row=1)
+    assert window._doc.cells[0] == replace(before, index=5, palette_row=1, flip_h=False)
 
 
 def test_right_click_picks_the_tile_the_cell_names(qtbot, tmp_path) -> None:
@@ -1967,17 +1968,12 @@ def test_a_right_drag_over_the_sheet_sweeps_a_rectangle_of_tiles(qtbot) -> None:
     assert not areas
 
 
-def test_a_sheet_brush_lays_indices_and_leaves_the_targets_their_own(
-    qtbot, tmp_path
-) -> None:
-    """A rectangle swept off the *sheet* is not one swept off the canvas.
-
-    A canvas pick carries whole cell records — flips, priority, the format's
-    uninterpreted ``flags`` — because the gesture is "put those ones here". A
-    sheet holds tiles and nothing else, so each square of its brush lands the way
-    a single sheet pick does: the index, with the target keeping the attributes
-    it already had. Laid as records the block would blank every flip under it, on
-    a gesture that only ever named four tile numbers.
+def test_a_sheet_brush_lays_indices_with_the_rows_settings(qtbot, tmp_path) -> None:
+    """A rectangle swept off the *sheet* holds tiles and nothing else, so each
+    square lands the way a single sheet pick does: the index with the property
+    row's settings — the same record everywhere, where a canvas-swept brush
+    lays the distinct records it picked up. The targets' own flips go under
+    the stamp's settings on both gestures alike.
     """
     from dataclasses import replace
 
@@ -2018,8 +2014,12 @@ def test_a_sheet_brush_lays_indices_and_leaves_the_targets_their_own(
 
     window._on_stamp_pressed(at, Qt.MouseButton.LeftButton)
     window._on_stamp_finished()
+    # Every square landed the same settings: the defaults, flips off — the
+    # targets' own flips went under the stamp.
     assert [window._doc.cells[target] for target in landing] == [
-        replace(cell, index=tile, palette_row=1, visible=True)
+        replace(
+            cell, index=tile, palette_row=1, visible=True, flip_h=False, flip_v=False
+        )
         for cell, tile in zip(before, (4, 5, 6, 7), strict=True)
     ]
 
@@ -3312,11 +3312,45 @@ def test_a_stamp_layouts_row_edits_the_drawn_bit_and_the_flags(qtbot, tmp_path) 
     assert "flags" in window.statusBar().currentMessage()
 
 
-def test_the_row_overrides_what_a_sheet_pick_stamps(qtbot, tmp_path) -> None:
-    """A sheet pick lands target-inherit, so in Edit Tiles mode the row holds
-    overrides: part-checked means "keep the target's", a click cycles on → off
-    → keep, an override lands on every stamp — and none of it is an undo step,
-    because the stroke that lands it is the step.
+def test_the_spin_sentinel_is_display_only(qtbot, tmp_path) -> None:
+    """-1 is the ``—`` sentinel the write slot ignores, so the floor stays at
+    0 wherever a write could land — a user cannot spin or type into a dash
+    that never lands — and only the mixed display parks on it. A sheet pick
+    after an eyedrop also shows the record's value carried over as the row's
+    setting, seeded by the pick that displaced it.
+    """
+    from PySide6.QtCore import Qt
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _bound_stamp_layout(window, tmp_path)
+    spin = window._cell_props_widgets["flags"]
+
+    window._select_tiles(0, 0)  # uniform selection: the sentinel is fenced off
+    assert (spin.minimum(), spin.value()) == (0, 0)
+    spin.setValue(1)
+    assert window._doc.cells[0].flags == 1
+
+    window._select_all()  # both cells - mixed: parked on the dash to show it
+    assert (spin.minimum(), spin.value()) == (-1, -1)
+
+    window._stamp_action.setChecked(True)
+    window._on_stamp_pressed(0, Qt.MouseButton.RightButton)  # eyedrop: a record
+    assert (spin.minimum(), spin.value()) == (0, 1)  # the record's own flags
+
+    window._on_tile_source_selected(1)  # a sheet pick: concrete settings
+    assert (spin.minimum(), spin.value()) == (0, 1)  # seeded from the record
+    assert window._stamp_attrs["flags"] == 1
+    spin.setValue(0)
+    assert window._stamp_attrs["flags"] == 0
+
+
+def test_the_rows_settings_are_what_a_sheet_pick_stamps(qtbot, tmp_path) -> None:
+    """A sheet pick has no record behind it, so the row *is* the record: the
+    stamp's settings, concrete values the landing lays whole — exactly what a
+    canvas-swept brush lays, so the two picks agree about what a press
+    writes. Defaults until touched, plain two-state boxes, and none of it is
+    an undo step, because the stroke that lands it is the step.
     """
     from PySide6.QtCore import Qt
 
@@ -3325,7 +3359,8 @@ def test_the_row_overrides_what_a_sheet_pick_stamps(qtbot, tmp_path) -> None:
     window, _ = _stamping(qtbot, tmp_path, [Cell(index=1, flip_v=True), Cell(index=2)])
     window._tile_source_panel.select_id(3)
     box = window._cell_props_widgets["flip_h"]
-    assert box.checkState() == Qt.CheckState.PartiallyChecked  # inherit
+    assert box.checkState() == Qt.CheckState.Unchecked  # the default, concrete
+    assert not box.isTristate()  # nothing to cycle to: on and off are all
 
     steps = window._undo_stack.count()
     qtbot.mouseClick(box, Qt.MouseButton.LeftButton)
@@ -3335,24 +3370,21 @@ def test_the_row_overrides_what_a_sheet_pick_stamps(qtbot, tmp_path) -> None:
     window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
     window._on_stamp_finished()
     laid = window._doc.cells[0]
-    # The override landed; everything else stayed the target's own.
-    assert (laid.index, laid.flip_h, laid.flip_v) == (3, True, True)
+    # The settings landed whole: flip_v is the default, not the target's True.
+    assert (laid.index, laid.flip_h, laid.flip_v) == (3, True, False)
 
-    # The cycle's other two stops: off, then back to the target's.
     qtbot.mouseClick(box, Qt.MouseButton.LeftButton)
     assert window._stamp_attrs == {"flip_h": False}
-    qtbot.mouseClick(box, Qt.MouseButton.LeftButton)
-    assert window._stamp_attrs == {}
-    assert "keeps each target cell's" in window.statusBar().currentMessage()
 
 
-def test_an_eyedrop_shows_its_record_on_the_row_and_clears_overrides(
+def test_an_eyedrop_shows_its_record_and_a_sheet_pick_takes_it_over(
     qtbot, tmp_path
 ) -> None:
     """An eyedrop means "put *that* one here": the record it takes is what the
-    row now describes, and overrides stacked on top would make the stamp lay
-    something other than what it took — so they clear, and an edit on the row
-    rewrites the held record itself.
+    row now describes — an edit rewrites it in place — and picking is placing,
+    so the eraser disarms. The sheet pick that later displaces the record
+    takes its attributes over as the row's settings, so a setup made on one
+    tile carries to the next pick.
     """
     from PySide6.QtCore import Qt
 
@@ -3360,9 +3392,10 @@ def test_an_eyedrop_shows_its_record_on_the_row_and_clears_overrides(
 
     window, _ = _stamping(qtbot, tmp_path, [Cell(index=1, flip_h=True), Cell(index=2)])
     window._stamp_attrs["flip_v"] = True
+    window._stamp_attrs["visible"] = False
 
     window._on_stamp_pressed(0, Qt.MouseButton.RightButton)  # the eyedropper
-    assert window._stamp_attrs == {}
+    assert "visible" not in window._stamp_attrs  # picking means placing again
     box = window._cell_props_widgets["flip_h"]
     assert box.checkState() == Qt.CheckState.Checked  # the record's own bit
 
@@ -3373,12 +3406,19 @@ def test_an_eyedrop_shows_its_record_on_the_row_and_clears_overrides(
     window._on_stamp_finished()
     assert window._doc.cells[1].flip_h is False
 
+    # The displacing sheet pick seeds the settings from the record - the
+    # stale flip_v set before the eyedrop is overwritten with the record's.
+    window._tile_source_panel.select_id(3)
+    assert window._stamp_attrs.get("flip_h") is False
+    assert window._stamp_attrs.get("flip_v") is False
+
 
 def test_the_transform_keys_act_on_the_held_stamp_while_armed(qtbot, tmp_path) -> None:
-    """Arming Edit Tiles clears the selection the H/V buttons act on, which left
-    the letters dead exactly where an artist flips most. While armed they steer
-    the held stamp instead: a sheet pick's override, an eyedropped record's own
-    bit, and a swept brush mirrored whole — order reversed and each toggled.
+    """Arming Edit Tiles clears the selection the flip buttons act on, which
+    left them and their letters dead exactly where an artist flips most. While
+    armed the groups re-arm for the held stamp: H/V press the Tile pair — each
+    held unit flipped in place (a sheet pick by toggling the row's setting) —
+    and Shift+H/V the Block pair, which mirrors a swept brush's positions too.
     """
     from PySide6.QtCore import Qt
 
@@ -3386,22 +3426,31 @@ def test_the_transform_keys_act_on_the_held_stamp_while_armed(qtbot, tmp_path) -
 
     window, _ = _stamping(qtbot, tmp_path, [Cell(index=1), Cell(index=2, flip_h=True)])
     window._tile_source_panel.select_id(3)
+    assert window._tile_group.flip_h.isEnabled()
+    assert not window._block_group.flip_h.isEnabled()  # a single pick: no block
+    assert not window._tile_group.rotate_cw.isEnabled()  # no rotation bit
     assert window._transform_key(Qt.Key.Key_H, False, False)
     assert window._stamp_attrs == {"flip_h": True}
 
-    # A rotation has no bit in any format in hand: consumed, named, refused.
+    # A rotation has no bit in any format in hand: the disabled button swallows
+    # the letter, exactly as it does over a selection.
     assert window._transform_key(Qt.Key.Key_C, False, False)
-    assert "no rotation" in window.statusBar().currentMessage()
     assert window._doc.cells[0].flip_h is False
 
-    # A canvas-swept brush mirrors geometrically - the checkbox's set-all is the
-    # other gesture, and both stay reachable.
+    # A canvas-swept brush: H flips each record in place; Shift+H is the Block
+    # flip, order reversed and every record toggled. The checkbox's set-all
+    # stays the third gesture, and all of them reach a different result.
     window._on_stamp_area_picked(0, 1)  # both cells, side by side
+    assert window._block_group.flip_h.isEnabled()
     assert window._transform_key(Qt.Key.Key_H, False, False)
     brush = window._stamp_brush
+    assert [brush.get(x, 0).index for x in range(2)] == [1, 2]  # in place
+    assert [brush.get(x, 0).flip_h for x in range(2)] == [True, False]
+    assert window._transform_key(Qt.Key.Key_H, True, False)
+    brush = window._stamp_brush
     assert [brush.get(x, 0).index for x in range(2)] == [2, 1]  # order reversed
-    assert [brush.get(x, 0).flip_h for x in range(2)] == [False, True]  # bits toggled
-    assert "Mirrored" in window.statusBar().currentMessage()
+    assert [brush.get(x, 0).flip_h for x in range(2)] == [True, False]
+    assert "Flipped" in window.statusBar().currentMessage()
 
 
 def test_a_mixed_brush_reads_part_checked_and_a_click_sets_it_whole(
@@ -3426,10 +3475,10 @@ def test_a_mixed_brush_reads_part_checked_and_a_click_sets_it_whole(
     assert "brush" in window.statusBar().currentMessage()
 
 
-def test_the_stamp_ghost_reads_the_cell_under_the_pointer(qtbot, tmp_path) -> None:
-    """A sheet pick inherits the target's attributes, so an honest ghost has to
-    know the target: hovering a flipped cell renders the held tile flipped, and
-    the landing computation itself is what renders it — the two cannot
+def test_the_stamp_ghost_lays_the_rows_settings(qtbot, tmp_path) -> None:
+    """A sheet pick lands the row's settings whole, so the ghost reads the
+    same over any cell — the target lends nothing the settings state — and
+    the landing computation itself is what renders it, so the two cannot
     disagree by construction.
     """
     from celpix.core.tilemap import Cell
@@ -3439,13 +3488,9 @@ def test_the_stamp_ghost_reads_the_cell_under_the_pointer(qtbot, tmp_path) -> No
 
     window._on_stamp_hovered(0)  # over the flipped cell
     cells, _ = window._held_stamp_cells()
-    assert (cells[0].index, cells[0].flip_h) == (3, True)  # the target's lend
+    assert (cells[0].index, cells[0].flip_h) == (3, False)  # the setting shows
 
-    window._on_stamp_hovered(window._doc.tiles_per_cell)  # over the plain cell
-    cells, _ = window._held_stamp_cells()
-    assert (cells[0].index, cells[0].flip_h) == (3, False)
-
-    # An override wins over what the target would lend.
+    # The setting is what lands, so it is what the ghost shows.
     window._stamp_attrs["flip_h"] = True
     cells, _ = window._held_stamp_cells()
     assert cells[0].flip_h is True

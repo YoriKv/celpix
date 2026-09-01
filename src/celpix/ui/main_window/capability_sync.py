@@ -164,10 +164,6 @@ _GATES: dict[Capability, tuple[str, ...]] = {
 #
 # ``TILE_BINDING`` is the replaced control: the binding bar and the navigation bar
 # are two pages of one stack, and this pass cannot ask for the other page.
-# ``CELL_ROTATE`` is the milder of the two: a quarter turn is already refused on a
-# non-square *tile*, so the kind's answer joins a condition the transform bar was
-# weighing anyway rather than arriving as a separate veto
-# (:meth:`~...transform.TransformMixin._sync_transform_actions`).
 # ``STAMP`` is deliberately **not** here, though its Cell spin still asks
 # :meth:`_can` itself. The capability's gate is the table's — it hides the Edit
 # Tiles mode, which needs only the kind's answer — and the spin's extra
@@ -203,7 +199,6 @@ _GATES: dict[Capability, tuple[str, ...]] = {
 _GATED_IN_PLACE = frozenset(
     {
         Capability.TILE_BINDING,  # tilemap_bar._sync_tilemap_bar — the stack swap
-        Capability.CELL_ROTATE,  # transform._sync_transform_actions
         Capability.PALETTE_ROW,  # palette_regions._sync_pin_actions
         Capability.PIXEL_EDIT,  # selection._pixel_edit_available
         Capability.IMPORT_IMAGE,  # selection._sync_edit_actions
@@ -221,12 +216,18 @@ _GATED_IN_PLACE = frozenset(
 # would be measured against. ``PALETTE`` already declines four of them; it has no
 # view of its own to gate, being applied rather than activated, which is why they
 # stay inert for now.
+#
+# The two transforms sit here together: both kinds declare both, and what a
+# *format* can express is the transform bar's finer question, asked per
+# operation through the codec probe rather than through :meth:`_can`
+# (:meth:`~...transform.TransformMixin._transform_allowed`).
 _UNGATED = frozenset(
     {
         Capability.PALETTE_EDIT,
         Capability.PALETTE_CODEC,
         Capability.TILE_SELECT,
         Capability.CELL_FLIP,
+        Capability.CELL_ROTATE,
         Capability.EXPORT_IMAGE,
         Capability.GRID,
         Capability.HEX_VIEW,
@@ -335,9 +336,9 @@ _GESTURE_CAPABILITY: dict[Gesture, Capability] = {
     Gesture.CLEAR: Capability.CLIPBOARD,
     Gesture.PASTE: Capability.CLIPBOARD,
     # The transform gestures carry the operation, so they are offered wherever
-    # *any* of the four is: a tilemap flips and cannot be turned, and which of
-    # the two a given button asks for is settled a level up, on the bar
-    # (``CELL_ROTATE`` in :data:`_GATED_IN_PLACE`).
+    # *any* of the four is; which operations this document's format can actually
+    # express is settled a level up, on the bar, by the codec probe
+    # (:meth:`~...transform.TransformMixin._transform_allowed`).
     Gesture.TRANSFORM_TILES: Capability.CELL_FLIP,
     Gesture.TRANSFORM_BLOCK: Capability.CELL_FLIP,
     # One gesture, two stores: the pixel body writes a pinned region into the

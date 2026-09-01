@@ -71,6 +71,7 @@ CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
     ("Abandon a rearrange drag", "Esc or right-click"),
     ("Lay the picked tile down (Edit Tiles)", "Click or drag"),
     ("Pick the tile a cell names (Edit Tiles)", "Right-click"),
+    ("Pick an area of cells as the stamp (Edit Tiles)", "Right-drag"),
     # Not the canvas's own, but a mouse gesture the whole window answers to, and
     # this is where someone looks for one. Its keys are on the Navigate menu.
     ("Back / forward through visited entries", "Mouse 4 / Mouse 5"),
@@ -88,6 +89,7 @@ PANEL_KEYS: tuple[tuple[str, str], ...] = (
     ("Copy / paste a subpalette", "Ctrl+Shift+C / Ctrl+Shift+V"),
     ("Move the color selection", "Arrow keys"),
     ("Step the tile pick", "Arrow keys"),
+    ("Sweep tiles as one stamp (Tile Source)", "Right-drag"),
     ("Tile Source columns", "Shift+Left / Shift+Right"),
     ("Zoom / pan the tile sheet", "Ctrl + Scroll / Space + drag"),
     ("Extend the Files selection", "Shift+click / Shift+Up / Shift+Down"),

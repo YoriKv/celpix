@@ -512,12 +512,12 @@ def test_a_screen_loads_through_the_pipeline_and_re_encodes_identically(
 
 
 # -- capabilities ----------------------------------------------------------
-def test_a_tilemap_flips_but_does_not_rotate() -> None:
-    """The case that justifies splitting the transforms: a hardware cell carries
-    mirror bits and no transpose bit, so one CELL_TRANSFORM capability would
-    have had to lie about one of the two."""
+def test_a_tilemap_declares_both_transforms_and_the_format_decides() -> None:
+    """Whether a cell flips or turns varies by format, not by kind, so the kind
+    admits both operations and the codec has the last word per operation — no
+    shipped codec answers a rotation, so those buttons stay disabled today."""
     assert supports(ContentKind.TILEMAP, Capability.CELL_FLIP)
-    assert not supports(ContentKind.TILEMAP, Capability.CELL_ROTATE)
+    assert supports(ContentKind.TILEMAP, Capability.CELL_ROTATE)
     assert supports(ContentKind.PIXELS, Capability.CELL_ROTATE)
 
 

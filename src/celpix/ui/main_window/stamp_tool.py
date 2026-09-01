@@ -104,16 +104,19 @@ class StampToolMixin:
         # single pick drops it
         # (:meth:`~...tile_source_dock.TileSourceDockMixin._set_source_tile`).
         self._stamp_brush: CellGrid | None = None
-        # The property row's explicit overrides on what a stamp lays — flips,
-        # priority, and `visible=False` for the eraser — applied on top of
-        # whatever the pick carried (:meth:`_apply_stamp_attrs`). Session state
-        # like Subpal: no undo step, and it outlives sheet picks so "set flip H
-        # once, paint many tiles" is one gesture per tile. An eyedrop clears it
-        # — that gesture means "put *that* one here", and the record it takes
-        # already says everything.
+        # The property row's settings for what a sheet pick lays — concrete
+        # per-field values, the format's defaults where never touched
+        # (:meth:`~...cell_props_bar.CellPropsMixin._stamp_attr_value`), landed
+        # whole so a sheet pick and a canvas brush agree about what a press
+        # writes. Session state like Subpal: no undo step, it outlives sheet
+        # picks so "set flip H once, paint many tiles" is one gesture per tile,
+        # and a pick that displaces a held record takes that record's values
+        # over (:meth:`~...cell_props_bar.CellPropsMixin._seed_stamp_attrs`).
+        # `visible` rides here too but stamp-wide — False is the eraser,
+        # applied whatever is held (:meth:`_apply_stamp_eraser`).
         self._stamp_attrs: dict[str, bool | int] = {}
         # The cell the pointer is over while the tool is armed, as a drawn
-        # position — what a target-inheriting ghost reads its attributes from
+        # position — the base record the ghost's landing computation reads
         # (:meth:`_stamp_target_at`). None off the canvas.
         self._stamp_hover_anchor: int | None = None
 
@@ -205,6 +208,10 @@ class StampToolMixin:
         # The property row retargets with the mode — held stamp or selection —
         # and neither the selection pass nor the refresh runs on an arm alone.
         self._sync_cell_props()
+        # So does the transform bar; its sync inside the row's covers only the
+        # armed side, and a disarm has to hand the groups back to the (empty)
+        # selection rather than leave them armed for a stamp no longer in play.
+        self._sync_transform_actions()
 
     def _sync_stamp_actions(self) -> None:
         """Converge the two actions with the state they drive.
@@ -382,12 +389,12 @@ class StampToolMixin:
                 # with no record behind it (`_source_cell` is only ever held by
                 # a canvas pick). The sheet holds tiles, not cells, so each
                 # square lands as a single sheet pick does: the index, with the
-                # target keeping its own attributes (:meth:`_stamp_cell` with
-                # nothing held).
+                # property row's settings (:meth:`_stamp_cell` with nothing
+                # held).
                 landing = self._stamp_cell(record.index, cells[at])
             else:
                 landing = self._settle_stamp_row(
-                    self._apply_stamp_attrs(replace(record, visible=True)),
+                    self._apply_stamp_eraser(replace(record, visible=True)),
                     cells[at],
                 )
             if cells[at] != landing:
@@ -411,12 +418,13 @@ class StampToolMixin:
         learning its name.
 
         A tile picked in the **sheet** has no such record behind it — the sheet
-        holds tiles — so only the index lands and the target keeps its own other
-        attributes. The property row's **overrides** then land on top either way
-        (:meth:`_apply_stamp_attrs`) — the one say the user has over a sheet
-        pick's attributes. The **palette row** follows neither pick but the
-        Subpal spin, which is the row every preview of the stamp is drawn in
-        (:meth:`_settle_stamp_row`).
+        holds tiles — so the property row's **settings** are the record: the
+        index lands with every declared attribute set concretely
+        (:meth:`~...cell_props_bar.CellPropsMixin._stamp_sheet_attrs`), exactly
+        as a canvas-swept brush lays its records, so the two picks cannot
+        disagree about what a press writes. The **palette row** follows neither
+        pick but the Subpal spin, which is the row every preview of the stamp
+        is drawn in (:meth:`_settle_stamp_row`).
 
         The guard is against a **stale** record: the held ID is re-validated
         against the map on every stamp (:meth:`_held_tile_id`) and a rebind can
@@ -430,37 +438,36 @@ class StampToolMixin:
         entirely so) every click a silent no-op. It is also what the authoring
         tool does: `scr_map_cnv` sets the drawn byte on every block it registers
         (``scgcad-formats.md`` §4). The one thing that outweighs the force is
-        the property row's own Drawn box: unchecked, the override lands
-        ``visible=False`` over it and the stamp is the **eraser** — every press
-        lays undrawn cells, which is Clear Cells said by pointing.
+        the property row's own Drawn box: unchecked, ``visible=False`` lands
+        over it and the stamp is the **eraser** — every press lays undrawn
+        cells, which is Clear Cells said by pointing.
         """
         held = self._source_cell
         if held is not None and held.index == tile_id:
             laid = replace(held, visible=True)
         else:
             laid = replace(over, index=tile_id, visible=True)
-        return self._settle_stamp_row(self._apply_stamp_attrs(laid), over)
+            laid = replace(laid, **self._stamp_sheet_attrs())
+        return self._settle_stamp_row(self._apply_stamp_eraser(laid), over)
 
-    def _apply_stamp_attrs(self, laid: Cell) -> Cell:
-        """``laid`` with the property row's overrides written over it.
+    def _apply_stamp_eraser(self, laid: Cell) -> Cell:
+        """``laid`` undrawn, wherever the Drawn box armed the eraser.
 
-        Filtered to the fields the format declares
+        The one row setting that is **stamp-wide**: the eraser must erase with
+        whatever is held — a record and a canvas-swept brush lay their own
+        attributes otherwise — so it runs on every landing rather than only
+        the sheet pick's. Gated on the format declaring the bit
         (:meth:`~...tilemap_edit.TilemapEditMixin._cell_fields`) rather than
         trusted from the row: the row prunes itself on every sync, but a codec
-        can change in the window between, and an undeclared bit set here would
-        show a mirrored tile the save then silently unmirrors. Runs on **every**
-        landing — single pick, sheet-swept brush and record brush alike —
-        because the Drawn override is stamp-wide (the eraser must erase with
-        whatever is held); the other overrides are still empty whenever a
-        record is held, since an eyedrop clears them and the row edits the
-        record itself instead.
+        can change in the window between, and a bit set here that the format
+        cannot store would hide cells the save then silently redraws.
         """
-        attrs = self._stamp_attrs
-        if not attrs:
-            return laid
-        fields = self._cell_fields()
-        allowed = {name: value for name, value in attrs.items() if name in fields}
-        return replace(laid, **allowed) if allowed else laid
+        if (
+            self._stamp_attrs.get("visible") is False
+            and "visible" in self._cell_fields()
+        ):
+            return replace(laid, visible=False)
+        return laid
 
     def _settle_stamp_row(self, laid: Cell, over: Cell) -> Cell:
         """``laid`` with the palette row a stamp actually writes into ``over``.
@@ -703,17 +710,18 @@ class StampToolMixin:
         :meth:`_stamp_cell` (or a record through :meth:`_settle_stamp_row`)
         against the cell actually under the pointer
         (:meth:`_stamp_target_at`) — so the ghost and the landing cannot come
-        out different by construction. The target matters twice: a sheet pick
-        inherits the target's attributes, and a row-group format's landing
-        keeps a row only the target knows. Off the canvas there is no target
-        yet, and a blank one is the closest honest answer.
+        out different by construction. The target still matters: a row-group
+        format's landing keeps a row only the target knows, and a field the
+        format declares outside the row's remit stays the target's own. Off
+        the canvas there is no target yet, and a blank one is the closest
+        honest answer.
         """
         brush = self._stamp_brush
         if brush is not None and len(brush):
             if self._source_cell is None:
                 # A sheet-swept brush lands square by square as sheet picks do —
-                # target-inherit plus the row's overrides — so it previews that
-                # way, each square against the cell it would land over.
+                # each index with the row's settings — so it previews that way,
+                # each square against the cell it would land over.
                 units = [
                     self._stamp_cell(brush.get(x, y).index, self._stamp_target_at(x, y))
                     for y in range(brush.height)
@@ -722,7 +730,9 @@ class StampToolMixin:
             else:
                 units = [
                     self._settle_stamp_row(
-                        self._apply_stamp_attrs(replace(brush.get(x, y), visible=True)),
+                        self._apply_stamp_eraser(
+                            replace(brush.get(x, y), visible=True)
+                        ),
                         self._stamp_target_at(x, y),
                     )
                     for y in range(brush.height)
@@ -739,7 +749,7 @@ class StampToolMixin:
 
     def _stamp_target_at(self, dx: int, dy: int) -> Cell:
         """The cell ``(dx, dy)`` placed units from the hovered anchor would land
-        over — what a target-inheriting ghost reads — or blank off the canvas.
+        over — the landing's base record — or blank off the canvas.
 
         The landing's own geometry (:meth:`_stamp_into`): units step by the
         stamp lattice, a row's end clips rather than wraps, and the drawn
@@ -821,83 +831,125 @@ class StampToolMixin:
             "No tile to stamp - pick one in the Tile Source panel first."
         )
 
-    # -- the transform keys, while armed -------------------------------------
-    def _stamp_transform_key(self, field: str | None, shift: bool) -> bool:
-        """``H``/``V`` against the held stamp; True if the key was consumed.
+    # -- the transform bar, while armed --------------------------------------
+    def _sync_stamp_transform_actions(self) -> None:
+        """Arm the Tile/Block groups for the held stamp.
 
-        The transform bar's letters act on the selection, and arming the tool
-        cleared it — so while armed they act on what a press would lay instead,
-        and what that means follows what is held, exactly as the property row's
-        boxes do (:mod:`~celpix.ui.main_window.cell_props_bar`):
-
-        - an **eyedropped record** toggles its own bit;
-        - a **canvas-swept brush** mirrors geometrically — order reversed and
-          every record toggled, the Block flip's two halves
-          (:meth:`~celpix.core.tilemap.CellGrid.flipped_h`);
-        - a **sheet pick** cycles the row's override, on → off → keep the
-          target's, the checkbox's own cycle so the two gestures agree;
-        - a **sheet-swept brush** mirrors too — the order reversed, and the
-          flip said through the override since its bare records' bits never
-          land: keep-the-target's reads as off, so the toggle mirrors back.
-
-        Every letter the bar owns is consumed here, armed or not — a rotation
-        is refused with a message (no format in hand has a rotation bit), and
-        Shift's Block half means nothing over a held stamp — because a letter
-        falling through to something else mid-tool is a surprise
-        (:meth:`~...transform.TransformMixin._transform_key`).
+        The bar's own sync reads the selection, and arming the tool cleared it,
+        so while armed the groups arm off what a press would lay instead
+        (:meth:`~...transform.TransformMixin._sync_transform_actions` branches
+        here) — the same retargeting the property row makes. Tile transforms
+        take any holding; Block ones need a swept brush, the one holding with
+        positions to permute. Rotation demands the square tile every group
+        does, a square brush for the Block half, and a **record-backed**
+        holding besides: a sheet pick's flips travel as the row's boolean
+        settings, and a rotation is not a boolean a setting can carry. The
+        per-operation veto is the format's, exactly as over a selection
+        (:meth:`~...transform.TransformMixin._transform_allowed`).
         """
-        if field is None:
-            return False
-        if shift:
-            return True  # the Block half acts on a selection this tool cleared
-        if field not in ("flip_h", "flip_v"):
-            self.statusBar().showMessage(
-                f"{self._tilemap_format_name()} has no rotation - nothing changed."
-            )
-            return True
-        spun = "horizontal flip" if field == "flip_h" else "vertical flip"
-        if field not in self._cell_fields():
-            self.statusBar().showMessage(
-                f"{self._tilemap_format_name()} has no {spun} - nothing changed."
-            )
-            return True
+        allows = self._transform_allowed
+        target = self._cell_props_target()
+        record_backed = target in ("record", "brush")
+        square = record_backed and self._square_tiles()
+        self._arm_transform_group(self._tile_group, target is not None, square, allows)
+        brush = self._stamp_brush
+        held = brush is not None and len(brush) > 0
+        square_block = held and brush.width == brush.height
+        self._arm_transform_group(
+            self._block_group, held, square and square_block, allows
+        )
+
+    def _stamp_transform_tiles(self, op) -> None:  # noqa: ANN001 — a TransformOp
+        """The Tile buttons against the held stamp: each unit, in place.
+
+        What the operation means follows what is held, exactly as the property
+        row's boxes do (:mod:`~celpix.ui.main_window.cell_props_bar`):
+
+        - an **eyedropped record** or a **canvas-swept brush** transforms its
+          records through the format's own answer
+          (:meth:`~...tilemap_edit.TilemapEditMixin._cell_transform`) — a flip
+          toggles each cell's bit, positions untouched;
+        - a **sheet pick**, single or swept, toggles the row's setting — the
+          checkbox's own gesture, so the key and the click agree. Its bare
+          records' bits never land, so the setting is the only place the flip
+          can be said — and a rotation is refused there, being no boolean a
+          setting could hold.
+        """
         target = self._cell_props_target()
         if target is None:
             self._refuse_stamp()
-            return True
-        if target == "record":
-            record = self._source_cell
-            flipped = not getattr(record, field)
-            self._source_cell = replace(record, **{field: flipped})
-            said = "on" if flipped else "off"
-            message = f"Held stamp's {spun} {said}."
-        elif target == "brush":
-            brush = self._stamp_brush
+            return
+        field = op.cell_op.value
+        said = op.cell_op.label
+        if target == "attrs":
+            if field not in ("flip_h", "flip_v") or field not in self._cell_fields():
+                self._refuse_transform(op)
+                return
+            now = not bool(self._stamp_attr_value(field))
+            self._stamp_attrs[field] = now
+            message = f"Next stamp lays {said} {'on' if now else 'off'}."
+        else:
+            apply = self._cell_transform(op)
+            if apply is None:
+                self._refuse_transform(op)
+                return
+            if target == "record":
+                self._source_cell = apply(self._source_cell)
+                if field in ("flip_h", "flip_v"):
+                    state = "on" if getattr(self._source_cell, field) else "off"
+                    message = f"Held stamp's {said} {state}."
+                else:
+                    message = f"{op.past} the held stamp."
+            else:
+                brush = self._stamp_brush
+                for y in range(brush.height):
+                    for x in range(brush.width):
+                        brush.set(x, y, apply(brush.get(x, y)))
+                message = (
+                    f"{op.past} each cell of the held "
+                    f"{brush.width}x{brush.height} brush."
+                )
+        self._after_stamp_prop_edit(message)
+
+    def _stamp_transform_block(self, op) -> None:  # noqa: ANN001 — a TransformOp
+        """The Block buttons against the held brush: positions *and* cells.
+
+        The Block reading everywhere else — permute the units and transform
+        each, so the brush mirrors as one picture
+        (:meth:`~...tilemap_edit.TilemapEditMixin._transform_cell_selection`)
+        — applied to the rectangle a right drag swept; only a brush has
+        positions to permute, so the group disarms for any single holding. A
+        **canvas-swept** brush transforms its records through the format's
+        answer; a **sheet-swept** one mirrors its layout and says the per-cell
+        half by toggling the row's setting, since its bare records' bits never
+        land — the setting is where every square's flip is said.
+        """
+        brush = self._stamp_brush
+        if brush is None or not len(brush):
+            return  # the group is disarmed without a brush; a backstop
+        field = op.cell_op.value
+        if self._source_cell is None:
+            if field not in ("flip_h", "flip_v") or field not in self._cell_fields():
+                self._refuse_transform(op)
+                return
             self._stamp_brush = (
                 brush.flipped_h() if field == "flip_h" else brush.flipped_v()
             )
-            message = f"Mirrored the held {brush.width}x{brush.height} brush."
+            self._stamp_attrs[field] = not bool(self._stamp_attr_value(field))
         else:
-            over = self._stamp_attrs.get(field)
-            brush = self._stamp_brush
-            if brush is not None and len(brush):
-                # Mirror the layout; the per-record flip is the override's,
-                # since a bare sheet record's own bits never land.
-                self._stamp_brush = (
-                    brush.flipped_h() if field == "flip_h" else brush.flipped_v()
-                )
-                self._stamp_attrs[field] = not bool(over)
-                message = f"Mirrored the held {brush.width}x{brush.height} brush."
-            elif over is None:
-                self._stamp_attrs[field] = True
-                message = f"Next stamp lays {spun} on."
-            elif over:
-                self._stamp_attrs[field] = False
-                message = f"Next stamp lays {spun} off."
-            else:
-                del self._stamp_attrs[field]
-                message = f"Next stamp keeps each target cell's {spun}."
-        self._sync_cell_props()
-        self._sync_stamp_preview()
-        self.statusBar().showMessage(message)
-        return True
+            apply = self._cell_transform(op)
+            if apply is None:
+                self._refuse_transform(op)
+                return
+            cols, rows = brush.width, brush.height
+            if field.startswith("rotate") and cols != rows:
+                return  # disarmed for a non-square brush; a backstop
+            turned = CellGrid(cols, rows)
+            for dy in range(rows):
+                for dx in range(cols):
+                    sx, sy = op.cell_src(dx, dy, cols, rows)
+                    turned.set(dx, dy, apply(brush.get(sx, sy)))
+            self._stamp_brush = turned
+        self._after_stamp_prop_edit(
+            f"{op.past} the held {brush.width}x{brush.height} brush."
+        )

@@ -17,32 +17,37 @@ in one undo step (:meth:`~...tilemap_edit.TilemapEditMixin._set_cell_property`).
 With **Edit Tiles** armed it retargets to the *held stamp*, where what it
 holds decides what an edit means:
 
-- A tile picked in the **sheet** has no record behind it — the landing keeps
-  the target cell's attributes (:meth:`~...stamp_tool.StampToolMixin.
-  _stamp_cell`) — so the row holds per-field **overrides**
-  (:attr:`~...stamp_tool.StampToolMixin._stamp_attrs`). A box there is
-  three-state by design: part-checked means *keep the target's*, and clicking
-  cycles on → off → keep. A brush swept off the sheet is the same pick
-  widened, so it reads the same way.
+- A tile picked in the **sheet** has no record behind it, so the row *is*
+  the record: the stamp's **settings**
+  (:attr:`~...stamp_tool.StampToolMixin._stamp_attrs`), concrete per-field
+  values the landing lays whole (:meth:`~...stamp_tool.StampToolMixin.
+  _stamp_cell`) — exactly what a canvas-swept brush lays, so the two picks
+  cannot disagree about what a press writes. An untouched field holds the
+  format's default; a pick that displaces a held record takes over that
+  record's values (:meth:`_seed_stamp_attrs`), so setting up one tile and
+  painting many carries the setup. A brush swept off the sheet is the same
+  pick widened, so it lands the same way.
 - An **eyedropped cell** is a whole record and lays down whole, so the row
   shows the record and an edit rewrites it in place.
 - A **canvas-swept brush** is many records: differing values show the third
-  state, and an edit sets them all — mirroring the brush geometrically is the
-  H/V key's job instead (:meth:`~...stamp_tool.StampToolMixin.
-  _stamp_transform_key`), so both gestures stay reachable.
+  state, and an edit sets them all — flipping each record, or mirroring the
+  brush whole, is the transform bar's job instead
+  (:meth:`~...stamp_tool.StampToolMixin._stamp_transform_tiles` and the Block
+  pair's :meth:`~...stamp_tool.StampToolMixin._stamp_transform_block`), so
+  every gesture stays reachable.
 
 Stamp-mode edits are session state like Subpal — no undo step; the stroke
 that lands them is the step — and every one re-renders the stamp preview, so
 what the ghost shows is what a press lays. Every declared field stays on the
 row while the tool is armed: Edit Tiles is where a stamp layout's editing
 happens at all, and its only fields are the drawn bit and the flags — hiding
-them left the row empty exactly where it was needed. Two of them read
-specially there. **Drawn** is a stamp-wide override whatever is held, because
+them left the row empty exactly where it was needed. One of them reads
+specially there. **Drawn** is a stamp-wide setting whatever is held, because
 the stamp otherwise forces the bit: checked is that default, and unchecking
 it turns the stamp into the **eraser** — every press lays undrawn cells, the
-inverse Clear Cells performs on a selection. **Flags** stay inherit unless
-explicitly set — the danger was never the user spraying bits deliberately,
-it was a brush spraying them silently.
+inverse Clear Cells performs on a selection. It is also the one field a
+displaced record does not seed: the eraser is armed by this box alone, never
+inherited from a cell that happened to be undrawn.
 
 Gated in place rather than by the blanket pass, exactly as the Cell spin is
 and for its reason: the pass runs later and its all-or-nothing visibility
@@ -61,6 +66,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QSpinBox, QWidget
 
 from celpix.core.capabilities import Capability
+from celpix.core.tilemap import BLANK, Cell
 from celpix.ui.widgets import add_labelled, hex_spin, signals_blocked, value_spin
 
 
@@ -85,14 +91,14 @@ _PROPERTY_SPECS = (
         "Flip H",
         "horizontal flip",
         "Mirror the selected cells' tiles left-right\n"
-        "In Edit Tiles mode: how the next stamp lands (H)",
+        "In Edit Tiles mode: how the next stamp lands",
     ),
     _PropSpec(
         "flip_v",
         "Flip V",
         "vertical flip",
         "Mirror the selected cells' tiles top-bottom\n"
-        "In Edit Tiles mode: how the next stamp lands (V)",
+        "In Edit Tiles mode: how the next stamp lands",
     ),
     _PropSpec(
         "priority",
@@ -172,9 +178,11 @@ class CellPropsMixin:
             limit = fields.get(spec.field)
             if limit is None:
                 continue
+            # Both spins' -1 floor is the ``—`` sentinel — display only, shown
+            # while a mixed target parks on it. The sync owns the minimum
+            # (:meth:`_show_cell_prop_spin`); the build leaves it 0.
             if spec.field == "flags":
                 spin = hex_spin(0, limit, spec.tip)
-                spin.setMinimum(-1)
                 spin.setSpecialValueText("—")
                 spin.valueChanged.connect(partial(self._on_cell_prop_spun, spec.field))
                 self._cell_props_labels[spec.field] = add_labelled(
@@ -186,7 +194,7 @@ class CellPropsMixin:
                 # is the switch, so the spin is the shape a sprite-word format
                 # would grow into rather than one any preset builds today.
                 spin = value_spin(
-                    -1, limit, 0, partial(self._on_cell_prop_spun, spec.field)
+                    0, limit, 0, partial(self._on_cell_prop_spun, spec.field)
                 )
                 spin.setSpecialValueText("—")
                 self._cell_props_labels[spec.field] = add_labelled(
@@ -212,10 +220,10 @@ class CellPropsMixin:
         ``"selection"`` in tile mode. With Edit Tiles armed: ``"brush"`` for a
         canvas-swept rectangle of records, ``"record"`` for a single eyedropped
         cell, ``"attrs"`` for a sheet pick — the one with no record behind it,
-        where the row holds overrides over the target-keeps-its-own landing. A
-        sheet-swept brush is ``"attrs"`` too: its squares are bare indices and
-        land on the same terms, so showing its blank records as "off" would
-        claim a write the landing does not make.
+        where the row's settings are the record the landing lays. A sheet-swept
+        brush is ``"attrs"`` too: its squares are bare indices that land with
+        the same settings, so showing its blank records instead would claim a
+        write the landing does not make.
         """
         if not self._stamping:
             return "selection"
@@ -228,7 +236,7 @@ class CellPropsMixin:
 
     def _cell_prop_values(self, target: str, field: str) -> set:
         """Every value ``field`` takes across ``target`` — one is uniform,
-        more is the mixed display, and none is "attrs" mode's *inherit*."""
+        more is the mixed display."""
         if target == "selection":
             doc = self._doc
             if doc is None or doc.cells is None:
@@ -236,9 +244,9 @@ class CellPropsMixin:
             return {getattr(doc.cells[at], field) for at in self._selected_cells()}
         if field == "visible":
             # The drawn bit is the stamp's whatever is held — forced on unless
-            # the eraser override says otherwise — so the record's own bit is
+            # the eraser setting says otherwise — so the record's own bit is
             # not what lands and must not be what shows.
-            return {self._stamp_attrs.get("visible", True)}
+            return {self._stamp_attr_value("visible")}
         if target == "brush":
             brush = self._stamp_brush
             return {
@@ -248,15 +256,51 @@ class CellPropsMixin:
             }
         if target == "record":
             return {getattr(self._source_cell, field)}
-        value = self._stamp_attrs.get(field)
-        return set() if value is None else {value}
+        return {self._stamp_attr_value(field)}
+
+    # -- the sheet pick's settings ---------------------------------------------
+    def _stamp_attr_value(self, field: str) -> bool | int:
+        """What a sheet pick lays for ``field``: the row's setting, or the
+        format's default for a field never touched (``BLANK`` states them)."""
+        return self._stamp_attrs.get(field, getattr(BLANK, field))
+
+    def _stamp_sheet_attrs(self) -> dict[str, bool | int]:
+        """Every row-managed field's landing value, for the sheet pick's stamp.
+
+        Concrete across the board — a sheet pick lays these *whole*, exactly as
+        a canvas-swept brush lays its records, so the two picks agree about
+        what a press writes. Filtered to what the format declares, on the
+        row's own pruning grounds: an undeclared bit written here would show
+        an attribute the save silently drops.
+        """
+        fields = self._cell_fields()
+        return {
+            field: self._stamp_attr_value(field)
+            for field in fields
+            if field in _SPEC_BY_FIELD
+        }
+
+    def _seed_stamp_attrs(self, record: Cell) -> None:
+        """Take ``record``'s attributes over as the sheet pick's settings.
+
+        Called where a sheet pick displaces a held record
+        (:meth:`~...tile_source_dock.TileSourceDockMixin._set_source_tile` and
+        the panel's own pick paths): the record was what the row showed and the
+        user tuned, so the next pick starting from it — rather than from the
+        defaults — is what keeps "set up one tile, paint many" one gesture per
+        tile. Every declared field but **Drawn**: the eraser is armed by its
+        box alone, never inherited from a record that happened to be undrawn.
+        """
+        for field in self._cell_fields():
+            if field in _SPEC_BY_FIELD and field != "visible":
+                self._stamp_attrs[field] = getattr(record, field)
 
     # -- sync ----------------------------------------------------------------
     def _sync_cell_props(self) -> None:
         """Converge the row with the format, the mode and the target.
 
         Rebuilds only when the format's field set moved; everything else is a
-        signal-blocked restore. Also where a stamp override whose field the
+        signal-blocked restore. Also where a stamp setting whose field the
         format no longer declares is dropped — a stale one surviving a codec
         switch would land bits the new format cannot store, and the row would
         show a value the landing quietly ignores.
@@ -277,6 +321,12 @@ class CellPropsMixin:
             self._rebuild_cell_props(signature)
         for field in [name for name in self._stamp_attrs if name not in shown]:
             del self._stamp_attrs[field]
+        if self._stamping:
+            # The transform bar targets the same held stamp this row does, so
+            # it converges wherever the row does: a pick changes what its
+            # buttons act on without a render or a selection pass running
+            # (:meth:`~...stamp_tool.StampToolMixin._sync_stamp_transform_actions`).
+            self._sync_transform_actions()
         if not usable:
             return
         target = self._cell_props_target()
@@ -291,26 +341,20 @@ class CellPropsMixin:
             values = self._cell_prop_values(target, field) if armed else set()
             with signals_blocked(widget):
                 if isinstance(widget, QCheckBox):
-                    self._show_cell_prop_check(widget, target, field, values)
+                    self._show_cell_prop_check(widget, values)
                 else:
                     self._show_cell_prop_spin(widget, values)
 
     @staticmethod
-    def _show_cell_prop_check(
-        box: QCheckBox, target: str | None, field: str, values: set
-    ) -> None:
-        """One box's display: uniform, mixed, or "attrs" mode's inherit.
+    def _show_cell_prop_check(box: QCheckBox, values: set) -> None:
+        """One box's display: uniform, or the mixed third state.
 
-        Three-state only while the third state is showing (or, in "attrs" mode,
-        reachable): Qt's click cycle visits the partial state, and in every
-        other mode that state is a *display* of disagreement rather than a
-        value — a click from it must resolve to a plain yes or no. The drawn
-        bit never inherits while stamping — the stamp forces it, so its two
-        states are that default and the eraser.
+        Three-state only while the third state is showing: it is a *display*
+        of disagreement rather than a value — Qt's click cycle visits the
+        partial state, and a click must resolve to a plain yes or no.
         """
-        inheritable = target == "attrs" and field != "visible"
-        mixed = len(values) > 1 or (inheritable and not values)
-        box.setTristate(inheritable or mixed)
+        mixed = len(values) > 1
+        box.setTristate(mixed)
         if mixed:
             box.setCheckState(Qt.CheckState.PartiallyChecked)
         else:
@@ -322,20 +366,26 @@ class CellPropsMixin:
 
     @staticmethod
     def _show_cell_prop_spin(spin: QSpinBox, values: set) -> None:
-        """One spin's display; ``—`` (the -1 floor) is the mixed reading."""
-        if len(values) == 1:
-            spin.setValue(int(next(iter(values))))
-        else:
-            spin.setValue(-1)
+        """One spin's display; ``—`` (the -1 floor) is the mixed reading.
+
+        The floor opens only while the mixed display is parked on it — the
+        minimum stays 0 everywhere else, because -1 is a sentinel the write
+        slot ignores, and a value a user can enter but that never lands reads
+        as a broken field.
+        """
+        uniform = len(values) == 1
+        # Minimum before value: raising it clamps a parked -1 up first.
+        spin.setMinimum(0 if uniform else -1)
+        spin.setValue(int(next(iter(values))) if uniform else -1)
 
     # -- the writes ----------------------------------------------------------
     def _on_cell_prop_clicked(self, field: str, _checked: bool = False) -> None:
         """A checkbox click, landed wherever the row is pointed.
 
         The state read back off the box rather than taken from the signal,
-        because in "attrs" mode the click's *destination* is the meaning: Qt
-        cycles on → off → part-checked there, and the third of those is the
-        gesture that clears the override.
+        because a mixed box is tristate and the click's *destination* is the
+        meaning — a click from the part-checked display must resolve to a
+        plain yes or no.
         """
         if self._applying_undo:
             return
@@ -346,7 +396,7 @@ class CellPropsMixin:
         state = self._cell_props_widgets[field].checkState()
         if field == "visible" and target != "selection":
             # The stamp forces the bit on, so the box is that default and the
-            # eraser — a stamp-wide override whatever is held, since a record's
+            # eraser — a stamp-wide setting whatever is held, since a record's
             # own bit is overwritten either way (:meth:`_stamp_cell`).
             if state == Qt.CheckState.Checked:
                 self._stamp_attrs.pop("visible", None)
@@ -356,12 +406,6 @@ class CellPropsMixin:
                 self._after_stamp_prop_edit(
                     "Stamping now clears - each press lays undrawn cells."
                 )
-            return
-        if target == "attrs" and state == Qt.CheckState.PartiallyChecked:
-            self._stamp_attrs.pop(field, None)
-            self._after_stamp_prop_edit(
-                f"Next stamp keeps each target cell's {spec.said}."
-            )
             return
         on = state == Qt.CheckState.Checked
         value: bool | int = int(on) if field == "priority" else on
@@ -385,9 +429,9 @@ class CellPropsMixin:
     def _on_cell_prop_spun(self, field: str, value: int) -> None:
         """A spin edit, landed wherever the row is pointed.
 
-        Negative is the ``—`` floor: a display state everywhere but "attrs"
-        mode, where spinning down to it is how a priority override is cleared
-        — the spin's reading of the part-checked click.
+        Negative is the ``—`` floor — the mixed display's parking spot, never
+        a value: the sync keeps the minimum at 0 wherever a write could land
+        (:meth:`_show_cell_prop_spin`), so the guard is a backstop, not a path.
         """
         if self._applying_undo:
             return
@@ -396,11 +440,6 @@ class CellPropsMixin:
             return
         spec = _SPEC_BY_FIELD[field]
         if value < 0:
-            if target == "attrs" and field in self._stamp_attrs:
-                del self._stamp_attrs[field]
-                self._after_stamp_prop_edit(
-                    f"Next stamp keeps each target cell's {spec.said}."
-                )
             return
         if target == "selection":
             self._set_cell_property(field, value)
@@ -423,8 +462,8 @@ class CellPropsMixin:
 
         A property edit, not a transform: making a mixed brush uniform is the
         one coherent reading of a checkbox over it. The geometric mirror —
-        reverse the order *and* toggle each — is the H/V key's
-        (:meth:`~...stamp_tool.StampToolMixin._stamp_transform_key`).
+        reverse the order *and* toggle each — is the Block flip's (Shift+H/V,
+        :meth:`~...stamp_tool.StampToolMixin._stamp_transform_block`).
         """
         brush = self._stamp_brush
         if brush is None:
