@@ -296,6 +296,42 @@ def resolve_cell(
     )
 
 
+def expand_stamp(
+    cell: Cell,
+    source: list[Cell],
+    stamp: tuple[int, int],
+    source_columns: int,
+    *,
+    carry_rows: bool,
+) -> list[Cell]:
+    """The source cells one stamp coordinate draws, in drawn (row-major) order.
+
+    One entry's worth of :func:`expand_stamps`' walk, factored out for the
+    previews that render a single stamp — the tile source sheet and the stamp
+    tool's ghost — so a preview and the map cannot resolve the same coordinate
+    two different ways. The corner is the coordinate itself and the rest of the
+    stamp steps the **source's** rows: ``source_columns`` is the stride between
+    a stamp's rows because a stamp is a rectangle cut out of the source.
+
+    ``cell`` is the *referring* entry, passed whole for the reason
+    :func:`resolve_cell` composes it: its flips, its row where the format
+    carries one, and its visibility are part of what the stamp draws as. A
+    caller with no real entry behind the coordinate — a sheet enumerating what
+    *could* be stamped — passes a bare ``Cell`` **with** ``carry_rows=False``:
+    a synthetic referrer has no row of its own to carry, and a bare cell's 0
+    let through would repaint the source's rows.
+    """
+    across, down = max(1, stamp[0]), max(1, stamp[1])
+    stride = max(1, source_columns)
+    return [
+        resolve_cell(
+            cell, source, carry_rows=carry_rows, at=cell.index + dx + dy * stride
+        )
+        for dy in range(down)
+        for dx in range(across)
+    ]
+
+
 def stamp_origin(
     position: int, columns: int, stamp: tuple[int, int], *, dense: bool = False
 ) -> int:

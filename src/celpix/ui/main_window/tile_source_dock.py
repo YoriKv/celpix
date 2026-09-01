@@ -303,6 +303,7 @@ class TileSourceDockMixin:
         self._refresh_tile_source_details()
         self._sync_set_base_tile()
         self._sync_stamp_preview()
+        self._sync_cell_props()
 
     def _set_source_tile(
         self, tile_id: int, cell: Cell | None = None, *, area: CellGrid | None = None
@@ -334,6 +335,11 @@ class TileSourceDockMixin:
         self._source_tile_id = tile_id
         self._source_cell = cell
         self._stamp_brush = area
+        if cell is not None:
+            # A record-carrying pick says "put *that* one here", and the record
+            # already states its attributes — overrides stacked on top would
+            # make the eyedrop lay something other than what it took.
+            self._stamp_attrs.clear()
         self._tile_source_pushing = True
         try:
             self._tile_source_panel.select_id(tile_id)
@@ -342,6 +348,7 @@ class TileSourceDockMixin:
         self._refresh_tile_source_details()
         self._sync_set_base_tile()
         self._sync_stamp_preview()
+        self._sync_cell_props()
 
     def _on_tile_source_area_picked(self, rows: list) -> None:
         """A right drag over the sheet: hold the swept rectangle as the stamp.
@@ -377,6 +384,7 @@ class TileSourceDockMixin:
         self._refresh_tile_source_details()
         self._sync_set_base_tile()
         self._sync_stamp_preview()
+        self._sync_cell_props()
         self.statusBar().showMessage(
             f"Picked {grid.width}x{grid.height} tiles - "
             "left click stamps them from the top-left."
@@ -399,6 +407,7 @@ class TileSourceDockMixin:
         self._refresh_tile_source_details()
         self._sync_set_base_tile()
         self._sync_stamp_preview()
+        self._sync_cell_props()
 
     def _point_source_at_pixel(self, x: int, y: int) -> None:
         """Pick the tile canvas pixel ``(x, y)`` was drawn from, if a cell drew it.
@@ -633,10 +642,20 @@ class TileSourceDockMixin:
         if not self._tile_source_dock.isVisible():
             return
         doc = self._doc
+        # Before the marker, and on every path with a sheet up (``row_shown`` is
+        # None exactly when there is none): the pick *leaving* moves the row too.
+        # Arming Edit Tiles clears the selection, and the row falls back from the
+        # departed cell's to Subpal's — the row the stamp ghost is drawn in — so
+        # a sheet left composed in the old row would disagree with the ghost
+        # beside it.
+        if (
+            doc is not None
+            and self._tile_source_row_shown is not None
+            and self._tile_source_row_shown != self._tile_source_row()
+        ):
+            self._refresh_tile_source()  # re-marks and re-reads on the way out
+            return
         if doc is not None and doc.is_sprite:
-            if self._tile_source_row_shown != self._tile_source_row():
-                self._refresh_tile_source()  # re-marks and re-reads on the way out
-                return
             sub = self._picked_subsprite_record()
             # The corner tile of a large subsprite, which is the number the
             # record holds and the only one of its four that is on the sheet:
@@ -647,9 +666,6 @@ class TileSourceDockMixin:
         cells = self._selected_cells() if doc is not None else []
         if doc is None or doc.cells is None or not cells:
             self._tile_source_panel.set_marked_id(None)
-            return
-        if self._tile_source_row_shown != self._tile_source_row():
-            self._refresh_tile_source()  # re-marks and re-reads on the way out
             return
         self._tile_source_panel.set_marked_id(doc.cells[cells[0]].index)
 
@@ -701,17 +717,27 @@ class TileSourceDockMixin:
                 "subsprite",
             )
         else:
+            # Only the entries the resolution reads: a sparse stamped map's
+            # filler holds whatever was last there, and counting it would
+            # report users the picture does not have. The noun follows the
+            # entries — a chained map's are stamps.
             used = counted(
-                sum(1 for cell in doc.cells or [] if cell.index == tile_id), "cell"
+                sum(
+                    1
+                    for at, cell in enumerate(doc.cells or [])
+                    if cell.index == tile_id and doc.cell_is_read(at)
+                ),
+                "stamp" if doc.is_indirect else "cell",
             )
         chain = doc.chain
         if chain is None:
             bank = tile_id + doc.tile_base_index
             where = f"bank tile ${bank:X}" if bank != tile_id else "no base offset"
             return f"Tile ${tile_id:X} - {where} - used by {used}."
-        stamp = resolve_cell(
-            Cell(index=tile_id), chain.source, carry_rows=chain.carry_rows
-        )
+        # A bare coordinate with no rows carried: the line describes the stamp
+        # as the source authored it, and no real entry stands behind this ID —
+        # a bare cell's row 0 let through would misreport the source's.
+        stamp = resolve_cell(Cell(index=tile_id), chain.source, carry_rows=False)
         # The corner cell's own attributes, which is what a stamp's other cells
         # each have their own of - so the size is stated and the rest is left to
         # the picture rather than listed cell by cell.

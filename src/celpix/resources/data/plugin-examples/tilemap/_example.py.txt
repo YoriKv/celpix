@@ -28,20 +28,20 @@ own width, so the view has to be able to try one.
 write back, so a field your format *has* and your decode ignores is zeroed on the
 next save — silently, and for the whole file.
 
-**Then say what a cell can do.** Five optional methods, where leaving one out
+**Then say what a cell can do.** Six optional methods, where leaving one out
 means "do not infer this for me". That makes ``index_limit`` the one to write
 first — **a format that omits it cannot have its cells pointed at a tile at
 all**, and the Cell spin and Edit Tiles simply refuse, with no error to read.
 
-Four of the five are below; ``has_line_flag`` is left out because this format
+Five of the six are below; ``has_line_flag`` is left out because this format
 ends no line on a bit.
 
 **What a format says about its cells' *kind* it declares.** ``layout``
 (``"text"`` for a fontmap, ``"sprite"`` for parts placed at pixel offsets rather
-than in a grid), ``indirect``, ``stamp_dense`` and ``cell_tiles`` are not
-parameters of the decode: they are facts celPix has to know *before* a byte is
-read — an object with no tiles bound to it is still an object — so they ride on
-the ``FormatInfo``:
+than in a grid), ``indirect``, ``stamp_dense``, ``stamp_cells``,
+``cell_row_stride`` and ``cell_tiles`` are not parameters of the decode: they
+are facts celPix has to know *before* a byte is read — an object with no tiles
+bound to it is still an object — so they ride on the ``FormatInfo``:
 
     info = FormatInfo(
         id="format.tilemap.my-text",
@@ -182,6 +182,25 @@ class SplitCell:
         if op is CellOp.FLIP_V:
             return cell.flipped_v()
         return None
+
+    def cell_fields(self):
+        """Every field a cell stores, named as the Cell spells it, each with its
+        highest value — one answer instead of a probe per field, and what celPix
+        generates the per-cell property controls from.
+
+        Omit it and the answer is assembled from the methods above, each in its
+        own safe direction. What that assembly can never grant is ``priority``
+        or ``flags``: no other probe speaks for them, so a format with those
+        fields declares them here or its users get no control over them.
+        """
+        return {
+            "index": (1 << _INDEX_BITS) - 1,
+            "palette_row": (1 << _PALETTE_BITS) - 1,
+            "priority": 1,
+            "flip_h": 1,
+            "flip_v": 1,
+            "flags": 0x3F,
+        }
 
 
 def register(registry):

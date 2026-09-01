@@ -117,7 +117,7 @@ _GATES: dict[Capability, tuple[str, ...]] = {
         "_toggle_rearrange_action",
         "_show_rearranged_action",
     ),
-    Capability.CELL_LABELS: ("_show_tile_ids_action",),
+    Capability.CELL_LABELS: ("_show_tile_ids_action", "_show_cell_attrs_action"),
     # The Edit Tiles mode. Hidden rather than greyed off a *pixel* document: a
     # tool for placing cells is not a feature switched off there, it is furniture
     # for a different room.
@@ -174,7 +174,8 @@ _GATES: dict[Capability, tuple[str, ...]] = {
 # conditions (cells this file can edit, a format with an index field) are a
 # finer question underneath it rather than a second place the capability is
 # gated. A capability sits in exactly one bucket; a control may still weigh more
-# than that bucket says.
+# than that bucket says. The property row beside the spin weighs the same way
+# (:meth:`~...cell_props_bar.CellPropsMixin._sync_cell_props`).
 #
 # ``IMPORT_IMAGE`` is here for a reason none of the others share, and it is the
 # one to check a new gate against: its control has an owner that runs **more
@@ -278,6 +279,7 @@ _GATE_OWNS = frozenset(
     {
         "_show_palette_regions_action",
         "_show_tile_ids_action",
+        "_show_cell_attrs_action",
         # The Navigate menu's window rows: built enabled beside the keys they
         # document, and no ``_sync_*`` has ever had a reason to touch them.
         "_nav_window_actions",

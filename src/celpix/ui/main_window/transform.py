@@ -470,6 +470,11 @@ class TransformMixin:
         """
         if ctrl or self._doc is None:
             return False
+        # Edit Tiles cleared the selection the buttons act on, so while it is
+        # armed the letters act on the held stamp instead
+        # (:meth:`~...stamp_tool.StampToolMixin._stamp_transform_key`).
+        if self._stamping:
+            return self._stamp_transform_key(KEY_FIELDS.get(key), shift)
         action = self._transform_key_actions(shift).get(key)
         if action is None:
             return False
@@ -594,18 +599,21 @@ class TransformMixin:
         map's own cell and the spins belong to the pixel view — one click on a
         16x16 cell has to turn that cell, not the 8x8 quadrant under the cursor.
         The unit is the same one the selection snaps to
-        (:meth:`~...selection.SelectionMixin._cell_unit`), which is the tile on a
-        pixel document.
+        (:meth:`~...selection.SelectionMixin._selection_unit`), which is the tile
+        on a pixel document — and on a stamped chain it outgrows the layout's
+        block, which stays the single cell the render places, so the snapped
+        unit wins where it is the larger: one click turns the whole stamp it
+        selected.
         """
         if self._doc is None or self._selected_tile is None:
             return None
         layout = self._view_layout()
         cx, cy = layout.slot_to_pos(self._selected_tile - self._offset)
-        across, down = self._cell_unit()
+        across, down = self._selection_unit()
         if len(self._selection_tiles()) <= across * down:
             # Match BlockLayout's block sizing (columns clamps block width).
-            bc = max(1, min(layout.block_columns, layout.columns))
-            br = max(1, layout.block_rows)
+            bc = max(1, min(max(layout.block_columns, across), layout.columns))
+            br = max(1, max(layout.block_rows, down))
             return bc, br, (cx // bc) * bc, (cy // br) * br
         if self._rect_size is not None:
             cols, rows = self._rect_size

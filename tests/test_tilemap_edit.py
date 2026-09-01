@@ -782,6 +782,25 @@ def test_a_view_only_map_disables_the_cell_clipboard(qtbot, tmp_path) -> None:
     assert window._cell_index.isHidden()
 
 
+def test_the_tile_readout_counts_only_entries_the_stamps_read(qtbot, tmp_path) -> None:
+    """A sparse layout's filler holds whatever was last there and is never
+    resolved, so counting it would report users the picture does not have. Only
+    the corners count, and the noun is the entries' own — stamps."""
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _bound_stamp_layout(window, tmp_path)
+    doc = window._doc
+    assert doc.stamp_cells == (2, 2)
+    # Entry 1 sits between two corners. Give it the corner's own index: still
+    # never read, so still not a user.
+    cells = list(doc.cells)
+    cells[1] = Cell(index=1)
+    doc.cells = cells
+    assert "used by 1 stamp." in window._tile_source_line(1)
+
+
 def test_a_stamp_layout_has_no_base_tile_control(qtbot, tmp_path) -> None:
     """It draws through a panel and takes the panel's base with it, so a base of
     its own would be a live control that changes nothing."""
@@ -1055,6 +1074,30 @@ def test_the_sheet_reads_in_the_selected_cells_palette_row(qtbot, tmp_path) -> N
     window._refresh_tile_source()
     assert window._tile_source_row() == 3
     assert window._tile_source_panel._sheet != row0
+
+
+def test_arming_edit_tiles_recolours_the_sheet_to_subpals_row(qtbot, tmp_path) -> None:
+    """Arming the tool clears the selection, so the sheet's row falls back from
+    the departed cell's to Subpal's — the row the stamp ghost is drawn in. Left
+    composed in the old row, the sheet and the ghost beside it would offer the
+    same tiles in two different palettes."""
+    from celpix.core.tilemap import Cell
+
+    window, _ = _shown_tile_source(
+        qtbot, tmp_path, [Cell(index=1, palette_row=2), Cell(index=1)]
+    )
+    window._subpalette.setValue(0)
+    window._select_tiles(0, 0)  # cell 0 draws in row 2, and the sheet follows
+    assert window._tile_source_row_shown == 2
+
+    window._stamp_action.setChecked(True)
+    assert window._stamping
+    assert window._tile_source_row_shown == 0
+
+    # Disarming changes nothing: the selection is gone either way, and Subpal
+    # keeps answering until a cell is picked again.
+    window._stamp_action.setChecked(False)
+    assert window._tile_source_row_shown == 0
 
 
 def test_the_sheet_previews_the_row_a_stamp_would_land(qtbot, tmp_path) -> None:
@@ -3140,3 +3183,319 @@ def test_a_stamp_leaves_the_row_behind_where_four_cells_share_one(
     assert not window._doc.has_row_groups
     assert window._doc.palette_row_group(5) == [5]
     assert window._stamp_cell(5, Cell(index=1, palette_row=0)).palette_row == 3
+
+
+# -- the per-cell property row ------------------------------------------------
+
+
+def test_the_property_row_grows_exactly_what_the_format_declares(
+    qtbot, tmp_path
+) -> None:
+    """The row is generated from the codec's own field table, so a format with
+    mirror bits and a priority grows three boxes, a bare index map grows nothing
+    and the row hides, and a codec switch rebuilds it — nothing is a fixed
+    control gated per format.
+    """
+    from celpix.core.tilemap import Cell
+
+    window, entry = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)])
+    assert set(window._cell_props_widgets) == {"flip_h", "flip_v", "priority"}
+
+    entry.tilemap_preset_id = "preset.tilemap.gb-bg"  # one byte, index only
+    window._reload_tilemap(entry)
+    assert window._cell_props_widgets == {}
+
+    entry.tilemap_preset_id = "preset.tilemap.snes-bg"
+    window._reload_tilemap(entry)
+    assert set(window._cell_props_widgets) == {"flip_h", "flip_v", "priority"}
+
+
+def test_a_codec_without_cell_fields_gets_the_probes_answer(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A plugin written before the whole-table probe existed keeps exactly the
+    controls its older probes earned — and never priority or flags, which no
+    older probe speaks for: a control over a field the encode drops would write
+    bits that vanish on save.
+    """
+    from celpix.core.tilemap import Cell
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+
+    window, _ = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)])
+    monkeypatch.delattr(TilemapCodec, "cell_fields")
+    fields = window._cell_fields()
+    assert set(fields) == {"index", "palette_row", "flip_h", "flip_v"}
+    assert fields["index"] == 0x3FF and fields["palette_row"] == 7
+
+
+def test_the_row_reads_the_selection_and_mixed_values_show_the_third_state(
+    qtbot, tmp_path
+) -> None:
+    """A uniform value shows plainly; a selection whose cells disagree shows the
+    part-checked state rather than picking a side — and with nothing selected
+    the row greys, because then it is the selection that is missing.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _bound_tilemap(
+        qtbot, tmp_path, [Cell(index=1, flip_h=True), Cell(index=2)], maker=_pnl_file
+    )
+    box = window._cell_props_widgets["flip_h"]
+
+    window._select_tiles(0, 0)
+    assert box.isEnabled()
+    assert box.checkState() == Qt.CheckState.Checked
+    window._select_tiles(1, 1)
+    assert box.checkState() == Qt.CheckState.Unchecked
+
+    window._select_tiles(0, 1)
+    assert box.checkState() == Qt.CheckState.PartiallyChecked
+
+    window._clear_selection()
+    assert not box.isEnabled()
+
+
+def test_a_click_on_the_row_writes_every_selected_cell_in_one_step(
+    qtbot, tmp_path
+) -> None:
+    """From the mixed state a click resolves to a plain yes and sets the whole
+    selection — one undo step, counted on the status line — rather than
+    toggling each cell into a different disagreement.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _bound_tilemap(
+        qtbot, tmp_path, [Cell(index=1, flip_h=True), Cell(index=2)], maker=_pnl_file
+    )
+    window._select_tiles(0, 1)
+    steps = window._undo_stack.count()
+
+    qtbot.mouseClick(window._cell_props_widgets["flip_h"], Qt.MouseButton.LeftButton)
+    assert [cell.flip_h for cell in window._doc.cells[:2]] == [True, True]
+    assert window._undo_stack.count() == steps + 1
+    assert "2 cells" in window.statusBar().currentMessage()
+
+    window._undo_stack.undo()
+    assert [cell.flip_h for cell in window._doc.cells[:2]] == [True, False]
+
+    # Priority is the field that had no editor at all; same funnel, same step.
+    window._select_tiles(0, 1)
+    qtbot.mouseClick(window._cell_props_widgets["priority"], Qt.MouseButton.LeftButton)
+    assert [cell.priority for cell in window._doc.cells[:2]] == [1, 1]
+
+
+def test_a_stamp_layouts_row_edits_the_drawn_bit_and_the_flags(qtbot, tmp_path) -> None:
+    """The row shows exactly the referrer-owned fields of a stamp layout —
+    drawn and the uninterpreted flags, no flips — and writes them where they
+    live, which no control could do before.
+    """
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    # Unbound: which fields the row grows asks the format, not the tile source.
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=1), Cell(index=2)])))
+    assert set(window._cell_props_widgets) == {"visible", "flags"}
+
+    window._select_tiles(0, 0)
+    box = window._cell_props_widgets["visible"]
+    box.click()
+    assert window._doc.cells[0].visible is False
+
+    spin = window._cell_props_widgets["flags"]
+    spin.setValue(1)
+    assert window._doc.cells[0].flags == 1
+    assert "flags" in window.statusBar().currentMessage()
+
+
+def test_the_row_overrides_what_a_sheet_pick_stamps(qtbot, tmp_path) -> None:
+    """A sheet pick lands target-inherit, so in Edit Tiles mode the row holds
+    overrides: part-checked means "keep the target's", a click cycles on → off
+    → keep, an override lands on every stamp — and none of it is an undo step,
+    because the stroke that lands it is the step.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(qtbot, tmp_path, [Cell(index=1, flip_v=True), Cell(index=2)])
+    window._tile_source_panel.select_id(3)
+    box = window._cell_props_widgets["flip_h"]
+    assert box.checkState() == Qt.CheckState.PartiallyChecked  # inherit
+
+    steps = window._undo_stack.count()
+    qtbot.mouseClick(box, Qt.MouseButton.LeftButton)
+    assert window._stamp_attrs == {"flip_h": True}
+    assert window._undo_stack.count() == steps  # session state, no step
+
+    window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    laid = window._doc.cells[0]
+    # The override landed; everything else stayed the target's own.
+    assert (laid.index, laid.flip_h, laid.flip_v) == (3, True, True)
+
+    # The cycle's other two stops: off, then back to the target's.
+    qtbot.mouseClick(box, Qt.MouseButton.LeftButton)
+    assert window._stamp_attrs == {"flip_h": False}
+    qtbot.mouseClick(box, Qt.MouseButton.LeftButton)
+    assert window._stamp_attrs == {}
+    assert "keeps each target cell's" in window.statusBar().currentMessage()
+
+
+def test_an_eyedrop_shows_its_record_on_the_row_and_clears_overrides(
+    qtbot, tmp_path
+) -> None:
+    """An eyedrop means "put *that* one here": the record it takes is what the
+    row now describes, and overrides stacked on top would make the stamp lay
+    something other than what it took — so they clear, and an edit on the row
+    rewrites the held record itself.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(qtbot, tmp_path, [Cell(index=1, flip_h=True), Cell(index=2)])
+    window._stamp_attrs["flip_v"] = True
+
+    window._on_stamp_pressed(0, Qt.MouseButton.RightButton)  # the eyedropper
+    assert window._stamp_attrs == {}
+    box = window._cell_props_widgets["flip_h"]
+    assert box.checkState() == Qt.CheckState.Checked  # the record's own bit
+
+    qtbot.mouseClick(box, Qt.MouseButton.LeftButton)
+    assert window._source_cell.flip_h is False  # the record, rewritten in place
+
+    window._on_stamp_pressed(1, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    assert window._doc.cells[1].flip_h is False
+
+
+def test_the_transform_keys_act_on_the_held_stamp_while_armed(qtbot, tmp_path) -> None:
+    """Arming Edit Tiles clears the selection the H/V buttons act on, which left
+    the letters dead exactly where an artist flips most. While armed they steer
+    the held stamp instead: a sheet pick's override, an eyedropped record's own
+    bit, and a swept brush mirrored whole — order reversed and each toggled.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(qtbot, tmp_path, [Cell(index=1), Cell(index=2, flip_h=True)])
+    window._tile_source_panel.select_id(3)
+    assert window._transform_key(Qt.Key.Key_H, False, False)
+    assert window._stamp_attrs == {"flip_h": True}
+
+    # A rotation has no bit in any format in hand: consumed, named, refused.
+    assert window._transform_key(Qt.Key.Key_C, False, False)
+    assert "no rotation" in window.statusBar().currentMessage()
+    assert window._doc.cells[0].flip_h is False
+
+    # A canvas-swept brush mirrors geometrically - the checkbox's set-all is the
+    # other gesture, and both stay reachable.
+    window._on_stamp_area_picked(0, 1)  # both cells, side by side
+    assert window._transform_key(Qt.Key.Key_H, False, False)
+    brush = window._stamp_brush
+    assert [brush.get(x, 0).index for x in range(2)] == [2, 1]  # order reversed
+    assert [brush.get(x, 0).flip_h for x in range(2)] == [False, True]  # bits toggled
+    assert "Mirrored" in window.statusBar().currentMessage()
+
+
+def test_a_mixed_brush_reads_part_checked_and_a_click_sets_it_whole(
+    qtbot, tmp_path
+) -> None:
+    """A canvas-swept brush is many records: where they disagree the row shows
+    the third state, and a click makes them uniform — the one coherent reading
+    of a property editor over a brush.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(qtbot, tmp_path, [Cell(index=1), Cell(index=2, flip_h=True)])
+    window._on_stamp_area_picked(0, 1)
+    box = window._cell_props_widgets["flip_h"]
+    assert box.checkState() == Qt.CheckState.PartiallyChecked
+
+    qtbot.mouseClick(box, Qt.MouseButton.LeftButton)
+    brush = window._stamp_brush
+    assert [brush.get(x, 0).flip_h for x in range(2)] == [True, True]
+    assert "brush" in window.statusBar().currentMessage()
+
+
+def test_the_stamp_ghost_reads_the_cell_under_the_pointer(qtbot, tmp_path) -> None:
+    """A sheet pick inherits the target's attributes, so an honest ghost has to
+    know the target: hovering a flipped cell renders the held tile flipped, and
+    the landing computation itself is what renders it — the two cannot
+    disagree by construction.
+    """
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(qtbot, tmp_path, [Cell(index=1, flip_h=True), Cell(index=2)])
+    window._tile_source_panel.select_id(3)
+
+    window._on_stamp_hovered(0)  # over the flipped cell
+    cells, _ = window._held_stamp_cells()
+    assert (cells[0].index, cells[0].flip_h) == (3, True)  # the target's lend
+
+    window._on_stamp_hovered(window._doc.tiles_per_cell)  # over the plain cell
+    cells, _ = window._held_stamp_cells()
+    assert (cells[0].index, cells[0].flip_h) == (3, False)
+
+    # An override wins over what the target would lend.
+    window._stamp_attrs["flip_h"] = True
+    cells, _ = window._held_stamp_cells()
+    assert cells[0].flip_h is True
+
+
+def test_the_row_stays_up_in_edit_tiles_mode_and_drawn_off_erases(
+    qtbot, tmp_path
+) -> None:
+    """Every declared control stays on the row while the tool is armed — a
+    stamp layout's are Drawn and Flags, and Edit Tiles is where a stamp layout
+    is edited at all, so hiding them left the row empty exactly where it was
+    needed. Drawn there is the stamp's own force made visible: unchecking it
+    turns the stamp into the eraser, laying undrawn cells.
+    """
+    from PySide6.QtCore import Qt
+
+    from celpix.ui import render_bridge
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _bound_stamp_layout(window, tmp_path)
+    window._stamp_action.setChecked(True)
+    assert window._stamping
+    assert set(window._cell_props_widgets) == {"visible", "flags"}
+
+    window._on_stamp_pressed(0, Qt.MouseButton.RightButton)  # pick stamp $1
+    box = window._cell_props_widgets["visible"]
+    assert box.isEnabled()
+    assert box.checkState() == Qt.CheckState.Checked  # the stamp's default
+
+    # Flags ride the held record like every other attribute of it.
+    window._cell_props_widgets["flags"].setValue(1)
+    assert window._source_cell.flags == 1
+
+    box.click()
+    assert window._stamp_attrs == {"visible": False}
+    # The ghost is the background: what lands is an undrawn position.
+    preview = window._canvas._stamp_preview
+    assert preview is not None
+    assert preview.pixelColor(0, 0) == render_bridge.HIDDEN_BACKGROUND
+
+    window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    laid = window._doc.cells[0]
+    assert laid.visible is False  # erased...
+    assert (laid.index, laid.flags) == (1, 1)  # ...with the rest still landing
+
+    # Checking the box again puts the force back: the next stamp draws.
+    box.click()
+    assert window._stamp_attrs == {}
+    window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    assert window._doc.cells[0].visible is True

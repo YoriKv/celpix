@@ -491,12 +491,15 @@ class Document:
         if chain is None or self.cells is None:
             self.resolved_cells = None
             return
-        if chain.stamp != (1, 1) and columns:
+        # `stamp_cells`, not `chain.stamp`: the one authority every unit in the
+        # UI reads, so a chain the units cannot report expands nowhere either.
+        stamp = self.stamp_cells
+        if stamp != (1, 1):
             self.resolved_cells = expand_stamps(
                 self.cells,
                 chain.source,
                 columns,
-                chain.stamp,
+                stamp,
                 chain.source_columns,
                 carry_rows=chain.carry_rows,
                 dense=chain.dense,
@@ -551,12 +554,13 @@ class Document:
         if stated:
             return stated
         chain = self.chain
-        if chain is None or not chain.dense or chain.stamp == (1, 1):
+        stamp = self._chain_stamp
+        if chain is None or not chain.dense or stamp == (1, 1):
             return 0
         # Floored to whole stamps, so a Cols the user typed between two of them
         # narrows the picture by the remainder rather than shearing it — and the
         # spin is set back to what was used (``_settle_tilemap_width``).
-        return max(1, self.view.columns // max(1, chain.stamp[0]))
+        return max(1, self.view.columns // max(1, stamp[0]))
 
     @property
     def is_tilemap(self) -> bool:
@@ -752,29 +756,47 @@ class Document:
         )
 
     @property
-    def stamp_cells(self) -> tuple[int, int]:
-        """How many drawn cells one pickable stamp covers — ``(1, 1)`` for none.
+    def _chain_stamp(self) -> tuple[int, int]:
+        """The stamp this chain *can* resolve — ``(1, 1)`` where it cannot.
 
-        The chain's stamp with two conditions on it. The source's own cells must
-        be single tiles: a stamp is placed as one layout block — a rectangle of
-        consecutive tiles — and a stamp of *metatile* cells interleaves two
-        rectangles no single block can express, so a format that stamped metatiles
-        would preview stamp by stamp here and draw correctly on the map either
-        way. No format in hand does: the only one that stamps is a PNL panel,
-        whose word is one 8x8 tile in every file of the corpus
-        (``docs/graphics-formats-reference/scgcad-formats.md`` §3.1).
-
-        And the picture must actually be **stamp-resolved** — the condition
-        :meth:`resolve` expands under and :meth:`cell_at` snaps under, which a
-        sparse map with no stated width fails (:attr:`stamp_columns`). There the
-        drawn picture is the plain chain, one cell per entry, so a unit wider
-        than that would size the sheet's tiles, the pick rectangle and the
-        preview to stamps the render never lays out.
+        The one place the metatile-stamp refusal lives. The source's own cells
+        must be single tiles: a stamp is placed as one layout block — a
+        rectangle of consecutive tiles — and a stamp of *metatile* cells
+        interleaves two rectangles no single block can express. No format in
+        hand does: the only one that stamps is a PNL panel, whose word is one
+        8x8 tile in every file of the corpus
+        (``docs/graphics-formats-reference/scgcad-formats.md`` §3.1). A chain
+        that states such a stamp degrades to the plain one-coordinate-one-cell
+        reading — through *this* property, so the resolution
+        (:meth:`resolve`, :meth:`cell_at`, :attr:`stamp_columns`) and every
+        unit built on :attr:`stamp_cells` degrade together rather than the
+        picture expanding under units that report 1x1. The host says why on
+        the status line when it builds such a chain
+        (``ui/main_window/session.py``).
         """
         chain = self.chain
-        if chain is None or self.cell_tiles != (1, 1) or not self.stamp_columns:
+        if chain is None or self.cell_tiles != (1, 1):
             return (1, 1)
         return chain.stamp
+
+    @property
+    def stamp_cells(self) -> tuple[int, int]:
+        """How many drawn cells one placed stamp covers — ``(1, 1)`` for none.
+
+        **The** stamp geometry, and deliberately the only one: :meth:`resolve`
+        expands under it, :meth:`cell_at` snaps under it, and the UI sizes the
+        pick rectangle, the selection unit, the clipboard lattice and the sheet
+        off it — one authority, so no gesture can act in a unit the resolution
+        does not.
+
+        :attr:`_chain_stamp` with one more condition: the picture must actually
+        be **stamp-resolved**, which a sparse map with no stated width fails
+        (:attr:`stamp_columns`). There the drawn picture is the plain chain,
+        one cell per entry, so a unit wider than that would size the sheet's
+        tiles, the pick rectangle and the preview to stamps the render never
+        lays out.
+        """
+        return self._chain_stamp if self.stamp_columns else (1, 1)
 
     @property
     def stamp_tiles(self) -> tuple[int, int]:
@@ -991,7 +1013,7 @@ class Document:
         columns = self.stamp_columns
         if chain is None or not chain.dense or not columns:
             return 0
-        return columns * max(1, chain.stamp[0])
+        return columns * max(1, self.stamp_cells[0])
 
     @property
     def columns_locked(self) -> bool:
@@ -1189,11 +1211,30 @@ class Document:
             position = order[position]
         chain = self.chain
         # The width the picture was *resolved* at, so the entry a click snaps to
-        # is the entry that position draws (:attr:`stamp_columns`).
+        # is the entry that position draws (:attr:`stamp_columns`) — and the
+        # stamp the picture was resolved under, for the same reason
+        # (:attr:`stamp_cells`).
         columns = self.stamp_columns
-        if chain is None or chain.stamp == (1, 1) or not columns:
+        stamp = self.stamp_cells
+        if chain is None or stamp == (1, 1):
             return position
-        return stamp_origin(position, columns, chain.stamp, dense=chain.dense)
+        return stamp_origin(position, columns, stamp, dense=chain.dense)
+
+    def cell_is_read(self, index: int) -> bool:
+        """Whether the resolution ever reads the entry at ``index``.
+
+        False only for a **sparse** stamped map's filler: its entries sit one
+        per drawn position with only the stamp corners meaningful, so the rest
+        hold whatever was last there and are never resolved
+        (:func:`~celpix.core.tilemap.stamp_origin`). Anything counting over the
+        file — "which cells use tile X" — would otherwise count data the format
+        says is meaningless. Every entry of a dense or unstamped map is read.
+        """
+        chain = self.chain
+        stamp = self.stamp_cells
+        if chain is None or chain.dense or stamp == (1, 1):
+            return True
+        return stamp_origin(index, self.stamp_columns, stamp) == index
 
     def palette_row_group(self, index: int) -> list[int]:
         """Every cell index whose stored palette row is the same field as ``index``'s.

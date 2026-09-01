@@ -54,12 +54,13 @@ from __future__ import annotations
 from dataclasses import replace
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QImage, QKeySequence
 
 from celpix.core.capabilities import Capability
 from celpix.core.errors import PipelineError
-from celpix.core.tilemap import Cell, CellGrid, resolve_cell
+from celpix.core.tilemap import BLANK, Cell, CellGrid, expand_stamp
 from celpix.pipeline import pipeline
+from celpix.ui import render_bridge
 from celpix.ui.tools import EditMode
 from celpix.ui.widgets import counted, signals_blocked
 
@@ -103,6 +104,18 @@ class StampToolMixin:
         # single pick drops it
         # (:meth:`~...tile_source_dock.TileSourceDockMixin._set_source_tile`).
         self._stamp_brush: CellGrid | None = None
+        # The property row's explicit overrides on what a stamp lays — flips,
+        # priority, and `visible=False` for the eraser — applied on top of
+        # whatever the pick carried (:meth:`_apply_stamp_attrs`). Session state
+        # like Subpal: no undo step, and it outlives sheet picks so "set flip H
+        # once, paint many tiles" is one gesture per tile. An eyedrop clears it
+        # — that gesture means "put *that* one here", and the record it takes
+        # already says everything.
+        self._stamp_attrs: dict[str, bool | int] = {}
+        # The cell the pointer is over while the tool is armed, as a drawn
+        # position — what a target-inheriting ghost reads its attributes from
+        # (:meth:`_stamp_target_at`). None off the canvas.
+        self._stamp_hover_anchor: int | None = None
 
     def _build_stamp_actions(self, bar) -> None:  # noqa: ANN001 — a QToolBar
         """The tool's two actions: the toolbar button and the Edit menu row.
@@ -139,6 +152,7 @@ class StampToolMixin:
         self._canvas.stamp_moved.connect(self._on_stamp_moved)
         self._canvas.stamp_finished.connect(self._on_stamp_finished)
         self._canvas.stamp_area_picked.connect(self._on_stamp_area_picked)
+        self._canvas.stamp_hovered.connect(self._on_stamp_hovered)
 
     # -- arming --------------------------------------------------------------
     def _stamp_available(self) -> bool:
@@ -185,7 +199,12 @@ class StampToolMixin:
         self._canvas.set_stamping(on)
         if on:
             self._clear_selection()
+        else:
+            self._stamp_hover_anchor = None
         self._sync_stamp_actions()
+        # The property row retargets with the mode — held stamp or selection —
+        # and neither the selection pass nor the refresh runs on an arm alone.
+        self._sync_cell_props()
 
     def _sync_stamp_actions(self) -> None:
         """Converge the two actions with the state they drive.
@@ -368,7 +387,8 @@ class StampToolMixin:
                 landing = self._stamp_cell(record.index, cells[at])
             else:
                 landing = self._settle_stamp_row(
-                    replace(record, visible=True), cells[at]
+                    self._apply_stamp_attrs(replace(record, visible=True)),
+                    cells[at],
                 )
             if cells[at] != landing:
                 cells[at] = landing
@@ -392,8 +412,10 @@ class StampToolMixin:
 
         A tile picked in the **sheet** has no such record behind it — the sheet
         holds tiles — so only the index lands and the target keeps its own other
-        attributes. The **palette row** follows neither pick but the Subpal spin,
-        which is the row every preview of the stamp is drawn in
+        attributes. The property row's **overrides** then land on top either way
+        (:meth:`_apply_stamp_attrs`) — the one say the user has over a sheet
+        pick's attributes. The **palette row** follows neither pick but the
+        Subpal spin, which is the row every preview of the stamp is drawn in
         (:meth:`_settle_stamp_row`).
 
         The guard is against a **stale** record: the held ID is re-validated
@@ -407,14 +429,38 @@ class StampToolMixin:
         feedback, and on a layout that is largely undrawn (`-CLR-.MAP` is
         entirely so) every click a silent no-op. It is also what the authoring
         tool does: `scr_map_cnv` sets the drawn byte on every block it registers
-        (``scgcad-formats.md`` §4).
+        (``scgcad-formats.md`` §4). The one thing that outweighs the force is
+        the property row's own Drawn box: unchecked, the override lands
+        ``visible=False`` over it and the stamp is the **eraser** — every press
+        lays undrawn cells, which is Clear Cells said by pointing.
         """
         held = self._source_cell
         if held is not None and held.index == tile_id:
             laid = replace(held, visible=True)
         else:
             laid = replace(over, index=tile_id, visible=True)
-        return self._settle_stamp_row(laid, over)
+        return self._settle_stamp_row(self._apply_stamp_attrs(laid), over)
+
+    def _apply_stamp_attrs(self, laid: Cell) -> Cell:
+        """``laid`` with the property row's overrides written over it.
+
+        Filtered to the fields the format declares
+        (:meth:`~...tilemap_edit.TilemapEditMixin._cell_fields`) rather than
+        trusted from the row: the row prunes itself on every sync, but a codec
+        can change in the window between, and an undeclared bit set here would
+        show a mirrored tile the save then silently unmirrors. Runs on **every**
+        landing — single pick, sheet-swept brush and record brush alike —
+        because the Drawn override is stamp-wide (the eraser must erase with
+        whatever is held); the other overrides are still empty whenever a
+        record is held, since an eyedrop clears them and the row edits the
+        record itself instead.
+        """
+        attrs = self._stamp_attrs
+        if not attrs:
+            return laid
+        fields = self._cell_fields()
+        allowed = {name: value for name, value in attrs.items() if name in fields}
+        return replace(laid, **allowed) if allowed else laid
 
     def _settle_stamp_row(self, laid: Cell, over: Cell) -> Cell:
         """``laid`` with the palette row a stamp actually writes into ``over``.
@@ -639,62 +685,130 @@ class StampToolMixin:
         except (KeyError, PipelineError):
             self._canvas.set_stamp_preview(None)
             return
-        self._canvas.set_stamp_preview(self._tilemap_grid_image(grid))
+        image = self._tilemap_grid_image(grid)
+        if self._stamp_attrs.get("visible") is False:
+            # The eraser: every landing position paints the background, so
+            # that is the ghost — the held tiles would promise a picture the
+            # press does not make. Same footprint, so the outline still says
+            # where the erase lands.
+            image = image.convertToFormat(QImage.Format.Format_ARGB32)
+            image.fill(render_bridge.HIDDEN_BACKGROUND)
+        self._canvas.set_stamp_preview(image)
 
     def _held_stamp_cells(self) -> tuple[list[Cell], int] | None:
         """The cells a left press would lay, ready to compose, and their width
         in placed units — or None with nothing usable held.
 
-        Each unit's records go through the row rule the landing goes through
-        (:meth:`_settle_stamp_row`), against a blank target: the one divergence
-        that leaves is the row-group format, whose landing keeps a row only the
-        target knows — a preview has no target yet, and the record's own row is
-        the closest honest answer there.
+        Built by the **landing computation itself** — each unit through
+        :meth:`_stamp_cell` (or a record through :meth:`_settle_stamp_row`)
+        against the cell actually under the pointer
+        (:meth:`_stamp_target_at`) — so the ghost and the landing cannot come
+        out different by construction. The target matters twice: a sheet pick
+        inherits the target's attributes, and a row-group format's landing
+        keeps a row only the target knows. Off the canvas there is no target
+        yet, and a blank one is the closest honest answer.
         """
         brush = self._stamp_brush
         if brush is not None and len(brush):
-            units = [
-                self._settle_stamp_row(replace(brush.get(x, y), visible=True), Cell())
-                for y in range(brush.height)
-                for x in range(brush.width)
-            ]
+            if self._source_cell is None:
+                # A sheet-swept brush lands square by square as sheet picks do —
+                # target-inherit plus the row's overrides — so it previews that
+                # way, each square against the cell it would land over.
+                units = [
+                    self._stamp_cell(brush.get(x, y).index, self._stamp_target_at(x, y))
+                    for y in range(brush.height)
+                    for x in range(brush.width)
+                ]
+            else:
+                units = [
+                    self._settle_stamp_row(
+                        self._apply_stamp_attrs(replace(brush.get(x, y), visible=True)),
+                        self._stamp_target_at(x, y),
+                    )
+                    for y in range(brush.height)
+                    for x in range(brush.width)
+                ]
             width = brush.width
         else:
             held = self._held_tile_id()
             if held is None:
                 return None
-            record = self._source_cell
-            picked = record if record is not None and record.index == held else Cell()
-            laid = replace(picked, index=held, visible=True)
-            units = [self._settle_stamp_row(laid, Cell())]
+            units = [self._stamp_cell(held, self._stamp_target_at(0, 0))]
             width = 1
         return [cell for unit in units for cell in self._stamp_unit_cells(unit)], width
+
+    def _stamp_target_at(self, dx: int, dy: int) -> Cell:
+        """The cell ``(dx, dy)`` placed units from the hovered anchor would land
+        over — what a target-inheriting ghost reads — or blank off the canvas.
+
+        The landing's own geometry (:meth:`_stamp_into`): units step by the
+        stamp lattice, a row's end clips rather than wraps, and the drawn
+        position resolves through
+        :meth:`~celpix.core.document.Document.cell_at`.
+        """
+        doc = self._doc
+        anchor = self._stamp_hover_anchor
+        if doc is None or doc.cells is None or anchor is None:
+            return BLANK
+        width = self._cells_per_row()
+        unit_w, unit_h = doc.stamp_cells
+        x = anchor % width + dx * unit_w
+        if x >= width:
+            return BLANK
+        at = doc.cell_at((anchor // width + dy * unit_h) * width + x)
+        return doc.cells[at] if 0 <= at < len(doc.cells) else BLANK
+
+    def _on_stamp_hovered(self, slot: object) -> None:
+        """The pointer crossed into another cell: re-aim the ghost's target.
+
+        Coalesced to the placed unit — the canvas already reports per tile
+        slot, and a metatile map would otherwise re-render an identical ghost
+        once per tile crossed. Re-rendered only where the target can show:
+        a held *record* lands the same everywhere, except on a row-group
+        format, whose landing keeps the target's row.
+        """
+        doc = self._doc
+        anchor = None
+        if slot is not None and doc is not None:
+            # Snapped to the unit lattice the ghost is painted on — a plain
+            # map's unit is one cell, a chained map's is the whole stamp.
+            unit_w, unit_h = doc.stamp_cells
+            width = self._cells_per_row()
+            at = int(slot) // doc.tiles_per_cell
+            x, y = at % width, at // width
+            anchor = (y - y % unit_h) * width + (x - x % unit_w)
+        if anchor == self._stamp_hover_anchor:
+            return
+        self._stamp_hover_anchor = anchor
+        if not self._stamping or self._stamp_cells is not None or doc is None:
+            return
+        if self._source_cell is None or doc.has_row_groups:
+            self._sync_stamp_preview()
 
     def _stamp_unit_cells(self, cell: Cell) -> list[Cell]:
         """What ``cell`` draws as, one record per composed cell.
 
         ``cell`` itself for every ordinary map. On a **chained** map a held ID
         is a position in the map being drawn through, so the unit is that
-        stamp's source cells resolved — tile and attributes both, the walk
-        :func:`~celpix.pipeline.pipeline.tile_source_image` takes for its own
-        preview of the same thing (§3.1).
+        stamp's source cells resolved — through the resolution's own helper
+        (:func:`~celpix.core.tilemap.expand_stamp`), so the ghost and the map
+        cannot resolve one coordinate two different ways. The **whole** record
+        goes in, not just its index: the landing composes the laid entry's
+        flips, row and visibility over the source (§3.1), and a ghost built
+        from a bare coordinate would preview a stamp facing a different way
+        than the press lays wherever the format carries those fields.
         """
         doc = self._doc
         chain = doc.chain if doc is not None else None
         if doc is None or chain is None:
             return [cell]
-        across, down = doc.stamp_cells
-        stride = max(1, chain.source_columns)
-        return [
-            resolve_cell(
-                Cell(index=cell.index),
-                chain.source,
-                carry_rows=chain.carry_rows,
-                at=cell.index + dx + dy * stride,
-            )
-            for dy in range(down)
-            for dx in range(across)
-        ]
+        return expand_stamp(
+            cell,
+            chain.source,
+            doc.stamp_cells,
+            chain.source_columns,
+            carry_rows=chain.carry_rows,
+        )
 
     def _refuse_stamp(self) -> None:
         """Say why a click laid nothing down, rather than doing nothing silently.
@@ -706,3 +820,84 @@ class StampToolMixin:
         self.statusBar().showMessage(
             "No tile to stamp - pick one in the Tile Source panel first."
         )
+
+    # -- the transform keys, while armed -------------------------------------
+    def _stamp_transform_key(self, field: str | None, shift: bool) -> bool:
+        """``H``/``V`` against the held stamp; True if the key was consumed.
+
+        The transform bar's letters act on the selection, and arming the tool
+        cleared it — so while armed they act on what a press would lay instead,
+        and what that means follows what is held, exactly as the property row's
+        boxes do (:mod:`~celpix.ui.main_window.cell_props_bar`):
+
+        - an **eyedropped record** toggles its own bit;
+        - a **canvas-swept brush** mirrors geometrically — order reversed and
+          every record toggled, the Block flip's two halves
+          (:meth:`~celpix.core.tilemap.CellGrid.flipped_h`);
+        - a **sheet pick** cycles the row's override, on → off → keep the
+          target's, the checkbox's own cycle so the two gestures agree;
+        - a **sheet-swept brush** mirrors too — the order reversed, and the
+          flip said through the override since its bare records' bits never
+          land: keep-the-target's reads as off, so the toggle mirrors back.
+
+        Every letter the bar owns is consumed here, armed or not — a rotation
+        is refused with a message (no format in hand has a rotation bit), and
+        Shift's Block half means nothing over a held stamp — because a letter
+        falling through to something else mid-tool is a surprise
+        (:meth:`~...transform.TransformMixin._transform_key`).
+        """
+        if field is None:
+            return False
+        if shift:
+            return True  # the Block half acts on a selection this tool cleared
+        if field not in ("flip_h", "flip_v"):
+            self.statusBar().showMessage(
+                f"{self._tilemap_format_name()} has no rotation - nothing changed."
+            )
+            return True
+        spun = "horizontal flip" if field == "flip_h" else "vertical flip"
+        if field not in self._cell_fields():
+            self.statusBar().showMessage(
+                f"{self._tilemap_format_name()} has no {spun} - nothing changed."
+            )
+            return True
+        target = self._cell_props_target()
+        if target is None:
+            self._refuse_stamp()
+            return True
+        if target == "record":
+            record = self._source_cell
+            flipped = not getattr(record, field)
+            self._source_cell = replace(record, **{field: flipped})
+            said = "on" if flipped else "off"
+            message = f"Held stamp's {spun} {said}."
+        elif target == "brush":
+            brush = self._stamp_brush
+            self._stamp_brush = (
+                brush.flipped_h() if field == "flip_h" else brush.flipped_v()
+            )
+            message = f"Mirrored the held {brush.width}x{brush.height} brush."
+        else:
+            over = self._stamp_attrs.get(field)
+            brush = self._stamp_brush
+            if brush is not None and len(brush):
+                # Mirror the layout; the per-record flip is the override's,
+                # since a bare sheet record's own bits never land.
+                self._stamp_brush = (
+                    brush.flipped_h() if field == "flip_h" else brush.flipped_v()
+                )
+                self._stamp_attrs[field] = not bool(over)
+                message = f"Mirrored the held {brush.width}x{brush.height} brush."
+            elif over is None:
+                self._stamp_attrs[field] = True
+                message = f"Next stamp lays {spun} on."
+            elif over:
+                self._stamp_attrs[field] = False
+                message = f"Next stamp lays {spun} off."
+            else:
+                del self._stamp_attrs[field]
+                message = f"Next stamp keeps each target cell's {spun}."
+        self._sync_cell_props()
+        self._sync_stamp_preview()
+        self.statusBar().showMessage(message)
+        return True

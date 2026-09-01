@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.13 - unreleased
+
+- Tilemap properties are now editable both in place and when placing tiles
+- Some more tilemap fixes
+
 ## v0.5.12 - 2026-08-31
 
 - Edit tiles previews the selected tile or stamp

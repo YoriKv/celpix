@@ -86,6 +86,7 @@ from celpix.ui.help_dialogs import AboutDialog, ShortcutGuide, shortcut_sections
 from celpix.ui.hex_view_panel import HexViewPanel
 from celpix.ui.main_window.animation import AnimationMixin
 from celpix.ui.main_window.capability_sync import CapabilitySyncMixin
+from celpix.ui.main_window.cell_props_bar import CellPropsMixin
 from celpix.ui.main_window.clipboard_ops import ClipboardOpsMixin
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
@@ -175,6 +176,7 @@ class MainWindow(
     SessionMixin,
     TilemapBarMixin,
     TilemapEditMixin,
+    CellPropsMixin,
     TileSourceDockMixin,
     StampToolMixin,
     SpriteSelectMixin,

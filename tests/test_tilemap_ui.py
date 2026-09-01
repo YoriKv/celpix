@@ -14,10 +14,12 @@ from uihelpers import (
     _bound_to_slice,
     _cgx_file,
     _make_snes_file,
+    _map_file,
     _obj_file,
     _pnl_file,
     _scr_file,
     _section_names,
+    _tilemap_file,
 )
 
 
@@ -888,6 +890,160 @@ def test_a_dense_map_that_states_no_width_keeps_cols_live(qtbot, tmp_path) -> No
     assert window._columns.value() == 6
 
 
+def test_a_format_can_declare_its_own_stamp_size(qtbot, tmp_path) -> None:
+    """The referrer's half of the stamp contract: a metatile table's coordinates
+    always name a fixed block, so its preset declares ``stamp_cells`` and needs
+    no container on the source to publish one. The source's width reaches the
+    chain too — the width its cells are actually laid at where its format
+    states none, since a stride of 1 would walk a stamp's second row along the
+    same source row instead of down one."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.errors import Stage
+    from celpix.core.tilemap import Cell
+    from celpix.plugins.base import Preset
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    # A raw map as the source: no container, so nothing publishes a stamp size
+    # or a width for it.
+    raw = _tilemap_file(tmp_path, [Cell(index=i % 8) for i in range(32)])
+    window._load_pixel(str(raw), content_kind=ContentKind.TILEMAP)
+    source = window._workspace.current
+    source.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(source)
+    assert source.doc.stated_columns == 0
+
+    path = tmp_path / "table.bin"
+    path.write_bytes(bytes(range(8)))
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    entry = window._workspace.current
+    window._registry.register_preset(
+        Preset(
+            id="preset.tilemap.declared-stamps",
+            name="A metatile table that knows its own stamp",
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id="codec.tilemap.packed",
+            params={
+                "bytes": 1,
+                "fields": "iiii iiii",
+                "indirect": True,
+                "stamp_dense": True,
+                "stamp_cells": [2, 2],
+            },
+        )
+    )
+    entry.tilemap_preset_id = "preset.tilemap.declared-stamps"
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry=source)
+    window._reload_tilemap(entry)
+
+    doc = window._doc
+    assert doc.chain is not None and doc.chain.stamp == (2, 2)
+    assert doc.stamp_cells == (2, 2)
+    assert doc.chain.source_columns == source.doc.view.columns
+    assert len(doc.drawn_cells) == 8 * 4  # every entry expands to its stamp
+
+
+def test_an_unresolvable_stamp_degrades_loudly_to_plain_cells(qtbot, tmp_path) -> None:
+    """A sparse map's entries sit where its stamps' corners landed, so its width
+    is not a preference — with none stated the stamps cannot be resolved. The
+    chain then degrades to one cell per entry **everywhere at once** (the
+    resolution, the click snap, every unit the UI sizes off ``stamp_cells``),
+    and the status line says why, rather than a wrong picture appearing
+    silently."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.errors import Stage
+    from celpix.core.tilemap import Cell
+    from celpix.plugins.base import Preset
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1)])))
+    panel = window._workspace.current
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(panel)
+
+    path = tmp_path / "loose.bin"
+    path.write_bytes(bytes(range(8)))
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    entry = window._workspace.current
+    window._registry.register_preset(
+        Preset(
+            id="preset.tilemap.loose-sparse",
+            name="Sparse coordinates with no stated width",
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id="codec.tilemap.packed",
+            params={"bytes": 1, "fields": "iiii iiii", "indirect": True},
+        )
+    )
+    entry.tilemap_preset_id = "preset.tilemap.loose-sparse"
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry=panel)
+    window._reload_tilemap(entry)
+
+    doc = window._doc
+    assert doc.chain is not None and doc.chain.stamp == (2, 2)  # the panel's word
+    assert doc.stamp_cells == (1, 1)  # ...which nothing here can resolve
+    assert len(doc.drawn_cells) == len(doc.cells)
+    assert "stamps not resolved" in window.statusBar().currentMessage()
+
+
+def test_a_metatile_format_can_declare_its_own_row_stride(qtbot, tmp_path) -> None:
+    """A metatile's lower tiles sit a VRAM row below its upper ones on a console
+    sheet, but a table of consecutive tiles strides by its own width — so the
+    stride is the format's to declare, with the VRAM row only the default."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.errors import Stage
+    from celpix.core.tilemap import Cell
+    from celpix.plugins import FormatInfo
+    from celpix.plugins.formats import adapt_format
+    from celpix.project.workspace import TileMode, TileSource
+
+    class _Consecutive:
+        info = FormatInfo(
+            id="format.tilemap.consecutive-metatiles",
+            name="2x2 metatiles of consecutive tiles",
+            declares={"cell_row_stride": 2},
+        )
+
+        def decode(self, data, ctx):
+            return [Cell(index=byte) for byte in data]
+
+        def encode(self, cells, ctx):
+            return bytes(cell.index & 0xFF for cell in cells)
+
+        def bytes_per_cell(self):
+            return 1
+
+        def cell_tiles(self):
+            return (2, 2)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    engine, preset = adapt_format(_Consecutive(), Stage.INTERPRET_TILEMAP)
+    window._registry.register(engine)
+    window._registry.register_preset(preset)
+    path = tmp_path / "table.bin"
+    path.write_bytes(bytes(4))
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    entry = window._workspace.current
+    entry.tilemap_preset_id = preset.id
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(entry)
+
+    assert window._doc.cell_tiles == (2, 2)
+    assert window._doc.cell_row_stride == 2
+
+
 def test_a_chained_map_keeps_its_own_row_grouping(qtbot, tmp_path) -> None:
     """A chained document takes its drawing from the map it stamps and its **file**
     facts from its own format, and the row grouping is one of the second kind.
@@ -981,6 +1137,51 @@ def test_a_binding_change_keeps_the_width_the_map_is_being_read_at(
     window._undo_stack.undo()
     assert window._doc.tile_base_index == 0
     assert window._columns.value() == 8
+
+
+def test_rebinding_to_an_unloaded_source_keeps_the_layouts_own_columns(
+    qtbot, tmp_path
+) -> None:
+    """A rebind carries the map's view across, so its own width hint is
+    (rightly) skipped on the re-read — which leaves nothing to put the width
+    back if something else moves it. And something did: a source with no
+    document yet loads *inside* the map's re-read, and its hint used to land on
+    the Cols spin of the map on screen, halving the layout irrecoverably — the
+    carried view then reads as the width the map "was seen at", and the columns
+    are not part of the binding step for undo to take back. An unloaded source
+    is the ordinary case, since a restored project loads every entry lazily."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.entries[0]
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=0), Cell(index=1)])))
+    panel = window._workspace.current
+    panel.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+    window._reload_tilemap(panel)
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1)], name="other.PNL")))
+    other = window._workspace.current
+    other.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=1), Cell(index=0)])))
+    layout = window._workspace.current
+    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry=panel)
+    window._reload_tilemap(layout)
+    width = window._columns.value()
+    assert width == layout.doc.view.columns != 32  # 32 is a panel's width
+
+    other.doc = None  # what a restored project holds: nothing loaded yet
+    window._rebind_tiles(layout, TileSource(mode=TileMode.ENTRY, entry=other))
+
+    assert layout.doc.chain is not None  # the rebind really resolved the panel
+    assert window._columns.value() == width
+    assert layout.doc.view.columns == width
+    assert other.doc.view.columns == 32  # the hint still reached its owner
+
+    window._undo_stack.undo()
+    assert window._columns.value() == width
+    assert layout.doc.view.columns == width
 
 
 def test_a_binding_change_keeps_the_maps_unsaved_cell_edits(qtbot, tmp_path) -> None:
@@ -1203,6 +1404,29 @@ def test_tile_id_labels_are_one_per_cell_on_a_metatile_map(qtbot, tmp_path) -> N
     assert window._canvas._tile_ids[:8] == [1, None, None, None, 2, None, None, None]
 
 
+def test_show_cell_attributes_badges_only_the_fields_the_format_declares(
+    qtbot, tmp_path
+) -> None:
+    """Priority is carried and never rendered, so the badge is the picture's
+    only account of it — one mark per cell whose bit is set. A format declaring
+    neither badgeable field shows nothing rather than claiming bits the file
+    has nowhere to store.
+    """
+    from celpix.core.tilemap import Cell
+    from celpix.ui.canvas import ATTR_PRIORITY_BIT
+
+    window, _bank, entry = _bound_screen(
+        qtbot, tmp_path, [Cell(index=1, priority=1), Cell(index=2)]
+    )
+    assert window._canvas._cell_attrs is None  # off by default
+    window._show_cell_attrs_action.setChecked(True)
+    assert window._canvas._cell_attrs[:2] == [ATTR_PRIORITY_BIT, None]
+
+    entry.tilemap_preset_id = "preset.tilemap.gb-bg"  # index only, no badges
+    window._reload_tilemap(entry)
+    assert window._canvas._cell_attrs is None
+
+
 def test_a_map_selects_every_cell_it_has_not_every_tile_the_bank_has(
     qtbot, tmp_path
 ) -> None:
@@ -1255,6 +1479,53 @@ def test_a_metatile_map_selects_whole_cells_in_either_shape(qtbot, tmp_path) -> 
     window._on_slots_selected(1, 6)
     assert window._selected_cells() == [0, 1]
     assert window._cell_rect() == (2, 1, 0, 0)
+
+
+def test_a_stamped_chain_selects_whole_stamps(qtbot, tmp_path) -> None:
+    """One file entry draws every cell of its stamp, so pointing at one 8x8
+    quadrant takes the whole 16x16: everything downstream of the selection acts
+    per entry however finely it is drawn, and a finer highlight would advertise
+    a target no edit through it honours. The counts, the block one click flips
+    and the size readout all speak the same unit."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=0), Cell(index=1)])))
+    panel = window._workspace.entries[1]
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(panel)
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=1)] * 8)))
+    layout = window._workspace.current
+    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry=panel)
+    window._reload_tilemap(layout)
+    doc = window._doc
+    assert doc.stamp_cells == (2, 2) and doc.tiles_per_cell == 1
+    assert (window._tile_size_label.text(), window._tile_size.text()) == (
+        "Stamp:",
+        "16×16",
+    )
+
+    # The bottom-right quadrant of the stamp at the origin takes all of it —
+    # including the block a click's flip would act on.
+    width = window._cells_per_row()
+    window._on_slots_selected(width + 1, width + 1)
+    assert window._selected_cells() == [0]
+    assert len(window._selection_tiles()) == 4
+    assert window._cell_rect() == (2, 2, 0, 0)
+    assert "1×1 stamps" in window.statusBar().currentMessage()
+
+    # An unaligned drag into the neighbour grows a whole stamp at a time, and
+    # the count speaks entries — one per stamp, not one per drawn position.
+    window._on_slots_selected(width + 1, width + 2)
+    assert window._selected_cells() == [0, 2]
+    assert len(window._selection_tiles()) == 8
+    assert "2×1 stamps" in window.statusBar().currentMessage()
+    assert "(2 stamps)" in window.statusBar().currentMessage()
 
 
 def test_the_size_readout_names_the_cell_on_a_tilemap(qtbot, tmp_path) -> None:

@@ -278,6 +278,58 @@ def test_a_cell_stated_field_by_field_still_reads() -> None:
     assert codec.encode(codec.decode(raw, per_field, ctx), per_field, ctx) == raw
 
 
+@pytest.mark.parametrize(
+    ("preset_id", "want"),
+    [
+        (
+            SNES_BG,
+            {"index": 0x3FF, "palette_row": 7, "priority": 1, "flip_h": 1, "flip_v": 1},
+        ),
+        ("preset.tilemap.gb-bg", {"index": 0xFF}),
+        ("preset.tilemap.scgcad-map", {"index": 0x3FFF, "visible": 1, "flags": 1}),
+        ("preset.tilemap.text-8bit-flag", {"index": 0x7F, "ends_line": 1}),
+    ],
+)
+def test_cell_fields_names_exactly_what_the_layout_places(
+    preset_id: str, want: dict[str, int]
+) -> None:
+    """The whole-table probe, off the same table as the per-field ones.
+
+    Keys are the Cell's names, not the layout's letters — the host builds
+    controls from the answer without learning how this engine spells ``drawn``.
+    An absent key is a field the format does not have, so the Game Boy map is
+    an index and nothing else, and the stamp layout's word shows exactly the
+    referrer-owned fields.
+    """
+    registry = default_registry()
+    codec, params = TilemapCodec(), _params(registry, preset_id)
+    fields = codec.cell_fields(params)
+    assert fields == want
+    # One table: the whole-set answer and the per-field probes cannot disagree.
+    assert fields.get("index") == codec.index_limit(params)
+    assert fields.get("palette_row") == codec.palette_row_limit(params)
+    assert ("visible" in fields) == codec.has_visibility(params)
+    assert ("ends_line" in fields) == codec.has_line_flag(params)
+
+
+def test_cell_fields_reads_the_per_field_preset_form_too() -> None:
+    """The legacy shift/bits statement answers the same as its layout twin."""
+    registry = default_registry()
+    codec = TilemapCodec()
+    per_field = {
+        "bytes": 2,
+        "endian": "little",
+        "index": [{"shift": 11, "bits": 1}, {"shift": 0, "bits": 8}],
+        "palette": {"shift": 8, "bits": 3},
+        "flip_h": {"shift": 13, "bits": 1},
+        "flip_v": {"shift": 14, "bits": 1},
+        "priority": {"shift": 15, "bits": 1},
+    }
+    assert codec.cell_fields(per_field) == codec.cell_fields(
+        _params(registry, "preset.tilemap.gbc-bg")
+    )
+
+
 def test_the_terminator_is_the_codecs_answer_not_the_presets() -> None:
     """The alphabet needs it before a newline can be typed, and only the codec
     knows where a cell's bits go — asking the params by name would be a second
@@ -1974,6 +2026,71 @@ def test_a_dense_stamped_map_fixes_its_own_width_and_restamps_by_the_stamp() -> 
     ]
 
 
+def test_a_single_stamp_resolves_exactly_as_the_map_does() -> None:
+    """``expand_stamp`` is the per-entry factoring of ``expand_stamps`` — the
+    previews (the tile source sheet, Edit Tiles' ghost) resolve through it, so a
+    preview and the map cannot resolve one coordinate two different ways. The
+    referring entry goes in whole: a format that carries rows or flips composes
+    them over every cell of the stamp, and a caller with no real entry behind
+    the coordinate passes ``carry_rows=False`` — a bare cell's row 0 let
+    through would repaint the source's rows."""
+    from celpix.core.tilemap import expand_stamp, expand_stamps
+
+    source = [Cell(index=100 + at, palette_row=at % 8) for at in range(16)]
+    entry = Cell(index=1, palette_row=5, flip_h=True)
+    unit = expand_stamp(entry, source, (2, 2), 4, carry_rows=True)
+    assert [cell.index for cell in unit] == [101, 102, 105, 106]
+    assert [cell.palette_row for cell in unit] == [5, 5, 5, 5]
+    assert all(cell.flip_h for cell in unit)
+    # Byte-identical to the map's own resolution of the same entry.
+    assert unit == expand_stamps(
+        [entry], source, 1, (2, 2), 4, carry_rows=True, dense=True
+    )
+    # A synthetic referrer carries nothing: the source's own rows survive.
+    bare = expand_stamp(Cell(index=1), source, (2, 2), 4, carry_rows=False)
+    assert [cell.palette_row for cell in bare] == [1, 2, 5, 6]
+
+
+def test_a_stamp_of_metatile_cells_degrades_everywhere_at_once() -> None:
+    """A stamp of metatile cells interleaves rectangles no single layout block
+    can place on the tile source sheet, so the chain resolves as the plain
+    one-coordinate-one-cell reading — and every reader agrees, because they all
+    ask ``stamp_cells``: the resolution, the click snap, and the unit the UI
+    sizes gestures off. A picture expanded under units reporting 1x1 would
+    paste wider blocks than were copied, the exact bug the shared unit exists
+    to prevent."""
+    from celpix.core.context import KEY_TILEMAP_COLUMNS
+    from celpix.core.document import CellChain, Document
+
+    ctx = PipelineContext()
+    ctx.set(KEY_TILEMAP_COLUMNS, 4)
+    source = [Cell(index=100 + at) for at in range(16)]
+    doc = Document(
+        pixel_data=b"",
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id=SNES_BG, write_enabled=False
+        ),
+        palette_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id="", write_enabled=False
+        ),
+        cells=[Cell(index=at) for at in range(16)],
+        chain=CellChain(source, False, stamp=(2, 2), source_columns=4),
+        cell_tiles=(2, 2),
+        tilemap_ctx=ctx,
+    )
+    assert doc.stamp_cells == (1, 1)
+    assert doc.stamp_tiles == (2, 2)  # the metatile itself, not a stamp of them
+    # Plain resolution: one source cell per entry, and a click edits the entry
+    # under it rather than snapping to a lattice the picture does not have.
+    assert len(doc.drawn_cells) == 16
+    assert doc.drawn_cells[5].index == 105
+    assert [doc.cell_at(at) for at in (0, 1, 5)] == [0, 1, 5]
+
+
 def test_a_dense_map_with_no_stated_width_takes_one_from_the_view() -> None:
     """The width of a dense map is not the format's to state — its entries are a
     plain rectangle with one per stamp — and a slice lifted out of a disk image
@@ -2137,7 +2254,7 @@ def test_a_panel_publishes_the_block_size_its_callers_index_in() -> None:
     """0x69/0x6A are exponents, and what they size is the *stamp* — how big a
     block of panel cells one layout coordinate names. Not this file's cell size,
     which is why it is published for a bound layout and never applied here."""
-    from celpix.core.context import KEY_TILEMAP_STAMP_TILES
+    from celpix.core.context import KEY_TILEMAP_STAMP_CELLS
 
     cases = {
         (1, 1): (2, 2),  # all 167 panels of the surveyed source are 2x2
@@ -2152,7 +2269,7 @@ def test_a_panel_publishes_the_block_size_its_callers_index_in() -> None:
         PnlContainer().read(
             ReadSource(data=_pnl_bytes(width_exp=width_exp, height_exp=height_exp)), ctx
         )
-        assert ctx.get(KEY_TILEMAP_STAMP_TILES) == want, (width_exp, height_exp)
+        assert ctx.get(KEY_TILEMAP_STAMP_CELLS) == want, (width_exp, height_exp)
 
 
 def test_a_screen_states_its_own_cell_size() -> None:

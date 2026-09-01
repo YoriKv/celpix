@@ -120,8 +120,8 @@ class TilemapFormat(Protocol):
     :class:`~celpix.plugins.base.TilemapCodecPlugin` carries, each minus
     ``params``: ``transform_cell(cell, op)``, ``index_limit()``,
     ``palette_row_limit()``, ``has_palette_rows()``,
-    ``palette_row_granularity()`` and
-    ``has_line_flag()``. **A format that wants its
+    ``palette_row_granularity()``, ``has_line_flag()``,
+    ``has_visibility()`` and ``cell_fields()``. **A format that wants its
     cells edited has to define ``index_limit``** — the host refuses what a codec
     has not been asked about, so omitting it leaves the cell reference unsettable
     and every flip refused, exactly as it would for a full plugin that stayed
@@ -171,6 +171,8 @@ _OPTIONAL: dict[Stage, dict[str, Any]] = {
         "has_palette_rows": _params_last,
         "palette_row_granularity": _params_last,
         "has_line_flag": _params_last,
+        "has_visibility": _params_last,
+        "cell_fields": _params_last,
         "size_pair": _params_last,
         "frames": _params_middle,
     },

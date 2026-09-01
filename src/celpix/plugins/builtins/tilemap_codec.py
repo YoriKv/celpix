@@ -138,6 +138,22 @@ _LEGEND = {
     "f": "flags",
 }
 
+# What each field is called on a Cell. The engine's field names follow the
+# formats' own notes (``drawn``, ``terminator``); the host's vocabulary is the
+# Cell's (``visible``, ``ends_line``), and ``cell_fields`` answers in the
+# host's so no caller ever learns this module's spelling. Beside _FIELDS so the
+# two lists cannot drift apart — a name in one and not the other is a bug here.
+_CELL_ATTR = {
+    "index": "index",
+    "palette": "palette_row",
+    "priority": "priority",
+    "flip_h": "flip_h",
+    "flip_v": "flip_v",
+    "drawn": "visible",
+    "terminator": "ends_line",
+    "flags": "flags",
+}
+
 
 def _placements(params: dict[str, Any]) -> dict[str, _Field] | None:
     """Everything the preset's ``fields`` layout places, or None where it has none."""
@@ -398,6 +414,20 @@ class TilemapCodec:
         drawn, and clearing a cell there has no "nothing here" to write.
         """
         return _field(params, "drawn") is not None
+
+    def cell_fields(self, params: dict[str, Any]) -> dict[str, int]:
+        """Every field the preset places, named as the Cell spells it.
+
+        The whole-table answer the per-field probes each give a row of, off the
+        same table for the same reason — a preset cannot disagree with itself.
+        Keys are :class:`Cell` attribute names via :data:`_CELL_ATTR`; values
+        are each field's :func:`_limit`.
+        """
+        return {
+            _CELL_ATTR[name]: limit
+            for name, field in _layout(params).items()
+            if (limit := _limit(field)) is not None
+        }
 
     def transform_cell(
         self, cell: Cell, op: CellOp, params: dict[str, Any]

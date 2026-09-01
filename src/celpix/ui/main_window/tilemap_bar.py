@@ -127,10 +127,17 @@ class TilemapBarMixin:
         rows = QVBoxLayout(bar)
         rows.setContentsMargins(6, 2, 6, 2)
         rows.setSpacing(2)
+        # The per-cell property row sits above the binding row: it describes the
+        # cells' own attributes where the row below describes where their tiles
+        # come from, and its controls are grown per format rather than built here
+        # (:class:`~celpix.ui.main_window.cell_props_bar.CellPropsMixin`).
+        props_row = QHBoxLayout()
         row = QHBoxLayout()
         offset_row = QHBoxLayout()
+        rows.addLayout(props_row)
         rows.addLayout(row)
         rows.addLayout(offset_row)
+        self._build_cell_props_row(props_row)
 
         row.addWidget(QLabel("Tiles "))
         # Wider than the mode pickers because it holds *file names*, which have no
@@ -331,6 +338,7 @@ class TilemapBarMixin:
         self._sync_all_frames()
         self._sync_transparent_zero()
         self._sync_cell_index()
+        self._sync_cell_props()
         self._tile_binding_note.setText(self._binding_note(entry, source))
 
     def _bake_binding_jump_icon(self) -> None:
@@ -727,15 +735,20 @@ class TilemapBarMixin:
         half to take back; a second closes it.
 
         The prompt names what this entry is most likely after — a stamp layout
-        wants a PNL panel, and asking it for "tiles" would name the thing its
-        coordinates cannot read. Only the wording follows the format, though: what
-        the dialog *accepts* is whatever a binding accepts (``_can_supply_tiles``).
+        wants the kind of map it was authored against, and asking it for
+        "tiles" would name the thing its coordinates cannot read. The format
+        itself supplies the noun (``source_hint`` in its preset params), since
+        only it knows what its files are authored against; a stamped format
+        that declares none is asked for a tilemap. Only the wording follows
+        the format, though: what the dialog *accepts* is whatever a binding
+        accepts (``_can_supply_tiles``).
         """
-        title = (
-            "PNL panel for this stamp layout"
-            if self._tilemap_is_indirect(entry)
-            else "Tiles for this tilemap"
-        )
+        hint = self._tilemap_declares(entry, "source_hint")
+        if self._tilemap_is_indirect(entry):
+            wanted = hint if isinstance(hint, str) and hint else "Tilemap"
+            title = f"{wanted} for this stamp layout"
+        else:
+            title = "Tiles for this tilemap"
         # Snapshotted before the open, which activates another entry and can
         # re-read this one: the step being pushed is the *bind*, so its starting
         # point is the binding as the user found it.

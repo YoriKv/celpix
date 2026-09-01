@@ -42,7 +42,7 @@ from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.sprite import Frame, Subsprite, frame_bounds
-from celpix.core.tilemap import Cell, resolve_cell
+from celpix.core.tilemap import Cell, expand_stamp
 from celpix.pipeline._stage import _run, tile_params
 from celpix.pipeline.metrics import pixel_bpp
 from celpix.plugins.base import PixelCodecPlugin
@@ -868,22 +868,24 @@ def tile_source_image(
     if chain is None:
         cells = [Cell(index=at, palette_row=palette_row) for at in ids]
     else:
-        # The stamp a coordinate names, walked the source's own rows the way the
-        # map resolves it (:func:`~celpix.core.tilemap.expand_stamps`) — one cell
-        # per ID wherever nothing is stamped, the loops collapsing to a single
-        # pass.
-        across, down = doc.stamp_cells
-        stride = max(1, chain.source_columns)
+        # The stamp a coordinate names, walked by the resolution's own helper
+        # (:func:`~celpix.core.tilemap.expand_stamp`) — one cell per ID wherever
+        # nothing is stamped, the walk collapsing to a single pass. The referrer
+        # here is synthetic — the sheet enumerates what *could* be stamped, and
+        # no real entry stands behind the coordinate — so no rows are carried:
+        # the sheet shows the stamp as the source authored it, and a real
+        # entry's row lands only on the map, where the resolution composes the
+        # actual cell (:func:`~celpix.core.tilemap.expand_stamps`).
         cells = [
-            resolve_cell(
+            resolved
+            for at in ids
+            for resolved in expand_stamp(
                 Cell(index=at),
                 chain.source,
-                carry_rows=chain.carry_rows,
-                at=at + dx + dy * stride,
+                doc.stamp_cells,
+                chain.source_columns,
+                carry_rows=False,
             )
-            for at in ids
-            for dy in range(down)
-            for dx in range(across)
         ]
     tiles, layout = expand_cells(doc, reg, cells, columns, doc.stamp_tiles)
     return TileSheet(compose_tiles(tiles, layout, None), ids)

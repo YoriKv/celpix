@@ -918,6 +918,33 @@ class TilemapCodecPlugin(Plugin, Protocol):
         """
         ...
 
+    def cell_fields(self, params: dict[str, Any]) -> dict[str, int]:
+        """The per-cell attributes this format stores, each with its highest value.
+
+        Optional, and the whole field set in one answer where the other probes
+        each take one question: what the host generates *controls* from. Keys
+        are :class:`~celpix.core.tilemap.Cell` attribute names — ``index``,
+        ``palette_row``, ``priority``, ``flip_h``, ``flip_v``, ``visible``,
+        ``ends_line``, ``flags`` — never a codec's own field vocabulary, so the
+        host reads the answer without learning how any engine spells it. Values
+        are limits, all the field's bits set (1 for a mirror bit, 3 for a
+        two-bit priority, 0xFF for a byte of flags), the number
+        :meth:`index_limit` and :meth:`palette_row_limit` already speak.
+
+        **An absent key is a field the format does not have**, and the host
+        builds no control for it — the refusal protocol every probe here shares,
+        for the shared reason: a control over a field :meth:`encode` drops would
+        write bits into the model that vanish on save.
+
+        A plugin that omits this method has the answer assembled from its other
+        probes, each in its own safe direction — so a codec written before this
+        method existed keeps exactly the controls it already earned. What that
+        assembly can never grant is ``priority`` or ``flags``: no older probe
+        speaks for either, and inferring a field nobody declared is the one
+        wrong direction. A format with those fields declares them here.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class Preset:

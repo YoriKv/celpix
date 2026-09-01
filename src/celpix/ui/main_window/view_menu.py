@@ -85,6 +85,9 @@ ENTIRE_FILE_KEY = "view/entire_file"
 # View ▸ Show Tile IDs, likewise: an annotation you turn on to read a map and off
 # again to look at it, which is about the reader and not about the map.
 TILE_IDS_KEY = "view/tile_ids"
+# View ▸ Show Cell Attributes, the badge twin, a local preference on the same
+# grounds.
+CELL_ATTRS_KEY = "view/cell_attrs"
 
 
 class ViewMenuMixin:
@@ -107,6 +110,7 @@ class ViewMenuMixin:
         # With the grid because it is the same kind of thing: an annotation laid
         # over the art in the grid's own colour, not part of the picture.
         self._build_tile_ids_action(menu)
+        self._build_cell_attrs_action(menu)
         menu.addSeparator()
         # Grouped with the zoom: both answer "how much of this am I looking at,
         # and how large" - Entire File sizes the window, zoom sizes the pixels.
@@ -156,6 +160,42 @@ class ViewMenuMixin:
     def _on_show_tile_ids_change(self, on: bool) -> None:
         save_bool_setting(TILE_IDS_KEY, on)
         self._show_tile_ids = on
+        if self._doc is not None:
+            self._refresh_view()
+
+    def _build_cell_attrs_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
+        """View ▸ Show Cell Attributes — badge the invisible per-cell fields.
+
+        The labels' badge twin, and for the two fields no render can show:
+        priority is carried and never drawn, and a format's uninterpreted
+        ``flags`` change no pixel by definition. The property row can now edit
+        both, and without a readout each edit lands with the picture looking
+        exactly the same — this is the seeing half of that editing
+        (:meth:`~...rendering.RenderingMixin._cell_attr_marks`).
+
+        Gated by ``CELL_LABELS`` beside Show Tile IDs: the badge answers a
+        question only a tilemap's cells have. On a format declaring neither
+        field the overlay simply draws nothing — a toggle is a preference, and
+        greying it per format would flicker it across an entry switch for no
+        reader's benefit.
+
+        Mnemonic "C": D, T, G, B, S and u are taken by its neighbours.
+        """
+        self._show_cell_attrs_action = QAction(
+            "Show &Cell Attributes", self, checkable=True
+        )
+        self._show_cell_attrs_action.setToolTip(
+            "Badge each cell whose priority or flags are set\n"
+            "The two fields the picture cannot show otherwise"
+        )
+        self._show_cell_attrs = load_bool_setting(CELL_ATTRS_KEY, False)
+        self._show_cell_attrs_action.setChecked(self._show_cell_attrs)
+        self._show_cell_attrs_action.toggled.connect(self._on_show_cell_attrs_change)
+        view_menu.addAction(self._show_cell_attrs_action)
+
+    def _on_show_cell_attrs_change(self, on: bool) -> None:
+        save_bool_setting(CELL_ATTRS_KEY, on)
+        self._show_cell_attrs = on
         if self._doc is not None:
             self._refresh_view()
 

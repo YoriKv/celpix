@@ -372,11 +372,25 @@ def test_a_code_format_carries_its_optional_codec_methods() -> None:
         def has_palette_rows(self):
             return False
 
+        def has_visibility(self):
+            return True
+
+        def cell_fields(self):
+            return {"index": 1023, "visible": 1}
+
     bare, _ = adapt_format(_Bare(), Stage.INTERPRET_TILEMAP)
     rich, _ = adapt_format(_Rich(), Stage.INTERPRET_TILEMAP)
     assert not hasattr(bare, "index_limit")
     assert rich.index_limit({}) == 1023  # the params a format has no use for
     assert rich.has_palette_rows({}) is False
+    # The two easiest to leave off the forwarding table, because each was once
+    # missing from it: a format whose has_visibility never arrives has Clear
+    # silently keep the drawn bit, and one whose cell_fields never arrives gets
+    # no property controls at all — with nothing shown to say why.
+    assert not hasattr(bare, "has_visibility")
+    assert not hasattr(bare, "cell_fields")
+    assert rich.has_visibility({}) is True
+    assert rich.cell_fields({}) == {"index": 1023, "visible": 1}
 
     class _Packed:
         info = FormatInfo(id="format.palette.packed", name="packed")

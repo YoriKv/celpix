@@ -57,7 +57,7 @@ from celpix.core.context import (
     KEY_TILEMAP_PAGE_ROWS,
     KEY_TILEMAP_PAGES_ACROSS,
     KEY_TILEMAP_PALETTE_ROW_BASE,
-    KEY_TILEMAP_STAMP_TILES,
+    KEY_TILEMAP_STAMP_CELLS,
     KEY_TILEMAP_SUBSPRITES_PER_FRAME,
     PipelineContext,
 )
@@ -440,7 +440,7 @@ def _blank_scr() -> bytes:
     return bytes(out)
 
 
-def _stamp_tiles(header: bytes) -> tuple[int, int]:
+def _stamp_cells(header: bytes) -> tuple[int, int]:
     """A panel's stamp size in cells, from its two header exponents.
 
     ``(1, 1)`` — no stamping — for a header that does not have them or states one
@@ -474,7 +474,7 @@ class PnlContainer:
 
     What the container *does* read is the stamp size at 0x69/0x6A, which is not
     about this file's own cells at all — it is how many of them one stamp of a
-    bound layout covers (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_TILES`).
+    bound layout covers (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_CELLS`).
     """
 
     info = PluginInfo(
@@ -502,7 +502,7 @@ class PnlContainer:
         # nothing about how *this* file is drawn, only how a layout bound to it
         # carves it up, so it cannot draw the panel at four times its content the
         # way reading one of those three as a cell size would.
-        ctx.set(KEY_TILEMAP_STAMP_TILES, _stamp_tiles(source.data[:HEADER]))
+        ctx.set(KEY_TILEMAP_STAMP_CELLS, _stamp_cells(source.data[:HEADER]))
         # The palette base is read, and it matters more here than anywhere else:
         # a panel states no depth, so its colour *half* could not be converted
         # into rows — but it does not have to be, because `col_half` is 0 in all
@@ -526,7 +526,7 @@ class PnlContainer:
         self, source: ReadSource, ctx: PipelineContext
     ) -> tuple[ContainerField, ...]:
         data = source.data
-        across, down = _stamp_tiles(data[:HEADER])
+        across, down = _stamp_cells(data[:HEADER])
         return (
             *_metadata_fields(data, 0),
             ContainerField(

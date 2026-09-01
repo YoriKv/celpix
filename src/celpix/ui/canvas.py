@@ -142,6 +142,23 @@ LINE_END_WIDTH = 2
 # structure is still the thing being read at that size.
 LINE_END_MIN_CELL = 8
 
+# The cell-attribute badges (:meth:`Canvas.set_cell_attrs`): a filled corner
+# square on a cell whose priority is set, a hollow one on a cell carrying
+# uninterpreted flags. Two invisible fields, so the badge is the only account
+# the picture gives of either. Magenta because the annotation colours around it
+# are spoken for — amber is the line-end bar, blue both grid levels — and each
+# badge is framed in near-black so it stays separable from art of any colour.
+ATTR_PRIORITY_COLOR = QColor(0xE8, 0x40, 0xC0)
+ATTR_FLAGS_COLOR = QColor(0x40, 0xC0, 0xFF)
+ATTR_BADGE_FRAME = QColor(0x20, 0x20, 0x20)
+# Bits of one slot's entry in the set_cell_attrs list.
+ATTR_PRIORITY_BIT = 1
+ATTR_FLAGS_BIT = 2
+# Below this many device pixels across a cell, a badge would be most of the
+# tile it annotates; the overlay skips whole rather than shrinking to noise —
+# Show Tile IDs' fits-or-skip rule.
+ATTR_BADGE_MIN_CELL = 12
+
 
 def _tile_id_text(value: int) -> str:
     """A cell's tile number as the tilemap controls spell one: ``$1c4``.
@@ -269,6 +286,11 @@ class Canvas(PanZoomSurface, QWidget):
     stamp_pressed = Signal(int, object)  # slot, Qt.MouseButton
     stamp_moved = Signal(int)  # slot dragged over, left button held
     stamp_finished = Signal()  # the left drag ended
+    # The slot under the pointer moved while the tool is armed (None off the
+    # canvas). The controller re-renders the held-tiles ghost from it where the
+    # landing depends on the cell it would cover — a sheet pick inherits the
+    # target's attributes, so an honest preview has to know the target.
+    stamp_hovered = Signal(object)  # slot: int | None
     # A right *drag* while the stamp tool is armed: the two corner slots of the
     # rectangle of cells it swept. The single-cell right click stays a
     # ``stamp_pressed`` — which one it was is only knowable on release, so the
@@ -315,6 +337,9 @@ class Canvas(PanZoomSurface, QWidget):
         # A fontmap's line ends, by the slot each one's cell starts at
         # (:meth:`set_line_ends`). Empty for every other kind of document.
         self._line_ends: frozenset[int] = frozenset()
+        # The invisible-attribute badges, by the slot each cell starts at, or
+        # None when the overlay is off (:meth:`set_cell_attrs`).
+        self._cell_attrs: list[int | None] | None = None
         self._tile_w = 8
         self._tile_h = 8
         # Arrangement placement (block grouping / order). 1×1 is plain row-major,
@@ -382,6 +407,9 @@ class Canvas(PanZoomSurface, QWidget):
         # block stays one cell (:meth:`set_stamp_unit`). (0, 0) falls back to
         # the block, which is every other document.
         self._stamp_unit: tuple[int, int] = (0, 0)
+        # The last slot reported over :attr:`stamp_hovered`, so every mouse
+        # move does not re-announce the same cell (:meth:`_report_stamp_hover`).
+        self._stamp_hover_slot: int | None = None
         # Where a rearrange drag would land, and whether it may: the controller
         # decides (a drop that would overlap its own source is refused), the
         # canvas only draws it.
@@ -482,6 +510,21 @@ class Canvas(PanZoomSurface, QWidget):
         self._widest_tile_id = max(
             (value for value in ids or () if value is not None), default=0
         )
+        self.update()
+
+    def set_cell_attrs(self, marks: list[int | None] | None) -> None:
+        """Badge the cells whose invisible attributes are set, or stop.
+
+        Indexed by the **slot the cell starts at**, like :meth:`set_tile_ids`'
+        numbers; each entry is a bit mask of :data:`ATTR_PRIORITY_BIT` and
+        :data:`ATTR_FLAGS_BIT`, ``None`` for a cell with neither and for a
+        cell's other slots. ``None`` for the whole list turns the overlay off.
+
+        The two fields are the ones the picture cannot show: priority is
+        carried and never rendered, and ``flags`` are bits celPix does not
+        interpret — so without the badge, editing either is blind.
+        """
+        self._cell_attrs = marks
         self.update()
 
     def set_line_ends(self, slots: frozenset[int]) -> None:
@@ -612,6 +655,7 @@ class Canvas(PanZoomSurface, QWidget):
             # A half-made pick drag dies with the tool; it was never reported.
             self._stamp_picking = False
             self._stamp_pick_anchor = self._stamp_pick_slot = None
+            self._stamp_hover_slot = None
         self._drag_anchor = self._drag_slot = None
         self._apply_cursor()
         self.update()
@@ -703,6 +747,8 @@ class Canvas(PanZoomSurface, QWidget):
         if self._hover_pixel is not None:
             self._hover_pixel = None
             self.update()
+        if self._stamping:
+            self._report_stamp_hover(None)
 
     def _wants_hover(self) -> bool:
         """Whether anything on screen follows the pointer between clicks —
@@ -717,6 +763,15 @@ class Canvas(PanZoomSurface, QWidget):
         if pixel != self._hover_pixel:
             self._hover_pixel = pixel
             self.update()
+        if self._stamping:
+            self._report_stamp_hover(self._slot_at(pos) if pixel is not None else None)
+
+    def _report_stamp_hover(self, slot: int | None) -> None:
+        """Tell the controller which slot the stamp ghost sits over, once per
+        change — every mouse move lands here, and the signal re-renders."""
+        if slot != self._stamp_hover_slot:
+            self._stamp_hover_slot = slot
+            self.stamp_hovered.emit(slot)
 
     def set_marquee(self, rect: QRect | None) -> None:
         """Show a pixel-space rectangle marquee (``None`` clears it)."""
@@ -1249,6 +1304,7 @@ class Canvas(PanZoomSurface, QWidget):
         self._paint_line_ends(painter, exposed)
         self._paint_palette_rows(painter, exposed)
         self._paint_tile_ids(painter, exposed)
+        self._paint_cell_attrs(painter, exposed)
         self._paint_selection(painter, exposed)
         self._paint_overlays(painter, exposed)
         painter.end()
@@ -1788,6 +1844,58 @@ class Canvas(PanZoomSurface, QWidget):
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                 _tile_id_text(value),
             )
+
+    def _paint_cell_attrs(self, painter: QPainter, exposed: QRect) -> None:
+        """Badge the cells whose invisible attributes are set — right corners.
+
+        The right-hand corners because the labels own the left ones: the tile
+        id keeps the top-left and the palette row the bottom-left, so a cell
+        can show all four without collision. Priority is the **top**-right,
+        filled — the field artists actually paint; flags the bottom-right,
+        hollow — a marker that bits celPix does not model are riding along.
+        Each badge sits in a near-black frame, which is what keeps it
+        separable from art of any colour.
+
+        Skipped whole below :data:`ATTR_BADGE_MIN_CELL` — the fits-or-skip rule
+        the tile-id overlay follows, and at that size a badge would be most of
+        the tile it annotates.
+        """
+        marks = self._cell_attrs
+        if not marks:
+            return
+        across, down = max(1, self._block_cols), max(1, self._block_rows)
+        cell_w = self._tile_w * self._zoom_x * across
+        cell_h = self._tile_h * self._zoom_y * down
+        if min(cell_w, cell_h) < ATTR_BADGE_MIN_CELL:
+            return
+        side = max(4, min(int(cell_h // 4), 10))
+        layout = self._layout()
+        cols, canvas_rows = self._columns(), self._rows()
+        band = self._exposed_slots(exposed)
+        left, right = self._exposed_columns(exposed, self._tile_w)
+        left, right = max(0, left - across), min(cols, right)
+        for slot in range(band.start, min(band.stop, len(marks))):
+            mask = marks[slot]
+            if not mask:
+                continue
+            tile_x, tile_y = layout.slot_to_pos(slot)
+            if not (left <= tile_x < right and 0 <= tile_y < canvas_rows):
+                continue
+            cell = self._cell_rect(tile_x, tile_y, across, down)
+            if not exposed.intersects(cell):
+                continue
+            corner_x = cell.right() - side
+            if mask & ATTR_PRIORITY_BIT:
+                badge = QRect(corner_x, cell.y() + 1, side, side)
+                painter.fillRect(badge, ATTR_PRIORITY_COLOR)
+                painter.setPen(ATTR_BADGE_FRAME)
+                painter.drawRect(badge)
+            if mask & ATTR_FLAGS_BIT:
+                badge = QRect(corner_x, cell.bottom() - side, side, side)
+                painter.setPen(ATTR_BADGE_FRAME)
+                painter.drawRect(badge)
+                painter.setPen(ATTR_FLAGS_COLOR)
+                painter.drawRect(badge.adjusted(1, 1, -1, -1))
 
     def _paint_line_ends(self, painter: QPainter, exposed: QRect) -> None:
         """Rule the trailing edge of every cell a fontmap's line ends on.

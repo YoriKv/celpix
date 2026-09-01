@@ -32,6 +32,7 @@ from celpix.core.document import ViewOptions
 from celpix.core.palette import Palette
 from celpix.pipeline import pipeline
 from celpix.ui import render_bridge
+from celpix.ui.canvas import ATTR_FLAGS_BIT, ATTR_PRIORITY_BIT
 from celpix.ui.hex_view_panel import BYTES_PER_ROW
 from celpix.ui.main_window.interpretation import (
     COLS_ASSEMBLED_TIP,
@@ -263,6 +264,20 @@ class RenderingMixin:
         the entry here: the restore has already run by this point and consumed the
         pending view it would have been read from
         (:meth:`~...session.SessionMixin._apply_restored_state`).
+
+        The width lands on the **document's view**; the Cols spin is only touched
+        where ``entry`` is the one on screen. This runs for every tilemap load,
+        and most loads are not that entry's: a bound source resolved on demand
+        inside another map's read, a first activation (loaded before ``current``
+        moves — writing the spin there would be captured back onto the *outgoing*
+        entry's view), an off-screen re-read. Their width written to the widget
+        becomes the shown entry's the next time the view is rebuilt from it —
+        which is how rebinding a stamp layout to a not-yet-loaded panel used to
+        halve the layout's own columns, irrecoverably, since the carried-over
+        view then reads as the width it "was seen at". The entry on screen gets
+        the spin seeded either here (a reload in place) or by
+        :meth:`~...session.SessionMixin._restore_session` reading the view this
+        wrote (an activation).
         """
         width = self._tilemap_columns_hint(entry)
         if width and not restored:
@@ -273,10 +288,11 @@ class RenderingMixin:
             # the same number the layout is about to use rather than that unit.
             if doc is not None and doc.drawn_columns:
                 width = doc.drawn_columns
-            with signals_blocked(self._columns):
-                self._columns.setValue(width)
             if doc is not None:
                 doc.view.columns = width
+            if entry is self._workspace.current:
+                with signals_blocked(self._columns):
+                    self._columns.setValue(width)
 
     def _settle_tilemap_width(self) -> None:
         """Let a tilemap that fixes its own width own Cols while it applies.
@@ -525,6 +541,43 @@ class RenderingMixin:
             labels.append(cell.index)
             labels.extend([None] * (per_cell - 1))
         return labels
+
+    def _cell_attr_marks(self) -> list[int | None] | None:
+        """The attribute badges for each visible cell, by canvas slot — or None.
+
+        :meth:`_tile_id_labels`' badge twin, for the two per-cell fields no
+        render can show: **priority** is carried and never drawn (celPix has no
+        layers), and **flags** are bits the format has that celPix does not
+        interpret. Without a readout, editing either through the property row
+        is blind — the change lands and the picture looks exactly the same.
+
+        Marked only for the fields the *format* declares
+        (:meth:`~...tilemap_edit.TilemapEditMixin._cell_fields`), so a badge
+        can never claim a bit the file has nowhere to store; same shape rules
+        as the labels — by tile slot, once per cell, in drawn order — and the
+        **drawn** cells, so a chained map badges what is actually on screen.
+        """
+        doc = self._doc
+        if doc is None or not doc.is_tilemap or not self._show_cell_attrs:
+            return None
+        if doc.is_sprite:
+            return None
+        fields = self._cell_fields()
+        priority = "priority" in fields
+        flags = "flags" in fields
+        if not priority and not flags:
+            return None
+        per_cell = doc.tiles_per_cell
+        marks: list[int | None] = []
+        for cell in doc.laid_out_cells:
+            mask = 0
+            if priority and cell.priority:
+                mask |= ATTR_PRIORITY_BIT
+            if flags and cell.flags:
+                mask |= ATTR_FLAGS_BIT
+            marks.append(mask or None)
+            marks.extend([None] * (per_cell - 1))
+        return marks
 
     def _line_end_slots(self) -> frozenset[int]:
         """The canvas slots whose cell ends a line — a **fontmap** only.
@@ -807,6 +860,9 @@ class RenderingMixin:
         # The tilemap-side annotation, and the same kind of thing: a number laid
         # over the art saying what the picture cannot.
         self._canvas.set_tile_ids(self._tile_id_labels())
+        # Its badge twin, for the two fields no render can show: priority and
+        # the format's uninterpreted flags.
+        self._canvas.set_cell_attrs(self._cell_attr_marks())
         # And the fontmap's, which has no switch because it is not an annotation:
         # where a string stops is content, and the grid of glyphs shows none of it.
         self._canvas.set_line_ends(self._line_end_slots())

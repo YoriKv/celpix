@@ -92,6 +92,9 @@ TILE_SIZE_TIP = "Size of one tile in pixels"
 TILE_SIZE_CELL_TIP = (
     "Size of one map cell in pixels\nSelections and edits work a cell at a time"
 )
+TILE_SIZE_STAMP_TIP = (
+    "Size of one stamp in pixels\nSelections and edits work a stamp at a time"
+)
 
 SUBPAL_TIP = "Which range of palette entries tiles index into"
 # On a tilemap whose cells carry rows the spin does not recolour anything - the
@@ -928,21 +931,34 @@ class InterpretationMixin:
 
         On a **tilemap** that unit is the map's own cell, not the tile it is built
         from: a screen of 16x16 cells is read, selected and edited a cell at a
-        time (:meth:`~...selection.SelectionMixin._cell_unit`), so reporting the
-        bound bank's 8x8 would name a thing no gesture in that view acts on. The
-        caption follows the number, since "Tile: 16x16" over cells made of four
-        8x8 tiles is the one reading that is wrong either way round.
+        time (:meth:`~...selection.SelectionMixin._selection_unit`), so reporting
+        the bound bank's 8x8 would name a thing no gesture in that view acts on.
+        The caption follows the number, since "Tile: 16x16" over cells made of
+        four 8x8 tiles is the one reading that is wrong either way round. A
+        **stamp-resolved chain** is the same story one size further up: its
+        gestures act a stamp at a time, and the caption says which reserved noun
+        the number measures (``docs/design/terminology.md``).
         """
-        cell = self._grid_tilemap() is not None
-        self._tile_size_label.setText("Cell:" if cell else "Tile:")
-        tip = TILE_SIZE_CELL_TIP if cell else TILE_SIZE_TIP
+        doc = self._grid_tilemap()
+        stamped = doc is not None and doc.stamp_cells != (1, 1)
+        cell = doc is not None
+        self._tile_size_label.setText(
+            "Stamp:" if stamped else "Cell:" if cell else "Tile:"
+        )
+        tip = (
+            TILE_SIZE_STAMP_TIP
+            if stamped
+            else TILE_SIZE_CELL_TIP
+            if cell
+            else TILE_SIZE_TIP
+        )
         for widget in (self._tile_size, self._tile_size_label):
             widget.setToolTip(tip)
         if self._doc is None:
             self._tile_size.setText("\u2014")
             return
         tile_w, tile_h = self._pixel_tile_size()
-        across, down = self._cell_unit()
+        across, down = self._selection_unit()
         self._tile_size.setText(f"{tile_w * across}\u00d7{tile_h * down}")
 
     def _pixel_tile_size(self) -> tuple[int, int]:

@@ -94,20 +94,23 @@ KEY_TILEMAP_CELL_TILES = "tilemap.cell-tiles"
 # panels want base 1 and 62 want 0 (``scgcad-formats.md`` §3.3). Published only
 # where those bytes have been checked against the corpus.
 KEY_TILEMAP_PALETTE_ROW_BASE = "tilemap.palette-row-base"
-# tuple[int, int]: how many cells one **stamp** covers, for a map whose cells are
-# subdivided into stamps a *referring* map indexes. Not a cell size — the cells
-# stay one tile each — but the step at which another format's coordinates land in
-# them, which only this file's header knows.
+# tuple[int, int]: how many **cells** of this map one **stamp** covers, for a map
+# whose cells are subdivided into stamps a *referring* map indexes. Counted in
+# this file's cells — not tiles, and not a cell size: the step at which another
+# format's coordinates land, which a referrer multiplies by ``cell_tiles`` when
+# it wants tiles (:attr:`~celpix.core.document.Document.stamp_tiles`).
 #
-# A panel is the one format that states it (header 0x69/0x6A, as exponents), and
-# the reader that needs it is the stamp layout bound to it: a layout's entry names
-# the stamp's *top-left* cell and the rest of the stamp follows from this pair,
-# with the positions between two entries holding nothing anyone should draw
-# (``docs/graphics-formats-reference/scgcad-formats.md`` §4). Published by the
-# **source** map and read by the referrer, which is why it travels on the context
-# rather than in the layout's own preset: the layout's file does not know it, and
-# the same layout stamps differently against a differently divided panel.
-KEY_TILEMAP_STAMP_TILES = "tilemap.stamp-tiles"
+# A panel is the one shipped format that states it (header 0x69/0x6A, as
+# exponents), and the reader that needs it is the stamp layout bound to it: a
+# layout's entry names the stamp's *top-left* cell and the rest of the stamp
+# follows from this pair, with the positions between two entries holding nothing
+# anyone should draw (``docs/graphics-formats-reference/scgcad-formats.md`` §4).
+# Published by the **source** map and read by the referrer where the referrer's
+# own format has not declared a ``stamp_cells`` of its own — the two sides of
+# one answer: a panel's header divides it for whoever calls, while a metatile
+# table's format fixes it for whatever it calls into
+# (``ui/main_window/session.py``, ``_chain_stamp_cells``).
+KEY_TILEMAP_STAMP_CELLS = "tilemap.stamp-cells"
 # int: how many cell *rows* one **page** holds, for a format whose file is several
 # independent maps end to end rather than one — a screen file is four 32x32
 # screens (``docs/graphics-formats-reference/scgcad-formats.md`` §2). Published
@@ -280,7 +283,7 @@ HINT_INFO: dict[str, tuple[str, str]] = {
         "its header states it. Read as 0 when the file says 1,\n"
         "every tile draws through the wrong sixteen colours.",
     ),
-    KEY_TILEMAP_STAMP_TILES: (
+    KEY_TILEMAP_STAMP_CELLS: (
         "Stamp size",
         "How many cells one stamp covers, for a map that another\n"
         "map's coordinates index in stamps. Read by the layout\n"

@@ -106,14 +106,28 @@ endian = "little"
 # indirect = true
 
 # Set when the file holds one entry per **stamp** instead of one per drawn
-# position. Only matters where the map this one draws through states a stamp size
-# bigger than 1x1 — then this says which of the two shapes the entries are in. A
-# stamp layout writes a slot for every position and means only the corners, so it
-# leaves this off; a map of 16x16 metatiles over an 8x8 bank writes one byte per
-# metatile and needs it on, or three quarters of the file is never drawn. Getting
-# it wrong is loud rather than subtle: the picture comes out at four times or a
-# quarter of its size.
+# position. Only matters where the chain has a stamp size bigger than 1x1 —
+# then this says which of the two shapes the entries are in. A stamp layout
+# writes a slot for every position and means only the corners, so it leaves
+# this off; a map of 16x16 metatiles over an 8x8 bank writes one byte per
+# metatile and needs it on, or three quarters of the file is never drawn.
+# Getting it wrong is loud rather than subtle: the picture comes out at four
+# times or a quarter of its size.
 # stamp_dense = true
+
+# How many **cells of the source** one coordinate names, for an indirect format
+# whose stamp is its own constant — a metatile table always names a 2x2, say —
+# rather than something the source's header divides for it. Declared here it
+# wins over the source's published size; left out, the source's answer applies,
+# and (1, 1) — one coordinate, one cell — where neither side states one.
+# stamp_cells = [2, 2]
+
+# The stride between a metatile cell's tile *rows* in the bank, for a format
+# whose cell covers several tiles (`cell_tiles`). The default is the console
+# VRAM row of 16 tiles — a cell's lower tiles sit directly under its upper
+# ones on the sheet. A table of consecutive tiles is its own width instead:
+# a 2x2 cell of tiles n, n+1, n+2, n+3 strides by 2.
+# cell_row_stride = 2
 
 # Set when the cells are **character codes** rather than tile numbers. The picture
 # is unchanged; what this adds is View > Text, where the run reads and is typed as

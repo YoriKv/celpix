@@ -449,21 +449,42 @@ class SelectionMixin:
         )
 
     def _cell_unit(self) -> tuple[int, int]:
-        """The block a selection snaps to, in canvas **slots** — i.e. in tiles.
+        """The map's own **cell** in canvas **slots** — i.e. in tiles.
 
-        1x1 on a pixel document: the tile is the unit there, and every snap below
-        reduces to what it always did. On a tilemap the unit is the map's own
-        **cell**, which may be a 2x2 metatile — and a quarter of a cell is not
-        something the file has. Everything a tilemap selection feeds works a whole
-        cell at a time (:meth:`~...tilemap_edit.TilemapEditMixin._selected_cells`,
-        the cell clipboard, a block flip), so selecting part of one would show a
-        highlight that no edit through it could honour.
+        The block the view layout places (:meth:`_view_layout`) and the unit a
+        linear run counts in: a cell's tiles are consecutive slots
+        (:func:`~celpix.pipeline.pipeline.tilemap_tiles`), which is what both
+        need — and a stamp's are not, so this is deliberately *not* the unit a
+        selection snaps to (:meth:`_selection_unit`). 1x1 on a pixel document,
+        where the tile is the unit.
         """
         doc = self._grid_tilemap()
         if doc is None:
             return 1, 1
         across, down = doc.cell_tiles
         return max(1, across), max(1, down)
+
+    def _selection_unit(self) -> tuple[int, int]:
+        """The block a selection snaps to, in canvas **slots** — i.e. in tiles.
+
+        1x1 on a pixel document: the tile is the unit there, and every snap
+        reduces to what it always did. On a tilemap the unit is the map's own
+        **cell**, which may be a 2x2 metatile — and a quarter of a cell is not
+        something the file has. On a **stamp-resolved chain** it is the whole
+        stamp, one size further up the same argument: one file entry draws every
+        cell of its stamp, so everything a selection feeds acts on whole stamps
+        however finely it is drawn
+        (:meth:`~...tilemap_edit.TilemapEditMixin._selected_cells` de-duplicates
+        to one entry, the cell clipboard lifts by the lattice), and a finer
+        highlight would advertise a target no edit through it could honour.
+        :attr:`~celpix.core.document.Document.stamp_tiles` is that unit stated
+        once — the cell everywhere unstamped, so most documents read the same
+        number here and in :meth:`_cell_unit`.
+        """
+        doc = self._grid_tilemap()
+        if doc is None:
+            return 1, 1
+        return doc.stamp_tiles
 
     def _grid_hidden(self) -> tuple[tuple[int, int, int, int], ...]:
         """The undrawn positions of the map on screen, as pixel rectangles.
@@ -822,18 +843,23 @@ class SelectionMixin:
         clamped out of a linear range; a press that *starts* there is ignored,
         as the single click always was.
 
-        Both shapes snap **outward to whole units** (:meth:`_cell_unit`) before
-        anything is selected. That is a no-op on a pixel document, where the unit
-        is the tile the slots already count in, and is what makes a tilemap of
-        16x16 cells select one whole cell per click and grow a cell at a time.
+        Both shapes snap **outward to whole units** before anything is selected.
+        That is a no-op on a pixel document, where the unit is the tile the
+        slots already count in, and is what makes a tilemap of 16x16 cells
+        select one whole cell per click and grow a cell at a time — and a
+        stamped chain select a whole stamp the same way. The rectangle snaps to
+        :meth:`_selection_unit`; the linear run counts in :meth:`_cell_unit`,
+        because its arithmetic needs a unit of consecutive slots, and the shape
+        is forced to Rectangle wherever the two differ
+        (:meth:`_forced_selection_shape` — a stamped chain is a tilemap).
         """
         if self._doc is None:
             return
         count = self._selection_extent()
         if self._offset + min(anchor_slot, moving_slot) >= count:
             return
-        across, down = self._cell_unit()
         if self._selection_shape.currentData() is SelectionShape.RECT:
+            across, down = self._selection_unit()
             layout = self._view_layout()
             ax, ay = layout.slot_to_pos(anchor_slot)
             mx, my = layout.slot_to_pos(moving_slot)
@@ -851,6 +877,7 @@ class SelectionMixin:
         else:
             # A cell's tiles are consecutive slots (``tilemap_tiles``), so a run
             # of whole cells is still one contiguous run.
+            across, down = self._cell_unit()
             unit = across * down
             first = self._offset + min(anchor_slot, moving_slot) // unit * unit
             last = min(
@@ -945,23 +972,31 @@ class SelectionMixin:
         dump beside them highlights and what a save writes. On an assembled screen
         file those need not run consecutively across a rectangle, so the range is
         its lowest and highest rather than its first and last.
+
+        On a **chained** map the word and the counts are "stamps" — the file's
+        entries are stamps, which is what the numbers here index and what the
+        clipboard's own messages already say (:meth:`~...tilemap_edit.
+        TilemapEditMixin._copy_cells`). The rectangle divides by the unit the
+        selection snapped to, so the two counts cannot disagree.
         """
         cells = self._selected_cells()
         if not cells:
             return
+        doc = self._doc
+        what = "stamp" if doc is not None and doc.is_indirect else "cell"
         at_first = self._cell_position_text(self._selected_positions()[0])
-        total = counted(len(cells), "cell")
+        total = counted(len(cells), what)
         if self._rect_size is not None:
-            across, down = self._cell_unit()
+            across, down = self._selection_unit()
             cols, rows = self._rect_size[0] // across, self._rect_size[1] // down
             self.statusBar().showMessage(
-                f"Selected {cols}×{rows} cells from {at_first} ({total})"
+                f"Selected {cols}×{rows} {what}s from {at_first} ({total})"
             )
         elif len(cells) == 1:
-            self.statusBar().showMessage(f"Selected cell {cells[0]:,} at {at_first}")
+            self.statusBar().showMessage(f"Selected {what} {cells[0]:,} at {at_first}")
         else:
             self.statusBar().showMessage(
-                f"Selected cells {min(cells):,}–{max(cells):,} "
+                f"Selected {what}s {min(cells):,}–{max(cells):,} "
                 f"from {at_first} ({total})"
             )
 
@@ -999,6 +1034,10 @@ class SelectionMixin:
         # would sit greyed over a live selection showing the cell before last
         # (:meth:`~...tilemap_bar.TilemapBarMixin._sync_cell_index`).
         self._sync_cell_index()
+        # The property row beside it reads the selection the same way, so the
+        # same comment applies verbatim
+        # (:meth:`~...cell_props_bar.CellPropsMixin._sync_cell_props`).
+        self._sync_cell_props()
         # The tile source panel's ring is in the same position for the same
         # reason: it marks the tile the selected cell names, and a selection
         # moves without anything being re-rendered. The palette grid's pinned-row

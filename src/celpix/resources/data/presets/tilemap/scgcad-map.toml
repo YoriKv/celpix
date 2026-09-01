@@ -27,6 +27,10 @@ category = "S-CG-CAD"
 # The cells are coordinates into a panel, not tile references: the host reads
 # this to know the entry binds to another tilemap and resolves through it.
 indirect = true
+# What the bind dialog calls the source this format wants — a MAP is authored
+# against a panel, and asking for a generic "tilemap" would name the thing
+# less precisely than the format knows it.
+source_hint = "PNL panel"
 bytes = 2
 endian = "big"
 # One entry names one panel *cell*, and a panel cell is one 8x8 tile — the Y

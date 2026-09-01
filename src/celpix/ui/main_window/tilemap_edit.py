@@ -40,11 +40,27 @@ from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, compose_window, split_grid
 from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.errors import PipelineError
-from celpix.core.tilemap import Cell, CellGrid
+from celpix.core.tilemap import Cell, CellGrid, CellOp
 from celpix.pipeline import pipeline
 from celpix.ui import clipboard, render_bridge
 from celpix.ui.undo_commands import TilemapCellsCommand
 from celpix.ui.widgets import counted
+
+# What each writable cell attribute is called in a sentence, and which of them
+# a Cell stores as a bool. The names are the Cell's own — the vocabulary
+# `cell_fields` answers in — so a field a format grows arrives here already
+# spelt right or not at all.
+_FIELD_LABELS = {
+    "index": "cell reference",
+    "palette_row": "palette row",
+    "priority": "priority",
+    "flip_h": "horizontal flip",
+    "flip_v": "vertical flip",
+    "visible": "drawn flag",
+    "ends_line": "line end",
+    "flags": "flags",
+}
+_BOOL_FIELDS = frozenset({"flip_h", "flip_v", "visible", "ends_line"})
 
 
 class TilemapEditMixin:
@@ -306,6 +322,112 @@ class TilemapEditMixin:
         except Exception:  # noqa: BLE001 — a probe must not break the gesture
             return False
 
+    def _cell_fields(self) -> dict[str, int]:
+        """Every per-cell field this entry's format stores, with each one's limit.
+
+        The whole-table probe the property row is generated from
+        (:meth:`~celpix.plugins.base.TilemapCodecPlugin.cell_fields`), keyed by
+        :class:`Cell` attribute name. Empty off a tilemap, and empty for a
+        format that answers nothing — no field, no control.
+
+        A codec without the method has the answer **assembled from its other
+        probes**, each already refusing in its own safe direction, so a plugin
+        written before the method existed keeps exactly the controls it earned.
+        What the assembly never grants is ``priority`` or ``flags``: no older
+        probe speaks for either, and a control over a field the encode drops
+        would write bits that vanish on save.
+        """
+        found = self._tilemap_engine()
+        if found is None:
+            return {}
+        engine, preset = found
+        ask = getattr(engine, "cell_fields", None)
+        if ask is not None:
+            try:
+                stated = dict(ask(preset.params))
+            except Exception:  # noqa: BLE001 — a probe must not break the bar
+                return {}
+            return {
+                name: limit
+                for name, limit in stated.items()
+                if isinstance(limit, int) and limit > 0
+            }
+
+        def probe(name: str):  # noqa: ANN202 — whatever the codec answers
+            asked = getattr(engine, name, None)
+            if asked is None:
+                return None
+            try:
+                return asked(preset.params)
+            except Exception:  # noqa: BLE001 — a probe must not break the bar
+                return None
+
+        fields: dict[str, int] = {}
+        top = probe("index_limit")
+        if isinstance(top, int) and top > 0:
+            fields["index"] = top
+        row = probe("palette_row_limit")
+        if isinstance(row, int) and row > 0:
+            fields["palette_row"] = row
+        mirror = getattr(engine, "transform_cell", None)
+        if mirror is not None:
+            for op, name in ((CellOp.FLIP_H, "flip_h"), (CellOp.FLIP_V, "flip_v")):
+                try:
+                    if mirror(Cell(), op, preset.params) is not None:
+                        fields[name] = 1
+                except Exception:  # noqa: BLE001 — same rule as above
+                    pass
+        if probe("has_visibility"):
+            fields["visible"] = 1
+        if probe("has_line_flag"):
+            fields["ends_line"] = 1
+        return fields
+
+    def _set_cell_property(self, field: str, value: bool | int) -> None:
+        """Write one attribute into every selected cell — one undoable step.
+
+        The property row's write funnel, and deliberately one method for every
+        field it shows: the shape is :meth:`_set_cell_index`'s — clamp to what
+        the format can hold, replace over a copied list, one command through
+        :meth:`_apply_cells` — and eight near-copies of it would be eight
+        places for that shape to drift.
+
+        Refused with a message when the format lacks the field. The control is
+        hidden where that is known in advance, so reaching the refusal means
+        the format moved under an armed row — same backstop as
+        :meth:`_refuse_transform`.
+        """
+        doc = self._doc
+        indices = self._selected_cells()
+        if doc is None or doc.cells is None or not indices:
+            return
+        label = _FIELD_LABELS.get(field, field)
+        limit = self._cell_fields().get(field)
+        if limit is None:
+            self.statusBar().showMessage(
+                f"{self._tilemap_format_name()} has no {label} to set"
+                " - nothing changed."
+            )
+            return
+        if field in _BOOL_FIELDS:
+            value = bool(value)
+        else:
+            value = max(0, min(int(value), limit))
+        cells = list(doc.cells)
+        for at in indices:
+            cells[at] = replace(cells[at], **{field: value})
+        if self._apply_cells(cells, f"set cell {label}"):
+            if field in _BOOL_FIELDS:
+                said = "on" if value else "off"
+                shown = f"Turned {label} {said}"
+            elif field == "flags":
+                shown = f"Set {label} to ${value:X}"
+            else:
+                shown = f"Set {label} to {value}"
+            self.statusBar().showMessage(
+                f"{shown} for {counted(len(indices), 'cell')}."
+            )
+
     def _assign_cell_palette_row(self) -> None:
         """The tilemap reading of the pin gesture: write the row into the cells.
 
@@ -452,15 +574,23 @@ class TilemapEditMixin:
         cells = list(doc.cells)
         original = list(doc.cells)
         moved = 0
-        for dy in range(rows):
-            for dx in range(cols):
-                sx, sy = op.cell_src(dx, dy, cols, rows)
+        # In placed units, like every sibling that walks a rectangle (the copy's
+        # lattice, the paste's step): on a stamped chain several positions share
+        # one entry, and a per-position walk would compute the permutation in
+        # position space and land it in entry space — each entry written once
+        # per position its stamp covers. The unit is one cell everywhere else,
+        # and the loops read as they always did.
+        unit_w, unit_h = doc.stamp_cells
+        ucols, urows = max(1, cols // unit_w), max(1, rows // unit_h)
+        for dy in range(urows):
+            for dx in range(ucols):
+                sx, sy = op.cell_src(dx, dy, ucols, urows)
                 # Both ends through the document, because the selection is a
                 # rectangle of the *picture* and the cells it holds need not be a
                 # run of the file: on an assembled screen a selection spanning two
                 # pages moves cells between them, which is what the user drew over.
-                dest = doc.cell_at((y0 + dy) * width + (x0 + dx))
-                src = doc.cell_at((y0 + sy) * width + (x0 + sx))
+                dest = doc.cell_at((y0 + dy * unit_h) * width + (x0 + dx * unit_w))
+                src = doc.cell_at((y0 + sy * unit_h) * width + (x0 + sx * unit_w))
                 if 0 <= dest < len(cells) and 0 <= src < len(original):
                     cells[dest] = apply(original[src])
                     moved += 1

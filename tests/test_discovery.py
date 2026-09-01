@@ -673,6 +673,14 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert split.has_palette_rows({}) is True
     assert split.transform_cell(Cell(index=1), CellOp.FLIP_H, {}).flip_h is True
     assert split.transform_cell(Cell(index=1), CellOp.ROTATE_CW, {}) is None
+    assert split.cell_fields({}) == {
+        "index": 0x3FF,
+        "palette_row": 0x07,
+        "priority": 1,
+        "flip_h": 1,
+        "flip_v": 1,
+        "flags": 0x3F,
+    }
     # NES-custom code format (no companion .pal, so its baked master palette is
     # used): index bytes whose colors are unique in that table, so nearest-color
     # encode maps each straight back to the index it came from.

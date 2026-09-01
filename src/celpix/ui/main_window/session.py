@@ -37,7 +37,7 @@ from celpix.core.context import (
     KEY_TILE_PALETTE_ROWS,
     KEY_TILEMAP_CELL_TILES,
     KEY_TILEMAP_PALETTE_ROW_BASE,
-    KEY_TILEMAP_STAMP_TILES,
+    KEY_TILEMAP_STAMP_CELLS,
     PipelineContext,
 )
 from celpix.core.document import CellChain, Document
@@ -333,18 +333,19 @@ class SessionMixin:
                 # `resolved_cells` follows from this and is not passed: the
                 # document derives it, so an edit can re-derive it the same way.
                 #
-                # The stamp size and the source's width come off the *source's*
-                # context, which is the only place either is stated: a PNL panel's
-                # header says how big a stamp its callers index in, and a layout's
-                # own file has no idea. Whether this file holds an entry per stamp
-                # or one per drawn position is the other way round — its own
-                # format's constant, so it is declared rather than published
+                # The stamp size is whichever side states it — this format's own
+                # declaration where it has one (a metatile table knows its own
+                # stamp), else the source's published context (a PNL panel's
+                # header says how big a stamp its callers index in, and a
+                # layout's own file has no idea). Whether this file holds an
+                # entry per stamp or one per drawn position is only ever its own
+                # format's constant, so that is declared rather than published
                 # (`docs/design/tilemap-entry.md` §3.1).
                 chain=CellChain(
                     through.cells or [],
                     loaded.palette_rows,
-                    stamp=self._stamp_tiles(through),
-                    source_columns=through.stated_columns,
+                    stamp=self._chain_stamp_cells(entry, through),
+                    source_columns=self._chain_source_columns(through),
                     dense=self._tilemap_is_dense(entry),
                 ),
                 # Writable, like any other tilemap: a cell edit here restamps, and
@@ -390,6 +391,28 @@ class SessionMixin:
             )
             self._apply_restored_state(entry)
             self._apply_tilemap_columns(entry, restored=restored)
+            doc = entry.doc
+            if (
+                not quiet
+                and doc.chain is not None
+                and doc.chain.stamp != (1, 1)
+                and doc.stamp_cells == (1, 1)
+            ):
+                # A stamp was stated and the resolution cannot lay it out, so
+                # the map degrades to one cell per entry everywhere at once
+                # (:attr:`~celpix.core.document.Document.stamp_cells`). Said
+                # here rather than nowhere: the picture that comes up is not
+                # the stamped one, and silence would leave that a puzzle.
+                across, down = doc.chain.stamp
+                why = (
+                    "the source's cells are metatiles"
+                    if doc.cell_tiles != (1, 1)
+                    else "this format states no width to resolve them at"
+                )
+                self.statusBar().showMessage(
+                    f"{across}x{down} stamps not resolved - {why}; "
+                    "drawing one cell per entry."
+                )
             return True
         tiles = self._load_bound_tiles(entry, quiet=quiet)
         # The cell size is the header's answer over the preset's assumption: the
@@ -443,7 +466,7 @@ class SessionMixin:
             cell_row_stride=(
                 0
                 if glyph_layout is not None or cell_tiles == (1, 1)
-                else VRAM_ROW_STRIDE
+                else self._declared_cell_row_stride(entry)
             ),
             glyph_layout=glyph_layout,
             index_mask=loaded.index_mask,
@@ -837,20 +860,53 @@ class SessionMixin:
             return 0
         return doc.stated_columns
 
-    @staticmethod
-    def _stamp_tiles(through: Document) -> tuple[int, int]:
-        """How many of ``through``'s cells one coordinate into it names.
+    def _chain_stamp_cells(self, entry: Entry, through: Document) -> tuple[int, int]:
+        """How many of ``through``'s **cells** one of ``entry``'s coordinates names.
 
-        The source map's own answer, published by its container from its header
-        (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_TILES`). ``(1, 1)`` for
-        every format that states nothing, which is the reading that leaves a chain
-        resolving one coordinate to one cell.
+        Whichever side states it, the referrer first. A format whose
+        coordinates always name a fixed block declares ``stamp_cells = [w, h]``
+        in its preset — a metatile table knows its own stamp, and needs no
+        container on the source to say so. Otherwise the **source's** published
+        answer (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_CELLS`, a PNL
+        panel's header saying how its callers index it). ``(1, 1)`` for a pair
+        that states nothing, which is the reading that leaves a chain resolving
+        one coordinate to one cell — and for a malformed declaration, since a
+        wrong guess here would expand the map to a multiple of its size.
         """
-        stated = through.tilemap_ctx.get(KEY_TILEMAP_STAMP_TILES)
-        if not stated:
+        stated = self._tilemap_declares(
+            entry, "stamp_cells"
+        ) or through.tilemap_ctx.get(KEY_TILEMAP_STAMP_CELLS)
+        try:
+            across, down = stated or (1, 1)
+            return max(1, int(across)), max(1, int(down))
+        except (TypeError, ValueError):
             return (1, 1)
-        across, down = stated
-        return max(1, int(across)), max(1, int(down))
+
+    @staticmethod
+    def _chain_source_columns(through: Document) -> int:
+        """The stride between a stamp's rows: the **source's** own width.
+
+        Stated where the source's format states one; otherwise the width its
+        cells are laid at is the view's, and file order is drawn order there.
+        A stride of 1 in that case would walk a stamp's second row along the
+        same source row instead of down one.
+        """
+        return through.stated_columns or max(1, through.view.columns)
+
+    def _declared_cell_row_stride(self, entry: Entry) -> int:
+        """The stride between a metatile cell's tile rows, in tiles of the bank.
+
+        ``cell_row_stride`` in the preset params, for a format whose metatile's
+        rows are not a VRAM row apart — a table of consecutive tiles is its own
+        width (2 for a 2x2 cell). The default stays the console VRAM row, which
+        is what every metatile format that declares nothing means: a cell's
+        lower tiles sit directly under its upper ones in the bank.
+        """
+        try:
+            stride = int(self._tilemap_declares(entry, "cell_row_stride"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return VRAM_ROW_STRIDE
+        return stride if stride > 0 else VRAM_ROW_STRIDE
 
     def _tilemap_is_indirect(self, entry: Entry) -> bool:
         """Whether ``entry``'s **format** says its cells are coordinates.
@@ -1265,9 +1321,15 @@ class SessionMixin:
         they were (:class:`~celpix.core.document.CellChain`). Called from the one
         place a cell list changes, which is what keeps two views of the same stamps
         in step without either being reloaded.
+
+        The **geometry** is re-read along with the cells: the stamp size and the
+        source's width are the source's answers, and a source whose stated shape
+        moved (a codec or preset switch re-reading its header) would otherwise
+        leave every dependent stamping at the old one until reloaded.
         """
-        cells = entry.doc.cells if entry.doc is not None else None
-        if cells is None:
+        through = entry.doc
+        cells = through.cells if through is not None else None
+        if through is None or cells is None:
             return False
         current = False
         for other in self._workspace.entries:
@@ -1277,7 +1339,12 @@ class SessionMixin:
                 continue
             if source is None or source.entry is not entry:
                 continue
-            doc.chain = replace(doc.chain, source=cells)
+            doc.chain = replace(
+                doc.chain,
+                source=cells,
+                stamp=self._chain_stamp_cells(other, through),
+                source_columns=self._chain_source_columns(through),
+            )
             doc.resolve()
             current = current or other is self._workspace.current
         return current
