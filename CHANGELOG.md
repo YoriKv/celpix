@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.14 - unreleased
+## v0.5.14 - 2026-08-31
 
 - More tilemap properties editing improvements and cleanup
 
