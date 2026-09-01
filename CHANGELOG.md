@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.13 - unreleased
+## v0.5.13 - 2026-08-31
 
 - Tilemap properties are now editable both in place and when placing tiles
 - Some more tilemap fixes
