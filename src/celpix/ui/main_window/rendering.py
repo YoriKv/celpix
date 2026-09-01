@@ -26,6 +26,8 @@ from the tail of the same cycle rather than each watching for its own trigger.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, tile_first_pixel
 from celpix.core.document import ViewOptions
@@ -33,7 +35,6 @@ from celpix.core.palette import Palette
 from celpix.pipeline import pipeline
 from celpix.ui import render_bridge
 from celpix.ui.canvas import ATTR_FLAGS_BIT, ATTR_PRIORITY_BIT
-from celpix.ui.hex_view_panel import BYTES_PER_ROW
 from celpix.ui.main_window.interpretation import (
     COLS_ASSEMBLED_TIP,
     COLS_CELLS_TIP,
@@ -981,15 +982,31 @@ class RenderingMixin:
         self._refresh_color_details()
         self._sync_color_editor()
 
-    def _refresh_hex(self) -> None:
-        """Feed the hex panel a dump of the file bytes at the current offset.
+    def _hex_addressing(
+        self, base: int
+    ) -> tuple[Callable[[int], str], Callable[[str], int | None]]:
+        """The dump's two address maps: byte index to displayed address, and a
+        typed address back to a byte index.
 
-        Cheap no-op while the dock is hidden (its usual state). The dump starts
-        at the row holding the current view origin - so the offset's row is
-        always the top line - and highlights the currently selected tile(s),
-        using the same address format as the navbar. Bounded to the on-screen
-        window (a minimum of some context, a cap for huge windows) so a
-        multi-megabyte file never renders as one giant document.
+        Both fold in ``base``, so the dump prints what the navbar prints and its
+        Go to box accepts what the navbar's offset box accepts - an address read
+        off one surface can be typed into the other.
+        """
+
+        def to_index(text: str) -> int | None:
+            value = self._parse_address(text)
+            return None if value is None else value - base
+
+        return (lambda index: self._format_offset(base + index)), to_index
+
+    def _refresh_hex(self) -> None:
+        """Feed the hex panel the file's bytes, anchored on the current offset.
+
+        Cheap no-op while the dock is hidden (its usual state). The panel gets
+        the *whole* file and renders only the rows on screen, so it can be
+        scrolled anywhere; what this decides is where the dump lands when the
+        offset moves - the row holding the current view origin - and which bytes
+        are tinted as the ones the canvas is drawing.
 
         A tilemap entry's own bytes are its cells rather than these pixels, so it
         takes its own route (:meth:`_refresh_tilemap_hex`).
@@ -1002,25 +1019,12 @@ class RenderingMixin:
         if self._doc.is_tilemap:
             self._refresh_tilemap_hex()
             return
-        data = self._doc.pixel_data
-        origin = self._byte_position()
-        window = len(
-            self._doc.window_bytes(
-                self._offset, self._columns.value() * self._view_rows(), self._nudge
-            )
-        )
-        row_start = (origin // BYTES_PER_ROW) * BYTES_PER_ROW
-        # Enough rows to cover the visible window, floored so the panel is never
-        # nearly empty and capped so a whole-file view can't blow up the dump.
-        span = max(window, 16 * BYTES_PER_ROW)
-        span = min(span, 256 * BYTES_PER_ROW)
-        region_end = min(len(data), row_start + BYTES_PER_ROW + span)
-        base = self._address_base()
+        addr_of, parse_addr = self._hex_addressing(self._address_base())
         self._hex_panel.show_bytes(
-            data,
-            row_start,
-            region_end,
-            lambda index: self._format_offset(base + index),
+            self._doc.pixel_data,
+            self._byte_position(),
+            addr_of,
+            parse_addr,
             self._selection_byte_range(),
         )
 
@@ -1037,22 +1041,19 @@ class RenderingMixin:
 
         There is no view window to anchor the dump to — a tilemap is always drawn
         entire — so it follows the **selection** instead, and picking a cell
-        scrolls its bytes onto the top row. Same span rule as the pixel dump, and
-        the cap earns its keep here: a screen is 8 KiB of cells.
+        scrolls its bytes onto the top row. That is the panel's Follow selection
+        switch at work, so turning it off holds the dump still here too
+        (``anchor_is_selection`` tells it this anchor is the selection).
         """
         doc = self._doc
         assert doc is not None
-        data = doc.tilemap_data
         highlight = self._selection_byte_range()
-        origin = highlight[0] if highlight is not None else 0
-        row_start = (origin // BYTES_PER_ROW) * BYTES_PER_ROW
-        span = min(max(len(data), 16 * BYTES_PER_ROW), 256 * BYTES_PER_ROW)
-        region_end = min(len(data), row_start + BYTES_PER_ROW + span)
-        base = self._tilemap_address_base()
+        addr_of, parse_addr = self._hex_addressing(self._tilemap_address_base())
         self._hex_panel.show_bytes(
-            data,
-            row_start,
-            region_end,
-            lambda index: self._format_offset(base + index),
+            doc.tilemap_data,
+            highlight[0] if highlight is not None else 0,
+            addr_of,
+            parse_addr,
             highlight,
+            anchor_is_selection=True,
         )

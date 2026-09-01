@@ -55,6 +55,7 @@ from celpix.core.address import (
 )
 from celpix.core.capabilities import Capability
 from celpix.project.workspace import EntryKind
+from celpix.ui.hex_view_panel import HexDumpView
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.undo_commands import (
     OffsetMoveCommand,
@@ -420,9 +421,9 @@ class NavigationMixin:
     # the navigation keys are left alone so it can cycle options / move the cursor.
     # The palette panel is one: focused (clicked), its Up/Down step palette rows.
     # The files tree is another: its arrows walk the open-entries list (selection
-    # is activation, so Up/Down switch the shown file/slice). The hex dump's text
-    # area (a QTextEdit) keeps its arrows on the text cursor. These same panels
-    # also claim the canvas editing shortcuts while focused (take_editing_shortcut),
+    # is activation, so Up/Down switch the shown file/slice). The hex dump keeps
+    # its arrows on its own byte cursor. These same panels also claim the canvas
+    # editing shortcuts while focused (take_editing_shortcut),
     # so nav keys and editing keys alike stay theirs - not the canvas's.
     _ARROW_INPUT_TYPES = (
         QComboBox,
@@ -430,6 +431,7 @@ class NavigationMixin:
         QLineEdit,
         QAbstractSlider,
         QTextEdit,
+        HexDumpView,
         PalettePanel,
         QTreeWidget,
     )

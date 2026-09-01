@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.17 - unreleased
+
+- Improved hex viewer
+- Added README screenshots
+
 ## v0.5.16 - 2026-09-01
 
 - Added SNES RLE1 and RLE 2 compression algorithms
