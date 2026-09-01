@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from os import listdir
 from os.path import (
     abspath,
@@ -62,6 +63,7 @@ from celpix.project.workspace import (
     Workspace,
     can_compose,
     palette_source_for,
+    path_exists,
 )
 
 # While celPix is in alpha the schema is expected to change often, and carries
@@ -136,10 +138,16 @@ def project_dict(ws: Workspace, path: str) -> dict[str, object]:
     saved to two places is legitimately two different documents.
     """
     base_dir = dirname(abspath(path))
+    # Where each entry sits, by identity, for the two records that name another
+    # entry (a tile binding, a composite's pieces). Built once rather than
+    # searched per record: the window asks this function after every edit, and a
+    # scan per binding makes that quadratic in the number of open entries -
+    # which a project of a few hundred files feels as lag while typing.
+    positions = {id(entry): i for i, entry in enumerate(ws.entries)}
     document: dict[str, object] = {
         "version": PROJECT_VERSION,
         "current": ws.entries.index(ws.current) if ws.current is not None else None,
-        "entries": [_entry_dict(entry, base_dir, ws.entries) for entry in ws.entries],
+        "entries": [_entry_dict(entry, base_dir, positions) for entry in ws.entries],
     }
     # A view-only project setting: which pixel codecs the dropdown lists. Sorted
     # so the serialized form is stable (the UI diffs documents to spot unsaved
@@ -182,7 +190,7 @@ _KINDS_BY_NAME = {name: kind for kind, name in _KIND_NAMES.items()}
 
 
 def _entry_dict(
-    entry: Entry, base_dir: str | None, entries: list[Entry]
+    entry: Entry, base_dir: str | None, positions: dict[int, int]
 ) -> dict[str, object]:
     data: dict[str, object] = {
         "kind": _KIND_NAMES[entry.kind],
@@ -235,7 +243,7 @@ def _entry_dict(
         # written as positions (``docs/design/composite-entry.md``). Its ``path``
         # above is ``""`` — it comes from no file — which is what the reader uses
         # to tell it apart from anything that does.
-        data["pieces"] = _pieces_list(entry, entries)
+        data["pieces"] = _pieces_list(entry, positions)
     # What the bytes are, as opposed to how the entry is bounded above. Omitted
     # at the default so a pixel entry — every entry any older project holds — is
     # written exactly as it was before tilemaps existed, and omitted for a
@@ -261,7 +269,7 @@ def _entry_dict(
             data["tilemap_preset_id"] = entry.tilemap_preset_id
         source = entry.tile_source
         if source is not None and source.is_bound:
-            data["tile_source"] = _tile_source_dict(source, entries)
+            data["tile_source"] = _tile_source_dict(source, positions)
         if entry.sprite_size_pair is not None:
             data["sprite_size_pair"] = list(entry.sprite_size_pair)
     session = entry.session
@@ -469,7 +477,7 @@ def entries_payload(
     positions = {id(entry): i for i, entry in enumerate(all_entries)}
     written = []
     for entry in entries:
-        data = _entry_dict(entry, None, all_entries)
+        data = _entry_dict(entry, None, positions)
         data["source_index"] = positions.get(id(entry), -1)
         written.append(data)
     return {
@@ -746,7 +754,9 @@ def _view_from(raw: object) -> ViewOptions | None:
     )
 
 
-def _tile_source_dict(source: TileSource, entries: list[Entry]) -> dict[str, object]:
+def _tile_source_dict(
+    source: TileSource, positions: dict[int, int]
+) -> dict[str, object]:
     """A bound tile source as JSON. ``base_index`` rides along when it is set.
 
     A binding holds the bound :class:`Entry` itself, and a file cannot name an
@@ -764,7 +774,7 @@ def _tile_source_dict(source: TileSource, entries: list[Entry]) -> dict[str, obj
     No path: the tiles are always another entry in this same project, and that
     entry stores its own path once, where relocating it fixes both.
     """
-    at = next((i for i, entry in enumerate(entries) if entry is source.entry), -1)
+    at = positions.get(id(source.entry), -1)
     data: dict[str, object] = {"mode": source.mode.value, "entry_index": at}
     if source.base_index:
         data["base_index"] = source.base_index
@@ -816,7 +826,7 @@ def _bind_tile_sources(raw_entries: list, parsed: list[Entry | None]) -> None:
         entry.tile_source = replace(source, entry=target) if target else None
 
 
-def _pieces_list(entry: Entry, entries: list[Entry]) -> list[dict[str, object]]:
+def _pieces_list(entry: Entry, positions: dict[int, int]) -> list[dict[str, object]]:
     """A composite's pieces as JSON, in order — positions, like a tile source.
 
     A piece holds the source :class:`Entry` itself and a file cannot name an
@@ -849,9 +859,7 @@ def _pieces_list(entry: Entry, entries: list[Entry]) -> list[dict[str, object]]:
             data["length"] = piece.extent
             out.append(data)
             continue
-        data["entry_index"] = next(
-            (i for i, other in enumerate(entries) if other is piece.entry), -1
-        )
+        data["entry_index"] = positions.get(id(piece.entry), -1)
         if piece.offset:
             data["offset"] = piece.offset
         if piece.length:
@@ -1036,6 +1044,28 @@ def _plugin_id(value: object, default: str) -> str:
 
 
 # -- path handling (docs/design/project-format.md §3) ----------------------
+@lru_cache(maxsize=8192)
+def _stored_form(target: str, base_dir: str) -> str:
+    """:func:`_store_path`'s answer for two **absolute** paths, memoised.
+
+    Worth a cache because :func:`project_dict` is how the window asks "does this
+    project differ from the file?" — after every edit, over every entry. A project
+    with hundreds of entries relativises well over a thousand paths per question,
+    and ``relpath`` (which abspaths both arguments again on the way in) is the
+    expensive part of it.
+
+    Sound to memoise only because both arguments are absolute: the answer is then
+    pure string arithmetic, with no dependence on the working directory the key
+    does not carry, and none on the filesystem — so a file appearing, moving or
+    vanishing cannot stale an entry here.
+    """
+    try:
+        stored = relpath(target, base_dir)
+    except ValueError:  # e.g. another drive letter on Windows — keep absolute
+        stored = target
+    return stored.replace(sep, "/")
+
+
 def _store_path(target: str, base_dir: str | None) -> str:
     """``target`` as stored in the project: relative to the project file with
     POSIX separators when on the same drive/tree, absolute otherwise.
@@ -1045,14 +1075,13 @@ def _store_path(target: str, base_dir: str | None) -> str:
     survive being pasted into a project saved somewhere else entirely, and only
     an absolute path means the same thing in both.
     """
-    target = abspath(target)
     if base_dir is None:
-        return target.replace(sep, "/")
-    try:
-        stored = relpath(target, base_dir)
-    except ValueError:  # e.g. another drive letter on Windows — keep absolute
-        stored = target
-    return stored.replace(sep, "/")
+        return abspath(target).replace(sep, "/")
+    if isabs(target) and isabs(base_dir):
+        return _stored_form(target, base_dir)
+    # A relative path means whatever the working directory says, so it is resolved
+    # here rather than under the cache key.
+    return _stored_form(abspath(target), abspath(base_dir))
 
 
 def _resolve_path(stored: str, base_dir: str) -> str:
@@ -1065,7 +1094,11 @@ def _resolve_path(stored: str, base_dir: str) -> str:
     """
     path = stored if isabs(stored) else join(base_dir, stored)
     path = normpath(path)
-    return path if exists(path) else _match_case(path)
+    # Through the workspace's helper, so a load opened inside
+    # :func:`~celpix.project.workspace.one_disk_scan` shares its answer with the
+    # readers that ask the same question again the moment the entries land - the
+    # Files list drawing its warnings, and Locate arming itself.
+    return path if path_exists(path) else _match_case(path)
 
 
 def _match_case(path: str) -> str:

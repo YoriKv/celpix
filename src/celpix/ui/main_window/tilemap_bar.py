@@ -144,6 +144,9 @@ class TilemapBarMixin:
         # bound at all — and a stated width is what stops it resizing the bar
         # every time the user opens an entry with a longer name than the last.
         self._tile_binding = SearchableComboBox(160)
+        # What the combo's rows were last built from (:meth:`_binding_combo_rows`),
+        # so a refresh that changes none of it leaves them alone.
+        self._binding_combo_rows_shown: tuple[object, ...] | None = None
         self._tile_binding.setToolTip(
             "Which open entry supplies this map's tiles\n"
             "Its edits follow through live\n"
@@ -584,29 +587,64 @@ class TilemapBarMixin:
             name = preset or "its own format"
         return f"Tiles from {bound.name}, read as {name}."
 
+    def _binding_combo_rows(self, entry: Entry) -> tuple[object, ...]:
+        """Everything the binding combo's **rows** are made of, in one cheap pass.
+
+        Refilling is not cheap — :meth:`~...session.SessionMixin._can_supply_tiles`
+        resolves each candidate's own binding against the open list, so the scan
+        is quadratic in the entries — and the bar is refreshed from every render.
+        On a project of several hundred files that was a rebuild per edit, which
+        is the lag it buys back.
+
+        The rows change only when the list does, and this says so without
+        resolving anything: each entry itself, the name that is shown, the two
+        kinds the rule reads, and the raw binding that decides whether a tilemap
+        can pass tiles on. The entries ride in the tuple rather than their ids
+        precisely so they stay alive to be compared — :class:`Entry` is
+        ``eq=False``, so a comparison of two of these is a row-by-row identity
+        check.
+        """
+        return (
+            entry,
+            self._tilemap_is_indirect(entry),
+            tuple(
+                (
+                    other,
+                    other.name,
+                    other.kind,
+                    other.content_kind,
+                    other.tile_source.entry if other.tile_source is not None else None,
+                )
+                for other in self._workspace.entries
+            ),
+        )
+
     def _fill_binding_combo(self, entry: Entry, source: TileSource) -> None:
         combo = self._tile_binding
-        combo.clear()
-        combo.addItem("(none)", _NONE)
-        # Any tilemap may draw through another one, so the list is both kinds,
-        # filtered by the single rule that says which entries qualify
-        # (``_can_supply_tiles``). What the format contributes is only the
-        # *order*: a map whose cells are coordinates cannot read a tile bank
-        # sensibly, so its tilemaps come first and the banks stay reachable
-        # instead of being hidden on the strength of a preset flag.
-        candidates = [
-            (index, candidate)
-            for index, candidate in enumerate(self._workspace.entries)
-            if self._can_supply_tiles(entry, candidate)
-        ]
-        if self._tilemap_is_indirect(entry):
-            # Stable, so entry order survives inside each group.
-            candidates.sort(
-                key=lambda pair: pair[1].content_kind is not ContentKind.TILEMAP
-            )
-        for _index, candidate in candidates:
-            combo.addItem(candidate.name, candidate)
-        combo.addItem("From file...", _FROM_FILE)
+        rows = self._binding_combo_rows(entry)
+        if rows != self._binding_combo_rows_shown:
+            self._binding_combo_rows_shown = rows
+            combo.clear()
+            combo.addItem("(none)", _NONE)
+            # Any tilemap may draw through another one, so the list is both kinds,
+            # filtered by the single rule that says which entries qualify
+            # (``_can_supply_tiles``). What the format contributes is only the
+            # *order*: a map whose cells are coordinates cannot read a tile bank
+            # sensibly, so its tilemaps come first and the banks stay reachable
+            # instead of being hidden on the strength of a preset flag.
+            candidates = [
+                candidate
+                for candidate in self._workspace.entries
+                if self._can_supply_tiles(entry, candidate)
+            ]
+            if rows[1]:  # the map's cells are coordinates - see _binding_combo_rows
+                # Stable, so entry order survives inside each group.
+                candidates.sort(key=lambda e: e.content_kind is not ContentKind.TILEMAP)
+            for candidate in candidates:
+                combo.addItem(candidate.name, candidate)
+            combo.addItem("From file...", _FROM_FILE)
+        # Always, rows rebuilt or not: which of them is *current* follows the
+        # binding, and that moves without the list of candidates moving at all.
         if source.mode is TileMode.ENTRY:
             at = combo.findData(source.entry)
             # A binding whose entry has since been closed keeps holding it, and

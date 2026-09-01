@@ -55,6 +55,7 @@ from celpix.project.workspace import (
     composite_preset_id,
     missing_paths,
     new_composite,
+    one_disk_scan,
     palette_source_for,
     path_is_palette_only,
     relocate_path,
@@ -309,11 +310,35 @@ class EntriesMixin:
             "changes with it"
         ):
             return
+        # One pass over the disk for the whole open. The loader resolves every
+        # stored path, then every row of the Files list asks the same question
+        # again to draw its warning, and Locate asks a third time - which on a
+        # project of several hundred entries, with its files on a slow drive, was
+        # the whole of the wait to open it
+        # (:func:`~celpix.project.workspace.one_disk_scan`). The scan is closed
+        # before the relocation walk below, which is the one part of this that
+        # changes what is on disk.
+        with one_disk_scan():
+            missing = self._load_project_entries(path)
+        if missing is None:
+            return
+        # Referenced files may have moved since the project was saved - offer to
+        # re-point them straight away. The menu row was armed inside the scan.
+        if missing:
+            self._relocate_missing(prompt_summary=True)
+
+    def _load_project_entries(self, path: str) -> list[str] | None:
+        """The disk-reading half of :meth:`_load_project`; its missing paths.
+
+        ``None`` when the load did not happen, which is the caller's signal to
+        stop rather than an empty worklist. Split out only so the scan above
+        wraps a block rather than most of a method.
+        """
         try:
             loaded = projectfile.load_project(path)
         except projectfile.ProjectError as exc:
             self._alert(str(exc), title="celPix - project")
-            return
+            return None
         if loaded.version > projectfile.PROJECT_VERSION:
             # No upgrade shims while the format is in alpha, so a file written at
             # a version this build doesn't know opens on key-level tolerance
@@ -365,21 +390,21 @@ class EntriesMixin:
         self.statusBar().showMessage(
             f"Loaded project {Path(path).name} ({len(loaded.entries)} entries)."
         )
-        # Referenced files may have moved since the project was saved - offer to
-        # re-point them straight away, and arm the menu for later.
+        # Referenced files may have moved since the project was saved: arm the
+        # menu for later, and hand the worklist back so the caller can offer the
+        # walk. Both readings sit inside the scan the caller opened, so the
+        # second one costs no disk at all.
         self._sync_locate_action()
-        if missing_paths(self._workspace):
-            self._relocate_missing(prompt_summary=True)
+        return missing_paths(self._workspace)
 
     def _sync_locate_action(self) -> None:
         """Arm File ▸ Locate missing files iff the project has missing files.
 
         Called from the points where the entry list changes shape - once per
-        user-level operation, never per entry. The scan behind it stats *every*
-        referenced path, so hanging it off the per-entry removal notification
-        made a closed file with slices, or a project load, probe the disk
-        quadratically: seconds of frozen UI when the files sit on a slow or
-        disconnected drive.
+        user-level operation, never per entry. The scan behind it stats every
+        distinct referenced path, which is cheap enough once and not per row: on
+        a slow or disconnected drive a stat costs milliseconds, and there is one
+        per open file.
         """
         self._locate_missing_action.setEnabled(bool(missing_paths(self._workspace)))
 

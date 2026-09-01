@@ -777,8 +777,26 @@ class FileListPanel(QWidget):
 
     def has_multi_selection(self) -> bool:
         """Whether more than one row is picked — the state that switches off
-        every action about a single entry, here and in the window's menus."""
-        return len(self.selected_entries()) > 1
+        every action about a single entry, here and in the window's menus.
+
+        Off the selection rather than out of :meth:`selected_entries`, whose walk
+        of the whole tree this is asked far too often to afford: it runs from
+        every menu-gating pass, and those run on every view refresh, so on a
+        project of several hundred rows it was a scan of all of them per edit.
+        The same two rows are skipped for the same reasons — a hidden row is not
+        part of what was picked, and a rename in flight yields nothing — and
+        section headers cannot be selected in the first place.
+        """
+        if self._editing is not None:
+            return False
+        seen = 0
+        for item in self._tree.selectedItems():
+            if item.isHidden() or item.data(0, Qt.ItemDataRole.UserRole) is None:
+                continue
+            seen += 1
+            if seen > 1:
+                return True
+        return False
 
     def move_orders(self, entries: list[Entry], delta: int) -> list[list[Entry]]:
         """The new order of each on-screen group a one-step move of ``entries``

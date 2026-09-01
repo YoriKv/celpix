@@ -39,7 +39,8 @@ activation. External changes to the file on disk are ignored.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from os.path import abspath, basename, exists, normcase, splitext
@@ -1975,6 +1976,58 @@ def palette_source_for(entry: Entry) -> PaletteSource | None:
 
 
 # -- missing-reference handling (docs/design/project-format.md §3) ---------
+#: The answers :func:`path_exists` is serving, while a scan is open; ``None``
+#: outside one, which is the ordinary state.
+_scanned: dict[str, bool] | None = None
+
+
+@contextmanager
+def one_disk_scan() -> Iterator[None]:
+    """Stat each referenced path at most once for the length of one operation.
+
+    Three separate readers ask whether a file is still there — the loader
+    resolving a stored path, every row of the Files list drawing its warning, and
+    :func:`missing_paths` arming Locate — and on a project of several hundred
+    entries that is thousands of stats over a few hundred distinct paths. Where
+    those paths live on a network share, or on a Windows drive seen through WSL,
+    a stat costs milliseconds and the redundancy is the whole of the wait.
+
+    What the scan asserts is only that **the disk does not change under one
+    operation**, so asking six times cannot be more accurate than asking once. It
+    deliberately does *not* span an operation that changes what is on disk — the
+    relocation walk above all, which is exactly a user putting files back where
+    the app can see them. Outside a scan nothing is remembered, which is what
+    keeps an ordinary row repaint able to notice a file that has just gone.
+
+    Nests: an inner scope shares the outer one's answers rather than starting
+    over, so a helper may open a scan of its own without knowing who called it.
+    """
+    global _scanned
+    outer = _scanned
+    if outer is None:
+        _scanned = {}
+    try:
+        yield
+    finally:
+        _scanned = outer
+
+
+def path_exists(path: str) -> bool:
+    """Whether ``path`` is on disk — from the open scan, if there is one.
+
+    ``os.path.exists`` outside a scan, and the reason every missing-file question
+    in this module goes through here rather than calling it directly
+    (:func:`one_disk_scan`).
+    """
+    scanned = _scanned
+    if scanned is None:
+        return exists(path)
+    answer = scanned.get(path)
+    if answer is None:
+        answer = scanned[path] = exists(path)
+    return answer
+
+
 def data_missing(entry: Entry) -> bool:
     """Whether any of the entry's data files is gone from disk.
 
@@ -1983,7 +2036,7 @@ def data_missing(entry: Entry) -> bool:
     of a several-file region counts: the region is the files joined, so one
     absent chip does not shorten it, it moves every byte after the gap.
     """
-    return any(not exists(path) for path in entry.paths)
+    return any(not path_exists(path) for path in entry.paths)
 
 
 def entry_palette_path(entry: Entry) -> str | None:
@@ -2009,7 +2062,7 @@ def entry_palette_path(entry: Entry) -> str | None:
 def palette_missing(entry: Entry) -> bool:
     """Whether the entry's external palette file is referenced but gone."""
     path = entry_palette_path(entry)
-    return path is not None and not exists(path)
+    return path is not None and not path_exists(path)
 
 
 def path_is_palette_only(ws: Workspace, path: str) -> bool:
@@ -2130,18 +2183,26 @@ def missing_paths(ws: Workspace) -> list[str]:
     """
     seen: set[str] = set()
     result: list[str] = []
-    for entry in ws.entries:
-        # Each *individually* missing file of a region, not the whole list: the
-        # user locates the one chip that moved, and the ones still on disk must
-        # not be put in front of them again.
-        candidates = [path for path in entry.paths if not exists(path)]
-        if palette_missing(entry):
-            candidates.append(entry_palette_path(entry))
-        for path in candidates:
-            key = Workspace.path_key(path)
-            if key not in seen:
+    with one_disk_scan():
+        for entry in ws.entries:
+            # Each *individually* missing file of a region, not the whole list:
+            # the user locates the one chip that moved, and the ones still on
+            # disk must not be put in front of them again.
+            candidates = list(entry.paths)
+            palette = entry_palette_path(entry)
+            if palette is not None:
+                candidates.append(palette)
+            for path in candidates:
+                # De-duplicated *before* the stat, not after: a ROM carries its
+                # slices and bookmarks, and every one of them names that same
+                # file, so asking the disk per entry made closing one - or
+                # opening a project - probe it dozens of times over.
+                key = Workspace.path_key(path)
+                if key in seen:
+                    continue
                 seen.add(key)
-                result.append(path)
+                if not path_exists(path):
+                    result.append(path)
     return result
 
 

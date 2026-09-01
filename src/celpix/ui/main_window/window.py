@@ -243,6 +243,10 @@ class MainWindow(
         # comparison can't drift, and it reads clean again when a change is
         # undone back to what is on disk. None while no project is open.
         self._saved_project: dict[str, object] | None = None
+        # Set while a command is being pushed, so the several refreshes one push
+        # sets off do not each re-answer a question with one answer per push
+        # (:meth:`_push_command`).
+        self._defer_project_modified = False
         # Where the palette comes from (:class:`PaletteMode`). The dock's mode
         # dropdown is a view of this member, and the mode's own properties -
         # is_real / has_source / decodes_raw_bytes / has_external_file /
@@ -630,8 +634,21 @@ class MainWindow(
         one stack spans every entry, so ``QUndoStack``'s single clean-index
         can't express per-entry state. Byte-editing commands stamp a revision
         token per entry instead (see :class:`Entry`).
+
+        The project's *unsaved* marker is a different question, and one push
+        raises it several times over: the apply refreshes the view, and the push
+        moves the stack index, and both are choke points
+        :meth:`_refresh_project_modified` hangs off. Answering it costs the whole
+        project re-serialized (:meth:`_project_snapshot`), so it is answered once
+        — after, where the answer is the same one every intermediate ask would
+        have got.
         """
-        self._undo_stack.push(command)
+        self._defer_project_modified = True
+        try:
+            self._undo_stack.push(command)
+        finally:
+            self._defer_project_modified = False
+            self._refresh_project_modified()
 
     def _ensure_current(self, entry: Entry) -> bool:
         """Make ``entry`` the current view for a document-scoped command.
@@ -898,8 +915,12 @@ class MainWindow(
         Called from the choke points every project-visible change passes through
         (a view refresh, a selection change, an undo-stack move). A missed one
         only leaves the *marker* briefly stale - the prompts that matter re-ask
-        :meth:`_project_is_dirty` at the moment they need the answer.
+        :meth:`_project_is_dirty` at the moment they need the answer. That is
+        also what makes it safe for :meth:`_push_command` to hold the question
+        back over a push and ask it once at the end.
         """
+        if self._defer_project_modified:
+            return
         if self._project_path is not None:
             self.setWindowModified(self._project_is_dirty())
 
