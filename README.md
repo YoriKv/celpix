@@ -13,8 +13,8 @@ celPix is built on Python + Qt (PySide6) and runs on Windows, macOS, and Linux.
 |:-:|:-:|:-:|
 | [![Pixel formats & editing](screenshots/cel_1.png)](screenshots/cel_1.png) | [![Tilemaps](screenshots/cel_2.png)](screenshots/cel_2.png) | [![Prototype & leak research](screenshots/cel_3.png)](screenshots/cel_3.png) |
 | Pixel formats & editing | Tilemaps | Prototype & leak research |
-| [![Blocks & bookmarks](screenshots/cel_4.png)](screenshots/cel_4.png) | [![Fontmaps](screenshots/cel_5.png)](screenshots/cel_5.png) | [![Containers & reshaping](screenshots/cel_6.png)](screenshots/cel_6.png) |
-| Blocks & bookmarks | Fontmaps | Containers & reshaping |
+| [![Slices & bookmarks](screenshots/cel_4.png)](screenshots/cel_4.png) | [![Fontmaps](screenshots/cel_5.png)](screenshots/cel_5.png) | [![Containers & reshaping](screenshots/cel_6.png)](screenshots/cel_6.png) |
+| Slices & bookmarks | Fontmaps | Containers & reshaping |
 
 ## Features
 
