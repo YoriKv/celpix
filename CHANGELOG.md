@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.18 - unreleased
+## v0.5.18 - 2026-09-02
 
 - New File (Ctrl+Shift+N) creates a blank pixel, palette or tilemap file using
   the provided settings and size
