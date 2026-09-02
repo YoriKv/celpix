@@ -776,7 +776,8 @@ def test_tpl_save_as_copies_the_header_it_cannot_invent() -> None:
     body = container.read(ReadSource(raw), ctx)
     assert container.write(body, WriteTarget(b""), ctx) == raw
 
-    with pytest.raises(ValueError, match="no file to write into"):
+    # With neither a file to copy from nor a codec stated, there is no header.
+    with pytest.raises(ValueError, match="no color format was stated"):
         container.write(body, WriteTarget(b""), PipelineContext())
 
 

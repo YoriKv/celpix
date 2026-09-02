@@ -1103,6 +1103,27 @@ class MainWindow(
             "Bind it to its tiles in the bar under the canvas",
         )
 
+        # Under the three Open rows, because it answers the same question they
+        # do — which bytes am I about to work on — and differs only in there
+        # being no file yet.
+        #
+        # **No mnemonic**, for the reason New Composite View… below has none:
+        # every letter of "New File…" is already spoken for in this menu (n by
+        # New Slice, e by Edit File Container, w by Write, f by New Slice from
+        # Selection, i by Container Info, l by Write All), and a silent clash —
+        # Qt cycling between two rows instead of activating either — is worse
+        # than a row reached by arrowing to it. The shortcut is what makes it
+        # reachable from the keyboard.
+        make_action(
+            self,
+            "New File…",
+            self._new_file,
+            menu=file_menu,
+            tip="Create a blank graphics, palette or tilemap file\n"
+            "and open it as an entry",
+            shortcut="Ctrl+Shift+N",
+        )
+
         file_menu.addSeparator()
 
         make_action(

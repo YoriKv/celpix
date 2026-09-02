@@ -26,7 +26,7 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Pathway, Stage
 from celpix.core.palette import Palette
 from celpix.pipeline._stage import _run
-from celpix.plugins.base import ColorCodecPlugin, PixelCodecPlugin
+from celpix.plugins.base import ColorCodecPlugin, PixelCodecPlugin, TilemapCodecPlugin
 from celpix.plugins.registry import Registry
 
 
@@ -176,6 +176,24 @@ def pixel_tile_bytes(preset_id: str, reg: Registry) -> int:
         Stage.INTERPRET_PIXEL,
         Pathway.PIXEL,
         lambda: engine.bytes_per_tile(preset.params),
+        plugin=preset.id,
+    )
+
+
+def tilemap_cell_bytes(preset_id: str, reg: Registry) -> int:
+    """How many bytes one cell of ``preset_id`` occupies.
+
+    The tilemap twin of :func:`pixel_tile_bytes`, and for the same kind of
+    caller: one that has to turn a count of cells into a byte length *before*
+    there is a document to measure. Creating a blank map is that caller — its
+    size is stated in cells and the file has to be that many cells long
+    (``docs/design/new-file.md``).
+    """
+    engine, preset = reg.engine_for(preset_id, TilemapCodecPlugin)
+    return _run(
+        Stage.INTERPRET_TILEMAP,
+        Pathway.TILEMAP,
+        lambda: engine.bytes_per_cell(preset.params),
         plugin=preset.id,
     )
 

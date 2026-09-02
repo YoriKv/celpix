@@ -462,15 +462,18 @@ class ViewMenuMixin:
     def _rebake_icons(self) -> None:
         """Re-paint the window's own painted icons against the live palette.
 
-        The two buttons whose art is a pixmap this window painted rather than a
-        icon the style draws: the codec filter's funnel and the tilemap bar's
-        jump. Called on a theme switch rather than from a ``changeEvent`` like the
-        panels that own their own icons - Qt sends a burst of PaletteChange during
-        construction, before these widgets exist, and a window-level handler would
-        have to guard against its own half-built state.
+        Everything whose art is a pixmap this window baked: the codec filter's
+        funnel, the tilemap bar's jump, the navigation bar's step arrows, and the
+        transform bar's five groups of flip/rotate buttons. Called on a theme
+        switch rather than from a ``changeEvent`` like the panels that own their
+        own icons - Qt sends a burst of PaletteChange during construction, before
+        these widgets exist, and a window-level handler would have to guard
+        against its own half-built state.
         """
         self._bake_pixel_filter_icon()
         self._bake_binding_jump_icon()
+        self._bake_step_arrow_icons()
+        self._bake_transform_icons()
 
     def _build_grid_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Grid - the on/off switch, over everything Grid Style configures.

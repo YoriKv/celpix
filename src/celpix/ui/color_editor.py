@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPalette, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -39,12 +39,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix import resources
+from celpix.ui.glyphs import Glyph
+from celpix.ui.icon_font import glyph_pixmap
 from celpix.ui.widgets import (
     CommittingLineEdit,
     icon_cache_key,
     signals_blocked,
-    tinted_icon,
 )
 
 # Channel order as edited, most significant first — the same order the hex
@@ -56,9 +56,13 @@ _CHANNEL_NAMES = {"A": "Alpha", "R": "Red", "G": "Green", "B": "Blue"}
 
 
 def _eyedropper_pixmap(color: QColor, size: int, ratio: float) -> QPixmap:
-    """The bundled eyedropper icon, recolored to ``color`` at device resolution."""
-    source = QImage.fromData(resources.read_bytes("icons", "eyedropper.png"))
-    return tinted_icon(source, color, QSize(size, size), ratio)
+    """The eyedropper glyph, recolored to ``color`` at device resolution.
+
+    The same mark the tool rail's sampler wears, from the same icon font, so the
+    button that picks a color off the canvas and the tool that does it are
+    visibly the one gesture.
+    """
+    return glyph_pixmap(Glyph.EYE_DROPPER, color, QSize(size, size), ratio)
 
 
 def parse_hex_color(text: str) -> int | None:

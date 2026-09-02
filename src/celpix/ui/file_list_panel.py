@@ -44,7 +44,6 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QIcon,
-    QImage,
     QKeySequence,
     QPalette,
     QPixmap,
@@ -60,7 +59,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix import resources
 from celpix.core.address import format_hex
 from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.notices import Notice
@@ -76,12 +74,13 @@ from celpix.project.workspace import (
     palette_missing,
 )
 from celpix.ui import clipboard
+from celpix.ui.glyphs import Glyph
+from celpix.ui.icon_font import glyph_pixmap
 from celpix.ui.searchable_combo import matches_search
 from celpix.ui.widgets import (
     ShortcutIsland,
     icon_cache_key,
     signals_blocked,
-    tinted_icon,
 )
 
 # Translucent amber behind an entry that needs the user's attention — a missing
@@ -414,7 +413,7 @@ class FileListPanel(QWidget):
         self._editing: Entry | None = None
         # Both built lazily and theme-colored; cached against the palette and
         # pixel ratio they were rasterized for (see _drop_stale_icons).
-        self._icons: dict[str, QIcon] = {}
+        self._icons: dict[Glyph, QIcon] = {}
         self._icon_key: tuple[int, float] | None = None
         # One section header per content kind, created with that kind's first
         # entry and removed with its last, so a list holding only one kind shows
@@ -1158,7 +1157,7 @@ class FileListPanel(QWidget):
 
     def _ribbon_icon(self) -> QIcon:
         """The bookmark marker: a flag icon in the theme's accent color."""
-        return self._icon("bookmark.png", role=QPalette.ColorRole.Highlight)
+        return self._icon(Glyph.FLAG, role=QPalette.ColorRole.Highlight)
 
     def _entry_marker(self, entry: Entry) -> tuple[QIcon, str]:
         """The icon a row wears, and what the tooltip calls what it holds.
@@ -1194,13 +1193,13 @@ class FileListPanel(QWidget):
         if entry.kind is EntryKind.BOOKMARK:
             return self._ribbon_icon(), ""
         if entry.content_kind is ContentKind.TILEMAP:
-            filename, what = {
-                "sprite": ("spritemap.png", "Sprite map"),
-                "text": ("fontmap.png", "Fontmap"),
-            }.get(self._tilemap_layout(entry), ("tilemap.png", "Tilemap"))
-            return self._icon(filename, role=QPalette.ColorRole.Text), what
+            glyph, what = {
+                "sprite": (Glyph.GRID_LARGE, "Sprite map"),
+                "text": (Glyph.GRID_ROWS, "Fontmap"),
+            }.get(self._tilemap_layout(entry), (Glyph.GRID, "Tilemap"))
+            return self._icon(glyph, role=QPalette.ColorRole.Text), what
         if entry.kind is EntryKind.SLICE:
-            return self._icon("slice.png", role=QPalette.ColorRole.Text), ""
+            return self._icon(Glyph.IMAGE, role=QPalette.ColorRole.Text), ""
         return QIcon(), ""
 
     def _tilemap_layout(self, entry: Entry) -> str:
@@ -1223,29 +1222,31 @@ class FileListPanel(QWidget):
         to go and find it (File ▸ Locate missing files). Deliberately not a cross
         — at this size, next to rows the user can close, a cross reads as a close
         button rather than a state."""
-        return self._icon("missing.png", tint=_WARNING_INK)
+        return self._icon(Glyph.QUESTION, tint=_WARNING_INK)
 
     def _notice_icon(self) -> QIcon:
         """An exclamation mark: the entry opened, but a stage had to drop, assume
         or substitute something on the way in, and the row's own tooltip spells
         out what."""
-        return self._icon("notice.png", tint=_WARNING_INK)
+        return self._icon(Glyph.EXCLAMATION, tint=_WARNING_INK)
 
-    def _icon(self, filename: str, *, role=None, tint: QColor | None = None) -> QIcon:  # noqa: ANN001
+    def _icon(  # noqa: ANN001 - role is a QPalette.ColorRole
+        self, glyph: Glyph, *, role=None, tint: QColor | None = None
+    ) -> QIcon:
         """A baked icon, kept until what it was rasterized from moves.
 
-        Keyed on the file, since each one is baked in exactly one color — either
+        Keyed on the glyph, since each one is baked in exactly one color: either
         a theme ``role`` (which follows the palette) or a fixed ``tint``.
         """
         self._drop_stale_icons()
-        icon = self._icons.get(filename)
+        icon = self._icons.get(glyph)
         if icon is None:
             icon = (
-                self._role_icon(filename, role)
+                self._role_icon(glyph, role)
                 if role is not None
-                else self._tinted_icon(filename, tint)
+                else self._tinted_icon(glyph, tint)
             )
-            self._icons[filename] = icon
+            self._icons[glyph] = icon
         return icon
 
     def _drop_stale_icons(self) -> None:
@@ -1269,7 +1270,7 @@ class FileListPanel(QWidget):
             for entry, item in self._items.items():
                 self._refresh_item(entry, item)
 
-    def _role_icon(self, filename: str, role: QPalette.ColorRole) -> QIcon:
+    def _role_icon(self, glyph: Glyph, role: QPalette.ColorRole) -> QIcon:
         """A bundled icon in a **theme** color — what the kind markers use.
 
         The color comes from the **Active** group explicitly: an entry's marker
@@ -1278,13 +1279,13 @@ class FileListPanel(QWidget):
         unfocused when the icon was first built and cached.
         """
         return self._tinted_icon(
-            filename, self.palette().color(QPalette.ColorGroup.Active, role)
+            glyph, self.palette().color(QPalette.ColorGroup.Active, role)
         )
 
-    def _tinted_icon(self, filename: str, color: QColor) -> QIcon:
-        """A bundled ``icons/<filename>`` recolored to ``color``.
+    def _tinted_icon(self, glyph: Glyph, color: QColor) -> QIcon:
+        """``glyph`` from the icon font, in ``color``.
 
-        The art ships as white silhouettes, pre-cropped to their opaque bounds (no
+        The glyph arrives as ink on transparency, fitted to its own bounds (no
         baked-in margin to widen the gap to the entry name). We recolor to the
         given color — which is a palette role for the kind markers, keeping them
         theme-aware in light and dark, and the fixed warning amber for the status
@@ -1293,7 +1294,7 @@ class FileListPanel(QWidget):
 
         Rasterized at the screen's **device** resolution, not the logical 13x16:
         a QIcon built from a single 1x pixmap has nothing better to offer a
-        scaled display, so Qt would stretch that bitmap — and these icons are
+        scaled display, so Qt would stretch that bitmap — and these marks are
         thin enough that the smear reads as a washed-out gray rather than the
         tint. The pixmap carries its ratio, so the icon still measures 13x16 in
         layout units.
@@ -1306,12 +1307,10 @@ class FileListPanel(QWidget):
         text color. The shape still says *which* condition it is; only the ink
         follows the row.
         """
-        source = QImage.fromData(resources.read_bytes("icons", filename))
-        image = source.convertToFormat(QImage.Format.Format_ARGB32)
-        icon = QIcon(self._icon_pixmap(image, color))
+        icon = QIcon(self._icon_pixmap(glyph, color))
         icon.addPixmap(
             self._icon_pixmap(
-                image,
+                glyph,
                 self.palette().color(
                     QPalette.ColorGroup.Active, QPalette.ColorRole.HighlightedText
                 ),
@@ -1320,10 +1319,10 @@ class FileListPanel(QWidget):
         )
         return icon
 
-    def _icon_pixmap(self, image: QImage, color: QColor) -> QPixmap:
-        """``image`` tinted ``color`` and centred in the icon box, at device scale."""
-        return tinted_icon(
-            image, color, QSize(_ICON_W, _ICON_H), self.devicePixelRatioF()
+    def _icon_pixmap(self, glyph: Glyph, color: QColor) -> QPixmap:
+        """``glyph`` tinted ``color`` and centred in the icon box, at device scale."""
+        return glyph_pixmap(
+            glyph, color, QSize(_ICON_W, _ICON_H), self.devicePixelRatioF()
         )
 
     # -- interaction ---------------------------------------------------------

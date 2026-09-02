@@ -1,9 +1,11 @@
 """Access to bundled, read-only resources shipped inside the package.
 
 This is where data-first plugin material and UI assets live — format/metadata
-tables and built-in presets under ``data/``, plus icons and the pixel font as we
-add them. Keeping them *inside* ``celpix`` (rather than a sibling data dir) means
-they are packaged into the wheel and resolvable via :func:`resource`.
+tables and built-in presets under ``data/``, the icon font every mark in the UI
+is drawn from under ``fonts/`` (with its license beside it), and the application
+icon under ``icons/`` — the one piece of art that cannot be a glyph. Keeping them
+*inside* ``celpix`` (rather than a sibling data dir) means they are packaged into
+the wheel and resolvable via :func:`resource`.
 
 Paths are resolved with :mod:`importlib.resources`, so they work identically in a
 source checkout and in a frozen/one-file build (PyInstaller relocates files to a
@@ -44,10 +46,10 @@ def resource(*parts: str) -> Traversable:
 def read_bytes(*parts: str) -> bytes:
     """Read a bundled resource as bytes.
 
-    Cached: bundled data cannot change while the app runs, and these are the
-    toolbar icons — re-read on every window construction, and on every theme or
-    DPI change that re-tints them. On a Windows drive mounted into WSL those
-    reads are most of what building the tools rail costs.
+    Cached: bundled data cannot change while the app runs, and the icon font is
+    read on every window construction and on every theme or DPI change that
+    re-bakes an icon — a re-read per marker on a Windows drive mounted into WSL
+    is worth avoiding even at the subset font's size.
     """
     return resource(*parts).read_bytes()
 

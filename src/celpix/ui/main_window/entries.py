@@ -34,12 +34,13 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core.capabilities import Capability, ContentKind
+from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.core.document import Document, ViewOptions
-from celpix.core.errors import PipelineError
+from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.pipeline import inspect_container
-from celpix.plugins.base import NO_COMPRESSION, FileRef
+from celpix.plugins.base import NO_COMPRESSION, STAGE_DEFAULT_PRESET, FileRef
 from celpix.plugins.detect import (
     content_kind_for,
     detect_container,
@@ -58,14 +59,17 @@ from celpix.project.workspace import (
     one_disk_scan,
     palette_source_for,
     path_is_palette_only,
+    pixel_config_for,
     relocate_path,
     repair_presets,
     retarget_files,
     slice_of,
+    tilemap_config_for,
 )
 from celpix.ui.composite_dialog import CompositeDialog, CompositeParams
 from celpix.ui.container_dialog import ContainerDialog, ContainerEdit
 from celpix.ui.container_info_dialog import ContainerInfoDialog
+from celpix.ui.new_file_dialog import NewFileDialog, NewFileParams
 from celpix.ui.slice_dialog import SliceDialog
 from celpix.ui.undo_commands import (
     AddEntryCommand,
@@ -80,6 +84,7 @@ from celpix.ui.widgets import (
     ask_save_path,
     clear_recent_projects,
     confirm_destructive,
+    counted,
     forget_recent_project,
     load_recent_projects,
     remember_recent_project,
@@ -95,6 +100,145 @@ class EntriesMixin:
     single live ``_doc``. See the module docstring for what it owns, and the
     package docstring for why these are mixins.
     """
+
+    # -- creating a file -----------------------------------------------------
+    # What the save picker offers for each kind, when the container has no
+    # extension of its own to suggest. A palette's ``.pal`` is the conventional
+    # name for a file that is nothing but colours; the other two are raw payloads
+    # with no convention at all, so ``.bin`` says exactly that.
+    _NEW_FILTERS = {
+        ContentKind.PIXELS: ("Binary files (*.bin);;All files (*)", ".bin"),
+        ContentKind.TILEMAP: ("Binary files (*.bin);;All files (*)", ".bin"),
+        ContentKind.PALETTE: ("Palette files (*.pal *.col);;All files (*)", ".pal"),
+    }
+
+    def _new_file(self) -> None:
+        """File ▸ New File… — create a blank file on disk and open it as an entry.
+
+        The one gesture that does not start from somebody else's bytes. It runs
+        in the order the answers depend on each other: the dialog settles *what*
+        is being made (content, container, codec, size), the save picker settles
+        *where*, and only then is anything written — so a cancel at either step
+        has left no file behind.
+
+        The file is written before the entry exists because an entry is a
+        reference to a path, and everything downstream of one — the load, a save,
+        the project file — is written against a file that is there. The entry
+        then carries exactly the answers the dialog gave rather than
+        re-detecting them: detection reads a signature, and a blank payload has
+        none to read.
+
+        Undo removes the entry, as it does for an opened file. The file itself
+        stays on disk — deleting a user's file is not something an undo of "add
+        a row to a list" should do, and redo simply opens it again.
+        """
+        params = NewFileDialog.get_params(
+            self,
+            self._registry,
+            pixel_preset_id=self._pixel_preset_id(),
+            palette_preset_id=self._palette_preset_id(),
+        )
+        if params is None:
+            return
+        path = self._ask_new_file_path(params)
+        if path is None:
+            return
+        # A file already open would be blanked under the entry editing it, which
+        # no amount of undo puts back — the same refusal relocating onto an open
+        # path makes, and for the same reason.
+        if self._workspace.find_file(path) or self._workspace.find_palette(path):
+            self._alert(
+                f"{Path(path).name} is already open in this project. "
+                "Close it first, or create the new file under another name.",
+                title="celPix - new file",
+            )
+            return
+        try:
+            size = pipeline.create_file(
+                path,
+                kind=params.content_kind,
+                container_id=params.container_id,
+                codec_id=params.codec_id,
+                units=params.units,
+                reg=self._registry,
+            )
+        except PipelineError as exc:
+            self._report(exc)
+            return
+        except OSError as exc:
+            self._alert(f"Cannot write {path}: {exc}", title="celPix - new file")
+            return
+        entry = self._new_file_entry(path, params)
+        self._push_command(AddEntryCommand(self, entry, f"new file {entry.name}"))
+        self.statusBar().showMessage(
+            f"Created {entry.name} - {self._new_file_extent(params)}, {size:,} bytes"
+        )
+
+    def _ask_new_file_path(self, params: NewFileParams) -> str | None:
+        """Where the new file goes, defaulting to the container's own extension.
+
+        A container that claims a suffix is claiming it for files of its format,
+        and this is about to write one, so its first extension is the right
+        default — that is also what lets the file be *re-detected* as that format
+        when it is opened again from disk in another session.
+        """
+        info = self._registry.plugin(Stage.CONTAINER, params.container_id).info
+        file_filter, suffix = self._NEW_FILTERS[params.content_kind]
+        if info.extensions:
+            suffix = info.extensions[0]
+            file_filter = f"{info.name} (*{suffix});;All files (*)"
+        return ask_save_path(
+            self,
+            "New file",
+            str(Path(self._export_dir(self._workspace.current)) / f"untitled{suffix}"),
+            file_filter,
+            suffix,
+        )
+
+    def _new_file_entry(self, path: str, params: NewFileParams) -> Entry:
+        """The workspace entry for a file just created with ``params``.
+
+        Every answer the dialog gave is stamped on rather than re-derived: the
+        codec goes on the session (or, for a map, on the entry's own cell format
+        and, for a palette file, on its recorded import format), and the size
+        goes on the pending view so the sheet opens at the shape it was asked
+        for instead of at the window's default 16x16.
+        """
+        name = Path(path).name
+        if params.content_kind is ContentKind.PALETTE:
+            # A palette entry is registered, never activated: it has no session
+            # and no view of its own, and the codec it was written with is the
+            # one it must be read back with (``docs/design/project-format.md`` §4).
+            return Entry(
+                name=name,
+                kind=EntryKind.PALETTE,
+                path=path,
+                container_id=params.container_id,
+                palette_preset_id=params.codec_id,
+            )
+        tilemap = params.content_kind is ContentKind.TILEMAP
+        entry = Entry(
+            name=name,
+            kind=EntryKind.FILE,
+            path=path,
+            container_id=params.container_id,
+            content_kind=params.content_kind,
+            tilemap_preset_id=params.codec_id if tilemap else None,
+        )
+        entry.session = EntrySession(
+            pixel_preset_id=(self._pixel_preset_id() if tilemap else params.codec_id),
+            palette_preset_id=self._palette_preset_id(),
+        )
+        entry.pending_view = ViewOptions(columns=params.columns, rows=params.rows)
+        return entry
+
+    @staticmethod
+    def _new_file_extent(params: NewFileParams) -> str:
+        """The size as the dialog stated it, for the status line."""
+        if params.content_kind is ContentKind.PALETTE:
+            return f"{params.units} colors"
+        noun = "cells" if params.content_kind is ContentKind.TILEMAP else "tiles"
+        return f"{params.columns}x{params.rows} {noun}"
 
     # -- opening a file ------------------------------------------------------
     def _open_pixel(self) -> None:
@@ -1097,6 +1241,7 @@ class EntriesMixin:
         """
         if entry.kind not in (EntryKind.FILE, EntryKind.PALETTE):
             return
+        codec_id = self._entry_codec_id(entry)
         edit = ContainerDialog.edit_container(
             self,
             self._registry,
@@ -1104,12 +1249,15 @@ class EntriesMixin:
             container_id=entry.container_id,
             reshape_id=entry.reshape_id,
             kind=entry.content_kind,
+            codec_id=codec_id,
+            units=self._entry_units(entry, codec_id),
         )
         if edit is None:
             return
         moved = edit.paths != entry.paths
         if (
             not moved
+            and edit.units is None
             and edit.container_id == entry.container_id
             and edit.reshape_id == entry.reshape_id
         ):
@@ -1120,12 +1268,187 @@ class EntriesMixin:
         # list — so applying either is a re-read, and pixel edits describe
         # positions the new bytes may not have. They cannot come across, so the
         # user gets the choice first. A re-pointed file re-reads its slices with
-        # it, so their edits are on the table too.
+        # it, so their edits are on the table too. A resize is the same story
+        # told about the file rather than the reading of it, so it joins the gate.
         family = [entry, *self._workspace.children_of(entry)] if moved else [entry]
         if not self._confirm_container_discard(family):
             return
+        # Before the command, and outside it: this one writes the file, and a
+        # truncated tail is not something an undo can put back — so it is settled
+        # while there is still a Cancel, and the undo stack is told nothing about
+        # it. A refusal here calls the whole edit off rather than applying half
+        # of what the dialog was left holding.
+        if edit.units is not None and not self._resize_entry_file(
+            entry, edit, codec_id
+        ):
+            return
         before = ContainerEdit(entry.container_id, entry.paths, entry.reshape_id)
-        self._push_command(ContainerEditCommand(self, entry, before=before, after=edit))
+        # The size is dropped on the way in: it is already on disk, and a command
+        # holding it would offer a redo of a write that has no undo.
+        self._push_command(
+            ContainerEditCommand(
+                self, entry, before=before, after=replace(edit, units=None)
+            )
+        )
+
+    # -- resizing a file -----------------------------------------------------
+    def _entry_codec_id(self, entry: Entry) -> str:
+        """The format ``entry``'s own bytes are read through — what measures it.
+
+        A size row counts tiles, cells or colours, and only the codec knows what
+        one of those costs, so the size question cannot be asked without this.
+        Each content kind keeps it in its own place
+        (``docs/design/project-format.md`` §4), and an entry that has never been
+        activated has no session to keep it in at all — hence the stage's own
+        default, which is what a fresh sheet opens on.
+        """
+        kind = entry.content_kind
+        if kind is ContentKind.PALETTE:
+            return entry.palette_preset_id or self._palette_import_preset_id()
+        if kind is ContentKind.TILEMAP:
+            return (
+                entry.tilemap_preset_id or STAGE_DEFAULT_PRESET[Stage.INTERPRET_TILEMAP]
+            )
+        if entry.session is not None:
+            return entry.session.pixel_preset_id
+        return STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
+
+    def _resize_config(
+        self, entry: Entry, edit: ContainerEdit, codec_id: str
+    ) -> PathwayConfig:
+        """The pathway a resize of ``entry`` reads and writes its file through.
+
+        Built from the **edit** rather than from the entry as it stands: the
+        container and reshape the dialog was left holding are the ones the file
+        is about to be read through, so they are the ones the resized bytes have
+        to go back out through. Framing a payload with the old container and
+        re-reading it with the new one would not produce the region the size row
+        was describing.
+
+        Through the same three builders a load uses, on an entry copied with the
+        edit applied, rather than a config assembled here: they are what decide
+        whether a stage can write at all — a plugin this build hasn't got leaves
+        the pathway view-only — and a second answer to that question is exactly
+        the kind that goes quietly out of date.
+        """
+        edited = replace(
+            entry,
+            path=edit.paths[0],
+            extra_paths=tuple(edit.paths[1:]),
+            container_id=edit.container_id,
+            reshape_id=edit.reshape_id,
+        )
+        if entry.content_kind is ContentKind.PALETTE:
+            return self._file_palette_config(
+                edited.path, 0, codec_id, edited.container_id
+            )
+        if entry.content_kind is ContentKind.TILEMAP:
+            return tilemap_config_for(edited, codec_id, self._registry)
+        return pixel_config_for(edited, codec_id, self._registry)
+
+    def _entry_units(self, entry: Entry, codec_id: str) -> int:
+        """How many tiles, cells or colours ``entry``'s region holds right now.
+
+        Read rather than remembered: only the container knows how much of the
+        file is payload, and the entry may never have been loaded. A region that
+        cannot be measured — an unreadable file, a codec that refuses the preset
+        — comes back 0, and the dialog says so in place of a size rather than
+        failing to open over a row that is not why it was reached for.
+        """
+        if not codec_id:
+            return 0
+        before = ContainerEdit(entry.container_id, entry.paths, entry.reshape_id)
+        try:
+            data, _ = pipeline.read_region(
+                self._resize_config(entry, before, codec_id), self._registry
+            )
+            return pipeline.blank_units(
+                entry.content_kind, codec_id, len(data), self._registry
+            )
+        except (PipelineError, OSError):
+            return 0
+
+    def _resize_entry_file(
+        self, entry: Entry, edit: ContainerEdit, codec_id: str
+    ) -> bool:
+        """Resize ``entry``'s file to ``edit.units``; False if it did not happen.
+
+        The one gesture in this dialog that changes the file rather than the
+        reading of it, so it is also the one that has to ask: shrinking drops the
+        tail, and no undo puts those bytes back (that is why this runs outside
+        the command). Growing needs no question — it adds zeroes past everything
+        that was there.
+
+        A false answer calls the *whole* edit off, container and file list
+        included: the user cancelled at a prompt about this dialog, and applying
+        the half they did not cancel would be a change they never confirmed.
+        """
+        assert edit.units is not None
+        cfg = self._resize_config(entry, edit, codec_id)
+        try:
+            current, ctx = pipeline.read_region(cfg, self._registry)
+            before = len(current)
+            after = pipeline.blank_size(
+                entry.content_kind, codec_id, edit.units, self._registry
+            )
+        except PipelineError as exc:
+            self._report(exc)
+            return False
+        except OSError as exc:
+            self._alert(f"Cannot read {entry.path}: {exc}", title="celPix - resize")
+            return False
+        # Where the region starts in the file, which is the container's answer and
+        # nobody else's — a slice's offset is file-absolute, so the region's new
+        # end has to be put back into those coordinates before the two compare.
+        base = int(ctx.get(KEY_SOURCE_OFFSET, 0) or 0)
+        if after < before and not self._confirm_shrink(
+            entry, before - after, base + after
+        ):
+            return False
+        try:
+            pipeline.resize_file(
+                cfg,
+                kind=entry.content_kind,
+                codec_id=codec_id,
+                units=edit.units,
+                reg=self._registry,
+            )
+        except PipelineError as exc:
+            self._report(exc)
+            return False
+        except (OSError, ValueError) as exc:
+            self._alert(f"Cannot resize {entry.path}: {exc}", title="celPix - resize")
+            return False
+        self.statusBar().showMessage(
+            f"Resized {entry.name} - {before:,} bytes to {after:,}"
+        )
+        return True
+
+    def _confirm_shrink(self, entry: Entry, dropped: int, end: int) -> bool:
+        """Ask before truncating ``entry``'s file; True to go ahead.
+
+        Names the children that will not survive it as well as the byte count. A
+        slice or bookmark is an offset into this file, and one anchored at or past
+        ``end`` — the region's new last byte — has nothing left to read. That is
+        the part of a shrink that costs more than the bytes, and it is the part
+        the size row cannot show.
+        """
+        message = f"Shrinking {entry.name} drops {dropped:,} bytes from the end."
+        orphaned = [
+            child
+            for child in self._workspace.children_of(entry)
+            if child.slice_offset >= end
+        ]
+        if orphaned:
+            names = ", ".join(child.name for child in orphaned)
+            message += (
+                f"\n\n{counted(len(orphaned), 'entry')} starting past the new "
+                f"end will no longer load: {names}."
+            )
+        message += "\n\nThis cannot be undone."
+        return self._confirm(
+            message, title="celPix - resize", accept="Shrink", warn=True
+        )
 
     def _apply_container_edit(self, entry: Entry, edit: ContainerEdit) -> None:
         """Put ``edit``'s file list, container and reshape on ``entry`` and

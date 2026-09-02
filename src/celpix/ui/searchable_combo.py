@@ -489,6 +489,29 @@ def preset_rows(
     return [(p.category, label(p) if label else p.name, p.id) for p in ordered]
 
 
+# The tag a cell-format picker puts in front of each entry, keyed by the layout
+# its preset declares — the same three the Files list draws an icon for
+# (:meth:`~celpix.ui.file_list_panel.FileListPanel._entry_marker`), and read the
+# same way: the *format's* answer, available before anything is loaded or bound.
+# A single bracketed letter rather than the word, because it prefixes a name that
+# already fills the picker and its job is to be scanned down a column, not read.
+# A plain grid map is the default, so it is what an unlisted layout gets.
+_LAYOUT_TAG = {"sprite": "[S]", "text": "[F]"}
+_GRID_TAG = "[T]"
+
+
+def tilemap_codec_label(preset: Preset) -> str:
+    """A cell format's picker text: its layout tag, then its name.
+
+    Here rather than beside either picker because both want it: the tilemap bar's
+    dropdown and the New File dialog's are choosing from the same list, and the
+    part of the choice the names do not carry evenly — "Text run" says what it is,
+    "Sprite object subsprite (OBJ/OBX)" leaves you to know that a subsprite makes
+    it a sprite map — has to read the same in both.
+    """
+    return f"{_LAYOUT_TAG.get(preset.params.get('layout'), _GRID_TAG)} {preset.name}"
+
+
 def info_rows(infos: Iterable[PluginInfo]) -> list[tuple[str, str, str]]:
     """Plugin descriptors as grouped rows, keeping **registration order** inside
     each category.

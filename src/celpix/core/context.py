@@ -59,7 +59,9 @@ KEY_PALETTE_ERROR = "palette.error"
 # nothing about its own encoding. A `TPL` file is the exception: its header names
 # the format outright, which is worth reporting precisely because every other
 # palette's format is a guess. Advisory like everything here; nothing is obliged
-# to adopt it.
+# to adopt it. Set by the *host* instead on a write into nothing (a new file),
+# naming the codec the blank payload is in, for a container whose header has to
+# state one and has no file to copy it from.
 KEY_PALETTE_PRESET = "palette.preset"
 # What a tilemap container read out of its file's *own* header, for the view to
 # start from. Advisory like everything here: each is a setting the user can then
@@ -206,7 +208,8 @@ KEY_TILEMAP_ANIMATIONS_INFERRED = "tilemap.animations-inferred"
 # the depths look alike enough that a wrong pick reads as plausible garbage. The
 # pixel-pathway twin of a tilemap container's ``default_tilemap_preset``, on the
 # context rather than as an attribute because it varies per *file*, not per
-# plugin. Advisory: it seeds the format picker and the user owns it after.
+# plugin. Advisory: it seeds the format picker and the user owns it after. Set
+# by the host on a write into nothing, as ``KEY_PALETTE_PRESET`` is.
 KEY_PIXEL_PRESET = "pixel.preset"
 # bytes: one palette row per tile, when the format carries a side table of them.
 # A tile bank that records which row each tile is meant to be read under is

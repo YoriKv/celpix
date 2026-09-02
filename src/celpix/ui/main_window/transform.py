@@ -57,8 +57,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QAction, QIcon, QPalette
 from PySide6.QtWidgets import QLabel, QSizePolicy, QToolBar, QWidget
 
 from celpix.core import transform
@@ -69,6 +69,7 @@ from celpix.core.tilerearrangement import (
     TILE_ROTATE_CCW,
     TILE_ROTATE_CW,
 )
+from celpix.ui.icon_font import glyph_pixmap
 from celpix.ui.main_window.capability_sync import Gesture
 from celpix.ui.main_window.selection import SELECTION_SHAPE_KEY, SelectionShape
 from celpix.ui.tools import TRANSFORM_SPECS, EditMode, TransformSpec
@@ -148,7 +149,7 @@ OP_ROTATE_CW = TransformOp(
 )
 
 # Which op each button in :data:`~celpix.ui.tools.TRANSFORM_SPECS` performs. The
-# specs carry the presentation (glyph, key, name) and this the behaviour, so the
+# specs carry the presentation (icon, key, name) and this the behaviour, so the
 # toolbar, the keys and the shortcut guide all read one button order.
 OP_BY_FIELD: dict[str, TransformOp] = {
     "flip_h": OP_FLIP_H,
@@ -168,10 +169,15 @@ def _qt_key(spec: TransformSpec) -> Qt.Key:
 
 
 # Appended to every tooltip in the rearrange tool's groups. Its buttons carry the
-# same glyphs as the destructive ones, so the one thing a tooltip there has to say
+# same icons as the destructive ones, so the one thing a tooltip there has to say
 # is that nothing is being rewritten. Its own line, within the ~60-column wrap a
 # plain-text tooltip needs (docs/py-qt-reference/pyside6-pitfalls.md).
 DISPLAY_ONLY_TIP = "\nDisplay only; the file is not changed"
+
+# The transform buttons' icon box, in logical pixels. Sized to the text arrows it
+# replaced rather than to a toolbar's default, so the bar keeps the height it had
+# over the canvas.
+_TRANSFORM_ICON = 16
 
 # The transform keys as Qt keys, in button order. Bare letters, so they are routed
 # by the app-wide event filter (:meth:`TransformMixin._transform_key`) rather than
@@ -234,7 +240,15 @@ class TransformMixin:
         """
         bar = QToolBar("Transform")
         bar.setMovable(False)
-        bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        # The bar's own icon size, not the platform's: this is the fourth row
+        # stacked over the canvas, and a toolbar left to its default (24px, and
+        # larger again on some desktops) would take a visible bite out of the
+        # editing surface for four arrows.
+        bar.setIconSize(QSize(_TRANSFORM_ICON, _TRANSFORM_ICON))
+        # Every group built below registers here, so a theme switch re-bakes all
+        # five without this list having to be spelled out twice.
+        self._transform_groups: list[_TransformGroup] = []
         self._build_selection_shape_combo(bar)
         bar.addSeparator()
         # Tile + Block: the tile-mode transforms. Each group's label and leading
@@ -266,7 +280,7 @@ class TransformMixin:
         )
         # Rearrange: shown only while that tool is armed, over *either* mode. Its
         # transforms are display state stored in the rearrangement, not edits —
-        # the same glyphs and the same Tile/Block captions, deliberately, because
+        # the same icons and the same Tile/Block captions, deliberately, because
         # the gesture and the split read the same; the tooltips carry the
         # difference.
         rearrange_label = self._group_caption(
@@ -420,7 +434,7 @@ class TransformMixin:
     def _group_caption(bar: QToolBar, text: str, tip: str):
         """A transform group's caption, tooltipped with what the group acts on.
 
-        The caption is as likely a hover target as the glyph buttons beside it,
+        The caption is as likely a hover target as the icon buttons beside it,
         and on its own " Tile: " says nothing about the distinction from Block -
         so it answers the same question its buttons' tooltips do.
         """
@@ -446,14 +460,43 @@ class TransformMixin:
         """
         actions = {}
         for spec in TRANSFORM_SPECS:  # the table is the left-to-right order
-            action = QAction(spec.glyph, self)
+            action = QAction(self)
+            # The label is set as well as the tooltip, even though the bar draws
+            # icons only: it is what a screen reader announces, and what Qt puts
+            # in the toolbar's own overflow menu when the bar is too narrow.
+            action.setText(spec.label)
             action.setToolTip(f"{spec.label} ({modifier}{spec.key}) — {scope}{suffix}")
             action.setEnabled(False)
             op = OP_BY_FIELD[spec.field]
             action.triggered.connect(lambda _=False, op=op: handler(op))
             bar.addAction(action)
             actions[spec.field] = action
-        return _TransformGroup(**actions)
+        group = _TransformGroup(**actions)
+        # Every group's icons are baked pixmaps in the palette's colour, so they
+        # are re-baked together on a theme or DPI change; registering the group
+        # here is what keeps that list from drifting as groups are added.
+        self._transform_groups.append(group)
+        self._bake_transform_group(group)
+        return group
+
+    def _bake_transform_group(self, group: _TransformGroup) -> None:
+        """Paint one group's four icons in the theme's button-text colour.
+
+        Disabled is left to Qt: unlike the tools rail, these buttons spend most
+        of their life *enabled* and the automatic fade is only asked to mark a
+        transform the current selection can't take — a passing state, not the
+        resting one.
+        """
+        color = self.palette().color(QPalette.ColorRole.ButtonText)
+        ratio = self.devicePixelRatioF()
+        box = QSize(_TRANSFORM_ICON, _TRANSFORM_ICON)
+        for spec, action in zip(TRANSFORM_SPECS, group.actions, strict=True):
+            action.setIcon(QIcon(glyph_pixmap(spec.icon, color, box, ratio)))
+
+    def _bake_transform_icons(self) -> None:
+        """Re-bake every transform group's icons — see ``_rebake_icons``."""
+        for group in self._transform_groups:
+            self._bake_transform_group(group)
 
     # -- the keys ----------------------------------------------------------
     def _transform_key(self, key, shift: bool, ctrl: bool) -> bool:  # noqa: ANN001

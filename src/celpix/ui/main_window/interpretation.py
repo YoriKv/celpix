@@ -40,6 +40,8 @@ from celpix.project.workspace import (
     pixel_config_for,
     repair_presets,
 )
+from celpix.ui.glyphs import Glyph
+from celpix.ui.icon_font import glyph_icon
 from celpix.ui.searchable_combo import (
     SearchableComboBox,
     fill_grouped,
@@ -55,7 +57,6 @@ from celpix.ui.widgets import (
     CompactComboBox,
     ZoomSpinBox,
     add_labelled,
-    funnel_icon,
     load_float_setting,
     save_float_setting,
     select_combo_data,
@@ -689,13 +690,14 @@ class InterpretationMixin:
             fill_grouped(self._pixel_preset, preset_rows(visible), select_id)
 
     def _bake_pixel_filter_icon(self) -> None:
-        """Paint the filter button's funnel in the theme's button-text color.
+        """Stamp the filter button's funnel in the theme's button-text color.
 
         A pixmap, so it is baked and not styled: re-run when the theme or the
         device scale changes (``_rebake_icons``).
         """
         self._pixel_filter.setIcon(
-            funnel_icon(
+            glyph_icon(
+                Glyph.FUNNEL,
                 self.palette().color(QPalette.ColorRole.ButtonText),
                 ratio=self.devicePixelRatioF(),
             )

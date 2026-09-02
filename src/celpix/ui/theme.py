@@ -9,33 +9,41 @@ left are the ones that are deliberately *not* theme colors — the canvas's
 neutral gray backing, the grid's two levels, the warning ambers — all of which
 have to read the same against the art whichever theme is on.
 
-**Light is the platform's own look**, unchanged: its palette is the active
-style's ``standardPalette()``, which is where Qt was already getting it.
-
-**Dark is derived, not tabulated.** ``QPalette(QColor)`` computes a whole
-palette from one surface color — window, button, text, and the Light/Mid/Dark/
-Shadow bevel shades all fall out of it — so the constants below are only the
-handful whose derived value is wrong for a dark UI (Qt's derivation assumes the
-seed is a *button* color on a light desktop). That keeps one seed as the thing
-to turn when the dark theme wants to be lighter or warmer.
-
-Dark also forces the **Fusion** style. The native Windows and macOS styles paint
-many controls from platform colors and ignore the application palette, so a dark
+**Both themes run on Fusion.** The native Windows and macOS styles paint many
+controls from platform colors and ignore the application palette, so a dark
 palette under them comes out half-light; Fusion honours the palette everywhere
-and ships on every platform Qt does. ``setColorScheme`` is requested alongside
-for the parts a palette cannot reach — most visibly the Windows title bar — and
-is a no-op on platforms that don't support the request (X11/Wayland without a
-portal), which is exactly why the palette above is built by hand rather than
+and ships on every platform Qt does. Using it for light as well is what makes a
+screenshot from one machine describe the app on the others — and what lets a
+theme be a *palette* here rather than a palette plus a note about which
+platform it looks right on. ``setColorScheme`` is requested alongside for the
+parts a palette cannot reach — most visibly the Windows title bar — and is a
+no-op on platforms that don't support the request (X11/Wayland without a
+portal), which is exactly why the palettes below are built here rather than
 left to Qt's own dark scheme.
+
+**A theme is a data row** (:class:`_PaletteSpec`, tabulated in
+:data:`_PALETTES`): a surface color to derive the whole palette from, plus the
+handful of roles whose derived value is wrong. ``QPalette(QColor)`` computes
+window, button, text and the Light/Mid/Dark/Shadow bevel shades from that one
+color, so a theme is a seed to turn rather than forty constants to keep
+consistent — and adding one is a row here, not a code path. Light is the
+exception in the other direction: it names no surface, because Fusion's own
+``standardPalette()`` is already a tuned light palette and there is nothing to
+improve on by re-deriving it.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle, QStyleFactory
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # App-wide, remembered across launches and shared by every project - the theme is
 # a property of the person using celPix, not of what they have open.
@@ -50,14 +58,29 @@ class Theme(Enum):
     DARK = "dark"
 
 
-# The one color the dark palette is derived from: the surface behind everything
-# that isn't an input. Dark enough that the art on the canvas is the brightest
+@dataclass(frozen=True)
+class _PaletteSpec:
+    """One theme's palette as data.
+
+    ``surface`` is the color the whole palette is derived from — the ground
+    behind everything that isn't an input — or ``None`` to start from the
+    style's own ``standardPalette()``. ``roles`` and ``disabled`` then override
+    what derivation gets wrong, the latter in the Disabled color group.
+    """
+
+    surface: QColor | None = None
+    roles: Mapping[QPalette.ColorRole, QColor] = field(default_factory=dict)
+    disabled: Mapping[QPalette.ColorRole, QColor] = field(default_factory=dict)
+
+
+# The dark theme's seed: dark enough that the art on the canvas is the brightest
 # thing in the window, light enough that the bevel shades Qt derives from it
 # (Light/Midlight/Mid/Dark/Shadow) still separate a raised control from its
 # background.
 _DARK_SURFACE = QColor(0x35, 0x35, 0x35)
 
-# What derivation gets wrong for a dark UI, and nothing more.
+# What derivation gets wrong for a dark UI, and nothing more. Qt's derivation
+# assumes the seed is a *button* color on a light desktop, so:
 #
 # - Base/AlternateBase: Qt derives pure black, which reads as a hole punched in
 #   the window. A shade *under* the surface is the same figure/ground relation
@@ -71,19 +94,36 @@ _DARK_SURFACE = QColor(0x35, 0x35, 0x35)
 # - PlaceholderText: derived as full-strength Text, which makes a hint look like
 #   a value; the light theme's is faded, so fade it here too.
 # - Link: the default blue is too dark to read on the surface.
-_DARK_BASE = QColor(0x2B, 0x2B, 0x2B)
-_DARK_ALTERNATE = QColor(0x30, 0x30, 0x30)
-_DARK_HIGHLIGHT = QColor(0x2A, 0x6E, 0xB8)
-_DARK_TOOLTIP_BASE = QColor(0x3C, 0x3C, 0x3C)
-_DARK_TOOLTIP_TEXT = QColor(0xE6, 0xE6, 0xE6)
-_DARK_PLACEHOLDER = QColor(0xFF, 0xFF, 0xFF, 0x66)
-_DARK_LINK = QColor(0x54, 0xA6, 0xFF)
+_DARK_ROLES = {
+    QPalette.ColorRole.Base: QColor(0x2B, 0x2B, 0x2B),
+    QPalette.ColorRole.AlternateBase: QColor(0x30, 0x30, 0x30),
+    QPalette.ColorRole.Highlight: QColor(0x2A, 0x6E, 0xB8),
+    QPalette.ColorRole.HighlightedText: QColor(Qt.GlobalColor.white),
+    QPalette.ColorRole.ToolTipBase: QColor(0x3C, 0x3C, 0x3C),
+    QPalette.ColorRole.ToolTipText: QColor(0xE6, 0xE6, 0xE6),
+    QPalette.ColorRole.PlaceholderText: QColor(0xFF, 0xFF, 0xFF, 0x66),
+    QPalette.ColorRole.Link: QColor(0x54, 0xA6, 0xFF),
+}
+
 # Disabled ink. Qt derives this by *darkening* the text color, which on a dark
 # surface lands a shade off black - a disabled label would be less readable than
 # no label at all. Grayed toward the surface instead, the direction that reads as
 # "off" on a dark UI.
 _DARK_DISABLED_TEXT = QColor(0x7A, 0x7A, 0x7A)
-_DARK_DISABLED_HIGHLIGHT = QColor(0x45, 0x45, 0x45)
+_DARK_DISABLED = {
+    QPalette.ColorRole.WindowText: _DARK_DISABLED_TEXT,
+    QPalette.ColorRole.Text: _DARK_DISABLED_TEXT,
+    QPalette.ColorRole.ButtonText: _DARK_DISABLED_TEXT,
+    QPalette.ColorRole.HighlightedText: _DARK_DISABLED_TEXT,
+    QPalette.ColorRole.Highlight: QColor(0x45, 0x45, 0x45),
+}
+
+_PALETTES: dict[Theme, _PaletteSpec] = {
+    Theme.LIGHT: _PaletteSpec(),
+    Theme.DARK: _PaletteSpec(
+        surface=_DARK_SURFACE, roles=_DARK_ROLES, disabled=_DARK_DISABLED
+    ),
+}
 
 
 class _UnderlinedMnemonics(QProxyStyle):
@@ -109,30 +149,21 @@ class _UnderlinedMnemonics(QProxyStyle):
         return super().styleHint(hint, option, widget, returnData)
 
 
-def dark_palette() -> QPalette:
-    """The dark theme's palette: derived from :data:`_DARK_SURFACE`, then the
-    handful of roles whose derived value is wrong for a dark UI (see above)."""
-    palette = QPalette(_DARK_SURFACE)
-    palette.setColor(QPalette.ColorRole.Base, _DARK_BASE)
-    palette.setColor(QPalette.ColorRole.AlternateBase, _DARK_ALTERNATE)
-    palette.setColor(QPalette.ColorRole.Highlight, _DARK_HIGHLIGHT)
-    palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
-    palette.setColor(QPalette.ColorRole.ToolTipBase, _DARK_TOOLTIP_BASE)
-    palette.setColor(QPalette.ColorRole.ToolTipText, _DARK_TOOLTIP_TEXT)
-    palette.setColor(QPalette.ColorRole.PlaceholderText, _DARK_PLACEHOLDER)
-    palette.setColor(QPalette.ColorRole.Link, _DARK_LINK)
-    for role in (
-        QPalette.ColorRole.WindowText,
-        QPalette.ColorRole.Text,
-        QPalette.ColorRole.ButtonText,
-        QPalette.ColorRole.HighlightedText,
-    ):
-        palette.setColor(QPalette.ColorGroup.Disabled, role, _DARK_DISABLED_TEXT)
-    palette.setColor(
-        QPalette.ColorGroup.Disabled,
-        QPalette.ColorRole.Highlight,
-        _DARK_DISABLED_HIGHLIGHT,
+def palette_for(theme: Theme, style: QStyle) -> QPalette:
+    """``theme``'s palette, as ``style`` would wear it.
+
+    ``style`` is asked rather than assumed because a theme that names no surface
+    *is* the style's standard palette, and that has to come from the style about
+    to be installed rather than from the outgoing one.
+    """
+    spec = _PALETTES[theme]
+    palette = (
+        style.standardPalette() if spec.surface is None else QPalette(spec.surface)
     )
+    for role, color in spec.roles.items():
+        palette.setColor(role, color)
+    for role, color in spec.disabled.items():
+        palette.setColor(QPalette.ColorGroup.Disabled, role, color)
     return palette
 
 
@@ -147,23 +178,16 @@ def apply_theme(theme: Theme) -> None:
     panels that bake a palette color into a pixmap (every tinted icon in the
     app) listen for exactly that event, so in the other order they would keep
     yesterday's colors until something else invalidated them.
-
-    Which is also why the style is *built* before it is installed: a light theme's
-    palette is the style's own ``standardPalette()`` — where Qt was already
-    getting it — so it has to be asked of the new style, not the outgoing one.
     """
     app = QApplication.instance()
     if app is None:  # nothing to theme yet (import-time, or a headless caller)
         return
-    dark = theme is Theme.DARK
     # For the parts of the UI a palette cannot reach — most visibly the Windows
     # title bar. Requested before the palette is read back, since a platform that
     # honours it regenerates the style's standard palette to match.
     app.styleHints().setColorScheme(
-        Qt.ColorScheme.Dark if dark else Qt.ColorScheme.Light
+        Qt.ColorScheme.Dark if theme is Theme.DARK else Qt.ColorScheme.Light
     )
-    # A QProxyStyle with no base resolves to the platform's default style, which
-    # is what the light theme wants; dark passes Fusion in as the base instead.
-    style = _UnderlinedMnemonics(QStyleFactory.create("Fusion") if dark else None)
-    app.setPalette(dark_palette() if dark else style.standardPalette())
+    style = _UnderlinedMnemonics(QStyleFactory.create("Fusion"))
+    app.setPalette(palette_for(theme, style))
     app.setStyle(style)

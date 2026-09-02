@@ -31,13 +31,10 @@ from PySide6.QtGui import (
     QActionGroup,
     QColor,
     QDesktopServices,
-    QIcon,
-    QImage,
     QKeySequence,
     QPainter,
     QPen,
     QPixmap,
-    QPolygonF,
 )
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -278,37 +275,21 @@ def icon_cache_key(widget: QWidget) -> tuple[int, float]:
     return (widget.palette().cacheKey(), widget.devicePixelRatioF())
 
 
-def tinted_icon(source: QImage, color: QColor, box: QSize, ratio: float) -> QPixmap:
-    """``source`` recolored to ``color``, fitted and centred in a ``box`` square.
+def stamped(mask: QPixmap, color: QColor) -> QPixmap:
+    """A copy of ``mask`` with ``color`` stamped through its alpha.
 
-    The bundled icons ship as solid silhouettes cropped to their opaque bounds;
-    SourceIn keeps only the alpha and stamps the tint through, so one piece of
-    art tracks the theme in light and dark. Rasterized at ``ratio`` and stamped
-    with it, so a scaled display gets crisp edges rather than a stretched 1x
-    bitmap, and the pixmap still measures ``box`` in layout units. Centred
-    because the art is rarely square.
+    The one operation every icon in celPix ends with: the art carries the shape
+    and the palette carries the color, so one mask serves both themes and, where
+    a widget needs it, its own disabled shade as well. A copy per call because
+    SourceIn overwrites what it is composited onto, and the caller usually
+    stamps the same mask more than once.
     """
-    tinted = source.convertToFormat(QImage.Format.Format_ARGB32)
-    tinting = QPainter(tinted)
-    tinting.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    tinting.fillRect(tinted.rect(), color)
-    tinting.end()
-    box_w, box_h = round(box.width() * ratio), round(box.height() * ratio)
-    scaled = QPixmap.fromImage(tinted).scaled(
-        box_w,
-        box_h,
-        Qt.AspectRatioMode.KeepAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
-    )
-    canvas = QPixmap(box_w, box_h)
-    canvas.fill(Qt.GlobalColor.transparent)
-    placing = QPainter(canvas)
-    placing.drawPixmap(
-        (box_w - scaled.width()) // 2, (box_h - scaled.height()) // 2, scaled
-    )
-    placing.end()
-    canvas.setDevicePixelRatio(ratio)
-    return canvas
+    pixmap = mask.copy()
+    painter = QPainter(pixmap)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    painter.fillRect(pixmap.rect(), color)
+    painter.end()
+    return pixmap
 
 
 def paint_selection_outline(
@@ -473,35 +454,6 @@ class CommittingLineEdit(QLineEdit):
         if value is not None:
             self.committed.emit(value)
         self.refresh()
-
-
-def funnel_icon(color: QColor, size: int = 16, ratio: float = 1.0) -> QIcon:
-    """A funnel/filter icon filled with ``color`` — the app's "filter a list" mark.
-
-    Painted rather than bundled so it inherits the current theme's text color and
-    stays crisp at any device-pixel ratio; Qt derives the disabled (greyed) form
-    from it automatically. The silhouette sits in a padded unit box: a wide mouth
-    converging to a short stem.
-    """
-    px = max(1, round(size * ratio))
-    pixmap = QPixmap(px, px)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(color)
-    unit = [
-        (0.12, 0.18),
-        (0.88, 0.18),
-        (0.58, 0.52),
-        (0.58, 0.86),
-        (0.42, 0.86),
-        (0.42, 0.52),
-    ]
-    painter.drawPolygon(QPolygonF([QPointF(x * px, y * px) for x, y in unit]))
-    painter.end()
-    pixmap.setDevicePixelRatio(ratio)
-    return QIcon(pixmap)
 
 
 # Amber for the warning level. The QToolTip rule is not decoration: Qt applies a
@@ -1204,38 +1156,6 @@ def add_enum_action_group(
     return group, actions
 
 
-def source_icon(color: QColor, size: int = 16, ratio: float = 1.0) -> QIcon:
-    """A ring with a dot at its centre — the app's "go to what this names" mark.
-
-    Painted rather than bundled for the same reasons as :func:`funnel_icon`: it
-    inherits the theme's text color and stays crisp at any device-pixel ratio,
-    and Qt derives the greyed form itself. Reads as a target rather than as a
-    direction: the button it marks does not step somewhere relative to here, it
-    opens the one thing a control already names.
-    """
-    px = max(1, round(size * ratio))
-    pixmap = QPixmap(px, px)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    centre = QPointF(px / 2, px / 2)
-    # The ring is stroked, so its radius is to the *centre* of the line: half a
-    # pen width short of the box, or antialiasing clips the outer edge flat.
-    pen = QPen(color)
-    pen.setWidthF(max(1.0, px * 0.1))
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    ring = px * 0.34
-    painter.drawEllipse(centre, ring, ring)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(color)
-    dot = px * 0.13
-    painter.drawEllipse(centre, dot, dot)
-    painter.end()
-    pixmap.setDevicePixelRatio(ratio)
-    return QIcon(pixmap)
-
-
 class ChecklistPopupButton(QToolButton):
     """A toolbar button that drops down a checkable list, with Select All / None.
 
@@ -1296,6 +1216,16 @@ class ChecklistPopupButton(QToolButton):
             column.addWidget(box)
         column.addStretch(1)
         scroll.setWidget(inner)
+        # Wide enough for the longest name. A scroll area's own width hint is its
+        # widget's and counts no scrollbar, but the height cap above guarantees a
+        # vertical one over a list this long -- so left to adjustSize() the popup
+        # opens exactly one scrollbar too narrow and puts a horizontal scrollbar
+        # under names that would otherwise have fit.
+        scroll.setMinimumWidth(
+            inner.sizeHint().width()
+            + scroll.verticalScrollBar().sizeHint().width()
+            + 2 * scroll.frameWidth()
+        )
         outer.addWidget(scroll)
 
         popup.adjustSize()

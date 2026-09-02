@@ -283,6 +283,23 @@ def _container_info_never_blocks(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _new_file_dialog_never_blocks(monkeypatch):
+    """Make the New File dialog's ``exec()`` return Rejected instead of blocking.
+
+    Reachable by triggering File ▸ New File…, and the same rule as
+    :func:`_container_dialog_never_blocks`: offscreen, ``exec()`` never returns.
+    Rejected is the safe default — the caller reads it as a cancel and writes no
+    file — while construction still happens, so a test can build the dialog and
+    assert on the sizes and formats it offered. Guarded like
+    :func:`captured_alerts` so headless suites stay Qt-free.
+    """
+    module = sys.modules.get("celpix.ui.new_file_dialog")
+    if module is None:
+        return
+    monkeypatch.setattr(module.NewFileDialog, "exec", lambda self: 0, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _composite_dialog_never_blocks(monkeypatch):
     """Make the composite dialog's ``exec()`` return Rejected instead of blocking.
 

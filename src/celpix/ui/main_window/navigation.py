@@ -38,7 +38,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSpinBox,
-    QStyle,
     QTextEdit,
     QTreeWidget,
     QVBoxLayout,
@@ -55,7 +54,9 @@ from celpix.core.address import (
 )
 from celpix.core.capabilities import Capability
 from celpix.project.workspace import EntryKind
+from celpix.ui.glyphs import Glyph
 from celpix.ui.hex_view_panel import HexDumpView
+from celpix.ui.icon_font import glyph_icon
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.undo_commands import (
     OffsetMoveCommand,
@@ -305,11 +306,13 @@ class NavigationMixin:
         row.addWidget(self._bank_settings)
         row.addStretch(1)
 
-        # Arrow steps use the style's standard icons rather than triangle glyphs:
-        # the left/right triangles are emoji-capable codepoints, so font fallback
-        # can render them in a different style from the up/down pair.
-        sp = QStyle.StandardPixmap
-        for text, icon, tip, handler in (
+        # The arrow steps wear the bundled icon font, like every other icon in
+        # the app, rather than the style's standard pixmaps: those are the
+        # platform's art, so the row changed shape with the widget style and sat
+        # at a different weight from the marks beside it. The four arrows are
+        # baked pixmaps, which is why they are collected for _rebake_icons.
+        self._step_arrows: list[tuple[QPushButton, Glyph]] = []
+        for text, glyph, tip, handler in (
             (
                 "Pg Dn",
                 None,
@@ -318,13 +321,13 @@ class NavigationMixin:
             ),
             (
                 "",
-                sp.SP_ArrowDown,
+                Glyph.ARROW_DOWN,
                 "Down one row (Down)\nA whole block-row in a block pattern",
                 lambda: self._nav_rows(self._row_step()),
             ),
             (
                 "",
-                sp.SP_ArrowUp,
+                Glyph.ARROW_UP,
                 "Up one row (Up)\nA whole block-row in a block pattern",
                 lambda: self._nav_rows(-self._row_step()),
             ),
@@ -334,10 +337,10 @@ class NavigationMixin:
                 "Up one page (PgUp)",
                 lambda: self._nav_rows(-self._view_rows()),
             ),
-            ("", sp.SP_ArrowLeft, "Back one tile (Left)", lambda: self._nav_tiles(-1)),
+            ("", Glyph.ARROW_LEFT, "Back one tile (Left)", lambda: self._nav_tiles(-1)),
             (
                 "",
-                sp.SP_ArrowRight,
+                Glyph.ARROW_RIGHT,
                 "Forward one tile (Right)",
                 lambda: self._nav_tiles(1),
             ),
@@ -361,13 +364,14 @@ class NavigationMixin:
             ),
         ):
             btn = QPushButton(text)
-            if icon is not None:
-                btn.setIcon(self.style().standardIcon(icon))
+            if glyph is not None:
+                self._step_arrows.append((btn, glyph))
             btn.setToolTip(tip)
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # keep arrow keys global
             btn.setFixedWidth(40)
             btn.clicked.connect(handler)
             step_row.addWidget(btn)
+        self._bake_step_arrow_icons()
 
         # Surface the byte nudge when active - the tile grid looks ordinary, so
         # without this the sub-tile shift would be invisible state. Sits next to
@@ -377,6 +381,17 @@ class NavigationMixin:
         step_row.addWidget(self._nudge_info)
         step_row.addStretch(1)
         return bar
+
+    def _bake_step_arrow_icons(self) -> None:
+        """Stamp the step arrows in the theme's button-text color.
+
+        Pixmaps, so they are baked and not styled: re-run when the theme or the
+        device scale changes (``_rebake_icons``).
+        """
+        color = self.palette().color(QPalette.ColorRole.ButtonText)
+        ratio = self.devicePixelRatioF()
+        for button, glyph in self._step_arrows:
+            button.setIcon(glyph_icon(glyph, color, ratio=ratio))
 
     def _tile_offset_bar_style(self) -> str:
         """Accent-colored QSS for the file-position bar.

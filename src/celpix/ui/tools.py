@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from celpix.core import draw
+from celpix.ui.glyphs import Glyph
 
 
 class EditMode(Enum):
@@ -71,8 +72,8 @@ class ToolSpec:
 
     ``icon`` and ``shape`` are the panel's two ways to draw a tool button, kept
     here as plain data so this module stays Qt-free. Exactly one is set: ``icon``
-    names a bundled monochrome PNG under ``resources/icons`` (tinted to the theme);
-    ``shape`` names a primitive the panel paints itself for the geometry tools
+    is a glyph in the bundled icon font (tinted to the theme); ``shape`` names a
+    primitive the panel paints itself for the geometry tools
     (``"line"``/``"rect"``/``"rect_filled"``/``"ellipse"``/``"ellipse_filled"``/
     ``"marquee"``), so they share one size and padding. ``label`` remains the
     accessible name and tooltip lead.
@@ -84,7 +85,7 @@ class ToolSpec:
     key: str  # the bare number key that selects it (1..9)
     gesture: Gesture
     rasterize: Rasterize | None = None
-    icon: str | None = None
+    icon: Glyph | None = None
     shape: str | None = None
 
 
@@ -110,7 +111,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "2",
         Gesture.FREEHAND,
         draw.line,
-        icon="pencil.png",
+        icon=Glyph.PENCIL,
     ),
     ToolSpec(
         Tool.EYEDROPPER,
@@ -118,7 +119,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Pick a color; right-click does this on any tool",
         "3",
         Gesture.SAMPLE,
-        icon="eyedropper.png",
+        icon=Glyph.EYE_DROPPER,
     ),
     ToolSpec(
         Tool.FILL,
@@ -126,7 +127,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Flood-fill the region under the cursor",
         "4",
         Gesture.FILL,
-        icon="paint-bucket.png",
+        icon=Glyph.PAINT_BUCKET,
     ),
     ToolSpec(
         Tool.LINE,
@@ -182,7 +183,7 @@ TOOL_BY_KEY: dict[str, Tool] = {spec.key: spec.tool for spec in TOOL_SPECS}
 
 @dataclass(frozen=True)
 class TransformSpec:
-    """One flip/rotate button: its glyph, its key, and what it is called.
+    """One flip/rotate button: its icon, its key, and what it is called.
 
     ``field`` names the attribute the button is stored under in a transform
     group, which is what lets one key table drive every group the bar can show
@@ -192,15 +193,15 @@ class TransformSpec:
     field: str
     key: str  # the bare letter; Shift picks the Block group, not another letter
     label: str
-    glyph: str
+    icon: Glyph
 
 
 # The transform bar's left-to-right button order *and* its keys, kept here rather
 # than beside the toolbar so the shortcut guide can list them without importing
 # the window. Shift is the Tile/Block axis, so four letters cover eight buttons.
 TRANSFORM_SPECS: tuple[TransformSpec, ...] = (
-    TransformSpec("flip_h", "H", "Flip horizontal", "↔"),
-    TransformSpec("flip_v", "V", "Flip vertical", "↕"),
-    TransformSpec("rotate_cw", "C", "Rotate 90° right", "↻"),
-    TransformSpec("rotate_ccw", "X", "Rotate 90° left", "↺"),
+    TransformSpec("flip_h", "H", "Flip horizontal", Glyph.FLIP_HORIZONTAL),
+    TransformSpec("flip_v", "V", "Flip vertical", Glyph.FLIP_VERTICAL),
+    TransformSpec("rotate_cw", "C", "Rotate 90° right", Glyph.ROTATE_RIGHT),
+    TransformSpec("rotate_ccw", "X", "Rotate 90° left", Glyph.ROTATE_LEFT),
 )

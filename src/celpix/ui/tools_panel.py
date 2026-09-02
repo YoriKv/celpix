@@ -9,9 +9,9 @@ pixel-edit controller decides what a tool *does* and drives :meth:`set_tool` bac
 when the tool changes by a number-key shortcut, so the buttons always mirror the
 active tool.
 
-Each button is a fixed square showing an icon only. The face comes from a bundled
-monochrome PNG where one exists (pencil, fill bucket, eyedropper) or a shape the
-panel paints for the geometry tools (line/rect/ellipse and their filled variants,
+Each button is a fixed square showing an icon only. The face comes from a glyph in
+the bundled icon font where one exists (pencil, fill bucket, eyedropper) or a shape
+the panel paints for the geometry tools (line/rect/ellipse and their filled variants,
 plus the selection marquee), so those share one size and padding. Both are
 rasterized here and tinted to the palette's text color — in its enabled *and*
 disabled shades, so the rail visibly goes dead outside pixel mode — which is how
@@ -22,7 +22,7 @@ the panel tracks the theme and the display's pixel ratio; see
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QImage, QPainter, QPalette, QPen, QPixmap
+from PySide6.QtGui import QIcon, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QGridLayout,
@@ -31,9 +31,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix import resources
+from celpix.ui.icon_font import glyph_mask
 from celpix.ui.tools import TOOL_SPECS, Tool, ToolSpec
-from celpix.ui.widgets import icon_cache_key
+from celpix.ui.widgets import icon_cache_key, stamped
 
 # A single vertical column: the panel is a rail down the right edge of the canvas,
 # so the nine tools read top-to-bottom like a paint program's toolbox.
@@ -47,16 +47,13 @@ _ICON = 20
 
 
 def _tinted(mask: QPixmap, color, ratio: float) -> QPixmap:
-    """``mask`` recolored to ``color``, preserving its alpha shape.
+    """``mask`` recolored to ``color`` and stamped with ``ratio``.
 
-    A copy per call: the mask is stamped twice (enabled and disabled ink), and
-    SourceIn overwrites the pixels it is composited onto.
+    The ratio is what makes the finished pixmap measure ``_ICON`` in layout units
+    however many device pixels it was rasterized at; the recolor itself is the
+    app's shared one.
     """
-    pixmap = mask.copy()
-    painter = QPainter(pixmap)
-    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    painter.fillRect(pixmap.rect(), color)
-    painter.end()
+    pixmap = stamped(mask, color)
     pixmap.setDevicePixelRatio(ratio)
     return pixmap
 
@@ -175,23 +172,18 @@ class ToolsPanel(QWidget):
 
         Untinted: only the alpha shape matters, since every tint is stamped
         through it by :func:`_tinted`.
+
+        The icon font already returns a fitted, centred mask, so a glyph tool is
+        that call and nothing else; the geometry tools are painted onto a mask of
+        the same size here, which is what keeps the two kinds the same weight in
+        the same column.
         """
+        if spec.icon is not None:
+            return glyph_mask(spec.icon, QSize(box, box))
         mask = QPixmap(box, box)
         mask.fill(Qt.GlobalColor.transparent)
         painter = QPainter(mask)
-        if spec.icon is not None:
-            source = QImage.fromData(resources.read_bytes("icons", spec.icon))
-            scaled = QPixmap.fromImage(source).scaled(
-                box,
-                box,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            painter.drawPixmap(
-                (box - scaled.width()) // 2, (box - scaled.height()) // 2, scaled
-            )
-        else:
-            self._paint_shape(painter, spec.shape, box)
+        self._paint_shape(painter, spec.shape, box)
         painter.end()
         return mask
 

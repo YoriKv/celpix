@@ -26,6 +26,12 @@ picker automatically is a further step this does not take: unlike the pixel
 pathway's ``KEY_PIXEL_PRESET``, a palette entry's format is chosen at
 registration time, before any pipeline has run to produce a context.
 
+The same key is read the other way on a write into nothing. A **new** palette
+has no file to copy a header from, and the colors cannot say what they are
+encoded in, so the host states the codec on the context and the header names
+that format — the one case where the byte is written from something other than
+the file it came out of.
+
 The three formats map onto codecs celPix already has, so nothing here is a new
 color format — only the framing that says which one to use. Full provenance, and
 why other readers get this format wrong by assuming type 0, is in
@@ -48,8 +54,9 @@ PLUGIN_ID = "container.tpl-palette"
 
 # bytes: the file this palette came out of, so a Save As can rebuild the header.
 # The format byte is not derivable from the colors — celPix's palette is ARGB and
-# says nothing about the encoding it was read through — so a new file cannot be
-# invented, only copied.
+# says nothing about the encoding it was read through — so a header is copied
+# from the file it came out of, or failing that built from the codec the host
+# says the payload is in (``KEY_PALETTE_PRESET``, on a write into nothing).
 KEY_TPL_SOURCE = "tpl.source"
 
 _MAGIC = b"TPL"
@@ -62,6 +69,12 @@ FORMATS: dict[int, tuple[str, int, str]] = {
     0: ("preset.palette.rgb888", 3, "RGB888"),
     1: ("preset.palette.nes-indexed", 1, "master-palette index"),
     2: ("preset.palette.bgr555", 2, "BGR555"),
+}
+
+# The same table the other way round, for a header built rather than copied:
+# the codec a new palette is written in names the format byte that says so.
+_FORMAT_BY_PRESET: dict[str, int] = {
+    preset: kind for kind, (preset, _, _) in FORMATS.items()
 }
 
 _MAGIC_PROBES: tuple[tuple[int, bytes], ...] = tuple(
@@ -89,6 +102,28 @@ def parse(raw: bytes) -> tuple[int, int]:
             f"({', '.join(str(k) for k in FORMATS)})"
         )
     return kind, (len(raw) - HEADER_SIZE) // FORMATS[kind][1]
+
+
+def _built_header(preset: object) -> bytes:
+    """A header for a file that has no file to copy one from — a new palette.
+
+    The format byte is the one thing the colors cannot say, so it comes from the
+    codec the host says they are written in. A codec the format has no byte for
+    is refused rather than guessed at: a header naming the wrong encoding is a
+    file every reader decodes wrongly and none of them obviously.
+    """
+    kind = _FORMAT_BY_PRESET.get(str(preset or ""))
+    if kind is None:
+        named = ", ".join(label for _, _, label in FORMATS.values())
+        reason = (
+            f"{preset} is not a format a TPL header can name"
+            if preset
+            else "no color format was stated"
+        )
+        raise _fail(
+            f"no file to copy a header from and {reason}; a header names one of {named}"
+        )
+    return _MAGIC + bytes([kind])
 
 
 class TplPaletteContainer:
@@ -124,13 +159,11 @@ class TplPaletteContainer:
         existing = dest.existing
         if not existing:
             stashed = ctx.get(KEY_TPL_SOURCE)
-            if not isinstance(stashed, (bytes, bytearray)):
-                raise _fail(
-                    "no file to write into: the header's format byte cannot be "
-                    "derived from the colors, only copied from the file they "
-                    "were read out of"
-                )
-            existing = bytes(stashed)
+            existing = (
+                bytes(stashed)
+                if isinstance(stashed, (bytes, bytearray))
+                else _built_header(ctx.get(KEY_PALETTE_PRESET))
+            )
         parse(existing)  # refuse to write a header this cannot read back
         # Rebuilt rather than spliced: the entry count *is* the file's length, so
         # a shorter palette has to shorten the file. Splicing would leave the old

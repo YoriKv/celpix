@@ -10,7 +10,7 @@ free: a new action with a key shows up here without anyone remembering to add it
 What no menu holds is appended as static sections, read from the same tables the
 widgets are built from so they stay in sync: the pixel tools' number keys
 (:data:`~celpix.ui.tools.TOOL_SPECS`) and the transform bar's flip/rotate letters
-(:data:`~celpix.ui.tools.TRANSFORM_SPECS`) — those buttons are glyphs on a toolbar
+(:data:`~celpix.ui.tools.TRANSFORM_SPECS`) — those buttons are icons on a toolbar
 that swaps with the mode, which is not something a menu row can say. The canvas
 gestures, the panel keys and the floating windows' own keys follow, and are the
 genuinely hand-maintained part: a drag, a held modifier and a key that belongs to
@@ -292,9 +292,23 @@ class ShortcutGuide(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(scroll)
         layout.addWidget(buttons)
-        # Wide enough for two columns without wrapping a key label; the height is
-        # a starting size, not a limit.
-        self.resize(760, 620)
+        # Sized to the width the two columns actually need rather than to a
+        # remembered number: the guide is generated from the live menu bar, so an
+        # action added anywhere can push a column past a hardcoded width and
+        # leave the dialog opening with a horizontal scrollbar over its own text.
+        # The scrollbar allowance is for the vertical one, which the tall list
+        # will have and which would otherwise eat that much of the columns. The
+        # height stays a starting size, not a limit -- the list grows with the
+        # app, and a short screen must still be able to reach the buttons.
+        margins = layout.contentsMargins()
+        width = (
+            body.sizeHint().width()
+            + scroll.verticalScrollBar().sizeHint().width()
+            + 2 * scroll.frameWidth()
+            + margins.left()
+            + margins.right()
+        )
+        self.resize(min(width, self.screen().availableGeometry().width()), 620)
 
 
 class AboutDialog(QDialog):
@@ -328,6 +342,10 @@ class AboutDialog(QDialog):
             f"<a href='{HOMEPAGE}'>{HOMEPAGE}</a></p>"
             "<p>Released under the MIT license. Built on Python and Qt via"
             " PySide6, which is licensed under the LGPLv3.</p>"
+            # Apache 2.0 asks that the notice travel with the work, so it is in
+            # the app and not only in the license file shipped beside the font.
+            "<p>Icons from <a href='https://fonts.google.com/icons'>Material"
+            " Symbols</a>, licensed Apache 2.0.</p>"
         )
         text.setWordWrap(True)
         text.setOpenExternalLinks(True)

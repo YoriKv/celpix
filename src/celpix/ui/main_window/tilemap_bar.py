@@ -75,10 +75,13 @@ from celpix.project.workspace import (
     TileSource,
     palette_source_for,
 )
+from celpix.ui.glyphs import Glyph
+from celpix.ui.icon_font import glyph_icon
 from celpix.ui.searchable_combo import (
     SearchableComboBox,
     fill_grouped,
     preset_rows,
+    tilemap_codec_label,
 )
 from celpix.ui.undo_commands import (
     TilemapBindingCommand,
@@ -88,7 +91,6 @@ from celpix.ui.widgets import (
     add_labelled,
     hex_spin,
     signals_blocked,
-    source_icon,
     value_spin,
 )
 
@@ -96,21 +98,6 @@ from celpix.ui.widgets import (
 # than strings so an entry named "From file..." cannot collide with the action.
 _NONE = object()
 _FROM_FILE = object()
-
-# The tag the cell-format picker puts in front of each entry, keyed by the layout
-# its preset declares — the same three the Files list draws an icon for
-# (:meth:`~celpix.ui.file_list_panel.FileListPanel._entry_marker`), and read the
-# same way: the *format's* answer, available before anything is loaded or bound.
-# A single bracketed letter rather than the word, because it prefixes a name that
-# already fills the picker and its job is to be scanned down a column, not read.
-# A plain grid map is the default, so it is what an unlisted layout gets.
-_LAYOUT_TAG = {"sprite": "[S]", "text": "[F]"}
-_GRID_TAG = "[T]"
-
-
-def _codec_label(preset) -> str:  # noqa: ANN001 — a Preset, imported for typing only
-    """A cell format's picker text: its layout tag, then its name."""
-    return f"{_LAYOUT_TAG.get(preset.params.get('layout'), _GRID_TAG)} {preset.name}"
 
 
 class TilemapBarMixin:
@@ -345,14 +332,15 @@ class TilemapBarMixin:
         self._tile_binding_note.setText(self._binding_note(entry, source))
 
     def _bake_binding_jump_icon(self) -> None:
-        """Paint the jump button's ring-and-dot in the theme's button-text color.
+        """Stamp the jump button's ring-and-dot in the theme's button-text color.
 
         A pixmap, so it is baked and not styled: re-run when the theme or the
         device scale changes (``_rebake_icons``), which is also why it is a
         method rather than two lines at the build site.
         """
         self._tile_binding_jump.setIcon(
-            source_icon(
+            glyph_icon(
+                Glyph.TARGET,
                 self.palette().color(QPalette.ColorRole.ButtonText),
                 ratio=self.devicePixelRatioF(),
             )
@@ -678,7 +666,8 @@ class TilemapBarMixin:
         (:meth:`~...session.SessionMixin._tilemap_preset_id`), and showing an
         empty selection over it would name a format the canvas is not drawing.
 
-        Every entry is tagged with the **layout** it declares (:data:`_LAYOUT_TAG`)
+        Every entry is tagged with the **layout** it declares
+        (:func:`~celpix.ui.searchable_combo.tilemap_codec_label`)
         because that is the part of the choice the names do not carry evenly:
         "Text run" says what it is, "Sprite object subsprite (OBJ/OBX)" leaves you
         to know that a subsprite makes it a sprite map, and picking across layouts
@@ -687,7 +676,9 @@ class TilemapBarMixin:
         """
         fill_grouped(
             self._tilemap_preset,
-            preset_rows(self._registry.presets(Stage.INTERPRET_TILEMAP), _codec_label),
+            preset_rows(
+                self._registry.presets(Stage.INTERPRET_TILEMAP), tilemap_codec_label
+            ),
             self._tilemap_preset_id(entry),
         )
 

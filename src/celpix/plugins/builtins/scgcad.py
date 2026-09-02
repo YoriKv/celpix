@@ -1134,7 +1134,10 @@ class CgxContainer:
     depth being saved and the header of the file already there may be a
     different one. Same variant, and everything around the tiles is preserved;
     otherwise the bank is built (:func:`_blank_cgx`), which is also what a save
-    to a path with no file at it gets.
+    to a path with no file at it gets. A payload that is none of the three sizes
+    is refused when the destination is a bank — splicing it in would overwrite
+    the header — and passed through whole otherwise, as the read passes through
+    a file of a length the family does not have.
 
     Two hints go out on the context rather than being applied here: the pixel
     preset the payload is in, and the per-tile palette rows. A container's job is
@@ -1190,8 +1193,21 @@ class CgxContainer:
         # different depth — its colour selectors, its table — is not a statement
         # about these tiles, so none of it carries over.
         if len(data) not in CGX_BY_PAYLOAD:
-            # Not one of the three payload sizes: the same pass-through the read
-            # half does for a length this family does not have.
+            if bank is not None:
+                # The destination *is* a bank and these tiles are no size a bank
+                # holds. Splicing them over it would lay tile bytes across the
+                # header and the row table, leaving a file no reader recognises
+                # - a resize past the family's sizes, not a save, since a save
+                # puts back the length the read produced. Refused so the bank
+                # stays a bank.
+                sizes = ", ".join(f"{size:#x}" for size in sorted(CGX_BY_PAYLOAD))
+                raise ValueError(
+                    f"a tile bank holds {sizes} bytes of tiles and {len(data):#x} "
+                    "is none of them; the bank at the destination was left as it is"
+                )
+            # Not one of the three payload sizes and nothing to protect: the same
+            # pass-through the read half does for a length this family does not
+            # have.
             return splice(dest.existing, 0, data)
         return splice(_blank_cgx(len(data)), 0, data)
 

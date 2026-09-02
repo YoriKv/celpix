@@ -25,11 +25,14 @@ geometry — is :mod:`celpix.pipeline._stage`.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
+from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
+    KEY_PALETTE_PRESET,
+    KEY_PIXEL_PRESET,
     KEY_SOURCE_FILES,
     KEY_SOURCE_OFFSET,
     KEY_SOURCE_PATH,
@@ -68,6 +71,7 @@ from celpix.pipeline.metrics import (
     pixel_tile_bytes,
     quantize_color,
     quantize_palette,
+    tilemap_cell_bytes,
 )
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.render import (
@@ -139,7 +143,11 @@ __all__ = [
     "TilemapData",
     "TilemapImage",
     "bitmap_params",
+    "blank_file_bytes",
+    "blank_size",
+    "blank_units",
     "compose_tiles",
+    "create_file",
     "decode_and_compose",
     "decode_tiles",
     "decode_window",
@@ -150,6 +158,7 @@ __all__ = [
     "expand_cells",
     "export_palette",
     "find_next_structure",
+    "frames_new_file",
     "glyph_sheet",
     "hidden_rects",
     "inspect_container",
@@ -171,6 +180,7 @@ __all__ = [
     "quantize_palette",
     "read_region",
     "reinterpret_pixel_data",
+    "resize_file",
     "save",
     "spliced_palette_bytes",
     "sprite_hit",
@@ -188,6 +198,7 @@ __all__ = [
     "tile_source_ids",
     "tile_source_image",
     "tile_source_span",
+    "tilemap_cell_bytes",
     "tilemap_image",
     "tilemap_tiles",
     "tiles_per_stripe",
@@ -763,6 +774,314 @@ def export_palette(
         _deposit(FileRef(path), lambda t: container.write(data, t, doc.palette_ctx))
 
     _run(Stage.CONTAINER, Pathway.PALETTE, write, "write", plugin=RAW_CONTAINER)
+
+
+def _new_file_pathway(kind: ContentKind) -> Pathway:
+    """The pathway a new file's failures are reported under."""
+    if kind is ContentKind.PALETTE:
+        return Pathway.PALETTE
+    return Pathway.TILEMAP if kind is ContentKind.TILEMAP else Pathway.PIXEL
+
+
+def blank_size(kind: ContentKind, codec_id: str, units: int, reg: Registry) -> int:
+    """Bytes a blank file of ``units`` tiles, cells or colors needs.
+
+    The one arithmetic behind creating a file (``docs/design/new-file.md``): a
+    new file is stated in the units the user thinks in — tiles for a graphic,
+    cells for a map, colors for a palette — and only the codec knows what one of
+    them costs. Asked of the codec rather than of a document, because there is no
+    document until this answer has produced a file to open.
+
+    A palette rounds up to a whole read unit rather than multiplying, since a
+    packed format holds several colors in one (:func:`palette_read_bytes`).
+    """
+    if kind is ContentKind.PALETTE:
+        return palette_read_bytes(units, codec_id, reg)
+    if kind is ContentKind.TILEMAP:
+        return units * tilemap_cell_bytes(codec_id, reg)
+    return units * pixel_tile_bytes(codec_id, reg)
+
+
+def blank_file_bytes(
+    kind: ContentKind,
+    container_id: str,
+    codec_id: str,
+    units: int,
+    reg: Registry,
+) -> bytes:
+    """A whole new file's bytes: a blank payload with its container's framing on.
+
+    The payload is **zero bytes** — :func:`blank_size` of them. Zero is what an
+    empty region reads as for every codec celPix carries: index 0 in a tile (the
+    transparent entry by convention), cell 0 in a map, black in a palette. So it
+    is produced by arithmetic rather than by encoding a list of blank tiles,
+    which would need a decoded shape for a codec whose geometry the preset alone
+    does not fix.
+
+    The framing is the container's, which is what makes this more than
+    ``bytes(n)``: the tile-bank and screen formats build a header and a clear
+    table around a payload that is not theirs to invent, and hand back a file
+    their own reader recognises.
+
+    **The destination is treated as empty.** A container's write is normally
+    shown what is already there so it can keep what it did not decode; a new file
+    has nothing to keep, and showing it a file about to be replaced would splice
+    a blank payload into bytes the user asked to be rid of. So a container that
+    can only *preserve* its framing returns the bare payload here, and the result
+    being exactly ``blank_size`` long is how a caller can tell
+    (:func:`frames_new_file`) — behaviourally, without any container declaring it.
+
+    The context carries the codec the payload is in (:func:`_seed_codec`), for a
+    container whose header has to *state* it and that has no file to copy it
+    from.
+
+    **The file is read back before it is handed over.** A format fixes what a
+    payload may be — a screen is 0x2000 bytes, a copier image is whole 16 KiB
+    blocks — and a container handed a length it does not have quietly makes the
+    file it can: the screen padded or cut to its size, the copier image with the
+    partial block dropped. Neither is the file that was asked for, so the result
+    is read through the same container and refused when it does not hold
+    ``blank_size`` bytes of payload (:func:`_check_payload_held`).
+    """
+    size = blank_size(kind, codec_id, units, reg)
+    payload = bytes(size)
+    container = reg.plugin(Stage.CONTAINER, container_id, ContainerPlugin)
+    ctx = PipelineContext()
+    _seed_codec(ctx, kind, codec_id)
+
+    def build() -> bytes:
+        data = container.write(payload, WriteTarget(b""), ctx)
+        held = len(container.read(ReadSource(data), PipelineContext()))
+        _check_payload_held(container, kind, codec_id, held, size, reg, "would hold")
+        return data
+
+    return _run(
+        Stage.CONTAINER, _new_file_pathway(kind), build, "write", plugin=container_id
+    )
+
+
+# The unit each kind is counted in, for a refusal that has to say how many of
+# them a container would have framed: the byte count alone is the codec's
+# arithmetic, and the user typed tiles.
+_UNIT_NOUNS = {
+    ContentKind.PIXELS: "tiles",
+    ContentKind.TILEMAP: "cells",
+    ContentKind.PALETTE: "colors",
+}
+
+
+def _seed_codec(ctx: PipelineContext, kind: ContentKind, codec_id: str) -> None:
+    """Tell a container writing into nothing what the payload is encoded in.
+
+    The same two keys a container *publishes* when its format states the codec
+    (``KEY_PIXEL_PRESET``, ``KEY_PALETTE_PRESET``), set from the other side: a
+    container that has to write that statement into a header it is building
+    fresh — a TPL palette's format byte — has nowhere else to learn it, a blank
+    payload saying nothing about its own encoding. Advisory in this direction
+    too; a container whose header states no codec ignores it.
+    """
+    if kind is ContentKind.PALETTE:
+        ctx.set(KEY_PALETTE_PRESET, codec_id)
+    elif kind is ContentKind.PIXELS:
+        ctx.set(KEY_PIXEL_PRESET, codec_id)
+
+
+def _check_payload_held(
+    container: ContainerPlugin,
+    kind: ContentKind,
+    codec_id: str,
+    held: int,
+    size: int,
+    reg: Registry,
+    verb: str,
+) -> None:
+    """Refuse a write whose result reads back as ``held`` payload bytes, not
+    ``size``.
+
+    A container's write is a byte transform that keeps the file well-formed for
+    its format, and for a format with fixed lengths that means a payload of the
+    wrong length comes out cut, padded or partly dropped rather than as an
+    error — the right behaviour for a save, where the payload is whatever the
+    read produced, and silently the wrong file for a size the user just typed.
+    Reading the result back is the one check that holds for every container,
+    including a third-party one, without any of them declaring what sizes they
+    have.
+    """
+    if held == size:
+        return
+    noun = _UNIT_NOUNS[kind]
+    name = container.info.short_name or container.info.name
+    raise ValueError(
+        f"{name} {verb} {held:,} bytes of payload "
+        f"({blank_units(kind, codec_id, held, reg):,} {noun}) where {size:,} "
+        f"bytes ({blank_units(kind, codec_id, size, reg):,} {noun}) were asked "
+        "for; a file of this format cannot be that size"
+    )
+
+
+def frames_new_file(
+    kind: ContentKind,
+    container_id: str,
+    codec_id: str,
+    units: int,
+    reg: Registry,
+) -> bool:
+    """Whether ``container_id`` builds framing around a payload it is handed fresh.
+
+    Probed by running the write against an empty destination and seeing whether
+    anything came back beyond the payload — behavioural, for the same reason
+    :func:`~celpix.pipeline.metrics.palette_has_alpha` is: it then holds for a
+    third-party container too, with nothing new to declare, and it reports what
+    the container really does rather than what it claims.
+
+    It depends on the size as well as the container, and has to: a bank format
+    builds its header for the payload lengths its family has and passes anything
+    else through.
+    """
+    size = blank_size(kind, codec_id, units, reg)
+    return len(blank_file_bytes(kind, container_id, codec_id, units, reg)) != size
+
+
+def create_file(
+    path: str,
+    *,
+    kind: ContentKind,
+    container_id: str,
+    codec_id: str,
+    units: int,
+    reg: Registry,
+) -> int:
+    """Create a blank file at ``path``; returns how many payload bytes it holds.
+
+    :func:`blank_file_bytes` decides what goes in it — see there for the payload
+    and the framing. The file is written whole rather than spliced into, so
+    naming an existing path replaces it, which is what the picker's overwrite
+    prompt already asked about.
+    """
+    data = blank_file_bytes(kind, container_id, codec_id, units, reg)
+    # Outside :func:`_run`, unlike the framing above: a path that cannot be
+    # written is the operating system's answer about a filename, not a stage
+    # failing, and the caller has a better message for it than a pipeline report.
+    Path(path).write_bytes(data)
+    return blank_size(kind, codec_id, units, reg)
+
+
+def blank_units(kind: ContentKind, codec_id: str, nbytes: int, reg: Registry) -> int:
+    """How many whole tiles, cells or colors ``nbytes`` holds — :func:`blank_size`
+    read backwards.
+
+    What a caller that has to state an *existing* region's size in the units the
+    user thinks in needs: the file has a byte length, and the size row asks for
+    tiles (``docs/design/new-file.md`` §6). Creating a file goes the other way
+    and has :func:`blank_size`; resizing one needs both, because the number it
+    puts in the spins has to come back out as the same file.
+
+    **Floored**, because a partial trailing unit is not one any codec can read —
+    the same rounding :func:`palette_entry_capacity` already applies for a packed
+    format, which is why that is what answers for a palette rather than a
+    division here.
+    """
+    if kind is ContentKind.PALETTE:
+        return palette_entry_capacity(nbytes, codec_id, reg)
+    per_unit = (
+        tilemap_cell_bytes(codec_id, reg)
+        if kind is ContentKind.TILEMAP
+        else pixel_tile_bytes(codec_id, reg)
+    )
+    return max(0, nbytes) // per_unit if per_unit > 0 else 0
+
+
+def resize_file(
+    cfg: PathwayConfig,
+    *,
+    kind: ContentKind,
+    codec_id: str,
+    units: int,
+    reg: Registry,
+) -> int:
+    """Resize the region ``cfg`` reads so it holds ``units`` tiles/cells/colors.
+
+    The counterpart of :func:`create_file` for a file that already exists
+    (``docs/design/new-file.md`` §6). The **payload** is what is resized — the
+    bytes the container yields, after any reshape — so the framing is rebuilt
+    around the new length rather than being counted as part of it: growing a
+    tile bank by eight tiles adds eight tiles' worth of payload and lets the
+    container restate its own header, which is the only thing that keeps the
+    file readable as that format afterwards.
+
+    Read and write are the same two halves an ordinary load and save use, in
+    that order, so a resize goes through exactly the stages the entry does and
+    cannot disagree with them about what the region's bytes are.
+
+    **Growth is zero bytes** and shrinking is a plain truncation of the tail, for
+    the reason :func:`blank_file_bytes` gives: zero is what an empty region reads
+    as for every codec celPix carries, and the end of the region is the only
+    place a caller can add or remove units without moving the ones already there.
+
+    Two refusals, both before anything is read:
+
+    - A region of **several files** cannot change size. Its boundaries are the
+      lengths the files have on disk, and they are the only thing that says which
+      bytes belong to which chip — see :func:`_deposit`, which refuses the same
+      thing at the deposit for the same reason. Refused here as well so the
+      caller is told before a multi-megabyte read, and told what is wrong rather
+      than that some buffer was the wrong length.
+    - A **view-only** pathway has no write half to put the bytes back through,
+      which is the same reason :func:`save` skips it.
+
+    And one after the write has run but before it reaches disk: a container
+    whose format fixes the payload's length — a screen, a tile bank outside its
+    three sizes, a copier image short of a whole block — is handed the resized
+    bytes and answers with a file of the length it has. The result is read back
+    through the entry's own stages and refused unless it holds exactly ``units``
+    (:func:`_check_payload_held`), so a resize either happens or reports why
+    not; it never reports a size the file does not have.
+
+    Returns the payload's new length in bytes.
+    """
+    target = cfg.write_target()
+    if len(target.paths) > 1:
+        raise ValueError(
+            f"this region is {len(target.paths)} files joined, and resizing it "
+            "would move the boundaries between them; nothing was written"
+        )
+    if not cfg.write_enabled:
+        raise ValueError(
+            "this region is read-only, so its size cannot be changed; nothing "
+            "was written"
+        )
+    pathway = _new_file_pathway(kind)
+    ctx = PipelineContext()
+    current = _read_reshape_decompress(cfg, ctx, reg, pathway)
+    size = blank_size(kind, codec_id, units, reg)
+    if size == len(current):
+        return size
+    resized = (
+        current[:size] if size < len(current) else current + bytes(size - len(current))
+    )
+    shaped = _compress_unshape(cfg, resized, ctx, reg, pathway)
+    container = reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin)
+
+    def produce(dest: WriteTarget) -> bytes:
+        result = container.write(shaped, dest, ctx)
+        # Read the result back through every stage the entry reads through,
+        # while it is still only bytes: a container whose format fixes the
+        # payload's length keeps the file at that length whatever it was handed
+        # (:func:`_check_payload_held`), and the only honest answers are the size
+        # that was asked for or nothing written.
+        preview = replace(cfg, source=replace(cfg.source, data=result, data_base=0))
+        held = len(_read_reshape_decompress(preview, PipelineContext(), reg, pathway))
+        _check_payload_held(container, kind, codec_id, held, size, reg, "keeps")
+        return result
+
+    _run(
+        Stage.CONTAINER,
+        pathway,
+        lambda: _deposit(target, produce),
+        "write",
+        plugin=cfg.container_id,
+    )
+    return size
 
 
 def _existing(path: str) -> bytes:

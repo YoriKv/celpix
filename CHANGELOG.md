@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.18 - unreleased
+
+- New File (Ctrl+Shift+N) creates a blank pixel, palette or tilemap file using
+  the provided settings and size
+- Edit File Container can resize files now
+- New light/dark fusion theme
+- Improved icons
+
 ## v0.5.17 - 2026-09-01
 
 - Improved hex viewer
