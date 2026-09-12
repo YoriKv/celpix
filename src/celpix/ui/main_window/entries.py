@@ -1044,16 +1044,17 @@ class EntriesMixin:
         """Re-list a composite's pieces and re-assemble — the application path
         for composite edits and their undos.
 
-        The re-assembly is a plain re-read, and the maps drawing through the
-        composite are re-resolved after it: their tiles came out of the join that
-        has just changed shape, so leaving them would have them drawing the old
-        one indefinitely (:meth:`~...session.SessionMixin._reassemble_composites`).
+        The re-assembly is a plain re-read of **this** entry
+        (:meth:`~...session.SessionMixin._rebuild_composite`), and the maps
+        drawing through the composite are re-resolved after it: their tiles came
+        out of the join that has just changed shape, so leaving them would have
+        them drawing the old one indefinitely.
         """
         entry.name = params.name
         entry.pieces = params.pieces
         if entry is self._workspace.current:
             self._capture_session()
-        self._reassemble_composites([entry])
+        self._rebuild_composite(entry)
         self._reresolve_bound_art(self._maps_drawing_from([entry]))
         self._files_panel.refresh_entry(entry)
 

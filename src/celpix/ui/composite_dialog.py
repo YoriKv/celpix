@@ -25,6 +25,8 @@ and that length is what keeps every piece after it on the index the maps expect.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -229,18 +231,23 @@ class CompositeDialog(QDialog):
     def _piece_of(self, item: QTreeWidgetItem) -> CompositePiece:
         """One row as a piece — the inverse of :meth:`_append`.
 
-        A source row is carried through **whole**, range and measurement
-        included: this dialog reads no bytes, so it is in no position to
-        re-answer either, and rebuilding the piece from the columns would lose
-        the range a project stated.
+        Every row is carried through **whole**, range and measurement included:
+        this dialog reads no bytes, so it is in no position to re-answer either,
+        and rebuilding the piece from the columns would lose the range a project
+        stated.
 
-        A blank row is the one thing it does own — its spin *is* the answer.
+        A blank row's length is the one thing it does own — its spin *is* the
+        answer — so that alone is written over the row's original piece. Building
+        a fresh one instead would drop an assembled pad's ``measured``, and OK on
+        an untouched list would then differ from the entry it was opened on and
+        land a no-op on the undo stack.
         """
+        original = item.data(1, Qt.ItemDataRole.UserRole)
         entry = item.data(0, Qt.ItemDataRole.UserRole)
         if entry is None:
             spin = self._list.itemWidget(item, 3)
-            return CompositePiece(length=spin.value() if spin is not None else 1)
-        return item.data(1, Qt.ItemDataRole.UserRole)
+            return replace(original, length=spin.value() if spin is not None else 1)
+        return original
 
     def pieces(self) -> tuple[CompositePiece, ...]:
         """The rows as pieces, in order — what OK returns."""

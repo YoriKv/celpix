@@ -548,6 +548,18 @@ class Entry:
     # buffer after it had been undone in the slice. Identity-keyed, like every
     # other reference to an entry (this class is ``eq=False``).
     pending_folds: set[Entry] = field(default_factory=set)
+    # SLICE entries only: why the last fold of this slice into its parent was
+    # refused — a re-encoded stream that no longer fits its slot, a compressor
+    # with no write half — or None when the parent's buffer holds its bytes.
+    #
+    # Set where the fold discovers it and read wherever the fold's success is
+    # otherwise assumed: a write of the parent marks its dirty slices clean, and
+    # an edit to the parent drops their documents, both on the strength of "the
+    # buffer already has the slice's edits". A refused fold is the one case
+    # where it does not, and without this record the slice was marked saved
+    # without a byte of it written, and its document dropped with the edit
+    # inside. Session state, never persisted.
+    fold_refused: str | None = None
     session: EntrySession | None = None
     # Unsaved in-memory changes, tracked **per pathway** because the two write to
     # different files: the pixel pathway is the entry's own data (its pixel bytes
@@ -1618,7 +1630,7 @@ def entry_view_bytes(
 # -- composites (docs/design/composite-entry.md) ---------------------------
 @dataclass(frozen=True)
 class PieceSpan:
-    """Where one :class:`CompositePiece` landed in the assembled buffer.
+    """Where one run of a :class:`CompositePiece` landed in the assembled buffer.
 
     ``owner`` is the entry those bytes belong to — the piece's, and **None** for
     a pad or for a source that could not be read. That is the whole of what the
@@ -1626,6 +1638,13 @@ class PieceSpan:
     written into or it has nothing behind it, and an edit there is refused rather
     than kept in a buffer no file answers for
     (``docs/design/slices-and-parents.md``).
+
+    A *run* rather than a piece, because a piece can land as two: the bytes its
+    source held, and the zero fill after them where a stated range outran the
+    source or a ragged one was rounded up to a tile. The fill is a span of its
+    own with no owner, since the owner has no byte at those positions — a
+    deposit there would be dropped at the end of its buffer while the stroke
+    stayed on screen, in the undo stack, and vanished at the next reassembly.
 
     ``source_base`` is where this run started **inside the owner's own buffer**,
     which is 0 for a whole-entry piece and the range's own ``offset`` for a ranged
@@ -1756,7 +1775,8 @@ def composite_layout(
     A piece with a **range** takes only those bytes of it
     (:attr:`CompositePiece.is_ranged`), zero-filled where the source is too short
     to fill it: a stated range is a statement about the composite's layout, so it
-    keeps its length whatever the source turns out to hold. A piece without one
+    keeps its length whatever the source turns out to hold. The fill is recorded
+    as a span nobody owns (:class:`PieceSpan`), exactly as a pad is. A piece without one
     takes everything from ``offset`` on, **rounded up to a whole tile** — that
     rounding is the point of the feature rather than tidiness, since a composite
     view exists to give a map one predictable index space and a ragged source
@@ -1765,9 +1785,22 @@ def composite_layout(
     ends and rounding would move the next one.
 
     A pad piece — and a source that is closed, unreadable, or one this refuses
-    (:func:`can_compose`) — contributes ``piece.extent`` blank bytes. Contributing
-    *nothing* would be worse than blank: every cell of every map bound to the
-    composite would shift by the length of the missing run.
+    (:func:`can_compose`) — contributes ``piece.extent`` blank bytes. So does an
+    un-ranged piece whose ``offset`` starts at or past the end of what its source
+    resolves to, which has no bytes left to take: without the fill that run would
+    disappear rather than go blank. Contributing *nothing* would be worse than
+    blank in either case: every cell of every map bound to the composite would
+    shift by the length of the missing run. A **ranged** piece never reaches that
+    — it fills to its stated ``length`` whatever the source holds, including
+    nothing.
+
+    ``preset_id`` is resolved before it is asked for a tile size
+    (:meth:`~celpix.plugins.registry.Registry.resolve_preset`), so a composite
+    whose stored format this build has not got assembles at the stage's default
+    instead of taking the window down with a ``KeyError`` — the same stand-in
+    :func:`composite_preset_id` falls back to. Which format the *view* then reads
+    the buffer through is still the entry's own business
+    (:func:`repair_presets`); this only needs a tile to round to.
 
     Returns the refreshed pieces alongside, each carrying what was actually
     assembled as its ``measured`` — never as its ``length``, which is the user's
@@ -1780,7 +1813,10 @@ def composite_layout(
     # Everything else here is bytes, which is the unit a source and the composite
     # reading it can both agree on (:class:`CompositePiece`).
     tile_bytes = pipeline.pixel_tile_bytes(
-        preset_id or composite_preset_id(entry, registry), registry
+        registry.resolve_preset(
+            Stage.INTERPRET_PIXEL, preset_id or composite_preset_id(entry, registry)
+        ),
+        registry,
     )
     out = bytearray()
     spans: list[PieceSpan] = []
@@ -1805,6 +1841,10 @@ def composite_layout(
                 except (PipelineError, OSError) as exc:
                     problems.append(f"{piece.entry.name} could not be read ({exc})")
                     data = None
+        # How many of the run's bytes the owner actually holds. The rest is fill,
+        # and fill has no owner: the two spans below are what keeps a stroke
+        # over it refused rather than deposited past the end of a file.
+        held = 0
         if data is None:
             # The pad case, and every failure above: the run keeps the length it
             # last had so nothing downstream of it moves.
@@ -1812,6 +1852,7 @@ def composite_layout(
         else:
             end = piece.offset + piece.length if piece.length else len(data)
             cut = data[piece.offset : end]
+            held = len(cut)
             if piece.length and len(cut) < piece.length:
                 problems.append(
                     f"{piece.entry.name} resolves to {len(data)} bytes, too short for "
@@ -1819,6 +1860,20 @@ def composite_layout(
                     "rest of the run is blank"
                 )
                 cut = cut + bytes(piece.length - len(cut))
+            elif not piece.length and not cut:
+                # Nothing lies at ``offset``, and an un-ranged run has no stated
+                # length to fall back on — so it would contribute no bytes at
+                # all and pull every run after it up by the length it used to
+                # have. Held to its last extent and blanked instead, exactly as
+                # an unreadable source is, and named for the same reason: a
+                # blank run the user can see is recoverable, a silent renumber
+                # of every map bound to the composite is not.
+                problems.append(
+                    f"{piece.entry.name} resolves to {len(data)} bytes, so the "
+                    f"{format_hex(piece.offset)} this run starts at is past the "
+                    "end of it; the whole run is blank"
+                )
+                cut, held = bytes(piece.extent), 0
             elif not piece.length and len(cut) % tile_bytes:
                 filled = ceil_div(len(cut), tile_bytes) * tile_bytes
                 problems.append(
@@ -1827,7 +1882,10 @@ def composite_layout(
                 )
                 cut = cut + bytes(filled - len(cut))
             data = cut
-        spans.append(PieceSpan(len(out), len(data), owner, piece.offset))
+        if held:
+            spans.append(PieceSpan(len(out), held, owner, piece.offset))
+        if len(data) > held:
+            spans.append(PieceSpan(len(out) + held, len(data) - held, None))
         out += data
         refreshed.append(replace(piece, measured=len(data)))
     return CompositeLayout(bytes(out), tuple(spans), tuple(refreshed), tuple(problems))

@@ -1121,47 +1121,28 @@ class SessionMixin:
             self._files_panel.refresh_entry(entry)
         return layout
 
-    def _composites_using(self, owner: Entry) -> list[Entry]:
-        """Every open composite with ``owner`` among its pieces, in list order.
+    def _region_of(self, entry: Entry) -> list[Entry]:
+        """``entry`` and every open entry whose bytes are the same file region.
 
-        The audience for a change to ``owner``'s bytes on the assembly side, as
-        :meth:`_entries_bound_to` is on the binding side: each of them holds a
-        *join* of those bytes, which an edit reaches only if something puts it
-        there — and since a join cannot be patched in place
-        (:meth:`_reassemble_composites`), what it gets is a dropped cache and a
-        fresh assembly.
-
-        Identity, not paths: a piece names the entry itself, so a file and a
-        slice of it are different pieces even though the bytes overlap.
+        A slice's bytes live inside its parent's, so the two are one region with
+        two names: an edit through either changes what the other shows
+        (``docs/design/slices-and-parents.md``). The answer is the entry first,
+        then its parent for a slice or its slices for a file — never sibling
+        slices, which share a parent but not necessarily any bytes, and never
+        anything for a composite, whose bytes are all somebody else's.
         """
-        return [
-            other
-            for other in self._workspace.entries
-            if other.kind is EntryKind.COMPOSITE
-            and any(piece.entry is owner for piece in other.pieces)
-        ]
-
-    def _composite_layout(self, entry: Entry, preset_id: str = ""):
-        """Assemble ``entry``'s pieces, settling each one's region first.
-
-        The composite's twin of :meth:`~...interpretation.InterpretationMixin.
-        _pixel_config`, and settling is why it exists rather than being a bare
-        call to :func:`~celpix.project.workspace.composite_layout`: a piece reads
-        its own live buffer, and a *file* piece with an edited slice of its own
-        owes that slice a fold before its bytes are true
-        (``docs/design/slices-and-parents.md`` §2). Assembling without settling
-        would join the pre-fold version and put a stale run in the composite.
-
-        The run lengths it measures are recorded on the entry, so every later
-        question about where a piece sits is answered from those rather than by
-        assembling again (:attr:`~celpix.project.workspace.Entry.piece_spans`).
-        """
-        for piece in entry.pieces:
-            self._settle_region(piece.entry)
-        layout = composite_layout(entry, self._registry, self._workspace, preset_id)
-        if record_composite_layout(entry, layout):
-            self._files_panel.refresh_entry(entry)
-        return layout
+        out = [entry]
+        if entry.kind is EntryKind.SLICE:
+            parent = self._workspace.find_file(entry.path)
+            if parent is not None:
+                out.append(parent)
+        elif entry.kind is EntryKind.FILE:
+            out += [
+                child
+                for child in self._workspace.children_of(entry)
+                if child.kind is EntryKind.SLICE
+            ]
+        return out
 
     def _entries_bound_to(self, owner: Entry) -> list[Entry]:
         """Every open entry that draws its tiles from ``owner``'s bytes.
@@ -1217,6 +1198,16 @@ class SessionMixin:
         (:meth:`_reresolve_bound_art` is the map-side twin, and *that* one can
         patch, which is why the two stay separate.)
 
+        Each owner is taken **with its region** (:meth:`_region_of`): a slice's
+        bytes are its parent's, so an edit to either is an edit to the other, and
+        a composite built on the other is exactly as stale as one built on the
+        entry the stroke named. Without that, a composite over a file went on
+        showing the old bytes after a stroke on a slice of it, and one over the
+        slice after a stroke on the file — until something else happened to drop
+        it. The reassembly reads each piece through the settle that pays the
+        fold a slice edit owes (:meth:`_composite_layout`), which is what makes
+        the parent's run true rather than merely fresh.
+
         ``keep`` is the composite an edit was **made on**, which already holds the
         bytes and whose buffer is the one the stroke landed in. It is the only
         exemption — a second composite over the same source is stale whether or
@@ -1235,22 +1226,40 @@ class SessionMixin:
         ask.
         """
         seen: list[Entry] = []
-        for owner in owners:
-            for composite in self._composites_using(owner):
+        for stale in [e for owner in owners for e in self._region_of(owner)]:
+            for composite in self._composites_using(stale):
                 # One composite can hold several of these owners — a file and a
                 # slice of it, both pieces of the same composite — and rebuilding
                 # it once per owner would reload it once per piece.
                 if composite is keep or any(composite is other for other in seen):
                     continue
                 seen.append(composite)
-                self._workspace.drop_document(composite)
-                if composite is not self._workspace.current:
-                    continue  # the next activation reads it fresh
-                if self._load_entry(composite, quiet=True):
-                    self._doc = composite.doc
-                    self._restore_session(composite)
-                self._refresh_view()
+                self._rebuild_composite(composite)
         return seen
+
+    def _rebuild_composite(self, composite: Entry) -> None:
+        """Drop ``composite``'s join and, when it is on screen, assemble it again.
+
+        The one step both invalidations end in: a piece's bytes or presence
+        changing under the composite (:meth:`_reassemble_composites`), and the
+        composite's own list being re-written
+        (:meth:`~...entries.EntriesMixin._apply_composite_params`). The second
+        used to ask the first, which looks for composites *using* the entry and
+        so never found the entry itself — a composite is never a piece — and an
+        edit to the list changed the name in the Files pane and nothing on
+        screen.
+
+        Off screen the drop is the whole of it: the next activation reads the
+        entry fresh. On screen it is reloaded here, quietly, because nothing
+        else is going to ask.
+        """
+        self._workspace.drop_document(composite)
+        if composite is not self._workspace.current:
+            return
+        if self._load_entry(composite, quiet=True):
+            self._doc = composite.doc
+            self._restore_session(composite)
+        self._refresh_view()
 
     def _reresolve_bound_art(self, maps: list[Entry]) -> None:
         """Re-read ``maps`` against whatever their bindings reach **now**.

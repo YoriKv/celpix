@@ -874,6 +874,61 @@ def test_a_sibling_slice_reads_an_edit_the_fold_has_not_run_for_yet(
     assert bytes(parent.doc.pixel_data[0x100:0x120]) == b"\x5a" * 32
 
 
+def test_a_slice_whose_fold_no_longer_fits_stays_dirty_and_is_reported(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A compressed slice edited past what its slot can hold cannot be folded
+    into its parent. It used to be marked saved by the parent's write with not
+    a byte of it written, and its document dropped by an edit to the parent
+    with the edit inside. Now the refusal is recorded on the slice, which stays
+    dirty and loaded through both, and the parent's write says so.
+    """
+    from celpix.plugins.builtins.lz_command import compress
+
+    blank = bytes(32 * 4)  # four blank tiles pack to a single fill command
+    stream = compress(blank, big_endian_offsets=True)
+    rom = tmp_path / "rom.bin"
+    image = bytearray(bytes([0x11]) * 0x800)
+    image[0x100 : 0x100 + len(stream)] = stream
+    rom.write_bytes(image)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    alerts: list[str] = []
+    monkeypatch.setattr(window, "_alert", lambda text, **_: alerts.append(text))
+    monkeypatch.setattr(window, "_report", lambda exc, **_: alerts.append(str(exc)))
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+    cut = window._workspace.add_slice(
+        parent.path, "gfx", 0x100, len(stream), compression_id="compression.lz2"
+    )
+
+    def paint(first: int) -> None:
+        tiles = window._decode_run(first, 1)
+        copy = type(tiles[0])(tiles[0].width, tiles[0].height, bytes(tiles[0].data))
+        copy.set(3, 3, 7)
+        window._apply_tile_edit(first, [copy], "paint")
+
+    window._activate_entry(cut)
+    paint(0)  # one pixel is more than a fill command can say
+    window._activate_entry(parent)  # settles the region: the fold is refused
+
+    assert cut.fold_refused is not None and "exceeds" in cut.fold_refused
+    assert cut.pixel_dirty and cut.doc is not None
+
+    paint(0x400 // 32)  # an edit to the parent drops its slices' documents...
+    assert cut.doc is not None  # ...but not this one's
+
+    assert window._write_entry(parent)
+    assert cut.pixel_dirty and cut.doc is not None
+    assert not parent.pixel_dirty
+    assert "gfx" in alerts[-1] and "still unsaved" in alerts[-1]
+    assert rom.read_bytes()[0x100 : 0x100 + len(stream)] == stream  # untouched
+
+    # Its own write reports the same overflow, and it is still not lost.
+    assert not window._write_entry(cut)
+    assert cut.pixel_dirty and "exceeds" in alerts[-1]
+
+
 def test_a_slice_edit_reaches_its_parent_and_the_parents_container(
     qtbot, tmp_path
 ) -> None:
@@ -3675,3 +3730,47 @@ def test_ctrl_f_reaches_the_files_filter_from_the_canvas(qtbot, tmp_path) -> Non
     qtbot.keyClick(window, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
     assert window._files_dock.isVisible()
     assert panel._filter.hasFocus()
+
+
+def test_a_slice_outside_the_parents_window_is_refused_rather_than_skipped(
+    qtbot, tmp_path, captured_alerts
+) -> None:
+    """The other way a fold fails to land: not the encoder refusing the bytes,
+    but the parent's buffer not reaching the slice at all.
+
+    An iNES parent's window is its CHR ROM, so a slice anchored back in the PRG
+    banks is read from the file rather than cut from that buffer, and the buffer
+    has nowhere to fold its edits into. Skipped in silence it was the same loss
+    a refused encode is: the parent's write marked it saved with not a byte of
+    it written, and the next edit to the parent dropped its document with the
+    edit inside. So it is recorded as a refusal too, and reported as one.
+    """
+    from celpix.core.context import KEY_SOURCE_OFFSET
+
+    prg = bytes((i * 7) & 0xFF for i in range(0x4000))
+    rom = tmp_path / "cart.nes"
+    rom.write_bytes(bytes([*b"NES\x1a", 1, 1, 0, 0]) + bytes(8) + prg + bytes(0x2000))
+    before = rom.read_bytes()
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+    # The CHR ROM, past the header and the PRG banks: the region a slice has to
+    # fall inside for the parent to hold its bytes at all.
+    assert window._doc.pixel_ctx.get(KEY_SOURCE_OFFSET) == 16 + 0x4000
+
+    cut = window._workspace.add_slice(parent.path, "gfx", 0x100, 0x100)
+    window._workspace.set_current(cut)
+    window._apply_pixel_bytes(
+        [(0, b"\x5a" * 32)], window._workspace.next_revision(), entry=cut
+    )
+    assert cut in parent.pending_folds
+
+    assert window._write_entry(parent)
+
+    assert cut.fold_refused is not None and "lies outside" in cut.fold_refused
+    assert cut.pixel_dirty and cut.doc is not None  # nothing of it was written
+    assert "gfx" in captured_alerts[-1][1] and "still unsaved" in captured_alerts[-1][1]
+    # ...and nothing of it reached the file either, at its own offset or any other.
+    assert rom.read_bytes() == before

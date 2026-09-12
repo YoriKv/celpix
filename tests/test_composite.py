@@ -109,6 +109,56 @@ def test_a_piece_that_ends_mid_tile_is_padded_out_and_says_so(tmp_path) -> None:
     # The next piece starts on a tile boundary, which is the point of the pad.
     assert layout.data[TILE * 2 :] == bytes([0x44]) * TILE
     assert any("not a whole number" in problem for problem in layout.problems)
+    # The fill has no owner: the file has no byte at those positions, so a stroke
+    # over them has nowhere to land and must be refused like a pad's.
+    assert [(s.start, s.length, s.owner) for s in layout.spans] == [
+        (0, TILE + 8, entry),
+        (TILE + 8, TILE - 8, None),
+        (TILE * 2, TILE, after),
+    ]
+
+
+def test_a_range_outrunning_its_source_is_filled_by_nobody(tmp_path) -> None:
+    """A stated range keeps its length whatever the source holds, so the part
+    the source cannot fill is zeros — and those are owned by nothing, for the
+    reason a ragged tail's are."""
+    reg = default_registry()
+    ws = Workspace()
+    src = ws.open_file(str(_tiles(tmp_path, "a.chr", 2, 0x11)))
+    src.session = _session()
+    composite = _composite_of(
+        ws, "w", CompositePiece(src, offset=TILE, length=TILE * 3)
+    )
+
+    layout = composite_layout(composite, reg, ws)
+
+    assert layout.data == bytes([0x11]) * TILE + bytes(TILE * 2)
+    assert any("too short" in problem for problem in layout.problems)
+    assert [(s.start, s.length, s.owner, s.source_base) for s in layout.spans] == [
+        (0, TILE, src, TILE),
+        (TILE, TILE * 2, None, 0),
+    ]
+
+
+def test_painting_the_fill_past_a_source_is_refused(qtbot, tmp_path) -> None:
+    """The stroke that used to vanish: over the zero fill after a short source,
+    the owner has no byte to take it, so it was dropped at the end of its buffer
+    while staying on screen and in the undo stack. Refused now, as a pad is."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_tiles(tmp_path, "a.chr", 2, 0x11)))
+    src = window._workspace.current
+    composite = new_composite("w", (CompositePiece(src, length=TILE * 4),))
+    window._workspace.entries.append(composite)
+    window._activate_entry(composite)
+    steps = window._undo_stack.count()
+
+    _paint(window, 3, 1)  # tile 3: past the source's two tiles
+
+    assert composite.doc.pixel_data[TILE * 3 :] == bytes(TILE)
+    assert window._undo_stack.count() == steps
+    assert not src.pixel_dirty
+    assert "blank tiles" in window.statusBar().currentMessage()
 
 
 def test_a_closed_source_leaves_a_hole_of_the_size_it_had(tmp_path) -> None:
@@ -444,6 +494,32 @@ def test_painting_a_blank_run_is_refused(qtbot, tmp_path) -> None:
     assert "blank tiles" in window.statusBar().currentMessage()
 
 
+def test_a_stroke_that_only_touched_a_pad_changes_nothing(qtbot, tmp_path) -> None:
+    """A rectangle over an owned tile and a pad, with every changed pixel on the
+    pad: once the pad is refused, what is left is the owned tile's own bytes —
+    and writing those back is not an edit, so no owner reads dirty and no undo
+    step is taken for it. The user is still told where the stroke went."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_tiles(tmp_path, "a.chr", 2, 0x11)))
+    source = window._workspace.current
+    composite = new_composite(
+        "w", (CompositePiece(source), CompositePiece(length=TILE))
+    )
+    window._workspace.entries.append(composite)
+    window._activate_entry(composite)
+    steps = window._undo_stack.count()
+
+    tiles = window._decode_run(1, 2)  # tile 1 is owned, tile 2 is the pad
+    edited = [type(t)(t.width, t.height, bytes(t.data)) for t in tiles]
+    edited[1].set(0, 0, 7)
+    window._apply_tile_edit(1, edited, "paint")
+
+    assert window._undo_stack.count() == steps
+    assert not source.pixel_dirty
+    assert "blank tiles" in window.statusBar().currentMessage()
+
+
 def test_editing_a_piece_directly_shows_through_the_composite(qtbot, tmp_path) -> None:
     """A composite's buffer is a join, so it cannot be patched with the splices
     that were right for the piece — an offset in a join is not an offset in the
@@ -564,6 +640,147 @@ def test_a_composite_of_slices_folds_through_to_the_rom(qtbot, tmp_path) -> None
     assert parent.doc.pixel_data[0x100 : 0x100 + TILE] == cut.doc.pixel_data[:TILE]
 
 
+def test_an_edit_reaches_composites_across_the_slice_boundary(qtbot, tmp_path) -> None:
+    """A slice's bytes are its parent's, so a composite over either is stale
+    after a stroke through the other. Both directions: paint the composite over
+    the slice and the one over the file must show it, then paint the file and
+    the one over the slice must."""
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes([0x11]) * 0x400)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+    cut = window._workspace.add_slice(parent.path, "gfx", 0x100, TILE * 2)
+    over_slice = new_composite("A", (CompositePiece(cut),))
+    over_file = new_composite("B", (CompositePiece(parent),))
+    window._workspace.entries += [over_slice, over_file]
+    window._activate_entry(over_file)  # so B holds a cached join
+    window._activate_entry(over_slice)
+
+    _paint(window, 0, 1)
+    painted = cut.doc.pixel_data[:TILE]
+    assert painted != bytes([0x11]) * TILE
+
+    window._activate_entry(over_file)
+    assert over_file.doc.pixel_data[0x100 : 0x100 + TILE] == painted
+
+    window._activate_entry(parent)
+    _paint(window, 0x100 // TILE, 1, index=3)
+    painted = parent.doc.pixel_data[0x100 : 0x100 + TILE]
+
+    window._activate_entry(over_slice)
+    assert over_slice.doc.pixel_data[:TILE] == painted
+
+
+def test_an_offset_palette_is_refused_on_a_composite_and_says_why(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A composite has no file for a palette offset to name, so the mode is
+    greyed in the picker, the selection action with it, and a load asked for
+    anyway says so — rather than "not enough data at that offset", which was
+    the wrong diagnosis the empty file list used to produce."""
+    from celpix.project.workspace import PaletteMode
+
+    window, first, second, composite = _window_with_composite(qtbot, tmp_path)
+    alerts: list[str] = []
+    monkeypatch.setattr(window, "_alert", lambda text, **_: alerts.append(text))
+    window._select_tiles(0, 0)
+
+    combo = window._palette_mode_combo
+    offset_item = combo.model().item(combo.findData(PaletteMode.OFFSET))
+    assert not offset_item.isEnabled()
+    assert not window._palette_from_selection_action.isEnabled()
+    assert not window._load_palette_at_offset(0)
+    assert alerts and "composite view has no file" in alerts[0]
+    assert window._palette_mode is not PaletteMode.OFFSET
+
+    # And back on a file, all three are available again.
+    window._activate_entry(first)
+    window._select_tiles(0, 0)
+    assert offset_item.isEnabled()
+    assert window._palette_from_selection_action.isEnabled()
+
+
+def test_editing_the_list_rebuilds_the_composite_and_its_maps(qtbot, tmp_path) -> None:
+    """Edit… on a composite re-lists its pieces, and the join on screen has to
+    follow — as does every map drawing through it. It did not: the rebuild
+    asked for composites *using* the entry, which never names the entry itself,
+    so the list changed and the picture kept the old bytes. Undo the same way."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+    from celpix.ui.composite_dialog import CompositeParams
+    from celpix.ui.undo_commands import CompositeEditCommand
+    from uihelpers import _scr_file
+
+    window, first, second, composite = _window_with_composite(qtbot, tmp_path)
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=0)])))
+    screen = window._workspace.current
+    screen.tile_source = TileSource(mode=TileMode.ENTRY, entry=composite)
+    window._reload_tilemap(screen)
+    assert screen.doc.pixel_data[:TILE] == bytes([0x11]) * TILE
+    window._activate_entry(composite)
+
+    before = CompositeParams(composite.name, composite.pieces)
+    after = CompositeParams("second only", (CompositePiece(second),))
+    window._push_command(
+        CompositeEditCommand(window, composite, before=before, after=after)
+    )
+
+    assert composite.doc is window._doc
+    assert composite.doc.pixel_data == bytes([0x22]) * (TILE * 4)
+    assert [s.owner for s in composite.piece_spans] == [second]
+    # The map bound to it draws tile 0 from the new join.
+    assert screen.doc.pixel_data[:TILE] == bytes([0x22]) * TILE
+
+    window._undo_stack.undo()
+
+    assert composite.doc.pixel_data[: TILE * 4] == bytes([0x11]) * (TILE * 4)
+    assert screen.doc.pixel_data[:TILE] == bytes([0x11]) * TILE
+
+    # Emptied outright, it shows nothing rather than the last join.
+    window._push_command(
+        CompositeEditCommand(
+            window, composite, before=before, after=CompositeParams("w", ())
+        )
+    )
+    assert composite.doc.pixel_data == b""
+
+
+def test_an_edit_through_a_file_piece_keeps_its_slices_edits(qtbot, tmp_path) -> None:
+    """A stroke on a composite whose piece is a whole FILE lands in that file,
+    and a file's own edit drops every slice document under it — safe only once
+    the folds those slices owed have been paid. The file was loaded quietly as
+    the deposit's owner, which settles before there is a buffer to fold into,
+    so the debt was discharged empty and the slice edits vanished from the
+    buffer and from the next write. Settled before the deposit lands now."""
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes([0x11]) * 0x800)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+    cut = window._workspace.add_slice(parent.path, "gfx", 0x100, TILE * 4)
+    over_file = new_composite(
+        "F", (CompositePiece(parent, offset=0x400, length=TILE * 4),)
+    )
+    window._workspace.entries.append(over_file)
+
+    window._activate_entry(cut)
+    _paint(window, 0, 1)
+    painted = cut.doc.pixel_data[:TILE]
+    window._workspace.drop_document(parent)  # the file is not loaded
+    window._activate_entry(over_file)
+    _paint(window, 1, 1)  # lands in the file at 0x400 + TILE
+
+    window._settle_region(parent)
+    assert parent.doc.pixel_data[0x100 : 0x100 + TILE] == painted
+    assert window._write_entry(parent)
+    on_disk = rom.read_bytes()
+    assert on_disk[0x100 : 0x100 + TILE] == painted
+    assert on_disk[0x400 + TILE : 0x400 + 2 * TILE] != bytes([0x11]) * TILE
+
+
 def test_a_copied_composite_keeps_its_pieces(tmp_path) -> None:
     """A composite's pieces are entries, and an entry is not a value — so a copy
     has to carry the *positions* and rebind them, exactly as a map's binding is.
@@ -647,3 +864,236 @@ def test_closing_a_piece_rebuilds_the_composite_on_screen(qtbot, tmp_path) -> No
     window._undo_stack.undo()
 
     assert composite.doc.pixel_data[:TILE] == bytes([0x11]) * TILE
+
+
+def test_ok_on_an_unchanged_list_with_a_pad_changes_nothing(qtbot, tmp_path) -> None:
+    """Edit… then OK on a list nobody touched is not an edit, pads included.
+
+    An assembled pad carries the ``measured`` the last refresh recorded, so a
+    dialog that answered for its blank rows with freshly built pieces returned a
+    list unequal to the entry's own — and the caller, which skips the command
+    when the two match, pushed an "edit composite" that changed nothing.
+
+    The spin is still the pad's to answer: dialling it has to produce a
+    different piece, or the same comparison would swallow a real edit.
+    """
+    from celpix.ui.composite_dialog import CompositeDialog, CompositeParams
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_tiles(tmp_path, "a.chr", 4, 0x11)))
+    source = window._workspace.current
+    composite = new_composite(
+        "w", (CompositePiece(source), CompositePiece(length=TILE))
+    )
+    window._workspace.entries.append(composite)
+    window._activate_entry(composite)  # assembles: every piece now has `measured`
+    before = CompositeParams(composite.name, composite.pieces)
+
+    dialog = CompositeDialog(
+        entry=composite,
+        candidates=list(window._workspace.entries),
+        tile_bytes=TILE,
+        name=composite.name,
+        pieces=composite.pieces,
+    )
+    qtbot.addWidget(dialog)
+
+    assert CompositeParams(dialog._name.text(), dialog.pieces()) == before
+
+    pad_row = dialog._items()[1]
+    dialog._list.itemWidget(pad_row, 3).setValue(TILE * 3)
+
+    after = CompositeParams(dialog._name.text(), dialog.pieces())
+    assert after != before
+    assert after.pieces[1].length == TILE * 3
+
+
+def test_a_composite_assembles_at_the_default_when_its_format_is_missing(
+    tmp_path,
+) -> None:
+    """A stored preset outlives the plugin that supplied it, and a composite
+    naming a gone one still has to assemble: the tile it rounds to falls back to
+    the stage's default, exactly as :func:`composite_preset_id` does, rather than
+    taking the window down with a ``KeyError`` before anything is drawn."""
+    reg = default_registry()
+    ws = Workspace()
+    src = ws.open_file(str(_tiles(tmp_path, "a.chr", 2, 0x11)))
+    src.session = _session()
+    composite = _composite_of(ws, "w", CompositePiece(src))
+
+    layout = composite_layout(
+        composite, reg, ws, preset_id="preset.pixel.no-such-thing"
+    )
+
+    assert layout.data == bytes([0x11]) * (TILE * 2)
+    assert [(s.start, s.length, s.owner) for s in layout.spans] == [(0, TILE * 2, src)]
+    assert not layout.problems
+
+
+def test_an_offset_past_the_source_leaves_a_blank_run_and_says_so(tmp_path) -> None:
+    """An un-ranged piece pointed past the end of its source holds its place.
+
+    There is nothing to take at that offset and no stated length to fall back on,
+    so the run would contribute no bytes at all and pull everything after it up
+    by the length it used to have — the silent renumber the blank fill exists to
+    prevent. It goes blank at its last measured extent instead, owned by nobody,
+    and the piece is named so the user can see which one lost its bytes."""
+    reg = default_registry()
+    ws = Workspace()
+    src = ws.open_file(str(_tiles(tmp_path, "a.chr", 2, 0x11)))
+    src.session = _session()
+    after = ws.open_file(str(_tiles(tmp_path, "b.chr", 1, 0x22)))
+    after.session = _session()
+    composite = _composite_of(
+        ws,
+        "w",
+        CompositePiece(src, offset=TILE * 8, measured=TILE),
+        CompositePiece(after),
+    )
+
+    layout = composite_layout(composite, reg, ws)
+
+    assert any("past the end" in problem for problem in layout.problems)
+    # The run keeps the length it had, so `after` still starts on tile 1.
+    assert layout.data == bytes(TILE) + bytes([0x22]) * TILE
+    assert [(s.start, s.length, s.owner) for s in layout.spans] == [
+        (0, TILE, None),
+        (TILE, TILE, after),
+    ]
+    # And the blank is recorded as what the run measured, not as a request.
+    assert [(p.length, p.measured) for p in layout.pieces] == [(0, TILE), (0, TILE)]
+
+
+def _bind_screen(window, tmp_path, composite):
+    """A screen entry bound to ``composite``, holding its own copy of the join."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+    from uihelpers import _scr_file
+
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=0)])))
+    screen = window._workspace.current
+    screen.tile_source = TileSource(mode=TileMode.ENTRY, entry=composite)
+    window._reload_tilemap(screen)
+    return screen
+
+
+def test_a_map_bound_to_a_composite_sees_an_edit_to_a_piece(qtbot, tmp_path) -> None:
+    """A stroke on a piece re-assembles every composite over it, and a map bound
+    to one of those holds a copy of the *join* — so it is stale in exactly the
+    same way and has to be re-read. The re-assembly was asked for and its answer
+    thrown away, so the map went on drawing the old join until something else
+    happened to reload it. Undo comes back through the same path.
+    """
+    window, first, second, composite = _window_with_composite(qtbot, tmp_path)
+    screen = _bind_screen(window, tmp_path, composite)
+    assert screen.doc.pixel_data[:TILE] == bytes([0x11]) * TILE
+
+    window._activate_entry(first)
+    _paint(window, 0, 1)
+    painted = first.doc.pixel_data[:TILE]
+
+    assert painted != bytes([0x11]) * TILE
+    assert screen.doc.pixel_data[:TILE] == painted
+
+    window._undo_stack.undo()
+
+    assert screen.doc.pixel_data[:TILE] == bytes([0x11]) * TILE
+
+
+def test_a_map_bound_to_a_sibling_composite_sees_a_composite_edit(
+    qtbot, tmp_path
+) -> None:
+    """The deposit half of the same rule: a stroke on one composite lands in a
+    piece, which makes every *other* composite over that piece stale — and the
+    maps bound to those with it. The composite the stroke was made on is exempt,
+    since its buffer is where the stroke landed.
+    """
+    window, first, second, composite = _window_with_composite(qtbot, tmp_path)
+    other = new_composite("other", (CompositePiece(first),))
+    window._workspace.entries.append(other)
+    screen = _bind_screen(window, tmp_path, other)
+    assert screen.doc.pixel_data[:TILE] == bytes([0x11]) * TILE
+
+    window._activate_entry(composite)
+    _paint(window, 0, 1)
+    painted = first.doc.pixel_data[:TILE]
+
+    assert painted != bytes([0x11]) * TILE
+    assert screen.doc.pixel_data[:TILE] == painted
+
+
+def test_a_mirrored_run_takes_an_edit_that_starts_before_it(qtbot, tmp_path) -> None:
+    """One source used twice in a window shows the same bytes at two composite
+    positions, and an edit to either has to appear at both. The overlap between
+    the edit and the second run's source range is an intersection at *both* ends:
+    the edit here starts before that range and reaches into it, which the old
+    test — "does the run's source range contain where the edit began?" — read as
+    no overlap at all, leaving the second run stale until the next reassembly.
+
+    A map bound to the composite holds a copy of the join, so the mirrored splice
+    is owed to it too — the caller's re-sync carries only the splices as the
+    stroke made them, which say nothing about the run being echoed into.
+    """
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_tiles(tmp_path, "a.chr", 4, 0x11)))
+    src = window._workspace.current
+    composite = new_composite(
+        "w", (CompositePiece(src), CompositePiece(src, offset=TILE, length=TILE * 2))
+    )
+    window._workspace.entries.append(composite)
+    window._activate_entry(composite)
+    screen = _bind_screen(window, tmp_path, composite)
+    window._activate_entry(composite)
+
+    # Owner bytes [0, 64); the second run shows owner [32, 96) at composite
+    # [128, 192), so its first tile is the second tile of the edit.
+    _paint(window, 0, 2)
+
+    assert src.doc.pixel_data[TILE : TILE * 2] != bytes([0x11]) * TILE
+    assert (
+        composite.doc.pixel_data[TILE * 4 : TILE * 5]
+        == src.doc.pixel_data[TILE : TILE * 2]
+    )
+    assert (
+        screen.doc.pixel_data[TILE * 4 : TILE * 5]
+        == src.doc.pixel_data[TILE : TILE * 2]
+    )
+
+
+def test_the_dock_menus_write_row_is_live_on_a_composite_and_writes_its_pieces(
+    qtbot, tmp_path, opened_menus
+) -> None:
+    """A composite's ``write_enabled`` is False about the assembled buffer, which
+    is nobody's file — but the edits made through it were deposited in the
+    pieces, and Write is what puts those on disk. So the dock's row is live
+    wherever the composite has a document, dirty pieces or not, the way a file's
+    and a slice's rows are live whether or not they are dirty.
+    """
+    window, _first, second, composite = _window_with_composite(qtbot, tmp_path)
+    panel = window._files_panel
+    tree = panel._tree
+    # The helper puts the composite in the workspace; the menu is the dock's, so
+    # it needs the row New Composite View… would have added alongside it.
+    panel.add_entry(composite, None, window._next_row(composite, None))
+
+    def write_row():
+        """The Write row of the composite's context menu, freshly built."""
+        panel._show_menu(tree.visualItemRect(panel._items[composite]).center())
+        return next(a for a in opened_menus[-1].actions() if a.text() == "&Write")
+
+    assert write_row().isEnabled()  # nothing dirty yet, and still not greyed
+
+    _paint(window, 5, 1)  # tile 5 of the composite is tile 1 of the second file
+
+    assert second.pixel_dirty
+    assert write_row().isEnabled()
+
+    window._write_entry_checked(composite)
+
+    on_disk = (tmp_path / "b.chr").read_bytes()
+    assert on_disk[TILE : TILE * 2] != bytes([0x22]) * TILE  # the edit landed
+    assert on_disk == second.doc.pixel_data
+    assert not second.pixel_dirty
+    assert second.name in window.statusBar().currentMessage()

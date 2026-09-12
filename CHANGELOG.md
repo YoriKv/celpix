@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.19 - unreleased
+
+- Lots of composite view fixes
+
 ## v0.5.18 - 2026-09-02
 
 - New File (Ctrl+Shift+N) creates a blank pixel, palette or tilemap file using

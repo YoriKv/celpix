@@ -316,7 +316,11 @@ class TileBytesMixin:
                 "Part of that edit fell on blank tiles this composite has no "
                 "source for, and was not applied."
             )
-        return kept
+        # A region differed as a whole and may not once clipped: a rectangle
+        # whose only changed pixels were on the pad still spans the owned tile
+        # beside it. Pushing that would stamp the owner dirty and cost an undo
+        # step for bytes it already had — the same no-op the caller drops.
+        return [k for k in kept if k[1] != k[2]]
 
     def _encode_spans(
         self, runs: list[tuple[int, list]], frame: dict | None = None
@@ -423,6 +427,15 @@ class TileBytesMixin:
             self._load_entry(entry, quiet=True)
         if entry.doc is None:
             return
+        # Any fold this region owes is paid **before** the new bytes land: the
+        # file's own edit drops every slice document below (`_propagate_pixel_edit`),
+        # and a debt still pending at that point names documents that no longer
+        # exist — it was discharged empty, and the slice edits it stood for were
+        # gone from the buffer and from the next write. Settling on load cannot
+        # cover this, since a load settles before it has a buffer to fold into.
+        # Before rather than after the splice, so an older slice edit over the
+        # same bytes does not come back over the stroke just made.
+        self._settle_region(entry)
         self._land_splices(entry.doc, splices)
         # A **composite** is never stamped: it owns no bytes, so it has no
         # unsaved state of its own to record and nothing to write that would
@@ -439,13 +452,21 @@ class TileBytesMixin:
         # below: a composite's pieces are where its edit actually lives, and a
         # piece that is a slice then owes its own parent a fold, which is what
         # `_propagate_pixel_edit` on that piece records.
-        self._deposit_composite_edit(entry, splices)
+        deposited = self._deposit_composite_edit(entry, splices)
         self._propagate_pixel_edit(entry)
         self._resync_tile_bindings(entry, splices)
         # Every composite assembled out of these bytes now holds a stale join of
-        # them. A composite is never a piece of another, so editing one rebuilds
-        # nothing here — its own pieces were seen to in the deposit above.
-        self._reassemble_composites([entry])
+        # them: the ones over `entry` itself, and — when `entry` *is* a composite,
+        # which owns no bytes — the ones over the pieces the deposit above wrote
+        # into. One call for both, so a composite standing over two of those
+        # pieces is rebuilt once and its maps re-read once. `keep` is the
+        # composite the stroke was made on, which holds the bytes already.
+        rebuilt = self._reassemble_composites([entry, *deposited], keep=entry)
+        # A map bound to one of those composites holds a copy of the join, so it
+        # is stale in exactly the same way and cannot be patched either — an
+        # offset in a join is not an offset in the piece it came from. Maps bound
+        # to `keep` need nothing: the re-sync above already patched them.
+        self._reresolve_bound_art(self._maps_drawing_from(rebuilt))
         self._refresh_view()
 
     def _pixel_edit_owners(
@@ -533,7 +554,7 @@ class TileBytesMixin:
 
     def _deposit_composite_edit(
         self, entry: Entry, splices: list[tuple[int, bytes]]
-    ) -> None:
+    ) -> list[Entry]:
         """Put a composite's edit into the entries whose bytes it really is.
 
         A composite's ``pixel_data`` is a *derived copy* of several entries', the
@@ -556,37 +577,68 @@ class TileBytesMixin:
         The revisions are not stamped here: they came off the command
         (:meth:`_apply_pixel_bytes`), so an undo hands each side back the exact
         unsaved state it had rather than a fresh token.
+
+        Returns the owners written into, in the order they were first reached.
+        Every *other* composite over one of them is now stale, and so is every map
+        drawing through it — but that is the caller's single pass rather than a
+        rebuild per run here, so two runs of one owner, or two owners of one
+        composite, do not each reload it (:meth:`_apply_pixel_bytes`).
         """
+        deposited: list[Entry] = []
         for start, data in splices:
             for owner, at, first, last in self._composite_runs(entry, start, len(data)):
                 cut = data[first - start : last - start]
+                # The same settle `_apply_pixel_bytes` makes before its own
+                # splice, for the same reason: a FILE piece loaded here as an
+                # owner has folds pending that the drop below would discard.
+                self._settle_region(owner)
                 self._land_splices(owner.doc, [(at, cut)])
                 self._propagate_pixel_edit(owner)
                 self._resync_tile_bindings(owner, [(at, cut)])
-                # Every *other* composite sharing this piece is now stale; this
-                # one holds the edit already and keeps its buffer.
-                self._reassemble_composites([owner], keep=entry)
                 self._mirror_shared_runs(entry, owner, at, cut, skip=first)
+                if not any(owner is seen for seen in deposited):
+                    deposited.append(owner)
+        return deposited
 
     def _mirror_shared_runs(
         self, entry: Entry, owner: Entry, at: int, data: bytes, *, skip: int
     ) -> None:
         """Show a landed edit in this composite's *other* runs of ``owner``.
 
-        ``at`` is where the bytes went in the owner; ``skip`` is the run that
-        already has them. Any other run of the same owner whose source range
-        covers ``at`` is showing those bytes at a different composite position, so
-        it is spliced there too — otherwise half a tile window updates and half
-        does not, and which half depends on where the user happened to draw.
+        ``at`` is where the bytes went in the owner; ``skip`` is a composite
+        position inside the run that already has them, so the run to leave alone
+        is the span **containing** ``skip`` rather than one starting exactly
+        there: an edit reaching into a run part-way along lands at the edit's
+        position, not the run's, and testing for equality left that run to be
+        mirrored over itself.
+
+        Every other run of the same owner is showing some stretch of its buffer at
+        a different composite position, so the part of the edit that falls inside
+        that stretch is spliced there too — otherwise half a tile window updates
+        and half does not, and which half depends on where the user happened to
+        draw. The overlap is an **intersection at both ends**, because an edit can
+        begin before a run's source range and reach into it as easily as it can
+        begin inside it — the ordinary case when two runs of one file overlap and
+        the stroke lands in the earlier one.
+
+        The mirrored splices are carried into the maps bound to the composite as
+        well: those hold a copy of the *join*, and the re-sync in
+        :meth:`_apply_pixel_bytes` gives them only the splices as the stroke made
+        them, which say nothing about the run this one is being echoed into.
         """
         for span in entry.piece_spans:
-            if span.owner is not owner or span.start == skip:
+            if span.owner is not owner or span.start <= skip < span.end:
                 continue
-            begin = span.source_base
-            overlap_at = at - begin
-            if 0 <= overlap_at < span.length:
-                room = min(len(data), span.length - overlap_at)
-                self._land_splices(entry.doc, [(span.start + overlap_at, data[:room])])
+            first = max(at, span.source_base)
+            last = min(at + len(data), span.source_base + span.length)
+            if first >= last:
+                continue
+            splice = (
+                span.start + (first - span.source_base),
+                data[first - at : last - at],
+            )
+            self._land_splices(entry.doc, [splice])
+            self._resync_tile_bindings(entry, [splice])
 
     def _land_splices(self, doc, splices: list[tuple[int, bytes]]) -> None:  # noqa: ANN001 — a Document
         """Put ``splices`` into ``doc``'s bytes and into everything derived from them.
