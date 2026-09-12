@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.19 - unreleased
+## v0.5.19 - 2026-09-11
 
 - Lots of composite view fixes
 
