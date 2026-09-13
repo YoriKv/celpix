@@ -27,7 +27,6 @@ SNAPSHOT = Path(__file__).parent / "src" / "celpix_lint" / "data" / "registry.js
 
 def snapshot() -> dict:
     """The built-in registry as the linter's ``registry.json`` body."""
-    from celpix import __version__
     from celpix.core.errors import Stage
     from celpix.plugins.aliases import RENAMED
     from celpix.plugins.registry import default_registry
@@ -35,7 +34,6 @@ def snapshot() -> dict:
 
     registry = default_registry()
     return {
-        "celpix_version": __version__,
         "project_version": PROJECT_VERSION,
         # Container-only in celPix, but stored for every stage so the reader
         # needs no special case: the other stages simply declare the default.
@@ -74,10 +72,7 @@ def main() -> int:
         handle.write("\n")
     counts = sum(len(ids) for ids in body["plugins"].values())
     presets = sum(len(ids) for ids in body["presets"].values())
-    print(
-        f"{SNAPSHOT}: {counts} plugins, {presets} presets, "
-        f"celPix {body['celpix_version']}"
-    )
+    print(f"{SNAPSHOT}: {counts} plugins, {presets} presets")
     return 0
 
 

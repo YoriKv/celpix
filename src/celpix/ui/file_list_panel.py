@@ -77,6 +77,7 @@ from celpix.ui import clipboard
 from celpix.ui.glyphs import Glyph
 from celpix.ui.icon_font import glyph_pixmap
 from celpix.ui.searchable_combo import matches_search
+from celpix.ui.theme import WARNING_INK
 from celpix.ui.widgets import (
     ShortcutIsland,
     icon_cache_key,
@@ -93,11 +94,6 @@ _MISSING_HIGHLIGHT = QBrush(QColor(255, 193, 7, 70))
 # Highlight, see _open_entry_wash). Deliberately fainter than the amber above:
 # that one is asking to be dealt with, this one only says "here".
 _OPEN_ENTRY_ALPHA = 45
-
-# The status icons' own color: opaque amber, matching the row wash it sits on.
-# Fixed rather than a palette role, because a warning that took the theme's text
-# color would stop reading as a warning.
-_WARNING_INK = QColor(200, 137, 10)
 
 # The section headings, in the order they appear. Dict order *is* the on-screen
 # order, so a header inserts at its own place however the sections were opened:
@@ -1222,13 +1218,13 @@ class FileListPanel(QWidget):
         to go and find it (File ▸ Locate missing files). Deliberately not a cross
         — at this size, next to rows the user can close, a cross reads as a close
         button rather than a state."""
-        return self._icon(Glyph.QUESTION, tint=_WARNING_INK)
+        return self._icon(Glyph.QUESTION, tint=WARNING_INK)
 
     def _notice_icon(self) -> QIcon:
         """An exclamation mark: the entry opened, but a stage had to drop, assume
         or substitute something on the way in, and the row's own tooltip spells
         out what."""
-        return self._icon(Glyph.EXCLAMATION, tint=_WARNING_INK)
+        return self._icon(Glyph.EXCLAMATION, tint=WARNING_INK)
 
     def _icon(  # noqa: ANN001 - role is a QPalette.ColorRole
         self, glyph: Glyph, *, role=None, tint: QColor | None = None

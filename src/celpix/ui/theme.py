@@ -6,8 +6,9 @@ Highlight, the file-position rail derives its accent from Highlight, the hex
 view shades its cursor from it), so handing the application a different palette
 re-colors the whole UI without a per-widget rule anywhere. The only literals
 left are the ones that are deliberately *not* theme colors — the canvas's
-neutral gray backing, the grid's two levels, the warning ambers — all of which
-have to read the same against the art whichever theme is on.
+neutral gray backing, the grid's two levels, and the warning and error inks
+(:data:`WARNING_INK`, :data:`ERROR_INK`) — all of which have to read the same
+whichever theme is on.
 
 **Both themes run on Fusion.** The native Windows and macOS styles paint many
 controls from platform colors and ignore the application palette, so a dark
@@ -40,7 +41,13 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle, QStyleFactory
+from PySide6.QtWidgets import (
+    QApplication,
+    QProxyStyle,
+    QStyle,
+    QStyleFactory,
+    QWidget,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -125,6 +132,15 @@ _PALETTES: dict[Theme, _PaletteSpec] = {
     ),
 }
 
+# The inks for a warning and an error: words (and icons) that have to read as a
+# warning or an error whichever theme is on, so a fixed color rather than a role -
+# QPalette has no role for either, and one that took the theme's text color would
+# stop saying it. Each sits at the lightness that reads equally on both themes'
+# surfaces (about 3.3:1 on either Window, 3.8:1 on either Base), which is the most
+# contrast one color can hold against both.
+WARNING_INK = QColor(0xAE, 0x7A, 0x11)
+ERROR_INK = QColor(0xDC, 0x58, 0x58)
+
 
 class _UnderlinedMnemonics(QProxyStyle):
     """Show every menu's mnemonic underline without holding Alt down.
@@ -147,6 +163,22 @@ class _UnderlinedMnemonics(QProxyStyle):
         if hint == QStyle.StyleHint.SH_UnderlineShortcut:
             return 1
         return super().styleHint(hint, option, widget, returnData)
+
+
+def set_ink(widget: QWidget, color: QColor | None) -> None:
+    """Draw ``widget``'s text in ``color``, or back in the theme's when ``None``.
+
+    Through the widget's palette rather than a stylesheet: only WindowText is
+    overridden, so every other role still follows a live theme switch, and the
+    widget's tooltip - which a stylesheet ``color:`` would tint as well - keeps
+    its own palette.
+    """
+    if color is None:
+        widget.setPalette(QPalette())  # nothing resolved: inherit it all again
+        return
+    palette = widget.palette()
+    palette.setColor(QPalette.ColorRole.WindowText, color)
+    widget.setPalette(palette)
 
 
 def palette_for(theme: Theme, style: QStyle) -> QPalette:

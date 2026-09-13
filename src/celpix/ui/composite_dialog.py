@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from celpix.core.address import format_hex
 from celpix.project.workspace import CompositePiece, Entry, can_compose
+from celpix.ui.theme import ERROR_INK, set_ink
 
 __all__ = ["CompositeDialog", "CompositeParams"]
 
@@ -121,7 +122,7 @@ class CompositeDialog(QDialog):
 
         self._total = QLabel()
         self._error = QLabel()
-        self._error.setStyleSheet("color: #c04040;")
+        set_ink(self._error, ERROR_INK)
         self._error.hide()
 
         self._add_source = QPushButton("Add source…")

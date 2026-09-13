@@ -46,6 +46,7 @@ from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
 from celpix.plugins.registry import Registry
 from celpix.project.workspace import SliceParams, default_slice_name
 from celpix.ui.searchable_combo import SearchableComboBox, fill_stage_combo
+from celpix.ui.theme import ERROR_INK, set_ink
 from celpix.ui.widgets import PRESET_COMBO_WIDTH
 
 __all__ = ["SliceDialog", "SliceParams"]
@@ -135,7 +136,7 @@ class SliceDialog(QDialog):
         self._slot_fill.setCurrentIndex(max(0, self._slot_fill.findData(slot_fill)))
 
         self._error = QLabel()
-        self._error.setStyleSheet("color: #c04040;")
+        set_ink(self._error, ERROR_INK)
         self._error.hide()
 
         # The name placeholder previews the generated default and tracks the

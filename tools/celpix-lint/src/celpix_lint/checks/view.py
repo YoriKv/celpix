@@ -16,7 +16,6 @@ from celpix_lint.schema import (
     VIEW_INT_MINIMUMS,
     VIEW_KEYS,
     is_int,
-    is_number,
 )
 
 #: bit 0 mirror H, bit 1 mirror V, bit 2 diagonal transpose.
@@ -53,6 +52,15 @@ def _keys(ctx: Context, entry: EntryView, view: dict) -> None:
                 pointer=entry.at("view", key),
                 entry=entry,
             )
+    if "zoom" in view:
+        ctx.info(
+            "I704",
+            "`zoom` is no longer stored per entry and is ignored",
+            pointer=entry.at("view", "zoom"),
+            entry=entry,
+            detail="Zoom is an app-wide preference, kept in the app's settings "
+            "rather than the project. Re-saving drops the key.",
+        )
     if "tile_map" in view:
         ctx.info(
             "I702",
@@ -91,24 +99,6 @@ def _numbers(ctx: Context, entry: EntryView, view: dict) -> None:
                 entry=entry,
                 detail="Values are clamped against the actual file on load, so the "
                 "entry opens on something other than what is written here.",
-            )
-    if "zoom" in view:
-        zoom = view["zoom"]
-        if not is_number(zoom):
-            ctx.error(
-                "E712",
-                f"`view.zoom` is {zoom!r}, not a number",
-                pointer=entry.at("view", "zoom"),
-                entry=entry,
-                detail="Zoom is the one view number that may be fractional (the 0.5 "
-                "level); every other level is written as a plain integer.",
-            )
-        elif zoom <= 0:
-            ctx.error(
-                "E713",
-                f"`view.zoom` is {zoom}, which magnifies nothing",
-                pointer=entry.at("view", "zoom"),
-                entry=entry,
             )
     if "block_order" in view and view["block_order"] not in BLOCK_ORDERS:
         ctx.error(

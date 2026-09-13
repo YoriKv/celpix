@@ -57,6 +57,7 @@ from celpix import APP_NAME
 from celpix.core import ceil_div
 from celpix.core.aspect import SQUARE, PixelAspect
 from celpix.core.aspect import scale as aspect_scale
+from celpix.ui.theme import WARNING_INK, set_ink
 
 _EnumT = TypeVar("_EnumT", bound=Enum)
 
@@ -456,13 +457,6 @@ class CommittingLineEdit(QLineEdit):
         self.refresh()
 
 
-# Amber for the warning level. The QToolTip rule is not decoration: Qt applies a
-# bare `color:` to the widget's *tooltip* as well, which would render the whole
-# explanation amber — pinning it to palette(text) keeps the tooltip readable in
-# either theme.
-BADGE_WARNING_STYLE = "QLabel { color: #c08a30; } QToolTip { color: palette(text); }"
-
-
 @dataclass(frozen=True)
 class Badge:
     """A tool window's status-bar annotation: the state its picture cannot show.
@@ -491,12 +485,12 @@ def apply_badge(label: QLabel, badge: Badge | None) -> None:
     """Put ``badge`` on ``label``, or empty and hide it when there is none.
 
     The three writes every badge needs kept in one place, since a window that set
-    the text and forgot the stylesheet would carry the last badge's colour into
-    this one's words.
+    the text and forgot the ink would carry the last badge's colour into this
+    one's words.
     """
     label.setText(badge.text if badge else "")
     label.setToolTip(badge.detail if badge else "")
-    label.setStyleSheet(BADGE_WARNING_STYLE if badge and badge.warning else "")
+    set_ink(label, WARNING_INK if badge and badge.warning else None)
     label.setVisible(badge is not None)
 
 

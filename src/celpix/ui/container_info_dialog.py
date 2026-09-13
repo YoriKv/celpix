@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 from celpix.core.notices import Notice
 from celpix.pipeline.pipeline import ContainerReport
 from celpix.plugins.base import ContainerField, format_size
+from celpix.ui.theme import WARNING_INK, set_ink
 
 __all__ = ["ContainerInfoDialog"]
 
@@ -140,7 +141,7 @@ class ContainerInfoDialog(QDialog):
             # up is usually what explains the failure — so the table still runs.
             failure = QLabel(f"The container's read failed: {report.error}")
             failure.setWordWrap(True)
-            failure.setStyleSheet("color: #a08040;")
+            set_ink(failure, WARNING_INK)
             layout.addWidget(failure)
 
         self._table = QTableWidget(0, 2)

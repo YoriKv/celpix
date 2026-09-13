@@ -124,8 +124,8 @@ def document_image(doc: Document, registry: Registry) -> QImage:
     block/2D arrangement and the active palette row, so the export matches what
     the canvas shows — just the whole file rather than the visible window. An
     indexed codec yields a ``Format_Indexed8`` image whose color table is exactly
-    the active palette row (index 0 transparent), so Qt writes a compact
-    indexed PNG; a direct-color codec yields ``Format_ARGB32``.
+    the active palette row, so Qt writes a compact indexed PNG; a direct-color
+    codec yields ``Format_ARGB32``.
 
     A tilemap entry takes a route of its own (:func:`_tilemap_image`): what it
     shows is the map, and its pixel bytes are a different entry's tiles.

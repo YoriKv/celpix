@@ -34,7 +34,7 @@ class KnownIds:
     #: ``retired id -> current id``, the forwarding table every lookup falls
     #: back to (``celpix.plugins.aliases``).
     renamed: dict[str, str] = field(default_factory=dict)
-    #: ``"snapshot (celPix 0.5.9)"`` or ``"live registry"`` — quoted in the
+    #: ``"shipped snapshot"`` or ``"live registry"`` — quoted in the
     #: report so a reader knows how much an "unknown id" finding is worth.
     source: str = "snapshot"
     #: False when nothing could be loaded at all, which turns every id check
@@ -114,12 +114,11 @@ def load_snapshot(path: str = _SNAPSHOT) -> KnownIds:
         # A missing or corrupt snapshot must not turn every id in the project
         # into a finding — it is the linter that is broken, not the project.
         return KnownIds(source="unavailable", usable=False)
-    version = body.get("celpix_version", "?")
     return KnownIds(
         plugins={stage: dict(ids) for stage, ids in body.get("plugins", {}).items()},
         presets={stage: set(ids) for stage, ids in body.get("presets", {}).items()},
         renamed=dict(body.get("renamed", {})),
-        source=f"snapshot (celPix {version})",
+        source="shipped snapshot",
         project_version=body.get("project_version", 1),
     )
 

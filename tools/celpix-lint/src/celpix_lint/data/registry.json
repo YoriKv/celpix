@@ -1,5 +1,4 @@
 {
-  "celpix_version": "0.5.15",
   "plugins": {
     "compression": {
       "compression.enigma": [
