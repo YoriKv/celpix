@@ -1264,7 +1264,8 @@ class Workspace:
             self._notify(self.on_dirty_changed, entry)
 
     def drop_document(self, entry: Entry) -> None:
-        """Discard an entry's cached document, preserving its palette source.
+        """Discard an entry's cached document, preserving its palette source
+        and its view.
 
         The palette must survive a document drop because for a **custom**
         palette the document is the *only* place its colors exist — nothing on
@@ -1273,10 +1274,19 @@ class Workspace:
         the pixel bytes never silently reverts an edited palette to the
         generated default. For the file-backed modes this is simply a
         re-resolution of the reference they already carry.
+
+        The view survives on the same footing: once a load has consumed
+        ``pending_view`` the document is the only place the entry's columns,
+        palette row and offset exist, so a drop that did not stash them handed
+        the reload the codec's defaults — a composite re-listed while on screen
+        came back on palette row 0, black, until the project was reopened. A
+        pending view not yet consumed is the newer answer and is left alone.
         """
         source = palette_source_for(entry)
         if source is not None:
             entry.pending_palette = source
+        if entry.pending_view is None and entry.doc is not None:
+            entry.pending_view = entry.doc.view
         entry.doc = None
         # A composite's spans describe the buffer that just went; keeping them
         # would leave the one question they answer being answered about bytes

@@ -1052,8 +1052,6 @@ class EntriesMixin:
         """
         entry.name = params.name
         entry.pieces = params.pieces
-        if entry is self._workspace.current:
-            self._capture_session()
         self._rebuild_composite(entry)
         self._reresolve_bound_art(self._maps_drawing_from([entry]))
         self._files_panel.refresh_entry(entry)

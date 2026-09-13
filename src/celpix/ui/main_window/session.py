@@ -1251,14 +1251,24 @@ class SessionMixin:
 
         Off screen the drop is the whole of it: the next activation reads the
         entry fresh. On screen it is reloaded here, quietly, because nothing
-        else is going to ask.
+        else is going to ask — and its session is captured first, so the offset
+        and format the widgets hold ride across the reload with the view the
+        drop stashes (:meth:`~celpix.project.workspace.Workspace.drop_document`).
+        A reload that fails keeps the document it had, so the entry and the
+        window never disagree about what is on screen.
         """
+        current = composite is self._workspace.current
+        if current:
+            self._capture_session()
+        previous = composite.doc
         self._workspace.drop_document(composite)
-        if composite is not self._workspace.current:
+        if not current:
             return
         if self._load_entry(composite, quiet=True):
             self._doc = composite.doc
             self._restore_session(composite)
+        else:
+            composite.doc = previous
         self._refresh_view()
 
     def _reresolve_bound_art(self, maps: list[Entry]) -> None:

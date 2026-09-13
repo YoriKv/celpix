@@ -747,6 +747,48 @@ def test_editing_the_list_rebuilds_the_composite_and_its_maps(qtbot, tmp_path) -
     assert composite.doc.pixel_data == b""
 
 
+def test_rebuilding_a_composite_keeps_its_view(qtbot, tmp_path) -> None:
+    """A re-listed composite is dropped and read again, and the read has to come
+    back under the view it had — columns, palette row, offset. It came back on
+    the codec's defaults: the drop threw the view away with the document, so
+    Edit… on the composite on screen turned it black (palette row 0) until the
+    project was reopened. A close of one of its pieces rebuilds it the same way
+    and is held to the same answer."""
+    from celpix.ui.composite_dialog import CompositeParams
+    from celpix.ui.undo_commands import CompositeEditCommand
+
+    window, first, second, composite = _window_with_composite(qtbot, tmp_path)
+    window._columns.setValue(2)
+    window._rows.setValue(1)  # a page of two, so an offset into the eight is legal
+    window._palette_row.setValue(1)
+    window._offset = 2
+    window._refresh_view()
+    assert window._palette_row.value() == 1  # the palette has a row to move to
+    assert window._offset == 2
+
+    before = CompositeParams(composite.name, composite.pieces)
+    after = CompositeParams("swapped", (CompositePiece(second), CompositePiece(first)))
+    window._push_command(
+        CompositeEditCommand(window, composite, before=before, after=after)
+    )
+
+    view = composite.doc.view
+    assert (view.columns, view.palette_row, view.tile_offset) == (2, 1, 2)
+    assert window._columns.value() == 2
+    assert window._palette_row.value() == 1
+    assert window._offset == 2
+
+    window._undo_stack.undo()
+    assert (window._columns.value(), window._palette_row.value()) == (2, 1)
+
+    # The same rebuild, reached by closing a piece rather than re-listing.
+    window._remove_entry(first, confirm=False)
+    assert window._workspace.current is composite
+    view = composite.doc.view
+    assert (view.columns, view.palette_row, view.tile_offset) == (2, 1, 2)
+    assert window._palette_row.value() == 1
+
+
 def test_an_edit_through_a_file_piece_keeps_its_slices_edits(qtbot, tmp_path) -> None:
     """A stroke on a composite whose piece is a whole FILE lands in that file,
     and a file's own edit drops every slice document under it — safe only once
