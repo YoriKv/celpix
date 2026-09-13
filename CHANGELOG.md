@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.20 - unreleased
+## v0.5.20 - 2026-09-12
 
 - Fix composite view editing
 
