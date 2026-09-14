@@ -1049,7 +1049,11 @@ class SelectionMixin:
         # _sync_font_alphabet_row`).
         self._sync_font_alphabet_row()
         self._sync_marked_palette_row()
-        self._palette_from_selection_action.setEnabled(has)
+        # A selection on a composite names no file byte for a palette to be read
+        # at, so the action greys there as it does with no selection at all.
+        self._palette_from_selection_action.setEnabled(
+            has and self._offset_palette_refusal(self._workspace.current) is None
+        )
         self._sync_pin_actions()
         # Only whole files spawn slices - slices never nest. Nor does a tilemap:
         # a slice is a pixel entry over a byte region, and the region a cell

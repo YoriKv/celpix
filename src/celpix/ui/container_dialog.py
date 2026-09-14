@@ -95,6 +95,7 @@ from celpix.ui.searchable_combo import (
     fill_stage_combo,
     info_rows,
 )
+from celpix.ui.theme import WARNING_INK, set_ink
 from celpix.ui.widgets import PRESET_COMBO_WIDTH, value_spin
 
 __all__ = ["ContainerDialog", "ContainerEdit"]
@@ -216,7 +217,7 @@ class ContainerDialog(QDialog):
         # user edits, not after.
         self._note = QLabel()
         self._note.setWordWrap(True)
-        self._note.setStyleSheet("color: #a08040;")
+        set_ink(self._note, WARNING_INK)
         # Both answers decide whether there is a write half to put resized bytes
         # back through, so the size row follows them as the note does.
         for combo in (self._container, self._reshape):

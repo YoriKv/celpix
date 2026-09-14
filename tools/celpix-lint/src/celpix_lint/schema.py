@@ -142,7 +142,6 @@ VIEW_KEYS = frozenset(
     {
         "columns",
         "rows",
-        "zoom",
         "palette_row",
         "offset",
         "byte_nudge",
@@ -164,6 +163,9 @@ VIEW_KEYS = frozenset(
         # Likewise: `palette_row` under its version-1 spelling. A project the
         # reader migrates is still a project this may be pointed at.
         "subpalette_row",
+        # No longer read at all - zoom is an app-wide preference now - but listed
+        # so it draws its own note (I704) rather than an unknown-key warning.
+        "zoom",
     }
 )
 
@@ -220,7 +222,3 @@ def is_int(value: object) -> bool:
     """A JSON integer — ``bool`` excluded, since it is an ``int`` subclass and a
     stray ``true`` must not read as a count of 1 (the reader's own rule)."""
     return isinstance(value, int) and not isinstance(value, bool)
-
-
-def is_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)

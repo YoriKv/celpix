@@ -515,14 +515,21 @@ class PaletteDockMixin:
         nothing open only File means anything - open a ``.pal`` and edit it on
         its own - so the rest are disabled rather than answering "Open pixel
         data first" to a click that looked available.
+
+        Offset is greyed on a **composite** as well, which has no file for an
+        offset to name (:meth:`~...palette_offset.PaletteOffsetMixin.
+        _offset_palette_refusal`).
         """
         graphic = self._doc is not None
+        no_offsets = self._offset_palette_refusal(self._workspace.current) is not None
         for index in range(self._palette_mode_combo.count()):
             mode = PaletteMode.parse(self._palette_mode_combo.itemData(index))
             # Default stays selectable with nothing open: it is the resting
             # state the dock shows read-only, and picking it is how you put a
             # standalone palette away again.
             enabled = graphic or mode in (PaletteMode.FILE, PaletteMode.DEFAULT)
+            if mode is PaletteMode.OFFSET and no_offsets:
+                enabled = False
             item = self._palette_mode_combo.model().item(index)
             if item is not None:
                 item.setEnabled(enabled)

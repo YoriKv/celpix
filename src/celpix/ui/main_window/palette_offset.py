@@ -67,6 +67,25 @@ class PaletteOffsetMixin:
     package docstring for why these are mixins.
     """
 
+    def _offset_palette_refusal(self, entry: Entry | None) -> str | None:
+        """Why ``entry`` cannot hold an Offset palette, or None if it can.
+
+        A **composite** is the one refusal. An Offset palette addresses a byte
+        of a file in its owner's coordinates, and a composite has no file: its
+        bytes are its pieces' and its offsets are positions in a join that
+        exists only in memory (``Entry.paths`` is empty for the same reason).
+        Said here, once, so the mode picker, the selection action and the load
+        itself agree — left to the load, the refusal arrived as "not enough data
+        at that offset", which is a wrong diagnosis of the right answer.
+        """
+        if entry is not None and entry.kind is EntryKind.COMPOSITE:
+            return (
+                "A composite view has no file of its own to read a palette from. "
+                "Load the palette on one of its pieces, or use File, Custom or "
+                "Emulator mode here."
+            )
+        return None
+
     def _initial_palette_offset(self) -> int:
         """Where Offset mode starts: the selected tile, else the window top-left.
 
@@ -382,6 +401,10 @@ class PaletteOffsetMixin:
         """
         entry = self._workspace.current
         if self._doc is None or entry is None:
+            return False
+        refusal = self._offset_palette_refusal(entry)
+        if refusal is not None:
+            self._alert(refusal, title="celPix - palette")
             return False
         try:
             ref, writable = self._offset_palette_source(byte_off)

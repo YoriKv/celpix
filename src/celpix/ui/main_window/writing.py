@@ -31,7 +31,7 @@ from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.core.errors import PipelineError
 from celpix.pipeline import pipeline
 from celpix.project.workspace import Entry, EntryKind
-from celpix.ui.widgets import confirm_destructive
+from celpix.ui.widgets import confirm_destructive, counted
 
 
 def _and_list(names: list[str]) -> str:
@@ -304,8 +304,11 @@ class WritingMixin:
             self._report(exc)
             return False
         self._workspace.mark_saved(entry, pixel=not palette_only)
+        if entry.kind is EntryKind.SLICE and not palette_only:
+            entry.fold_refused = None  # its own write just put the bytes down
         if writes_region and entry.kind is EntryKind.FILE:
             self._mark_region_saved(entry)
+            self._report_refused_folds(entry)
         # Invalidated even for a palette-only write: in Offset mode the palette's
         # target *is* this entry's own file, so other entries on it are stale too.
         # Every file of a region, since a save can have rewritten any of them.
@@ -344,6 +347,18 @@ class WritingMixin:
         would leave the edited version standing in the buffer after the undo. The
         debt is discharged whatever came of each child: one that cannot encode
         never could, and keeping it would re-attempt the failure at every read.
+
+        A child whose fold is **refused** is recorded as such on the child
+        (:attr:`~celpix.project.workspace.Entry.fold_refused`). Two things refuse
+        one: a re-encoded stream that no longer fits its slot, and a slice this
+        buffer does not reach — anchored before the window the parent's container
+        opened on the file, or running past the end of it. Either is recorded,
+        because the buffer then lacks that slice's edits while two things
+        downstream assume otherwise: the parent's write marks its dirty slices
+        saved, and the parent's edit drops their documents. Both read the record
+        and leave such a slice alone, dirty and loaded, and the write says so.
+        Not re-attempted at every read for the reason above; the next write of
+        either side tries again.
         """
         if parent.kind is not EntryKind.FILE or parent.doc is None:
             return []
@@ -357,17 +372,26 @@ class WritingMixin:
                 continue
             try:
                 shaped = pipeline.encoded_pixel_bytes(child.doc, self._registry)
-            except PipelineError:
+            except PipelineError as exc:
                 if child is also:
                     raise  # the one being written reports its own failure
+                child.fold_refused = str(exc)
                 continue
             start = child.slice_offset - base
             # A slice anchored outside the parent's window was never cut from
             # this buffer (`workspace._parent_view_bytes`), so it has no place
-            # in it to fold back into.
+            # in it to fold back into. Recorded like an encoder's refusal and
+            # for the same reason: the buffer does not hold these bytes, so a
+            # skip left silent here has the parent's write mark the slice saved
+            # with nothing of it written.
             if start < 0 or start + len(shaped) > len(parent.doc.pixel_data):
+                child.fold_refused = (
+                    f"lies outside {parent.name}'s region, so there is nowhere "
+                    "in it to fold these bytes into"
+                )
                 continue
             parent.doc.replace_bytes(start, shaped)
+            child.fold_refused = None
             folded.append(child)
         parent.pending_folds.clear()
         return folded
@@ -417,9 +441,16 @@ class WritingMixin:
             self._files_panel.refresh_entry(parent)
         elif entry.kind is EntryKind.FILE:
             for child in self._workspace.children_of(entry):
-                if child.kind is EntryKind.SLICE and child.doc is not None:
-                    self._drop_bound_copies(child)
-                    self._workspace.drop_document(child)
+                if child.kind is not EntryKind.SLICE or child.doc is None:
+                    continue
+                # A slice whose fold was refused keeps its document: the buffer
+                # does not hold its edits, so re-deriving it from the buffer
+                # would be the one way to lose them. It goes on showing its own
+                # bytes rather than this edit until it fits and is written.
+                if child.fold_refused is not None:
+                    continue
+                self._drop_bound_copies(child)
+                self._workspace.drop_document(child)
 
     def _settle_region(self, entry: Entry | None) -> None:
         """Pay any fold ``entry``'s region owes, before its bytes are believed.
@@ -497,11 +528,46 @@ class WritingMixin:
         (:meth:`_propagate_pixel_edit`) - so they are on disk too. Leaving them
         marked dirty would claim otherwise, and a later write of one would put
         its own window back over whatever has happened since.
+
+        Every dirty slice **except one whose fold was refused**: its edits are
+        in no buffer and on no disk, so it stays dirty, and the caller reports
+        it (:meth:`_report_refused_folds`). Marking it saved was how an edit
+        that had grown past its slot vanished without a word.
         """
         self._workspace.mark_saved(parent, palette=False)
         for child in self._workspace.children_of(parent):
-            if child.kind is EntryKind.SLICE and child.pixel_dirty:
+            if (
+                child.kind is EntryKind.SLICE
+                and child.pixel_dirty
+                and child.fold_refused is None
+            ):
                 self._workspace.mark_saved(child, palette=False)
+
+    def _report_refused_folds(self, parent: Entry) -> None:
+        """Tell the user which of ``parent``'s slices a write just left behind.
+
+        After a region write: a slice whose fold was refused is still dirty and
+        still loaded, so nothing is lost — but the write it was part of has
+        reported success, and a user who takes that as "everything is on disk"
+        would close the project over an edit that is not. One modal, naming each
+        slice and the reason, which is the reason the encoder gave.
+        """
+        left = [
+            child
+            for child in self._workspace.children_of(parent)
+            if child.kind is EntryKind.SLICE
+            and child.pixel_dirty
+            and child.fold_refused is not None
+        ]
+        if not left:
+            return
+        lines = "\n".join(f"• {child.name}: {child.fold_refused}" for child in left)
+        self._alert(
+            f"{parent.name} was written, but the unsaved changes in "
+            f"{counted(len(left), 'slice')} could not go with it and are still "
+            f"unsaved:\n\n{lines}\n\nMake them fit and write again.",
+            title="celPix - write",
+        )
 
     def _write_pixels_through_parent(self, entry: Entry) -> bool:
         """Persist a slice by folding it into its parent and writing that.
@@ -548,6 +614,7 @@ class WritingMixin:
         # separate file, and this write says nothing about it.
         pipeline.save(parent.doc, self._registry, palette=False)
         self._mark_region_saved(parent)
+        self._report_refused_folds(parent)
         return True
 
     def _refresh_stale_current(self) -> None:

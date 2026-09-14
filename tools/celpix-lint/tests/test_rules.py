@@ -489,10 +489,10 @@ def test_overlapping_pinned_regions(project, entry):
     assert "W734" in codes
 
 
-def test_fractional_zoom_is_legal(project, entry):
-    assert (
-        project({"version": 1, "entries": [entry(view={"zoom": 0.5})]}, files=ROM) == []
-    )
+def test_zoom_is_noted_as_ignored(project, entry):
+    assert project(
+        {"version": 1, "entries": [entry(view={"zoom": 0.5})]}, files=ROM
+    ) == ["I704"]
 
 
 # -- session and palette ---------------------------------------------------

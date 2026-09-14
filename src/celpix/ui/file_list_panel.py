@@ -77,6 +77,7 @@ from celpix.ui import clipboard
 from celpix.ui.glyphs import Glyph
 from celpix.ui.icon_font import glyph_pixmap
 from celpix.ui.searchable_combo import matches_search
+from celpix.ui.theme import WARNING_INK
 from celpix.ui.widgets import (
     ShortcutIsland,
     icon_cache_key,
@@ -93,11 +94,6 @@ _MISSING_HIGHLIGHT = QBrush(QColor(255, 193, 7, 70))
 # Highlight, see _open_entry_wash). Deliberately fainter than the amber above:
 # that one is asking to be dealt with, this one only says "here".
 _OPEN_ENTRY_ALPHA = 45
-
-# The status icons' own color: opaque amber, matching the row wash it sits on.
-# Fixed rather than a palette role, because a warning that took the theme's text
-# color would stop reading as a warning.
-_WARNING_INK = QColor(200, 137, 10)
 
 # The section headings, in the order they appear. Dict order *is* the on-screen
 # order, so a header inserts at its own place however the sections were opened:
@@ -1222,13 +1218,13 @@ class FileListPanel(QWidget):
         to go and find it (File ▸ Locate missing files). Deliberately not a cross
         — at this size, next to rows the user can close, a cross reads as a close
         button rather than a state."""
-        return self._icon(Glyph.QUESTION, tint=_WARNING_INK)
+        return self._icon(Glyph.QUESTION, tint=WARNING_INK)
 
     def _notice_icon(self) -> QIcon:
         """An exclamation mark: the entry opened, but a stage had to drop, assume
         or substitute something on the way in, and the row's own tooltip spells
         out what."""
-        return self._icon(Glyph.EXCLAMATION, tint=_WARNING_INK)
+        return self._icon(Glyph.EXCLAMATION, tint=WARNING_INK)
 
     def _icon(  # noqa: ANN001 - role is a QPalette.ColorRole
         self, glyph: Glyph, *, role=None, tint: QColor | None = None
@@ -1505,18 +1501,33 @@ class FileListPanel(QWidget):
 
     def _add_write_action(self, menu: QMenu, entry: Entry) -> None:
         """Write, sitting under the entry's own settings (a file's container, a
-        slice's definition) rather than down by the import/export group: it is
-        what commits the edits those dialogs and the canvas make. One builder so
-        the two kinds that write bytes cannot disagree about when it is live.
+        slice's definition, a composite's piece list) rather than down by the
+        import/export group: it is what commits the edits those dialogs and the
+        canvas make. One builder so the kinds that write bytes cannot disagree
+        about when it is live.
+
+        A file or a slice needs a loaded, write-capable document: a
+        never-activated or view-only entry has nothing to write. A **composite**
+        is asked for the document only. Its ``write_enabled`` is False about the
+        assembled buffer, which is nobody's file, while the edits made through it
+        were deposited in the pieces — and those are what the handler writes, so
+        reading the buffer's flag here would grey out the very row that sends
+        them home. Nor is it gated on a piece being dirty: a file and a slice
+        stay live whether or not they have unsaved edits, and a row that came and
+        went with the state of entries it doesn't show would be a rule the user
+        can't see. The handler answers instead, naming the pieces that landed or
+        saying that none of them had anything to write.
         """
-        # Writing needs a loaded, write-capable document; a never-activated or
-        # view-only entry has nothing to write.
         self._entry_action(
             menu,
             "&Write",
             self.write_requested.emit,
             entry,
-            enabled=entry.doc is not None and entry.doc.pixel_config.write_enabled,
+            enabled=entry.doc is not None
+            and (
+                entry.kind is EntryKind.COMPOSITE
+                or entry.doc.pixel_config.write_enabled
+            ),
         )
 
     def _add_order_actions(

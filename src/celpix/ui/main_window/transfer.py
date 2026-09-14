@@ -69,7 +69,7 @@ class TransferMixin:
             "Export as &PNG…",
             lambda: self._export_png(self._workspace.current),
             menu=export_menu,
-            tip="Export as an indexed PNG\nIndex 0 is transparent",
+            tip="Export as an indexed PNG\nIndex 0 keeps its palette color",
         )
         self._export_raw_action = make_action(
             self,

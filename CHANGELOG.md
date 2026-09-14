@@ -1,8 +1,16 @@
 # Changelog
 
-## v0.5.19 - unreleased
+## v0.5.21 - unreleased
 
 - Built-in D88 floppy disk image container (.d88/.d77 and relatives)
+
+## v0.5.20 - 2026-09-12
+
+- Fix composite view editing
+
+## v0.5.19 - 2026-09-11
+
+- Lots of composite view fixes
 
 ## v0.5.18 - 2026-09-02
 

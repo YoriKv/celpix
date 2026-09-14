@@ -3,10 +3,14 @@ the compression overlay, the menus and the window's own furniture."""
 
 from __future__ import annotations
 
+from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QApplication
+
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
 from celpix.ui import render_bridge
 from celpix.ui.main_window import MainWindow
+from celpix.ui.theme import WARNING_INK
 from uihelpers import _combo_ids, _make_snes_file, _scr_file
 
 
@@ -460,7 +464,9 @@ def test_compression_overlay_badge_distinguishes_the_three_decode_states(
     window._columns.setValue(1)
     assert window._overlay._badge.isVisible()
     assert window._overlay._badge.text() == "end not in view"
-    assert "#c08a30" in window._overlay._badge.styleSheet()
+    assert window._overlay._badge.palette().color(QPalette.ColorRole.WindowText) == (
+        WARNING_INK
+    )
 
     # A scheme with no end marker: informational, not amber, whatever the window.
     window._load_pixel(str(endless))
@@ -469,7 +475,9 @@ def test_compression_overlay_badge_distinguishes_the_three_decode_states(
     )
     assert window._overlay._badge.isVisible()
     assert window._overlay._badge.text() == "end of view window"
-    assert window._overlay._badge.styleSheet() == ""
+    assert window._overlay._badge.palette().color(QPalette.ColorRole.WindowText) == (
+        QApplication.palette().color(QPalette.ColorRole.WindowText)
+    )
     # Hard-wrapped so the tooltip doesn't run off the screen edge.
     assert "\n" in window._overlay._badge.toolTip()
 

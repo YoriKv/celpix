@@ -1574,7 +1574,9 @@ def test_the_hex_dump_under_a_tilemap_shows_its_cells_not_its_tiles(
     window._on_slots_selected(1, 1)
     assert window._selected_cells() == [1]
     assert window._selection_byte_range() == (2, 2)  # cell 1, one 2-byte word
-    assert any(row.hi_from is not None for row in window._hex_panel._view.visible_rows())
+    assert any(
+        row.hi_from is not None for row in window._hex_panel._view.visible_rows()
+    )
 
 
 def test_a_cell_edit_reaches_the_bytes_the_dump_and_export_raw_read(

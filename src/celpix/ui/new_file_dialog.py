@@ -57,6 +57,7 @@ from celpix.ui.searchable_combo import (
     preset_rows,
     tilemap_codec_label,
 )
+from celpix.ui.theme import WARNING_INK, set_ink
 from celpix.ui.widgets import PRESET_COMBO_WIDTH, signals_blocked, value_spin
 
 __all__ = ["NewFileDialog", "NewFileParams", "SIZE_CAPTIONS"]
@@ -198,7 +199,7 @@ class NewFileDialog(QDialog):
         self._size = QLabel()
         self._note = QLabel()
         self._note.setWordWrap(True)
-        self._note.setStyleSheet("color: #a08040;")
+        set_ink(self._note, WARNING_INK)
 
         self._size_caption = QLabel()
         form = QFormLayout(self)
