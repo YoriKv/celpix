@@ -35,6 +35,7 @@ from .containers import (
     SmdContainer,
     SnesInterleavedContainer,
 )
+from .d88 import D88Container
 from .direct_color_codec import DirectColorCodec
 from .enigma import EnigmaCompression
 from .gb_rom import GbRomContainer
@@ -92,6 +93,7 @@ def register_builtins(reg: Registry) -> None:
         SnesInterleavedContainer(),
         GbRomContainer(),
         N64RomContainer(),
+        D88Container(),
         ScrContainer(),
         PnlContainer(),
         MapContainer(),

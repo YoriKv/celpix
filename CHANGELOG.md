@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.19 - unreleased
+
+- Built-in D88 floppy disk image container (.d88/.d77 and relatives)
+
 ## v0.5.18 - 2026-09-02
 
 - New File (Ctrl+Shift+N) creates a blank pixel, palette or tilemap file using

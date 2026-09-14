@@ -41,6 +41,7 @@ from celpix.plugins.builtins.containers import (
     SmdContainer,
     SnesInterleavedContainer,
 )
+from celpix.plugins.builtins.d88 import D88Container
 from celpix.plugins.builtins.gb_rom import GbRomContainer, repair_checksums
 from celpix.plugins.builtins.n64_rom import (
     KEY_N64_SWAP,
@@ -185,6 +186,7 @@ def test_detection_prefers_magic_and_falls_back_to_raw() -> None:
     # No magic to assert on, so .smd is claimed on its name alone.
     assert detect_container(reg, "cart.smd", b"\x00" * 16) == "container.smd"
     assert detect_container(reg, "cart.bin", b"\x00" * 16) == RAW_CONTAINER
+    assert detect_container(reg, "disk.d88", b"\x00" * 16) == "container.d88"
     # Never auto-detected: deinterleaving a plain image would scramble it.
     assert (
         detect_container(reg, "cart.sfc", b"\x00" * 16) != "container.snes-interleaved"
@@ -233,6 +235,24 @@ def _noise(n: int, seed: int = 0) -> bytes:
     return bytes(((i * 7 + seed) & 0xFF) for i in range(n))
 
 
+def _d88_disk(tracks, header: int = 0x2B0) -> bytes:
+    """A D88 disk: each track None (unformatted) or ``(R, N, data, 0Eh field)``s."""
+    body = bytearray()
+    table = []
+    for sectors in tracks:
+        if sectors is None:
+            table.append(0)
+            continue
+        table.append(header + len(body))
+        for r, n, data, length in sectors:
+            body += struct.pack("<4BH3B5xH", 0, 0, r, n, len(sectors), 0, 0, 0, length)
+            body += data
+    head = bytearray(header)
+    struct.pack_into("<I", head, 0x1C, header + len(body))
+    struct.pack_into(f"<{len(table)}I", head, 0x20, *table)
+    return bytes(head) + body
+
+
 # One plausible file per shipped container. Each must be something its reader
 # actually claims, since the point is to exercise the real read→write pair.
 _CONTAINER_SAMPLES = {
@@ -257,6 +277,10 @@ _CONTAINER_SAMPLES = {
         ),
     ),
     "container.n64-rom": ("f.v64", b"\x37\x80\x40\x12" + _noise(0x2000 - 4, 7)),
+    "container.d88": (
+        "f.d88",
+        _d88_disk([[(r, 1, _noise(256, r + t), 256) for r in (1, 2)] for t in (0, 2)]),
+    ),
 }
 
 
@@ -315,6 +339,52 @@ def test_an_edit_lands_where_its_container_read_it_from(container_id, tmp_path) 
 
     assert len(path.read_bytes()) == len(content)
     assert pipeline.load(cfg, cfg, reg).pixel_data[at] == want
+
+
+def test_d88_reads_an_irregular_disk_at_the_offsets_a_loader_counts() -> None:
+    """Every liberty the format's images take, in one file, read flat and back.
+
+    The sectors of track 0 are stored out of R order and one carries a garbage
+    length field; track 1 was never formatted; a sector of track 3 is stored with
+    no data; the table is the older 160-entry one; and a second disk follows the
+    first. Each shifts every later offset if handled wrongly, and none fails.
+    """
+
+    def sector(r: int, data: bytes, length: int | None = None):
+        return (r, 1, data, len(data) if length is None else length)
+
+    a, b, c, d, e = (bytes([v]) * 256 for v in (0xA1, 0xA2, 0xC1, 0xD1, 0xE1))
+    first = _d88_disk(
+        [
+            [sector(2, b, length=0xBEEF), sector(1, a)],
+            None,
+            [sector(1, c), sector(2, c)],
+            [sector(1, d), sector(2, b"")],
+        ],
+        header=0x2A0,
+    )
+    raw = first + _d88_disk([[(1, 0, e[:128], 128)]])
+
+    ctx = PipelineContext()
+    flat = D88Container().read(ReadSource(raw), ctx)
+    assert flat == a + b + bytes(512) + c + c + d + bytes(256) + e[:128]
+    assert [n.is_warning for n in notices(ctx)] == [False]  # the padded track
+
+    container = D88Container()
+    assert container.write(flat, WriteTarget(raw), PipelineContext()) == raw
+    # An edit to track 0's R2 lands in the sector stored first in the file, and
+    # one on the unformatted track has nowhere to go and says so.
+    edited = bytearray(flat)
+    edited[256 + 5] = 0x55
+    edited[600] = 0x77
+    ctx = PipelineContext()
+    out = container.write(bytes(edited), WriteTarget(raw), ctx)
+    assert out[0x2A0 + 16 + 5] == 0x55 and len(out) == len(raw)
+    assert (
+        container.read(ReadSource(out), PipelineContext())
+        == flat[:261] + b"\x55" + flat[262:]
+    )
+    assert [n.is_warning for n in notices(ctx)] == [True]
 
 
 def test_container_id_degrades_when_the_plugin_is_gone() -> None:

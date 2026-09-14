@@ -1,5 +1,5 @@
 {
-  "celpix_version": "0.5.15",
+  "celpix_version": "0.5.18",
   "plugins": {
     "compression": {
       "compression.enigma": [
@@ -89,6 +89,10 @@
     },
     "container": {
       "container.copier-header": [
+        "pixels",
+        "tilemap"
+      ],
+      "container.d88": [
         "pixels",
         "tilemap"
       ],
