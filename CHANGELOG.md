@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.21 - unreleased
+## v0.5.21 - 2026-09-14
 
 - Built-in D88 floppy disk image container (.d88/.d77 and relatives)
 
