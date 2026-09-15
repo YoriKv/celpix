@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.22 - unreleased
+
+- Grouped word-table reshape (`reshape.split-words-2x2`) for 2x2 stamp tables
+  stored as four corner arrays
+
 ## v0.5.21 - 2026-09-14
 
 - Built-in D88 floppy disk image container (.d88/.d77 and relatives)

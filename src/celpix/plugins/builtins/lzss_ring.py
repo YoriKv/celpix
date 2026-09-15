@@ -30,12 +30,19 @@ decode stops when it has produced exactly that many bytes; the source position i
 stopped at is the structure's true compressed length. That makes the scheme
 self-delimiting even though the compressed body is not.
 
+Other lineages wrap the same body differently, so :func:`decompress` and
+:func:`compress` take the prefix's width and byte order and the ring's size as
+keywords, defaulting to this framing. Namco's Mega Drive LZSS and its 2 KiB-ring
+variant are that (:mod:`~celpix.plugins.builtins.namco_lz`).
+
 The compressor is a greedy parse with a one-step lazy deferral, over a
 3-byte-prefix index of recent positions. Byte-identity with a particular
 original blob is a non-goal; round-tripping is the contract.
 """
 
 from __future__ import annotations
+
+from typing import Literal
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
@@ -46,14 +53,21 @@ from celpix.plugins.builtins._lz import (
     parse_greedy,
 )
 
+SIZE_BYTES = 4
 RING_SIZE = 4096
-# Where the ring's write cursor sits before the first output byte. Equivalent to
-# `RING_SIZE - MAX_MATCH - 2`, the reference implementation's way of leaving the
-# encoder's lookahead room ahead of the cursor.
-RING_START = 0xFEE
 
 MIN_MATCH = 3
 MAX_MATCH = 18  # 4-bit length field, biased by MIN_MATCH
+
+
+def _ring_start(ring_size: int) -> int:
+    """Where the ring's write cursor sits before the first output byte.
+
+    0xFEE for the 4 KiB ring: the reference implementation's way of leaving the
+    encoder's lookahead room ahead of the cursor, which carries over to a smaller
+    ring as the same distance from its end.
+    """
+    return ring_size - MAX_MATCH
 
 # Compressor tuning: how many recent positions sharing a 3-byte prefix to test
 # (see :class:`~celpix.plugins.builtins._lz.MatchFinder`).
@@ -64,7 +78,14 @@ def _fail(reason: str) -> ValueError:
     return ValueError(f"corrupt LZSS stream: {reason}")
 
 
-def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
+def decompress(
+    data: bytes,
+    *,
+    partial: bool = False,
+    size_bytes: int = SIZE_BYTES,
+    byteorder: Literal["little", "big"] = "little",
+    ring_size: int = RING_SIZE,
+) -> tuple[bytes, int, bool]:
     """Decode a size-prefixed LZSS stream.
 
     Returns ``(output, consumed, complete)``. ``complete`` is true when the full
@@ -72,18 +93,24 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     length — the slot a save-back must fit. With ``partial`` a buffer that ends
     mid-stream yields the prefix decoded so far instead of raising, which is what
     a bounded view window needs; a structurally invalid stream still raises.
+
+    The keywords are the framings other lineages put around the same body: the
+    size prefix's width and byte order, and a smaller ring
+    (:mod:`~celpix.plugins.builtins.namco_lz`).
     """
-    if len(data) < 4:
-        raise _fail("shorter than the 4-byte size prefix")
-    target = int.from_bytes(data[0:4], "little")
+    if len(data) < size_bytes:
+        raise _fail(f"shorter than the {size_bytes}-byte size prefix")
+    target = int.from_bytes(data[:size_bytes], byteorder)
     if target == 0:
         raise _fail("declared uncompressed size is zero")
 
+    ring_mask = ring_size - 1
+    ring_start = _ring_start(ring_size)
     # `win` is the output preceded by the ring's zero fill, so a reference that
     # reaches back before the first output byte reads zeros exactly as the ring
-    # would. Output byte i is win[RING_SIZE + i].
-    win = bytearray(RING_SIZE)
-    src = 4
+    # would. Output byte i is win[ring_size + i].
+    win = bytearray(ring_size)
+    src = size_bytes
     n = len(data)
     produced = 0
 
@@ -103,17 +130,18 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 
             if src + 1 >= n:
                 break
-            ring_pos = data[src] | ((data[src + 1] & 0xF0) << 4)
+            # A ring narrower than the 12-bit field ignores the field's top bits.
+            ring_pos = (data[src] | ((data[src + 1] & 0xF0) << 4)) & ring_mask
             length = min((data[src + 1] & 0x0F) + MIN_MATCH, target - produced)
             src += 2
             # Resolve the absolute ring position to the output position it names:
-            # the one in the last RING_SIZE bytes congruent to it modulo the ring.
-            base = produced - RING_SIZE
-            start = RING_SIZE + base + ((ring_pos - RING_START - base) % RING_SIZE)
+            # the one in the last ring_size bytes congruent to it modulo the ring.
+            base = produced - ring_size
+            start = ring_size + base + ((ring_pos - ring_start - base) % ring_size)
             copy_from(win, start, length)
             produced += length
 
-    out = bytes(win[RING_SIZE:])
+    out = bytes(win[ring_size:])
     complete = len(out) == target
     if not complete and not partial:
         raise _fail(f"source ended after {len(out):,} of {target:,} bytes")
@@ -123,19 +151,38 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 # -- compression ------------------------------------------------------------
 
 
-def compress(data: bytes) -> bytes:
-    """Encode raw bytes into a size-prefixed LZSS stream."""
-    if len(data) > 0xFFFFFFFF:
-        raise ValueError("input is too large for the 32-bit LZSS size prefix")
+def compress(
+    data: bytes,
+    *,
+    size_bytes: int = SIZE_BYTES,
+    byteorder: Literal["little", "big"] = "little",
+    ring_size: int = RING_SIZE,
+    window: int | None = None,
+) -> bytes:
+    """Encode raw bytes into a size-prefixed LZSS stream.
 
+    ``window`` caps the distance a reference may reach, below ``ring_size``, for
+    a framing whose true ring size is in doubt: see
+    :mod:`~celpix.plugins.builtins.namco_lz`.
+    """
     n = len(data)
+    if n >= 1 << (size_bytes * 8):
+        raise ValueError(
+            f"input is {n:,} bytes; the {size_bytes * 8}-bit LZSS size prefix "
+            f"holds {(1 << (size_bytes * 8)) - 1:,}"
+        )
+
+    ring_start = _ring_start(ring_size)
     # The longest match wins outright here: a back-reference costs two bytes
     # whatever its distance, so there is nothing to trade off against length.
     finder = MatchFinder(
-        data, min_match=MIN_MATCH, window=RING_SIZE, max_candidates=_MAX_CANDIDATES
+        data,
+        min_match=MIN_MATCH,
+        window=window or ring_size,
+        max_candidates=_MAX_CANDIDATES,
     )
 
-    out = bytearray(n.to_bytes(4, "little"))
+    out = bytearray(n.to_bytes(size_bytes, byteorder))
     # LSB first, and a set bit is the *literal* — both the opposite way round from
     # the BIOS LZ77 next door (:mod:`~celpix.plugins.builtins.gba_lz77`).
     group = FlagGroup(out, msb_first=False, set_means_match=False)
@@ -144,7 +191,7 @@ def compress(data: bytes) -> bytes:
     ):
         group.select(length > 0)
         if length:
-            ring_pos = (RING_START + candidate) & 0xFFF
+            ring_pos = (ring_start + candidate) & (ring_size - 1)
             out.append(ring_pos & 0xFF)
             out.append(((ring_pos >> 4) & 0xF0) | (length - MIN_MATCH))
         else:

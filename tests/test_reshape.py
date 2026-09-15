@@ -147,6 +147,39 @@ def test_word_interleave_round_trips_including_ragged_tail(parts: int) -> None:
         assert plugin.reshape(data, ctx)[aligned:] == data[aligned:]
 
 
+# -- Grouped word tables (a table stored as parallel arrays) ----------------
+
+
+def test_grouped_word_join_lays_corner_arrays_out_as_2x2_stamps() -> None:
+    """Four corner arrays TL‖TR‖BL‖BR must come out as interleave(TL, TR)
+    followed by interleave(BL, BR), so at twice the table length stamp *m*'s
+    cells sit at ``2m, 2m+1`` over ``2m+W, 2m+W+1``. The two-part join over the
+    whole region gives the same cells transposed — TL beside BL — which draws
+    a plausible but diagonally flipped stamp, so that is pinned apart here."""
+    tl, tr, bl, br = (bytes((q, 0, q, 1, q, 2)) for q in (0x10, 0x20, 0x30, 0x40))
+    region = tl + tr + bl + br
+    plugin = SplitPartsReshape(2, unit=2, groups=2)
+    ctx = PipelineContext()
+    joined = plugin.reshape(region, ctx)
+    assert joined == (
+        bytes((0x10, 0, 0x20, 0, 0x10, 1, 0x20, 1, 0x10, 2, 0x20, 2))
+        + bytes((0x30, 0, 0x40, 0, 0x30, 1, 0x40, 1, 0x30, 2, 0x40, 2))
+    )
+    assert joined != SplitPartsReshape(2, unit=2).reshape(region, ctx)
+    assert plugin.unshape(joined, ctx) == region
+
+
+def test_grouped_word_join_round_trips_including_ragged_tail() -> None:
+    plugin = SplitPartsReshape(2, unit=2, groups=2)
+    ctx = PipelineContext()
+    for length in (0, 1, 7, 8, 9, 8 * 5, 8 * 5 + 6):
+        data = bytes((i * 37 + 5) & 0xFF for i in range(length))
+        assert plugin.unshape(plugin.reshape(data, ctx), ctx) == data
+        assert plugin.reshape(plugin.unshape(data, ctx), ctx) == data
+        aligned = (length // 8) * 8
+        assert plugin.reshape(data, ctx)[aligned:] == data[aligned:]
+
+
 # -- position in the pipeline ------------------------------------------------
 
 

@@ -31,6 +31,19 @@ Two unit sizes cover the shipped variants:
   stock ``sms-4bpp`` preset reads a board like TMNT directly
   (``docs/design/reshape-stage.md`` §7).
 
+A third shape is not a chip split at all but a **table stored as parallel
+arrays**, and it is the same join applied one level down:
+
+- **Grouped** (``groups=G``) cuts the region into G equal groups first and joins
+  N parts *within* each. A table of 2x2 stamps kept as four word arrays — every
+  stamp's top-left cell, then every top-right, bottom-left, bottom-right — is
+  G=2, N=2: the join turns ``TL‖TR‖BL‖BR`` into ``TL0 TR0 TL1 TR1…`` followed by
+  ``BL0 BR0 BL1 BR1…``, so laid out at twice the table's length each stamp's four
+  cells are a 2x2 rectangle, which is what a chained binding's stamp walk
+  (``docs/design/tilemap-entry.md`` §3.1) reads. A plain four-part join would
+  weave all four into one row instead, and the two-part join over the whole
+  region pairs TL with BL — the same four cells, transposed.
+
 Which a board wants is **not visible in the shapes**. For a two-chip pair the
 byte-wise and word-wise joins differ only by a swap of bitplanes 1 and 2, so both
 render the same picture and only the colours tell them apart — the byte-wise join
@@ -66,6 +79,11 @@ PART_COUNTS = (2, 3, 4, 5, 6, 8)
 # powers of two, so this set is closed rather than merely what has been needed.
 WORD_PART_COUNTS = (2, 4)
 
+# ``(parts, groups)`` for the grouped word joins. Unlike the bus widths above this
+# is a list of what has been needed, not a closed set: 2x2 is a table of 2x2
+# stamps stored as four corner arrays (Sesame Street: Counting Cafe, Mega Drive).
+GROUPED_WORD_PARTS = ((2, 2),)
+
 
 def _join(data: bytes, parts: int, unit: int) -> bytes:
     """Interleave ``parts`` equal parts of ``data`` ``unit`` bytes at a time;
@@ -91,20 +109,50 @@ def _split(data: bytes, parts: int, unit: int) -> bytes:
     return bytes(out) + data[size * parts :]
 
 
+def _grouped(data: bytes, groups: int, parts: int, unit: int, step) -> bytes:
+    """Apply ``step`` (:func:`_join` or :func:`_split`) to each of ``groups`` equal
+    groups; keep any tail past a whole number of unit-aligned parts per group.
+
+    Each group is cut to a whole number of parts before ``step`` sees it, so the
+    per-group call never has a tail of its own and the one tail is the region's.
+    """
+    if groups == 1:
+        return step(data, parts, unit)
+    size = (len(data) // (groups * parts * unit)) * parts * unit
+    body = b"".join(
+        step(data[g * size : (g + 1) * size], parts, unit) for g in range(groups)
+    )
+    return body + data[size * groups :]
+
+
 class SplitPartsReshape:
     """Join N parts into one contiguous stream, and split them back apart.
 
-    The part count and unit size are constructor arguments rather than subclasses:
-    the transform is identical for every combination and only the numbers differ,
-    so the shipped variants are instances of this one class.
+    The part count, unit size and group count are constructor arguments rather
+    than subclasses: the transform is identical for every combination and only the
+    numbers differ, so the shipped variants are instances of this one class.
     """
 
     parts: int
     unit: int
+    groups: int
 
-    def __init__(self, parts: int, unit: int = 1) -> None:
+    def __init__(self, parts: int, unit: int = 1, groups: int = 1) -> None:
         self.parts = parts
         self.unit = unit
+        self.groups = groups
+        if groups > 1:
+            # Named for what is on disk — tables side by side — since no chip
+            # wiring is involved, and filed apart from the arcade joins.
+            plugin_id = f"reshape.split-words-{parts}x{groups}"
+            name = (
+                f"Split word tables ({groups} groups of {parts}, "
+                f"{unit * 8}-bit words, join each group)"
+            )
+            self.info = PluginInfo(
+                id=plugin_id, name=name, stage=Stage.RESHAPE, category="Generic"
+            )
+            return
         if unit == 1:
             plugin_id = f"reshape.split-planes-{parts}"
             name = f"Split bitplanes ({parts} ROMs, join)"
@@ -118,15 +166,20 @@ class SplitPartsReshape:
         )
 
     def reshape(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return _join(data, self.parts, self.unit)
+        return _grouped(data, self.groups, self.parts, self.unit, _join)
 
     def unshape(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return _split(data, self.parts, self.unit)
+        return _grouped(data, self.groups, self.parts, self.unit, _split)
 
 
 def split_part_plugins() -> list[SplitPartsReshape]:
-    """Every shipped variant, in registration order: the byte-wise splits, then
-    the word-wise chip interleaves (``ROM_LOAD32_WORD`` / ``ROM_LOAD64_WORD``)."""
+    """Every shipped variant, in registration order: the byte-wise splits, the
+    word-wise chip interleaves (``ROM_LOAD32_WORD`` / ``ROM_LOAD64_WORD``), then
+    the grouped word-table joins."""
     plugins = [SplitPartsReshape(parts) for parts in PART_COUNTS]
     plugins += [SplitPartsReshape(parts, unit=2) for parts in WORD_PART_COUNTS]
+    plugins += [
+        SplitPartsReshape(parts, unit=2, groups=groups)
+        for parts, groups in GROUPED_WORD_PARTS
+    ]
     return plugins

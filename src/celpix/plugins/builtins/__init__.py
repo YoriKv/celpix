@@ -27,6 +27,7 @@ from celpix.plugins.discovery import (
 )
 from celpix.plugins.formats import adapt_format
 
+from .bluesky_lz import BlueSkyLzCompression
 from .byte_swap import ByteSwapReshape
 from .color_codec import ColorCodec
 from .containers import (
@@ -50,6 +51,7 @@ from .lzss_ring import LzssRingCompression
 from .m7_vram import M7VramReshape
 from .md_sprite import MdSpriteCodec
 from .n64_rom import N64RomContainer
+from .namco_lz import NamcoLzCompression, StrikeLzCompression
 from .nemesis import NemesisCompression
 from .nes_nametable import NesNametableFormat
 from .nibble_planar_codec import NibblePlanarCodec
@@ -61,6 +63,7 @@ from .planar_codec import PlanarCodec
 from .prs import PrsCompression
 from .pvr import PvrCompression
 from .raw_file import RawFileContainer
+from .rnc import Rnc1Compression, Rnc2Compression
 from .scgcad import (
     CgxContainer,
     ColContainer,
@@ -128,6 +131,11 @@ def register_builtins(reg: Registry) -> None:
         KosinskiCompression(),
         Slz16Compression(),
         Slz24Compression(),
+        NamcoLzCompression(),
+        StrikeLzCompression(),
+        BlueSkyLzCompression(),
+        Rnc1Compression(),
+        Rnc2Compression(),
         PrsCompression(),
         PvrCompression(),
         PackBitsCompression(),
