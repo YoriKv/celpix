@@ -487,8 +487,10 @@ class InterpretationMixin:
         # canvas transform toolbar - see :mod:`celpix.ui.main_window.transform` -
         # because it gates that bar's block transforms.
 
-        # Arrangement (display-only placement/addressing, so these re-render like
-        # zoom/grid - not undoable). Block W×H groups tiles into blocks; Order sets
+        # Arrangement: display-only placement/addressing, and undoable all the
+        # same - the project file keeps all five, and a Pattern preset moves four
+        # of them at once (:class:`~celpix.ui.undo_commands.ArrangementCommand`).
+        # Block W×H groups tiles into blocks; Order sets
         # how each block fills; 2D reads the source as one wide bitmap Cols across.
         # These share the codecs bar's second row (see _build_toolbar) rather than
         # the view row.

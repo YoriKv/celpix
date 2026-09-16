@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.23 - unreleased
+
+- A few cleanup fixes
+- More undo stack fixes
+
 ## v0.5.22 - 2026-09-15
 
 - Added plugin inputs that allow a plugin to be configurable, mostly used

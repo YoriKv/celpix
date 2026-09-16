@@ -272,6 +272,37 @@ def test_the_slice_dialogs_badge_edits_the_codec_the_dialog_has_picked(
     assert form.windowModality() == Qt.WindowModality.NonModal
 
 
+def test_escape_closes_the_inputs_window(qtbot, tmp_path) -> None:
+    """A QWidget gets none of QDialog's key handling, so Escape is spelled out —
+    and it is the only way out while the window is blocking a Slice dialog."""
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+
+    window, rom = _open(qtbot, tmp_path)
+    entry = _bound_slice(window, rom)
+    window._show_inputs(entry)
+    form = window._inputs_window
+    assert form.isVisible()
+
+    # Sent to a *field*, not the window: that is where the keyboard actually is
+    # while the form is being filled in, and a child that swallowed the key would
+    # leave the window with no way out at all.
+    field = form._rows[(XOR_ID, "table")]._offset
+    field.setFocus()
+    QApplication.sendEvent(
+        field,
+        QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_Escape,
+            Qt.KeyboardModifier.NoModifier,
+        ),
+    )
+    assert not form.isVisible()
+    # Closed, not unpinned: re-opening is what the badge does, and the entry it
+    # was on is still the one it answers for.
+    assert form.entry is entry
+
+
 def test_an_edit_to_a_table_in_another_file_re_reads_the_stream_bound_to_it(
     qtbot, tmp_path
 ) -> None:

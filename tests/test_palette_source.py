@@ -1763,6 +1763,16 @@ def test_a_palette_file_that_wont_decode_opens_and_import_as_re_reads_it(
     # Import as… governs the next file read, and only that - it stayed put.
     assert window._palette_import_preset.currentData() == "preset.palette.rgb888"
 
+    # Correcting a wrong guess means trying formats until one reads, so each try
+    # is a step: undo puts the entry - and the picker - back on the last one.
+    window._undo_stack.undo()
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    assert entry.palette_preset_id == "preset.palette.rgb888"
+    assert window._palette_preset.currentData() == "preset.palette.rgb888"
+    assert list(entry.doc.palette.colors) == [MISSING_COLOR] * 16
+    window._undo_stack.redo()
+    assert len(entry.doc.palette) == 256
+
 
 def test_editing_a_file_palette_updates_every_graphic_using_it(qtbot, tmp_path) -> None:
     from celpix.project.workspace import EntryKind

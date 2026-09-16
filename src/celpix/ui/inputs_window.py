@@ -13,10 +13,13 @@ A non-modal ``Qt.Tool`` window, like the font alphabet and subsprite windows,
 and **pinned to the entry it was opened for** rather than following the current
 one: the point of it being non-modal is that the user goes and selects the
 table in the parent while it is open, and *Use selection* reads that selection
-back. The main window supplies what the rows cannot know — the entries a region
-may name, what the selection on screen is, whether a binding resolves — through
-the callbacks handed to :meth:`InputsWindow.show_for`; nothing here reads a
-file or touches the workspace.
+back. (The one exception is the Slice dialog's badge, which opens it blocking —
+see :meth:`InputsWindow.show_for`.) Escape closes it either way: a ``QWidget``
+inherits none of ``QDialog``'s key handling, so the gesture is spelled out. The
+main window supplies what the rows cannot know — the entries a region may name,
+what the selection on screen is, whether a binding resolves — through the
+callbacks handed to :meth:`InputsWindow.show_for`; nothing here reads a file or
+touches the workspace.
 
 Offsets and lengths follow the app-wide address-box convention
 (:func:`~celpix.core.address.parse_hex`): bare digits are hex, ``$`` and ``0x``
@@ -29,6 +32,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QGridLayout,
@@ -532,6 +536,21 @@ class InputsWindow(QWidget):
         if self.windowModality() != wanted:
             self.hide()
             self.setWindowModality(wanted)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # Qt override
+        """Escape closes it, the way it closes every other window in the app.
+
+        A plain ``QWidget`` inherits none of ``QDialog``'s key handling, so the
+        one gesture a floating editor has to answer had to be spelled out. It is
+        the Close button's move rather than a Cancel: nothing typed here is live
+        until Apply, so closing discards the unapplied rows either way — and it
+        is the only way out of the window while it is blocking a Slice dialog
+        that has taken the keyboard's other exits.
+        """
+        if event.key() == Qt.Key.Key_Escape:
+            self.hide()
+            return
+        super().keyPressEvent(event)
 
     def hide_overlay(self) -> None:
         """Hide — the entry it was pinned to is gone."""

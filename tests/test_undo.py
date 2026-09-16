@@ -604,6 +604,34 @@ def test_arrangement_merges_per_control_and_custom_costs_no_step(
     assert window._block_rows.isEnabled()
 
 
+def test_the_preview_picker_is_one_step_per_scheme(qtbot, tmp_path) -> None:
+    """The main view stays raw whatever the picker says, so nothing here moves a
+    byte — but which scheme a region is *believed* to be in is written to the
+    entry's session, and finding it means trying schemes until one decodes.
+
+    The before state has to come off the session rather than a stale capture:
+    a session is otherwise only written on the way out of an entry, which is far
+    too late to be what a second pick measures itself against.
+    """
+    window, _ = _open(qtbot, tmp_path)
+    stack = window._undo_stack
+    combo = window._compression
+    first = window._compression_id()
+    base = stack.count()
+
+    combo.setCurrentIndex(combo.findData("compression.lz2"))
+    assert window._compression_id() == "compression.lz2"
+    combo.setCurrentIndex(combo.findData("compression.lz1"))
+    assert stack.count() == base + 2  # two tries, two steps
+
+    stack.undo()
+    assert window._compression_id() == "compression.lz2"
+    stack.undo()
+    assert window._compression_id() == first
+    stack.redo()
+    assert window._compression_id() == "compression.lz2"
+
+
 def test_the_projects_own_settings_are_undoable(qtbot, tmp_path, monkeypatch) -> None:
     """The two keys a ``.celpix`` holds above its entries.
 

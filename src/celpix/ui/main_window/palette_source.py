@@ -376,8 +376,11 @@ class PaletteSourceMixin:
         :meth:`_palette_doc` is ``None``. Opening a graphic takes the dock back
         to that graphic's palette.
 
-        Display state, so nothing is pushed onto the undo stack and the entry
-        never becomes current: the ``.pal`` is being looked at, not edited.
+        **Previewing** pushes nothing and the entry never becomes current: the
+        ``.pal`` is being looked at, not edited. The *format* it is read with is
+        a different question and does take a step
+        (:meth:`_reload_previewed_palette`) — it is written to the entry, and
+        correcting a wrong guess means trying formats until one reads.
         """
         if data_missing(entry):
             self._alert(

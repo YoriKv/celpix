@@ -42,7 +42,9 @@ document *is*, so landing one drops it and reads the entry again.
 
 Some of the controls sit outside that. **All Frames** and **Transparent 0** say
 how much of an already-decoded document to show, which is the reading Show
-Rearranged Tiles gets: a view toggle, no undo step and no re-read.
+Rearranged Tiles gets: a view toggle and **no re-read**. They are still undo
+steps — the answer is the entry's and the project file keeps it, so it is part
+of how the sheet is set up rather than a glance at it.
 
 What a fontmap's codes *say* is not on this bar at all. It is the **font's** own
 data, not the map's, and it is typed up against the sheet that draws it — so it

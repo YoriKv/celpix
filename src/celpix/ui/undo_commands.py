@@ -154,6 +154,8 @@ class _CurrentEntryCommand(_StateCommand):
     (``docs/design/undo-redo.md``).
     """
 
+    _entry: Entry  # a reaching command always has one
+
     def _reach(self) -> bool:
         return self._window._ensure_current(self._entry)
 
@@ -166,21 +168,29 @@ class _InPlaceCommand(_StateCommand):
     context the change needs.
     """
 
+    _entry: Entry  # a reaching command always has one
+
     def _reach(self) -> bool:
         return True
 
 
-class _ProjectCommand(_InPlaceCommand):
+class _ProjectCommand(_StateCommand):
     """A change to the **project** rather than to any one entry.
 
     The two settings a ``.celpix`` file holds above its entries — which pixel
     codecs the dropdown lists, and the shape one pixel is drawn at — belong to
     the workspace, so there is no entry to carry and none to reach: they are
-    visible from wherever you are, exactly as a rename is.
+    visible from wherever you are, exactly as a rename is. That is why this
+    hangs off :class:`_StateCommand` directly rather than off
+    :class:`_InPlaceCommand`, which reaches nothing either but does have an
+    entry to not reach.
     """
 
     def __init__(self, window: MainWindow, text: str, before, after) -> None:
         super().__init__(window, None, text, before, after)
+
+    def _reach(self) -> bool:
+        return True
 
 
 class _EditModeCommand(_StateCommand):
@@ -199,6 +209,8 @@ class _EditModeCommand(_StateCommand):
     would take the view off the picture the stroke was drawn on, and reverting the
     stroke somewhere it cannot be seen is the thing this class exists to prevent.
     """
+
+    _entry: Entry  # a reaching command always has one
 
     def __init__(
         self,

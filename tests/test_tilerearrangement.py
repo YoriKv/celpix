@@ -230,9 +230,17 @@ def test_the_toggle_takes_the_map_out_of_the_read_path(qtbot, tmp_path) -> None:
     window = _window(qtbot, tmp_path)
     window._set_tile_rearrangement(TileRearrangement().swap(1, 40))
     assert window._active_tile_rearrangement().actual(1) == 40
+    steps = window._undo_stack.count()
     window._show_rearranged_action.setChecked(False)
     assert window._active_tile_rearrangement().is_identity()
     assert window._decode_run(0, 2) == window._decode_actual_run(0, 2)
+
+    # One undo step, like the drop that built the map: the setting is the
+    # entry's and the project file keeps it.
+    assert window._undo_stack.count() == steps + 1
+    window._undo_stack.undo()
+    assert window._show_rearranged and window._show_rearranged_action.isChecked()
+    assert window._active_tile_rearrangement().actual(1) == 40
 
 
 def test_the_armed_tool_shows_rearranged_tiles_whatever_the_setting_says(
