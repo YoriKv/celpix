@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.24 - unreleased
+## v0.5.24 - 2026-09-16
 
 - LZ4W and aPLib compression (from SGDK)
 - Boolean checkbox plugin inputs
