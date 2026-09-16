@@ -38,6 +38,8 @@ looking at the list, not a change to it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import QEvent, QSize, Qt, Signal
 from PySide6.QtGui import (
     QAction,
@@ -365,6 +367,9 @@ class FileListPanel(QWidget):
     container_info_requested = Signal(object)  # Entry (FILE/PALETTE) — what it read
     use_palette_requested = Signal(object)  # Entry (a PALETTE) — apply to the view
     edit_slice_requested = Signal(object)  # Entry (a SLICE) — edit its coordinates
+    inputs_requested = Signal(object)  # Entry — what its formats need from elsewhere
+    copy_inputs_requested = Signal(object)  # Entry — its bindings to the clipboard
+    paste_inputs_requested = Signal(object)  # list[Entry] — bindings onto these rows
     edit_composite_requested = Signal(object)  # Entry (a COMPOSITE) — re-list it
     jump_to_source_requested = Signal(object)  # Entry (a SLICE) — show it in its parent
     jump_to_bookmark_requested = Signal(object)  # Entry (a BOOKMARK) — apply + jump
@@ -379,6 +384,8 @@ class FileListPanel(QWidget):
         # Only to name a file's container in its label; None simply omits the
         # hint, which keeps the panel constructible on its own.
         self._registry = registry
+        # Answered by the window once it is wired up (:meth:`set_inputs_probe`).
+        self._inputs_probe: Callable[[Entry], bool] = lambda _entry: False
         self._tree = _EntryTree()
         self._tree.setHeaderHidden(True)
         self._tree.setColumnCount(2)
@@ -824,6 +831,15 @@ class FileListPanel(QWidget):
         """Mirror whether the canvas has a tile selection (gates the
         selection-based context-menu action)."""
         self._has_selection = active
+
+    def set_inputs_probe(self, probe: Callable[[Entry], bool]) -> None:
+        """Who answers "does this entry have inputs to bind?" for the menu row.
+
+        The window's question, not the panel's: whether a *file* has any depends
+        on the codec its compression preview is set to, which only the toolbar
+        knows (``main_window/inputs.py``).
+        """
+        self._inputs_probe = probe
 
     def set_registry(self, registry: Registry | None) -> None:
         """Point the panel at a rebuilt registry, and re-render what reads it.
@@ -1499,6 +1515,42 @@ class FileListPanel(QWidget):
             menu, "&Container Info…", self.container_info_requested.emit, entry
         )
 
+    def _add_inputs_actions(self, menu: QMenu, entry: Entry) -> QAction:
+        """Inputs…, Copy Inputs and Paste Inputs, under the row that chooses the
+        codec they belong to.
+
+        Inputs… is live only where a format on the entry declares something to
+        bind; Copy only where the entry binds something; Paste only with a copy
+        on the clipboard, and onto every selected row the right-clicked one is
+        among — forty slices sharing one table is the case this exists for.
+        """
+        self._entry_action(
+            menu,
+            "Inp&uts…",
+            self.inputs_requested.emit,
+            entry,
+            enabled=self._inputs_probe(entry),
+        )
+        self._entry_action(
+            menu,
+            "Copy Inputs",
+            self.copy_inputs_requested.emit,
+            entry,
+            enabled=bool(entry.inputs),
+        )
+        selected = self.selected_entries()
+        targets = selected if entry in selected else [entry]
+        # Returned so the multi-row gate can spare it: it is the one row here
+        # that is *about* several entries rather than about the clicked one.
+        return self._entry_action(
+            menu,
+            "Paste Inputs",
+            self.paste_inputs_requested.emit,
+            targets,
+            enabled=clipboard.has_inputs()
+            and any(self._inputs_probe(e) for e in targets),
+        )
+
     def _add_write_action(self, menu: QMenu, entry: Entry) -> None:
         """Write, sitting under the entry's own settings (a file's container, a
         slice's definition, a composite's piece list) rather than down by the
@@ -1695,6 +1747,7 @@ class FileListPanel(QWidget):
         # free (Write/Ctrl+W, Edit File Container/Ctrl+E). Each entry kind builds
         # its own menu below, so the letters only need to be unique per branch.
         menu = QMenu(self)
+        paste_inputs: QAction | None = None
         if entry.kind is EntryKind.FILE:
             # Only files spawn slices and bookmarks (neither nests), so the
             # menu shows these on files alone. All but the plain dialog
@@ -1747,6 +1800,7 @@ class FileListPanel(QWidget):
                 shortcut=QKeySequence("Ctrl+E"),
             )
             self._add_container_info_action(menu, entry)
+            paste_inputs = self._add_inputs_actions(menu, entry)
             self._add_write_action(menu, entry)
             menu.addSeparator()
         elif entry.kind is EntryKind.SLICE:
@@ -1758,6 +1812,7 @@ class FileListPanel(QWidget):
             menu.addSeparator()
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
             self._entry_action(menu, "&Edit…", self.edit_slice_requested.emit, entry)
+            paste_inputs = self._add_inputs_actions(menu, entry)
             self._add_write_action(menu, entry)
             menu.addSeparator()
         elif entry.kind is EntryKind.COMPOSITE:
@@ -1814,6 +1869,10 @@ class FileListPanel(QWidget):
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
             menu.addSeparator()
         live = self._add_order_actions(menu, entry, acting)
+        # Paste Inputs is the fourth row a multi-row selection leaves live: it
+        # lands on every selected row, which is the whole reason it exists.
+        if paste_inputs is not None:
+            live.append(paste_inputs)
         self._add_clipboard_actions(menu, entry)
         if entry.kind.has_document:
             # Import is the mirror of Export ▸ As PNG…, and lands the image at

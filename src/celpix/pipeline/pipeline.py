@@ -24,13 +24,15 @@ geometry — is :mod:`celpix.pipeline._stage`.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
+    KEY_INPUTS,
     KEY_PALETTE_PRESET,
     KEY_PIXEL_PRESET,
     KEY_SOURCE_FILES,
@@ -205,6 +207,38 @@ __all__ = [
 ]
 
 
+def seed_inputs(ctx: PipelineContext, cfg: PathwayConfig, stage: Stage) -> None:
+    """Put ``stage``'s resolved inputs on ``ctx`` as :data:`KEY_INPUTS`.
+
+    Called immediately before the stage runs, and from that stage's own dict
+    only, so a compression input and an interpret input of the same key never
+    meet. A stage the config resolved nothing for gets the key **cleared** rather
+    than left holding the previous stage's dict — a plugin reading
+    ``ctx.get(KEY_INPUTS) or {}`` then sees nothing, which is the contract.
+    """
+    ctx.set(KEY_INPUTS, cfg.inputs.get(stage) or {})
+
+
+@contextmanager
+def _stage_inputs(
+    ctx: PipelineContext, cfg: PathwayConfig, stage: Stage
+) -> Iterator[None]:
+    """:func:`seed_inputs` for the duration of one stage call, then put back.
+
+    The **byte** stages are wrapped rather than seeded, because they run on a
+    context that outlives them: a document's ``tilemap_ctx`` is seeded for its
+    *interpret* stage and read by every later cell encode, and a save's compress
+    running on that same context must not leave the compression dict behind
+    where the next encode would read it as its own.
+    """
+    before = ctx.get(KEY_INPUTS)
+    seed_inputs(ctx, cfg, stage)
+    try:
+        yield
+    finally:
+        ctx.set(KEY_INPUTS, {} if before is None else before)
+
+
 @dataclass(frozen=True)
 class ScanResult:
     """Where a forward structure scan ended (:func:`find_next_structure`).
@@ -228,6 +262,7 @@ def find_next_structure(
     *,
     progress_every: int = 64,
     on_tick: Callable[[int], bool] | None = None,
+    inputs: dict[str, bytes | int] | None = None,
 ) -> ScanResult:
     """The first offset ≥ ``start`` where ``plugin`` decodes a complete structure.
 
@@ -238,12 +273,21 @@ def find_next_structure(
     (so non-self-delimiting schemes are effectively unscannable). Every
     ``progress_every`` bytes ``on_tick(pos)`` is called if given; returning True
     aborts the scan (the UI pumps its event loop and reports a Stop there).
+
+    ``inputs`` is what a scheme that needs a table declares
+    (:class:`~celpix.plugins.base.InputSpec`), already resolved: "find the next
+    stream that decodes with *this* table", which is the question a shared-table
+    format asks. Handed to every probe on a fresh context, so a hit means the
+    structure decodes with those inputs and nothing else.
     """
     pos = start
     n = len(data)
     while pos < n:
+        ctx = PipelineContext()
+        if inputs:
+            ctx.set(KEY_INPUTS, inputs)
         try:
-            if plugin.decompress(data[pos : pos + probe_bytes], PipelineContext()):
+            if plugin.decompress(data[pos : pos + probe_bytes], ctx):
                 return ScanResult(pos, pos, False)
         except Exception:  # noqa: BLE001 — not a structure here; keep walking
             pass
@@ -362,6 +406,11 @@ class TilemapData(NamedTuple):
     on row 0 still reports True. What it gates is whether the view's palette row
     applies at all (``docs/design/tilemap-entry.md`` §8).
 
+    ``column_major`` is set by a format whose cells run **down each column**
+    rather than across each row, the way a side-scrolling level is commonly kept
+    so the strip the hardware needs next is contiguous. Display-only, like the
+    page assembly it is permuted by (:func:`~celpix.core.tilemap.column_order`).
+
     ``row_granularity`` is how many cells share one *stored* row — ``(1, 1)``
     unless the format keeps its rows in a plane coarser than its cells, which
     an NES nametable does
@@ -379,6 +428,7 @@ class TilemapData(NamedTuple):
     index_mask: int = 0
     palette_row_base: int = 0
     row_granularity: tuple[int, int] = (1, 1)
+    column_major: bool = False
 
 
 def load_tilemap_data(
@@ -418,6 +468,10 @@ def load_tilemap_data(
     if live is not None:
         data = live + data[len(live) :]
     engine, preset = reg.engine_for(cfg.interpret_preset_id, TilemapCodecPlugin)
+    # Seeded and **left** on the context, unlike the byte stages: this context
+    # becomes the document's ``tilemap_ctx``, and every later cell encode — a
+    # stamp, a save — reads its inputs from there (:func:`encode_cells`).
+    seed_inputs(ctx, cfg, Stage.INTERPRET_TILEMAP)
     cells = _run(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
@@ -563,6 +617,7 @@ def load_tilemap_data(
         mask,
         row_base,
         grain,
+        bool(preset.params.get("column_major", False)),
     )
 
 
@@ -1208,6 +1263,10 @@ def _read_reshape_decompress(
             f"{stage.value} to make the entry editable again.",
             stage.value,
         )
+    # Same moment, same reason: an input the host could not resolve has already
+    # put its stage on the fallback, and this is where the user learns why.
+    for stage, summary, detail in cfg.input_problems:
+        warn(ctx, summary, detail, stage.value)
 
     def read() -> bytes:
         source, files = _acquire(cfg.source)
@@ -1239,15 +1298,16 @@ def _read_reshape_decompress(
         "reshape",
         plugin=cfg.reshape_id,
     )
-    return _run(
-        Stage.COMPRESSION,
-        pathway,
-        lambda: reg.plugin(
-            Stage.COMPRESSION, cfg.compression_id, CompressionPlugin
-        ).decompress(shaped, ctx),
-        "decompress",
-        plugin=cfg.compression_id,
-    )
+    with _stage_inputs(ctx, cfg, Stage.COMPRESSION):
+        return _run(
+            Stage.COMPRESSION,
+            pathway,
+            lambda: reg.plugin(
+                Stage.COMPRESSION, cfg.compression_id, CompressionPlugin
+            ).decompress(shaped, ctx),
+            "decompress",
+            plugin=cfg.compression_id,
+        )
 
 
 def _save_pixel(doc: Document, reg: Registry) -> None:
@@ -1440,15 +1500,16 @@ def _compress_unshape(
     a *different region* whose unshape scatters every byte to the wrong chip —
     there is no such thing as writing the front of one.
     """
-    packed = _run(
-        Stage.COMPRESSION,
-        pathway,
-        lambda: reg.plugin(
-            Stage.COMPRESSION, cfg.compression_id, CompressionPlugin
-        ).compress(data, ctx),
-        "compress",
-        plugin=cfg.compression_id,
-    )
+    with _stage_inputs(ctx, cfg, Stage.COMPRESSION):
+        packed = _run(
+            Stage.COMPRESSION,
+            pathway,
+            lambda: reg.plugin(
+                Stage.COMPRESSION, cfg.compression_id, CompressionPlugin
+            ).compress(data, ctx),
+            "compress",
+            plugin=cfg.compression_id,
+        )
     shaped = _run(
         Stage.RESHAPE,
         pathway,

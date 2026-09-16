@@ -25,7 +25,12 @@ import pytest
 
 from celpix.core.arrangement import BlockLayout
 from celpix.core.capabilities import ContentKind
-from celpix.core.context import PipelineContext
+from celpix.core.context import (
+    KEY_COMPRESSED_SIZE,
+    KEY_DECOMPRESS_COMPLETE,
+    KEY_INPUTS,
+    PipelineContext,
+)
 from celpix.core.errors import Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
@@ -33,7 +38,12 @@ from celpix.plugins.base import FileRef
 from celpix.plugins.discovery import load_user_plugins, project_plugin_dir
 from celpix.plugins.registry import default_registry
 from celpix.project.projectfile import load_project
-from celpix.project.workspace import EntryKind
+from celpix.project.workspace import (
+    EntryKind,
+    Workspace,
+    pixel_config_for,
+    tilemap_config_for,
+)
 
 ROOT = Path(__file__).resolve().parents[1] / "sample-projects"
 
@@ -65,6 +75,14 @@ def _open(name: str):
         registry, [project_plugin_dir(str(project))], confirm=lambda *a, **k: True
     )
     return workspace, registry
+
+
+def _workspace(loaded) -> Workspace:  # noqa: ANN001 — a LoadedProject
+    """``loaded``'s entries adopted into a workspace, the way the app does it —
+    what a config factory needs to find a slice's parent."""
+    ws = Workspace()
+    ws.replace(loaded.entries, loaded.current)
+    return ws
 
 
 def _read(workspace, registry, name: str) -> tuple[str, bool]:
@@ -329,3 +347,128 @@ def test_the_alttp_sample_project_reads_its_dialogue_as_sentences() -> None:
     flat = next(e for e in workspace.entries if e.name.startswith("Font sheet as BG3"))
     assert (flat.slice_offset, flat.slice_length) == (font.slice_offset, 0x1000)
     assert (flat.pending_view.block_columns, flat.pending_view.block_rows) == (1, 1)
+
+
+def test_the_counting_cafe_huffman_art_decodes_through_its_bound_inputs() -> None:
+    """The cart that motivated plugin inputs (``docs/design/plugin-inputs.md``).
+
+    Its Huffman node tables sit outside the streams, shared by ten and
+    thirty-nine of them, and the decoded lengths in a third table. The project's
+    own codec declares both as inputs and every art slice binds them to the ROM
+    — the table as a region, the length *read from bytes* — so what is asserted
+    is the whole path: project file, binding resolution against the parent,
+    the context hand-off, and the codec, byte-identical to the reference decoder
+    the survey was made with. Then the same table writes the bytes back.
+    """
+    import importlib.util  # noqa: PLC0415 — the reference decoder lives beside the sample
+    import sys  # noqa: PLC0415
+
+    workspace, registry = _open("counting-cafe/counting-cafe.celpix")
+    ws = _workspace(workspace)
+    spec = importlib.util.spec_from_file_location(
+        "cafe", ROOT / "counting-cafe" / "cafe.py"
+    )
+    cafe = importlib.util.module_from_spec(spec)
+    # Registered before it runs: its dataclasses resolve their annotations
+    # through ``sys.modules[__module__]`` and find nothing otherwise.
+    sys.modules["cafe"] = cafe
+    spec.loader.exec_module(cafe)
+
+    art = [e for e in ws.entries if e.name.startswith("huffman — ") and "art" in e.name]
+    assert len(art) == 49
+    packed = 0
+    for entry, reference in zip(art, [*cafe.BG_SETS, *cafe.SPRITE_SETS], strict=True):
+        cfg = pixel_config_for(entry, entry.session.pixel_preset_id, registry, ws)
+        assert cfg.compression_id == "compression.counting-cafe-huffman", entry.name
+        assert cfg.write_enabled, entry.name
+        px = pipeline.load_pixel_data(cfg, registry)
+        expected, consumed = cafe.huffman(
+            reference.tree, reference.offset, reference.out_len
+        )
+        assert px.data == expected, entry.name
+        assert len(px.data) == reference.out_len
+        # The size came from the length table, so the decode found its own end
+        # and the consumed extent is the slot the generator cut the slice at.
+        assert px.ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+        assert px.ctx.get(KEY_COMPRESSED_SIZE) == consumed == entry.slice_length
+        packed += consumed
+    assert packed == 104_012
+
+    # Written back through the same table: the codes are the tree's, so a
+    # round trip is exact even where the game's packer padded differently.
+    entry = art[0]
+    cfg = pixel_config_for(entry, entry.session.pixel_preset_id, registry, ws)
+    px = pipeline.load_pixel_data(cfg, registry)
+    plugin = registry.plugin(Stage.COMPRESSION, cfg.compression_id)
+    ctx = PipelineContext()
+    ctx.set(KEY_INPUTS, cfg.inputs[Stage.COMPRESSION])
+    again = plugin.decompress(plugin.compress(px.data, ctx), ctx)
+    assert again == px.data
+
+
+def test_the_counting_cafe_sprite_mappings_frame_through_five_bound_arrays() -> None:
+    """The second consumer of plugin inputs, one stage over from the first.
+
+    A frame here is a byte range into three parallel word tables plus a size
+    from a fourth, and the entry's own bytes are only the attribute words; the
+    other five arrays are region inputs the mapping format declares. What is
+    asserted is every piece of all 277 frames against the reference reader —
+    position, size, tile, row, flips — with each frame's tiles offset to where
+    its art lands in the composite the entry draws through: its raw frame for
+    0-132, and for the rest the Huffman sprite set its animations name, found by
+    walking the four bound animation tables.
+    """
+    import importlib.util  # noqa: PLC0415 — the reference decoder lives beside the sample
+    import sys  # noqa: PLC0415
+
+    workspace, registry = _open("counting-cafe/counting-cafe.celpix")
+    ws = _workspace(workspace)
+    spec = importlib.util.spec_from_file_location(
+        "cafe", ROOT / "counting-cafe" / "cafe.py"
+    )
+    cafe = importlib.util.module_from_spec(spec)
+    sys.modules["cafe"] = cafe
+    spec.loader.exec_module(cafe)
+
+    entry = next(e for e in ws.entries if e.name.startswith("sprite mappings"))
+    assert entry.tile_source is not None
+    assert entry.tile_source.entry.kind is EntryKind.COMPOSITE
+    cfg = tilemap_config_for(entry, entry.tilemap_preset_id, registry, ws)
+    assert cfg.interpret_preset_id == entry.tilemap_preset_id  # nothing degraded
+    loaded = pipeline.load_tilemap_data(cfg, registry)
+    assert len(loaded.cells) == cafe.MAP_PIECES
+    assert len(loaded.frames) == cafe.MAP_FRAMES
+
+    assert entry.tile_source.entry.pieces[-1].entry.name.startswith(
+        "huffman — sprite art 38"
+    )
+    bases, total = [], 0
+    for _offset, length in cafe.FRAMES:
+        bases.append(total // 32)
+        total += length
+    set_starts = []
+    for art in cafe.SPRITE_SETS:
+        set_starts.append(total // 32)
+        total += art.out_len
+    bases += [
+        set_starts[cafe.frame_sets()[i]]
+        for i in range(cafe.FRAME_COUNT, cafe.MAP_FRAMES)
+    ]
+    for i in range(cafe.MAP_FRAMES):
+        expected = cafe.mapping(i)
+        got = loaded.frames[i]
+        assert len(got) == len(expected), i
+        for piece, sub in zip(expected, got, strict=True):
+            assert (sub.x, sub.y, sub.across, sub.down) == (
+                piece.x,
+                piece.y,
+                piece.w,
+                piece.h,
+            )
+            assert sub.index == (piece.attr & 0x7FF) + bases[i]
+            assert sub.palette_row == (piece.attr >> 13) & 3
+            assert (sub.flip_h, sub.flip_v) == (
+                bool(piece.attr & 0x800),
+                bool(piece.attr & 0x1000),
+            )
+            assert sub.column_major

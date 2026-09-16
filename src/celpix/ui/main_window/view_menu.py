@@ -62,6 +62,7 @@ from celpix.ui.main_window.interpretation import (
 )
 from celpix.ui.pixel_aspect_dialog import PixelAspectDialog
 from celpix.ui.theme import THEME_KEY, Theme, apply_theme
+from celpix.ui.undo_commands import PixelAspectCommand
 from celpix.ui.widgets import (
     add_enum_action_group,
     load_bool_setting,
@@ -353,16 +354,33 @@ class ViewMenuMixin:
         view_menu.addAction(self._pixel_aspect_action)
 
     def _on_pixel_aspect(self) -> None:
-        """Ask for a ratio and apply it to the project and every surface."""
+        """Ask for a ratio and apply it to the project and every surface.
+
+        One undo step: it is written to the project file, and the answer it
+        replaces may be ``None`` — the project still *asking*, which is the state
+        that leaves a container free to answer on the next load and which nothing
+        in the dialog can express. Undo is the only way back to it.
+        """
         chosen = PixelAspectDialog.ask(self, self._pixel_aspect())
         if chosen is None or chosen == self._workspace.pixel_aspect:
             return
-        self._workspace.pixel_aspect = chosen
+        self._push_command(
+            PixelAspectCommand(
+                self,
+                f"set pixel aspect {aspect_name(chosen)}",
+                self._workspace.pixel_aspect,
+                chosen,
+            )
+        )
+        self.statusBar().showMessage(f"Pixel aspect: {aspect_name(chosen)}.")
+
+    def _apply_pixel_aspect(self, aspect: PixelAspect | None) -> None:
+        """Land a ratio (or the unanswered ``None``) on the project's surfaces."""
+        self._workspace.pixel_aspect = aspect
         self._sync_pixel_aspect()
         # A project setting, so the title's unsaved marker has to notice — the
         # same refresh a view move makes.
         self._refresh_project_modified()
-        self.statusBar().showMessage(f"Pixel aspect: {aspect_name(chosen)}.")
 
     def _pixel_aspect(self) -> PixelAspect:
         """The ratio in force — square while nobody has answered.
@@ -471,6 +489,7 @@ class ViewMenuMixin:
         against its own half-built state.
         """
         self._bake_pixel_filter_icon()
+        self._bake_inputs_badges()
         self._bake_binding_jump_icon()
         self._bake_step_arrow_icons()
         self._bake_transform_icons()

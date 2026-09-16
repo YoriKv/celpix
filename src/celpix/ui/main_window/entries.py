@@ -47,6 +47,12 @@ from celpix.plugins.detect import (
     tilemap_preset_for,
 )
 from celpix.project import projectfile
+from celpix.project.inputs import (
+    IntegerFromBytes,
+    RegionBinding,
+    input_specs,
+    with_bindings,
+)
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -698,7 +704,7 @@ class EntriesMixin:
             return
         self._capture_session()  # the on-screen entry's snapshot must be fresh
         try:
-            projectfile.save_project(self._workspace, path)
+            projectfile.save_project(self._workspace, path, self._registry)
         except OSError as exc:
             self._alert(f"Cannot write {path}: {exc}", title="celPix - project")
             return
@@ -1089,6 +1095,10 @@ class EntriesMixin:
             # coordinates, and re-reading it as another kind of thing would take
             # its binding and its section in the Files list with it.
             content_kind=entry.content_kind,
+            inputs_hint=lambda codec: self._inputs_hint(entry, codec),
+            edit_inputs=lambda dialog, codec: self._edit_slice_inputs(
+                dialog, entry, codec
+            ),
         )
         if params is None:
             return
@@ -1104,6 +1114,33 @@ class EntriesMixin:
         if params == before:
             return  # OK'd unchanged - nothing happened, nothing to undo
         self._push_command(SliceEditCommand(self, entry, before=before, after=params))
+
+    def _inputs_hint(self, entry: Entry, codec: str) -> str:
+        """The Slice dialog's one line about a codec's inputs: what ``entry``
+        binds for it — the file's preview bindings a new slice will copy, or the
+        slice's own — and ``""`` for a codec that declares none."""
+        specs = input_specs(self._registry, Stage.COMPRESSION, codec)
+        if not specs:
+            return ""
+        bound = entry.inputs.get(codec, {})
+        parts = []
+        for spec in specs:
+            binding = bound.get(spec.key)
+            if binding is None and spec.default is not None and not spec.required:
+                # What the codec will be handed, not "unbound": an optional
+                # integer with a default is delivered as that default.
+                parts.append(f"{spec.label}: {spec.default} (default)")
+            elif binding is None:
+                parts.append(
+                    f"{spec.label}: unbound" + ("" if spec.required else " (optional)")
+                )
+            elif isinstance(binding, RegionBinding):
+                parts.append(f"{spec.label}: {binding.offset:#x}, {binding.length} B")
+            elif isinstance(binding, IntegerFromBytes):
+                parts.append(f"{spec.label}: read at {binding.offset:#x}")
+            else:
+                parts.append(f"{spec.label}: {binding}")
+        return "; ".join(parts)
 
     def _apply_slice_params(self, entry: Entry, params: SliceParams) -> None:
         """Re-point a slice's coordinates and re-read the region - the
@@ -1551,6 +1588,12 @@ class EntriesMixin:
         if slice_entry.session is None:
             slice_entry.session = self._seed_session(slice_entry)
         src = slice_entry.session
+        # The slice's own bindings travel up with its codec: the preview at the
+        # source decodes with the same table the slice does, or it would show
+        # nothing where the slice shows tiles (``main_window/inputs.py``).
+        bound = slice_entry.inputs.get(slice_entry.compression_id)
+        if bound:
+            parent.inputs = with_bindings(parent, slice_entry.compression_id, bound)
         # Keep the parent's view geometry (columns/rows/zoom/grid); the origin
         # is landed after load, once the new preset's tile size is known. Read
         # before _jump_into_parent drops the document it may live on.
@@ -1769,6 +1812,13 @@ class EntriesMixin:
             content_kind=parent.content_kind,
             choose_content=parent.content_kind
             in (ContentKind.PIXELS, ContentKind.TILEMAP),
+            inputs_hint=lambda codec: self._inputs_hint(parent, codec),
+            # A new slice has nothing to bind *on* yet, so the badge edits the
+            # parent file's bindings for the codec — which ``slice_of`` hands
+            # straight down to the slice this dialog is about to create.
+            edit_inputs=lambda dialog, codec: self._edit_slice_inputs(
+                dialog, parent, codec
+            ),
         )
         if params is None:
             return

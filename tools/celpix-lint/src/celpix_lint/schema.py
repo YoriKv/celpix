@@ -22,7 +22,7 @@ from __future__ import annotations
 
 #: The reader's own :data:`celpix.project.projectfile.PROJECT_VERSION`. A file
 #: claiming more than this is one a newer celPix wrote.
-KNOWN_PROJECT_VERSION = 2
+KNOWN_PROJECT_VERSION = 3
 
 # -- enumerations (celpix.project.workspace, celpix.core) ------------------
 #: ``EntryKind`` — how an entry is *bounded*.
@@ -88,6 +88,7 @@ ENTRY_KEYS = frozenset(
         "sprite_size_pair",
         "palette_row_base",
         "font",
+        "inputs",
         "session",
         "view",
         "palette",
@@ -114,6 +115,10 @@ KIND_ONLY = {
     "offset": ("bookmark",),
     "palette_preset_id": ("palette",),
     "pieces": ("composite",),
+    # What a slice's or a tilemap's codecs need from outside its bytes, and on a
+    # file the compression preview's bindings; a composite reads no byte stage,
+    # and a palette or bookmark decodes through nothing that could declare one.
+    "inputs": ("file", "slice"),
     # A palette entry is a reference plus how to read it, and carries no
     # session, view or palette of its own.
     "session": ("file", "slice", "bookmark", "composite"),
@@ -133,6 +138,14 @@ REQUIRED = {
 
 #: Keys read only from a **tilemap** entry, whatever its kind.
 TILEMAP_ONLY = ("tilemap_preset_id", "tile_source", "sprite_size_pair")
+
+# -- plugin inputs (celpix.project.inputs) ------------------------------------
+#: The stages whose plugins may declare inputs, as the snapshot keys them.
+INPUT_STAGES = ("compression", "interpret-tilemap")
+#: The byte orders an integer read from bytes may name; anything else reads as big.
+INPUT_ENDIANS = ("big", "little")
+#: The widest integer a binding may read from bytes (``inputs._MAX_INT_WIDTH``).
+MAX_INPUT_WIDTH = 8
 
 SESSION_KEYS = frozenset(
     {"pixel_preset_id", "palette_preset_id", "palette_mode", "compression_id"}

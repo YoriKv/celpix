@@ -38,6 +38,7 @@ from celpix.core.paletteregions import PaletteRegions
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, drawn_frames
 from celpix.core.tilemap import (
     Cell,
+    column_order,
     expand_stamps,
     page_assemblies,
     page_order,
@@ -411,6 +412,12 @@ class Document:
     # (:meth:`palette_row_group`): a decoded cell already carries the row it is
     # drawn in, so nothing about rendering changes.
     palette_row_granularity: tuple[int, int] = (1, 1)
+
+    # Whether this map's cells run down each column rather than across each row
+    # (:func:`~celpix.core.tilemap.column_order`). A fact about the format, which
+    # states it (``column_major``), and display-only like the page assembly: the
+    # cells stay in the file's order, so a save writes back what was read.
+    column_major: bool = False
     # Set instead of a grid layout when the cells are **subsprites**: their
     # pixel offsets are not tile-aligned, so no cell grid can hold them and the
     # view draws frames of freely placed subsprites (:mod:`celpix.core.sprite`).
@@ -487,16 +494,25 @@ class Document:
         self.layout_cache = None
         chain = self.chain
         columns = self.stamp_columns
-        self.resolved_columns = columns
-        if chain is None or self.cells is None:
+        self.resolved_columns = self.entry_columns
+        if self.cells is None:
             self.resolved_cells = None
+            return
+        # A column-major map's entries are turned into reading order here and
+        # nowhere else, so everything downstream — the stamp expansion, the
+        # render, the selection — sees one list in drawn order, as it does for a
+        # map that was stored that way to begin with.
+        order = self.cell_permutation
+        cells = self.cells if order is None else [self.cells[at] for at in order]
+        if chain is None:
+            self.resolved_cells = None if order is None else cells
             return
         # `stamp_cells`, not `chain.stamp`: the one authority every unit in the
         # UI reads, so a chain the units cannot report expands nowhere either.
         stamp = self.stamp_cells
         if stamp != (1, 1):
             self.resolved_cells = expand_stamps(
-                self.cells,
+                cells,
                 chain.source,
                 columns,
                 stamp,
@@ -507,7 +523,7 @@ class Document:
             return
         self.resolved_cells = [
             resolve_cell(cell, chain.source, carry_rows=chain.carry_rows)
-            for cell in self.cells
+            for cell in cells
         ]
 
     @property
@@ -561,6 +577,32 @@ class Document:
         # narrows the picture by the remainder rather than shearing it — and the
         # spin is set back to what was used (``_settle_tilemap_width``).
         return max(1, self.view.columns // max(1, stamp[0]))
+
+    @property
+    def entry_columns(self) -> int:
+        """How many **entries** one stored row holds — the file's own width.
+
+        :attr:`stamp_columns` wherever a stamped resolution has one, since that is
+        already the width in entries rather than in drawn positions, and the
+        view's Cols otherwise. What :attr:`cell_permutation` needs, and the one
+        place the difference between the two widths is spelled once.
+        """
+        return self.stamp_columns or max(1, self.view.columns)
+
+    @property
+    def cell_permutation(self) -> tuple[int, ...] | None:
+        """Which **file entry** each entry position draws, or None for the usual none.
+
+        A column-major map's entries run down each column
+        (:func:`~celpix.core.tilemap.column_order`), so this is applied in
+        :meth:`resolve` — *before* a stamp expands, because the order is of the
+        entries the file stores and one of those becomes four drawn positions.
+        :meth:`cell_at` inverts it, so an edit still reaches the entry the file
+        has there.
+        """
+        if not self.column_major or not self.cells:
+            return None
+        return column_order(self.entry_columns, len(self.cells))
 
     @property
     def is_tilemap(self) -> bool:
@@ -747,7 +789,7 @@ class Document:
         putting a stored width on a document already built, or a bulk PNG export
         of entries that were loaded and never shown.
         """
-        if self.resolved_columns != self.stamp_columns:
+        if self.resolved_columns != self.entry_columns:
             self.resolve()
         return (
             self.resolved_cells
@@ -1216,9 +1258,14 @@ class Document:
         # (:attr:`stamp_cells`).
         columns = self.stamp_columns
         stamp = self.stamp_cells
-        if chain is None or stamp == (1, 1):
-            return position
-        return stamp_origin(position, columns, stamp, dense=chain.dense)
+        if chain is not None and stamp != (1, 1):
+            position = stamp_origin(position, columns, stamp, dense=chain.dense)
+        # Last, because the steps above answer in *entry* positions and this is
+        # the one step that says which entry of the file that is.
+        entries = self.cell_permutation
+        if entries is not None and 0 <= position < len(entries):
+            return entries[position]
+        return position
 
     def cell_is_read(self, index: int) -> bool:
         """Whether the resolution ever reads the entry at ``index``.

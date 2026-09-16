@@ -3631,3 +3631,63 @@ def test_a_coarse_row_plane_locks_the_width_at_any_page_count() -> None:
     ordinary = page_doc(1)
     ordinary.palette_row_granularity = (1, 1)
     assert (ordinary.row_plane_columns, ordinary.columns_locked) == (0, False)
+
+
+def test_a_column_major_map_reads_down_each_column_and_edits_back_in_place() -> None:
+    """A map whose cells run top-to-bottom of one column and then down the next —
+    how a side-scroller commonly keeps a level, so the strip it uploads as it
+    scrolls one column further is contiguous (Sesame Street: Counting Cafe,
+    `$3E12`). Read across instead and the picture is scrambled rather than wrong
+    in a way anything reports.
+
+    The permutation is of the **entries**, before any stamp expands, and
+    :meth:`~celpix.core.document.Document.cell_at` inverts it: a click still
+    edits the entry the file has there, and the cells keep the file's order so a
+    save writes back what was read."""
+    from celpix.core.document import CellChain, Document
+    from celpix.core.tilemap import column_order
+
+    # Position -> entry for a 3-wide, 4-tall map: entry 4 is column 1's top.
+    assert column_order(3, 12) == (0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, 11)
+    # A ragged last column has no position to be drawn at, so it is left out
+    # rather than drawn at another position's.
+    assert column_order(3, 11) == (0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7)
+
+    source = [Cell(index=100 + at) for at in range(16)]
+
+    def doc_for(column_major: bool) -> Document:
+        doc = Document(
+            pixel_data=b"",
+            bytes_per_tile=32,
+            tile_width=8,
+            tile_height=8,
+            palette=None,
+            pixel_config=PathwayConfig(
+                source=FileRef(""), interpret_preset_id=SNES_BG, write_enabled=False
+            ),
+            palette_config=PathwayConfig(
+                source=FileRef(""), interpret_preset_id="", write_enabled=False
+            ),
+            # Stored down two columns of two: 0, 2 is the left column.
+            cells=[Cell(index=0), Cell(index=2), Cell(index=8), Cell(index=10)],
+            chain=CellChain(source, False, stamp=(2, 2), source_columns=4, dense=True),
+            column_major=column_major,
+        )
+        doc.view.columns = 4  # two stamps across, so two entries across
+        return doc
+
+    across = doc_for(False)
+    assert across.cell_permutation is None
+    # Row-major: the second entry is the top row's right-hand stamp.
+    assert [cell.index for cell in across.drawn_cells[:4]] == [100, 101, 102, 103]
+
+    down = doc_for(True)
+    assert down.cell_permutation == (0, 2, 1, 3)
+    # Column-major: the second entry is the *lower* left stamp, so the entry
+    # drawn top right is the third one (index 8 -> source cells 108...).
+    assert [cell.index for cell in down.drawn_cells[:4]] == [100, 101, 108, 109]
+    # And a click on that stamp reaches the entry the file keeps third.
+    assert down.cell_at(2) == 2
+    assert down.cell_at(0) == 0
+    # The file's own order is untouched, which is what a save writes.
+    assert [cell.index for cell in down.cells] == [0, 2, 8, 10]

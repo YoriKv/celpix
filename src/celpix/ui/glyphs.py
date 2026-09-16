@@ -65,6 +65,12 @@ class Glyph(Enum):
     # not step somewhere relative to here, it opens the one thing a control
     # already names.
     TARGET = "\ue39e"  # adjust
+    # `tune` is three sliders. It marks "what this format needs from
+    # elsewhere" — the button beside a codec picker that opens the inputs the
+    # codec declares: a table's offset, a size — and reads as settings for the
+    # thing beside it rather than as a link or an arrow into a box, which are
+    # the other metaphors on offer and both say something about direction.
+    INPUTS = "\ue429"  # tune
 
     # The transform bar's flip/rotate buttons, one pair per axis. The flips are
     # double-headed arrows rather than a mirror-and-dashed-line "flip" icon,

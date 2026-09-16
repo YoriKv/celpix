@@ -3,7 +3,7 @@
 Order matters only for readability of the code — every pass reports
 independently, and none consumes another's findings. It is arranged
 outside-in: the document, then each entry's own shape, then what the entry
-points at (the disk, the registry, the other entries), then the three nested
+points at (the disk, the registry, the other entries), then the nested
 blocks.
 """
 
@@ -15,6 +15,7 @@ from celpix_lint.checks import (
     files,
     font,
     ids,
+    inputs,
     palette,
     toplevel,
     view,
@@ -29,6 +30,7 @@ PASSES = (
     view.check,
     palette.check,
     font.check,
+    inputs.check,
 )
 
 __all__ = ["PASSES"]

@@ -59,6 +59,7 @@ from .object_codec import ObjectCodec, ObzCodec, SprCodec
 from .packbits import PackBitsCompression
 from .packed_codec import PackedCodec
 from .passthrough import PassthroughCompression, PassthroughReshape
+from .phantasy_star_rle import PhantasyStarRleCompression
 from .planar_codec import PlanarCodec
 from .prs import PrsCompression
 from .pvr import PvrCompression
@@ -76,6 +77,7 @@ from .scgcad import (
 )
 from .slz import Slz16Compression, Slz24Compression
 from .snes_rle import Rle1Compression, Rle2Compression
+from .sonic2_tiles import Sonic2TilesCompression
 from .split_planes import split_part_plugins
 from .tilemap_codec import TilemapCodec
 from .tim import TimClutContainer, TimContainer
@@ -139,6 +141,8 @@ def register_builtins(reg: Registry) -> None:
         PrsCompression(),
         PvrCompression(),
         PackBitsCompression(),
+        PhantasyStarRleCompression(),
+        Sonic2TilesCompression(),
         PlanarCodec(),
         PackedCodec(),
         NibblePlanarCodec(),

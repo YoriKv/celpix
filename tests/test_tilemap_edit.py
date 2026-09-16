@@ -3545,3 +3545,26 @@ def test_the_row_stays_up_in_edit_tiles_mode_and_drawn_off_erases(
     window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
     window._on_stamp_finished()
     assert window._doc.cells[0].visible is True
+
+
+def test_a_source_wider_than_a_screenful_keeps_the_width_its_binding_strides_by(
+    qtbot, tmp_path
+) -> None:
+    """Cols is a preference on a picture and a **stride** on a bound source: a map
+    resolves a stamp's lower half at ``index + source_columns``, and the source's
+    width is the one its cells are laid at. A table of four corner arrays is laid
+    at twice its own length, which passes a thousand cells long before anything
+    unusual is going on, so the spin's range has to reach there — clamped, the
+    stored width comes back as a different number and every stamp's lower half
+    resolves from the wrong row, which draws a plausible picture rather than
+    failing (``docs/design/tilemap-entry.md`` §3.1).
+    """
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=at) for at in range(8)])))
+
+    window._columns.setValue(1070)
+    assert window._columns.value() == 1070
+    assert window._doc.view.columns == 1070

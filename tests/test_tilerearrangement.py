@@ -530,12 +530,13 @@ def test_shift_h_and_v_drive_the_block_flip(qtbot, tmp_path) -> None:
 def test_what_a_rearrange_drop_costs_on_the_undo_stack(qtbot, tmp_path) -> None:
     window = _window(qtbot, tmp_path)
     window._set_rearranging(True)
+    base = window._undo_stack.count()  # the open, and the helper's Cols/Rows
 
     # A drop back on the grabbed cell rearranges nothing, so it is not a step.
     window._on_rearrange_started(5)
     window._on_rearrange_dropped(5)
     assert window._tile_rearrangement.is_identity()
-    assert window._undo_stack.count() == 1  # only the file-open command
+    assert window._undo_stack.count() == base
 
     # A real move is one step, undoable and redoable.
     window._on_rearrange_started(0)  # cell (0, 0)

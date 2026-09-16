@@ -30,7 +30,7 @@ from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
 from celpix.core.tilemap import Cell
-from celpix.plugins.base import PluginInfo, Preset
+from celpix.plugins.base import InputSpec, PluginInfo, Preset
 
 
 @dataclass(frozen=True)
@@ -60,12 +60,19 @@ class FormatInfo:
 
     Keep it to declarations. A key the format's own methods would read is a
     parameter, and a format that wants parameters is an engine.
+
+    ``inputs`` is the one declaration that is *not* copied into the preset: what
+    the format needs from outside the bytes it is handed
+    (:class:`~celpix.plugins.base.InputSpec`) is the engine's word, so
+    :func:`adapt_format` puts it on the engine's :class:`PluginInfo`, where the
+    host looks for every plugin's (``docs/design/plugin-inputs.md``).
     """
 
     id: str
     name: str
     category: str = ""
     declares: Mapping[str, Any] = field(default_factory=dict)
+    inputs: tuple[InputSpec, ...] = ()
 
 
 @runtime_checkable
@@ -202,7 +209,12 @@ class _PixelFormatEngine:
 
     def __init__(self, fmt: PixelFormat) -> None:
         self._fmt = fmt
-        self.info = PluginInfo(fmt.info.id, fmt.info.name, Stage.INTERPRET_PIXEL)
+        self.info = PluginInfo(
+            fmt.info.id,
+            fmt.info.name,
+            Stage.INTERPRET_PIXEL,
+            inputs=tuple(fmt.info.inputs),
+        )
 
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
@@ -226,7 +238,12 @@ class _PaletteFormatEngine:
 
     def __init__(self, fmt: PaletteFormat) -> None:
         self._fmt = fmt
-        self.info = PluginInfo(fmt.info.id, fmt.info.name, Stage.INTERPRET_PALETTE)
+        self.info = PluginInfo(
+            fmt.info.id,
+            fmt.info.name,
+            Stage.INTERPRET_PALETTE,
+            inputs=tuple(fmt.info.inputs),
+        )
 
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
@@ -247,7 +264,12 @@ class _TilemapFormatEngine:
 
     def __init__(self, fmt: TilemapFormat) -> None:
         self._fmt = fmt
-        self.info = PluginInfo(fmt.info.id, fmt.info.name, Stage.INTERPRET_TILEMAP)
+        self.info = PluginInfo(
+            fmt.info.id,
+            fmt.info.name,
+            Stage.INTERPRET_TILEMAP,
+            inputs=tuple(fmt.info.inputs),
+        )
 
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext

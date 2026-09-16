@@ -13,6 +13,8 @@ the entry is, and must load. :func:`_same_bytes` is the test.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -48,8 +50,12 @@ from celpix.ui.searchable_combo import (
     preset_rows,
 )
 from celpix.ui.undo_commands import (
+    ArrangementCommand,
+    ArrangementState,
     PaletteState,
     PixelConfigCommand,
+    PixelFilterCommand,
+    PreviewCompressionCommand,
 )
 from celpix.ui.widgets import (
     PRESET_COMBO_WIDTH,
@@ -180,11 +186,12 @@ def _same_bytes(a: PathwayConfig, b: PathwayConfig) -> bool:
     those bytes are *read*, so when this holds the loaded buffer is still valid
     and must not be fetched again (see :meth:`InterpretationMixin._pixel_data_for`).
     """
-    return (a.source, a.container_id, a.compression_id) == (
-        b.source,
-        b.container_id,
-        b.compression_id,
-    )
+    return (
+        a.source,
+        a.container_id,
+        a.compression_id,
+        a.inputs.get(Stage.COMPRESSION),
+    ) == (b.source, b.container_id, b.compression_id, b.inputs.get(Stage.COMPRESSION))
 
 
 class InterpretationMixin:
@@ -299,15 +306,24 @@ class InterpretationMixin:
             "[T] grid map · [S] sprite map · [F] fontmap"
         )
         self._tilemap_preset.activated.connect(self._on_tilemap_preset_change)
+        # The badge beside the picker: present only when the cell engine
+        # declares inputs — a mapping's parallel arrays — wearing whether they
+        # resolve, and opening the Inputs window (``main_window/inputs.py``).
+        self._tilemap_inputs_badge = self._make_inputs_badge(
+            "What this cell format needs from elsewhere in the file"
+        )
+        self._tilemap_inputs_badge.clicked.connect(self._inputs_current)
         self._tilemap_codec_action = codecs.addWidget(
-            _group("Tilemap:", self._tilemap_preset)
+            _group("Tilemap:", self._tilemap_preset, self._tilemap_inputs_badge)
         )
 
         # Compression preview: the main view stays raw; the chosen Decompress
         # plugin runs over the current window and shows in the floating overlay.
         self._compression = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._populate_compression()
-        self._compression.currentIndexChanged.connect(self._on_view_change)
+        self._compression.currentIndexChanged.connect(
+            self._on_preview_compression_change
+        )
         # Structure navigation for contiguously packed compressed data: hop
         # past the structure in view, or walk forward looking for the next one.
         self._jump_next = QPushButton("Jump to Next")
@@ -328,18 +344,28 @@ class InterpretationMixin:
         )
         self._promote_button.setEnabled(False)
         self._promote_button.clicked.connect(self._on_promote_structure)
+        # The compression badge speaks for the *preview* codec, bound on the
+        # file on screen: what the overlay decodes with, what Scan hunts with,
+        # and what a slice carved under that codec inherits.
+        self._compression_inputs_badge = self._make_inputs_badge(
+            "What this codec needs from elsewhere in the file,\n"
+            "for the preview and for every slice carved under it"
+        )
+        self._compression_inputs_badge.clicked.connect(self._inputs_current)
         # The picker and the three buttons it drives travel together: they are
         # one feature, and the buttons with no codec to run would be furniture.
         self._compression_action = codecs.addWidget(
             _group(
                 "Compression:",
                 self._compression,
+                self._compression_inputs_badge,
                 self._jump_next,
                 self._scan_button,
                 self._promote_button,
                 tooltip="Preview the window decompressed with this codec",
             )
         )
+        self._bake_inputs_badges()
 
         # Sits immediately left of Cols because the two are read together: a
         # bitmap width re-cuts the codec's tiles and Cols is then derived from
@@ -362,8 +388,16 @@ class InterpretationMixin:
         )
 
         # Ranged well past a screenful of 8-px tiles because a bitmap width
-        # derives this: a 4096-px bitmap of 8-px tiles is 512 columns.
-        self._columns = value_spin(1, 512, 16, self._on_view_change)
+        # derives this: a 4096-px bitmap of 8-px tiles is 512 columns. The range
+        # runs further still because a **tilemap's** width is not a preference
+        # the user would ever type: a map bound to a stamp table strides the
+        # source by the width its cells are laid at
+        # (``session._chain_source_columns``), and a table of four corner arrays
+        # is laid at twice its own length — 1,070 cells for a 535-stamp table.
+        # Clamped, that entry's stored width silently becomes the wrong stride
+        # and every stamp's lower half resolves from the wrong row, which draws
+        # a picture rather than failing.
+        self._columns = value_spin(1, 8192, 16, self._axis_slot("columns"))
         # The caption is kept for the same reason Rows' and Palette Row's are: an
         # tilemap that fixes its own width locks the pair and has to say what
         # locked it (:meth:`~...rendering.RenderingMixin._settle_tilemap_width`).
@@ -378,7 +412,7 @@ class InterpretationMixin:
         # How many tile-rows the window shows - the "render N rows" view setting.
         # Kept on self with its caption because View > Entire File locks the pair
         # (see MainWindow._sync_entire_file), which retooltips and greys both.
-        self._rows = value_spin(1, 256, 16, self._on_view_change)
+        self._rows = value_spin(1, 256, 16, self._axis_slot("rows"))
         self._rows_label = add_labelled(view, "Rows:", self._rows, ROWS_TIP)
         # Cols maxes at 2 digits, rows at 3, so their hints differ - pin both
         # to the rows hint so the pair reads as a matched set.
@@ -405,7 +439,7 @@ class InterpretationMixin:
 
         # Range 255: enough rows for a 512-entry palette under a 2-color (1bpp)
         # index space; the view refresh clamps to the loaded palette anyway.
-        self._palette_row = value_spin(0, 255, 0, self._on_view_change)
+        self._palette_row = value_spin(0, 255, 0, self._axis_slot("palette row"))
         # The caption is kept because _sync_palette_row retooltips the pair
         # together on a tilemap whose cells carry their own rows, where the spin
         # picks a row to *assign* rather than one to draw through - and a label
@@ -469,11 +503,15 @@ class InterpretationMixin:
         self._pattern.setToolTip(
             "Arrangement preset; pick Custom to edit these yourself"
         )
+        # What the picker settled on last, which the view does not record and a
+        # ``currentIndexChanged`` handler can no longer read (the combo has
+        # already moved) - see :meth:`_stored_arrangement`.
+        self._pattern_choice = self._pattern.currentData()
         self._pattern.currentIndexChanged.connect(self._on_pattern_change)
         add_labelled(arrange, "Pattern:", self._pattern, self._pattern.toolTip())
 
-        self._block_cols = value_spin(1, 64, 1, self._on_view_change)
-        self._block_rows = value_spin(1, 256, 1, self._on_view_change)
+        self._block_cols = value_spin(1, 64, 1, self._arrangement_slot("block size"))
+        self._block_rows = value_spin(1, 256, 1, self._arrangement_slot("block size"))
         # Narrower than the three digits Cols and Rows are pinned to: a block is a
         # handful of tiles \u2014 every shipped arrangement is 1 or 2 a side \u2014 so
         # sizing these to their *range* reserved a Rows-wide box for a "2".
@@ -519,11 +557,13 @@ class InterpretationMixin:
             ("Row-interleave", "row-interleave"),
         ):
             self._block_order.addItem(label, data)
-        self._block_order.currentIndexChanged.connect(self._on_view_change)
+        self._block_order.currentIndexChanged.connect(
+            self._arrangement_slot("block order")
+        )
         add_labelled(arrange, "Order:", self._block_order, self._block_order.toolTip())
         self._two_d = QCheckBox("2D")
         self._two_d.setToolTip("Read as one wide bitmap, not back-to-back tiles")
-        self._two_d.toggled.connect(self._on_two_d_change)
+        self._two_d.toggled.connect(self._arrangement_slot("2D"))
         arrange.addWidget(self._two_d)
 
         # The width the wide-bitmap read is *of* — so it belongs to 2D and is
@@ -531,7 +571,9 @@ class InterpretationMixin:
         # width, which an 8-px tile can't do for (say) 306. Deliberately outside
         # _arrangement_controls: a Pattern preset picks the arrangement, not the
         # width of one particular asset, so it stays editable under a preset.
-        self._bitmap_width = value_spin(0, 8192, 0, self._recut_tile_geometry)
+        self._bitmap_width = value_spin(
+            0, 8192, 0, self._arrangement_slot("bitmap width")
+        )
         self._bitmap_width.setSuffix(" px")
         add_labelled(
             arrange,
@@ -604,7 +646,7 @@ class InterpretationMixin:
     def _on_pattern_change(self) -> None:
         """Apply a chosen Pattern: a preset fills + locks the block/order/2D
         controls; Custom just unlocks them (leaving the current values as the
-        starting point). Either way, re-render.
+        starting point).
 
         Picking a Pattern also **clears the bitmap width**. A width is an
         override of the codec's own geometry chosen for one particular asset, not
@@ -613,26 +655,148 @@ class InterpretationMixin:
         force invisibly (the spin greys out under a preset) and springs back the
         moment the new arrangement is 2D. Clearing it hands the tile size and
         Cols back at the same time (:meth:`_settle_bitmap_width_and_columns`).
+
+        Which is why this is one undo step and not five: the pick moves four
+        controls and withdraws a fifth at once, and afterwards nothing on screen
+        says what any of them held. The widgets are not touched here - the state
+        is computed and pushed, and the command's first ``redo()`` is what fills
+        them (:meth:`_apply_arrangement`).
         """
         data = self._pattern.currentData()
-        applied = self._effective_bitmap_width() > 0
-        with signals_blocked(self._bitmap_width):
-            self._bitmap_width.setValue(0)
+        live = self._live_arrangement()
+        after = replace(live, bitmap_width=0)
         if isinstance(data, ArrangementPreset):
-            self._set_arrangement(
-                data.block_columns,
-                data.block_rows,
-                data.block_order,
-                data.two_dimensional,
+            after = replace(
+                after,
+                block_columns=data.block_columns,
+                block_rows=data.block_rows,
+                block_order=data.block_order,
+                two_dimensional=data.two_dimensional,
             )
+        self._push_arrangement("arrangement", after)
+
+    def _arrangement_slot(self, field: str):  # noqa: ANN202 - a bare Qt slot
+        """A slot for one arrangement control, naming which one it is.
+
+        The bar's five controls share one push site, and the name is both the
+        step's text and its merge key - so stepping the bitmap width up in ones
+        is a single step, while a width followed by an Order change stays two.
+        Bound at connect time for the reason :meth:`_axis_slot` binds an axis.
+        """
+        return lambda *_args: self._push_arrangement(field, self._live_arrangement())
+
+    def _live_arrangement(self) -> ArrangementState:
+        """The arrangement the **widgets** are showing, right now."""
+        return ArrangementState(
+            block_columns=self._block_cols.value(),
+            block_rows=self._block_rows.value(),
+            block_order=self._block_order.currentData(),
+            two_dimensional=self._two_d.isChecked(),
+            bitmap_width=self._bitmap_width.value(),
+            columns=self._columns.value(),
+            columns_before_bitmap=self._columns_before_bitmap,
+            byte_position=self._byte_position() if self._doc is not None else 0,
+            pattern=self._pattern.currentData(),
+        )
+
+    def _stored_arrangement(self) -> ArrangementState:
+        """The arrangement the last refresh **settled**, off ``doc.view``.
+
+        The before state of a gesture: the widget that fired has already moved,
+        and the view is where the value it moved from was written down. The two
+        derived fields are read live all the same - Cols and the count a bitmap
+        width displaced are settled by the refresh, not by the gesture, so at
+        push time they still hold what they held before it.
+
+        The Pattern picker is the one thing here the view does not record, and
+        it has already moved too, so it is shadowed: :attr:`_pattern_choice` is
+        the selection as of the last settle.
+        """
+        assert self._doc is not None
+        view = self._doc.view
+        return ArrangementState(
+            block_columns=view.block_columns,
+            block_rows=view.block_rows,
+            block_order=view.block_order,
+            two_dimensional=view.two_dimensional,
+            bitmap_width=view.bitmap_width,
+            columns=view.columns,
+            columns_before_bitmap=self._columns_before_bitmap,
+            byte_position=self._byte_position(),
+            pattern=self._pattern_choice,
+        )
+
+    def _push_arrangement(self, field: str, after: ArrangementState) -> None:
+        """Push one arrangement move; the command's first redo is the apply.
+
+        With **no document** there is nothing to step against - a Pattern picked
+        against an empty window only fills and locks the controls - so that lands
+        straight through the apply helper, the way a plugin refresh does.
+        """
+        if self._applying_undo:
+            return
+        entry = self._workspace.current
+        if self._doc is None or entry is None:
+            self._apply_arrangement(after, recut=False)
+            return
+        before = self._stored_arrangement()
+        if before == after:
+            # A Pattern picked on the values it already had: the controls lock or
+            # unlock and nothing the project file keeps has moved, so this lands
+            # without costing a step.
+            self._apply_arrangement(after, recut=False)
+            return
+        self._push_command(
+            ArrangementCommand(self, entry, field, before=before, after=after)
+        )
+
+    def _apply_arrangement(self, state: ArrangementState, *, recut: bool) -> None:
+        """Land a whole arrangement on the bar and redraw through it.
+
+        The single application path for a Pattern pick, a hand-edited axis, an
+        undo and a redo. Signals stay blocked throughout (the ``_restore_session``
+        pattern): five controls settling one at a time would re-render five times
+        and push four more commands.
+
+        ``recut`` says the **bitmap width in force** moved, which alone among
+        these changes the codec's *geometry* - bytes per tile, and therefore what
+        a tile index means. That takes the same re-interpretation path a format
+        switch does, landing on the byte position the state carries rather than
+        on a tile index that now points somewhere else. Everything else is a
+        repaint.
+        """
+        blocked = (
+            self._block_cols,
+            self._block_rows,
+            self._block_order,
+            self._two_d,
+            self._bitmap_width,
+            self._columns,
+        )
+        with signals_blocked(*blocked):
+            self._block_cols.setValue(state.block_columns)
+            self._block_rows.setValue(state.block_rows)
+            self._two_d.setChecked(state.two_dimensional)
+            self._bitmap_width.setValue(state.bitmap_width)
+            self._columns.setValue(state.columns)
+        select_combo_data(self._block_order, state.block_order)
+        # The count a width displaced travels with the width itself: without it
+        # a withdrawn width would hand Cols back a number derived from a bitmap
+        # nobody is reading any more (:meth:`_settle_bitmap_width_and_columns`).
+        self._columns_before_bitmap = state.columns_before_bitmap
+        # The picker is landed from the state rather than re-derived from the
+        # axes: a user in Custom whose hand-edited values happen to match a
+        # preset must not have the controls re-locked under them. The lock pass
+        # settles the bitmap width and Cols with it.
+        select_combo_data(self._pattern, state.pattern)
+        self._pattern_choice = state.pattern
         self._apply_pattern_lock()
-        # A width that *was* in force re-cut the codec's tiles, so withdrawing it
-        # is a geometry change and takes the re-interpretation path; otherwise
-        # this is an ordinary re-render.
-        if applied:
-            self._recut_tile_geometry()
-        else:
-            self._on_view_change()
+        if self._doc is None:
+            return
+        if not recut:
+            self._refresh_view()
+        elif self._apply_pixel_config(self._pixel_preset_id(), state.byte_position):
+            self.statusBar().showMessage(self._bitmap_width_note())
 
     def _sync_pattern_selection(self) -> None:
         """Reselect the Pattern entry that matches the live block/order/2D widgets
@@ -647,6 +811,7 @@ class InterpretationMixin:
         )
         target = preset if preset is not None else "custom"
         select_combo_data(self._pattern, target)
+        self._pattern_choice = target
         self._apply_pattern_lock()
 
     def _preset_combo(self, stage: Stage, default_suffix: str) -> SearchableComboBox:
@@ -726,21 +891,50 @@ class InterpretationMixin:
         (no document, or the bytes don't fit the new codec) nothing changes. The
         returned set is what actually ended up checked, so the popup can spring a
         clamped request back.
+
+        One popup visit is **one** undo step even when it is two commands: the
+        forced switch is an ordinary ``PixelConfigCommand`` and the list is a
+        :class:`~celpix.ui.undo_commands.PixelFilterCommand`, and a macro over
+        the pair is what stops Ctrl+Z restoring thirty hidden formats while
+        leaving the view on a codec the user never chose.
         """
         all_ids = {preset.id for preset in self._all_pixel_presets()}
         current = self._pixel_preset_id()
         desired = (set(desired) & all_ids) or {current}
-        if current not in desired:
-            target = next(
-                (p.id for p in self._all_pixel_presets() if p.id in desired), None
+        before = frozenset(self._workspace.hidden_pixel_presets)
+        after = frozenset(all_ids - desired)
+        if after == before:
+            return desired
+        switching = current not in desired
+        if switching:
+            self._undo_stack.beginMacro("filter pixel formats")
+        try:
+            if switching:
+                target = next(
+                    (p.id for p in self._all_pixel_presets() if p.id in desired), None
+                )
+                if target is None or not self._try_switch_pixel(target):
+                    return all_ids - before  # unchanged
+            self._push_command(
+                PixelFilterCommand(self, "filter pixel formats", before, after)
             )
-            if target is None or not self._try_switch_pixel(target):
-                return all_ids - self._workspace.hidden_pixel_presets  # unchanged
-        self._workspace.hidden_pixel_presets = all_ids - desired
-        self._fill_pixel_combo(self._pixel_preset_id())
-        # The filter is project state now, so changing it can dirty the project.
-        self._refresh_project_modified()
+        finally:
+            if switching:
+                self._undo_stack.endMacro()
         return desired
+
+    def _apply_pixel_filter_set(self, hidden: set[str]) -> None:
+        """Land a hidden-id set on the workspace and refill the dropdown.
+
+        The application path for the filter popup, its undo and its redo. The
+        combo is rebuilt rather than reselected because the format in force is
+        force-shown whatever the list says - you can never hide what you are
+        looking at - so which items exist depends on both.
+        """
+        self._workspace.hidden_pixel_presets = set(hidden)
+        self._fill_pixel_combo(self._pixel_preset_id())
+        # The filter is project state, so changing it can dirty the project.
+        self._refresh_project_modified()
 
     def _try_switch_pixel(self, target: str) -> bool:
         """Move the dropdown to ``target`` and reinterpret through it, as an
@@ -765,6 +959,48 @@ class InterpretationMixin:
         palette currently on screen whatever its source.
         """
         return self._palette_import_preset.currentData()
+
+    def _on_preview_compression_change(self, *_args) -> None:
+        """Push one move of the compression-preview picker.
+
+        The pick is kept in the entry's session and written to the project file,
+        so it is a finding about the region rather than a glance at it. The
+        session field is the before state and the apply is what keeps it true,
+        so the pair never drifts from the combo.
+        """
+        if self._applying_undo:
+            return
+        entry = self._workspace.current
+        if self._doc is None or entry is None or entry.session is None:
+            self._on_view_change()
+            return
+        before = entry.session.preview_compression_id
+        after = self._compression_id()
+        if before == after:
+            return
+        self._push_command(
+            PreviewCompressionCommand(
+                self,
+                entry,
+                f"preview {self._compression.currentText()}",
+                before,
+                after,
+            )
+        )
+
+    def _apply_preview_compression(self, preset_id: str) -> None:
+        """Land a preview scheme on the picker and re-run the overlay.
+
+        Writes the entry's session as well as the combo, so the next gesture's
+        before state is the one actually showing - a session is otherwise only
+        captured on the way out of an entry, which is far too late to be the
+        thing a second pick measures itself against.
+        """
+        select_combo_data(self._compression, preset_id)
+        entry = self._workspace.current
+        if entry is not None and entry.session is not None:
+            entry.session.preview_compression_id = preset_id
+        self._on_view_change()
 
     def _compression_id(self) -> str:
         """The compression-preview combo's plugin id, pass-through by default.
@@ -828,33 +1064,6 @@ class InterpretationMixin:
         spin from still quietly driving the codec's geometry.
         """
         return self._bitmap_width.value() if self._two_d.isChecked() else 0
-
-    def _on_two_d_change(self) -> None:
-        """2D toggled: re-render, or re-cut the geometry if a width is waiting.
-
-        With a bitmap width set, switching the walk on or off changes the tile
-        size itself (it comes into force, or reverts), so this has to take the
-        geometry path rather than merely repaint.
-        """
-        if self._bitmap_width.value() > 0:
-            self._recut_tile_geometry()
-        else:
-            self._on_view_change()
-
-    def _recut_tile_geometry(self) -> None:
-        """Re-cut the codec's tiles to the new bitmap width.
-
-        Alone among the view controls this changes the document's *geometry* —
-        bytes per tile, and therefore what a tile index means — so it takes the
-        same re-interpretation path a format switch does, which re-lands the
-        view on the byte position it was showing instead of on a tile index that
-        now points somewhere else. Still display state, so nothing is pushed
-        onto the undo stack.
-        """
-        if self._doc is None:
-            return
-        if self._apply_pixel_config(self._pixel_preset_id(), self._byte_position()):
-            self.statusBar().showMessage(self._bitmap_width_note())
 
     def _bitmap_width_note(self) -> str:
         """What the bitmap width did to the tile size, for the status footer.

@@ -32,6 +32,11 @@ first, as with any ``uv`` command here)::
 The app's own settings are *read* (the theme, View ▸ Entire File, the pinned-row
 toggles) so the picture matches the app as that user has it set up, and nothing
 is written back — in particular the project is not added to their recent list.
+
+**Code plugins need trust, as in the app.** One not yet approved is declined, and
+the entry still renders — through a fallback format, so the PNG looks plausible
+and is wrong. The run ends with a warning naming each declined plugin; heed it,
+since a missing warning is the only sign the picture is the real one.
 """
 
 from __future__ import annotations
@@ -107,13 +112,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return args
 
 
-def _build_registry(trust_plugins: bool):  # noqa: ANN201 - (Registry, issues) factory
+def _build_registry(trust_plugins: bool, declined: set[str]):  # noqa: ANN201 - (Registry, issues) factory
     """The app bootstrap's plugin load, minus the dialogs (``celpix.app.main``).
 
     The user's real plugin folder and trust store, so a format they added in the
     app is available here and one they already approved loads without asking.
     Nothing is seeded into the folder — that is the app's business, and a render
-    should not create files.
+    should not create files. Every plugin turned down is added to ``declined``,
+    for the warning that closes the run.
     """
     from PySide6.QtCore import QStandardPaths
 
@@ -137,6 +143,7 @@ def _build_registry(trust_plugins: bool):  # noqa: ANN201 - (Registry, issues) f
         def confirm(pending: PendingCodePlugin) -> bool:
             if trust_plugins:
                 return True
+            declined.add(str(pending.path))
             print(
                 f"declined an untrusted code plugin: {pending.path}\n"
                 "  approve it in celPix, or re-run with --trust-plugins",
@@ -252,23 +259,58 @@ def main(argv: list[str] | None = None) -> int:
     # display to open, and the window is never shown in any case.
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
     from celpix import APP_NAME
-    from celpix.core.aspect import SQUARE
-    from celpix.core.aspect import scale as aspect_scale
-    from celpix.project.workspace import export_basename
-    from celpix.ui.export import save_png
 
     app = QApplication([sys.argv[0]])
     # The app data location - and so the plugin folder and the trust store - is
     # named after the application, so this has to be set before either is asked for.
     app.setApplicationName(APP_NAME)
 
-    reload_plugins, plugin_dir = _build_registry(args.trust_plugins)
+    declined: set[str] = set()
+    reload_plugins, plugin_dir = _build_registry(args.trust_plugins, declined)
     registry, issues = reload_plugins()
+    try:
+        return _render(args, registry, plugin_dir, issues, reload_plugins)
+    finally:
+        _warn_declined(declined)
 
+
+def _warn_declined(declined: set[str]) -> None:
+    """Close the run with what a declined plugin means for the picture.
+
+    The per-plugin line goes out while the project is still loading, and is easy
+    to lose above the Qt noise or behind a ``tail``: the render still succeeds and
+    still writes a PNG, only drawn through the fallback format. So the warning is
+    repeated as the very last thing printed, saying plainly that the file is not
+    what celPix shows.
+    """
+    if not declined:
+        return
+    rows = "\n".join(f"  {path}" for path in sorted(declined))
+    print(
+        f"\nWARNING: {len(declined)} untrusted code plugin(s) were declined:\n{rows}\n"
+        "Entries that use them fall back to a default format or fail to load, so\n"
+        "any output is NOT what celPix draws once they are trusted. Approve them in\n"
+        "celPix, or re-run with --trust-plugins - which records the approval in\n"
+        "celPix's trust store just as the app does. To keep it out of the real one,\n"
+        "point the app data somewhere disposable first (on Linux: XDG_DATA_HOME\n"
+        "and XDG_CONFIG_HOME).",
+        file=sys.stderr,
+    )
+
+
+def _render(  # noqa: ANN001 - what _build_registry made
+    args: argparse.Namespace, registry, plugin_dir, issues, reload_plugins
+) -> int:
+    """Open the project in a ``MainWindow`` and write (or list) the entry."""
+    from PySide6.QtCore import Qt
+
+    from celpix.core.aspect import SQUARE
+    from celpix.core.aspect import scale as aspect_scale
+    from celpix.project.workspace import export_basename
+    from celpix.ui.export import save_png
     from celpix.ui.main_window import MainWindow
 
     _silence_modals()

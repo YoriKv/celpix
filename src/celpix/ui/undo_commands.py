@@ -39,7 +39,7 @@ adding versus removing an entry, and the color edit, which merges.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QRect
@@ -72,6 +72,8 @@ if TYPE_CHECKING:
 OFFSET_MOVE_ID = 1
 COLOR_EDIT_ID = 2
 TILEMAP_CELLS_ID = 3
+VIEW_AXIS_ID = 4
+ARRANGEMENT_ID = 5
 
 
 @dataclass(frozen=True)
@@ -116,7 +118,7 @@ class _StateCommand(QUndoCommand):
     """
 
     def __init__(
-        self, window: MainWindow, entry: Entry, text: str, before, after
+        self, window: MainWindow, entry: Entry | None, text: str, before, after
     ) -> None:
         super().__init__(text)
         self._window = window
@@ -166,6 +168,19 @@ class _InPlaceCommand(_StateCommand):
 
     def _reach(self) -> bool:
         return True
+
+
+class _ProjectCommand(_InPlaceCommand):
+    """A change to the **project** rather than to any one entry.
+
+    The two settings a ``.celpix`` file holds above its entries — which pixel
+    codecs the dropdown lists, and the shape one pixel is drawn at — belong to
+    the workspace, so there is no entry to carry and none to reach: they are
+    visible from wherever you are, exactly as a rename is.
+    """
+
+    def __init__(self, window: MainWindow, text: str, before, after) -> None:
+        super().__init__(window, None, text, before, after)
 
 
 class _EditModeCommand(_StateCommand):
@@ -232,6 +247,273 @@ class OffsetMoveCommand(_CurrentEntryCommand):
 
     def _apply(self, state: tuple[int, int]) -> None:
         self._window._apply_offset(*state)
+
+
+@dataclass(frozen=True)
+class ViewAxisState:
+    """Where the three view axes stand, plus the window they frame.
+
+    The axes are Cols, Rows and Palette Row. The **position** rides along
+    because changing an axis re-clamps it: a wider window has fewer pages, so
+    the origin is pulled back to the last one and restoring the narrow Cols on
+    its own would leave the view somewhere the user never was. Carrying it
+    costs two ints and makes the revert the picture they had.
+    """
+
+    columns: int
+    rows: int
+    palette_row: int
+    tile_offset: int
+    byte_nudge: int
+
+
+class ViewAxisCommand(_CurrentEntryCommand):
+    """One move of a view axis spin - Cols, Rows or Palette Row.
+
+    Sibling of :class:`OffsetMoveCommand`: these change how the bytes are laid
+    out and which palette row they are drawn through, never what they are, so
+    this **stamps no revision** and undoing it leaves the document exactly as
+    dirty - or as clean - as it was. It is on the stack because all three are
+    written to the project file, and a setting a save records is one a user can
+    lose by nudging it.
+
+    Merging is per **axis** as well as per entry: a held Shift+Right walks Cols
+    up in one step, while a Cols move followed by a Rows move stays two, since
+    they are answers to different questions. A run that walks back to its start
+    dissolves, exactly as a nav run does.
+
+    All three axes travel in every state even though one gesture moves one of
+    them, because they do not settle independently: a shorter palette clamps
+    Palette Row, a wider window clamps the origin, and a snapshot of the lot is
+    what makes either direction land the view whole rather than in pieces.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        axis: str,
+        *,
+        before: ViewAxisState,
+        after: ViewAxisState,
+    ) -> None:
+        super().__init__(window, entry, f"set {axis}", before, after)
+        self._axis = axis
+
+    def id(self) -> int:
+        return VIEW_AXIS_ID
+
+    def mergeWith(self, other: QUndoCommand) -> bool:
+        if (
+            not isinstance(other, ViewAxisCommand)
+            or other._entry is not self._entry
+            or other._axis != self._axis
+        ):
+            return False
+        self._after = other._after
+        if self._after == self._before:
+            # The run walked back to its start - drop the empty step entirely.
+            self.setObsolete(True)
+        return True
+
+    def _apply(self, state: ViewAxisState) -> None:
+        self._window._apply_view_axes(state)
+
+
+@dataclass(frozen=True)
+class ArrangementState:
+    """The whole arrangement, as one value: where the tiles are read from.
+
+    Five fields the project file keeps, and they are one answer rather than
+    five — a Pattern preset moves four of them at once and clears the fifth, so
+    a per-field command could not describe a single pick. ``columns`` and
+    ``columns_before_bitmap`` ride along because a bitmap width **takes Cols
+    over** while it spans the codec's tiles
+    (:meth:`~...interpretation.InterpretationMixin._settle_bitmap_width_and_columns`):
+    restoring the width without the count it displaced would hand Cols back a
+    number derived from a bitmap nobody is reading any more.
+
+    ``byte_position`` is the anchor a re-cut lands on. Only a change to
+    :attr:`effective_width` needs one — that is the one thing here that moves
+    the codec's *tile size*, so a tile index stops meaning the same bytes — and
+    it is carried on every state all the same, since which of two adjacent
+    states re-cuts is the pair's question and not either half's.
+
+    ``pattern`` is the Pattern picker's own selection: a preset, or the string
+    ``"custom"``. The project file does not keep it — a session restore derives
+    it back from the four axes — but the step does, because a **deliberate**
+    Custom on values that already match a preset is a real choice (it is how the
+    controls unlock) and deriving would undo it.
+
+    Neither of those two is compared. The anchor is a position rather than a
+    setting, so a merged run that walks the arrangement back to its start must
+    still read as empty however far the view moved meanwhile; and a Pattern
+    picked on the values it already had moves nothing the file records, so it
+    unlocks the controls without costing a step.
+    """
+
+    block_columns: int
+    block_rows: int
+    block_order: str
+    two_dimensional: bool
+    bitmap_width: int
+    columns: int
+    columns_before_bitmap: int | None
+    byte_position: int = field(compare=False, default=0)
+    pattern: object = field(compare=False, default="custom")
+
+    @property
+    def effective_width(self) -> int:
+        """The width actually in force: a bitmap width means nothing without 2D."""
+        return self.bitmap_width if self.two_dimensional else 0
+
+
+class ArrangementCommand(_CurrentEntryCommand):
+    """One move of the arrangement bar — Pattern, Block W x H, Order, 2D, width.
+
+    Display placement, so like :class:`ViewAxisCommand` it **stamps no
+    revision**: an arrangement says which byte each tile is read from, never
+    what the bytes are. It is on the stack because all five fields are written
+    to the project file, and because a **Pattern** pick is the most destructive
+    gesture on the bar — it fills four controls and clears the bitmap width in
+    one go, and nothing on screen afterwards says what was there before.
+
+    ``field`` names the control that moved. It is both the command's text and
+    its merge key, so stepping the width up in ones is one step while a width
+    followed by an Order change stays two — the same rule the view axes use.
+
+    A change to :attr:`ArrangementState.effective_width` re-cuts the codec's
+    tile geometry, so that pair applies down the re-interpretation path a format
+    switch takes rather than by repainting. Which pair it is cannot be read off
+    one half, so the command answers it and the apply is told.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        field: str,
+        *,
+        before: ArrangementState,
+        after: ArrangementState,
+    ) -> None:
+        super().__init__(window, entry, f"set {field}", before, after)
+        self._field = field
+
+    def id(self) -> int:
+        return ARRANGEMENT_ID
+
+    def mergeWith(self, other: QUndoCommand) -> bool:
+        if (
+            not isinstance(other, ArrangementCommand)
+            or other._entry is not self._entry
+            or other._field != self._field
+        ):
+            return False
+        self._after = other._after
+        if self._after == self._before:
+            self.setObsolete(True)
+        return True
+
+    def _recuts(self) -> bool:
+        return self._before.effective_width != self._after.effective_width
+
+    def _apply(self, state: ArrangementState) -> None:
+        self._window._apply_arrangement(state, recut=self._recuts())
+
+
+class PreviewCompressionCommand(_CurrentEntryCommand):
+    """One move of the compression-preview picker, as before/after plugin ids.
+
+    The main view stays raw whatever this says — the chosen Decompress plugin
+    runs over the window and shows in the floating overlay — so no byte moves
+    and no revision is stamped. It is a step because the pick is kept in the
+    entry's ``session`` and written to the project file: which scheme a region
+    is *believed* to be in is a finding about the file, not a glance at it.
+    """
+
+    def _apply(self, state: str) -> None:
+        self._window._apply_preview_compression(state)
+
+
+class ViewToggleCommand(_CurrentEntryCommand):
+    """One of the entry's view switches — Show Rearranged, All Frames, Zero Clear.
+
+    Three boxes with one shape: a bool on ``ViewOptions`` that the project file
+    keeps per entry, changing what is laid out or how an index is coloured
+    without re-reading anything. ``attr`` is the window field each drives, which
+    is the whole of applying one; the refresh that follows re-syncs the box
+    itself, since every one of them is filled from the render cycle.
+
+    They stamp no revision, and they do not merge: a tick is a deliberate
+    answer, and two of them in a row are two answers rather than a run.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        attr: str,
+        text: str,
+        *,
+        before: bool,
+        after: bool,
+    ) -> None:
+        super().__init__(window, entry, text, before, after)
+        self._attr = attr
+
+    def _apply(self, state: bool) -> None:
+        self._window._apply_view_toggle(self._attr, state)
+
+
+class PixelFilterCommand(_ProjectCommand):
+    """One edit of the pixel-format filter, as before/after hidden-id sets.
+
+    Project state, and a **list the dropdown is read through** rather than
+    anything on screen, so undoing it changes no picture — which is exactly why
+    it needs a step: a filter popup can hide thirty formats in one gesture and
+    leave nothing behind saying which.
+
+    Whole sets rather than a delta, on :class:`PaletteRegionsCommand`'s rule:
+    the hidden ids are a handful, so a snapshot is cheap and cannot drift the
+    way replaying a sequence of ticks could. Unchecking the format **in force**
+    switches the view as well, which is its own `PixelConfigCommand` — the two
+    are pushed under a macro so one Ctrl+Z takes back the whole gesture.
+    """
+
+    def _apply(self, state: frozenset[str]) -> None:
+        self._window._apply_pixel_filter_set(set(state))
+
+
+class PixelAspectCommand(_ProjectCommand):
+    """One answer to View > Pixel Aspect, as before/after ratios.
+
+    ``None`` is a state of its own and not a synonym for square: it is the
+    project still *asking*, which is what leaves a container free to answer on
+    the next load (``ViewOptions`` and ``Workspace.pixel_aspect``). So undo
+    hands back the open question rather than a 1:1 that would close it.
+    """
+
+    def _apply(self, state: tuple[int, int] | None) -> None:
+        self._window._apply_pixel_aspect(state)
+
+
+class PreviewPaletteFormatCommand(_InPlaceCommand):
+    """One re-read of a previewed palette file under a different codec.
+
+    The document-less twin of :class:`PaletteCommand`: a registered ``.pal``
+    shown in the dock with nothing open has no document to re-decode, so the
+    format change goes back to the file. In place, because the entry it belongs
+    to is a PALETTE entry that can never be current.
+
+    A preview is read-only, so there is nothing here a re-read could lose — but
+    the codec it lands on is written to the entry, and a file that decoded wrong
+    is corrected by trying formats until one reads. Stepping back through those
+    tries is the point.
+    """
+
+    def _apply(self, state: str) -> None:
+        self._window._apply_preview_palette_format(self._entry, state)
 
 
 class TileRearrangementCommand(_CurrentEntryCommand):
@@ -857,6 +1139,41 @@ class SliceEditCommand(_InPlaceCommand):
 
     def _apply(self, state: SliceParams) -> None:
         self._window._apply_slice_params(self._entry, state)
+
+
+class InputsEditCommand(_InPlaceCommand):
+    """Re-binding what one or several entries hand a plugin as its inputs.
+
+    The state either way is **every target's whole binding map**, as a tuple of
+    ``(entry, inputs)`` pairs: a bulk apply over a selection is one gesture and
+    one step, and the maps are small (a handful of offsets), so a snapshot costs
+    less than a delta's bookkeeping. Like :class:`SliceEditCommand` the apply
+    re-reads each slice or map — the inputs decide what its bytes decode *to* —
+    and cannot resurrect unsaved edits discarded with the dropped document (the
+    window warns first). A **file**'s bindings feed only its compression
+    preview, so that one re-runs the preview and drops nothing.
+
+    ``entry`` is the target the window was opened on, which is what the command
+    is filed against; the others ride along in the state.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        *,
+        before: tuple[tuple[Entry, dict], ...],
+        after: tuple[tuple[Entry, dict], ...],
+    ) -> None:
+        what = (
+            f'inputs of "{entry.name}"'
+            if len(after) == 1
+            else f"inputs of {len(after)} entries"
+        )
+        super().__init__(window, entry, what, before, after)
+
+    def _apply(self, state: tuple[tuple[Entry, dict], ...]) -> None:
+        self._window._apply_inputs(state)
 
 
 class CompositeEditCommand(_InPlaceCommand):

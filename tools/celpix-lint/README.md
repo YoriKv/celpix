@@ -73,6 +73,7 @@ Roughly, by family:
 | `E6xx` | `session` and `palette`, and whether the mode and the block agree. |
 | `E7xx` | The `view` block, the tile rearrangement, the pinned palette regions. |
 | `E8xx` | The `font` alphabet. |
+| `E9xx` `W9xx` | The `inputs` block: what an entry binds to the data its plugins need from outside its bytes — the shape of each binding, its reach into the file, and the entry it names. Not what a plugin *declares* (which keys, required or not, the stride, the range): that needs the plugin, and the app reports it as a notice on the entry instead. |
 
 The findings that have paid for themselves so far, on this repo's own sample
 projects: bookmarks into a four-chip joined region that carried no `extra_paths`

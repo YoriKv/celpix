@@ -26,6 +26,7 @@ from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
     KEY_DECOMPRESS_PARTIAL,
+    KEY_INPUTS,
     PipelineContext,
 )
 from celpix.core.errors import Stage
@@ -148,6 +149,15 @@ class CompressionMixin:
             return
         ctx = PipelineContext()
         ctx.set(KEY_DECOMPRESS_PARTIAL, True)
+        # A scheme that needs a table decodes with the file's binding for it,
+        # or not at all: no preview is the honest answer to an unbound input,
+        # and the badge beside the picker says which (``main_window/inputs.py``).
+        inputs = self._preview_config_inputs(compression_id)
+        if inputs is None:
+            self._overlay.hide_overlay()
+            return
+        if inputs:
+            ctx.set(KEY_INPUTS, inputs[Stage.COMPRESSION])
         engine, preset = self._registry.engine_for(self._pixel_preset_id())
         layout = BlockLayout(
             view.columns, view.block_columns, view.block_rows, view.block_order
@@ -249,6 +259,15 @@ class CompressionMixin:
         if compression_id == NO_COMPRESSION:
             return
         plugin = self._registry.plugin(Stage.COMPRESSION, compression_id)
+        # "Find the next stream that decodes with *this* table": the scan runs
+        # with the file's bindings, and without them a scheme that needs one
+        # cannot be tried at all.
+        inputs = self._preview_config_inputs(compression_id)
+        if inputs is None:
+            self.statusBar().showMessage(
+                "Bind this codec's inputs before scanning (the badge beside it)."
+            )
+            return
         data = self._doc.pixel_data
         # Probe as many compressed bytes as one screenful decompresses to: a
         # structure bigger than the view can show is not worth confirming here.
@@ -266,6 +285,7 @@ class CompressionMixin:
                 probe_bytes,
                 self._byte_position() + 1,
                 on_tick=self._scan_tick,
+                inputs=inputs.get(Stage.COMPRESSION),
             )
         finally:
             self._scanning = False

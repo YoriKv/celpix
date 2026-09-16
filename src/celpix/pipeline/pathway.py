@@ -15,7 +15,7 @@ the workspace entries it is rebuilt from rather than the config itself
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from celpix.core.errors import Stage
@@ -125,6 +125,21 @@ class PathwayConfig:
     # entry goes view-only; carried here so the load can say *which* plugin is
     # missing rather than leaving the user with a greyed-out Write and no reason.
     missing_plugins: tuple[tuple[Stage, str], ...] = ()
+    # What each stage declared it needs from outside its own bytes, already
+    # **resolved** — the table's bytes, the size's value — keyed by stage and
+    # then by the spec's key (:class:`~celpix.plugins.base.InputSpec`). Resolved
+    # by the host that built this config, because only it can reach the parent's
+    # buffer and the other entries a binding names
+    # (:func:`~celpix.project.inputs.resolve_inputs`); the pipeline only hands
+    # each stage its own dict as :data:`~celpix.core.context.KEY_INPUTS` right
+    # before running it. A stage with no entry here gets no key at all.
+    inputs: dict[Stage, dict[str, bytes | int]] = field(default_factory=dict)
+    # Why a stage's inputs could not be resolved, as ``(stage, summary, detail)``
+    # — said once at load, like ``missing_plugins``. The stage they belong to has
+    # already been put on its fallback by the host: a compression scheme with an
+    # unbound table decodes as pass-through and the entry goes view-only, so the
+    # file still opens and the notice says what to bind.
+    input_problems: tuple[tuple[Stage, str, str], ...] = ()
 
     def write_target(self) -> FileRef:
         """Where Write should put the bytes: explicit ``dest`` or back to source."""

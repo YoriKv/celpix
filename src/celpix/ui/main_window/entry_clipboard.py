@@ -36,6 +36,7 @@ from dataclasses import replace
 from os.path import basename, exists
 
 from celpix.project import projectfile
+from celpix.project.inputs import iter_bindings, names_entry, with_bindings
 from celpix.project.workspace import Entry, EntryKind, Workspace
 from celpix.ui import clipboard
 from celpix.ui.undo_commands import PasteEntriesCommand
@@ -56,6 +57,21 @@ _MULTIPLE_KINDS = (*_CHILD_KINDS, EntryKind.COMPOSITE)
 #: _live_bindings`, beside the numbered slots a composite's pieces use. Negative
 #: so it can never collide with a piece index.
 TILE_SLOT = -1
+#: Where the slots for a row's **input bindings** start, counting down: the
+#: *n*-th binding that names an entry (in :func:`~celpix.project.inputs.
+#: iter_bindings` order) sits at ``INPUT_SLOT_BASE - n``. Below the tile slot so
+#: the three kinds of reference a row can hold never share a number.
+INPUT_SLOT_BASE = -2
+
+
+def _named_bindings(entry: Entry):  # noqa: ANN202 — Iterator[tuple[str, str, RegionBinding | IntegerFromBytes]]
+    """``entry``'s input bindings that name an entry, in the order the payload
+    writes them — the order both halves of the join are counted in."""
+    return (
+        (plugin, key, binding)
+        for plugin, key, binding in iter_bindings(entry)
+        if names_entry(binding)
+    )
 
 
 def _rows_at(
@@ -129,6 +145,8 @@ class EntryClipboardMixin:
             for slot, piece in enumerate(entry.pieces):
                 if piece.entry is not None:
                     bound[(at, slot)] = piece.entry
+            for n, (_plugin, _key, binding) in enumerate(_named_bindings(entry)):
+                bound[(at, INPUT_SLOT_BASE - n)] = binding.entry
         return bound
 
     def _cut_entry(self, entry: Entry) -> None:
@@ -448,6 +466,19 @@ class EntryClipboardMixin:
                         zip(record.entry.pieces, record.piece_sources, strict=True)
                     )
                 )
+            # The third reference, resolved by the same two answers. One that
+            # resolves to nothing is **dropped** rather than left: a binding
+            # with no entry reads as "this file", which would quietly decode
+            # against the wrong bytes, where an unbound input opens the entry
+            # degraded and says what to bind.
+            for n, (plugin_id, key, at) in enumerate(record.input_sources):
+                found = target_for(record, at, INPUT_SLOT_BASE - n)
+                bindings = dict(record.entry.inputs.get(plugin_id, {}))
+                if found is None:
+                    bindings.pop(key, None)
+                elif key in bindings:
+                    bindings[key] = replace(bindings[key], entry=found)
+                record.entry.inputs = with_bindings(record.entry, plugin_id, bindings)
 
     # -- the undo command's two directions --------------------------------------
     def _apply_paste_entries(

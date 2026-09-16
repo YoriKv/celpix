@@ -46,6 +46,7 @@ from celpix.ui.main_window.interpretation import (
     PALETTE_ROW_CELLS_TIP,
     PALETTE_ROW_TIP,
 )
+from celpix.ui.undo_commands import ViewAxisCommand, ViewAxisState
 from celpix.ui.widgets import signals_blocked
 
 
@@ -61,6 +62,91 @@ class RenderingMixin:
     def _on_view_change(self, *_args) -> None:
         if self._doc is not None:
             self._refresh_view()
+
+    def _axis_slot(self, axis: str) -> Callable[..., None]:
+        """A ``valueChanged`` slot that names which axis moved.
+
+        The three spins share one handler, and Qt hands a slot the new *value*
+        rather than the sender — so the axis has to be bound at connect time.
+        Bound as a closure rather than read back off ``self.sender()`` because
+        the name is also the merge key: two adjacent steps coalesce only when
+        they answer the same question.
+        """
+        return lambda *_args: self._on_view_axis_change(axis)
+
+    def _on_view_axis_change(self, axis: str, *_args) -> None:
+        """Push one Cols / Rows / Palette Row move; the command does the render.
+
+        The three axes go through here rather than straight to
+        :meth:`_on_view_change` because a project file records all three, so a
+        nudge of one is a change to the saved document and belongs on the stack
+        (:class:`~celpix.ui.undo_commands.ViewAxisCommand`). Every *programmatic*
+        write to these spins blocks their signals — a session restore, the
+        bitmap-width and tilemap-width settles, the palette-row clamp — so what
+        reaches here is a gesture, and the push discipline holds: capture the
+        before, push, and let the first ``redo()`` be the apply.
+
+        ``doc.view`` is the before. It is the settled state of the last refresh
+        and the spin is the only thing that has moved since, so it holds the two
+        axes this gesture did not touch as well as the one it did.
+        """
+        if self._doc is None or self._applying_undo:
+            return
+        entry = self._workspace.current
+        assert entry is not None  # a document implies a current entry
+        view = self._doc.view
+        before = ViewAxisState(
+            view.columns, view.rows, view.palette_row, self._offset, self._nudge
+        )
+        after = ViewAxisState(
+            self._columns.value(),
+            self._rows.value(),
+            self._palette_row.value(),
+            # The position the gesture started from, not a new one: widening the
+            # window can put it past the last page, and the refresh the apply
+            # runs is what clamps it — the same path the gesture always took.
+            self._offset,
+            self._nudge,
+        )
+        if before == after:
+            return
+        self._push_command(
+            ViewAxisCommand(self, entry, axis, before=before, after=after)
+        )
+
+    def _apply_view_axes(self, state: ViewAxisState) -> None:
+        """Land one half of a view-axis command (commands only - gestures push).
+
+        One coherent swap followed by a single refresh, the ``_restore_session``
+        pattern: setting the spins one at a time with their signals live would
+        re-render three times and push three more commands.
+        """
+        spins = (
+            (self._columns, state.columns),
+            (self._rows, state.rows),
+            (self._palette_row, state.palette_row),
+        )
+        with signals_blocked(*(spin for spin, _ in spins)):
+            for spin, value in spins:
+                spin.setValue(value)
+        self._offset, self._nudge = state.tile_offset, state.byte_nudge
+        self._refresh_view()  # re-clamps the position against the restored axes
+
+    def _apply_view_toggle(self, attr: str, on: bool) -> None:
+        """Land one of the entry's view switches (commands only - gestures push).
+
+        Show Rearranged Tiles, All Frames and Zero Clear are one shape: a bool
+        the window holds and the refresh writes into ``doc.view``. Setting the
+        field is the whole of applying one - every box that shows a toggle is
+        filled from the render cycle, so the refresh below is also what re-ticks
+        it. With nothing open there is no cycle to do that, and the rearrange
+        actions are the only ones that show outside a document.
+        """
+        setattr(self, attr, on)
+        if self._doc is None:
+            self._sync_rearrange_actions()
+            return
+        self._refresh_view()
 
     def _view_rows(self) -> int:
         """Tile-rows the window actually shows - the Rows setting, or the file.
@@ -941,6 +1027,10 @@ class RenderingMixin:
         # on grounds that are true in general and beside the point for a document
         # of the wrong kind (``docs/design/tilemap-entry.md`` §4).
         self._sync_capabilities()
+        # After the veto, because the badges sit *inside* the codec groups it
+        # hides and decide their own visibility on the plugin the picker names,
+        # not on the kind (``main_window/inputs.py``).
+        self._sync_inputs_badges()
         # Everything above landed in doc.view, which a project save writes out.
         self._refresh_project_modified()
 

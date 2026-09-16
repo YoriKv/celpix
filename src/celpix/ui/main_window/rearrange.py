@@ -68,7 +68,7 @@ from celpix.core.tilerearrangement import (
 from celpix.ui import render_bridge
 from celpix.ui.main_window.transform import TransformOp
 from celpix.ui.tools import EditMode
-from celpix.ui.undo_commands import TileRearrangementCommand
+from celpix.ui.undo_commands import TileRearrangementCommand, ViewToggleCommand
 from celpix.ui.widgets import signals_blocked
 
 # The tool's own tooltip, re-set by :meth:`RearrangeMixin._sync_rearrange_actions`
@@ -299,13 +299,29 @@ class RearrangeMixin:
         Turning it off while the tool is armed doesn't disarm it: the tool
         overrides the setting anyway, so the view stays rearranged and the choice
         takes effect when the tool is put down.
+
+        One undo step, like the drop that built the map: the setting is the
+        entry's and the project file keeps it, so switching a rearrangement off
+        is a change to the saved document rather than a way of glancing at the
+        file underneath. With nothing open there is no entry to carry it, and it
+        lands through the apply helper directly.
         """
-        if self._show_rearranged == on:
+        if self._show_rearranged == on or self._applying_undo:
             return
-        self._show_rearranged = on
-        self._sync_rearrange_actions()
-        if self._doc is not None:
-            self._refresh_view()
+        entry = self._workspace.current
+        if self._doc is None or entry is None:
+            self._apply_view_toggle("_show_rearranged", on)
+            return
+        self._push_command(
+            ViewToggleCommand(
+                self,
+                entry,
+                "_show_rearranged",
+                "show the file's own tile order" if not on else "show rearranged tiles",
+                before=self._show_rearranged,
+                after=on,
+            )
+        )
 
     def _sync_rearrange_actions(self) -> None:
         """Converge the three actions with the state they drive.

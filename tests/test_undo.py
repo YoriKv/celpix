@@ -448,10 +448,10 @@ def test_pinning_a_selection_is_one_undoable_step_that_leaves_bytes_clean(
     window, _ = _open(qtbot, tmp_path)
     entry = window._workspace.current
     stack = window._undo_stack
-    before = stack.count()
 
     window._set_linear_selection(4, 7)
-    window._palette_row.setValue(3)
+    window._palette_row.setValue(3)  # a step of its own - see the axis test below
+    before = stack.count()
     window._pin_selection()
 
     assert stack.count() == before + 1
@@ -468,6 +468,182 @@ def test_pinning_a_selection_is_one_undoable_step_that_leaves_bytes_clean(
     # Pinning the same tiles to the same row again is not a second history step.
     window._pin_selection()
     assert stack.count() == before + 1
+
+
+def test_view_axes_are_undoable_per_axis_and_carry_the_position(
+    qtbot, tmp_path
+) -> None:
+    """Cols, Rows and Palette Row are on the stack, one step per axis run.
+
+    All three are written to the project file, so nudging one is a change to
+    the saved document — but none of them moves a byte, so undoing one must
+    leave the entry exactly as clean as it was. The position rides along
+    because a wider window re-clamps it: restoring the axis without it would
+    land the view somewhere the user never was.
+    """
+    window, _ = _open(qtbot, tmp_path)
+    entry = window._workspace.current
+    stack = window._undo_stack
+
+    # Park the view on the last page, so widening Cols has to pull it back.
+    window._nav_end()
+    parked = window._offset
+    assert parked > 0
+    base = stack.count()
+
+    # A run in one axis coalesces; the next axis starts a new step.
+    window._columns.setValue(24)
+    window._columns.setValue(32)
+    window._rows.setValue(8)
+    assert stack.count() == base + 2
+    assert window._doc.view.columns == 32 and window._doc.view.rows == 8
+    assert not entry.pixel_dirty  # a layout, not an edit
+
+    stack.undo()  # rows
+    assert window._rows.value() == 16 and window._doc.view.rows == 16
+    stack.undo()  # the whole columns run, and the position it was made from
+    assert window._columns.value() == 16 and window._doc.view.columns == 16
+    assert window._offset == parked
+    stack.redo()
+    assert window._columns.value() == 32
+    stack.redo()  # back to the top, so the pushes below truncate nothing
+
+    # Palette Row is the third axis, and merges only with itself.
+    before_row = stack.count()
+    window._palette_row.setValue(2)
+    window._palette_row.setValue(3)
+    assert stack.count() == before_row + 1
+    stack.undo()
+    assert window._palette_row.value() == 0 and window._doc.view.palette_row == 0
+    stack.redo()
+
+    # A run that walks back to where it started is no step at all.
+    settled = stack.count()
+    window._columns.setValue(20)
+    window._columns.setValue(32)
+    assert stack.count() == settled
+
+
+def test_a_pattern_pick_is_one_step_over_every_control_it_moved(
+    qtbot, tmp_path
+) -> None:
+    """The bar's most destructive gesture: a pick fills four controls and
+    withdraws the bitmap width, and afterwards nothing on screen says what any of
+    them held. One step has to take the whole of it back — including the Cols the
+    width had displaced, and the byte position the re-cut landed on.
+    """
+    from celpix.core.arrangement import ARRANGEMENT_PRESETS
+
+    window, _ = _open(qtbot, tmp_path)
+    stack = window._undo_stack
+    window._columns.setValue(24)
+    window._two_d.setChecked(True)
+    window._bitmap_width.setValue(128)  # 8-px tiles: 16 columns span it
+    assert window._doc.view.bitmap_width == 128
+    assert window._columns.value() == 16 and not window._columns.isEnabled()
+    window._nav_rows(2)
+    parked = window._byte_position()
+    assert parked > 0
+    base = stack.count()
+
+    preset = next(p for p in ARRANGEMENT_PRESETS if p.id == "genesis-sprite")
+    window._pattern.setCurrentIndex(window._pattern.findData(preset))
+    view = window._doc.view
+    assert (view.block_columns, view.block_rows, view.block_order) == (2, 2, "column")
+    assert view.bitmap_width == 0  # the width does not follow a new arrangement
+    assert window._columns.value() == 24  # handed back, not left at the derived 16
+    assert stack.count() == base + 1
+
+    stack.undo()
+    view = window._doc.view
+    assert (view.block_columns, view.block_rows) == (1, 1)
+    assert view.bitmap_width == 128 and view.two_dimensional
+    assert window._columns.value() == 16  # the width owns it again
+    assert window._byte_position() == parked  # the re-cut re-anchored in bytes
+    stack.redo()
+    assert window._doc.view.bitmap_width == 0
+    assert window._doc.view.block_columns == 2
+
+
+def test_arrangement_merges_per_control_and_custom_costs_no_step(
+    qtbot, tmp_path
+) -> None:
+    """Two rules the bar needs. A run in one control is one step, while two
+    different controls stay two — and picking **Custom** moves nothing the
+    project file keeps, so it unlocks the controls without costing a step and
+    without a later edit re-locking them.
+    """
+    from celpix.core.arrangement import ARRANGEMENT_PRESETS
+
+    window, _ = _open(qtbot, tmp_path)
+    stack = window._undo_stack
+    base = stack.count()
+
+    # Custom off the default preset unlocks the controls and is not a step: no
+    # axis moved, and there is no width for the pick to withdraw.
+    window._pattern.setCurrentIndex(window._pattern.findData("custom"))
+    assert window._block_cols.isEnabled() and stack.count() == base
+
+    window._two_d.setChecked(True)
+    window._bitmap_width.setValue(64)
+    window._bitmap_width.setValue(128)  # merges with the step above
+    assert stack.count() == base + 2  # 2D, then the width run
+
+    # A run that walks back to its start dissolves, like a nav run.
+    settled = stack.count()
+    window._bitmap_width.setValue(64)
+    window._bitmap_width.setValue(128)
+    assert stack.count() == settled
+
+    # A hand edit that happens to match a preset must not re-lock the controls.
+    nes = next(p for p in ARRANGEMENT_PRESETS if p.id == "nes-8x16")
+    window._two_d.setChecked(nes.two_dimensional)
+    window._block_rows.setValue(nes.block_rows)
+    window._block_cols.setValue(nes.block_columns)
+    assert window._pattern.currentData() == "custom"
+    assert window._block_rows.isEnabled()
+
+
+def test_the_projects_own_settings_are_undoable(qtbot, tmp_path, monkeypatch) -> None:
+    """The two keys a ``.celpix`` holds above its entries.
+
+    The filter needs a **macro**: unchecking the format in force switches the
+    view too, and a Ctrl+Z that restored thirty hidden formats while leaving the
+    view on a codec nobody chose would be worse than no step. The aspect needs
+    ``None`` to survive — the project still *asking*, which is the state that
+    leaves a container free to answer on the next load and which the dialog
+    cannot express.
+    """
+    from celpix.ui.pixel_aspect_dialog import PixelAspectDialog
+
+    window, _ = _open(qtbot, tmp_path)
+    stack = window._undo_stack
+    combo = window._pixel_preset
+    current = combo.currentData()
+    # Only the real rows: the dropdown is grouped, and a heading carries a
+    # sentinel rather than a preset id.
+    ids = [
+        combo.itemData(i)
+        for i in range(combo.count())
+        if isinstance(combo.itemData(i), str)
+    ]
+    other = next(i for i in ids if i != current)
+    base = stack.count()
+
+    window._apply_pixel_filter({other})  # hides the format in force, so it switches
+    assert combo.currentData() == other
+    assert current in window._workspace.hidden_pixel_presets
+    assert stack.count() == base + 1  # one macro, not two steps
+    stack.undo()
+    assert not window._workspace.hidden_pixel_presets
+    assert window._doc.pixel_config.interpret_preset_id == current
+
+    assert window._workspace.pixel_aspect is None  # nobody has answered yet
+    monkeypatch.setattr(PixelAspectDialog, "ask", staticmethod(lambda *_a: (2, 1)))
+    window._on_pixel_aspect()
+    assert window._workspace.pixel_aspect == (2, 1)
+    stack.undo()
+    assert window._workspace.pixel_aspect is None  # the question, not a 1:1
 
 
 def test_the_base_palette_row_is_one_step_and_never_a_re_read(qtbot, tmp_path) -> None:

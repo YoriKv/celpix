@@ -462,6 +462,10 @@ class TileBytesMixin:
         # pieces is rebuilt once and its maps re-read once. `keep` is the
         # composite the stroke was made on, which holds the bytes already.
         rebuilt = self._reassemble_composites([entry, *deposited], keep=entry)
+        # An entry whose *inputs* come out of these bytes — a code table bound
+        # as a region of them — holds a decode that is stale the same way, and
+        # is re-read on the composite's rule (``main_window/inputs.py``).
+        self._reread_input_dependents([entry, *deposited])
         # A map bound to one of those composites holds a copy of the join, so it
         # is stale in exactly the same way and cannot be patched either — an
         # offset in a join is not an offset in the piece it came from. Maps bound

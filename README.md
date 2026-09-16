@@ -21,8 +21,8 @@ celPix is built on Python + Qt (PySide6) and runs on Windows, macOS, and Linux.
 - **Supported formats** - a wide variety of pixel and palette formats, covering
   the full set of formats supported by existing tools (YY-CHR, etc).
 - **Compression** - SNES LZ1/LZ2/LZ16, Konami RLE, PackBits, LZSS, GBA/NDS BIOS
-  LZ77, Sega's Nemesis/Enigma/Kosinski, SLZ16/SLZ24, PRS and PowerVR, with a
-  decompressed preview overlay and support for editing decompressed pixel data.
+  LZ77, Sega's Nemesis/Enigma/Kosinski, and more. A decompressed preview overlay
+  and support for editing decompressed pixel data.
 - **Containers & Reshaping** - support for appending multiple files together and then a variety of byte "reshaping" plugins such as merging split ROM chips, deinterleaving, reversing bit order, etc
 - **Editing** - full set of editing tools with undo/redo, copy/paste/etc internally
   and to external editors.

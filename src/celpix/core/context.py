@@ -46,6 +46,15 @@ KEY_DECOMPRESS_PARTIAL = "compression.allow-partial"
 # extent, not a truncation point. Distinguishes "the whole structure is in
 # view" from a best-effort partial decode.
 KEY_DECOMPRESS_COMPLETE = "compression.complete"
+# dict[str, bytes | int]: the **current stage's** resolved inputs — the bytes
+# and numbers a plugin declared it needs from outside its own slice
+# (:class:`~celpix.plugins.base.InputSpec`), keyed by the spec's ``key``. Set by
+# the host immediately before each stage that declares any runs, and only from
+# that stage's own bindings, so a compression input and a tilemap input of the
+# same key never meet. An optional input nobody bound is absent from the dict,
+# not None. Read with ``ctx.get(KEY_INPUTS) or {}`` — a plugin handed no
+# inputs finds the key unset (``docs/design/plugin-inputs.md`` §2).
+KEY_INPUTS = "plugin.inputs"
 # str: why this palette pathway is carrying a placeholder instead of the file's
 # colors - the decode error the read fell back from. A palette file records
 # nothing about its own encoding, so the format is always a guess; set when that

@@ -94,6 +94,7 @@ from celpix.ui.main_window.entries import EntriesMixin
 from celpix.ui.main_window.entry_clipboard import EntryClipboardMixin
 from celpix.ui.main_window.font_alphabet import FontAlphabetMixin
 from celpix.ui.main_window.history import HistoryMixin
+from celpix.ui.main_window.inputs import InputsMixin
 from celpix.ui.main_window.interpretation import (
     InterpretationMixin,
 )
@@ -161,6 +162,7 @@ class MainWindow(
     FontAlphabetMixin,
     HistoryMixin,
     InterpretationMixin,
+    InputsMixin,
     PaletteSourceMixin,
     PaletteOffsetMixin,
     PaletteTransferMixin,
@@ -355,6 +357,9 @@ class MainWindow(
         # sheet to be composed again through the same path a refresh takes.
         self._subsprites = SubspriteWindow(self)
         self._subsprites.refresh_requested.connect(self._show_subsprites)
+        # The fourth tool window: what an entry's formats need from outside its
+        # bytes, pinned to the entry it was opened on (``main_window/inputs.py``).
+        self._build_inputs_window()
         self._text = TextWindow(self)
         # Which run of typing the next text edit belongs to, so consecutive
         # keystrokes merge into one undo step (``main_window/text.py``).
@@ -554,6 +559,10 @@ class MainWindow(
         self._files_panel.container_info_requested.connect(self._show_container_info)
         self._files_panel.use_palette_requested.connect(self._use_palette_entry)
         self._files_panel.edit_slice_requested.connect(self._edit_slice)
+        self._files_panel.inputs_requested.connect(self._show_inputs)
+        self._files_panel.copy_inputs_requested.connect(self._copy_inputs)
+        self._files_panel.paste_inputs_requested.connect(self._paste_inputs)
+        self._files_panel.set_inputs_probe(self._inputs_available)
         self._files_panel.edit_composite_requested.connect(self._edit_composite)
         self._files_panel.jump_to_source_requested.connect(self._jump_to_slice_source)
         self._files_panel.jump_to_bookmark_requested.connect(self._jump_to_bookmark)
@@ -934,7 +943,9 @@ class MainWindow(
         if self._project_path is None:
             return None
         self._capture_session()
-        return projectfile.project_dict(self._workspace, self._project_path)
+        return projectfile.project_dict(
+            self._workspace, self._project_path, self._registry
+        )
 
     def _project_is_dirty(self) -> bool:
         """True when the open project differs from what is on disk.
@@ -1244,6 +1255,19 @@ class MainWindow(
             menu=file_menu,
             tip="What this file's container read out of it:\n"
             "the header fields it used, and what it passed on",
+            enabled=False,
+        )
+        # Beside the container rows for the same reason they sit together: all
+        # three are about how this entry's bytes are read. Armed only when a
+        # format on the entry declares something to bind (``_sync_inputs_badges``).
+        self._inputs_action = make_action(
+            self,
+            "Inp&uts…",
+            self._inputs_current,
+            menu=file_menu,
+            tip="What this entry's formats need from elsewhere in the\n"
+            "file - a shared code table, a size kept in another table -\n"
+            "and where each is bound",
             enabled=False,
         )
 

@@ -288,6 +288,33 @@ def test_the_slice_dialogs_spare_room_row_follows_the_compression_choice(
     assert dialog._params.slot_fill is SlotFill.ZERO
 
 
+def test_the_slice_dialogs_pickers_keep_their_stated_widths(qtbot, tmp_path) -> None:
+    # A CompactComboBox only states a *hint*, and a QFormLayout's field column
+    # stretches: dropped in bare, every picker here is pulled to whatever the
+    # widest row made the dialog, which is how a three-word Spare room ended up
+    # as wide as a format picker. The holders are what pin them.
+    from celpix.plugins.registry import default_registry
+    from celpix.ui.slice_dialog import SliceDialog
+    from celpix.ui.widgets import PRESET_COMBO_WIDTH, SHORT_COMBO_WIDTH
+
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(256))
+    dialog = SliceDialog(
+        default_registry(),
+        paths=(str(rom),),
+        offset=0,
+        length=64,
+        compression_id="compression.lz2",
+        choose_content=True,
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert dialog._reshape.width() == PRESET_COMBO_WIDTH
+    assert dialog._decompress.width() == PRESET_COMBO_WIDTH
+    assert dialog._slot_fill.width() == SHORT_COMBO_WIDTH
+    assert dialog._content.width() == SHORT_COMBO_WIDTH
+
+
 def test_a_pan_drag_started_on_the_claimed_backing_moves_the_view(qtbot) -> None:
     # The grey around a small picture is where the pointer is when the picture is
     # the one wanting to be moved, so a drag begun out there has to pan. The whole

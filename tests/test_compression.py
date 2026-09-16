@@ -11,13 +11,18 @@ import random
 
 import pytest
 
+from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
     KEY_DECOMPRESS_PARTIAL,
     PipelineContext,
 )
+from celpix.core.errors import Stage
+from celpix.pipeline import pipeline
+from celpix.plugins.base import STAGE_DEFAULT_PRESET
 from celpix.plugins.builtins import (
+    bluesky_lz,
     enigma,
     gba_lz77,
     konami_rle,
@@ -25,11 +30,15 @@ from celpix.plugins.builtins import (
     lz16,
     lz_command,
     lzss_ring,
+    namco_lz,
     nemesis,
     packbits,
+    phantasy_star_rle,
     prs,
+    rnc,
     slz,
     snes_rle,
+    sonic2_tiles,
 )
 from celpix.plugins.builtins._lz import MatchFinder
 from celpix.plugins.builtins.gba_lz77 import GbaLz77Compression
@@ -42,9 +51,12 @@ from celpix.plugins.builtins.lz16 import (
 from celpix.plugins.builtins.lz_command import Lz1, Lz1Improved, Lz2, Lz2Improved
 from celpix.plugins.builtins.lzss_ring import LzssRingCompression
 from celpix.plugins.builtins.packbits import PackBitsCompression
+from celpix.plugins.builtins.phantasy_star_rle import PhantasyStarRleCompression
 from celpix.plugins.builtins.prs import PrsCompression
 from celpix.plugins.builtins.slz import Slz16Compression, Slz24Compression
 from celpix.plugins.builtins.snes_rle import Rle1Compression, Rle2Compression
+from celpix.plugins.registry import default_registry
+from celpix.project.workspace import Workspace, pixel_config_for, tilemap_config_for
 
 # -- LZ1/LZ2 command stream -------------------------------------------------
 
@@ -1689,3 +1701,360 @@ def test_kosinski_plugin_round_trips_through_the_stage() -> None:
     stream = plugin.compress(plain, ctx)
     assert plugin.decompress(stream + b"\xff" * 32, ctx) == plain
     assert ctx.get(KEY_COMPRESSED_SIZE) == len(stream)
+
+
+# -- RNC ---------------------------------------------------------------------
+
+
+def _rnc_stream(method: int, body: bytes, plain: bytes, chunks: int = 1) -> bytes:
+    """A header around ``body``, with the sizes and CRCs the decoder verifies."""
+    return (
+        b"RNC"
+        + bytes((method,))
+        + len(plain).to_bytes(4, "big")
+        + len(body).to_bytes(4, "big")
+        + rnc.crc16(plain).to_bytes(2, "big")
+        + rnc.crc16(body).to_bytes(2, "big")
+        + bytes((0, chunks))
+        + body
+    )
+
+
+def _lsb_words(fields: list[tuple[int, int]]) -> bytes:
+    """``(value, bits)`` fields packed low bit first into 16-bit LE words."""
+    acc = shift = 0
+    for value, bits in fields:
+        acc |= value << shift
+        shift += bits
+    return acc.to_bytes(-(-shift // 16) * 2, "little")
+
+
+def test_rnc_crc16_is_the_reflected_a001_polynomial() -> None:
+    assert rnc.crc16(b"123456789") == 0xBB3D
+
+
+def test_rnc1_decodes_length_classes_and_ends_a_chunk_on_a_literal_run() -> None:
+    """Two literals, a 6-byte match 2 back, and an empty final run.
+
+    Guards three silent traps at once: a Huffman symbol is a *bit-length class*
+    followed by extra bits (the run of 2 is symbol 2 plus one bit, the length 6
+    is symbol 3 plus two); a subchunk count of 2 is two runs but one match; and
+    the literal bytes sit after the whole 16-bit word their run code is in, not
+    inside the bit stream.
+    """
+    bits = _lsb_words(
+        [
+            (0, 1), (0, 1),                      # not locked, not keyed
+            (3, 5), (1, 4), (0, 4), (1, 4),      # runs: symbols 0 and 2, 1 bit
+            (2, 5), (0, 4), (1, 4),              # distances: symbol 1 only
+            (4, 5), (0, 4), (0, 4), (0, 4), (1, 4),  # lengths: symbol 3 only
+            (2, 16),                             # two subchunks
+            (1, 1), (0, 1),                      # run: symbol 2, extra 0 -> 2
+            (0, 1),                              # distance: 1 + 1
+            (0, 1), (0, 2),                      # length: symbol 3, extra 0 -> 4 + 2
+            (0, 1),                              # final run: 0
+        ]
+    )  # fmt: skip
+    plain = b"ABABABAB"
+    stream = _rnc_stream(1, bits + b"AB", plain)
+    assert rnc.decompress(stream, method=1) == (plain, len(stream), True)
+
+
+def test_rnc2_reads_raw_bytes_between_bit_bytes() -> None:
+    """Literal A, literal B, a 4-byte match 2 back, then the end of the chunk.
+
+    The bit bytes are 0x08 and 0x78; the two literals follow the first because
+    it was fetched before they were read, and the match's distance byte and the
+    marker's zero byte follow the second for the same reason.
+    """
+    body = bytes.fromhex("084142780100")
+    stream = _rnc_stream(2, body, b"ABABAB")
+    assert rnc.decompress(stream, method=2) == (b"ABABAB", len(stream), True)
+
+
+@pytest.mark.parametrize("method", [rnc.METHOD_1, rnc.METHOD_2])
+@pytest.mark.parametrize(
+    "plain",
+    # Nothing, one byte, incompressible bytes, a long fill, a repeat 2000 back,
+    # and low-entropy data past the 0x3000-byte chunk the packer covers.
+    [
+        b"",
+        b"A",
+        bytes(range(256)),
+        b"\xab" * 5000,
+        bytes((i * 7919) % 251 for i in range(2000)) * 2,
+        bytes((i * 97 + i // 7) & 0xFF for i in range(0x3100)),
+    ],
+)
+def test_rnc_round_trips(method: int, plain: bytes) -> None:
+    stream = rnc.compress(plain, method=method)
+    ctx = PipelineContext()
+    plugin = rnc.Rnc1Compression() if method == 1 else rnc.Rnc2Compression()
+    assert plugin.decompress(stream + b"RNC junk", ctx) == plain
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(stream)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+
+
+def test_rnc_rejects_corrupt_streams_and_forgives_only_a_short_buffer() -> None:
+    rng = random.Random(5)
+    plain = bytes(rng.randrange(256) for _ in range(1500)) * 2
+    stream = rnc.compress(plain, method=1)
+
+    flipped = bytearray(stream)
+    flipped[40] ^= 0x10
+    with pytest.raises(ValueError, match="packed data fails its CRC"):
+        rnc.decompress(bytes(flipped), method=1)
+    wrong_sum = bytearray(stream)
+    wrong_sum[12] ^= 1
+    with pytest.raises(ValueError, match="unpacked data fails its CRC"):
+        rnc.decompress(bytes(wrong_sum), method=1)
+    with pytest.raises(ValueError, match="method byte"):
+        rnc.decompress(stream, method=2)
+
+    cut = stream[: len(stream) // 2]
+    with pytest.raises(ValueError, match="source ends"):
+        rnc.decompress(cut, method=1)
+    prefix, _, complete = rnc.decompress(cut, method=1, partial=True)
+    assert not complete
+    assert 0 < len(prefix) < len(plain)
+    assert plain.startswith(prefix)
+
+
+# -- Namco LZSS and the Strike variant ---------------------------------------
+
+
+def test_namco_lz_prefix_is_big_endian_and_strike_masks_its_ring() -> None:
+    """The ring LZSS vector behind a 16-bit big-endian size.
+
+    The reference names ring position 0xFEE, the Namco cursor origin. The Strike
+    ring is 2048 bytes, so the same field reads as 0x7EE -- its own origin --
+    which is what masking the top bit has to give.
+    """
+    stream = bytes([0x00, 0x07, 0x03, 0x41, 0x42, 0xEE, 0xF2])
+    assert namco_lz.decompress(stream) == (b"ABABABA", 7, True)
+    assert namco_lz.decompress(stream, ring_size=namco_lz.STRIKE_RING)[0] == b"ABABABA"
+
+
+def test_namco_lz_streams_read_the_same_under_a_1024_byte_ring() -> None:
+    """The encoder's hedge on the doubted window: nothing reaches past 1024 back.
+
+    A block repeated 2000 bytes on would be a cheap match under the 4096-byte
+    ring. Written that way, a 1024-byte-ring reading copies the wrong bytes.
+    """
+    block = bytes((i * 7919) % 251 for i in range(2000))
+    stream = namco_lz.compress(block * 2)
+    assert namco_lz.decompress(stream)[0] == block * 2
+    narrow = lzss_ring.decompress(
+        stream, size_bytes=2, byteorder="big", ring_size=0x400
+    )
+    assert narrow[0] == block * 2
+
+
+@pytest.mark.parametrize("ring", [namco_lz.NAMCO_RING, namco_lz.STRIKE_RING])
+def test_namco_lz_round_trips_and_needs_a_whole_stream(ring: int) -> None:
+    plain = bytes((i * 97 + i // 5) & 0xFF for i in range(3000)) + bytes(3000)
+    stream = namco_lz.compress(plain, ring_size=ring, window=min(ring, 0x400))
+    assert namco_lz.decompress(stream + b"junk", ring_size=ring) == (
+        plain,
+        len(stream),
+        True,
+    )
+    with pytest.raises(ValueError, match="source ended"):
+        namco_lz.decompress(stream[:-3], ring_size=ring)
+    with pytest.raises(ValueError, match="empty payload"):
+        namco_lz.compress(b"", ring_size=ring)
+
+
+# -- BlueSky LZ + RLE --------------------------------------------------------
+
+
+def test_bluesky_lz_decodes_both_two_byte_ops_and_the_whole_ring_distance() -> None:
+    """Literals A B, a 4-byte match 2 back, a 3-byte fill of Z, and a 3-byte
+    match at distance field 0 — which is the full 2048 bytes back, into the
+    ring's zero fill. The size field says 12 by storing 11.
+    """
+    stream = bytes.fromhex("000B384142A100005A8000")
+    assert bluesky_lz.decompress(stream) == (b"ABABABZZZ\0\0\0", len(stream), True)
+    # One less in the size field cuts the final match short rather than failing.
+    shorter = bytes.fromhex("000A") + stream[2:]
+    assert bluesky_lz.decompress(shorter)[0] == b"ABABABZZZ\0\0"
+
+
+@pytest.mark.parametrize(
+    "plain",
+    [
+        b"A",
+        bytes(range(256)),
+        b"\x00" * 5000,  # fills chained end to end
+        bytes((i * 7919) % 251 for i in range(1500)) * 2,  # within the 2 KiB ring
+        b"ab" + bytes(300) + b"ab" * 50,
+    ],
+)
+def test_bluesky_lz_round_trips(plain: bytes) -> None:
+    stream = bluesky_lz.compress(plain)
+    assert bluesky_lz.decompress(stream + b"junk") == (plain, len(stream), True)
+
+
+def test_bluesky_lz_truncation_is_an_error_unless_partial() -> None:
+    rng = random.Random(6)
+    plain = bytes(rng.randrange(256) for _ in range(2000))
+    cut = bluesky_lz.compress(plain)[:1000]
+    with pytest.raises(ValueError, match="source ended"):
+        bluesky_lz.decompress(cut)
+    prefix, _, complete = bluesky_lz.decompress(cut, partial=True)
+    assert not complete
+    assert plain.startswith(prefix)
+    with pytest.raises(ValueError, match="empty payload"):
+        bluesky_lz.compress(b"")
+
+
+# -- Master System: "Phantasy Star" RLE and the "Sonic 2" tile codec -----------
+
+# Four parts of four bytes: a run and a literal, a literal, a run of zeros, a
+# literal and a run. Verified against the game's Z80 tile loader, which writes
+# part k's byte i at k + 4i.
+_PS_STREAM = bytes.fromhex("03AA810100 841011121300 040000 82F0F102FF00")
+_PS_TILES = bytes.fromhex("AA1000F0 AA1100F1 AA1200FF 011300FF")
+
+
+def test_phantasy_star_rle_weaves_its_parts_and_reads_80_as_256_literals() -> None:
+    assert phantasy_star_rle.decompress(_PS_STREAM + b"\x7f") == (
+        _PS_TILES,
+        len(_PS_STREAM),
+        True,
+    )
+    # The tile loader counts a literal down with djnz, so a zero count is 256.
+    literal = bytes(range(256))
+    assert phantasy_star_rle.decompress(b"\x80" + literal + b"\x00", parts=1) == (
+        literal,
+        258,
+        True,
+    )
+
+
+@pytest.mark.parametrize("parts", [2, 4])
+def test_phantasy_star_rle_round_trips_and_never_writes_80(parts: int) -> None:
+    rng = random.Random(parts)
+    data = (
+        bytes(64)
+        + b"\x5a" * 1000  # runs past the 127-byte packet
+        + bytes(rng.randrange(256) for _ in range(1016))  # literals past it too
+        + bytes(rng.choice((0, 0, 1, 0x80)) for _ in range(512))
+    )
+    packed = phantasy_star_rle.compress(data, parts=parts)
+    assert phantasy_star_rle.decompress(packed, parts=parts) == (
+        data,
+        len(packed),
+        True,
+    )
+    i = 0
+    for _ in range(parts):  # walk the packets: $80 means 256 or 65,536 by loader
+        while packed[i]:
+            assert packed[i] != 0x80
+            i += 1 + (packed[i] & 0x7F if packed[i] & 0x80 else 1)
+        i += 1
+    assert len(packed) < len(data) * 3 // 4
+
+
+def test_phantasy_star_rle_rejects_a_cut_stream_and_a_wrong_part_count() -> None:
+    with pytest.raises(ValueError, match="inside part 3 of 4"):
+        phantasy_star_rle.decompress(_PS_STREAM[:-2])
+    prefix, _, complete = phantasy_star_rle.decompress(_PS_STREAM[:-2], partial=True)
+    assert not complete and prefix[:3] == _PS_TILES[:3]
+    # A two-part tilemap read as four parts takes two more out of what follows.
+    tilemap = phantasy_star_rle.compress(bytes(range(40)), parts=2)
+    with pytest.raises(ValueError, match="part count is likely wrong"):
+        phantasy_star_rle.decompress(tilemap + b"\x81\x00\x00\x82\x00\x00\x00", parts=4)
+    with pytest.raises(ValueError, match="whole number"):
+        phantasy_star_rle.compress(bytes(5), parts=2)
+
+
+def test_phantasy_star_rle_interleave_is_an_input_defaulting_to_tiles(tmp_path) -> None:
+    """Unbound, the host hands the codec its default of 4; bound to 2, the same
+    stream reads as a map's two parts, woven two apart — on the tilemap pathway
+    too, which resolves a compressed map's scheme inputs as the pixel side does."""
+    rom = tmp_path / "rom.sms"
+    rom.write_bytes(bytes(0x40) + _PS_STREAM + bytes(0x40))
+    reg = default_registry()
+    ws = Workspace()
+    parent = ws.open_file(str(rom))
+    codec = PhantasyStarRleCompression.info.id
+    sl = ws.add_slice(parent.path, "art", 0x40, len(_PS_STREAM), codec)
+    preset = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
+
+    cfg = pixel_config_for(sl, preset, reg, ws)
+    assert cfg.compression_id == codec and not cfg.input_problems
+    assert pipeline.load_pixel_data(cfg, reg).data == _PS_TILES
+
+    woven = bytes.fromhex("AA10AA11AA120113")
+    sl.inputs = {codec: {phantasy_star_rle.INPUT_PARTS: 2}}
+    assert (
+        pipeline.load_pixel_data(pixel_config_for(sl, preset, reg, ws), reg).data
+        == woven
+    )
+    sl.content_kind = ContentKind.TILEMAP
+    cfg = tilemap_config_for(sl, "preset.tilemap.sms-bg", reg, ws)
+    assert cfg.compression_id == codec
+    assert pipeline.load_tilemap_data(cfg, reg).data == woven
+
+
+def _sonic2_vector() -> tuple[bytes, bytes]:
+    """One tile of each type, in one bitstream byte read low pair first.
+
+    The XOR tile's mask sets bits 0, 2, 4 and 17 (byte 2, bit 1). Its pass is a
+    running XOR, so byte 4 becomes 0F ^ FF — the byte 2 already changed — not
+    0F ^ F0; and byte 17's 01 carries down every odd byte after it. Verified
+    against the game's Z80 loader.
+    """
+    stream = (
+        bytes.fromhex("0100 0400 3400")  # header, 4 tiles, bitstream at 52
+        + bytes(range(32))  # %01 raw
+        + bytes.fromhex("01000080 1122")  # %10: bytes 0 and 31
+        + bytes.fromhex("15000200 0FF00F01")  # %11
+        + bytes([0b11_10_01_00])
+    )
+    masked = bytearray(32)
+    masked[0], masked[31] = 0x11, 0x22
+    xored = bytearray(32)
+    xored[0], xored[2] = 0x0F, 0xFF
+    xored[4:16:2] = b"\xf0" * 6
+    xored[17:32:2] = b"\x01" * 8
+    return stream, bytes(32) + bytes(range(32)) + masked + xored
+
+
+def test_sonic2_tiles_decode_all_four_types() -> None:
+    stream, tiles = _sonic2_vector()
+    assert sonic2_tiles.decompress(stream + b"\xee" * 8) == (tiles, len(stream), True)
+
+
+@pytest.mark.parametrize(
+    "tiles",
+    [
+        bytes(64),
+        bytes((i * 7919) % 251 for i in range(32 * 20)),  # raw
+        bytes(8) + b"\x33" + bytes(23),  # masked
+        b"\x0f\xf0" * 8 + bytes(16),  # a chain the XOR pass zeroes
+        bytes(random.Random(9).choice((0, 0, 0, 0x81)) for _ in range(32 * 64)),
+    ],
+)
+def test_sonic2_tiles_round_trip(tiles: bytes) -> None:
+    packed = sonic2_tiles.compress(tiles)
+    assert sonic2_tiles.decompress(packed) == (tiles, len(packed), True)
+
+
+def test_sonic2_tiles_reject_truncated_and_corrupt_streams() -> None:
+    stream, tiles = _sonic2_vector()
+    with pytest.raises(ValueError, match="bitstream ends"):
+        sonic2_tiles.decompress(stream[:-1])
+    cut = stream[:45] + stream[52:]  # the XOR tile cut one byte into its mask
+    cut = cut[:4] + (45).to_bytes(2, "little") + cut[6:]
+    with pytest.raises(ValueError, match="after 3 of 4 tiles"):
+        sonic2_tiles.decompress(cut)
+    prefix, _, complete = sonic2_tiles.decompress(cut, partial=True)
+    assert not complete and prefix == tiles[:96]
+    with pytest.raises(ValueError, match="not 01 00"):
+        sonic2_tiles.decompress(b"\x00" + stream[1:])
+    with pytest.raises(ValueError, match="tile count is 0"):
+        sonic2_tiles.decompress(stream[:2] + b"\x00\x00" + stream[4:])
+    with pytest.raises(ValueError, match="whole 32-byte tiles"):
+        sonic2_tiles.compress(bytes(33))

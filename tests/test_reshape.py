@@ -26,6 +26,7 @@ from celpix.plugins.builtins.split_planes import (
     PART_COUNTS,
     WORD_PART_COUNTS,
     SplitPartsReshape,
+    split_part_plugins,
 )
 from celpix.plugins.data_lut import (
     DATA_LUT_ENGINE,
@@ -538,3 +539,60 @@ def test_backfill_slice_length_refuses_under_a_reshape() -> None:
     assert not backfill_slice_length(reshaped, ctx)
     assert reshaped.slice_length is None
     assert reshaped.reshape_id != NO_RESHAPE
+
+
+def test_clockwise_corner_arrays_lay_out_as_a_raster_stamp() -> None:
+    """Four corner arrays stored **around** a 2x2 stamp — TL, TR, BR, BL — rather
+    than across it. The join has to put the bottom pair back in reading order, or
+    every stamp comes out with its bottom half mirrored: a picture that still
+    looks like a picture, which is why the two orders are worth telling apart
+    (Sesame Street: Counting Cafe's stamp tables, `$3E84`).
+    """
+    ctx = PipelineContext()
+    corners = [(0x00, 0x01), (0x10, 0x11), (0x20, 0x21), (0x30, 0x31)]  # TL TR BR BL
+    table = b"".join(bytes(pair) for pair in corners for _ in range(2))
+    clockwise = SplitPartsReshape(2, unit=2, groups=2, clockwise=True)
+    laid = clockwise.reshape(table, ctx)
+    # Top row is TL TR, bottom row BL BR — laid at twice the table's length the
+    # four cells of stamp 0 are its corners, the right way round.
+    assert laid[:4] == bytes((0x00, 0x01, 0x10, 0x11))
+    assert laid[8:12] == bytes((0x30, 0x31, 0x20, 0x21))
+    assert clockwise.unshape(laid, ctx) == table
+    # The raster-order join of the same bytes differs only in the bottom half,
+    # which is the whole hazard.
+    raster = SplitPartsReshape(2, unit=2, groups=2).reshape(table, ctx)
+    assert raster[:4] == laid[:4]
+    assert raster[8:12] == bytes((0x20, 0x21, 0x30, 0x31))
+
+
+def test_a_grouped_join_states_the_width_it_lays_the_table_out_at() -> None:
+    """The layout is the point of the transform — two groups joined, read as two
+    rows — so the width is not a preference: a map bound to the table strides its
+    stamp's lower half by the source's width, and any other number resolves that
+    half from the wrong row and draws every other 8-pixel row from the wrong
+    place. Stated, the binding cannot be knocked over by the Cols spin.
+    """
+    from celpix.core.context import KEY_TILEMAP_COLUMNS
+
+    ctx = PipelineContext()
+    table = bytes(8 * 5)  # four word arrays of five stamps
+    SplitPartsReshape(2, unit=2, groups=2).reshape(table, ctx)
+    assert ctx.get(KEY_TILEMAP_COLUMNS) == 10  # two rows of five stamps' cells
+
+    # A chip split is a region of pixels and has no cells to lay out.
+    plain = PipelineContext()
+    SplitPartsReshape(2, unit=2).reshape(table, plain)
+    assert plain.get(KEY_TILEMAP_COLUMNS) is None
+
+    # And a region with a tail says nothing rather than something off by a row:
+    # the claim is exact or absent.
+    ragged = PipelineContext()
+    SplitPartsReshape(2, unit=2, groups=2).reshape(table + b"\x00\x00", ragged)
+    assert ragged.get(KEY_TILEMAP_COLUMNS) is None
+
+
+def test_clockwise_and_raster_group_joins_register_apart() -> None:
+    """Both orders ship, under ids that say which is which: a table read through
+    the wrong one is a silent half-mirror rather than an error."""
+    ids = {plugin.info.id for plugin in split_part_plugins()}
+    assert {"reshape.split-words-2x2", "reshape.split-words-2x2-clockwise"} <= ids

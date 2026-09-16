@@ -212,12 +212,20 @@ class _Source:
             raise _fail("bit stream runs past the header's packed size")
         return 0
 
-    def take(self, count: int) -> bytes:
-        """``count`` payload bytes, which must lie inside the stream."""
+    def take(self, count: int, out: bytearray | None = None) -> bytes:
+        """``count`` payload bytes, which must lie inside the stream.
+
+        Given ``out``, a buffer that ends inside the bytes still hands over the
+        ones it has before giving up, so a partial decode of incompressible data
+        -- one long literal run -- shows something rather than nothing.
+        """
         at = self.pos
         if at + count > self._end:
             raise _fail("raw bytes run past the header's packed size")
         if at + count > self._avail:
+            if out is not None:
+                out += self._data[at : self._avail]
+            self.pos = self._avail
             raise _Truncated
         self.pos += count
         return self._data[at : at + count]
@@ -300,7 +308,10 @@ class _Table:
             raise _fail(f"a table declares {count} symbols, more than 16")
         depths = [bits.bits(4) for _ in range(count)]
         # The Kraft sum, in units of 2**-15: above one whole, two codes collide.
-        if sum(1 << (M1_MAX_CODE_BITS - d) for d in depths if d) > 1 << M1_MAX_CODE_BITS:
+        if (
+            sum(1 << (M1_MAX_CODE_BITS - d) for d in depths if d)
+            > 1 << M1_MAX_CODE_BITS
+        ):
             raise _fail("code lengths over-subscribe the code space")
         self._lookup = {
             code: symbol
@@ -335,7 +346,7 @@ def _unpack_1(src: _Source, target: int, out: bytearray) -> None:
             run = runs.value(bits)
             if run:
                 _room(out, run, target)
-                out += src.take(run)
+                out += src.take(run, out)
                 bits.resync()
             if left:
                 distance = distances.value(bits) + 1
@@ -431,7 +442,7 @@ def _unpack_2(src: _Source, target: int, out: bytearray) -> None:
                 if length == M2_LONG_MIN:
                     run = (bits.bits(4) << 2) + M2_RUN_MIN
                     _room(out, run, target)
-                    out += src.take(run)
+                    out += src.take(run, out)
                     continue
                 distance = _distance_2(bits, src)
             _copy(out, distance, length, target)
@@ -672,7 +683,9 @@ def _ops_2(data: bytes) -> list[tuple[int, int]]:
     and it is routinely not the longest match inside 4 KiB, so both are searched.
     """
     n = len(data)
-    near_len, near_at = MatchFinder(data, min_match=2, window=M2_NEAR_WINDOW).all_longest(2)
+    near_len, near_at = MatchFinder(
+        data, min_match=2, window=M2_NEAR_WINDOW
+    ).all_longest(2)
     far_len, far_at = MatchFinder(data, min_match=3, window=M2_WINDOW).all_longest(
         M2_MAX_MATCH
     )

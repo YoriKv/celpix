@@ -676,6 +676,30 @@ def resolve_pages_across(
 
 
 @lru_cache(maxsize=16)
+def column_order(columns: int, count: int) -> tuple[int, ...]:
+    """Which cell each drawn position shows, for a map stored **down columns**.
+
+    A map whose cells run top-to-bottom of one column and then down the next,
+    which is how a side-scroller commonly keeps a level: the strip the hardware
+    needs as it scrolls one column further is then contiguous. Nothing about the
+    cells themselves differs — only which position each one is drawn at — so this
+    is the same kind of permutation a page assembly is (:func:`page_order`), and
+    it sits beside it for the same caller (:attr:`~celpix.core.document.Document.
+    cell_order`).
+
+    The column height is the count divided by the width, because the picture is
+    the rectangle the cells fill: the file states the width nowhere a map of this
+    shape can be read without one. A **ragged** last column has no position to
+    be drawn at, so its cells are left out rather than drawn at someone else's
+    position — the same honesty :func:`page_order` shows a partial page.
+    """
+    width = max(1, columns)
+    height = ceil_div(max(0, count), width)
+    order = [column * height + row for row in range(height) for column in range(width)]
+    return tuple(at for at in order if at < count)
+
+
+@lru_cache(maxsize=16)
 def page_order(
     page_columns: int, page_rows: int, pages: int, pages_across: int
 ) -> tuple[int, ...]:

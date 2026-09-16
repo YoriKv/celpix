@@ -332,6 +332,12 @@ def paint_selection_outline(
 # the longest preset name is and a plugin can make it longer at any time.
 PRESET_COMBO_WIDTH = 160
 
+# The width a **fixed-choice** dropdown takes: a handful of phrases the app wrote
+# itself, not a list the registry can grow — spare room, content kind, literal vs
+# from-bytes, byte order. Narrower than a format picker because nothing can make
+# its longest item longer, and one number so a form of them lines up.
+SHORT_COMBO_WIDTH = 120
+
 
 class CompactComboBox(QComboBox):
     """A combo box whose closed button is a stated width in pixels.

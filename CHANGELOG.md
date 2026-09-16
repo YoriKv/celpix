@@ -2,8 +2,15 @@
 
 ## v0.5.22 - unreleased
 
-- Grouped word-table reshape (`reshape.split-words-2x2`) for 2x2 stamp tables
-  stored as four corner arrays
+- Added plugin inputs that allow a plugin to be configurable, mostly used
+  for plugins that reference other parts of the ROM for tables
+- The Slice dialog can edit its codec's inputs, from a button beside its own
+  compression picker
+- More sega compression formats
+- Expanded reshape plugin, added `reshape.split-words-2x2-clockwise`
+- Added `column_major` to tilemap formats
+- More things added to the undo stack
+- Various fixes
 
 ## v0.5.21 - 2026-09-14
 

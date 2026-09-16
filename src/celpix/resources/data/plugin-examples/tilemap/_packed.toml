@@ -115,6 +115,13 @@ endian = "little"
 # times or a quarter of its size.
 # stamp_dense = true
 
+# Set when the cells run **down each column** instead of across each row — how a
+# side-scroller commonly keeps a level, so the strip the hardware uploads as it
+# scrolls one column further is contiguous in the file. Display only: the cells
+# stay in the file's order, so a save writes back what was read, and the column
+# height comes from the width the picture is laid at.
+# column_major = true
+
 # How many **cells of the source** one coordinate names, for an indirect format
 # whose stamp is its own constant — a metatile table always names a 2x2, say —
 # rather than something the source's header divides for it. Declared here it

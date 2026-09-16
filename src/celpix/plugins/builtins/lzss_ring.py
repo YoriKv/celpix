@@ -69,6 +69,7 @@ def _ring_start(ring_size: int) -> int:
     """
     return ring_size - MAX_MATCH
 
+
 # Compressor tuning: how many recent positions sharing a 3-byte prefix to test
 # (see :class:`~celpix.plugins.builtins._lz.MatchFinder`).
 _MAX_CANDIDATES = 96

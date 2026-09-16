@@ -86,6 +86,7 @@ from celpix.ui.searchable_combo import (
 from celpix.ui.undo_commands import (
     TilemapBindingCommand,
     TilemapBindingState,
+    ViewToggleCommand,
 )
 from celpix.ui.widgets import (
     add_labelled,
@@ -454,21 +455,21 @@ class TilemapBarMixin:
     def _on_all_frames_change(self, on: bool) -> None:
         """Redraw with the empty frame slots shown, or without them.
 
-        A **view** toggle, so no re-read and no undo step: the frames are all
-        decoded either way (``Document.sprite_frames`` holds every slot), and
-        this only says how many of them the sheet lays out. That also makes it
-        cheap enough to be a checkbox rather than a reload the way the size pair
-        beside it is.
+        No **re-read**: the frames are all decoded either way
+        (``Document.sprite_frames`` holds every slot), and this only says how
+        many of them the sheet lays out. That is what makes it cheap enough to
+        be a checkbox rather than a reload the way the size pair beside it is.
+
+        One undo step all the same. The answer is the entry's and the project
+        file keeps it, so it is part of how the sheet is set up rather than a
+        glance at it - and a sprite sheet resized from 32 slots to 8 and back is
+        not something a user should have to remember the number for.
 
         The refresh is what lands it: the capture at the top of that cycle puts
         the window's answer into ``doc.view``, which is where the sheet geometry,
         the image and an export all read it (``Document.shown_frames``).
         """
-        if self._show_all_frames == on:
-            return
-        self._show_all_frames = on
-        if self._doc is not None:
-            self._refresh_view()
+        self._push_view_toggle("_show_all_frames", "show all frames", on)
 
     def _sync_transparent_zero(self) -> None:
         """Hold the entry's backdrop choice on the box.
@@ -485,17 +486,34 @@ class TilemapBarMixin:
     def _on_transparent_zero_change(self, on: bool) -> None:
         """Redraw with index 0 clear, or as the colour that sits there.
 
-        A **view** toggle like All Frames: nothing is re-read and nothing is
-        undoable, because no index moves — only the colour table the render
-        resolves them through changes, one entry of it per palette row
-        (:func:`~celpix.ui.render_bridge._clear_zeros`). The refresh is what lands
-        it, via the view capture at the top of that cycle.
+        Like All Frames: nothing is re-read, because no index moves — only the
+        colour table the render resolves them through changes, one entry of it
+        per palette row (:func:`~celpix.ui.render_bridge._clear_zeros`) — and it
+        is one undo step, because which cells read as empty is the entry's
+        answer and the project file keeps it. The refresh is what lands it, via
+        the view capture at the top of that cycle.
         """
-        if self._transparent_zero == on:
+        self._push_view_toggle("_transparent_zero", "clear index 0", on)
+
+    def _push_view_toggle(self, attr: str, text: str, on: bool) -> None:
+        """Push one of the bar's view switches, or land it if there is no entry.
+
+        Shared by the two boxes above, which differ only in which field they
+        drive and what the step is called. The guard is the ordinary one: a box
+        re-ticked to what it already shows is not a gesture, and one moved by an
+        undo apply is the apply.
+        """
+        if getattr(self, attr) == on or self._applying_undo:
             return
-        self._transparent_zero = on
-        if self._doc is not None:
-            self._refresh_view()
+        entry = self._workspace.current
+        if self._doc is None or entry is None:
+            self._apply_view_toggle(attr, on)
+            return
+        self._push_command(
+            ViewToggleCommand(
+                self, entry, attr, text, before=getattr(self, attr), after=on
+            )
+        )
 
     def _sync_cell_index(self) -> None:
         """Show the selected cell's reference, ranged to what the format allows.

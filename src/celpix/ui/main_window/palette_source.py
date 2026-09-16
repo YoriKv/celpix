@@ -57,6 +57,7 @@ from celpix.ui.undo_commands import (
     PaletteCommand,
     PaletteConsumerLink,
     PaletteState,
+    PreviewPaletteFormatCommand,
 )
 from celpix.ui.widgets import (
     select_combo_data,
@@ -1075,14 +1076,40 @@ class PaletteSourceMixin:
 
         Re-read rather than re-decoded: a preview is read-only, so its document
         holds nothing an edit could have put there and nothing is lost by going
-        back to the file. Display state, so no undo step - the same reason
-        previewing one isn't a history step either.
+        back to the file.
+
+        One undo step all the same, and for the reason the gesture exists: the
+        codec it lands on is written to the entry, and correcting a file that
+        decoded wrong means trying formats until one reads. Stepping back
+        through those tries is the point. Applied in place - the entry is a
+        PALETTE entry, which can never be the current view.
         """
         entry = self._preview_palette
-        if entry is None:
+        if entry is None or self._applying_undo:
             return
-        entry.palette_preset_id = self._palette_preset_id()
+        after = self._palette_preset_id()
+        if entry.palette_preset_id == after:
+            return
+        self._push_command(
+            PreviewPaletteFormatCommand(
+                self,
+                entry,
+                f"read {entry.name} as {self._palette_preset.currentText()}",
+                entry.palette_preset_id,
+                after,
+            )
+        )
+
+    def _apply_preview_palette_format(self, entry: Entry, preset_id: str) -> None:
+        """Re-read a previewed palette file under ``preset_id``.
+
+        Drops the cached document so the preview goes back to the file, and
+        snaps the Format picker with it - an undo of this reaches the dock from
+        the history, where nothing else is moving the combo.
+        """
+        entry.palette_preset_id = preset_id
         entry.doc = None
+        select_combo_data(self._palette_preset, preset_id)
         self._preview_palette_file(entry)
 
     def _relabel_custom_format(self) -> None:

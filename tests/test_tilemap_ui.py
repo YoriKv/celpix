@@ -250,8 +250,15 @@ def test_transparent_zero_clears_a_blank_cell_on_every_palette_row(
     assert image.pixel(8, 0) >> 24 == 0  # blank on row 0
     assert image.pixel(16, 0) >> 24 == 0  # blank on row 2 — the stride case
 
-    # A view toggle, like All Frames beside it: no index moved, so no undo step.
-    assert window._undo_stack.count() == steps
+    # One undo step, like All Frames beside it: no index moved and nothing was
+    # re-read, but which cells read as empty is the entry's answer and the
+    # project file keeps it.
+    assert window._undo_stack.count() == steps + 1
+    window._undo_stack.undo()
+    assert not window._transparent_zero and not window._transparent_zero_box.isChecked()
+    assert window._canvas._image.pixel(16, 0) >> 24 == 0xFF
+    window._undo_stack.redo()
+    assert window._transparent_zero
 
     # And it belongs to the entry, not the window: the bank has no answer of its
     # own, so switching to it must not carry this one along.
@@ -406,9 +413,14 @@ def test_all_frames_is_a_sprite_maps_own_switch_and_grows_the_sheet(
     assert window._sprite_sheet().frames == 32
     assert window._canvas._filled_tiles == window._sprite_sheet().slots
 
-    # Not undoable, unlike its neighbours on the bar: it says how much of the
-    # file to look at, not what the file holds.
-    assert window._undo_stack.count() == steps
+    # One undo step, like its neighbours on the bar: it says how much of the file
+    # to look at rather than what the file holds, but that answer is the entry's
+    # and the project file keeps it.
+    assert window._undo_stack.count() == steps + 1
+    window._undo_stack.undo()
+    assert not window._all_frames.isChecked() and window._sprite_sheet().frames == 1
+    window._undo_stack.redo()
+    assert window._sprite_sheet().frames == 32
 
     # A grid tilemap has no frames, so the box is not a feature switched off there.
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))

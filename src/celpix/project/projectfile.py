@@ -52,6 +52,14 @@ from celpix.plugins.base import (
     RAW_CONTAINER,
     STAGE_DEFAULT_PRESET,
 )
+from celpix.plugins.registry import Registry
+from celpix.project.inputs import (
+    Bindings,
+    InputBinding,
+    IntegerFromBytes,
+    RegionBinding,
+    prune_bindings,
+)
 from celpix.project.workspace import (
     CompositePiece,
     Entry,
@@ -79,7 +87,7 @@ from celpix.project.workspace import (
 # detail: an id names what an entry was opened *with*, so a rename with no
 # forwarding address resets that entry to pass-through, which reads as data
 # loss. That mapping lives in `plugins/aliases.py`.
-PROJECT_VERSION = 2
+PROJECT_VERSION = 3
 PROJECT_EXTENSION = ".celpix"
 
 # The two alphabet presets celPix used to ship, by the id an older project names
@@ -174,8 +182,21 @@ def _migrate_1_to_2(data: dict[str, object]) -> dict[str, object]:
     return data
 
 
+def _migrate_2_to_3(data: dict[str, object]) -> dict[str, object]:
+    """v2 → v3: entries may carry ``inputs`` — what they bind to the data their
+    plugins declare they need from outside their own bytes.
+
+    Purely additive, so there is nothing to rewrite: a v2 file is a v3 file
+    with no bindings in it. The bump exists for the other direction — a v2 build
+    opening a v3 project drops every binding on its next save, and the number
+    is what makes it warn before it does (``docs/design/project-format.md`` §2).
+    """
+    return data
+
+
 _MIGRATIONS: dict[int, Callable[[dict[str, object]], dict[str, object]]] = {
     1: _migrate_1_to_2,
+    2: _migrate_2_to_3,
 }
 
 
@@ -197,7 +218,9 @@ def _migrated(data: dict[str, object]) -> tuple[dict[str, object], int | None]:
 
 
 # -- saving ----------------------------------------------------------------
-def project_dict(ws: Workspace, path: str) -> dict[str, object]:
+def project_dict(
+    ws: Workspace, path: str, registry: Registry | None = None
+) -> dict[str, object]:
     """The version-stamped JSON body ``ws`` would be saved as at ``path``.
 
     Split out of :func:`save_project` so the UI can also ask *what would be
@@ -205,6 +228,12 @@ def project_dict(ws: Workspace, path: str) -> dict[str, object]:
     written or loaded is what tells the user their project has unsaved changes.
     Stored paths are relative to ``path``'s directory, so the same workspace
     saved to two places is legitimately two different documents.
+
+    ``registry`` is what a save prunes each entry's input bindings against
+    (:func:`~celpix.project.inputs.prune_bindings`) — the plugins an entry no
+    longer reads through, the keys a plugin no longer declares. Without one
+    every binding is written, which is right for a caller with no registry to
+    ask: nothing is lost, and the next save that has one tidies up.
     """
     base_dir = dirname(abspath(path))
     # Where each entry sits, by identity, for the two records that name another
@@ -216,7 +245,9 @@ def project_dict(ws: Workspace, path: str) -> dict[str, object]:
     document: dict[str, object] = {
         "version": PROJECT_VERSION,
         "current": ws.entries.index(ws.current) if ws.current is not None else None,
-        "entries": [_entry_dict(entry, base_dir, positions) for entry in ws.entries],
+        "entries": [
+            _entry_dict(entry, base_dir, positions, registry) for entry in ws.entries
+        ],
     }
     # A view-only project setting: which pixel codecs the dropdown lists. Sorted
     # so the serialized form is stable (the UI diffs documents to spot unsaved
@@ -234,9 +265,9 @@ def project_dict(ws: Workspace, path: str) -> dict[str, object]:
     return document
 
 
-def save_project(ws: Workspace, path: str) -> None:
+def save_project(ws: Workspace, path: str, registry: Registry | None = None) -> None:
     """Serialize ``ws`` to ``path`` as a version-stamped ``.celpix`` document."""
-    document = project_dict(ws, path)
+    document = project_dict(ws, path, registry)
     # LF + trailing newline: projects are meant to live in version control.
     #
     # ``ensure_ascii=False`` because a font alphabet's run is whatever characters
@@ -259,7 +290,10 @@ _KINDS_BY_NAME = {name: kind for kind, name in _KIND_NAMES.items()}
 
 
 def _entry_dict(
-    entry: Entry, base_dir: str | None, positions: dict[int, int]
+    entry: Entry,
+    base_dir: str | None,
+    positions: dict[int, int],
+    registry: Registry | None = None,
 ) -> dict[str, object]:
     data: dict[str, object] = {
         "kind": _KIND_NAMES[entry.kind],
@@ -341,6 +375,12 @@ def _entry_dict(
             data["tile_source"] = _tile_source_dict(source, positions)
         if entry.sprite_size_pair is not None:
             data["sprite_size_pair"] = list(entry.sprite_size_pair)
+    # What the entry binds to the inputs its plugins declare — omitted when it
+    # binds nothing, which is every entry of every format that carries its own
+    # description in-line, so a project that never met one is byte-identical.
+    inputs = _inputs_dict(entry, positions, registry)
+    if inputs:
+        data["inputs"] = inputs
     session = entry.session
     if session is not None:
         # The tile selection is deliberately absent: it is a transient pointer
@@ -523,6 +563,12 @@ class CopiedEntry:
     #: an entry is not a value, so without this a pasted composite arrives with
     #: its list emptied (``docs/design/composite-entry.md``).
     piece_sources: tuple[int, ...] = ()
+    #: One ``(plugin id, key, position)`` per **input binding** that names an
+    #: entry, in the order :func:`~celpix.project.inputs.iter_bindings` walks
+    #: them — the same join again, for the third kind of reference a row can
+    #: hold (``docs/design/plugin-inputs.md`` §3). ``-1`` for a source that
+    #: was not part of the copy.
+    input_sources: tuple[tuple[str, str, int], ...] = ()
 
 
 def entries_payload(
@@ -582,6 +628,10 @@ def entries_from_payload(raw: object) -> list[CopiedEntry]:
         # The pieces themselves ride on the entry; only the entry each one names
         # has to come back beside it, for the reason the binding does.
         entry.pieces = tuple(piece for piece, _at in pieces)
+        # The bindings ride on the entry too, and the ones naming an entry are
+        # handed back beside it the same way; the paste resolves or drops them.
+        input_sources = entry._pending_input_sources
+        entry._pending_input_sources = ()
         out.append(
             CopiedEntry(
                 entry=entry,
@@ -589,9 +639,36 @@ def entries_from_payload(raw: object) -> list[CopiedEntry]:
                 tile_source=binding[0] if binding is not None else None,
                 tile_source_index=binding[1] if binding is not None else -1,
                 piece_sources=tuple(at for _piece, at in pieces),
+                input_sources=input_sources,
             )
         )
     return out
+
+
+def inputs_payload(entry: Entry, all_entries: list[Entry], session: str) -> dict:
+    """One entry's input bindings as a clipboard payload (Copy Inputs).
+
+    The same per-plugin form the project file writes, so a paste lands exactly
+    what a save would, and the same ``session`` token :func:`entries_payload`
+    carries: a binding naming an entry is resolved through the objects the
+    copying process remembered, when the paste is in that process.
+    """
+    positions = {id(e): i for i, e in enumerate(all_entries)}
+    return {
+        "version": CLIPBOARD_VERSION,
+        "session": session,
+        "inputs": _inputs_dict(entry, positions, None),
+    }
+
+
+def inputs_from_payload(
+    raw: object,
+) -> tuple[dict[str, Bindings], list[tuple[str, str, int]]]:
+    """A Copy Inputs payload back into bindings, plus the named positions in
+    the order the copying side numbered them; empty for anything unusable."""
+    if not isinstance(raw, dict) or raw.get("version") != CLIPBOARD_VERSION:
+        return {}, []
+    return _inputs_from(raw)
 
 
 def payload_session(raw: object) -> str:
@@ -631,6 +708,7 @@ def load_project(path: str) -> LoadedProject:
     # After the bindings and for the same reason: both turn a stored position
     # back into an object, and both can only do it once every entry exists.
     _bind_composite_pieces(data.get("entries", []), parsed)
+    _bind_inputs(data.get("entries", []), parsed)
     index = _int(data.get("current"), -1)
     current = parsed[index] if 0 <= index < len(parsed) else None
     if current is not None and not current.kind.has_document:
@@ -697,7 +775,7 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
             ),
         )
     offset_key = "offset" if kind is EntryKind.BOOKMARK else "slice_offset"
-    return Entry(
+    entry = Entry(
         name=name if isinstance(name, str) and name else basename(path),
         kind=kind,
         path=path,
@@ -731,6 +809,17 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         pending_view=_view_from(raw.get("view")),
         pending_palette=_palette_from(raw.get("palette"), base_dir),
     )
+    _read_inputs_onto(entry, raw)
+    return entry
+
+
+def _read_inputs_onto(entry: Entry, raw: dict) -> None:
+    """Parse ``raw``'s bindings onto ``entry``, leaving the entry-shaped ones
+    for :func:`_bind_inputs` to point at their targets once every entry
+    exists — the same two-step every cross-entry reference here takes."""
+    bindings, named = _inputs_from(raw)
+    entry.inputs = bindings
+    entry._pending_input_sources = tuple(named)
 
 
 def _font_from(raw: dict) -> dict[str, object]:
@@ -902,6 +991,143 @@ def _bind_tile_sources(raw_entries: list, parsed: list[Entry | None]) -> None:
         source, at = found
         target = parsed[at] if 0 <= at < len(parsed) else None
         entry.tile_source = replace(source, entry=target) if target else None
+
+
+def _inputs_dict(
+    entry: Entry, positions: dict[int, int], registry: Registry | None
+) -> dict[str, object]:
+    """An entry's input bindings as JSON: ``plugin id -> key -> binding``.
+
+    Keyed by the **plugin**, so two codecs that both call an input ``table`` can
+    never be handed each other's bytes, and so that a picker moved away and back
+    finds its bindings where it left them. Which keys appear on a binding says
+    which shape it is (``docs/design/plugin-inputs.md`` §3):
+
+    - a **region** writes ``offset`` and ``length``;
+    - an integer **read from bytes** writes ``offset``, ``width`` and ``endian``;
+    - a **literal** integer is a bare number.
+
+    Either of the first two adds ``entry_index`` when it reaches into another
+    entry — the position rule :func:`_tile_source_dict` states, ``-1`` for one
+    that is no longer in the list, which round-trips to unbound. Without it the
+    range is into the entry's own file, absolute from byte 0.
+
+    Pruned against ``registry`` when there is one, and sorted at both levels so
+    the file is stable under a diff.
+    """
+    bindings = prune_bindings(entry, registry) if registry is not None else entry.inputs
+    out: dict[str, object] = {}
+    for plugin_id in sorted(bindings):
+        written: dict[str, object] = {}
+        for key in sorted(bindings[plugin_id]):
+            written[key] = _binding_dict(bindings[plugin_id][key], positions)
+        if written:
+            out[plugin_id] = written
+    return out
+
+
+def _binding_dict(binding: InputBinding, positions: dict[int, int]) -> object:
+    if isinstance(binding, RegionBinding):
+        data: dict[str, object] = {"offset": binding.offset, "length": binding.length}
+    elif isinstance(binding, IntegerFromBytes):
+        data = {
+            "offset": binding.offset,
+            "width": binding.width,
+            "endian": "little" if binding.little_endian else "big",
+        }
+    else:
+        return int(binding)
+    if binding.entry is not None:
+        data["entry_index"] = positions.get(id(binding.entry), -1)
+    return data
+
+
+def _inputs_from(raw: dict) -> tuple[dict[str, Bindings], list[tuple[str, str, int]]]:
+    """Stored bindings, and the entry position each entry-shaped one named.
+
+    The positions come back separately for the reason :func:`_pieces_from`'s do
+    — the entries they name may not be parsed yet — and :func:`_bind_inputs`
+    resolves them once they all are. Until then such a binding holds ``None``
+    for its entry, which reads as "this file"; the binder replaces it or drops
+    it, never leaves it.
+
+    Tolerant like the rest of this path: a malformed binding is skipped rather
+    than failing the entry, and a plugin whose bindings are all malformed writes
+    no key. Which shape a binding is comes from which keys it has, so a binding
+    from a newer build with keys this one does not know reads as nothing.
+    """
+    data = raw.get("inputs")
+    if not isinstance(data, dict):
+        return {}, []
+    bindings: dict[str, Bindings] = {}
+    named: list[tuple[str, str, int]] = []
+    for plugin_id, items in data.items():
+        if not isinstance(plugin_id, str) or not isinstance(items, dict):
+            continue
+        parsed: Bindings = {}
+        for key, item in items.items():
+            if not isinstance(key, str):
+                continue
+            binding = _binding_from(item)
+            if binding is None:
+                continue
+            parsed[key] = binding
+            if isinstance(item, dict) and "entry_index" in item:
+                named.append((plugin_id, key, _int(item.get("entry_index"), -1)))
+        if parsed:
+            # Through the alias table, like every other plugin id in the file:
+            # a renamed codec must find its bindings under its new name.
+            bindings[current_id(plugin_id)] = parsed
+    return bindings, named
+
+
+def _binding_from(item: object) -> InputBinding | None:
+    if isinstance(item, bool):
+        return None
+    if isinstance(item, int):
+        return item
+    if not isinstance(item, dict):
+        return None
+    offset = _int(item.get("offset"), None)
+    if offset is None or offset < 0:
+        return None
+    if "width" in item:
+        width = _int(item.get("width"), None)
+        if width is None or width <= 0:
+            return None
+        return IntegerFromBytes(
+            offset=offset, width=width, little_endian=item.get("endian") == "little"
+        )
+    length = _int(item.get("length"), None)
+    if length is None or length < 0:
+        return None
+    return RegionBinding(offset=offset, length=length)
+
+
+def _bind_inputs(raw_entries: list, parsed: list[Entry | None]) -> None:
+    """Point every entry-shaped binding at the entry its position named.
+
+    Resolved against ``parsed`` including the entries that failed to parse, for
+    the reason :func:`_bind_tile_sources` gives. A position naming nothing
+    **drops the binding**: left as it was it would read as "this file" and
+    silently decode against the wrong bytes, where an unbound input opens the
+    entry degraded with a notice naming what to bind.
+    """
+    for raw, entry in zip(raw_entries, parsed, strict=True):
+        if entry is None or not isinstance(raw, dict):
+            continue
+        for plugin_id, key, at in entry._pending_input_sources:
+            target = parsed[at] if 0 <= at < len(parsed) else None
+            bindings = entry.inputs.get(plugin_id)
+            if bindings is None or key not in bindings:
+                continue
+            if target is None:
+                del bindings[key]
+                if not bindings:
+                    del entry.inputs[plugin_id]
+            else:
+                bindings[key] = replace(bindings[key], entry=target)
+        entry._pending_input_sources = ()
 
 
 def _pieces_list(entry: Entry, positions: dict[int, int]) -> list[dict[str, object]]:

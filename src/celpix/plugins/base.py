@@ -14,6 +14,7 @@ the escape hatch for behaviour data cannot express. Qt-free — these run headle
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from celpix.core.capabilities import ContentKind
@@ -338,6 +339,63 @@ class ContainerField:
     detail: str = ""
 
 
+class InputKind(str, Enum):
+    """What kind of thing an :class:`InputSpec` asks an entry to bind.
+
+    An open list: a kind is one JSON shape in the project file, one resolver
+    (:mod:`celpix.project.inputs`) and one row in the Inputs window, and adding
+    one touches those three sites and no other. String-valued for the project
+    file, like :class:`~celpix.core.errors.Stage`. A binding whose kind a build
+    does not know reads as unbound, so a newer project degrades rather than
+    failing (``docs/design/plugin-inputs.md`` §2).
+    """
+
+    REGION = "region"  # bytes cut from the entry's file or from another entry
+    INTEGER = "integer"  # a number: a literal, or read out of bytes
+
+
+@dataclass(frozen=True)
+class InputSpec:
+    """One thing a stage plugin needs from **outside** the bytes it is handed.
+
+    Every stage plugin is given one byte range plus a context, which is enough
+    for a format that carries its own description in-line. A scheme whose code
+    table is shared by forty streams and stored ahead of them, or a sprite
+    mapping split into parallel arrays, needs bytes no slice can reach — so the
+    plugin *declares* what it needs here, the entry binds each one, and the host
+    resolves the bindings onto the context as
+    :data:`~celpix.core.context.KEY_INPUTS` (``docs/design/plugin-inputs.md``).
+
+    ``key`` is written into project files, so it is a compatibility surface like
+    a plugin id: renaming one orphans every binding of it. ``label`` is what the
+    UI calls it, and ``tooltip`` follows the tooltip rule — hard-wrapped at ~60
+    columns with explicit newlines, since Qt never wraps one.
+
+    ``unit`` is presentation: what one element is called, so a region's length
+    reads as "375 nodes" and an integer as "48 tiles". Empty shows bytes.
+
+    ``stride`` is **region-only** — the element size in bytes, which a bound
+    length must divide by. ``minimum``, ``maximum`` and ``default`` are
+    **integer-only**: the range a bound value must fall in, and what an
+    *optional* integer means when nothing is bound — ``None`` leaves that to
+    the plugin, which then finds the key absent from the dict.
+
+    An **absent optional input is absent from the dict**, never ``None``, so a
+    plugin tells "not bound" from any value with ``in``.
+    """
+
+    key: str
+    label: str
+    kind: InputKind = InputKind.REGION
+    required: bool = True
+    tooltip: str = ""
+    unit: str = ""
+    stride: int = 1
+    minimum: int = 0
+    maximum: int = 0xFFFF_FFFF
+    default: int | None = None
+
+
 @dataclass(frozen=True)
 class PluginInfo:
     """A plugin's identity. ``id`` is stable and namespaced by stage.
@@ -427,6 +485,13 @@ class PluginInfo:
 
     ``category`` is the heading a picker files this plugin under
     (:data:`CATEGORIES`) — presentation only, and empty means "no heading".
+
+    ``inputs`` is what the plugin needs from outside its own bytes
+    (:class:`InputSpec`), in the order the UI lists them. Declared by a
+    **code** plugin only — a preset is data and inherits its engine's — and
+    empty for every format that carries its description in-line, which is nearly
+    every one celPix ships. A Compression or Interpret plugin may declare them; a
+    container is already handed its whole source and reads what it likes.
     """
 
     id: str
@@ -442,6 +507,7 @@ class PluginInfo:
     content_kinds: tuple[ContentKind, ...] = (ContentKind.PIXELS, ContentKind.TILEMAP)
     preserves_offsets: bool = False
     category: str = ""
+    inputs: tuple[InputSpec, ...] = ()
 
 
 # The methods a plugin must have to be that kind of plugin at all. Only the

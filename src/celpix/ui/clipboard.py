@@ -259,6 +259,49 @@ def has_entries() -> bool:
     return mime is not None and mime.hasFormat(ENTRIES_MIME)
 
 
+# -- input bindings ------------------------------------------------------------
+INPUTS_MIME = "application/x-celpix-inputs"
+
+#: The entries a copied binding names, by the binding's position among the
+#: named ones — :data:`_COPIED_BINDINGS`'s rule and reason, one feature over.
+_COPIED_INPUT_SOURCES: dict[int, weakref.ref] = {}
+
+
+def put_inputs(payload: dict, sources: dict[int, object]) -> None:
+    """Place one entry's input bindings on the clipboard (Copy Inputs)."""
+    _COPIED_INPUT_SOURCES.clear()
+    _COPIED_INPUT_SOURCES.update(
+        {key: weakref.ref(target) for key, target in sources.items()}
+    )
+    mime = QMimeData()
+    mime.setData(INPUTS_MIME, QByteArray(json.dumps(payload).encode("utf-8")))
+    QGuiApplication.clipboard().setMimeData(mime)
+
+
+def take_inputs() -> dict | None:
+    """The bindings payload on the clipboard, if Copy Inputs put one there."""
+    mime = QGuiApplication.clipboard().mimeData()
+    if mime is None or not mime.hasFormat(INPUTS_MIME):
+        return None
+    try:
+        payload = json.loads(bytes(mime.data(INPUTS_MIME)).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def take_input_sources() -> dict[int, object]:
+    """The entries the last Copy Inputs remembered, minus any since freed."""
+    live = {key: ref() for key, ref in _COPIED_INPUT_SOURCES.items()}
+    return {key: target for key, target in live.items() if target is not None}
+
+
+def has_inputs() -> bool:
+    """Whether Paste Inputs could do anything — drives the row's state."""
+    mime = QGuiApplication.clipboard().mimeData()
+    return mime is not None and mime.hasFormat(INPUTS_MIME)
+
+
 def image_to_argb(image: QImage) -> ArgbGrid:
     """Convert a QImage into the Qt-free grid the import pathway takes.
 

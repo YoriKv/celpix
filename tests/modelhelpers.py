@@ -11,7 +11,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from celpix.core.context import PipelineContext
+from celpix.core.context import KEY_INPUTS, PipelineContext
+from celpix.core.errors import Stage
+from celpix.plugins.base import InputKind, InputSpec, PluginInfo
 
 
 def decoded_at_probe_length(
@@ -48,3 +50,48 @@ def decoded_at_probe_length(
         if cells:
             return cells, data, ctx
     return [], b"", PipelineContext()
+
+
+XOR_ID = "compression.test-xor-table"
+
+
+class XorTableCodec:
+    """A scheme whose stream is XORed against a table kept elsewhere — the
+    smallest plugin with **inputs** (``docs/design/plugin-inputs.md``).
+
+    Two inputs, one of each kind: the table is a required region of 2-byte
+    elements, the output size an optional integer that truncates the result.
+    Like PackBits it has no end marker, so it never reports completion. Both
+    directions are the one XOR, so a round trip is exact whatever the table.
+    """
+
+    info = PluginInfo(
+        id=XOR_ID,
+        name="XOR against a table",
+        stage=Stage.COMPRESSION,
+        self_delimiting=False,
+        inputs=(
+            InputSpec("table", "Key table", InputKind.REGION, stride=2, unit="word"),
+            InputSpec(
+                "output_size",
+                "Output size",
+                InputKind.INTEGER,
+                required=False,
+                minimum=1,
+                maximum=0x10000,
+                unit="byte",
+            ),
+        ),
+    )
+
+    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        inputs = ctx.get(KEY_INPUTS) or {}
+        out = xor_bytes(data, inputs["table"])
+        return out[: inputs["output_size"]] if "output_size" in inputs else out
+
+    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        return self.decompress(data, ctx)
+
+
+def xor_bytes(data: bytes, table: bytes) -> bytes:
+    return bytes(b ^ table[i % len(table)] for i, b in enumerate(data))

@@ -70,6 +70,7 @@ from celpix.plugins.base import (
 )
 from celpix.plugins.detect import resolved_container_id
 from celpix.plugins.registry import Registry
+from celpix.project.inputs import InputBinding, engine_id_of, resolve_inputs
 
 # The digit runs :func:`_natural_key` compares as numbers. Captured, so the split
 # keeps them and the key sees the whole name rather than only its text.
@@ -677,6 +678,26 @@ class Entry:
     # An object authored against another pair draws every subsprite at the wrong size
     # until this says so, which is why it is the user's and why it is per entry.
     sprite_size_pair: tuple[int, int] | None = None
+    # What this entry binds to the inputs its plugins declare
+    # (:class:`~celpix.plugins.base.InputSpec`): ``plugin id -> input key ->``
+    # :data:`InputBinding`. Keyed by the **plugin** rather than the stage because
+    # the binding belongs to the plugin that declared the key — two codecs may
+    # both call an input ``table`` and mean different bytes — and so that
+    # switching a picker away and back loses nothing. On a **slice** or a
+    # tilemap entry these feed the codecs that read it; on a **file** entry they
+    # feed the compression *preview* run over it, and are copied onto every
+    # slice carved under that codec (:func:`slice_of`). Bindings for a plugin
+    # the entry does not currently name are inert, and pruned only on save
+    # (:func:`~celpix.project.inputs.prune_bindings`). Treated as immutable:
+    # an edit replaces the whole mapping, which is what lets an undo command
+    # hold the before and after by reference
+    # (:func:`~celpix.project.inputs.with_bindings`).
+    inputs: dict[str, dict[str, InputBinding]] = field(default_factory=dict)
+    # The project reader's scratch: which of those bindings named an entry by
+    # position, ``(plugin id, key, position)``, until every entry exists and the
+    # positions can become objects (``projectfile._bind_inputs``). Empty on any
+    # entry the reader has finished with, and on every entry it never touched.
+    _pending_input_sources: tuple[tuple[str, str, int], ...] = ()
     # COMPOSITE entries only: the runs this entry's bytes are assembled from, in
     # order (:class:`CompositePiece`). Empty is a legal state and renders as an
     # empty document — a composite is created before it is filled in, and a
@@ -823,6 +844,15 @@ def slice_of(
     It also carries the parent's :class:`ContentKind` down, which
     :func:`new_slice` cannot: a window into a tilemap file is a tilemap, and only
     the entry knows what its file holds.
+
+    And it carries the parent's **input bindings** for ``compression_id`` down
+    (:attr:`Entry.inputs`): a file binds the code table its compression preview
+    decodes with, and the slice promoted or carved out of that preview has to be
+    read with the same table or it opens degraded. A **copy**, not a live link —
+    one file may keep two tables for one codec, so "the parent's binding" is
+    not one thing to inherit from — and the ``None``-sourced shape means "this
+    file" on the slice exactly as it did on the parent
+    (:class:`RegionBinding`).
     """
     entry = new_slice(
         parent.path,
@@ -834,6 +864,9 @@ def slice_of(
         reshape_id,
     )
     entry.content_kind = parent.content_kind
+    inherited = parent.inputs.get(compression_id)
+    if inherited:
+        entry.inputs = {compression_id: dict(inherited)}
     return entry
 
 
@@ -1486,6 +1519,19 @@ def pixel_config_for(
     parent = workspace.find_file(entry.path) if workspace is not None else None
     reordered = parent is not None and reorders_bytes(parent, registry)
     live, live_base = _parent_view_bytes(entry, parent, reordered, registry, preset_id)
+    # What the scheme needs from outside the slice — a shared code table, an
+    # output size — resolved here because only the host can reach the parent's
+    # buffer and the other entries a binding names. A scheme whose inputs do not
+    # resolve is put on the pass-through, exactly as a scheme this build lacks
+    # is: the bytes show packed, Write greys out, and the notice says what to
+    # bind (``docs/design/plugin-inputs.md`` §4).
+    compression_id = resolved[Stage.COMPRESSION][0]
+    inputs, problems = _stage_inputs(
+        entry, Stage.COMPRESSION, compression_id, registry, workspace
+    )
+    if problems:
+        compression_id = NO_COMPRESSION
+        writable = False
     if parent is not None:
         # **Every** slice is saved by splicing into the parent's buffer and
         # writing the parent, not by depositing at its own bounds. Under a
@@ -1522,11 +1568,13 @@ def pixel_config_for(
         dest=FileRef(entry.paths, offset=entry.slice_offset, length=entry.slice_length),
         interpret_preset_id=preset_id,
         reshape_id=reshape_id,
-        compression_id=resolved[Stage.COMPRESSION][0],
+        compression_id=compression_id,
         slot_fill=entry.slot_fill,
         write_enabled=writable,
         writes_through_parent=parent is not None,
         missing_plugins=missing,
+        inputs=inputs,
+        input_problems=problems,
     )
 
 
@@ -1551,16 +1599,46 @@ def tilemap_config_for(
     Whole-file tilemaps keep their own container, exactly as on the pixel side —
     there is no parent to read through, and the file's own read is the answer.
     """
+    # The cell engine's inputs — a sprite mapping's parallel arrays — resolved
+    # as the pixel side resolves a scheme's. With a problem the entry is read
+    # with the stage's **default preset** instead and goes view-only, the same
+    # degraded opening a missing preset gets: the cells draw as something rather
+    # than nothing, and the notice says which input to bind.
+    inputs, problems = _stage_inputs(
+        entry,
+        Stage.INTERPRET_TILEMAP,
+        engine_id_of(registry, preset_id),
+        registry,
+        workspace,
+    )
+    writable = not problems
+    if problems:
+        preset_id = STAGE_DEFAULT_PRESET[Stage.INTERPRET_TILEMAP]
     if entry.kind is EntryKind.FILE:
         return PathwayConfig(
             source=FileRef(entry.paths),
             interpret_preset_id=preset_id,
             container_id=resolved_container_id(registry, entry.container_id),
             reshape_id=entry.reshape_id,
+            write_enabled=writable,
+            inputs=inputs,
+            input_problems=problems,
         )
     parent = workspace.find_file(entry.path) if workspace is not None else None
     reordered = parent is not None and reorders_bytes(parent, registry)
     live, live_base = _parent_view_bytes(entry, parent, reordered, registry, preset_id)
+    # A compressed map's scheme may declare inputs of its own — how many parts a
+    # de-interleaved stream weaves, which is 2 for a map where the same scheme
+    # weaves 4 for tiles — resolved and degraded exactly as the pixel side does.
+    compression_id = entry.compression_id
+    scheme_inputs, scheme_problems = _stage_inputs(
+        entry, Stage.COMPRESSION, compression_id, registry, workspace
+    )
+    if scheme_problems:
+        compression_id = NO_COMPRESSION
+        writable = False
+    inputs = {**inputs, **scheme_inputs}
+    problems = scheme_problems + problems
     return PathwayConfig(
         source=FileRef(
             entry.paths,
@@ -1575,9 +1653,37 @@ def tilemap_config_for(
         dest=FileRef(entry.paths, offset=entry.slice_offset, length=entry.slice_length),
         interpret_preset_id=preset_id,
         reshape_id=entry.reshape_id,
-        compression_id=entry.compression_id,
+        compression_id=compression_id,
         slot_fill=entry.slot_fill,
+        write_enabled=writable,
         writes_through_parent=parent is not None,
+        inputs=inputs,
+        input_problems=problems,
+    )
+
+
+def _stage_inputs(
+    entry: Entry,
+    stage: Stage,
+    plugin_id: str,
+    registry: Registry,
+    workspace: Workspace | None,
+) -> tuple[dict[Stage, dict[str, bytes | int]], tuple[tuple[Stage, str, str], ...]]:
+    """``stage``'s resolved inputs in the config's shape, and its problems as
+    the ``(stage, summary, detail)`` notices the load will say.
+
+    Empty on both counts for a plugin that declares nothing, which is nearly
+    every shipped format — so a config for one is byte-identical to what it was
+    before inputs existed.
+    """
+    if not plugin_id:
+        return {}, ()
+    resolved = resolve_inputs(entry, stage, plugin_id, registry, workspace)
+    if not resolved.values and not resolved.problems:
+        return {}, ()
+    return (
+        {stage: resolved.values},
+        tuple((stage, p.summary, p.detail) for p in resolved.problems),
     )
 
 

@@ -1,6 +1,10 @@
 {
   "plugins": {
     "compression": {
+      "compression.bluesky-lz": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.enigma": [
         "pixels",
         "tilemap"
@@ -49,6 +53,10 @@
         "pixels",
         "tilemap"
       ],
+      "compression.namco-lz": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.nemesis": [
         "pixels",
         "tilemap"
@@ -58,6 +66,10 @@
         "tilemap"
       ],
       "compression.packbits": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.phantasy-star-rle": [
         "pixels",
         "tilemap"
       ],
@@ -77,11 +89,27 @@
         "pixels",
         "tilemap"
       ],
+      "compression.rnc1": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.rnc2": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.slz16": [
         "pixels",
         "tilemap"
       ],
       "compression.slz24": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.sonic2-tiles": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.strike-lz": [
         "pixels",
         "tilemap"
       ]
@@ -272,6 +300,14 @@
         "pixels",
         "tilemap"
       ],
+      "reshape.split-words-2x2": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.split-words-2x2-clockwise": [
+        "pixels",
+        "tilemap"
+      ],
       "reshape.split-words-4": [
         "pixels",
         "tilemap"
@@ -423,7 +459,7 @@
     ],
     "reshape": []
   },
-  "project_version": 2,
+  "project_version": 3,
   "renamed": {
     "codec.color-indexed": "codec.palette.indexed",
     "codec.color-mask": "codec.palette.mask",

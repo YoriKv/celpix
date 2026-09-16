@@ -666,3 +666,123 @@ def test_the_shipped_snapshot_loads():
     assert snapshot.usable and not snapshot.authoritative
     assert snapshot.has("interpret-pixel", "preset.pixel.snes-4bpp")
     assert snapshot.has("container", "container.raw-file")
+
+
+# -- plugin inputs ------------------------------------------------------------
+def _bound_slice(entry, **inputs):
+    return entry(
+        kind="slice",
+        slice_offset=0x200,
+        slice_length=64,
+        compression_id="compression.lz2",
+        inputs={"compression.lz2": inputs},
+    )
+
+
+def test_a_well_formed_inputs_block_is_silent(project, entry):
+    codes = project(
+        {
+            "version": 1,
+            "entries": [
+                entry(),
+                _bound_slice(
+                    entry,
+                    table={"offset": 0x100, "length": 4},
+                    size={"offset": 0x300, "width": 2, "endian": "big"},
+                    count=16,
+                    other={"entry_index": 0, "offset": 0, "length": 4},
+                ),
+            ],
+        },
+        files=ROM,
+    )
+    assert codes == []
+
+
+def test_inputs_shapes_the_loader_skips_are_reported(project, entry):
+    codes = project(
+        {
+            "version": 1,
+            "entries": [
+                entry(),
+                _bound_slice(
+                    entry,
+                    flag=True,
+                    text="0x100",
+                    negative={"offset": -1, "length": 4},
+                    wide={"offset": 0x300, "width": 9},
+                    order={"offset": 0x300, "width": 2, "endian": "middle"},
+                    empty={"offset": 0x100, "length": 0},
+                ),
+            ],
+        },
+        files=ROM,
+    )
+    assert codes.count("E907") == 2
+    assert "E909" in codes and "E910" in codes
+    assert "W911" in codes and "W913" in codes
+
+
+def test_a_region_past_the_file_and_a_bad_target_are_reported(project, entry):
+    codes = project(
+        {
+            "version": 1,
+            "entries": [
+                entry(),
+                _bound_slice(
+                    entry,
+                    past={"offset": 0xFFF0, "length": 0x20},
+                    gone={"entry_index": -1, "offset": 0, "length": 4},
+                    far={"entry_index": 9, "offset": 0, "length": 4},
+                    me={"entry_index": 1, "offset": 0, "length": 4},
+                    map={"entry_index": 2, "offset": 0, "length": 4},
+                    deep={"entry_index": 3, "offset": 0, "length": 4},
+                ),
+                entry(
+                    content_kind="tilemap", tilemap_preset_id="preset.tilemap.snes-bg"
+                ),
+                _bound_slice(entry, table={"entry_index": 0, "offset": 0, "length": 4}),
+            ],
+        },
+        files=ROM,
+    )
+    assert "E912" in codes
+    assert "W915" in codes and "E916" in codes
+    assert codes.count("E917") == 2
+    assert "E918" in codes
+
+
+def test_inputs_for_another_codec_and_an_unknown_plugin_are_noted(project, entry):
+    codes = project(
+        {
+            "version": 1,
+            "entries": [
+                entry(),
+                entry(
+                    kind="slice",
+                    slice_offset=0,
+                    inputs={
+                        "compression.lz2": {"table": {"offset": 0, "length": 4}},
+                        "compression.nobody": {"table": 1},
+                        "preset.pixel.snes-4bpp": {"table": 1},
+                    },
+                ),
+            ],
+        },
+        files=ROM,
+    )
+    assert "I906" in codes and "E904" in codes and "E903" in codes
+
+
+def test_inputs_on_a_bookmark_are_never_read(project, entry):
+    codes = project(
+        {
+            "version": 1,
+            "entries": [
+                entry(),
+                entry(kind="bookmark", offset=0, inputs={"compression.lz2": {}}),
+            ],
+        },
+        files=ROM,
+    )
+    assert "W211" in codes

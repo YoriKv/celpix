@@ -388,6 +388,7 @@ class SessionMixin:
                 # site that left it out would write a single cell where the
                 # codec's encode then recolours the other three.
                 palette_row_granularity=loaded.row_granularity,
+                column_major=loaded.column_major,
             )
             self._apply_restored_state(entry)
             self._apply_tilemap_columns(entry, restored=restored)
@@ -488,6 +489,7 @@ class SessionMixin:
             # The chained document above passes this too, and for the same
             # reason: it is a fact about the format whose cells this entry holds.
             palette_row_granularity=loaded.row_granularity,
+            column_major=loaded.column_major,
             text_layout=fontmap,
             font_alphabet=self._font_alphabet_for(entry, loaded.cell_bytes),
         )
@@ -1756,6 +1758,9 @@ class SessionMixin:
         # document, so the tile size would otherwise still read the old entry's.
         self._refresh_tile_size()
         self._overlay.hide_overlay()
+        # After _doc is cleared: no render runs on the way out, so the badges
+        # would otherwise go on wearing the last entry's answer.
+        self._sync_inputs_badges()
         self._animation.hide_overlay()
         self._animation_action.setEnabled(False)
         self._subsprites.hide_overlay()
