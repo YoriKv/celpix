@@ -1000,3 +1000,117 @@ def test_an_empty_alphabet_is_none_rather_than_a_lookup_that_maps_nothing() -> N
     states, and only the first is worth telling the user about."""
     assert pipeline.load_font_alphabet("", ()) is None
     assert pipeline.load_font_alphabet("A", ()) is not None
+
+
+# -- the surround: what a scheme that copies from before its stream reads -----
+
+
+def _lz4w_files(tmp_path):
+    """A ROM whose LZ4W stream at 0x400 copies from the bytes before it."""
+    from celpix.plugins.builtins import lz4w
+
+    rom = bytearray(bytes(i & 0xFF for i in range(0x400)))
+    payload = bytes(rom[0x100:0x300])  # what the stream unpacks to
+    packed = lz4w.compress(payload, previous=bytes(rom))
+    with pytest.raises(ValueError):  # it really does lean on the preceding bytes
+        lz4w.decompress(packed)
+    rom += packed + bytes(0x40)
+    px = tmp_path / "game.bin"
+    px.write_bytes(bytes(rom))
+    pl = tmp_path / "game.pal"
+    pl.write_bytes(bytes(32))
+    pixel = PathwayConfig(
+        source=FileRef(str(px), offset=0x400, length=len(packed) + 0x40),
+        interpret_preset_id="preset.pixel.snes-4bpp",
+        compression_id="compression.lz4w",
+    )
+    palette = PathwayConfig(
+        source=FileRef(str(pl)),
+        interpret_preset_id="preset.palette.bgr555",
+        write_enabled=False,
+    )
+    return px, payload, packed, pixel, palette
+
+
+def test_a_stream_copying_from_before_itself_reads_the_file_unbound(tmp_path) -> None:
+    """A raw-file entry hands its scheme the bytes around the stream, so an
+    SGDK stream packed against the resource before it opens with no binding;
+    and the buffer does not stay on the document's context afterwards."""
+    from celpix.core.context import KEY_SURROUND, KEY_SURROUND_START
+
+    reg = default_registry()
+    _px, payload, _packed, pixel_cfg, palette_cfg = _lz4w_files(tmp_path)
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    assert doc.pixel_data == payload
+    assert doc.pixel_ctx.get(KEY_SURROUND) is None
+    assert doc.pixel_ctx.get(KEY_SURROUND_START) is None
+
+
+class _SurroundProbe:
+    """A scheme that records what the host lent it, and changes nothing."""
+
+    def __init__(self) -> None:
+        from celpix.plugins.base import PluginInfo
+
+        self.info = PluginInfo(
+            id="compression.surround-probe", name="Probe", stage=Stage.COMPRESSION
+        )
+        self.seen: list[tuple[object, object]] = []
+
+    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        from celpix.core.context import KEY_SURROUND, KEY_SURROUND_START
+
+        self.seen.append((ctx.get(KEY_SURROUND), ctx.get(KEY_SURROUND_START)))
+        return data
+
+    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        self.decompress(data, ctx)
+        return data
+
+
+def test_the_surround_is_the_file_and_the_slices_place_in_it(tmp_path) -> None:
+    """A raw-file slice's scheme is lent the whole file and the slice's offset
+    in it, on the load and again on the save; under a reshape a position in the
+    stream is no position in the file, so it is lent nothing."""
+    reg = default_registry()
+    probe = _SurroundProbe()
+    reg.register(probe)
+    px, pl, pixel_bytes, _ = _make_files(tmp_path)
+    pixel_cfg, palette_cfg = _slice_configs(px, pl, offset=32, length=64)
+    pixel_cfg.compression_id = probe.info.id
+    palette_cfg.write_enabled = False
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    pipeline.save(doc, reg)
+    assert probe.seen == [(pixel_bytes, 32), (pixel_bytes, 32)]
+
+    probe.seen.clear()
+    pixel_cfg.reshape_id = "reshape.swap-bytes-2"
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    pipeline.save(doc, reg)
+    assert probe.seen == [(None, None), (None, None)]
+
+
+def test_saving_packs_against_the_files_own_preceding_bytes(tmp_path) -> None:
+    """With pack_previous bound, a save reads the destination as it stands and
+    writes a stream that copies from before its slot - which then reloads."""
+    from celpix.plugins.builtins import lz4w
+
+    reg = default_registry()
+    px, payload, packed, pixel_cfg, palette_cfg = _lz4w_files(tmp_path)
+    pixel_cfg.inputs = {Stage.COMPRESSION: {lz4w.INPUT_PACK_PREVIOUS: 1}}
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    pipeline.save(doc, reg)
+    written = px.read_bytes()[0x400 : 0x400 + len(packed)]
+    assert written == packed  # the same parse, leaning on the same bytes
+    assert pipeline.load(pixel_cfg, palette_cfg, reg).pixel_data == payload
+
+
+def test_scan_finds_a_stream_that_copies_from_before_itself(tmp_path) -> None:
+    from celpix.plugins.builtins import lz4w
+
+    px, payload, packed, *_ = _lz4w_files(tmp_path)
+    rom = px.read_bytes()
+    result = pipeline.find_next_structure(
+        rom, lz4w.Lz4wCompression(), len(packed), 0x3F0
+    )
+    assert result.found == 0x400

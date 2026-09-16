@@ -1013,7 +1013,8 @@ def _inputs_dict(
 
     - a **region** writes ``offset`` and ``length``;
     - an integer **read from bytes** writes ``offset``, ``width`` and ``endian``;
-    - a **literal** integer is a bare number.
+    - a **literal** integer is a bare number;
+    - a **flag** is a bare ``true`` or ``false``.
 
     Either of the first two adds ``entry_index`` when it reaches into another
     entry — the position rule :func:`_tile_source_dict` states, ``-1`` for one
@@ -1035,6 +1036,8 @@ def _inputs_dict(
 
 
 def _binding_dict(binding: InputBinding, positions: dict[int, int]) -> object:
+    if isinstance(binding, bool):
+        return binding
     if isinstance(binding, RegionBinding):
         data: dict[str, object] = {"offset": binding.offset, "length": binding.length}
     elif isinstance(binding, IntegerFromBytes):
@@ -1090,9 +1093,7 @@ def _inputs_from(raw: dict) -> tuple[dict[str, Bindings], list[tuple[str, str, i
 
 
 def _binding_from(item: object) -> InputBinding | None:
-    if isinstance(item, bool):
-        return None
-    if isinstance(item, int):
+    if isinstance(item, bool | int):
         return item
     if not isinstance(item, dict):
         return None

@@ -16,17 +16,22 @@ from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
     KEY_DECOMPRESS_PARTIAL,
+    KEY_INPUTS,
+    KEY_SURROUND,
+    KEY_SURROUND_START,
     PipelineContext,
 )
 from celpix.core.errors import Stage
 from celpix.pipeline import pipeline
 from celpix.plugins.base import STAGE_DEFAULT_PRESET
 from celpix.plugins.builtins import (
+    aplib,
     bluesky_lz,
     enigma,
     gba_lz77,
     konami_rle,
     kosinski,
+    lz4w,
     lz16,
     lz_command,
     lzss_ring,
@@ -2058,3 +2063,305 @@ def test_sonic2_tiles_reject_truncated_and_corrupt_streams() -> None:
         sonic2_tiles.decompress(stream[:2] + b"\x00\x00" + stream[4:])
     with pytest.raises(ValueError, match="whole 32-byte tiles"):
         sonic2_tiles.compress(bytes(33))
+
+
+# -- aPLib and LZ4W (SGDK's two packers) ---------------------------------------
+
+# One 34-byte payload as SGDK's own packers wrote it: apj.jar and lz4w.jar over
+# the same bytes, so both vectors are the reference tools' streams and not ours.
+_SGDK_PLAIN = b"ABCD" * 4 + b"hello hello hello\x00"
+_SGDK_APLIB = bytes.fromhex("4114424344 04e068656c e26f522006 dc3000".replace(" ", ""))
+_SGDK_LZ4W = bytes.fromhex(
+    "2501 41424344 3402 68656c6c6f20 1000 6f00 0000 0000".replace(" ", "")
+)
+
+
+def test_aplib_decodes_the_reference_packers_stream() -> None:
+    """Literals, a block after a literal (bias 3), short matches and the end.
+
+    The block is the trap: its gamma-coded distance high byte is biased by 3
+    here because a literal preceded it, and by 2 after another block.
+    """
+    assert aplib.decompress(_SGDK_APLIB + b"\xff" * 8) == (
+        _SGDK_PLAIN,
+        len(_SGDK_APLIB),
+        True,
+    )
+
+
+def _aplib_stream(first: int, *ops: str | int) -> bytes:
+    """Assemble a stream from the raw first byte and a sequence of tag bits
+    (a string) and operand bytes (an int), laid out as the reader fetches them:
+    a tag byte is allocated at the first bit written after the previous one
+    filled, and operand bytes land after it."""
+    out = bytearray((first,))
+    tag_at, left = -1, 0
+    for op in ops:
+        if isinstance(op, int):
+            out.append(op)
+            continue
+        for bit in op:
+            if not left:
+                tag_at, left = len(out), 8
+                out.append(0)
+            left -= 1
+            if bit == "1":
+                out[tag_at] |= 1 << left
+    return bytes(out)
+
+
+def _gamma(value: int) -> str:
+    """The tag bits of aPLib's gamma code: the leading 1 implied, then each
+    remaining bit followed by whether another follows."""
+    rest = bin(value)[3:]
+    return "".join(b + ("1" if i < len(rest) - 1 else "0") for i, b in enumerate(rest))
+
+
+def test_aplib_block_bias_and_repeat_form_follow_the_previous_op() -> None:
+    """After a block the distance gamma is biased by 2; after a literal a gamma
+    of 2 means "the previous block's distance" and the bias is 3.
+
+    Stream: 'A', literal 'B', block(gamma 3 -> high 0, low 2, len gamma 2 + 2
+    for distance < 128 = 4 -> "ABAB"), block(gamma 2 after a block -> high 0,
+    low 2, len 2 + 2 -> "ABAB"), literal 'C', repeat block(gamma 2, len gamma 3
+    -> 3 bytes from 2 back -> "BCB"), end.
+    """
+    stream = _aplib_stream(
+        0x41,
+        "0", 0x42,
+        "10", _gamma(3), 0x02, _gamma(2),
+        "10", _gamma(2), 0x02, _gamma(2),
+        "0", 0x43,
+        "10", _gamma(2), _gamma(3),
+        "110", 0x00,
+    )  # fmt: skip
+    out, consumed, complete = aplib.decompress(stream)
+    assert out == b"AB" + b"ABAB" + b"ABAB" + b"C" + b"BCB"
+    assert consumed == len(stream) and complete
+
+
+def test_aplib_length_adjustments_accumulate_past_32000() -> None:
+    """A distance of 32000 earns both the 1280 and the 32000 increments.
+
+    'A', literal 'B', a block at distance 2 for 32000 bytes (bias 3, length
+    gamma + 2 below 128), then a block at distance 32000 (bias 2, high 125,
+    low 0) whose gamma of 2 has to come out as 4 - and lands on "ABAB" only if
+    the distance is right too.
+    """
+    stream = _aplib_stream(
+        0x41,
+        "0", 0x42,
+        "10", _gamma(3), 0x02, _gamma(31998),
+        "10", _gamma(125 + 2), 0x00, _gamma(2),
+        "110", 0x00,
+    )  # fmt: skip
+    out, consumed, complete = aplib.decompress(stream)
+    assert out == b"AB" * 16003
+    assert consumed == len(stream) and complete
+
+
+def test_aplib_tiny_form_writes_a_zero_or_copies_one_byte() -> None:
+    stream = _aplib_stream(0x41, "111", "0000", "111", "0010", "110", 0x00)
+    assert aplib.decompress(stream)[0] == b"A\x00A"
+
+
+def test_aplib_rejects_a_reach_before_the_output() -> None:
+    # 'A' then a short match 3 back into one byte of output.
+    with pytest.raises(ValueError, match="reaches 3 bytes back"):
+        aplib.decompress(_aplib_stream(0x41, "110", 0x06))
+
+
+def test_aplib_truncated_stream_needs_the_partial_flag() -> None:
+    cut = _SGDK_APLIB[:-2]
+    with pytest.raises(ValueError, match="source ended"):
+        aplib.decompress(cut)
+    prefix, consumed, complete = aplib.decompress(cut, partial=True)
+    assert _SGDK_PLAIN.startswith(prefix) and len(prefix) >= 16
+    assert consumed == len(cut) and not complete
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b"A", id="one"),
+        pytest.param(bytes(1), id="zero"),
+        pytest.param(bytes(3000), id="fill"),
+        pytest.param(bytes(range(256)) * 3, id="ramp"),
+        pytest.param(
+            bytes(random.Random(3).randrange(256) for _ in range(2000)), id="noise"
+        ),
+        pytest.param(
+            bytes(random.Random(4).choice(b"\x00\x11\x22\x33") for _ in range(4001)),
+            id="tiles",
+        ),
+        # A match past the 1280 band; the 32000 one is a decode vector, since
+        # encoding that much is a search the suite cannot afford per test.
+        pytest.param(
+            (tail := bytes(random.Random(5).randrange(256) for _ in range(300)))
+            + bytes(1300)
+            + tail,
+            id="far",
+        ),
+    ],
+)
+def test_aplib_round_trips(data: bytes) -> None:
+    packed = aplib.compress(data)
+    assert aplib.decompress(packed) == (data, len(packed), True)
+
+
+def test_aplib_plugin_records_size_and_refuses_an_empty_payload() -> None:
+    plugin = aplib.AplibCompression()
+    ctx = PipelineContext()
+    assert plugin.decompress(_SGDK_APLIB + bytes(4), ctx) == _SGDK_PLAIN
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(_SGDK_APLIB)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+    with pytest.raises(ValueError, match="empty payload"):
+        plugin.compress(b"", ctx)
+
+
+def test_lz4w_decodes_the_reference_packers_stream() -> None:
+    """Literals and short matches, all counted in words, and the odd tail byte
+    riding in the end marker."""
+    assert lz4w.decompress(_SGDK_LZ4W + b"\xff" * 8) == (
+        _SGDK_PLAIN,
+        len(_SGDK_LZ4W),
+        True,
+    )
+
+
+def test_lz4w_long_match_distance_word_follows_the_literals() -> None:
+    """A long match: literals first, then the negated 15-bit distance, and the
+    match overlapping its own output. Then the end block carries an odd byte."""
+    # Distance 1 word is stored as 0: -(1 - 1) & 0x7FFF.
+    stream = bytes.fromhex("2000 41424344" + "1001 4546 0000" + "0000 805a")
+    assert lz4w.decompress(stream) == (
+        b"ABCD" + b"EF" + b"EFEFEF" + b"Z",
+        len(stream),
+        True,
+    )
+
+
+def test_lz4w_source_relative_match_reads_the_preceding_data() -> None:
+    """X = 1 addresses the ROM from the stream's own read pointer: here 5 words
+    back from just past the distance word lands on the preceding data's start."""
+    previous = bytes.fromhex("112233445566")
+    stream = bytes.fromhex("0001 fffc 0000 0000")
+    with pytest.raises(ValueError, match="precedes the stream"):
+        lz4w.decompress(stream)
+    with pytest.raises(ValueError, match="outside the preceding data"):
+        lz4w.decompress(stream, previous=previous[2:])
+    assert lz4w.decompress(stream, previous=previous) == (previous, len(stream), True)
+
+    plugin = lz4w.Lz4wCompression()
+    ctx = PipelineContext()
+    ctx.set(KEY_INPUTS, {lz4w.INPUT_PREVIOUS: previous})
+    assert plugin.decompress(stream, ctx) == previous
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(stream)
+
+
+def test_lz4w_rejects_a_reach_before_the_output_and_needs_partial_when_cut() -> None:
+    with pytest.raises(ValueError, match="reaches 2 words back"):
+        lz4w.decompress(bytes.fromhex("1101 4142"))
+    cut = _SGDK_LZ4W[:-5]
+    with pytest.raises(ValueError, match="source ended"):
+        lz4w.decompress(cut)
+    prefix, consumed, complete = lz4w.decompress(cut, partial=True)
+    # The cut leaves half a header, which is not consumed.
+    assert prefix == _SGDK_PLAIN[:32] and consumed == len(cut) - 1 and not complete
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b"", id="empty"),
+        pytest.param(b"A", id="odd-one"),
+        pytest.param(b"AB", id="word"),
+        pytest.param(bytes(3000), id="fill"),
+        pytest.param(bytes(3001), id="odd-fill"),
+        # Forty incompressible words: literal runs past a header's fifteen.
+        pytest.param(
+            bytes(random.Random(6).randrange(256) for _ in range(80)), id="noise"
+        ),
+        pytest.param(
+            bytes(random.Random(7).choice(b"\x00\x11\x22\x33") for _ in range(4001)),
+            id="tiles",
+        ),
+        # A match further back than the short form's 256 words.
+        pytest.param(
+            bytes(random.Random(8).randrange(256) for _ in range(1000)) * 2, id="far"
+        ),
+    ],
+)
+def test_lz4w_round_trips(data: bytes) -> None:
+    packed = lz4w.compress(data)
+    assert lz4w.decompress(packed) == (data, len(packed), True)
+    assert len(packed) % 2 == 0
+
+
+def test_lz4w_reads_the_preceding_data_from_the_hosts_surround() -> None:
+    """With the buffer the stream was cut from on the context, a source-relative
+    match resolves without any binding; a bound input overrides it."""
+    previous = bytes.fromhex("112233445566")
+    stream = bytes.fromhex("0001 fffc 0000 0000")
+    plugin = lz4w.Lz4wCompression()
+    ctx = PipelineContext()
+    ctx.set(KEY_SURROUND, b"\xaa\xbb" + previous + stream + b"\xcc")
+    ctx.set(KEY_SURROUND_START, 2 + len(previous))
+    assert plugin.decompress(stream, ctx) == previous
+    ctx.set(KEY_INPUTS, {lz4w.INPUT_PREVIOUS: bytes.fromhex("778899aabbcc")})
+    assert plugin.decompress(stream, ctx) == bytes.fromhex("778899aabbcc")
+
+
+def test_lz4w_packs_against_the_preceding_data_only_when_asked() -> None:
+    """The pack_previous input turns matches into the preceding bytes into
+    source-relative long matches; off, the stream is valid on its own."""
+    rng = random.Random(12)
+    previous = bytes(rng.choice(b"\x00\x11\x22\x33") for _ in range(1024))
+    data = previous[300:900] + bytes(rng.randrange(256) for _ in range(40))
+    plugin = lz4w.Lz4wCompression()
+    ctx = PipelineContext()
+    ctx.set(KEY_SURROUND, previous + b"\xff" * 8)
+    ctx.set(KEY_SURROUND_START, len(previous))
+    plain = plugin.compress(data, ctx)
+    assert lz4w.decompress(plain) == (data, len(plain), True)
+
+    ctx.set(KEY_INPUTS, {lz4w.INPUT_PACK_PREVIOUS: 1})
+    packed = plugin.compress(data, ctx)
+    assert len(packed) < len(plain)
+    with pytest.raises(ValueError, match="copies from"):
+        lz4w.decompress(packed)
+    assert plugin.decompress(packed, ctx) == data
+    # Cut where a save would lay it: the bytes before the slot are the
+    # preceding data, and the stream is read from right after them.
+    assert lz4w.decompress(packed, previous=previous) == (
+        data,
+        len(packed),
+        True,
+    )
+
+
+def test_lz4w_source_match_past_the_field_is_written_as_literals() -> None:
+    """A source-relative distance is measured from the stream's read pointer,
+    which incompressible literals push past the output's, so a match that fits
+    the output-relative window can still overflow the field; it goes as
+    literals and the stream needs no preceding data."""
+    rng = random.Random(13)
+    tail = bytes(rng.randrange(256) for _ in range(64))
+    previous = tail + bytes(
+        rng.randrange(256) for _ in range(lz4w.LONG_MAX_DISTANCE * 2 - 64 - 2)
+    )
+    # 3000 literal words cost 200 headers: enough to push the match past 0x4000.
+    data = bytes(rng.randrange(256) for _ in range(6000)) + tail
+    packed = lz4w.compress(data, previous=previous)
+    assert lz4w.decompress(packed) == (data, len(packed), True)
+
+
+def test_lz4w_pack_previous_without_preceding_data_warns_and_packs_plain() -> None:
+    from celpix.core.notices import notices
+
+    plugin = lz4w.Lz4wCompression()
+    ctx = PipelineContext()
+    ctx.set(KEY_INPUTS, {lz4w.INPUT_PACK_PREVIOUS: 1})
+    packed = plugin.compress(b"ABABABAB", ctx)
+    assert lz4w.decompress(packed)[0] == b"ABABABAB"
+    assert [n.summary for n in notices(ctx)] == ["Packed without the preceding data"]

@@ -27,6 +27,7 @@ from celpix.plugins.discovery import (
 )
 from celpix.plugins.formats import adapt_format
 
+from .aplib import AplibCompression
 from .bluesky_lz import BlueSkyLzCompression
 from .byte_swap import ByteSwapReshape
 from .color_codec import ColorCodec
@@ -46,6 +47,7 @@ from .indirect_record import IndirectRecordCodec
 from .konami_rle import KonamiFdsRle, KonamiNesRle
 from .kosinski import KosinskiCompression
 from .linear_codec import PackedStraddlingCodec
+from .lz4w import Lz4wCompression
 from .lz16 import Lz16Compression, Lz16ImprovedCompression
 from .lz_command import Lz1, Lz1Improved, Lz2, Lz2Improved
 from .lzss_ring import LzssRingCompression
@@ -143,6 +145,8 @@ def register_builtins(reg: Registry) -> None:
         Rnc1Compression(),
         Rnc2Compression(),
         PrsCompression(),
+        AplibCompression(),
+        Lz4wCompression(),
         PvrCompression(),
         PackBitsCompression(),
         PhantasyStarRleCompression(),

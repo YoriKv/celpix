@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.24 - unreleased
+
+- LZ4W and aPLib compression (from SGDK)
+- Boolean checkbox plugin inputs
+
 ## v0.5.23 - 2026-09-16
 
 - "View as palette" feature. View ROM data interpreted as a palette to make

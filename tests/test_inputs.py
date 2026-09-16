@@ -147,6 +147,30 @@ def test_an_optional_input_left_unbound_is_absent_or_its_default(tmp_path) -> No
     ws, _parent, sl = _rom(tmp_path)
     got = resolve_inputs(sl, Stage.COMPRESSION, XOR_ID, reg, ws)
     assert got.ok and "output_size" not in got.values
+    # A flag is always delivered: unbound is its default, False here.
+    assert got.values["invert"] is False
+
+
+def test_a_flag_is_a_bool_and_refuses_a_number(tmp_path) -> None:
+    reg = _registry()
+    ws, _parent, sl = _rom(tmp_path)
+    sl.inputs = {XOR_ID: {**sl.inputs[XOR_ID], "invert": True}}
+    got = resolve_inputs(sl, Stage.COMPRESSION, XOR_ID, reg, ws)
+    assert got.ok and got.values["invert"] is True
+
+    sl.inputs = {XOR_ID: {**sl.inputs[XOR_ID], "invert": 1}}
+    got = resolve_inputs(sl, Stage.COMPRESSION, XOR_ID, reg, ws)
+    assert [p.key for p in got.problems] == ["invert"]
+    assert "yes or no" in got.problems[0].detail
+
+    spec = replace(_XorTable.info.inputs[2], default=1)
+    reg.plugin(Stage.COMPRESSION, XOR_ID).info = replace(
+        _XorTable.info, inputs=(*_XorTable.info.inputs[:2], spec)
+    )
+    sl.inputs = {XOR_ID: {"table": sl.inputs[XOR_ID]["table"]}}
+    assert (
+        resolve_inputs(sl, Stage.COMPRESSION, XOR_ID, reg, ws).values["invert"] is True
+    )
 
     spec = replace(_XorTable.info.inputs[1], default=8)
     reg.plugin(Stage.COMPRESSION, XOR_ID).info = replace(
@@ -276,7 +300,11 @@ def test_bindings_round_trip_through_a_project_in_every_shape(tmp_path) -> None:
         }
     }
     other.inputs = {
-        XOR_ID: {"table": RegionBinding(offset=0x100, length=4), "output_size": 32}
+        XOR_ID: {
+            "table": RegionBinding(offset=0x100, length=4),
+            "output_size": 32,
+            "invert": True,
+        }
     }
     project = tmp_path / "p.celpix"
     save_project(ws, str(project), reg)
@@ -287,6 +315,7 @@ def test_bindings_round_trip_through_a_project_in_every_shape(tmp_path) -> None:
     assert stored["table"] == {"entry_index": 2, "offset": 2, "length": 4}
     assert stored["output_size"] == {"offset": 0x300, "width": 2, "endian": "little"}
     assert raw["entries"][2]["inputs"][XOR_ID]["output_size"] == 32
+    assert raw["entries"][2]["inputs"][XOR_ID]["invert"] is True
     assert raw["entries"][0]["inputs"][XOR_ID]["table"] == {
         "offset": 0x100,
         "length": 4,
@@ -303,6 +332,7 @@ def test_bindings_round_trip_through_a_project_in_every_shape(tmp_path) -> None:
         offset=0x300, width=2, little_endian=True
     )
     assert second.inputs[XOR_ID]["output_size"] == 32
+    assert second.inputs[XOR_ID]["invert"] is True
 
 
 def test_a_binding_onto_a_closed_entry_is_dropped_on_load(tmp_path) -> None:

@@ -40,7 +40,12 @@ from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.pipeline import inspect_container
-from celpix.plugins.base import NO_COMPRESSION, STAGE_DEFAULT_PRESET, FileRef
+from celpix.plugins.base import (
+    NO_COMPRESSION,
+    STAGE_DEFAULT_PRESET,
+    FileRef,
+    InputKind,
+)
 from celpix.plugins.detect import (
     content_kind_for,
     detect_container,
@@ -1128,7 +1133,11 @@ class EntriesMixin:
         parts = []
         for spec in specs:
             binding = bound.get(spec.key)
-            if binding is None and spec.default is not None and not spec.required:
+            if spec.kind is InputKind.FLAG:
+                # Always delivered: unbound is the default, so say which.
+                on = binding if isinstance(binding, bool) else bool(spec.default)
+                parts.append(f"{spec.label}: {'yes' if on else 'no'}")
+            elif binding is None and spec.default is not None and not spec.required:
                 # What the codec will be handed, not "unbound": an optional
                 # integer with a default is delivered as that default.
                 parts.append(f"{spec.label}: {spec.default} (default)")

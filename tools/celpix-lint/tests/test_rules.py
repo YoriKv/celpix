@@ -718,7 +718,8 @@ def test_inputs_shapes_the_loader_skips_are_reported(project, entry):
         },
         files=ROM,
     )
-    assert codes.count("E907") == 2
+    # A boolean is a flag's shape, so `flag=True` is only an undeclared key.
+    assert codes.count("E907") == 1
     assert "E909" in codes and "E910" in codes
     assert "W911" in codes and "W913" in codes
 
@@ -819,7 +820,14 @@ def _project_with_input(tmp_path, value):
 def _input_codes(report) -> list[str]:
     # the minimal fixture project draws its own findings (no session, no view);
     # only the declaration checks are under test here
-    return [d.code for d in report.diagnostics if d.code in ("E914", "W913")]
+    return [d.code for d in report.diagnostics if d.code in ("E914", "W913", "E919")]
+
+
+def test_a_flag_bound_as_a_number_is_an_error_and_a_boolean_is_quiet(tmp_path, ids):
+    report = lint(str(_project_with_input(tmp_path, {"strict": 1})), ids)
+    assert _input_codes(report) == ["E919"]
+    report = lint(str(_project_with_input(tmp_path, {"strict": True})), ids)
+    assert _input_codes(report) == []
 
 
 def test_an_input_outside_the_declared_range_is_an_error(tmp_path, ids):

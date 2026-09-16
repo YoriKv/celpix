@@ -83,6 +83,7 @@ tools for accuracy where available.
 - **[mdcomp](https://github.com/flamewing/mdcomp)**
 - **[Beehive](https://github.com/BigEvilCorporation/Beehive)**
 - **[mdtools](https://github.com/sikthehedgehog/mdtools)**
+- **[SGDK](https://github.com/Stephane-D/SGDK)**
 
 ## AI Use Disclaimer
 

@@ -116,8 +116,10 @@ class IntegerFromBytes:
     little_endian: bool = False
 
 
-#: One bound input: a region, an integer read from bytes, or a literal integer.
-InputBinding = RegionBinding | IntegerFromBytes | int
+#: One bound input: a region, an integer read from bytes, a literal integer,
+#: or a flag's ``bool`` — told from an integer by its type, since ``bool`` is
+#: an ``int`` subclass and a flag spec refuses a number.
+InputBinding = RegionBinding | IntegerFromBytes | int | bool
 #: One plugin's bindings, by the spec's key.
 Bindings = dict[str, InputBinding]
 
@@ -374,6 +376,8 @@ def resolve_inputs(
                 )
             elif spec.kind is InputKind.INTEGER and spec.default is not None:
                 values[spec.key] = spec.default
+            elif spec.kind is InputKind.FLAG:
+                values[spec.key] = bool(spec.default)
             continue
         try:
             values[spec.key] = _resolve_one(spec, binding, source_of)
@@ -407,6 +411,14 @@ def _resolve_one(
                 f"({binding.length % stride} left over)."
             )
         return _cut(spec, binding, binding.length, source_of)
+    if spec.kind is InputKind.FLAG:
+        if isinstance(binding, bool):
+            return binding
+        raise _Unresolved(
+            f"{spec.label} is bound as a "
+            f"{'byte range' if isinstance(binding, RegionBinding) else 'number'},\n"
+            "but this format wants yes or no here."
+        )
     if spec.kind is InputKind.INTEGER:
         if isinstance(binding, IntegerFromBytes):
             if not 1 <= binding.width <= _MAX_INT_WIDTH:

@@ -59,10 +59,11 @@ class XorTableCodec:
     """A scheme whose stream is XORed against a table kept elsewhere — the
     smallest plugin with **inputs** (``docs/design/plugin-inputs.md``).
 
-    Two inputs, one of each kind: the table is a required region of 2-byte
-    elements, the output size an optional integer that truncates the result.
-    Like PackBits it has no end marker, so it never reports completion. Both
-    directions are the one XOR, so a round trip is exact whatever the table.
+    Three inputs, one of each kind: the table is a required region of 2-byte
+    elements, the output size an optional integer that truncates the result,
+    and a flag that inverts every byte on top. Like PackBits it has no end
+    marker, so it never reports completion. Both directions are the one XOR
+    (and the one inversion), so a round trip is exact whatever the table.
     """
 
     info = PluginInfo(
@@ -81,12 +82,15 @@ class XorTableCodec:
                 maximum=0x10000,
                 unit="byte",
             ),
+            InputSpec("invert", "Invert", InputKind.FLAG, required=False),
         ),
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
         inputs = ctx.get(KEY_INPUTS) or {}
         out = xor_bytes(data, inputs["table"])
+        if inputs.get("invert"):
+            out = bytes(b ^ 0xFF for b in out)
         return out[: inputs["output_size"]] if "output_size" in inputs else out
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:

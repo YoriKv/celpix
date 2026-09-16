@@ -34,6 +34,7 @@ from collections.abc import Callable
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QGridLayout,
     QGroupBox,
@@ -387,9 +388,43 @@ class IntegerRow(_Row):
             self.go_to_requested.emit(binding)
 
 
+class FlagRow(_Row):
+    """A **flag** input: one checkbox.
+
+    There is no unbound state to offer, because an unbound flag reads as its
+    default and a box showing the default *is* that reading. So the row binds
+    only the other value: a box left at the default writes nothing, and a
+    project file carries a flag only where it was switched.
+    """
+
+    use_selection_requested = Signal(object)  # never emitted: nothing to select
+    go_to_requested = Signal(object)  # never emitted: nowhere to go
+
+    def __init__(self, spec: InputSpec, sources: list[Entry]) -> None:
+        super().__init__(spec, sources)
+        self._box = QCheckBox()
+        self._box.setToolTip(spec.tooltip or spec.label)
+        self._box.toggled.connect(lambda _on: self.changed.emit())
+
+    def widgets(self) -> list[QWidget]:
+        return [self._box]
+
+    def binding(self) -> bool | None:
+        on = self._box.isChecked()
+        return None if on == bool(self.spec.default) else on
+
+    def set_binding(self, binding: InputBinding | None) -> None:
+        with signals_blocked(self._box):
+            self._box.setChecked(
+                binding if isinstance(binding, bool) else bool(self.spec.default)
+            )
+
+
 def _row_for(spec: InputSpec, sources: list[Entry]) -> _Row:
     if spec.kind is InputKind.INTEGER:
         return IntegerRow(spec, sources)
+    if spec.kind is InputKind.FLAG:
+        return FlagRow(spec, sources)
     return RegionRow(spec, sources)
 
 

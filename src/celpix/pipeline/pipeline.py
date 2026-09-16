@@ -38,6 +38,8 @@ from celpix.core.context import (
     KEY_SOURCE_FILES,
     KEY_SOURCE_OFFSET,
     KEY_SOURCE_PATH,
+    KEY_SURROUND,
+    KEY_SURROUND_START,
     KEY_TILEMAP_PALETTE_ROW_BASE,
     KEY_TILEMAP_SUBSPRITE_TILES,
     PipelineContext,
@@ -239,6 +241,52 @@ def _stage_inputs(
         ctx.set(KEY_INPUTS, {} if before is None else before)
 
 
+@contextmanager
+def _stage_surround(
+    ctx: PipelineContext, buffer: bytes | None, start: int
+) -> Iterator[None]:
+    """Publish ``buffer`` as :data:`KEY_SURROUND` for one stage call, then remove it.
+
+    ``None`` publishes nothing, so a caller states the condition once and the
+    keys are absent rather than stale where it does not hold. Removed rather than
+    restored because nothing legitimately holds these keys across calls: the
+    point of the wrapper is that a document's context never keeps its file alive.
+    """
+    if buffer is None:
+        yield
+        return
+    ctx.set(KEY_SURROUND, buffer)
+    ctx.set(KEY_SURROUND_START, start)
+    try:
+        yield
+    finally:
+        ctx.discard(KEY_SURROUND)
+        ctx.discard(KEY_SURROUND_START)
+
+
+def _surround_of(
+    cfg: PathwayConfig, reg: Registry, acquire: Callable[[], ReadSource | None]
+) -> tuple[bytes | None, int]:
+    """What :func:`_stage_surround` may publish for ``cfg``'s compression stage.
+
+    A position in the compression stage's data names a position in the source
+    buffer only when the container kept positions (``preserves_offsets``) and no
+    reshape reordered the bytes between the two; otherwise the buffer is a
+    different address space and publishing it would let a scheme resolve a copy
+    from the wrong bytes rather than refuse. ``acquire`` is called only once
+    those checks pass, since on the save side it is a read of the destination.
+    """
+    if cfg.reshape_id != NO_RESHAPE:
+        return None, 0
+    container = reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin)
+    if not container.info.preserves_offsets:
+        return None, 0
+    source = acquire()
+    if source is None:
+        return None, 0
+    return source.data, source.start
+
+
 @dataclass(frozen=True)
 class ScanResult:
     """Where a forward structure scan ended (:func:`find_next_structure`).
@@ -286,6 +334,11 @@ def find_next_structure(
         ctx = PipelineContext()
         if inputs:
             ctx.set(KEY_INPUTS, inputs)
+        # The probe is a window of `data`, and a scheme that copies from the
+        # bytes before its stream has to be told where in `data` the window
+        # sits, or it would resolve those copies against the window's own start.
+        ctx.set(KEY_SURROUND, data)
+        ctx.set(KEY_SURROUND_START, pos)
         try:
             if plugin.decompress(data[pos : pos + probe_bytes], ctx):
                 return ScanResult(pos, pos, False)
@@ -1268,8 +1321,11 @@ def _read_reshape_decompress(
     for stage, summary, detail in cfg.input_problems:
         warn(ctx, summary, detail, stage.value)
 
+    held: list[ReadSource] = []
+
     def read() -> bytes:
         source, files = _acquire(cfg.source)
+        held.append(source)
         # Provenance the host owns, because it is the host that knows where the
         # bytes came from; the container publishes only KEY_SOURCE_OFFSET, which
         # is a fact about the format rather than about the source. Both keys are
@@ -1298,7 +1354,11 @@ def _read_reshape_decompress(
         "reshape",
         plugin=cfg.reshape_id,
     )
-    with _stage_inputs(ctx, cfg, Stage.COMPRESSION):
+    surround, start = _surround_of(cfg, reg, lambda: held[0] if held else None)
+    with (
+        _stage_inputs(ctx, cfg, Stage.COMPRESSION),
+        _stage_surround(ctx, surround, start),
+    ):
         return _run(
             Stage.COMPRESSION,
             pathway,
@@ -1500,7 +1560,23 @@ def _compress_unshape(
     a *different region* whose unshape scatters every byte to the wrong chip —
     there is no such thing as writing the front of one.
     """
-    with _stage_inputs(ctx, cfg, Stage.COMPRESSION):
+
+    def destination() -> ReadSource | None:
+        # The bytes around the slot as they stand now, for a scheme asked to
+        # pack against what precedes its stream: read here, before the deposit
+        # reads the destination again, because the compressor runs first. One
+        # extra read of the file per save of a compressed entry, and none for a
+        # destination that does not exist yet.
+        try:
+            return _acquire(cfg.write_target())[0]
+        except OSError:
+            return None
+
+    surround, start = _surround_of(cfg, reg, destination)
+    with (
+        _stage_inputs(ctx, cfg, Stage.COMPRESSION),
+        _stage_surround(ctx, surround, start),
+    ):
         packed = _run(
             Stage.COMPRESSION,
             pathway,

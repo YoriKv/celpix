@@ -361,6 +361,7 @@ class InputKind(str, Enum):
 
     REGION = "region"  # bytes cut from the entry's file or from another entry
     INTEGER = "integer"  # a number: a literal, or read out of bytes
+    FLAG = "flag"  # yes or no: a checkbox, never required, unbound is its default
 
 
 @dataclass(frozen=True)
@@ -390,7 +391,9 @@ class InputSpec:
     the plugin, which then finds the key absent from the dict.
 
     An **absent optional input is absent from the dict**, never ``None``, so a
-    plugin tells "not bound" from any value with ``in``.
+    plugin tells "not bound" from any value with ``in``. A **flag** is the
+    exception: it is always delivered, as ``bool(default)`` when unbound, since
+    a switch has no third state worth a plugin's attention.
     """
 
     key: str

@@ -27,6 +27,8 @@ from celpix.core.context import (
     KEY_DECOMPRESS_COMPLETE,
     KEY_DECOMPRESS_PARTIAL,
     KEY_INPUTS,
+    KEY_SURROUND,
+    KEY_SURROUND_START,
     PipelineContext,
 )
 from celpix.core.errors import Stage
@@ -152,6 +154,10 @@ class CompressionMixin:
             return
         ctx = PipelineContext()
         ctx.set(KEY_DECOMPRESS_PARTIAL, True)
+        # The window is cut from the entry's buffer, and a scheme that copies
+        # from the bytes before its stream resolves them through that buffer.
+        ctx.set(KEY_SURROUND, self._doc.pixel_data)
+        ctx.set(KEY_SURROUND_START, self._byte_position())
         # A scheme that needs a table decodes with the file's binding for it,
         # or not at all: no preview is the honest answer to an unbound input,
         # and the badge beside the picker says which (``main_window/inputs.py``).

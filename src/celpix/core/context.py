@@ -30,6 +30,20 @@ KEY_SOURCE_OFFSET = "source.offset"  # int: byte offset within that source
 # precisely so it need not consult this, but one assembling a region from named
 # chips can.
 KEY_SOURCE_FILES = "source.files"
+# bytes: the buffer the current stage's data was **cut from**, with
+# KEY_SURROUND_START the index in it of the data's first byte - what a
+# compression scheme whose stream copies from the bytes *before* it in ROM
+# (SGDK's LZ4W packs each resource against the ones already laid down) resolves
+# those copies through. Published by the host for the duration of a Decompress
+# or Compress call, and only when a position in the data is a position in that
+# buffer: the container preserves offsets and no reshape intervened. Removed
+# afterwards rather than left on the context, because a document's context
+# outlives the call and would otherwise keep a whole ROM alive per entry. The
+# structure scan and the window preview publish their own, since each probes a
+# window of a buffer it already holds. Absent means "not knowable here", which
+# a scheme that needs it answers with its own input or a refusal.
+KEY_SURROUND = "source.surround"
+KEY_SURROUND_START = "source.surround-start"
 # int: size of the compressed structure in the source, recorded by Decompress.
 # A container usually over-reads (offset to end-of-file), so this — not the
 # input length — is the slot a save-back has to fit into.
@@ -420,6 +434,16 @@ class PipelineContext:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._entries.get(key, default)
+
+    def discard(self, key: str) -> None:
+        """Remove ``key`` if present.
+
+        For what the host publishes around one call and must not leave behind: a
+        :data:`KEY_SURROUND` buffer, which on a long-lived document context would
+        hold its file in memory for as long as the entry is open. Setting ``None``
+        instead would leave a row for the enumerating side to show.
+        """
+        self._entries.pop(key, None)
 
     def items(self) -> dict[str, Any]:
         """Everything recorded here, for a caller that has to enumerate the bag.

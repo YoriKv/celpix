@@ -214,7 +214,7 @@ def test_the_slice_dialog_shows_the_codecs_bindings_only_under_that_codec(
     qtbot.addWidget(dialog)
     assert (
         dialog._inputs.text()
-        == "Key table: 0x100, 4 B; Output size: unbound (optional)"
+        == "Key table: 0x100, 4 B; Output size: unbound (optional); Invert: no"
     )
     dialog._decompress.setCurrentIndex(dialog._decompress.findData(NO_COMPRESSION))
     assert dialog._inputs.text() == ""
@@ -252,7 +252,11 @@ def test_the_slice_dialogs_badge_edits_the_codec_the_dialog_has_picked(
     qtbot.addWidget(form)
     assert form.isVisible() and form.entry is entry
     # The section is the *dialog's* codec, which the entry does not read with.
-    assert set(form._rows) == {(XOR_ID, "table"), (XOR_ID, "output_size")}
+    assert set(form._rows) == {
+        (XOR_ID, "table"),
+        (XOR_ID, "output_size"),
+        (XOR_ID, "invert"),
+    }
     # Above the modal dialog, or it would be drawn and then ignore every click.
     assert form.windowModality() == Qt.WindowModality.ApplicationModal
 
@@ -260,7 +264,11 @@ def test_the_slice_dialogs_badge_edits_the_codec_the_dialog_has_picked(
     form._on_apply()
     assert entry.inputs == {XOR_ID: {"table": RegionBinding(offset=0x100, length=4)}}
     # Applying rebuilds the form: the same section, still above the dialog.
-    assert set(form._rows) == {(XOR_ID, "table"), (XOR_ID, "output_size")}
+    assert set(form._rows) == {
+        (XOR_ID, "table"),
+        (XOR_ID, "output_size"),
+        (XOR_ID, "invert"),
+    }
     assert form.windowModality() == Qt.WindowModality.ApplicationModal
     dialog.refresh_inputs()  # what returning to the dialog does
     assert dialog._inputs.text().startswith("Key table: 0x100, 4 B")
@@ -328,3 +336,27 @@ def test_an_edit_to_a_table_in_another_file_re_reads_the_stream_bound_to_it(
     assert stream.doc is None
     window._activate_entry(stream)
     assert window._doc.pixel_data == xor_bytes(STREAM, bytes([0xAA, 0xBB, 0xCC, 0xDD]))
+
+
+def test_a_flag_row_binds_only_when_switched(qtbot, tmp_path) -> None:
+    window, rom = _open(qtbot, tmp_path)
+    entry = _bound_slice(window, rom)
+    window._activate_entry(entry)
+    window._show_inputs(entry)
+    form = window._inputs_window
+    row = form._rows[(XOR_ID, "invert")]
+    # Showing the default binds nothing; switched, it binds the other value,
+    # and the slice is re-read through it.
+    assert row.binding() is None
+    row._box.setChecked(True)
+    assert row.binding() is True
+    form._on_apply()
+    assert entry.inputs[XOR_ID]["invert"] is True
+    assert window._doc.pixel_data == bytes(b ^ 0xFF for b in xor_bytes(STREAM, TABLE))
+    window._show_inputs(entry)
+    row = window._inputs_window._rows[(XOR_ID, "invert")]
+    assert row._box.isChecked()
+    row._box.setChecked(False)
+    window._inputs_window._on_apply()
+    assert "invert" not in entry.inputs[XOR_ID]
+    assert window._doc.pixel_data == xor_bytes(STREAM, TABLE)

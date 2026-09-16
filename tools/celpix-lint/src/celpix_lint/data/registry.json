@@ -1,6 +1,24 @@
 {
   "inputs": {
     "compression": {
+      "compression.lz4w": [
+        {
+          "key": "previous",
+          "kind": "region",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "required": false,
+          "stride": 2
+        },
+        {
+          "key": "pack_previous",
+          "kind": "flag",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "required": false,
+          "stride": 1
+        }
+      ],
       "compression.phantasy-star-rle": [
         {
           "key": "interleave",
@@ -20,6 +38,10 @@
   },
   "plugins": {
     "compression": {
+      "compression.aplib": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.bluesky-lz": [
         "pixels",
         "tilemap"
@@ -65,6 +87,10 @@
         "tilemap"
       ],
       "compression.lz2-improved": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.lz4w": [
         "pixels",
         "tilemap"
       ],

@@ -50,7 +50,15 @@ def ids() -> KnownIds:
                         "minimum": 1,
                         "maximum": 8,
                         "stride": 1,
-                    }
+                    },
+                    {
+                        "key": "strict",
+                        "kind": "flag",
+                        "required": False,
+                        "minimum": 0,
+                        "maximum": 0,
+                        "stride": 1,
+                    },
                 ]
             }
         },
