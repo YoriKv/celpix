@@ -1,4 +1,23 @@
 {
+  "inputs": {
+    "compression": {
+      "compression.phantasy-star-rle": [
+        {
+          "key": "interleave",
+          "kind": "integer",
+          "maximum": 32,
+          "minimum": 1,
+          "required": false,
+          "stride": 1
+        }
+      ]
+    },
+    "container": {},
+    "interpret-palette": {},
+    "interpret-pixel": {},
+    "interpret-tilemap": {},
+    "reshape": {}
+  },
   "plugins": {
     "compression": {
       "compression.bluesky-lz": [
@@ -175,6 +194,10 @@
         "pixels",
         "tilemap"
       ],
+      "container.sms-rom": [
+        "pixels",
+        "tilemap"
+      ],
       "container.snes-interleaved": [
         "pixels",
         "tilemap"
@@ -220,12 +243,20 @@
         "pixels",
         "tilemap"
       ],
+      "codec.pixel.palette-swatch": [
+        "pixels",
+        "tilemap"
+      ],
       "codec.pixel.planar": [
         "pixels",
         "tilemap"
       ]
     },
     "interpret-tilemap": {
+      "codec.tilemap.indirect-record": [
+        "pixels",
+        "tilemap"
+      ],
       "codec.tilemap.md-sprite": [
         "pixels",
         "tilemap"
@@ -325,6 +356,7 @@
       "preset.palette.abgr8888",
       "preset.palette.bgr222",
       "preset.palette.bgr333",
+      "preset.palette.bgr333-le",
       "preset.palette.bgr444",
       "preset.palette.bgr444-be",
       "preset.palette.bgr555",
@@ -334,6 +366,7 @@
       "preset.palette.ega-indexed",
       "preset.palette.gb-bgp",
       "preset.palette.genesis-9bpp",
+      "preset.palette.genesis-9bpp-le",
       "preset.palette.grb333",
       "preset.palette.grb333-be",
       "preset.palette.msx-indexed",
@@ -428,6 +461,7 @@
       "preset.pixel.snes-8bpp",
       "preset.pixel.snes-8bpp-bank",
       "preset.pixel.vb-2bpp",
+      "preset.pixel.view-as-palette",
       "preset.pixel.ws-2bpp"
     ],
     "interpret-tilemap": [
@@ -440,6 +474,7 @@
       "preset.tilemap.gbc-bg",
       "preset.tilemap.md-bg",
       "preset.tilemap.md-sprite",
+      "preset.tilemap.metatile-index",
       "preset.tilemap.ngp-bg",
       "preset.tilemap.ngpc-bg",
       "preset.tilemap.pce-bat",

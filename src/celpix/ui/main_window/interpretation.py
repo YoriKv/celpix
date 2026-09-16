@@ -31,10 +31,16 @@ from celpix.core.arrangement import (
     ArrangementPreset,
     arrangement_preset_for,
 )
+from celpix.core.capabilities import Capability
 from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_COMPRESSION, category_order
+from celpix.plugins.base import (
+    NO_COMPRESSION,
+    PALETTE_SWATCH_ENGINE,
+    STAGE_DEFAULT_PRESET,
+    category_order,
+)
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -53,6 +59,7 @@ from celpix.ui.undo_commands import (
     ArrangementCommand,
     ArrangementState,
     PaletteState,
+    PaletteViewFormatCommand,
     PixelConfigCommand,
     PixelFilterCommand,
     PreviewCompressionCommand,
@@ -365,6 +372,26 @@ class InterpretationMixin:
                 tooltip="Preview the window decompressed with this codec",
             )
         )
+        # The compression group's stand-in while the pixel picker reads the
+        # bytes as palette colors: there is nothing to decompress on a color
+        # table, and what the view needs instead is which color format the
+        # entries are in. Same slot, so the bar keeps its shape — the swap is
+        # made in _sync_palette_view_bar, one level under the kind's gate.
+        self._palette_view_preset = self._preset_combo(
+            Stage.INTERPRET_PALETTE, "bgr555"
+        )
+        self._palette_view_preset.setToolTip(
+            "How each palette entry's bytes decode to a color\n"
+            "Shown in place of the compression preview while\n"
+            "the view reads the bytes as palette colors"
+        )
+        self._palette_view_preset.currentIndexChanged.connect(
+            self._on_palette_view_change
+        )
+        self._palette_view_action = codecs.addWidget(
+            _group("Palette:", self._palette_view_preset)
+        )
+        self._palette_view_action.setVisible(False)
         self._bake_inputs_badges()
 
         # Sits immediately left of Cols because the two are read together: a
@@ -954,6 +981,103 @@ class InterpretationMixin:
     def _palette_preset_id(self) -> str:
         return self._palette_preset.currentData()
 
+    def _palette_view_preset_id(self) -> str:
+        """The color format the palette-swatch view reads through — the toolbar
+        picker's, falling back to the stage default before it is populated."""
+        return (
+            self._palette_view_preset.currentData()
+            or STAGE_DEFAULT_PRESET[Stage.INTERPRET_PALETTE]
+        )
+
+    def _palette_view_active(self) -> bool:
+        """Whether the pixel picker names a preset over the palette-swatch engine.
+
+        Off the **picker** rather than the document, because the bar it decides
+        configures the next open as much as the current one: with nothing loaded
+        the picker still says how bytes will be read, and the palette-format
+        group belongs beside it then too. Decided by the engine, not the shipped
+        preset's id, so a user's own preset over the same engine gets the group.
+        """
+        preset_id = self._pixel_preset_id()
+        if not preset_id or not self._registry.has_preset(preset_id):
+            return False
+        return self._registry.preset(preset_id).engine_id == PALETTE_SWATCH_ENGINE
+
+    def _sync_palette_view_bar(self) -> None:
+        """Put the palette-format group in the compression group's place, or the
+        reverse — the one swap the capability table cannot express.
+
+        Runs from the tail of :meth:`~...capability_sync.CapabilitySyncMixin.
+        _sync_capabilities`, after the kind's own gate on the compression group
+        has had its say: a tilemap shows neither, whatever the pixel picker holds.
+        """
+        allowed = self._can(Capability.COMPRESSION_SCAN)
+        swatches = allowed and self._palette_view_active()
+        self._compression_action.setVisible(allowed and not swatches)
+        self._palette_view_action.setVisible(swatches)
+
+    def _on_palette_view_change(self, *_args) -> None:
+        """Push one move of the palette-format picker.
+
+        The pixel-preset switch's shape rather than the compression picker's:
+        the format decides how many bytes an entry is, so the bytes are
+        reinterpreted — validated once here, then landed by the command's first
+        redo. The before state comes off the session, which the apply keeps
+        true, since a session is otherwise captured only on the way out.
+        """
+        if self._applying_undo:
+            return
+        entry = self._workspace.current
+        after = self._palette_view_preset_id()
+        if self._doc is None or entry is None or entry.session is None:
+            self._on_view_change()
+            return
+        before = entry.session.palette_view_preset_id
+        if before == after:
+            return
+        if self._palette_view_active():
+            # Validate against the new format before anything is committed: the
+            # config reads the session, so the session is moved for the probe
+            # and put back on failure.
+            entry.session.palette_view_preset_id = after
+            cfg = self._pixel_config(entry, self._pixel_preset_id())
+            try:
+                self._pixel_data_for(cfg)
+            except PipelineError as exc:
+                entry.session.palette_view_preset_id = before
+                self._report(exc)
+                select_combo_data(self._palette_view_preset, before)
+                return
+            entry.session.palette_view_preset_id = before
+        self._push_command(
+            PaletteViewFormatCommand(
+                self,
+                entry,
+                f"read palette as {self._palette_view_preset.currentText()}",
+                before,
+                after,
+            )
+        )
+
+    def _apply_palette_view_format(self, preset_id: str) -> None:
+        """Land a color format on the picker and the session, and re-read the
+        bytes through it where the swatch view is showing.
+
+        Written to the session as well as the combo for the reason
+        :meth:`_apply_preview_compression` gives — and because the session is
+        what the pixel config is built from, so the reinterpretation below reads
+        the format that was just picked rather than the one before it. Under any
+        other pixel format the pick is only kept, for the next time the swatch
+        view is chosen.
+        """
+        select_combo_data(self._palette_view_preset, preset_id)
+        entry = self._workspace.current
+        if entry is not None and entry.session is not None:
+            entry.session.palette_view_preset_id = preset_id
+        if self._doc is None or not self._palette_view_active():
+            return
+        self._apply_pixel_config(self._pixel_preset_id(), self._byte_position())
+
     def _palette_import_preset_id(self) -> str:
         """The format a palette *file* is read with (the dock's Import as…).
 
@@ -1452,6 +1576,14 @@ class InterpretationMixin:
         # refreshes the same way (keep the selection when it survives the reload).
         with signals_blocked(self._compression):
             self._populate_compression(self._compression.currentData())
+        # And the swatch view's format picker, which lists the palette presets
+        # a second time: same list, same rule.
+        with signals_blocked(self._palette_view_preset):
+            fill_grouped(
+                self._palette_view_preset,
+                preset_rows(self._registry.presets(Stage.INTERPRET_PALETTE)),
+                self._palette_view_preset.currentData(),
+            )
 
     def _partial_tile_note(self) -> str:
         """Status-bar warning when the data ends mid-tile, or ``""`` when aligned.

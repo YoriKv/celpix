@@ -38,6 +38,7 @@ from celpix.core.context import (
     KEY_TILEMAP_CELL_TILES,
     KEY_TILEMAP_PALETTE_ROW_BASE,
     KEY_TILEMAP_STAMP_CELLS,
+    KEY_TILEMAP_STAMP_STRIDE,
     PipelineContext,
 )
 from celpix.core.document import CellChain, Document
@@ -886,13 +887,22 @@ class SessionMixin:
 
     @staticmethod
     def _chain_source_columns(through: Document) -> int:
-        """The stride between a stamp's rows: the **source's** own width.
+        """The stride between a stamp's rows, in cells of the **source**.
 
-        Stated where the source's format states one; otherwise the width its
-        cells are laid at is the view's, and file order is drawn order there.
-        A stride of 1 in that case would walk a stamp's second row along the
-        same source row instead of down one.
+        The source's own answer first (:data:`~celpix.core.context.
+        KEY_TILEMAP_STAMP_STRIDE`): a table of packed records stamps at the
+        record's width whatever it is displayed at, and publishing that is what
+        lets it be shown as a sheet. Else the width its format states;
+        otherwise the width its cells are laid at is the view's, and file order
+        is drawn order there. A stride of 1 in that case would walk a stamp's
+        second row along the same source row instead of down one.
         """
+        stride = through.tilemap_ctx.get(KEY_TILEMAP_STAMP_STRIDE)
+        try:
+            if stride and int(stride) >= 1:
+                return int(stride)
+        except (TypeError, ValueError):
+            pass
         return through.stated_columns or max(1, through.view.columns)
 
     def _declared_cell_row_stride(self, entry: Entry) -> int:
@@ -1593,6 +1603,7 @@ class SessionMixin:
                 if entry.kind is EntryKind.SLICE
                 else self._compression_id()
             ),
+            palette_view_preset_id=self._palette_view_preset_id(),
         )
 
     def _capture_session(self) -> None:
@@ -1611,6 +1622,7 @@ class SessionMixin:
             palette_preset_id=self._palette_preset_id(),
             palette_mode=self._palette_mode,
             preview_compression_id=self._compression_id(),
+            palette_view_preset_id=self._palette_view_preset_id(),
             selected_tile=self._selected_tile,
             selected_last=self._selected_last,
             selection_slots=self._rect_size,
@@ -1637,6 +1649,7 @@ class SessionMixin:
         for combo, data in (
             (self._palette_preset, session.palette_preset_id),
             (self._compression, session.preview_compression_id),
+            (self._palette_view_preset, session.palette_view_preset_id),
         ):
             select_combo_data(combo, data)
         # The four arrangement axes move as one coherent change, through the

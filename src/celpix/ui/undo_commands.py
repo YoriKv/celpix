@@ -448,6 +448,21 @@ class PreviewCompressionCommand(_CurrentEntryCommand):
         self._window._apply_preview_compression(state)
 
 
+class PaletteViewFormatCommand(_CurrentEntryCommand):
+    """One move of the palette-format picker that stands in for the compression
+    one while the bytes are read as palette swatches, as before/after preset ids.
+
+    Kept in the entry's ``session`` and written to the project file like the
+    compression pick — which color format a table is in is a finding about the
+    file. Unlike that pick it changes what is drawn: the format decides how many
+    bytes an entry is, so the apply reinterprets the loaded bytes in place, the
+    way a pixel-preset switch does, and the push site validates the read first.
+    """
+
+    def _apply(self, state: str) -> None:
+        self._window._apply_palette_view_format(state)
+
+
 class ViewToggleCommand(_CurrentEntryCommand):
     """One of the entry's view switches — Show Rearranged, All Frames, Zero Clear.
 

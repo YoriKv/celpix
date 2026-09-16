@@ -2825,3 +2825,44 @@ def test_the_arrangement_bar_is_furniture_for_a_pixel_document(qtbot, tmp_path) 
     window._activate_entry(window._workspace.entries[0])
     assert not window._arrange_toolbar.isHidden()
     assert window._arrange_toolbar.isEnabled()
+
+
+def test_a_source_that_states_a_stamp_stride_is_stamped_at_it_not_at_its_width(
+    qtbot, tmp_path
+) -> None:
+    """The stride a chain steps a stamp's rows by is the source's own answer
+    where it gives one: a table of packed 2x2 records stamps at 2 however wide
+    it is displayed. Without the answer the stride is the displayed width, which
+    is what forced such tables to be shown as two-cell ribbons."""
+    from celpix.core.context import KEY_TILEMAP_STAMP_STRIDE, PipelineContext
+    from celpix.core.document import Document
+    from celpix.core.tilemap import Cell
+    from celpix.pipeline.pathway import PathwayConfig
+    from celpix.plugins.base import FileRef
+
+    def table(stride: int | None, columns: int) -> Document:
+        ctx = PipelineContext()
+        if stride is not None:
+            ctx.set(KEY_TILEMAP_STAMP_STRIDE, stride)
+        doc = Document(
+            pixel_data=b"",
+            bytes_per_tile=32,
+            tile_width=8,
+            tile_height=8,
+            palette=None,
+            pixel_config=PathwayConfig(
+                source=FileRef(""), interpret_preset_id="", write_enabled=False
+            ),
+            palette_config=PathwayConfig(
+                source=FileRef(""), interpret_preset_id="", write_enabled=False
+            ),
+            cells=[Cell(index=at) for at in range(64)],
+            tilemap_ctx=ctx,
+        )
+        doc.view.columns = columns
+        return doc
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._chain_source_columns(table(2, 32)) == 2
+    assert window._chain_source_columns(table(None, 32)) == 32

@@ -148,7 +148,13 @@ INPUT_ENDIANS = ("big", "little")
 MAX_INPUT_WIDTH = 8
 
 SESSION_KEYS = frozenset(
-    {"pixel_preset_id", "palette_preset_id", "palette_mode", "compression_id"}
+    {
+        "pixel_preset_id",
+        "palette_preset_id",
+        "palette_mode",
+        "compression_id",
+        "palette_view_preset_id",
+    }
 )
 
 VIEW_KEYS = frozenset(
@@ -223,6 +229,7 @@ ID_STAGES = {
     "compression_id": "compression",
     "tilemap_preset_id": "interpret-tilemap",
     "palette_preset_id": "interpret-palette",
+    "palette_view_preset_id": "interpret-palette",
     "pixel_preset_id": "interpret-pixel",
 }
 

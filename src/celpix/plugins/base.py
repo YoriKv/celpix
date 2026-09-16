@@ -45,6 +45,15 @@ RAW_CONTAINER = "container.raw-file"
 # offsets: addresses go dark and slices can't be carved until this is selected.
 NO_RESHAPE = "reshape.none"
 
+# The pixel engine that reads bytes as palette colors, one swatch tile per entry
+# (``plugins/builtins/palette_swatch.py``), and the param naming which color
+# format. Known to the host by id, like the pass-throughs above, because the
+# toolbar swaps the compression preview for a palette-format picker whenever the
+# pixel picker names a preset over this engine, and the entry's session carries
+# that pick into the config as this param (``PathwayConfig.interpret_params``).
+PALETTE_SWATCH_ENGINE = "codec.pixel.palette-swatch"
+PALETTE_PRESET_PARAM = "palette_preset_id"
+
 # The same three keyed by stage. Each one *does nothing*, so standing in for a
 # plugin the registry hasn't got leaves the stage a no-op rather than a different
 # transform (:meth:`~celpix.plugins.registry.Registry.resolve_stage`).

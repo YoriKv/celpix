@@ -42,6 +42,7 @@ from .enigma import EnigmaCompression
 from .gb_rom import GbRomContainer
 from .gba_lz77 import GbaLz77Compression
 from .indexed_codec import IndexedColorCodec
+from .indirect_record import IndirectRecordCodec
 from .konami_rle import KonamiFdsRle, KonamiNesRle
 from .kosinski import KosinskiCompression
 from .linear_codec import PackedStraddlingCodec
@@ -58,6 +59,7 @@ from .nibble_planar_codec import NibblePlanarCodec
 from .object_codec import ObjectCodec, ObzCodec, SprCodec
 from .packbits import PackBitsCompression
 from .packed_codec import PackedCodec
+from .palette_swatch import PaletteSwatchCodec
 from .passthrough import PassthroughCompression, PassthroughReshape
 from .phantasy_star_rle import PhantasyStarRleCompression
 from .planar_codec import PlanarCodec
@@ -76,6 +78,7 @@ from .scgcad import (
     StdContainer,
 )
 from .slz import Slz16Compression, Slz24Compression
+from .sms_rom import SmsRomContainer
 from .snes_rle import Rle1Compression, Rle2Compression
 from .sonic2_tiles import Sonic2TilesCompression
 from .split_planes import split_part_plugins
@@ -97,6 +100,7 @@ def register_builtins(reg: Registry) -> None:
         SmdContainer(),
         SnesInterleavedContainer(),
         GbRomContainer(),
+        SmsRomContainer(),
         N64RomContainer(),
         D88Container(),
         ScrContainer(),
@@ -148,10 +152,14 @@ def register_builtins(reg: Registry) -> None:
         NibblePlanarCodec(),
         PackedStraddlingCodec(),
         DirectColorCodec(),
+        # Handed the registry: it lends a *color* format a tile shape, so it
+        # resolves that format's engine the way the palette pathway would.
+        PaletteSwatchCodec(reg),
         ColorCodec(),
         IndexedColorCodec(),
         TilemapCodec(),
         MdSpriteCodec(),
+        IndirectRecordCodec(),
     ):
         reg.register(plugin)
 

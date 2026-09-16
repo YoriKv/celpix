@@ -105,7 +105,10 @@ class CompressionMixin:
         """
         assert self._doc is not None
         compression_id = self._compression_id()
-        active = compression_id != NO_COMPRESSION
+        # A color table has nothing to unpack: while the bytes are read as
+        # palette swatches the picker is off the bar, and the scheme it still
+        # holds is kept for the next tile format rather than run here.
+        active = compression_id != NO_COMPRESSION and not self._palette_view_active()
         self._scan_button.setEnabled(active and not self._scanning)
         self._next_structure = None
         self._structure_extent = None
@@ -256,7 +259,7 @@ class CompressionMixin:
         if self._doc is None:
             return
         compression_id = self._compression_id()
-        if compression_id == NO_COMPRESSION:
+        if compression_id == NO_COMPRESSION or self._palette_view_active():
             return
         plugin = self._registry.plugin(Stage.COMPRESSION, compression_id)
         # "Find the next stream that decodes with *this* table": the scan runs
@@ -323,6 +326,7 @@ class CompressionMixin:
             self._pixel_preset,
             self._pixel_filter,
             self._compression,
+            self._palette_view_preset,
             self._jump_next,
             self._promote_button,
         ):

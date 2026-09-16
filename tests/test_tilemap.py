@@ -1979,6 +1979,32 @@ def test_a_dense_stamped_chain_expands_every_entry_into_a_stamp() -> None:
     assert [cell.index for cell in packed] == [0, 1, 2, 3, 4, 5, 6, 7]
 
 
+def test_the_indirect_record_engine_names_a_records_corner_and_snaps_back() -> None:
+    """The shipped half of the packed-record case above: a stored byte is a
+    record number, and the engine puts the coordinate on the record's first
+    cell — packed tables end to end, grid tables at the corner the reshape laid
+    the record out at — and an edit anywhere inside a record writes that record."""
+    from celpix.plugins.builtins.indirect_record import IndirectRecordCodec
+
+    codec = IndirectRecordCodec()
+    ctx = PipelineContext()
+    packed = {"record_cells": 4}
+    cells = codec.decode(bytes([0, 1, 5, 255]), packed, ctx)
+    assert [c.index for c in cells] == [0, 4, 20, 1020]
+    assert codec.index_limit(packed) == 1020
+    # a coordinate partway into record 5 snaps to record 5
+    assert codec.encode([Cell(index=22)], packed, ctx) == b"\x05"
+    assert codec.encode(cells, packed, ctx) == bytes([0, 1, 5, 255])
+
+    grid = {"record_cells": 4, "record_columns": 2, "records_across": 8}
+    # block 20 of an eight-across grid: row 2, column 4 -> 2 * 32 + 4 * 2, and
+    # its lower-right cell is one source row (16 cells) and one column on
+    assert [c.index for c in codec.decode(bytes([20]), grid, ctx)] == [72]
+    assert codec.encode([Cell(index=72 + 17)], grid, ctx) == bytes([20])
+    assert codec.encode([Cell(index=72 + 32)], grid, ctx) == bytes([28])
+    assert codec.index_limit(grid) == (255 // 8) * 32 + (255 % 8) * 2
+
+
 def test_a_dense_stamped_map_fixes_its_own_width_and_restamps_by_the_stamp() -> None:
     """The document end: the file's width counts entries, so the picture is wider
     than the file states and the layout has to take that from the document rather
@@ -3691,3 +3717,29 @@ def test_a_column_major_map_reads_down_each_column_and_edits_back_in_place() -> 
     assert down.cell_at(0) == 0
     # The file's own order is untouched, which is what a save writes.
     assert [cell.index for cell in down.cells] == [0, 2, 8, 10]
+
+
+def test_the_packed_engine_publishes_a_source_tables_stamp_and_stride() -> None:
+    """A metatile table read through the packed engine is ordinary cells; what
+    makes it a stamp source is two numbers its preset states and no cell holds.
+    The stride is the record's width, not the table's displayed width, so a
+    table of packed 2x2 records can be shown sixteen across and still stamp."""
+    from celpix.core.context import KEY_TILEMAP_STAMP_CELLS, KEY_TILEMAP_STAMP_STRIDE
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+
+    params = {
+        "bytes": 2, "endian": "little", "fields": "...o pvhi iiii iiii",
+        "stamp_cells": [2, 2], "stamp_stride": 2,
+    }  # fmt: skip
+    ctx = PipelineContext()
+    cells = TilemapCodec().decode(bytes(range(16)), params, ctx)
+    assert len(cells) == 8
+    assert ctx.get(KEY_TILEMAP_STAMP_CELLS) == (2, 2)
+    assert ctx.get(KEY_TILEMAP_STAMP_STRIDE) == 2
+
+    # and a preset saying neither publishes neither, so an ordinary map is
+    # still stamped at the width it is viewed
+    plain = PipelineContext()
+    TilemapCodec().decode(bytes(range(16)), {"bytes": 2}, plain)
+    assert plain.get(KEY_TILEMAP_STAMP_CELLS) is None
+    assert plain.get(KEY_TILEMAP_STAMP_STRIDE) is None

@@ -47,7 +47,12 @@ from PySide6.QtWidgets import (
 from celpix.core.capabilities import ContentKind
 from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
-from celpix.plugins.base import RAW_CONTAINER, STAGE_DEFAULT_PRESET, format_size
+from celpix.plugins.base import (
+    PALETTE_SWATCH_ENGINE,
+    RAW_CONTAINER,
+    STAGE_DEFAULT_PRESET,
+    format_size,
+)
 from celpix.plugins.detect import container_write_enabled, containers_for
 from celpix.plugins.registry import Registry
 from celpix.ui.searchable_combo import (
@@ -271,7 +276,16 @@ class NewFileDialog(QDialog):
 
         stage = _CODEC_STAGES[kind]
         label = tilemap_codec_label if kind is ContentKind.TILEMAP else None
-        rows = preset_rows(self._registry.presets(stage), label)
+        # The palette-swatch view is a way of *looking* at bytes, not a format
+        # to author a file in — a palette file is made as the Palette kind.
+        rows = preset_rows(
+            (
+                preset
+                for preset in self._registry.presets(stage)
+                if preset.engine_id != PALETTE_SWATCH_ENGINE
+            ),
+            label,
+        )
         with signals_blocked(self._codec):
             fill_grouped(self._codec, rows, self._codec_memory[kind])
         # Whatever survived the fill is now this kind's remembered choice — the

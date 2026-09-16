@@ -2,6 +2,10 @@
 
 ## v0.5.23 - unreleased
 
+- "View as palette" feature. View ROM data interpreted as a palette to make
+  it easier to find palette data
+- Stamp tilemap plugin stride is not its own parameters instead of using cols
+- A plugin example for plugin inputs
 - A few cleanup fixes
 - More undo stack fixes
 

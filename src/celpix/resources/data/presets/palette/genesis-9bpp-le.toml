@@ -1,0 +1,19 @@
+# Byte-swapped Mega Drive CRAM — the same spaced word as `genesis-9bpp`, read
+# little-endian. The VDP is big-endian, so this is never what the hardware sees:
+# it is what a word-swapped dump holds, and what a PC port that byte-swapped its
+# assets for an x86 host ships (Sonic & Knuckles Collection).
+#
+# Reading such data as `genesis-9bpp` is the plausible-but-wrong case
+# (docs/rom-mapping/palettes.md §3), and this one has a loud tell: the swap puts
+# green's nibble where the unused one is read, so green comes out zero
+# everywhere and red and blue trade places. A palette that has gone magenta is
+# this, not a bad offset.
+id = "preset.palette.genesis-9bpp-le"
+name = "BGR333 (9-bit, Mega Drive/Genesis VDP CRAM, byte-swapped)"
+engine_id = "codec.palette.mask"
+category = "Sega"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"
+fields = ".... bbb. ggg. rrr."

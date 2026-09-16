@@ -125,6 +125,30 @@ def test_round_trip_preserves_entries_sessions_and_state(tmp_path) -> None:
     assert second.pending_palette == PaletteSource(offset=0x200)
 
 
+def test_swatch_view_color_format_is_stored_only_when_picked(tmp_path) -> None:
+    """The fifth session key: written when the swatch view's color format was
+    chosen, absent while it is the stage default, so a project that never
+    opened the view is byte-identical to one written before the key existed."""
+    rom = tmp_path / "rom.sfc"
+    rom.write_bytes(b"\x00" * 0x400)
+    ws = Workspace()
+    plain = ws.open_file(str(rom))
+    plain.session = _session()
+    picked = ws.add_slice(str(rom), "colors", 0x100, 0x20)
+    picked.session = _session(palette_view_preset_id="preset.palette.rgb888")
+    project = tmp_path / "hack.celpix"
+    save_project(ws, str(project))
+
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert "palette_view_preset_id" not in raw["entries"][0]["session"]
+    assert raw["entries"][1]["session"]["palette_view_preset_id"] == (
+        "preset.palette.rgb888"
+    )
+    first, second = load_project(str(project)).entries
+    assert first.session.palette_view_preset_id == "preset.palette.bgr555"
+    assert second.session.palette_view_preset_id == "preset.palette.rgb888"
+
+
 def test_bookmark_round_trips_and_current_index_at_bookmark_degrades(tmp_path) -> None:
     rom = tmp_path / "rom.sfc"
     rom.write_bytes(b"\x00" * 0x400)

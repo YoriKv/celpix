@@ -234,6 +234,7 @@ class EntriesMixin:
         entry.session = EntrySession(
             pixel_preset_id=(self._pixel_preset_id() if tilemap else params.codec_id),
             palette_preset_id=self._palette_preset_id(),
+            palette_view_preset_id=self._palette_view_preset_id(),
         )
         entry.pending_view = ViewOptions(columns=params.columns, rows=params.rows)
         return entry
@@ -786,6 +787,7 @@ class EntriesMixin:
             palette_mode=src.palette_mode,
             # A slice's bytes are already decompressed - no preview codec.
             preview_compression_id=NO_COMPRESSION,
+            palette_view_preset_id=src.palette_view_preset_id,
         )
         slice_entry.pending_palette = palette_source_for(parent)
         # Only the palette row and the arrangement: the rest of the geometry
@@ -1610,6 +1612,7 @@ class EntriesMixin:
                 # nothing left to unpack), and it is the codec that unpacked it
                 # that makes the packed bytes at this address readable.
                 preview_compression_id=slice_entry.compression_id,
+                palette_view_preset_id=src.palette_view_preset_id,
             ),
             view=(
                 replace(prior_view, tile_offset=0, byte_nudge=0)

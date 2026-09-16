@@ -10,12 +10,13 @@ from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
     KEY_DECOMPRESS_PARTIAL,
+    KEY_INPUTS,
     PipelineContext,
 )
 from celpix.core.errors import Stage
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins import discovery
-from celpix.plugins.base import ReadSource, WriteTarget
+from celpix.plugins.base import InputKind, ReadSource, WriteTarget
 from celpix.plugins.bitswap import BitswapReshape
 from celpix.plugins.data_lut import DataLutReshape
 from celpix.plugins.registry import default_registry
@@ -482,6 +483,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     seeded = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("_*"))
     assert seeded == [
         "compression/_example.py",
+        "compression/_inputs.py",
         "containers/_example.py",
         "containers/_tiff.py",
         "palette/_color-indexed.toml",
@@ -493,11 +495,13 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         "pixel/_nibble-planar.toml",
         "pixel/_packed-straddling.toml",
         "pixel/_packed.toml",
+        "pixel/_palette-swatch.toml",
         "pixel/_planar.toml",
         "reshape/_bitswap.toml",
         "reshape/_data-lut.toml",
         "reshape/_example.py",
         "tilemap/_example.py",
+        "tilemap/_indirect-record.toml",
         "tilemap/_md-sprite.toml",
         "tilemap/_packed.toml",
     ]
@@ -601,9 +605,13 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         again = engine.encode(
             engine.decode(data, preset.params, ctx), preset.params, ctx
         )
-        if preset.engine_id == "codec.pixel.direct-color":
+        if preset.engine_id in (
+            "codec.pixel.direct-color",
+            "codec.pixel.palette-swatch",
+        ):
             # Fewer than 8 bits a channel is lossy, so only the decoded value
-            # round-trips — the raw bits cannot, and never could.
+            # round-trips — the raw bits cannot, and never could. The swatch
+            # engine reads colours the same way, one entry per tile.
             assert engine.decode(again, preset.params, ctx) == engine.decode(
                 data, preset.params, ctx
             )
@@ -706,6 +714,39 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     lenient.set(KEY_DECOMPRESS_PARTIAL, True)
     assert raw.startswith(dec.decompress(cut, lenient))
     assert lenient.get(KEY_DECOMPRESS_COMPLETE) is False
+
+    # Inputs example: the same stage, declaring what it needs from outside its
+    # own bytes. The specs are the contract the Inputs window builds its rows
+    # from, so they are checked as well as the round trip — a stride the host
+    # counts a region in, and an optional integer whose default is what an
+    # unbound entry decodes with.
+    bp = reg.plugin(Stage.COMPRESSION, "compression.example-byte-pair")
+    table, first_code = bp.info.inputs
+    assert (table.key, table.kind, table.required, table.stride) == (
+        "table",
+        InputKind.REGION,
+        True,
+        2,
+    )
+    assert (first_code.kind, first_code.required, first_code.default) == (
+        InputKind.INTEGER,
+        False,
+        0x80,
+    )
+    # A dict the host would have seeded: the table bound, the optional integer
+    # left to its default, which is the case needing no binding at all.
+    bound = PipelineContext()
+    bound.set(KEY_INPUTS, {"table": b"AB" + b"\xc0\xde"})
+    raw = b"hello \xc0\xdeAB"
+    packed = bp.compress(raw, bound)
+    assert bp.decompress(packed, bound) == raw
+    assert bp.info.self_delimiting is False
+    assert bound.get(KEY_DECOMPRESS_COMPLETE) is False
+    assert bound.get(KEY_COMPRESSED_SIZE) == len(packed)
+    # An edit the bound table cannot spell is refused rather than written as
+    # something else — the whole answer to an input being read-only.
+    with pytest.raises(ValueError):
+        bp.compress(b"\xff\xff", bound)
 
     # Reshape example: reshape → unshape restores the bytes at every parity,
     # including the odd tail byte the example deliberately passes through.

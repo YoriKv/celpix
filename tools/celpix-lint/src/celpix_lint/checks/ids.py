@@ -58,7 +58,12 @@ def check(ctx: Context) -> None:
             )
         session = view.raw.get("session")
         if isinstance(session, dict):
-            for key in ("pixel_preset_id", "palette_preset_id", "compression_id"):
+            for key in (
+                "pixel_preset_id",
+                "palette_preset_id",
+                "compression_id",
+                "palette_view_preset_id",
+            ):
                 if key in session:
                     _one(ctx, view, key, session[key], view.at("session", key))
         _container_content(ctx, view)

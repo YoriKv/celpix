@@ -43,6 +43,7 @@ from celpix.plugins.builtins.containers import (
 )
 from celpix.plugins.builtins.d88 import D88Container
 from celpix.plugins.builtins.gb_rom import GbRomContainer, repair_checksums
+from celpix.plugins.builtins.sms_rom import SmsRomContainer, repair_checksum
 from celpix.plugins.builtins.n64_rom import (
     KEY_N64_SWAP,
     N64RomContainer,
@@ -277,6 +278,12 @@ _CONTAINER_SAMPLES = {
         ),
     ),
     "container.n64-rom": ("f.v64", b"\x37\x80\x40\x12" + _noise(0x2000 - 4, 7)),
+    "container.sms-rom": (
+        "f.sms",
+        repair_checksum(
+            _noise(0x7FF0, 10) + b"TMR SEGA" + bytes(7) + b"\x4c" + _noise(0x8000, 11)
+        ),
+    ),
     "container.d88": (
         "f.d88",
         _d88_disk([[(r, 1, _noise(256, r + t), 256) for r in (1, 2)] for t in (0, 2)]),
@@ -466,6 +473,43 @@ def test_gb_write_repairs_both_checksums() -> None:
     # Only the checksums and the edit differ; nothing else was rewritten.
     assert out[0x4000:0x4010] == bytes(range(16))
     assert out[:0x14D] == bytes(rom[:0x14D])
+
+
+def _sms_rom(size: int = 0x10000) -> bytearray:
+    rom = bytearray(size)
+    rom[0x7FF0:0x7FF8] = b"TMR SEGA"
+    rom[0x7FFF] = 0x4E  # export, 64 KiB summed
+    return rom
+
+
+def test_sms_write_repairs_the_header_checksum() -> None:
+    # The sum skips the header's own sixteen bytes and stops at the length the
+    # size nibble names; a tile edit anywhere else invalidates it.
+    rom = _sms_rom()
+    edited = bytearray(rom)
+    edited[0x4000:0x4010] = bytes(range(16))
+    out = SmsRomContainer().write(
+        bytes(edited), WriteTarget(bytes(rom)), PipelineContext()
+    )
+    expected = (sum(out[:0x7FF0]) + sum(out[0x8000:0x10000])) & 0xFFFF
+    assert out[0x7FFA:0x7FFC] == expected.to_bytes(2, "little")
+    assert out[0x4000:0x4010] == bytes(range(16))
+    assert out[:0x7FFA] == bytes(edited[:0x7FFA])
+
+
+def test_sms_write_honours_the_size_nibble_and_the_small_header_slots() -> None:
+    # A 16 KiB cartridge keeps its header at $3FF0 and the BIOS sums only that
+    # much: the container finds the header where it is and sums what it says.
+    rom = bytearray(0x4000)
+    rom[0x3FF0:0x3FF8] = b"TMR SEGA"
+    rom[0x3FFF] = 0x4B  # 16 KiB
+    out = SmsRomContainer().write(bytes(rom), WriteTarget(b""), PipelineContext())
+    assert out[0x3FFA:0x3FFC] == ((sum(rom[:0x3FF0])) & 0xFFFF).to_bytes(2, "little")
+
+
+def test_sms_write_leaves_a_headerless_file_alone() -> None:
+    out = SmsRomContainer().write(b"\xaa" * 64, WriteTarget(b""), PipelineContext())
+    assert out == b"\xaa" * 64
 
 
 def test_gb_write_leaves_a_headerless_file_alone() -> None:

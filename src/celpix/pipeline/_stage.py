@@ -168,7 +168,13 @@ def tile_params(doc: Document, engine, params: dict) -> dict:  # noqa: ANN001
     document keeps that single resolution authoritative instead of recomputing
     it — and leaves params untouched whenever the document is on the codec's
     natural tiles, which is every format that has no tile-size parameter.
+
+    The entry's own ``interpret_params`` are laid over the preset's first, here
+    and in :func:`_pixel_geometry`, which between them are every place a pixel
+    engine is handed a document's params — so the geometry recorded at load and
+    the params every later decode runs under cannot come from different sets.
     """
+    params = {**params, **doc.pixel_config.interpret_params}
     return _with_tile_size(engine, params, (doc.tile_width, doc.tile_height))
 
 
@@ -177,7 +183,9 @@ def _pixel_geometry(
 ) -> tuple[int, int, int]:
     """``(bytes_per_tile, tile_width, tile_height)`` of ``cfg``'s pixel codec."""
     engine, preset = reg.engine_for(cfg.interpret_preset_id, PixelCodecPlugin)
-    params = bitmap_params(engine, preset.params, bitmap_width)
+    params = bitmap_params(
+        engine, {**preset.params, **cfg.interpret_params}, bitmap_width
+    )
     tile_bytes = _run(
         Stage.INTERPRET_PIXEL,
         Pathway.PIXEL,

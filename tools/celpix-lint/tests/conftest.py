@@ -28,7 +28,11 @@ def ids() -> KnownIds:
                 "container.scgcad-col": ["palette"],
             },
             "reshape": {"reshape.none": [], "reshape.split-planes-2": []},
-            "compression": {"compression.none": [], "compression.lz2": []},
+            "compression": {
+                "compression.none": [],
+                "compression.lz2": [],
+                "compression.parted": [],
+            },
         },
         presets={
             "interpret-pixel": {"preset.pixel.snes-4bpp", "preset.pixel.nes-2bpp"},
@@ -36,6 +40,20 @@ def ids() -> KnownIds:
             "interpret-tilemap": {"preset.tilemap.snes-bg"},
         },
         renamed={"preset.palette.r4g4b4": "preset.palette.bgr444"},
+        inputs={
+            "compression": {
+                "compression.parted": [
+                    {
+                        "key": "interleave",
+                        "kind": "integer",
+                        "required": False,
+                        "minimum": 1,
+                        "maximum": 8,
+                        "stride": 1,
+                    }
+                ]
+            }
+        },
         source="test registry",
         authoritative=True,
     )

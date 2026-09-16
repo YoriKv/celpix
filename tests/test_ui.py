@@ -920,3 +920,58 @@ def test_a_declined_code_plugin_is_not_reported_as_a_failure(
     window._alert_plugin_issues()
     ((_title, message),) = captured_alerts
     assert message.startswith("1 plugin failed to load")  # the decline is not one
+
+
+def test_view_as_palette_swaps_the_compression_group_for_a_color_format(
+    qtbot, tmp_path
+) -> None:
+    """The special Pixels entry: the bytes read as palette swatches, the
+    compression preview off the bar and the color-format picker in its place,
+    and one move of that picker one undo step that re-cuts the tiles.
+
+    One window walks the whole feature because it is one state machine: which
+    of the two groups shows, what the swatch view reads through, and that the
+    pick outlives the view (kept on the session for the next visit).
+    """
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    assert window._compression_action.isVisible()
+    assert not window._palette_view_action.isVisible()
+    # The entry sits above every heading, as the one pick that is not a format.
+    assert window._pixel_preset.itemData(0) == "preset.pixel.view-as-palette"
+
+    combo = window._pixel_preset
+    combo.setCurrentIndex(combo.findData("preset.pixel.view-as-palette"))
+    doc = window._doc
+    assert (doc.bytes_per_tile, doc.tile_width, doc.tile_height) == (2, 8, 8)
+    assert not window._compression_action.isVisible()
+    assert window._palette_view_action.isVisible()
+    assert not window._scan_button.isEnabled()
+    # Bytes 0..1 = 0x0E01 in BGR555 -> r=1, g=16, b=3, replicated to 8 bits.
+    assert window._window_grid().get(0, 0) == 0xFF088418
+
+    stack = window._undo_stack
+    base = stack.count()
+    fmt = window._palette_view_preset
+    fmt.setCurrentIndex(fmt.findData("preset.palette.rgb888"))
+    assert stack.count() == base + 1
+    assert window._doc.bytes_per_tile == 3
+    assert window._doc.pixel_config.interpret_params == {
+        "palette_preset_id": "preset.palette.rgb888"
+    }
+    stack.undo()
+    assert window._doc.bytes_per_tile == 2
+    stack.redo()
+
+    # Back to tiles: the groups swap back and the format waits for next time.
+    combo.setCurrentIndex(combo.findData("preset.pixel.snes-4bpp"))
+    assert window._doc.bytes_per_tile == 32
+    assert window._compression_action.isVisible()
+    assert not window._palette_view_action.isVisible()
+    window._capture_session()
+    session = window._workspace.current.session
+    assert session.palette_view_preset_id == "preset.palette.rgb888"
+    combo.setCurrentIndex(combo.findData("preset.pixel.view-as-palette"))
+    assert window._doc.bytes_per_tile == 3

@@ -1,0 +1,10 @@
+# The bytes read as palette colors, one solid 8x8 swatch per entry — for finding
+# and editing color tables inside a ROM without carving a palette entry first.
+# No category, so it sits above every heading as the one entry that is a way of
+# looking rather than a tile format. Which color format the entries are in is not
+# a preset param: the toolbar's palette-format picker sets it per entry
+# (`PathwayConfig.interpret_params`), taking the compression preview's place
+# while this is selected. See docs/design/plugin-system.md §5.
+id = "preset.pixel.view-as-palette"
+name = "View as Palette"
+engine_id = "codec.pixel.palette-swatch"

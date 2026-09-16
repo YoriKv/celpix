@@ -105,6 +105,12 @@ endian = "little"
 # is the only shipped preset that needs it.
 # indirect = true
 
+# What the "bind a source" dialog should call the thing an `indirect` format's
+# coordinates point into. Only the wording — what the bind accepts is unchanged
+# — but a format that knows its files are authored against a panel says so
+# rather than letting the prompt ask for a generic tilemap.
+# source_hint = "PNL panel"
+
 # Set when the file holds one entry per **stamp** instead of one per drawn
 # position. Only matters where the chain has a stamp size bigger than 1x1 —
 # then this says which of the two shapes the entries are in. A stamp layout
@@ -128,6 +134,13 @@ endian = "little"
 # wins over the source's published size; left out, the source's answer applies,
 # and (1, 1) — one coordinate, one cell — where neither side states one.
 # stamp_cells = [2, 2]
+
+# The stride, in this map's own cells, between one row of a stamp and the
+# next — for a table whose records are packed end to end. A 2x2 metatile
+# stored as four consecutive cells stamps at 2, and stating that here lets the
+# table be displayed at any width (sixteen metatiles across, say) and still
+# stamp correctly. Left out, the stride is the width the table is shown at.
+# stamp_stride = 2
 
 # The stride between a metatile cell's tile *rows* in the bank, for a format
 # whose cell covers several tiles (`cell_tiles`). The default is the console

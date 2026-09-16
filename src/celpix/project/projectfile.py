@@ -392,6 +392,11 @@ def _entry_dict(
             "palette_mode": session.palette_mode.value,
             "compression_id": session.preview_compression_id,
         }
+        # Only when picked: the swatch view's color format is the stage default
+        # until someone chooses another, and a project that never opened the
+        # view stays byte-identical to one written before it existed.
+        if session.palette_view_preset_id != _DEFAULT_PALETTE_PRESET:
+            data["session"]["palette_view_preset_id"] = session.palette_view_preset_id
     # A loaded document carries the live state; a never-activated entry may
     # still hold state a previous load restored into its pending fields.
     view = entry.doc.view if entry.doc is not None else entry.pending_view
@@ -890,6 +895,9 @@ def _session_from(raw: object) -> EntrySession:
         ),
         palette_mode=PaletteMode.parse(data.get("palette_mode")),
         preview_compression_id=_plugin_id(data.get("compression_id"), NO_COMPRESSION),
+        palette_view_preset_id=_plugin_id(
+            data.get("palette_view_preset_id"), _DEFAULT_PALETTE_PRESET
+        ),
     )
 
 

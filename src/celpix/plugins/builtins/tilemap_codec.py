@@ -78,6 +78,8 @@ from typing import Any
 
 from celpix.core.context import (
     KEY_TILEMAP_COLUMNS,
+    KEY_TILEMAP_STAMP_CELLS,
+    KEY_TILEMAP_STAMP_STRIDE,
     KEY_TILEMAP_PAGE_ROWS,
     PipelineContext,
 )
@@ -265,6 +267,37 @@ def _publish_pages(cells: int, params: dict[str, Any], ctx: PipelineContext) -> 
     ctx.set(KEY_TILEMAP_PAGE_ROWS, rows)
 
 
+def _publish_stamp(params: dict[str, Any], ctx: PipelineContext) -> None:
+    """State the stamp a *source* table is indexed in, where its preset says.
+
+    A metatile table read through this engine is ordinary cells — the file at
+    the end of a chain — and what makes it a stamp source is two numbers no
+    cell carries: how many of its cells one coordinate names (``stamp_cells``)
+    and how far apart a stamp's rows sit in its cell list (``stamp_stride``).
+    Records packed end to end, four cells to a 2x2 metatile, stamp at stride
+    2 whatever width the table is displayed at; stating the stride here is what
+    lets such a table be viewed sixteen metatiles across and still stamp.
+
+    Both are read by the map bound to this one (``session._chain_stamp_cells``,
+    ``_chain_source_columns``), never by this map, so a referrer's own preset
+    carrying ``stamp_cells`` publishes them to no effect.
+    """
+    cells = params.get("stamp_cells")
+    if isinstance(cells, (list, tuple)) and len(cells) == 2:
+        try:
+            ctx.set(
+                KEY_TILEMAP_STAMP_CELLS, (max(1, int(cells[0])), max(1, int(cells[1])))
+            )
+        except (TypeError, ValueError):
+            pass
+    stride = params.get("stamp_stride")
+    if stride is not None:
+        try:
+            ctx.set(KEY_TILEMAP_STAMP_STRIDE, max(1, int(stride)))
+        except (TypeError, ValueError):
+            pass
+
+
 def _endian(params: dict[str, Any]) -> str:
     order = str(params.get("endian", "little"))
     if order not in ("little", "big"):
@@ -327,6 +360,7 @@ class TilemapCodec:
                 )
             )
         _publish_pages(len(cells), params, ctx)
+        _publish_stamp(params, ctx)
         return cells
 
     def encode(

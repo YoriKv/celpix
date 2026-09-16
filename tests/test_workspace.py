@@ -992,3 +992,31 @@ def test_repair_presets_swaps_missing_formats_and_reports_them(tmp_path) -> None
     ]
     # A second pass has nothing left to say.
     assert repair_presets([entry], default_registry()) == []
+
+
+def test_swatch_view_config_carries_the_sessions_color_format(tmp_path) -> None:
+    """The one entry-level preset param: a config over the palette-swatch
+    engine reads the session's color format, any other engine reads nothing,
+    and a format this build lacks is dropped rather than handed to an engine
+    that would refuse the whole load."""
+    from celpix.plugins.registry import default_registry
+    from celpix.project.workspace import interpret_params_for, pixel_config_for
+
+    reg = default_registry()
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(b"\x00" * 64)
+    ws = Workspace()
+    entry = ws.open_file(str(rom))
+    entry.session = _session()
+    entry.session.palette_view_preset_id = "preset.palette.rgb888"
+    swatches = "preset.pixel.view-as-palette"
+    assert interpret_params_for(entry, "preset.pixel.snes-4bpp", reg) == {}
+    assert interpret_params_for(entry, swatches, reg) == {
+        "palette_preset_id": "preset.palette.rgb888"
+    }
+    cfg = pixel_config_for(entry, swatches, reg, ws)
+    assert cfg.interpret_params == {"palette_preset_id": "preset.palette.rgb888"}
+    # The geometry the pipeline records follows the session's format: 3 bytes.
+    assert pipeline.load_pixel_data(cfg, reg).bytes_per_tile == 3
+    entry.session.palette_view_preset_id = "preset.palette.no-such"
+    assert interpret_params_for(entry, swatches, reg) == {}

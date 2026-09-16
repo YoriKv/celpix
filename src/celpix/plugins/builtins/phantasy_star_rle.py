@@ -74,7 +74,12 @@ INPUT_PARTS = "interleave"
 TILE_PARTS = 4
 #: A tilemap: one part per byte of the 2-byte cell.
 TILEMAP_PARTS = 2
-_MAX_PARTS = 8
+# A bound on the input spin, not a property of the scheme: the loader picks the
+# count, and a level map decompressed to RAM one part per **row** takes as many
+# parts as it has rows -- 12 on Alex Kidd in Shinobi World, whose to-RAM entry
+# point is called with C = 12 for every room. 32 leaves headroom for a screen
+# cut per row (28) without admitting the values a typo produces.
+_MAX_PARTS = 32
 
 # The largest packet the encoder writes: $80 means 256 to one loader and 65,536
 # to another, so both packet kinds stop one short of it.

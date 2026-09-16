@@ -81,3 +81,29 @@ def test_project_version_matches(snapshot):
     """The linter warns that a newer file will be rewritten on save; it can only
     do that while it knows which version this build writes."""
     assert snapshot["project_version"] == PROJECT_VERSION, f"version {REGENERATE}"
+
+
+def test_input_declarations_match(snapshot):
+    """The range a plugin accepts for an input is what the app checks a binding
+    against before dropping the stage; the linter reports the same failure
+    from the snapshot, so the snapshot has to carry the same numbers."""
+    registry = default_registry()
+    for stage in Stage:
+        expected = {
+            plugin.info.id: [
+                {
+                    "key": spec.key,
+                    "kind": spec.kind.value,
+                    "required": bool(spec.required),
+                    "minimum": int(spec.minimum),
+                    "maximum": int(spec.maximum),
+                    "stride": int(spec.stride),
+                }
+                for spec in plugin.info.inputs
+            ]
+            for plugin in registry.plugins(stage)
+            if plugin.info.inputs
+        }
+        assert snapshot.get("inputs", {}).get(stage.value, {}) == expected, (
+            f"{stage.value} inputs {REGENERATE}"
+        )

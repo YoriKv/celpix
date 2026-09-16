@@ -43,8 +43,8 @@ def _session(ctx: Context, entry: EntryView) -> str | None:
             "on default formats",
             pointer=entry.at("session"),
             entry=entry,
-            detail="Its four keys are the pixel and palette presets, the palette mode "
-            "and the preview compression.",
+            detail="Its keys are the pixel and palette presets, the palette mode, "
+            "the preview compression and the swatch view's color format.",
         )
         return None
     for key in session:
@@ -54,7 +54,7 @@ def _session(ctx: Context, entry: EntryView) -> str | None:
                 f"unknown key {key!r} in `session` — the reader ignores it",
                 pointer=entry.at("session", key),
                 entry=entry,
-                detail=f"The four it reads are: {', '.join(sorted(SESSION_KEYS))}.",
+                detail=f"The ones it reads are: {', '.join(sorted(SESSION_KEYS))}.",
             )
     raw_mode = session.get("palette_mode")
     if raw_mode is None:

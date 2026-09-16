@@ -57,8 +57,9 @@ class ExampleContainer:
         # Detection is declarative: describe the file, never inspect it, and the
         # container claims its own files instead of being picked by hand.
         # `extensions` is the other half — see _tiff.py, which claims .tif/.tiff
-        # by name as well as by both byte orders. `size_modulo` and `min_size`
-        # never make a match, only narrow one.
+        # by name as well as by both byte orders. `exact_size`, `size_modulo`
+        # and `min_size` never make a match, only narrow one: a length alone
+        # would claim every binary that happened to be that long.
         magic=((0, _MAGIC),),
         # The tag the Files list shows beside a filename: "art.bin (Example)".
         short_name="Example",

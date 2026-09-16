@@ -61,10 +61,12 @@ def test_palette_preset_reports_entry_size(preset_id: str) -> None:
     assert len(palette) == 3 * per_unit
 
 
-# Index-producing pixel presets are bijective on whole buffers; direct-color is
-# lossy at <8bpp/component, so it's round-tripped separately (idempotency).
+# Index-producing pixel presets are bijective on whole buffers; the two
+# color-producing engines are lossy at <8bpp/component, so they are
+# round-tripped separately (idempotency).
+_COLOR_ENGINES = {"codec.pixel.direct-color", "codec.pixel.palette-swatch"}
 _INDEX_PIXEL_IDS = [
-    p for p in _pixel_ids() if _REG.preset(p).engine_id != "codec.pixel.direct-color"
+    p for p in _pixel_ids() if _REG.preset(p).engine_id not in _COLOR_ENGINES
 ]
 
 
@@ -98,6 +100,43 @@ def test_direct_color_round_trips(preset_id: str) -> None:
         engine.encode(grids, params, PipelineContext()), params, PipelineContext()
     )
     assert again == grids
+
+
+def test_palette_swatch_reads_entries_through_the_named_color_format() -> None:
+    """One solid 8x8 tile per entry, decoded by whichever color codec the
+    ``palette_preset_id`` param names — the toolbar's pick rides in as that
+    param — and a packed register's unit is one tile with a swatch per shade,
+    so bytes per tile stays whole. Encoding takes a swatch's majority color, so
+    a stray pixel does not move an entry and a repaint of most of one does.
+    """
+    engine, params = _pixel_engine("preset.pixel.view-as-palette")
+    ctx = PipelineContext()
+    assert (engine.bytes_per_tile(params), engine.tile_size(params)) == (2, (8, 8))
+    # Pure red, then white, in BGR555 (the stage default when nothing is named).
+    tiles = engine.decode(b"\x1f\x00\xff\x7f", params, ctx)
+    assert [t.get(0, 0) for t in tiles] == [0xFFFF0000, 0xFFFFFFFF]
+    assert tiles[0].get(7, 7) == 0xFFFF0000 and tiles[0].bytes_per_pixel == 4
+    assert engine.encode(tiles, params, ctx) == b"\x1f\x00\xff\x7f"
+    # A partial repaint: 63 pixels blue, one red -> blue.
+    for y in range(8):
+        for x in range(8):
+            if (x, y) != (3, 3):
+                tiles[0].set(x, y, 0xFF0000FF)
+    assert engine.encode(tiles[:1], params, ctx) == b"\x00\x7c"
+
+    packed = {"palette_preset_id": "preset.palette.gb-bgp"}
+    assert (engine.bytes_per_tile(packed), engine.tile_size(packed)) == (1, (32, 8))
+    [tile] = engine.decode(b"\xe4", packed, ctx)
+    assert [tile.get(8 * i, 0) for i in range(4)] == [
+        0xFFFFFFFF,
+        0xFFAAAAAA,
+        0xFF555555,
+        0xFF000000,
+    ]
+    assert engine.encode([tile], packed, ctx) == b"\xe4"
+
+    with pytest.raises(ValueError):
+        engine.bytes_per_tile({"palette_preset_id": "preset.palette.no-such"})
 
 
 def test_direct_color_known_vector() -> None:

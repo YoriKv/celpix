@@ -786,3 +786,55 @@ def test_inputs_on_a_bookmark_are_never_read(project, entry):
         files=ROM,
     )
     assert "W211" in codes
+
+
+# -- inputs against the plugin's declarations ------------------------------
+def _project_with_input(tmp_path, value):
+    path = tmp_path / "in.celpix"
+    (tmp_path / "rom.sfc").write_bytes(bytes(0x10000))
+    path.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "current": 0,
+                "entries": [
+                    {"kind": "file", "name": "rom.sfc", "path": "rom.sfc"},
+                    {
+                        "kind": "slice",
+                        "name": "map",
+                        "path": "rom.sfc",
+                        "slice_offset": 0,
+                        "slice_length": 16,
+                        "compression_id": "compression.parted",
+                        "inputs": {"compression.parted": value},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _input_codes(report) -> list[str]:
+    # the minimal fixture project draws its own findings (no session, no view);
+    # only the declaration checks are under test here
+    return [d.code for d in report.diagnostics if d.code in ("E914", "W913")]
+
+
+def test_an_input_outside_the_declared_range_is_an_error(tmp_path, ids):
+    # The app refuses the binding and drops the stage, so the entry opens raw
+    # with only a notice: the quietest failure in the format, and the one a
+    # generator that seeded the context by hand never saw.
+    report = lint(str(_project_with_input(tmp_path, {"interleave": 12})), ids)
+    assert _input_codes(report) == ["E914"]
+
+
+def test_an_input_inside_the_declared_range_is_quiet(tmp_path, ids):
+    report = lint(str(_project_with_input(tmp_path, {"interleave": 4})), ids)
+    assert _input_codes(report) == []
+
+
+def test_an_input_the_plugin_never_declared_is_a_warning(tmp_path, ids):
+    report = lint(str(_project_with_input(tmp_path, {"parts": 4})), ids)
+    assert _input_codes(report) == ["W913"]

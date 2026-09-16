@@ -48,6 +48,28 @@ def snapshot() -> dict:
             stage.value: sorted(preset.id for preset in registry.presets(stage))
             for stage in Stage
         },
+        # What each plugin asks an entry to bind, with the range it accepts: the
+        # app *refuses* a binding outside it and drops the stage, so an entry
+        # whose input is out of range opens raw. The linter cannot ask the plugin
+        # where celPix is not installed, so the declarations travel here.
+        "inputs": {
+            stage.value: {
+                plugin.info.id: [
+                    {
+                        "key": spec.key,
+                        "kind": spec.kind.value,
+                        "required": bool(spec.required),
+                        "minimum": int(spec.minimum),
+                        "maximum": int(spec.maximum),
+                        "stride": int(spec.stride),
+                    }
+                    for spec in plugin.info.inputs
+                ]
+                for plugin in registry.plugins(stage)
+                if plugin.info.inputs
+            }
+            for stage in Stage
+        },
         # Carried so the linter can tell "an id this build never had" from "an id
         # that has been renamed since" — the second is a working project that
         # will stop depending on the table as soon as it is re-saved, and saying

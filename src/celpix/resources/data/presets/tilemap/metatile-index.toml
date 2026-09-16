@@ -1,0 +1,25 @@
+# A metatile index map — one byte per 16x16 metatile, naming a record of a
+# packed definition table (four name-table cells per record, TL TR BL BR, the
+# table stated two cells wide). The ordinary side-scroller arrangement: the map
+# holds one byte per metatile and no filler, and the table is what the byte
+# indexes. Read as a dense stamped chain (docs/design/tilemap-entry.md §3.1):
+# `indirect` says the cell is a coordinate into the bound table, `stamp_cells`
+# that one names a 2x2 of its cells, `stamp_dense` that there is one entry per
+# stamp, and the engine turns record k into its first cell, 4k.
+#
+# A map stored down each column — the shape a stream cut one part per row
+# decodes to — is this preset plus `column_major = true`, which is what a
+# project preset adds (sample-projects/alex-kidd). The Cols spin is the map's
+# width, in tiles, since the file states it nowhere.
+id = "preset.tilemap.metatile-index"
+name = "Metatile index map (byte -> 2x2 record of a packed table)"
+engine_id = "codec.tilemap.indirect-record"
+category = "Generic"
+
+[params]
+record_cells = 4
+record_columns = 2
+records_across = 0
+indirect = true
+stamp_cells = [2, 2]
+stamp_dense = true

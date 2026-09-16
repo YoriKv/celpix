@@ -127,13 +127,15 @@ class TilemapFormat(Protocol):
     :class:`~celpix.plugins.base.TilemapCodecPlugin` carries, each minus
     ``params``: ``transform_cell(cell, op)``, ``index_limit()``,
     ``palette_row_limit()``, ``has_palette_rows()``,
-    ``palette_row_granularity()``, ``has_line_flag()``,
-    ``has_visibility()`` and ``cell_fields()``. **A format that wants its
-    cells edited has to define ``index_limit``** — the host refuses what a codec
-    has not been asked about, so omitting it leaves the cell reference unsettable
-    and every flip refused, exactly as it would for a full plugin that stayed
-    quiet (see each method on :class:`~celpix.plugins.base.TilemapCodecPlugin`
-    for why silence is the safe direction).
+    ``palette_row_granularity()``, ``has_line_flag()``, ``has_visibility()`` and
+    ``cell_fields()`` — plus the two a ``layout = "sprite"`` format adds,
+    ``size_pair()`` and ``frames(cells, ctx)``, which have no place on a grid.
+    **A format that wants its cells edited has to define ``index_limit``** — the
+    host refuses what a codec has not been asked about, so omitting it leaves the
+    cell reference unsettable and every flip refused, exactly as it would for a
+    full plugin that stayed quiet (see each method on
+    :class:`~celpix.plugins.base.TilemapCodecPlugin` for why silence is the safe
+    direction).
     """
 
     info: FormatInfo

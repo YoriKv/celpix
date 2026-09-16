@@ -6,9 +6,12 @@ for what data cannot express.
 
 The names re-exported here are the ones that describe a plugin *as a plugin*, so
 a drop-in file in any folder can write ``from celpix.plugins import FormatInfo``:
-the descriptors, the format classes, :class:`~celpix.plugins.base.ContainerField`
-and :func:`format_size` for a container's optional ``describe``, and the two
-helpers a read and a write would otherwise each reimplement.
+the descriptors, the format classes,
+:class:`~celpix.plugins.base.InputSpec` and its kind enum for a stage that needs
+something from outside its own bytes (``docs/design/plugin-inputs.md``),
+:class:`~celpix.plugins.base.ContainerField` and :func:`format_size` for a
+container's optional ``describe``, and the two helpers a read and a write would
+otherwise each reimplement.
 
 **The data a plugin handles is not here**, and deliberately — it belongs to the
 model, so there is one import path for each name rather than two. A plugin reaches
@@ -27,6 +30,8 @@ themselves.
 
 from celpix.plugins.base import (
     ContainerField,
+    InputKind,
+    InputSpec,
     PluginInfo,
     ReadSource,
     WriteTarget,
@@ -44,6 +49,8 @@ from celpix.plugins.formats import (
 __all__ = [
     "ContainerField",
     "FormatInfo",
+    "InputKind",
+    "InputSpec",
     "PaletteFormat",
     "PixelFormat",
     "PluginInfo",

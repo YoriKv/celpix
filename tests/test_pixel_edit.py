@@ -1083,3 +1083,26 @@ def test_eyedropper_inside_a_pinned_region_picks_that_rows_color(qtbot, tmp_path
     window._eyedrop_at(1, 1)
     assert window._palette_panel.selected_index() == stored
     assert window._pen_value() == stored
+
+
+def test_a_pen_dot_on_a_swatch_rewrites_the_whole_palette_entry(
+    qtbot, tmp_path
+) -> None:
+    """Under View as Palette a swatch is one entry and an entry is one color,
+    so any gesture on it recolors the whole 8x8 — a dot would otherwise be
+    discarded by the majority-color encode and the pen would look dead. The
+    bytes come back quantized to what the format can hold."""
+    window = _window(qtbot, tmp_path)
+    combo = window._pixel_preset
+    combo.setCurrentIndex(combo.findData("preset.pixel.view-as-palette"))
+    window._tool = Tool.PENCIL
+    window._pen_argb = 0xFF12F3A4  # not representable in BGR555 as-is
+    window._on_pixel_pressed(11, 5, Qt.MouseButton.LeftButton)
+    window._on_pixel_released(11, 5)
+    # Every pixel of the second swatch took the color, quantized: 5-bit
+    # channels replicated -> 0x10 / 0xF7 / 0xA5.
+    grid = window._window_grid()
+    assert {grid.get(x, y) for x in range(8, 16) for y in range(8)} == {0xFF10F7A5}
+    assert grid.get(7, 5) != 0xFF10F7A5  # the neighbour is untouched
+    # BGR555 of (0x10, 0xF7, 0xA5): b=20 g=30 r=2 -> 0b0_10100_11110_00010.
+    assert window._doc.pixel_data[2:4] == (0x53C2).to_bytes(2, "little")

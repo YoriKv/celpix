@@ -442,3 +442,8 @@ class CapabilitySyncMixin:
                         # Never the other branch: see the module docstring on
                         # why this only ever takes away.
                         control.setEnabled(False)
+        # One level under the kind: the compression group's slot is shared with
+        # the palette-format picker, and which of the two shows is the pixel
+        # *picker's* answer rather than the content kind's. After the table, so
+        # the kind's veto on the slot itself still stands.
+        self._sync_palette_view_bar()

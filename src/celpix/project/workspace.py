@@ -64,6 +64,8 @@ from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
 from celpix.plugins.base import (
     NO_COMPRESSION,
     NO_RESHAPE,
+    PALETTE_PRESET_PARAM,
+    PALETTE_SWATCH_ENGINE,
     RAW_CONTAINER,
     STAGE_DEFAULT_PRESET,
     FileRef,
@@ -437,6 +439,13 @@ class EntrySession:
     # says what the toolbar was showing, not how the entry's bytes are read.
     # Entry.compression_id is that, and the two move independently.
     preview_compression_id: str = NO_COMPRESSION
+    # The color format the palette-swatch view reads the entry's bytes through
+    # — a decode choice, but the *entry's* rather than a preset's, since the same
+    # "View as Palette" pick means BGR555 in one ROM and RGB888 in the next. Kept
+    # whatever pixel format is showing, so switching back to swatches finds the
+    # format that was last read here; it reaches the pipeline as the config's
+    # ``interpret_params`` (:func:`interpret_params_for`).
+    palette_view_preset_id: str = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PALETTE]
     # The selection. ``selected_tile`` is the anchor (and what single-selection
     # consumers read); ``selected_last`` >= it bounds a range, None when the
     # selection is a single tile (or absent). ``selection_slots`` is set only for
@@ -1452,6 +1461,32 @@ def _natural_key(name: str) -> tuple[tuple[int, object], ...]:
     )
 
 
+def interpret_params_for(entry: Entry, preset_id: str, registry: Registry) -> dict:
+    """The preset params ``entry`` lays over ``preset_id``'s own — the
+    ``interpret_params`` of every pixel config built for it.
+
+    One case today: a preset over the **palette-swatch** engine reads its bytes
+    in whatever color format the entry's session names, so that format rides
+    along as the engine's ``palette_preset_id``. Decided by the *engine* rather
+    than the shipped preset's id, so a user's own preset over the same engine
+    gets the picker too. A stored format this build hasn't got is left out
+    rather than passed on: the engine would refuse the load outright, where its
+    default reads the bytes as *something* and the picker shows what.
+
+    Empty for every other format, which is what keeps this from being a cost to
+    them: the merge downstream is a no-op on an empty dict.
+    """
+    session = entry.session
+    if session is None or not registry.has_preset(preset_id):
+        return {}
+    if registry.preset(preset_id).engine_id != PALETTE_SWATCH_ENGINE:
+        return {}
+    wanted = session.palette_view_preset_id
+    if not wanted or not registry.has_preset(wanted):
+        return {}
+    return {PALETTE_PRESET_PARAM: wanted}
+
+
 def pixel_config_for(
     entry: Entry,
     preset_id: str,
@@ -1511,6 +1546,7 @@ def pixel_config_for(
         return PathwayConfig(
             source=FileRef(entry.paths),
             interpret_preset_id=preset_id,
+            interpret_params=interpret_params_for(entry, preset_id, registry),
             container_id=resolved[Stage.CONTAINER][0],
             reshape_id=reshape_id,
             write_enabled=writable,
@@ -1567,6 +1603,7 @@ def pixel_config_for(
         # back to depositing here (the factory's caller-beware form).
         dest=FileRef(entry.paths, offset=entry.slice_offset, length=entry.slice_length),
         interpret_preset_id=preset_id,
+        interpret_params=interpret_params_for(entry, preset_id, registry),
         reshape_id=reshape_id,
         compression_id=compression_id,
         slot_fill=entry.slot_fill,
@@ -2041,6 +2078,9 @@ def composite_config(
         # borrow a name from.
         source=FileRef((entry.name or "composite",), data=layout.data),
         interpret_preset_id=preset_id or composite_preset_id(entry, registry),
+        interpret_params=interpret_params_for(
+            entry, preset_id or composite_preset_id(entry, registry), registry
+        ),
         write_enabled=False,
     )
 

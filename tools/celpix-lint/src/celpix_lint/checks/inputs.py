@@ -7,13 +7,15 @@ integer read from bytes (``offset``, ``width``, ``endian``), or a bare integer.
 Either of the first two may add ``entry_index`` to reach into another entry's
 resolved bytes, the composite piece's rule and the same positional fragility.
 
-What this cannot check is the half that needs the plugin: which keys a codec
-declares, which are required, the stride a length must divide by, the range an
-integer must fall in. Those are the plugin's declarations, and a linter that
-runs where celPix is not installed has no way to read them — the app reports
-each of them as a notice on the entry the moment it opens. What *is* checkable
-without the plugin is everything about the binding's own shape and reach, which
-is what a hand edit gets wrong.
+The half that needs the plugin — which keys a codec declares, the range an
+integer must fall in, the stride a region's length must divide by — travels in
+the registry snapshot (``known.KnownIds.inputs``), because the consequence of
+getting it wrong is the quietest failure in the format: the app **refuses** a
+binding outside the declared range and drops the whole stage, so a compressed
+map whose part count exceeds the codec's spin opens as its raw bytes, with only
+a notice to say so. A generator that seeded the context by hand decoded it
+perfectly; only the app saw the difference. A project's own plugin declares
+nothing the snapshot can see, so those bindings are checked for shape only.
 """
 
 from __future__ import annotations
@@ -59,8 +61,12 @@ def _inputs(ctx: Context, view: EntryView) -> None:
             )
             continue
         _plugin(ctx, view, plugin_id, pointer)
+        specs = ctx.ids.input_specs(plugin_id) if ctx.ids.usable else None
         for key, binding in bindings.items():
-            _binding(ctx, view, binding, view.at("inputs", plugin_id, key))
+            at = view.at("inputs", plugin_id, key)
+            _binding(ctx, view, binding, at)
+            if specs is not None:
+                _declared(ctx, view, plugin_id, key, binding, specs, at)
 
 
 def _plugin(ctx: Context, view: EntryView, plugin_id: str, pointer: str) -> None:
@@ -115,6 +121,47 @@ def _plugin(ctx: Context, view: EntryView, plugin_id: str, pointer: str) -> None
                 detail="They are kept so that switching the codec back costs "
                 "nothing, and pruned by the next save.",
             )
+
+
+def _declared(
+    ctx: Context,
+    view: EntryView,
+    plugin_id: str,
+    key: str,
+    binding: object,
+    specs: list[dict],
+    pointer: str,
+) -> None:
+    """The binding against what the plugin declared: a key it asks for, and a
+    literal inside the range it accepts."""
+    spec = next((s for s in specs if s.get("key") == key), None)
+    if spec is None:
+        ctx.warn(
+            "W913",
+            f"{plugin_id!r} declares no input {key!r}",
+            pointer=pointer,
+            entry=view,
+            detail="It is ignored: the plugin asks for "
+            + (", ".join(repr(s.get("key")) for s in specs) or "nothing")
+            + ". A key from another codec, or a typo.",
+        )
+        return
+    if isinstance(binding, bool) or not isinstance(binding, int):
+        return
+    lo, hi = spec.get("minimum", 0), spec.get("maximum", 0xFFFF_FFFF)
+    if not (lo <= binding <= hi):
+        ctx.error(
+            "E914",
+            f"{key!r} = {binding} is outside the {lo}..{hi} that {plugin_id!r} "
+            "accepts — celPix refuses the binding and drops the stage",
+            pointer=pointer,
+            entry=view,
+            detail="The entry opens with that stage removed, so a compressed "
+            "slice shows its compressed bytes as if they were the data, with "
+            "only a notice to say why. Bring the value into range, or raise the "
+            "plugin's declared maximum if the value is what the game's loader "
+            "really passes.",
+        )
 
 
 def _binding(ctx: Context, view: EntryView, binding: object, pointer: str) -> None:

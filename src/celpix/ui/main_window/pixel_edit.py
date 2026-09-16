@@ -51,6 +51,7 @@ from celpix.core.errors import PipelineError
 from celpix.core.tilemap import cell_orientation
 from celpix.core.tilerearrangement import unapply_orientation
 from celpix.pipeline import importer, pipeline
+from celpix.plugins.builtins.palette_swatch import SWATCH
 from celpix.ui import clipboard, render_bridge
 from celpix.ui.tools import SPEC_BY_TOOL, TOOL_BY_KEY, EditMode, Gesture, Tool
 from celpix.ui.tools_panel import ToolsPanel
@@ -372,6 +373,12 @@ class PixelEditMixin:
         """
         if value is None:
             value = self._pen_value()
+        if self._palette_view_active():
+            # A swatch is one palette entry, and an entry is one color: any
+            # gesture that touches a swatch recolors the whole of it, so the pen
+            # sets an entry rather than leaving a dot the encode would discard
+            # (``plugins/builtins/palette_swatch.py``).
+            pixels = self._whole_swatches(pixels)
         w, h = grid.width, grid.height
         tile_w, tile_h = self._pixel_tile_size()
         doc = self._doc
@@ -402,6 +409,23 @@ class PixelEditMixin:
                         0 if found is None else self._cell_paint_base(found[0], space)
                     )
             grid.set(px, py, value + base)
+
+    @staticmethod
+    def _whole_swatches(pixels):  # noqa: ANN001, ANN205 - a pixel iterable in and out
+        """Every pixel of each swatch any of ``pixels`` falls in, once each.
+
+        Swatches are :data:`~celpix.plugins.builtins.palette_swatch.SWATCH`
+        squares aligned to the window grid — a tile is a whole number of them
+        and tiles compose at their own boundaries — so the square is found by
+        rounding down and never has to ask which tile it is in.
+        """
+        cells = {(px // SWATCH, py // SWATCH) for px, py in pixels}
+        return [
+            (cx * SWATCH + dx, cy * SWATCH + dy)
+            for cx, cy in sorted(cells)
+            for dy in range(SWATCH)
+            for dx in range(SWATCH)
+        ]
 
     def _clipped(self, pixels, w: int, h: int, masked: bool = True):
         """``pixels`` that a tool is allowed to paint — the clip rule, once.

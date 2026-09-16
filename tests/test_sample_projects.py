@@ -472,3 +472,41 @@ def test_the_counting_cafe_sprite_mappings_frame_through_five_bound_arrays() -> 
                 bool(piece.attr & 0x1000),
             )
             assert sub.column_major
+
+
+def test_the_alex_kidd_sample_project_reads_its_strings_and_stamps_its_maps(
+    monkeypatch,
+) -> None:
+    """The Master System worked example, through the app's own paths.
+
+    Two claims, each of which every layer has to be right for. The bonus
+    strings read as words through the font the 419-tile bank declares - the
+    slice, the RLE unpack, the binding at the base the loader gives, the
+    alphabet. And a level map, loaded through ``tilemap_config_for`` rather
+    than a hand-seeded context, decodes to twelve rows of metatiles: the map
+    is a 12-part stream, and the codec's input range has to admit the part
+    count the game's loader passes or the app silently opens the map raw.
+    """
+    monkeypatch.chdir(ROOT / "alex-kidd")
+    workspace, registry = _open("alex-kidd/alex-kidd.celpix")
+
+    body, exact = _read(
+        workspace,
+        registry,
+        "text: name table $3A44 - 13x1 cells, uncompressed ($01779)",
+    )
+    assert body.strip().split() == ["SECRET", "BONUS"]
+    assert exact
+
+    room = next(
+        e for e in workspace.entries if e.name.startswith("round 0 room 1 - level map")
+    )
+    cfg = tilemap_config_for(room, room.tilemap_preset_id, registry)
+    assert cfg.compression_id == room.compression_id
+    cells = pipeline.load_tilemap_data(cfg, registry).cells
+    assert len(cells) == 128 * 12
+    # the byte names a metatile and the chain wants its first cell, so every
+    # coordinate is a multiple of four into a table the map cannot overrun
+    table = room.tile_source.entry
+    assert all(cell.index % 4 == 0 for cell in cells)
+    assert max(cell.index for cell in cells) < table.slice_length * 4

@@ -286,7 +286,12 @@ def test_a_dropped_preset_is_filed_by_where_it_came_from(tmp_path) -> None:
     from celpix.core.errors import Stage
 
     rows = preset_rows(registry.presets(Stage.INTERPRET_PIXEL))
-    assert [row[0] for row in rows[:2]] == [PROJECT_CATEGORY, USER_CATEGORY]
+    # Above them sits only what names no heading at all — the "View as Palette"
+    # entry, a way of looking rather than a format, which leads every picker it
+    # is in the way the compression pass-through does (`category_order`).
+    headed = [row[0] for row in rows if row[0]]
+    assert headed[:2] == [PROJECT_CATEGORY, USER_CATEGORY]
+    assert [row[2] for row in rows if not row[0]] == ["preset.pixel.view-as-palette"]
 
 
 class _Info:

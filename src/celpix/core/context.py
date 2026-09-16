@@ -122,6 +122,14 @@ KEY_TILEMAP_PALETTE_ROW_BASE = "tilemap.palette-row-base"
 # table's format fixes it for whatever it calls into
 # (``ui/main_window/session.py``, ``_chain_stamp_cells``).
 KEY_TILEMAP_STAMP_CELLS = "tilemap.stamp-cells"
+# int: the stride, in cells of the **source**, between one row of a stamp and
+# the next — published by a source whose records are packed end to end rather
+# than laid out in rows. A 2x2 metatile record stored as four consecutive cells
+# is stamped at stride 2, whatever width the table is *displayed* at; without
+# this the stride falls back to the source's stated or viewed width, which
+# forces such a table to be shown two cells wide to stamp correctly
+# (``ui/main_window/session.py``, ``_chain_source_columns``).
+KEY_TILEMAP_STAMP_STRIDE = "tilemap.stamp-stride"
 # int: how many cell *rows* one **page** holds, for a format whose file is several
 # independent maps end to end rather than one — a screen file is four 32x32
 # screens (``docs/graphics-formats-reference/scgcad-formats.md`` §2). Published
@@ -300,6 +308,12 @@ HINT_INFO: dict[str, tuple[str, str]] = {
         "How many cells one stamp covers, for a map that another\n"
         "map's coordinates index in stamps. Read by the layout\n"
         "bound to this one, not by this one.",
+    ),
+    KEY_TILEMAP_STAMP_STRIDE: (
+        "Stamp stride",
+        "How many cells apart a stamp's rows sit in this map's\n"
+        "cell list. Records packed end to end stamp at their own\n"
+        "width, however wide the table is shown.",
     ),
     KEY_TILEMAP_PAGE_ROWS: (
         "Page height",

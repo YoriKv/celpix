@@ -26,7 +26,7 @@
 #                   channel, three bits apart, the Mega Drive's CRAM.
 #   rgb888          3 bytes, a whole byte a channel, nothing lossy.
 #   rgb555-split-be `rrrr gggg bbbb rgb.` — each channel in two pieces.
-#   gb-bgp          `kk` with bits_per_entry 2 and invert — four shades in one
+#   gb-bgp          `vv` with bits_per_entry 2 and invert — four shades in one
 #                   register byte, counting darkness.
 #   ws-gray         `.vvv` with bits_per_entry 4 — the same idea a nibble wide.
 #   ngp-gray        `.... .vvv` over a whole-byte entry.

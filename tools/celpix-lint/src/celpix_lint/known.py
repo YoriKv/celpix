@@ -34,6 +34,11 @@ class KnownIds:
     #: ``retired id -> current id``, the forwarding table every lookup falls
     #: back to (``celpix.plugins.aliases``).
     renamed: dict[str, str] = field(default_factory=dict)
+    #: ``stage -> {plugin id: [input specs]}``, each spec a dict with ``key``,
+    #: ``kind``, ``required``, ``minimum``, ``maximum`` and ``stride`` — what the
+    #: app checks a binding against before accepting it. Only the plugins that
+    #: declare inputs appear; a plugin absent here declares none.
+    inputs: dict[str, dict[str, list[dict]]] = field(default_factory=dict)
     #: ``"shipped snapshot"`` or ``"live registry"`` — quoted in the
     #: report so a reader knows how much an "unknown id" finding is worth.
     source: str = "snapshot"
@@ -94,6 +99,18 @@ class KnownIds:
                 return stage
         return None
 
+    def input_specs(self, plugin_id: str) -> list[dict] | None:
+        """The inputs ``plugin_id`` declares, or None where this source does not
+        know — a project's own plugin, or a snapshot from before the field."""
+        current = self.current_id(plugin_id)
+        for stage in self.inputs.values():
+            specs = stage.get(plugin_id)
+            if specs is None:
+                specs = stage.get(current)
+            if specs is not None:
+                return specs
+        return None
+
     def content_kinds(self, plugin_id: str) -> list[str] | None:
         """What content kinds a container frames, or None if it is not one."""
         containers = self.plugins.get("container", {})
@@ -118,6 +135,7 @@ def load_snapshot(path: str = _SNAPSHOT) -> KnownIds:
         plugins={stage: dict(ids) for stage, ids in body.get("plugins", {}).items()},
         presets={stage: set(ids) for stage, ids in body.get("presets", {}).items()},
         renamed=dict(body.get("renamed", {})),
+        inputs={stage: dict(ids) for stage, ids in body.get("inputs", {}).items()},
         source="shipped snapshot",
         project_version=body.get("project_version", 1),
     )
@@ -150,6 +168,24 @@ def load_live() -> KnownIds | None:
             for stage in Stage
         },
         renamed=dict(RENAMED),
+        inputs={
+            stage.value: {
+                plugin.info.id: [
+                    {
+                        "key": spec.key,
+                        "kind": spec.kind.value,
+                        "required": bool(spec.required),
+                        "minimum": int(spec.minimum),
+                        "maximum": int(spec.maximum),
+                        "stride": int(spec.stride),
+                    }
+                    for spec in plugin.info.inputs
+                ]
+                for plugin in registry.plugins(stage)
+                if plugin.info.inputs
+            }
+            for stage in Stage
+        },
         source="live registry",
         authoritative=True,
         project_version=PROJECT_VERSION,

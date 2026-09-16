@@ -38,6 +38,8 @@ every parameter it takes.
 - `_nibble-planar.toml` — one byte holds four pixels, a bitplane to each nibble
 - `_packed-straddling.toml` — the 3bpp and 6bpp packings, whose fields straddle bytes
 - `_direct-color.toml` — the pixel carries its own colour, no palette
+- `_palette-swatch.toml` — the bytes are a colour table: one solid swatch per
+  palette entry, read through any palette format
 - `_color-mask.toml` — a palette entry's channels as a bit layout (RGB555, …)
 - `_color-indexed.toml` — palette bytes index a table baked into the hardware
 - `tilemap/_packed.toml` — a cell is one packed integer: tile number in the low
@@ -47,6 +49,8 @@ every parameter it takes.
   record with an example here: the other three celPix reads are **formats**, one
   bespoke codec apiece with nothing to parameterise, so there is no TOML for them
   to be an example of (see the `.py` section below)
+- `_indirect-record.toml` — one byte per 16x16 metatile, naming a *record* of a
+  definition table rather than a tile: how a side-scroller keeps a level
 
 `reshape/` takes presets too: `_bitswap.toml` for boards that scramble the byte
 *address*, `_data-lut.toml` for boards that substitute byte *values*.
@@ -60,7 +64,7 @@ The interpret stages — `pixel/`, `palette/`, `tilemap/` — write a **format**
 `FormatInfo` (an id and a name), that stage's decode/encode pair, and
 `registry.register_format(...)`. It lands in the picker beside the presets with no
 preset to author. A tilemap that has to *declare* something about its cells —
-`layout = "text"` for a fontmap, `sprite`, `indirect`, `cell_tiles` — puts those
+`layout = "text"` for a fontmap, `sprite`, `indirect`, `stamp_dense` — puts those
 in its `FormatInfo(..., declares={...})`, which is for what the **app** has to be
 told and never for what your own code reads; anything you would read yourself is a
 constant in the class. See `tilemap/_example.py`. Every other stage writes a
@@ -71,8 +75,11 @@ Reach for a format whenever you are implementing **one** codec. A preset is for
 parameterising an engine that serves many, and an engine you would ship a single
 preset for is a format that has not noticed yet.
 
-Every folder carries an `_example.py` of the right shape for it, and
-`containers/_tiff.py` is a full real-world format.
+Every folder carries an `_example.py` of the right shape for it, and three
+folders carry a second, worked one: `containers/_tiff.py`, a real format whose
+framing is a lookup; `compression/_inputs.py`, a codec decoding against a table
+kept elsewhere in the file; and `palette/_nes-custom.py`, a format loading its
+colour table from a companion file.
 
 ## Where yours appears in the picker
 
@@ -106,6 +113,10 @@ Each `_example.py` documents its own stage in full. In short:
 - Interpret code (pixel, palette, tilemap) must be **buffer-relative**: decode
   whatever bytes you are handed, with no assumption about where they sit in the
   file. That is what lets celPix decode only the visible part of a large ROM.
+- A stage needing something from **outside its own bytes** — a table shared by
+  forty streams, a count the file records nowhere — declares an `InputSpec` for
+  each, and the entry binds it to where its file keeps it. Compression and
+  tilemap only; see `compression/_inputs.py`.
 - A **container** says what kind of entry it frames (`content_kinds`), defaulting
   to pixels and tilemaps; set it to `PALETTE` for one that frames a palette file,
   so the two are never offered each other's formats.
