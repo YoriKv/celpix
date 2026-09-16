@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.23 - unreleased
+## v0.5.23 - 2026-09-16
 
 - "View as palette" feature. View ROM data interpreted as a palette to make
   it easier to find palette data
