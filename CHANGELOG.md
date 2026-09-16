@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.22 - unreleased
+## v0.5.22 - 2026-09-15
 
 - Added plugin inputs that allow a plugin to be configurable, mostly used
   for plugins that reference other parts of the ROM for tables
