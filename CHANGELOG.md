@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.26 - unreleased
+## v0.5.26 - 2026-09-17
 
 - Koei LZ compression (SNES)
 
