@@ -4,7 +4,7 @@ The compression almost all Game Boy Advance and Nintendo DS graphics ship behind
 the console's own BIOS decompresses it (`SWI 0x11`, and the VRAM-safe `SWI 0x12`),
 so a game gets it for free and nearly every title uses it. Stream shape::
 
-    byte0        0x10        high nibble 1 = LZ77; the low nibble is reserved
+    byte0        0x10        high nibble 1 = LZ77; the low nibble is reserved (0)
     bytes 1..3   uint24 le   decompressed size, in bytes
     then, repeating:
       flags byte      8 op selectors, **MSB first**; 1 = back-reference, 0 = literal
@@ -74,12 +74,19 @@ from celpix.plugins.builtins._lz import (
 )
 
 HEADER_SIZE = 4
-# The type nibble the BIOS dispatches on. The low nibble is reserved and ignored
-# by hardware, so it is masked off rather than required to be zero: real ROM data
-# carries stray values there, and the widely used PC tool's exact-0x10 test is a
-# narrowing of its own rather than something the format says.
+# The whole type byte: high nibble 1 is the LZ77 the BIOS dispatches on, and the
+# low nibble is reserved as zero. The hardware itself never looks at the low
+# nibble, so requiring it is a choice, made for the structure scan: masking it
+# off accepted 1,670 "structures" across one 4 MiB cartridge at header bytes
+# 0x11-0x1F, exactly one of them word-aligned and over 64 bytes, and that one
+# a 1.01:1 coincidence — while all 463 real streams carried 0x10.
 LZ77_TYPE = 0x10
-_TYPE_MASK = 0xF0
+# The start alignment the BIOS imposes: it reads the header with one 32-bit
+# load, which on this CPU rotates rather than faults at an unaligned address,
+# so a stream at an unaligned offset decodes to garbage on the console. The
+# scan probes only aligned offsets for that reason; a decode is handed a
+# buffer, not an address, and cannot check it.
+ALIGNMENT = 4
 
 MIN_MATCH = 3
 MAX_MATCH = 18  # 4-bit length field, biased by MIN_MATCH
@@ -114,8 +121,11 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     """
     if len(data) < HEADER_SIZE:
         raise _fail(f"shorter than the {HEADER_SIZE}-byte header")
-    if data[0] & _TYPE_MASK != LZ77_TYPE:
-        raise _fail(f"type byte {data[0]:#04x} is not an LZ77 header (high nibble 1)")
+    if data[0] != LZ77_TYPE:
+        raise _fail(
+            f"type byte {data[0]:#04x} is not an LZ77 header "
+            f"(high nibble 1, low nibble reserved as 0)"
+        )
     target = int.from_bytes(data[1:HEADER_SIZE], "little")
     if target == 0:
         # Nothing to produce, and accepting it would make four bytes of noise a
@@ -212,6 +222,7 @@ class GbaLz77Compression(PartialDecompression):
         # The body has no end marker, but the 24-bit size field in the header
         # bounds it, so a decode does know where the structure ends.
         self_delimiting=True,
+        alignment=ALIGNMENT,
         category="Nintendo",
     )
 

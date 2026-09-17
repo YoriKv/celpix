@@ -318,12 +318,15 @@ class MainWindow(
         # scan interlock (the Scan button doubles as Stop while one runs).
         self._next_structure: int | None = None
         # The complete structure in view as (start byte position, byte extent)
-        # - the promote-to-slice source. Kept separately from _next_structure,
-        # which is deliberately None when the structure ends at end-of-file
-        # (nowhere to jump) even though promoting it is still valid.
+        # - what New Slice from View prefills. Kept separately from
+        # _next_structure, which is deliberately None when the structure ends
+        # at end-of-file (nowhere to jump) even though slicing it is still valid.
         self._structure_extent: tuple[int, int] | None = None
         self._scanning = False
         self._scan_stop = False
+        # What a running scan disabled, to be handed back on thaw and nothing
+        # more (CompressionMixin._set_scan_ui).
+        self._scan_frozen: list[QWidget] = []
 
         # Pixel-edit state (mode, tool, pen, stroke/float scratch) must exist
         # before the transform toolbar builds its mode toggle off _edit_mode.

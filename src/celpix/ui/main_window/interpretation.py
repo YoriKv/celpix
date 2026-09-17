@@ -343,14 +343,18 @@ class InterpretationMixin:
         )
         self._scan_button.setEnabled(False)
         self._scan_button.clicked.connect(self._on_scan)
-        # One click promotes the complete structure in view into a decompressed
-        # slice entry in the files list - the overlay preview made editable.
-        self._promote_button = QPushButton("To Slice")
-        self._promote_button.setToolTip(
-            "Add the structure in view as a decompressed slice"
+        # Scan again, but only stop on a structure that plausibly holds tiles
+        # of the current pixel format (pipeline.looks_like_graphics). Making
+        # the structure in view a slice is File > New Slice from View.
+        self._smart_scan_button = QPushButton("Smart Scan")
+        self._smart_scan_button.setToolTip(
+            "Scan for the next structure that looks like graphics\n"
+            "under the current pixel format: a whole number of\n"
+            "tiles, more than a lone command, and not expanded\n"
+            "past what art compresses to. Click again to stop."
         )
-        self._promote_button.setEnabled(False)
-        self._promote_button.clicked.connect(self._on_promote_structure)
+        self._smart_scan_button.setEnabled(False)
+        self._smart_scan_button.clicked.connect(self._on_smart_scan)
         # The compression badge speaks for the *preview* codec, bound on the
         # file on screen: what the overlay decodes with, what Scan hunts with,
         # and what a slice carved under that codec inherits.
@@ -368,7 +372,7 @@ class InterpretationMixin:
                 self._compression_inputs_badge,
                 self._jump_next,
                 self._scan_button,
-                self._promote_button,
+                self._smart_scan_button,
                 tooltip="Preview the window decompressed with this codec",
             )
         )

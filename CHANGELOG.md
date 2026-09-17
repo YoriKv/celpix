@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.25 - unreleased
+
+- Added smart scan, a heuristic based scan for compressed graphics
+
 ## v0.5.24 - 2026-09-16
 
 - LZ4W and aPLib compression (from SGDK)

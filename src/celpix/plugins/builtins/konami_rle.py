@@ -41,6 +41,7 @@ from __future__ import annotations
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
+    KEY_DECOMPRESS_PARTIAL,
     PipelineContext,
 )
 from celpix.core.errors import Stage
@@ -143,6 +144,12 @@ class _KonamiRle:
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
         out, consumed, complete = decompress(data, fds=self.fds)
+        # A buffer that ran out before the 0xFF terminator is a prefix, and only
+        # a caller that said the buffer may cut the structure short (the view
+        # preview) gets one back. Anywhere else — a slice read, the scan — it is
+        # the failure it looks like, or the scan would hit on any byte at all.
+        if not complete and not ctx.get(KEY_DECOMPRESS_PARTIAL):
+            raise ValueError("corrupt Konami RLE stream: no 0xFF terminator")
         ctx.set(KEY_COMPRESSED_SIZE, consumed)
         ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
         return out

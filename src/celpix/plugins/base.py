@@ -428,6 +428,15 @@ class PluginInfo:
     one was cut short and widening the window can fix it, while one without simply
     decodes as far as it is fed.
 
+    ``alignment`` is **Compression-only**: the start-address alignment the
+    hardware imposes on a structure, 1 when it imposes none. Only the scan
+    consults it (:func:`~celpix.pipeline.pipeline.find_next_structure`), to skip
+    the offsets a real structure cannot sit at — a decoder handed a buffer
+    cannot know the buffer's address, so it decodes wherever it is pointed. It
+    is a statement about the format's loader, not a guess about its data: the
+    GBA BIOS reads the LZ77 header as one aligned word, so a stream at an odd
+    address is one the console could never have unpacked.
+
     ``extensions`` and ``magic`` are **Container-only** and together form its
     *signature*, what makes opening a file pick its container instead of asking.
     ``extensions`` are lowercase suffixes including the dot (``(".nes",)``);
@@ -510,6 +519,7 @@ class PluginInfo:
     name: str
     stage: Stage | None = None
     self_delimiting: bool = True
+    alignment: int = 1
     extensions: tuple[str, ...] = ()
     magic: tuple[tuple[int, bytes], ...] = ()
     size_modulo: tuple[int, int] | None = None

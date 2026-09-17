@@ -482,13 +482,16 @@ def test_compression_overlay_badge_distinguishes_the_three_decode_states(
     assert "\n" in window._overlay._badge.toolTip()
 
 
-def test_promote_bounds_a_stream_scheme_at_the_window_end(qtbot, tmp_path) -> None:
+def test_slice_from_view_bounds_a_stream_scheme_at_the_window_end(
+    qtbot, tmp_path, monkeypatch
+) -> None:
     # A scheme with no end marker never yields a structure extent, so the only
-    # extent on offer is where the view window ran out - which To Slice uses, so
-    # a PackBits stream can still be promoted into an editable entry. Jump stays
-    # off: with no end found there is no "byte after this structure".
+    # extent on offer is where the view window ran out - which New Slice from
+    # View prefills, so a PackBits stream can still become an editable entry.
+    # Jump stays off: with no end found there is no "byte after this structure".
     from celpix.plugins.builtins import packbits
     from celpix.project.workspace import EntryKind
+    from celpix.ui.slice_dialog import SliceDialog, SliceParams
 
     # One 32-byte run per tile, so every tile is exactly one 2-byte PackBits
     # packet: any window then cuts on a packet boundary *and* on a whole tile,
@@ -506,7 +509,7 @@ def test_promote_bounds_a_stream_scheme_at_the_window_end(qtbot, tmp_path) -> No
     window._compression.setCurrentIndex(
         window._compression.findData("compression.packbits")
     )
-    assert window._promote_button.isEnabled()
+    assert not window._scan_button.isEnabled()  # no end marker: unscannable
     assert not window._jump_next.isEnabled()
 
     start, extent = window._structure_extent
@@ -514,7 +517,16 @@ def test_promote_bounds_a_stream_scheme_at_the_window_end(qtbot, tmp_path) -> No
     assert (start, extent) == (0, window_bytes)  # bounded by the window's end
     assert extent < len(packed)  # and the stream really does run on past it
 
-    window._on_promote_structure()
+    monkeypatch.setattr(
+        SliceDialog,
+        "get_slice",
+        staticmethod(
+            lambda *_a, **kw: SliceParams(
+                "cut", kw["offset"], kw["length"], kw["compression_id"]
+            )
+        ),
+    )
+    window._new_slice_from_view()
     entry = window._workspace.entries[-1]
     assert entry.kind is EntryKind.SLICE
     assert (entry.slice_offset, entry.slice_length) == (start, extent)

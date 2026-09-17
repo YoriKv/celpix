@@ -533,6 +533,62 @@ def test_find_next_structure_locates_reports_and_aborts() -> None:
     assert ticks  # the callback actually ran
 
 
+def test_find_next_structure_needs_a_reported_end_and_honours_alignment() -> None:
+    """A decode that only *produced bytes* is not a hit — PackBits decodes any
+    input and never reports an end, so the walk must reach EOF rather than stop
+    on the first byte — and a scheme declaring a start alignment is probed at
+    aligned offsets only, so a structure at an odd offset is passed over."""
+    from celpix.plugins.builtins import gba_lz77
+
+    reg = default_registry()
+    packbits = reg.plugin(Stage.COMPRESSION, "compression.packbits")
+    junk = bytes(range(1, 200))
+    miss = pipeline.find_next_structure(junk, packbits, 64, 0)
+    assert miss.found is None
+    assert miss.end == len(junk)
+
+    lz77 = reg.plugin(Stage.COMPRESSION, "compression.gba-lz77")
+    stream = gba_lz77.compress(bytes((i * 13 + 1) & 0xFF for i in range(96)))
+    aligned = pipeline.find_next_structure(
+        bytes(8) + stream, lz77, 4096, 1, alignment=lz77.info.alignment
+    )
+    assert aligned.found == 8
+    unaligned = pipeline.find_next_structure(
+        bytes(7) + stream + bytes(9), lz77, 4096, 0, alignment=lz77.info.alignment
+    )
+    assert unaligned.found is None
+
+
+def test_looks_like_graphics_gates_on_tiles_size_and_ratio() -> None:
+    """The smart scan's rule, one clause at a time, and the scan honouring it."""
+    from celpix.plugins.builtins import lz_command
+
+    ok = pipeline.looks_like_graphics
+    assert ok(bytes(64), 20, 32)  # two whole tiles from a real command stream
+    assert not ok(bytes(48), 20, 32)  # not a whole number of tiles
+    assert not ok(bytes(16), 20, 32)  # less than one tile
+    assert not ok(bytes(32), 3, 32)  # a lone fill command
+    assert not ok(bytes(1024), 20, 32)  # 51:1 is nothing art compresses to
+    assert ok(bytes(640), 20, 32)  # 32:1 still is
+    assert not ok(bytes(64), 20, 0)
+
+    plugin = default_registry().plugin(Stage.COMPRESSION, "compression.lz2")
+    fill = b"\x3f\x5a\xff"  # complete: one tile from a 3-byte structure
+    packed = lz_command.compress(
+        bytes((i * 7 + 3) & 0xFF for i in range(128)), big_endian_offsets=True
+    )
+    data = fill + packed
+    assert pipeline.find_next_structure(data, plugin, 4096, 0).found == 0
+    smart = pipeline.find_next_structure(
+        data,
+        plugin,
+        4096,
+        0,
+        accept=lambda out, consumed: ok(out, consumed, 32),
+    )
+    assert smart.found == len(fill)
+
+
 def test_quantize_color_reports_what_a_format_can_store() -> None:
     """The color editor's "Stored as" preview: encode+decode through a preset.
 

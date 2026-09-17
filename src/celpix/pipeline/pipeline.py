@@ -32,6 +32,8 @@ from typing import NamedTuple
 
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
+    KEY_COMPRESSED_SIZE,
+    KEY_DECOMPRESS_COMPLETE,
     KEY_INPUTS,
     KEY_PALETTE_PRESET,
     KEY_PIXEL_PRESET,
@@ -311,16 +313,33 @@ def find_next_structure(
     progress_every: int = 64,
     on_tick: Callable[[int], bool] | None = None,
     inputs: dict[str, bytes | int] | None = None,
+    alignment: int = 1,
+    accept: Callable[[bytes, int], bool] | None = None,
 ) -> ScanResult:
     """The first offset ≥ ``start`` where ``plugin`` decodes a complete structure.
 
     Walks ``data`` one byte at a time, trying a strict decompress of the
-    ``probe_bytes`` compressed bytes at each offset; a non-empty result is a hit. This
-    is the Qt-free core of the toolbar's *Scan* — a hit is a *complete*, non-empty
-    structure, since a best-effort partial decode "succeeds" on almost any bytes
-    (so non-self-delimiting schemes are effectively unscannable). Every
-    ``progress_every`` bytes ``on_tick(pos)`` is called if given; returning True
-    aborts the scan (the UI pumps its event loop and reports a Stop there).
+    ``probe_bytes`` compressed bytes at each offset. A hit is a non-empty decode
+    that the plugin **reports complete** (:data:`KEY_DECOMPRESS_COMPLETE`): the
+    structure's own end — terminator or declared size — landed inside the probe.
+    Non-empty output alone is not enough, because a scheme with no end to find
+    (PackBits, RLE2) decodes *any* bytes to something and never reports
+    completion, and a hit on every byte is no scan at all. That is what makes
+    the scan meaningless for a non-self-delimiting scheme, and the UI keeps it
+    off for those. Every ``progress_every`` bytes ``on_tick(pos)`` is called if
+    given; returning True aborts the scan (the UI pumps its event loop and
+    reports a Stop there).
+
+    ``alignment`` is the plugin's declared start alignment
+    (:attr:`~celpix.plugins.base.PluginInfo.alignment`): only multiples of it
+    are probed, counted from ``data[0]``, so the caller hands in a buffer whose
+    start *is* aligned — a whole ROM image, for the one scheme that declares it.
+
+    ``accept(output, consumed)`` is a further test a complete structure has to
+    pass to count — the smart scan's :func:`looks_like_graphics` — and the
+    walk simply moves on past one that fails it. That is the one place the
+    scan applies a *heuristic*: everything above is the format's own word on
+    where a structure is.
 
     ``inputs`` is what a scheme that needs a table declares
     (:class:`~celpix.plugins.base.InputSpec`), already resolved: "find the next
@@ -328,7 +347,8 @@ def find_next_structure(
     format asks. Handed to every probe on a fresh context, so a hit means the
     structure decodes with those inputs and nothing else.
     """
-    pos = start
+    alignment = max(1, alignment)
+    pos = -(-start // alignment) * alignment  # first aligned offset >= start
     n = len(data)
     while pos < n:
         ctx = PipelineContext()
@@ -340,14 +360,56 @@ def find_next_structure(
         ctx.set(KEY_SURROUND, data)
         ctx.set(KEY_SURROUND_START, pos)
         try:
-            if plugin.decompress(data[pos : pos + probe_bytes], ctx):
+            out = plugin.decompress(data[pos : pos + probe_bytes], ctx)
+            if (
+                out
+                and ctx.get(KEY_DECOMPRESS_COMPLETE)
+                and (accept is None or accept(out, ctx.get(KEY_COMPRESSED_SIZE) or 0))
+            ):
                 return ScanResult(pos, pos, False)
         except Exception:  # noqa: BLE001 — not a structure here; keep walking
             pass
-        pos += 1
+        pos += alignment
         if on_tick is not None and pos % progress_every == 0 and on_tick(pos):
             return ScanResult(None, pos, True)
     return ScanResult(None, pos, False)
+
+
+# The smart scan's plausibility rule, three thresholds measured rather than
+# guessed (``docs/rom-mapping/finding-data.md`` §1.3): over 575 known graphics
+# streams in four cartridges (SMW and Zelda 3 LZ, Yoshi's Island GBA LZ77, Alex
+# Kidd RLE) every one passes all three, while 97-99% of the complete decodes the
+# plain scan lands on fail at least one.
+#
+# Fewer compressed bytes than this is a single fill or literal command with its
+# terminator — a 3-byte "structure" that random bytes form every few dozen
+# offsets. The smallest real stream measured is 12 bytes.
+MIN_COMPRESSED = 8
+# Beyond this ratio the "structure" is one command producing hundreds of bytes
+# of one value. Real art tops out well under it (31:1 for a nearly blank tile
+# set, 8:1 elsewhere); an all-blank bank compresses 5:1 in the RLE that hit 31.
+MAX_RATIO = 32
+
+
+def looks_like_graphics(output: bytes, consumed: int, bytes_per_tile: int) -> bool:
+    """Whether a complete structure plausibly holds tiles of the current format.
+
+    The heuristic half of the smart scan, deliberately small: the output is a
+    whole number of tiles under the view's pixel preset and at least one, the
+    structure is more than a lone command, and it did not expand beyond what
+    graphics ever compress to. Anything about the *pixels* — how often
+    neighbours match, how many colours a tile uses, whether the palette's
+    colours sit close together — was measured and left out: it cost real
+    streams (a dithered Mode 7 backdrop, a 16-colour test sheet) for a few
+    fewer false hits, and the palette gave no separation at all.
+    """
+    if bytes_per_tile <= 0 or len(output) < bytes_per_tile:
+        return False
+    if len(output) % bytes_per_tile:
+        return False
+    if consumed < MIN_COMPRESSED:
+        return False
+    return len(output) <= MAX_RATIO * consumed
 
 
 class PixelData(NamedTuple):

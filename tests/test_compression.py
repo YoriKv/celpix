@@ -501,6 +501,21 @@ def test_konami_truncated_stream_decodes_prefix() -> None:
     assert data[: len(out)] == out
 
 
+def test_konami_plugin_is_strict_unless_told_the_buffer_is_bounded() -> None:
+    # The scan and a slice read decode strictly: a buffer that ends before the
+    # terminator is a failure there, and only the preview (allow-partial) gets
+    # the prefix back. Without this the scan hit on almost any byte.
+    packed = konami_rle.compress(bytes(range(200)))
+    cut = packed[:-30]
+    with pytest.raises(ValueError, match="terminator"):
+        KonamiNesRle().decompress(cut, PipelineContext())
+    ctx = PipelineContext()
+    ctx.set(KEY_DECOMPRESS_PARTIAL, True)
+    prefix = KonamiNesRle().decompress(cut, ctx)
+    assert 0 < len(prefix) < 200 and bytes(range(len(prefix))) == prefix
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is False
+
+
 def test_konami_plugins_record_size_and_round_trip() -> None:
     data = b"\x00" * 50 + bytes(range(30)) + b"\xff" * 40
     packed = KonamiNesRle().compress(data, PipelineContext())
@@ -1012,6 +1027,10 @@ def test_gba_lz77_rejects_a_non_lz77_header() -> None:
     # The high nibble is the BIOS's dispatch; 0x30 is RLE, which this is not.
     with pytest.raises(ValueError, match="not an LZ77 header"):
         gba_lz77.decompress(bytes.fromhex("30040000" + "00" + "41424344"))
+    # The low nibble is reserved as zero. Masking it off let the scan accept
+    # thousands of "structures" per cartridge that no encoder ever wrote.
+    with pytest.raises(ValueError, match="reserved"):
+        gba_lz77.decompress(bytes.fromhex("12040000" + "00" + "41424344"))
 
 
 @pytest.mark.parametrize(

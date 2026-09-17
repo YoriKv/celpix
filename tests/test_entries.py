@@ -1122,13 +1122,70 @@ def test_jump_and_scan_navigate_structures(qtbot, tmp_path) -> None:
     assert window._scan_button.text() == "Scan"  # restored after the run
 
 
+def test_smart_scan_skips_structures_that_do_not_look_like_graphics(
+    qtbot, tmp_path
+) -> None:
+    """Smart Scan is Scan plus the graphics-plausibility rule: a 3-byte fill
+    command is a complete LZ2 structure that decodes to exactly one tile, so
+    Scan stops on it, while Smart Scan walks past it to the real tile bank.
+    Started on a whole structure, Smart Scan also begins *after* it rather
+    than at the next byte, so it does not re-find that structure's own tail."""
+    from celpix.plugins.builtins import lz_command
+
+    tiles_a = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    tiles_b = bytes((i * 31 + 7) & 0xFF for i in range(32 * 4))
+    packed_a = lz_command.compress(tiles_a, big_endian_offsets=True)
+    packed_b = lz_command.compress(tiles_b, big_endian_offsets=True)
+    junk = (b"\x83\xff\xff" * 20)[:60]
+    fill = b"\x3f\x5a\xff"  # fill 32 bytes of 0x5A, terminator: one whole tile
+    px = tmp_path / "packed3.bin"
+    px.write_bytes(packed_a + junk + fill + junk + packed_b + bytes(512))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._columns.setValue(4)
+    window._rows.setValue(4)
+    window._compression.setCurrentIndex(window._compression.findData("compression.lz2"))
+    assert window._smart_scan_button.isEnabled()
+
+    window._on_jump_next()  # past A, into the junk (A's own tail would hit)
+    window._on_scan()
+    assert window._byte_position() == len(packed_a) + len(junk)  # the fill
+
+    window._set_byte_position(0)  # back on structure A, whole and in view
+    assert window._jump_next.isEnabled()
+    window._on_smart_scan()
+    assert window._byte_position() == len(packed_a) + 2 * len(junk) + len(fill)
+    assert window._overlay.isVisible()
+    assert window._smart_scan_button.text() == "Smart Scan"
+
+    # Stop has to be clickable while the scan runs: the running button is the
+    # one control left enabled (the toolbars sit inside the central widget, so
+    # a wholesale freeze there would take it down too), and clicking it again
+    # aborts the walk at the next progress tick.
+    def stop_at_first_tick(pos: int) -> bool:
+        assert window._smart_scan_button.isEnabled()
+        assert window._smart_scan_button.text() == "Stop"
+        assert not window._scan_button.isEnabled()
+        assert not window._compression.isEnabled()
+        window._on_smart_scan()  # the click while running
+        return window._scan_stop
+
+    window._scan_tick = stop_at_first_tick
+    window._set_byte_position(0)
+    window._on_smart_scan()
+    assert window._byte_position() == 192  # the first tick past A, not B
+    assert window._smart_scan_button.text() == "Smart Scan"
+    assert window._scan_button.isEnabled() and window._compression.isEnabled()
+
+
 def test_scan_ui_thaw_does_not_arm_structure_actions(qtbot, tmp_path) -> None:
     from celpix.plugins.builtins import lz_command
 
     # Same layout as the jump/scan test: a structure, a junk region no scheme
     # accepts, another structure, padding. Jumping past the first structure
-    # lands in the junk, where the overlay is hidden and both Jump-to-Next and
-    # promote-to-slice are off.
+    # lands in the junk, where the overlay is hidden and Jump-to-Next is off.
     tiles_a = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
     tiles_b = bytes((i * 31 + 7) & 0xFF for i in range(32 * 4))
     packed_a = lz_command.compress(tiles_a, big_endian_offsets=True)
@@ -1146,17 +1203,20 @@ def test_scan_ui_thaw_does_not_arm_structure_actions(qtbot, tmp_path) -> None:
     window._set_byte_position(len(packed_a))  # into the junk: no structure here
     assert not window._overlay.isVisible()
     assert not window._jump_next.isEnabled()
-    assert not window._promote_button.isEnabled()
 
     # A scan freezes the whole UI then thaws it. The blanket re-enable on thaw
-    # must restore Jump / promote from the overlay's structure state, not switch
-    # them on just because a scan ended (regression: a scan landing back on this
-    # same offset never re-refreshed, so they were left wrongly enabled).
-    window._set_scan_ui(True)
-    window._set_scan_ui(False)
+    # must restore Jump from the overlay's structure state, not switch it on
+    # just because a scan ended (regression: a scan landing back on this same
+    # offset never re-refreshed, so it was left wrongly enabled). The scan
+    # buttons themselves come back, the one that ran with its own label.
+    window._set_scan_ui(True, window._smart_scan_button)
+    assert window._smart_scan_button.text() == "Stop"
+    assert not window._scan_button.isEnabled()
+    window._set_scan_ui(False, window._smart_scan_button)
 
     assert not window._jump_next.isEnabled()
-    assert not window._promote_button.isEnabled()
+    assert window._smart_scan_button.text() == "Smart Scan"
+    assert window._scan_button.isEnabled()
 
 
 def test_new_slice_from_view_prefills_viewport_extent(

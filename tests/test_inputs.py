@@ -11,7 +11,12 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from celpix.core.context import KEY_INPUTS, KEY_SOURCE_OFFSET
+from celpix.core.context import (
+    KEY_DECOMPRESS_COMPLETE,
+    KEY_INPUTS,
+    KEY_SOURCE_OFFSET,
+    PipelineContext,
+)
 from celpix.core.document import Document
 from celpix.core.errors import Stage
 from celpix.core.notices import notices
@@ -418,12 +423,21 @@ def test_the_clipboard_form_carries_bindings_and_their_join(tmp_path) -> None:
 
 
 def test_the_scan_probes_with_the_bindings_it_is_given() -> None:
-    plugin = _XorTable()
+    class _Bounded(_XorTable):
+        """The XOR stub with an end to find: a scan hit needs a decode that
+        *reports complete*, which the stream-shaped stub never does."""
+
+        def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+            out = super().decompress(data, ctx)
+            ctx.set(KEY_DECOMPRESS_COMPLETE, bool(out))
+            return out
+
+    plugin = _Bounded()
     table = bytes([0x5A, 0xA5])
     data = b"\x00" * 8 + _xor(b"hello", table)
     # Without the table every probe raises on the missing key and nothing is
-    # found; with it, the first offset that decodes to anything non-empty wins —
-    # which for a stream scheme is the start, exactly as with PackBits.
+    # found; with it, the first offset that decodes to a complete, non-empty
+    # structure wins — which for this stub is wherever the scan starts.
     assert pipeline.find_next_structure(data, plugin, 8, 0).found is None
     hit = pipeline.find_next_structure(data, plugin, 8, 3, inputs={"table": table})
     assert hit.found == 3
