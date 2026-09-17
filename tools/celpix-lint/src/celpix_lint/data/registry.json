@@ -54,6 +54,10 @@
         "pixels",
         "tilemap"
       ],
+      "compression.koei-lz": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.konami-fds-rle": [
         "pixels",
         "tilemap"

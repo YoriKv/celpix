@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.26 - unreleased
+
+- Koei LZ compression (SNES)
+
 ## v0.5.25 - 2026-09-16
 
 - Added smart scan, a heuristic based scan for compressed graphics

@@ -44,6 +44,7 @@ from .gb_rom import GbRomContainer
 from .gba_lz77 import GbaLz77Compression
 from .indexed_codec import IndexedColorCodec
 from .indirect_record import IndirectRecordCodec
+from .koei_lz import KoeiLzCompression
 from .konami_rle import KonamiFdsRle, KonamiNesRle
 from .kosinski import KosinskiCompression
 from .linear_codec import PackedStraddlingCodec
@@ -132,6 +133,7 @@ def register_builtins(reg: Registry) -> None:
         Lz2Improved(),
         Lz16Compression(),
         Lz16ImprovedCompression(),
+        KoeiLzCompression(),
         LzssRingCompression(),
         GbaLz77Compression(),
         NemesisCompression(),

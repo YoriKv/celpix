@@ -29,6 +29,7 @@ from celpix.plugins.builtins import (
     bluesky_lz,
     enigma,
     gba_lz77,
+    koei_lz,
     konami_rle,
     kosinski,
     lz4w,
@@ -1887,6 +1888,52 @@ def test_namco_lz_round_trips_and_needs_a_whole_stream(ring: int) -> None:
         namco_lz.decompress(stream[:-3], ring_size=ring)
     with pytest.raises(ValueError, match="empty payload"):
         namco_lz.compress(b"", ring_size=ring)
+
+
+# -- Koei's SNES LZ ----------------------------------------------------------
+
+
+def test_koei_lz_reads_its_code_words_from_among_the_literals() -> None:
+    """The interleaving, on a vector assembled from the format description.
+
+    ``80 60`` is the priming word, then the flag byte ``11000000``: two
+    literals, a match, and the flag bit that introduces the end marker. The
+    match's nine bits of code exhaust the priming word, so the *second* word is
+    fetched mid-match and lands at offset 5 -- after the two literal bytes it
+    was written before. A reader that took the words as a block up front, or
+    left them to the end, would see ``00 FE`` as literal data.
+    """
+    stream = bytes([0x80, 0x60, 0xC0, 0x41, 0x42, 0x00, 0xFE])
+    # 011 length (4 bytes) + 000001 distance (one back of two) + the marker.
+    assert koei_lz.decompress(stream + b"junk") == (b"ABABAB", len(stream), True)
+    assert koei_lz.compress(b"ABABAB") == stream
+
+
+def test_koei_lz_round_trips_every_code_bucket_and_stops_on_its_marker() -> None:
+    """Both code tables end to end, plus the extents the marker has to bound.
+
+    The payload reaches the far distance codes (a 3 KiB block repeated), the
+    saturated length code (runs past 255 bytes) and the near ones in between.
+    """
+    block = bytes((i * 7919) % 251 for i in range(3000))
+    plain = block + b"\x00" * 600 + block + b"the quick brown fox " * 8
+    stream = koei_lz.compress(plain)
+    assert koei_lz.decompress(stream + b"\xaa" * 8) == (plain, len(stream), True)
+    assert koei_lz.compress(b"") != b""  # an empty payload is still a stream
+    assert koei_lz.decompress(koei_lz.compress(b""))[0] == b""
+
+
+def test_koei_lz_needs_the_whole_stream_unless_asked_for_a_prefix() -> None:
+    plain = bytes((i * 97 + i // 5) & 0xFF for i in range(2000)) + bytes(1000)
+    stream = koei_lz.compress(plain)
+    with pytest.raises(ValueError, match="source ended"):
+        koei_lz.decompress(stream[: len(stream) // 2])
+    prefix, _, complete = koei_lz.decompress(stream[: len(stream) // 2], partial=True)
+    assert not complete
+    assert 0 < len(prefix) < len(plain)
+    assert plain.startswith(prefix)
+    with pytest.raises(ValueError, match="16-bit code word"):
+        koei_lz.decompress(b"\x00")
 
 
 # -- BlueSky LZ + RLE --------------------------------------------------------

@@ -84,6 +84,7 @@ tools for accuracy where available.
 - **[Beehive](https://github.com/BigEvilCorporation/Beehive)**
 - **[mdtools](https://github.com/sikthehedgehog/mdtools)**
 - **[SGDK](https://github.com/Stephane-D/SGDK)**
+- **[Koei Decompress](https://www.romhacking.net/utilities/1083/)**
 
 ## AI Use Disclaimer
 
