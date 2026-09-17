@@ -46,6 +46,10 @@
         "pixels",
         "tilemap"
       ],
+      "compression.capcom-mask8": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.enigma": [
         "pixels",
         "tilemap"
@@ -510,6 +514,7 @@
       "preset.tilemap.gb-bg",
       "preset.tilemap.gba-bg",
       "preset.tilemap.gbc-bg",
+      "preset.tilemap.index-8bit",
       "preset.tilemap.md-bg",
       "preset.tilemap.md-sprite",
       "preset.tilemap.metatile-index",

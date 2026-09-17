@@ -2,7 +2,9 @@
 
 ## v0.5.27 - unreleased
 
-- Konami LZ compression, both the 1 KiB and 4 KiB ring variants
+- Konami LZ compression, both the 1 kb and 4 kb variants
+- Capcom 8-byte mask RLE compression (SNES)
+- Generic 8-bit index tilemap format
 
 ## v0.5.26 - 2026-09-17
 

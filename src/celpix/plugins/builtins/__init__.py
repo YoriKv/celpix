@@ -30,6 +30,7 @@ from celpix.plugins.formats import adapt_format
 from .aplib import AplibCompression
 from .bluesky_lz import BlueSkyLzCompression
 from .byte_swap import ByteSwapReshape
+from .capcom_mask8 import CapcomMask8Compression
 from .color_codec import ColorCodec
 from .containers import (
     CopierHeaderContainer,
@@ -155,6 +156,7 @@ def register_builtins(reg: Registry) -> None:
         PvrCompression(),
         PackBitsCompression(),
         PhantasyStarRleCompression(),
+        CapcomMask8Compression(),
         Sonic2TilesCompression(),
         PlanarCodec(),
         PackedCodec(),

@@ -1,6 +1,10 @@
 # Game Boy BG map — one byte per cell, tile number only. The attribute byte a
 # Game Boy Color adds lives in a second VRAM bank, so it is a separate region
 # rather than a wider cell; this preset reads the plain map either way.
+#
+# The same cell as `index-8bit`, named so Game Boy users find it. Reach for the
+# generic one where the region is some game's own map data rather than this
+# console's hardware map — the bytes are the same and the name is the difference.
 id = "preset.tilemap.gb-bg"
 name = "Game Boy BG map (8-bit, index only)"
 engine_id = "codec.tilemap.packed"

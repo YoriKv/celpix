@@ -56,7 +56,7 @@ preset — and would still not make this a parameterised engine.
 any remainder, and ``encode`` writes whole pages back, so the two are exact
 inverses over the only length this format has. A **960-byte** nametable saved
 without its attribute plane is not this format at all — it is a bare index run,
-which ``preset.tilemap.gb-bg`` already reads and writes byte for byte, and
+which ``preset.tilemap.index-8bit`` already reads and writes byte for byte, and
 reading it here would decode 960 cells that encode could only put back as 1024
 bytes.
 

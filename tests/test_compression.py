@@ -27,6 +27,7 @@ from celpix.plugins.base import STAGE_DEFAULT_PRESET
 from celpix.plugins.builtins import (
     aplib,
     bluesky_lz,
+    capcom_mask8,
     enigma,
     gba_lz77,
     koei_lz,
@@ -48,6 +49,7 @@ from celpix.plugins.builtins import (
     sonic2_tiles,
 )
 from celpix.plugins.builtins._lz import MatchFinder
+from celpix.plugins.builtins.capcom_mask8 import CapcomMask8Compression
 from celpix.plugins.builtins.gba_lz77 import GbaLz77Compression
 from celpix.plugins.builtins.konami_rle import KonamiNesRle
 from celpix.plugins.builtins.lz16 import (
@@ -690,6 +692,82 @@ def test_packbits_output_cap_stops_an_unbounded_read() -> None:
     out, consumed = packbits.decompress(bomb)
     assert len(out) == 0x100000
     assert consumed == 2 * (0x100000 // 128) < len(bomb)
+
+
+# -- Capcom 8-byte mask -----------------------------------------------------
+
+
+def test_capcom_mask8_decode_known_vector() -> None:
+    # Hand-assembled from the format spec. Block 1 is a pure run; block 2's mask
+    # 0x81 pins the bit order - the *most* significant bit drives the *first*
+    # output byte, and reading it the other way round is the one mistake that
+    # still produces plausible-looking tiles; block 3 is the degenerate all-
+    # literal block, where `dd` is read and never emitted.
+    stream = bytes.fromhex("00 aa 81 00 11 22 ff 99 01 02 03 04 05 06 07 08")
+    out, consumed = capcom_mask8.decompress(stream)
+    assert out == bytes.fromhex(
+        "aa aa aa aa aa aa aa aa 11 00 00 00 00 00 00 22 01 02 03 04 05 06 07 08"
+    )
+    assert consumed == len(stream)
+    # Our encoder reproduces the first two blocks byte for byte; the third it
+    # improves on, spending `dd` on a byte that occurs (0x7f 01 02..08, nine
+    # bytes) instead of wasting it. No encoder has a reason to emit 0xff.
+    assert capcom_mask8.compress(out[:16]) == stream[:6]
+
+
+def test_capcom_mask8_round_trip() -> None:
+    rng = random.Random(11)
+    payloads = [
+        b"\x42" * 8,  # one block, all the same: the 2-byte minimum
+        bytes(range(8)),  # one block, all distinct: the 9-byte maximum
+        b"\x00" * 4096,
+        bytes(rng.randrange(256) for _ in range(2048)),
+        bytes(rng.choice(b"\x00\xff") for _ in range(1024)),
+        bytes(range(32)) * 8,
+    ]
+    for data in payloads:
+        packed = capcom_mask8.compress(data)
+        out, consumed = capcom_mask8.decompress(packed)
+        assert out == data
+        assert consumed == len(packed)
+        # Nine bytes per block is the worst the encoder can do: it always spends
+        # the repeat byte on a value the block actually contains.
+        assert len(packed) <= 9 * (len(data) // 8)
+
+
+def test_capcom_mask8_rejects_a_partial_block() -> None:
+    # The format cannot state a short final block - the loader stops on an
+    # output count it holds externally - so padding one would hand back more
+    # bytes than went in.
+    for bad in (b"", b"\x00" * 7, b"\x00" * 9):
+        with pytest.raises(ValueError, match="whole 8-byte blocks"):
+            capcom_mask8.compress(bad)
+
+
+def test_capcom_mask8_truncated_stream_decodes_prefix() -> None:
+    # A view window can cut a block in half. The bytes the block can still
+    # produce are emitted - the overlay preview wants them - but `consumed`
+    # stops at the last whole block, the only offset a following structure
+    # could start at.
+    stream = bytes.fromhex("00 aa 0f 00 11 22")  # second block wants 4 literals
+    out, consumed = capcom_mask8.decompress(stream)
+    assert out == b"\xaa" * 8 + b"\x00" * 4 + b"\x11\x22"
+    assert consumed == 2
+    # A mask byte with no repeat byte behind it contributes nothing at all.
+    assert capcom_mask8.decompress(b"\x00\xaa\x0f") == (b"\xaa" * 8, 2)
+
+
+def test_capcom_mask8_plugin_records_size_but_never_complete() -> None:
+    # Same framing story as PackBits above: no terminator, so a decode that
+    # reaches the end of the buffer is "the buffer ran out", not "the structure
+    # ended". Reporting complete would let a slice with no length backfill its
+    # extent as the whole rest of the file.
+    data = b"\x00" * 64 + bytes(range(32)) + b"\xff" * 32
+    packed = CapcomMask8Compression().compress(data, PipelineContext())
+    ctx = PipelineContext()
+    assert CapcomMask8Compression().decompress(packed, ctx) == data
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is False
 
 
 # The FDS plugin wrapper (KonamiFdsRle*) is a copy of the NES wrapper differing

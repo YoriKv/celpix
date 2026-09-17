@@ -26,9 +26,10 @@
 # The ones worth reading next to this file:
 #   snes-bg         the layout below, `vhop ppii iiii iiii`, with page geometry.
 #   snes-bg-swapped the same fields, word stored the other way round.
-#   gb-bg           a bare index byte, `iiii iiii`: every letter but `i` unused.
+#   index-8bit      a bare index byte, `iiii iiii`: every letter but `i` unused.
+#   gb-bg           the same cell, named for the console whose BG map it is.
 #   gba-bg          the same 16-bit shape with 32x32 pages.
-#   text-8bit       character codes — gb-bg's byte, made a fontmap by `layout`.
+#   text-8bit       character codes — that byte, made a fontmap by `layout`.
 #   text-16bit      the same at word width, for a font past 256 glyphs.
 #   text-8bit-flag  `eiii iiii`: the line break as a flag above a 7-bit index.
 #   snes-bg-16x16   the same word, cell drawing a 16x16 metatile.

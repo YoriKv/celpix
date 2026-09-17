@@ -1,0 +1,27 @@
+# A bare index run — one byte per cell, the tile number and nothing else. The
+# simplest cell there is, and the one that turns up on hardware that never had a
+# wider entry (the Game Boy's BG map) as well as in map data that some game of
+# its own invented, on any console at all.
+#
+# It is here under a name that says what it *is* because the alternative was
+# reading a Super Famicom's own map data through a preset called "Game Boy".
+# `gb-bg` is this same cell named for the console whose hardware map it is, and
+# either reads the other's bytes; pick whichever names the thing in front of you.
+#
+# `text-8bit` is also this same byte, made a **fontmap** by `layout = "text"` —
+# so if the cells are character codes rather than tile numbers, that is the one
+# to reach for, and it is a different reading rather than a different format
+# (docs/design/fontmap-entry.md §1).
+#
+# There are no attributes to declare, which is the whole of what this says about
+# a region: no palette, no priority, no flip. A cell that carries any of those is
+# some wider entry, and reading it here loses them on the first edit.
+id = "preset.tilemap.index-8bit"
+name = "Tile map (8-bit index only)"
+engine_id = "codec.tilemap.packed"
+category = "Generic"
+
+[params]
+bytes = 1
+endian = "little"
+fields = "iiii iiii"
