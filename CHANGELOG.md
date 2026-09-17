@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.25 - unreleased
+## v0.5.25 - 2026-09-16
 
 - Added smart scan, a heuristic based scan for compressed graphics
 
