@@ -45,6 +45,7 @@ from .gba_lz77 import GbaLz77Compression
 from .indexed_codec import IndexedColorCodec
 from .indirect_record import IndirectRecordCodec
 from .koei_lz import KoeiLzCompression
+from .konami_lz import KonamiLz1kCompression, KonamiLz4kCompression
 from .konami_rle import KonamiFdsRle, KonamiNesRle
 from .kosinski import KosinskiCompression
 from .linear_codec import PackedStraddlingCodec
@@ -125,6 +126,8 @@ def register_builtins(reg: Registry) -> None:
         PassthroughCompression(),
         KonamiNesRle(),
         KonamiFdsRle(),
+        KonamiLz1kCompression(),
+        KonamiLz4kCompression(),
         Rle1Compression(),
         Rle2Compression(),
         Lz1(),

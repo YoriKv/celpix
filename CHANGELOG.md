@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.27 - unreleased
+
+- Konami LZ compression, both the 1 KiB and 4 KiB ring variants
+
 ## v0.5.26 - 2026-09-17
 
 - Koei LZ compression (SNES)

@@ -30,6 +30,7 @@ from celpix.plugins.builtins import (
     enigma,
     gba_lz77,
     koei_lz,
+    konami_lz,
     konami_rle,
     kosinski,
     lz4w,
@@ -1934,6 +1935,99 @@ def test_koei_lz_needs_the_whole_stream_unless_asked_for_a_prefix() -> None:
     assert plain.startswith(prefix)
     with pytest.raises(ValueError, match="16-bit code word"):
         koei_lz.decompress(b"\x00")
+
+
+# -- Konami's two LZ schemes -------------------------------------------------
+
+# Vectors assembled from the format descriptions; both are confirmed against the
+# upstream decoders. 1 KiB: flags 0b00111100 -- two literals, then the three op
+# forms, then the end opcode. 4 KiB: flags 0b00000111 -- three literals, a
+# back-reference, and the zero-distance one that ends it.
+KONAMI_1K_VECTOR = (
+    bytes([0x3C, 0x41, 0x42, 0x91, 0x08, 0x05, 0xC0]) + b"CDEFGHIJ" + b"\xff"
+)
+KONAMI_4K_VECTOR = bytes([0x07, 0x41, 0x42, 0x43, 0x00, 0x31, 0x00, 0x00])
+
+
+def test_konami_lz_1k_decodes_all_three_of_its_op_forms() -> None:
+    """Short match, long match and literal block, in one stream.
+
+    ``0x91`` is a short match -- three bytes from two back, which overlaps the
+    write head. ``0x08 0x05`` is a long match, five from five back. ``0xC0`` is a
+    literal block of eight, the form that has no counterpart in any other LZSS
+    here: one flag bit covering seventy raw bytes rather than one covering one.
+    """
+    assert konami_lz.decompress_1k(KONAMI_1K_VECTOR + b"junk") == (
+        b"ABABAABABACDEFGHIJ",
+        len(KONAMI_1K_VECTOR),
+        True,
+    )
+
+
+def test_konami_lz_1k_spells_a_full_ring_reach_as_a_zero_distance() -> None:
+    """The long form's distance field holds 0..1023, and 0 means 1024.
+
+    It addresses the ring position the cursor is sitting on, which after a wrap
+    is a whole ring back. Read as "no distance" it would reach past the write
+    head; here the only match available is exactly 1024 bytes back.
+    """
+    head = random.Random(3).randbytes(1024)
+    plain = head + head[:20]
+    stream = konami_lz.compress_1k(plain)
+    assert b"\x44\x00" in stream  # 20 bytes, distance field 0
+    assert konami_lz.decompress_1k(stream) == (plain, len(stream), True)
+
+
+def test_konami_lz_4k_ends_on_a_zero_distance_back_reference() -> None:
+    """Distance 0 is the terminator, so the reach is 1..4095, not 1..4096.
+
+    A repeat exactly 4096 bytes on therefore has to stay literal: coded as a
+    match it would end the stream where the decode is only part-way through.
+    """
+    assert konami_lz.decompress_4k(KONAMI_4K_VECTOR + b"junk") == (
+        b"ABCABCA",
+        len(KONAMI_4K_VECTOR),
+        True,
+    )
+    head = random.Random(4).randbytes(4096)
+    plain = head + head[:20]
+    stream = konami_lz.compress_4k(plain)
+    assert konami_lz.decompress_4k(stream) == (plain, len(stream), True)
+
+
+def test_konami_lz_variants_do_not_read_each_other() -> None:
+    """The two share a name and a flag-byte idiom, and nothing else.
+
+    Handed the other's stream each runs off the end rather than completing, so a
+    scan cannot quietly settle on the wrong one.
+    """
+    for decode, vector in (
+        (konami_lz.decompress_4k, KONAMI_1K_VECTOR),
+        (konami_lz.decompress_1k, KONAMI_4K_VECTOR),
+    ):
+        _, _, complete = decode(vector, partial=True)
+        assert not complete
+        with pytest.raises(ValueError, match="source ended"):
+            decode(vector)
+
+
+@pytest.mark.parametrize("ring", ["1k", "4k"])
+def test_konami_lz_round_trips_and_needs_a_whole_stream(ring: str) -> None:
+    compress = getattr(konami_lz, f"compress_{ring}")
+    decompress = getattr(konami_lz, f"decompress_{ring}")
+    plain = (
+        bytes((i * 97 + i // 5) & 0xFF for i in range(2500))  # weakly compressible
+        + b"\x5a" * 400  # runs past every cap
+        + b"the quick brown fox jumps over the lazy dog. " * 12
+    )
+    stream = compress(plain)
+    assert decompress(stream + b"\xcc" * 8) == (plain, len(stream), True)
+    assert decompress(compress(b""))[0] == b""
+    with pytest.raises(ValueError, match="source ended"):
+        decompress(stream[: len(stream) // 2])
+    prefix, _, complete = decompress(stream[: len(stream) // 2], partial=True)
+    assert not complete
+    assert plain.startswith(prefix)
 
 
 # -- BlueSky LZ + RLE --------------------------------------------------------

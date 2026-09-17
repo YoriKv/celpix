@@ -62,6 +62,14 @@
         "pixels",
         "tilemap"
       ],
+      "compression.konami-lz-1k": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.konami-lz-4k": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.konami-nes-rle": [
         "pixels",
         "tilemap"
