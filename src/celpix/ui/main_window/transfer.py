@@ -15,6 +15,7 @@ pixel data.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -34,6 +35,7 @@ from celpix.project import projectfile
 from celpix.project.workspace import (
     Entry,
     EntryKind,
+    entry_export_name,
     export_basename,
     exportable_entries,
 )
@@ -269,7 +271,7 @@ class TransferMixin:
             self, "Export slices to folder", self._export_dir(entry)
         )
         if folder:
-            self._bulk_export_png(slices, folder)
+            self._bulk_export(slices, folder)
 
     def _export_project(self) -> None:
         """File ▸ Export ▸ Export All as PNGs: the whole project → a folder.
@@ -284,10 +286,35 @@ class TransferMixin:
             self, "Export project to folder", self._export_dir()
         )
         if folder:
-            self._bulk_export_png(entries, folder)
+            self._bulk_export(entries, folder)
 
-    def _bulk_export_png(self, entries: list[Entry], folder: str) -> None:
-        """Render each of ``entries`` to ``folder``/<name>.png and summarize.
+    def _export_entries(self, entries: list[Entry], raw: bool) -> None:
+        """Files list ▸ Export on a multi-row selection: each picked entry to a
+        folder, as a PNG or a raw dump, named after its row.
+
+        Named by :func:`~celpix.project.workspace.entry_export_name` rather than
+        the parent-prefixed :func:`export_basename` the whole-file bulk exports
+        use: these rows were picked by what the list calls them, so the files
+        say the same. A picked file is exported even if it has slices - it was
+        chosen explicitly, the same rule the single-entry export follows."""
+        if not entries:
+            return
+        folder = QFileDialog.getExistingDirectory(
+            self, "Export selection to folder", self._export_dir(entries[0])
+        )
+        if folder:
+            self._bulk_export(entries, folder, raw=raw, name=entry_export_name)
+
+    def _bulk_export(
+        self,
+        entries: list[Entry],
+        folder: str,
+        *,
+        raw: bool = False,
+        name: Callable[[Entry], str] = export_basename,
+    ) -> None:
+        """Render each of ``entries`` to ``folder``/<name>.png and summarize -
+        or, with ``raw``, dump its decoded bytes to ``folder``/<name>.bin.
 
         Basenames are de-duplicated within the run (two slices of one file can
         share a name), and each entry is loaded quietly on demand - a
@@ -301,17 +328,26 @@ class TransferMixin:
             if entry.doc is None and not self._load_entry(entry, quiet=True):
                 failed.append(entry.name)
                 continue
+            base = self._unique_export_name(name(entry), used)
+            if raw:
+                try:
+                    export.save_raw(entry.doc, str(Path(folder) / f"{base}.bin"))
+                except OSError:
+                    failed.append(entry.name)
+                else:
+                    written += 1
+                continue
             try:
                 image = export.document_image(entry.doc, self._registry)
             except PipelineError:
                 failed.append(entry.name)
                 continue
-            name = self._unique_export_name(export_basename(entry), used)
-            if export.save_png(image, str(Path(folder) / f"{name}.png")):
+            if export.save_png(image, str(Path(folder) / f"{base}.png")):
                 written += 1
             else:
                 failed.append(entry.name)
-        message = f"Exported {written} image(s) to {folder}."
+        noun = "file(s)" if raw else "image(s)"
+        message = f"Exported {written} {noun} to {folder}."
         if failed:
             message += f" {len(failed)} could not be exported."
         self.statusBar().showMessage(message)

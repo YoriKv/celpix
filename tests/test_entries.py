@@ -572,7 +572,7 @@ def test_removing_a_multi_selection_asks_once_and_undoes_in_one_step(
     assert window._workspace.entries == [a, carved, b, c]
 
 
-def test_a_multi_row_context_menu_leaves_only_remove_and_the_moves_live(
+def test_a_multi_row_context_menu_leaves_only_the_set_actions_live(
     qtbot, tmp_path, opened_menus
 ) -> None:
     # Every other row is about one entry, so it is greyed rather than dropped -
@@ -592,7 +592,17 @@ def test_a_multi_row_context_menu_leaves_only_remove_and_the_moves_live(
         for action in opened_menus[-1].actions()
         if action.isEnabled() and not action.isSeparator()
     }
-    assert live == {"M&ove Up\tAlt+Up", "Move &Down\tAlt+Down", "&Remove 2 Entries"}
+    assert live == {
+        "M&ove Up\tAlt+Up",
+        "Move &Down\tAlt+Down",
+        "E&xport",
+        "&Remove 2 Entries",
+    }
+    export = next(a.menu() for a in opened_menus[-1].actions() if a.text() == "E&xport")
+    assert [a.text() for a in export.actions() if a.isEnabled()] == [
+        "2 Entries as &PNGs…",
+        "2 Entries as &Raw…",
+    ]
 
     # A right-click on a row *outside* the selection collapses onto it (Qt's own
     # rule), and the ordinary one-entry menu comes back.
@@ -2367,6 +2377,30 @@ def test_export_acts_on_the_entry_it_is_handed(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(dump), ""))
     window._export_raw(parent)
     assert dump.read_bytes() == sheet.read_bytes()
+
+
+def test_export_selected_entries_to_folder_by_entry_name(qtbot, tmp_path, monkeypatch):
+    """A multi-row export writes each picked entry into one folder under its own
+    row name — de-duplicated, never-activated slices loaded on demand."""
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QFileDialog
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    sheet = _make_snes_file(tmp_path)
+    window._load_pixel(str(sheet))
+    hero = window._workspace.add_slice(str(sheet), "hero 1", 0, 64)
+    twin = window._workspace.add_slice(str(sheet), "hero 1", 64, 32)
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(out))
+
+    window._files_panel.export_entries_requested.emit([hero, twin], True)
+    assert (out / "hero_1.bin").read_bytes() == sheet.read_bytes()[:64]
+    assert (out / "hero_1_2.bin").read_bytes() == sheet.read_bytes()[64:96]
+
+    window._files_panel.export_entries_requested.emit([hero], False)
+    assert QImage(str(out / "hero_1.png")).size().toTuple() == (16, 8)
 
 
 def test_window_title_names_project_and_marks_it_unsaved(qtbot, tmp_path):

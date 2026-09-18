@@ -23,9 +23,10 @@ pixel file that sits under Pixels.
 **Several rows can be selected at once** — Shift for a range, Ctrl for one more
 — and the *first* of them stays the open document: extending a selection never
 switches the view, so the picture on the canvas is still the row the user opened.
-Only the two operations that mean something over a set of rows act on the whole
-selection (Remove, and the one-step Move Up/Down); everything else here is about
-one entry, and goes dead while more than one is picked. The window's own
+Only the operations that mean something over a set of rows act on the whole
+selection (Remove, the one-step Move Up/Down, Paste Inputs, and Export to a
+folder); everything else here is about one entry, and goes dead while more than
+one is picked. The window's own
 entry-scoped menu rows do the same (``MainWindow._sync_entry_scope``).
 
 A **filter field** sits under the list, matching the same way the format pickers'
@@ -358,6 +359,8 @@ class FileListPanel(QWidget):
     export_png_requested = Signal(object)  # Entry (FILE/SLICE) — render to one PNG
     export_raw_requested = Signal(object)  # Entry (FILE/SLICE) — decoded bytes out
     export_slices_requested = Signal(object)  # Entry (a FILE) — its slices to a folder
+    # list[Entry], raw — a multi-row selection to a folder, as PNGs or raw dumps
+    export_entries_requested = Signal(object, bool)
     import_png_requested = Signal(object)  # Entry (FILE/SLICE) — image over its start
     new_slice_requested = Signal(object)  # Entry (a FILE) — open the slice dialog
     new_slice_from_view_requested = Signal(object)  # Entry — slice the viewport
@@ -1887,11 +1890,33 @@ class FileListPanel(QWidget):
             # first — the window loads it on demand. Always offered: whether the
             # bytes decode is only knowable by trying.
             export = menu.addMenu("E&xport")
-            self._entry_action(
-                export, "As &PNG…", self.export_png_requested.emit, entry
-            )
-            self._entry_action(export, "&Raw…", self.export_raw_requested.emit, entry)
-            if entry.kind is EntryKind.FILE and self._has_slices(item):
+            if multi:
+                # The set is exported whole, into one folder: the other rows it
+                # picked that hold no document (a bookmark, a palette) are left
+                # out rather than making the whole row go dead.
+                targets = [e for e in acting if e.kind.has_document]
+                live.append(export.menuAction())
+                for label, raw in (
+                    (f"{len(targets)} Entries as &PNGs…", False),
+                    (f"{len(targets)} Entries as &Raw…", True),
+                ):
+                    live.append(
+                        self._entry_action(
+                            export,
+                            label,
+                            self.export_entries_requested.emit,
+                            targets,
+                            raw,
+                        )
+                    )
+            else:
+                self._entry_action(
+                    export, "As &PNG…", self.export_png_requested.emit, entry
+                )
+                self._entry_action(
+                    export, "&Raw…", self.export_raw_requested.emit, entry
+                )
+            if not multi and entry.kind is EntryKind.FILE and self._has_slices(item):
                 export.addSeparator()
                 self._entry_action(
                     export, "&Slices as PNGs…", self.export_slices_requested.emit, entry

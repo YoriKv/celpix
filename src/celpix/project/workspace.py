@@ -2548,6 +2548,21 @@ def export_basename(entry: Entry) -> str:
     return f"{_sanitize(parent_stem)}_{_sanitize(entry.name)}"
 
 
+def entry_export_name(entry: Entry) -> str:
+    """A filesystem-safe basename (no extension) from ``entry``'s **own** name.
+
+    What an export of a hand-picked set of rows is named by: the user chose
+    those rows by what the list calls them, so the files carry the same names
+    rather than :func:`export_basename`'s parent-prefixed ones. A file still
+    named after its path drops the extension, so ``foo.chr`` leaves as ``foo``
+    rather than ``foo.chr.png``. The caller still de-dupes.
+    """
+    name = entry.name
+    if entry.kind is EntryKind.FILE and name == basename(entry.path):
+        name = splitext(name)[0]
+    return _sanitize(name)
+
+
 def _sanitize(name: str) -> str:
     cleaned = "".join(c if c in _SAFE_NAME else "_" for c in name).strip("._")
     return cleaned or "export"

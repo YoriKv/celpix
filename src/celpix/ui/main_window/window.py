@@ -549,6 +549,7 @@ class MainWindow(
         self._files_panel.export_png_requested.connect(self._export_png)
         self._files_panel.export_raw_requested.connect(self._export_raw)
         self._files_panel.export_slices_requested.connect(self._export_file_slices)
+        self._files_panel.export_entries_requested.connect(self._export_entries)
         self._files_panel.import_png_requested.connect(self._import_png_into)
         self._files_panel.new_slice_requested.connect(self._new_slice_for)
         self._files_panel.new_slice_from_view_requested.connect(

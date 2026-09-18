@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.28 - unreleased
+
+- Export from multi-select
+
 ## v0.5.27 - 2026-09-17
 
 - Konami LZ compression, both the 1 kb and 4 kb variants
