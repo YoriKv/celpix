@@ -1,7 +1,8 @@
 # Changelog
 
-## v0.5.28 - unreleased
+## v1.0.0 - unreleased
 
+- 1.0 release
 - Export from multi-select
 
 ## v0.5.27 - 2026-09-17
