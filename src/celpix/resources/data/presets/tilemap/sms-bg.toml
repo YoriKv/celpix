@@ -9,6 +9,13 @@ category = "Sega"
 [params]
 bytes = 2
 endian = "little"
-fields = "...o pvhi iiii iiii"
-# No page geometry: the visible nametable is 32 columns by 24 or 28 rows
-# depending on the display mode, so a cell count does not name one shape.
+# Bits 13-15 are `f` rather than `.` because the VDP ignores them and games
+# therefore use them: a stored screen commonly carries collision or damage-zone
+# flags up there, one per cell, and clearing them on a write would strip a
+# level of its hazards. Carried through untouched instead, so a round-trip of a
+# cell nothing was changed on is byte-exact
+# (docs/rom-mapping/console-master-system.md §4).
+fields = "fffo pvhi iiii iiii"
+# No page geometry: the nametable is 32 columns by 24, 28 or 32 rows depending
+# on the display mode and on whether a stored screen holds the whole table or
+# only the visible part of it, so a cell count does not name one shape.

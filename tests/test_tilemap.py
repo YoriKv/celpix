@@ -390,6 +390,22 @@ def test_every_shipped_tilemap_preset_resolves_to_a_working_engine() -> None:
         assert engine.encode(cells, preset.params, ctx) == data
 
 
+def test_the_nametable_carries_the_bits_its_vdp_ignores() -> None:
+    """The sweep above probes all-zero, so only a set word shows this: the
+    Master System's top three cell bits are the game's, commonly per-cell
+    collision or damage-zone flags, and writing them back as zero would strip a
+    stored screen of its hazards (``console-master-system.md`` §4)."""
+    registry = default_registry()
+    codec, params = TilemapCodec(), _params(registry, "preset.tilemap.sms-bg")
+    word = (0b101 << 13) | (1 << 12) | (1 << 11) | (1 << 10) | (1 << 9) | 0x1A5
+    data = word.to_bytes(2, "little")
+    (cell,) = codec.decode(data, params, PipelineContext())
+    assert cell == Cell(
+        index=0x1A5, palette_row=1, priority=1, flip_h=True, flip_v=True, flags=0b101
+    )
+    assert codec.encode([cell], params, PipelineContext()) == data
+
+
 # -- the containers --------------------------------------------------------
 def _scr_bytes(payload: bytes = b"") -> bytes:
     out = bytearray(SCR_SIZE)
