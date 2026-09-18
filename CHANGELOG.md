@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.27 - unreleased
+## v0.5.27 - 2026-09-17
 
 - Konami LZ compression, both the 1 kb and 4 kb variants
 - Capcom 8-byte mask RLE compression (SNES)
