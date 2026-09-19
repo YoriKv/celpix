@@ -42,6 +42,7 @@ from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.errors import PipelineError
 from celpix.core.tilemap import Cell, CellGrid, CellOp
 from celpix.pipeline import pipeline
+from celpix.project.workspace import Entry, EntryKind
 from celpix.ui import clipboard, render_bridge
 from celpix.ui.undo_commands import TilemapCellsCommand
 from celpix.ui.widgets import counted
@@ -845,7 +846,7 @@ class TilemapEditMixin:
         """
         doc = self._doc
         entry = self._workspace.current
-        if self._refuse_view_only():
+        if self._applying_undo or self._refuse_view_only():
             return False
         if doc is None or doc.cells is None or entry is None:
             return False
@@ -886,25 +887,52 @@ class TilemapEditMixin:
         )
         return True
 
-    def _set_cells(self, entry, cells: list[Cell], revision: int) -> None:  # noqa: ANN001
+    def _set_cells(
+        self,
+        entry: Entry,
+        cells: list[Cell],
+        revision: int,
+        owners: tuple[tuple[Entry, int], ...] = (),
+    ) -> None:
         """Land a cell list on ``entry`` — the command's apply, both directions.
 
         ``revision`` stamps the data pathway, so the entry reads dirty against
         what was last written and an undo back to the saved state reads clean
-        again. A tilemap's cells are its own data, which is the same pathway a
-        pixel entry's bytes use (:func:`~celpix.pipeline.pipeline.save`).
+        again. ``owners`` are the other entries the cells land in — a map slice's
+        parent file, into whose buffer the edit is folded — each with the
+        revision this side of the step leaves it at. A tilemap's cells are its
+        own data, which is the same pathway a pixel entry's bytes use
+        (:func:`~celpix.pipeline.pipeline.save`).
 
         Both directions of the chain are settled here, which is what makes a
         restamp show up: this document re-resolves its own new coordinates, and
         anything drawing *through* it is re-pointed at the cells it now has
         (:meth:`~...session.SessionMixin._rechain_dependents`).
+
+        **An entry with no document is read first.** The command applies in
+        place, so it can land on a map whose cache a write of another entry on the
+        same file dropped (``Workspace.invalidate_path``) — and landing the
+        revision without the cells would leave the history and the bytes
+        disagreeing: the row reads dirty, a save writes what the file already
+        holds, and the edit the step names is nowhere. A map that cannot be read
+        takes neither, which is the ``undo-redo.md`` §5 edge rather than a
+        silent half-apply.
         """
-        if entry.doc is not None:
-            entry.doc.cells = list(cells)
-            entry.doc.resolve()
-            self._reencode_cells(entry.doc)
+        if entry.doc is None and not self._load_entry(entry, quiet=True):
+            return
+        entry.doc.cells = list(cells)
+        entry.doc.resolve()
+        self._reencode_cells(entry.doc)
+        if entry.kind is EntryKind.SLICE:
+            # A map carved from a file is a window of its buffer like any slice,
+            # so the file owes it a fold — recorded in *both* directions, since an
+            # undo back to the saved cells still has to take the edited ones back
+            # out of the parent (``docs/design/slices-and-parents.md`` §2).
+            self._propagate_pixel_edit(entry)
         touched = self._rechain_dependents(entry)
         self._workspace.set_pixel_revision(entry, revision)
+        for owner, owner_revision in owners:
+            self._workspace.set_pixel_revision(owner, owner_revision)
         if entry is self._workspace.current or touched:
             self._refresh_view()
 

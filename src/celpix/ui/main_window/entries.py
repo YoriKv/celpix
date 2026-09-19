@@ -25,6 +25,7 @@ write — is :mod:`~celpix.ui.main_window.writing`. What happens when the view
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -80,13 +81,18 @@ from celpix.project.workspace import (
 from celpix.ui.composite_dialog import CompositeDialog, CompositeParams
 from celpix.ui.container_dialog import ContainerDialog, ContainerEdit
 from celpix.ui.container_info_dialog import ContainerInfoDialog
+from celpix.ui.main_window.interpretation import _same_bytes
 from celpix.ui.new_file_dialog import NewFileDialog, NewFileParams
 from celpix.ui.slice_dialog import SliceDialog
 from celpix.ui.undo_commands import (
     AddEntryCommand,
     CompositeEditCommand,
     ContainerEditCommand,
+    JumpToParentCommand,
+    LocatedState,
+    LocateFilesCommand,
     PaletteConsumerLink,
+    ParentState,
     RemoveEntriesCommand,
     RemovePaletteWithConsumersCommand,
     SliceEditCommand,
@@ -270,24 +276,11 @@ class EntriesMixin:
         if path:
             self._load_pixel(path, content_kind=ContentKind.TILEMAP)
 
-    def _open_as_chosen(self, path: str) -> None:
-        """Ask what ``path`` holds, then open it that way — the Ctrl-drop gesture.
-
-        Detection is a guess from a signature and a suffix, and it is silent
-        about being one. Holding Ctrl is how the user says they know better,
-        without having to find the matching menu entry for a file they are
-        already dropping.
-        """
-        kind = self._ask_content_kind(path)
-        if kind is None:
-            return
-        if kind is ContentKind.PALETTE:
-            self._open_palette_data(path)
-        else:
-            self._load_pixel(path, content_kind=kind)
-
     def _ask_content_kind(self, path: str) -> ContentKind | None:
-        """Which of the three readings to open ``path`` as, or None if cancelled."""
+        """Which of the three readings to open ``path`` as, or None if cancelled —
+        the Ctrl-drop's question. Detection is a guess from a signature and a
+        suffix, and silent about being one; holding Ctrl is how the user says
+        they know better."""
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle("celPix - open as")
@@ -380,6 +373,11 @@ class EntriesMixin:
         # project, not of the app (:meth:`_load_project_plugins`).
         if self._project_path is not None:
             self._load_project_plugins(None)
+        # Pixels floating over the outgoing entry go with it, unlanded: the user
+        # has just agreed to discard that project, so setting them down would
+        # write into a document nobody will save (entry switching lands them
+        # instead - there the entry stays).
+        self._clear_pixel_selection()
         # -> _on_current_entry_changed(None) -> _show_empty: the canvas, the
         # palette dock and every document-bound action land on the idle state.
         self._workspace.replace([], None)
@@ -527,6 +525,8 @@ class EntriesMixin:
         # scroll area a moment later.
         self._workspace.pixel_aspect = loaded.pixel_aspect
         self._sync_pixel_aspect()
+        # Dropped, not landed, as in :meth:`_new_project`.
+        self._clear_pixel_selection()
         self._workspace.replace(loaded.entries, loaded.current)
         self._fill_pixel_combo(self._pixel_preset_id())
         # The one entry-lifecycle change that bypasses the undo stack: older
@@ -610,6 +610,13 @@ class EntriesMixin:
                 return
         start_dir = str(Path(self._project_path).parent) if self._project_path else ""
         relocated = 0
+        # The whole run is one undo step, and it is interactive, so it is done
+        # first and pushed after: every entry's references as they stood, and
+        # the list, so the palette rows a reachable file palette registers on
+        # the way can be told apart and taken back out.
+        before = {id(e): self._located_state(e) for e in self._workspace.entries}
+        listed = list(self._workspace.entries)
+        touched: list[Entry] = []
         for old in paths:
             what = "palette file " if old in palette_only else ""
             new, _ = QFileDialog.getOpenFileName(
@@ -632,11 +639,27 @@ class EntriesMixin:
                 continue
             for entry in relocate_path(self._workspace, old, new):
                 self._refresh_relocated_entry(entry)
+                if not any(entry is seen for seen in touched):
+                    touched.append(entry)
             relocated += 1
         self._sync_locate_action()
         # Re-show the current entry: a now-resolvable one loads; one whose picked
         # file was invalid (or still skipped) falls back to the unavailable state.
         self._on_current_entry_changed(self._workspace.current)
+        if relocated:
+            added = [
+                (index, entry)
+                for index, entry in enumerate(self._workspace.entries)
+                if not any(entry is was for was in listed)
+            ]
+            self._push_command(
+                LocateFilesCommand(
+                    self,
+                    [(entry, before[id(entry)]) for entry in touched],
+                    added,
+                    relocated,
+                )
+            )
         remaining = len(missing_paths(self._workspace))
         self.statusBar().showMessage(
             f"Relocated {relocated} file(s)"
@@ -660,6 +683,74 @@ class EntriesMixin:
         if len(paths) > len(shown):
             lines.append(f"…and {len(paths) - len(shown)} more")
         return "\n".join(lines)
+
+    @staticmethod
+    def _located_state(entry: Entry) -> LocatedState:
+        """``entry``'s references as they stand — one half of a Locate step."""
+        doc = entry.doc
+        return LocatedState(
+            path=entry.path,
+            extra_paths=entry.extra_paths,
+            name=entry.name,
+            missing_palette=_copied(entry.missing_palette),
+            pending_palette=_copied(entry.pending_palette),
+            doc=doc,
+            palette=(
+                (
+                    doc.palette,
+                    doc.palette_config,
+                    doc.palette_ctx,
+                    doc.palette_base_bytes,
+                    frozenset(doc.palette_edits),
+                )
+                if doc is not None
+                else None
+            ),
+        )
+
+    def _apply_located_states(
+        self,
+        states: list[tuple[Entry, LocatedState]],
+        added: list[tuple[int, Entry]],
+        *,
+        restore_added: bool,
+    ) -> list[tuple[Entry, LocatedState]]:
+        """Put each entry's references back as ``states`` has them — a Locate
+        step in either direction — and return the states it replaced.
+
+        Each entry gets its document back as well: an entry whose file was found
+        loaded a document that the undo has no use for (the path it reads is
+        missing again), and an entry whose *palette* was found had it loaded onto
+        the document it already had, so the colors it showed before go back onto
+        that document. ``added`` are the palette rows the run registered; undo
+        takes them out and redo puts the same objects back, before the graphics
+        that mirror them are touched.
+        """
+        self._capture_session()
+        leaving = [(entry, self._located_state(entry)) for entry, _ in states]
+        if restore_added:
+            self._apply_restore_entries(added, None)
+        else:
+            for _index, entry in reversed(added):
+                if entry in self._workspace.entries:
+                    self._apply_close_entry(entry)
+        for entry, state in states:
+            entry.path = state.path
+            entry.extra_paths = state.extra_paths
+            entry.name = state.name
+            entry.missing_palette = _copied(state.missing_palette)
+            entry.pending_palette = _copied(state.pending_palette)
+            entry.doc = state.doc
+            if state.doc is not None and state.palette is not None:
+                doc = state.doc
+                palette, config, ctx, base, edits = state.palette
+                doc.palette, doc.palette_config, doc.palette_ctx = palette, config, ctx
+                doc.palette_base_bytes, doc.palette_edits = base, set(edits)
+            self._files_panel.refresh_entry(entry)
+        self._sync_locate_action()
+        self._on_current_entry_changed(self._workspace.current)
+        self._refresh_window_title()
+        return leaving
 
     def _refresh_relocated_entry(self, entry: Entry) -> None:
         """Refresh one entry after its path(s) were corrected.
@@ -1332,10 +1423,17 @@ class EntriesMixin:
         before = ContainerEdit(entry.container_id, entry.paths, entry.reshape_id)
         # The size is dropped on the way in: it is already on disk, and a command
         # holding it would offer a redo of a write that has no undo.
+        after = replace(edit, units=None)
+        if after == before:
+            # A resize and nothing else: the file changed under the entry, so it
+            # has to be re-read, but a step whose two halves are the same would
+            # be an undo that does nothing. Under the guard the command would
+            # have run it in, so the re-read cannot push a step of its own.
+            with self._undo_apply():
+                self._apply_container_edit(entry, after)
+            return
         self._push_command(
-            ContainerEditCommand(
-                self, entry, before=before, after=replace(edit, units=None)
-            )
+            ContainerEditCommand(self, entry, before=before, after=after)
         )
 
     # -- resizing a file -----------------------------------------------------
@@ -1586,7 +1684,6 @@ class EntriesMixin:
         """
         if slice_entry.kind is not EntryKind.SLICE:
             return
-        parent = self._parent_file_of(slice_entry)
         # The current entry's session snapshot lags the live toolbar until a
         # switch captures it, and the palette mode is read off that snapshot -
         # so freshen it, or jumping from the slice on screen carries the palette
@@ -1599,85 +1696,192 @@ class EntriesMixin:
         if slice_entry.session is None:
             slice_entry.session = self._seed_session(slice_entry)
         src = slice_entry.session
+        session = EntrySession(
+            pixel_preset_id=src.pixel_preset_id,
+            palette_preset_id=src.palette_preset_id,
+            palette_mode=src.palette_mode,
+            # How the slice's bytes are read, not what its own combo was
+            # showing: a decompressed slice previews as none (there is
+            # nothing left to unpack), and it is the codec that unpacked it
+            # that makes the packed bytes at this address readable.
+            preview_compression_id=slice_entry.compression_id,
+            palette_view_preset_id=src.palette_view_preset_id,
+        )
+        palette = palette_source_for(slice_entry)
         # The slice's own bindings travel up with its codec: the preview at the
         # source decodes with the same table the slice does, or it would show
         # nothing where the slice shows tiles (``main_window/inputs.py``).
         bound = slice_entry.inputs.get(slice_entry.compression_id)
-        if bound:
-            parent.inputs = with_bindings(parent, slice_entry.compression_id, bound)
-        # Keep the parent's view geometry (columns/rows/zoom/grid); the origin
-        # is landed after load, once the new preset's tile size is known. Read
-        # before _jump_into_parent drops the document it may live on.
-        prior_view = parent.doc.view if parent.doc is not None else parent.pending_view
-        self._jump_into_parent(
-            parent,
-            slice_entry,
-            session=EntrySession(
-                pixel_preset_id=src.pixel_preset_id,
-                palette_preset_id=src.palette_preset_id,
-                palette_mode=src.palette_mode,
-                # How the slice's bytes are read, not what its own combo was
-                # showing: a decompressed slice previews as none (there is
-                # nothing left to unpack), and it is the codec that unpacked it
-                # that makes the packed bytes at this address readable.
-                preview_compression_id=slice_entry.compression_id,
-                palette_view_preset_id=src.palette_view_preset_id,
-            ),
-            view=(
-                replace(prior_view, tile_offset=0, byte_nudge=0)
-                if prior_view is not None
-                else None
-            ),
-            palette=palette_source_for(slice_entry),
-        )
 
-    def _parent_file_of(self, child: Entry) -> Entry:
-        """The FILE entry a slice or bookmark anchors to, opening it if closed —
-        a jump has to have somewhere to land."""
-        return self._workspace.find_file(child.path) or self._workspace.open_file(
-            child.path
-        )
+        def target(parent: Entry) -> ParentState:
+            # Keep the parent's view geometry (columns/rows/grid); the origin is
+            # landed after load, once the new preset's tile size is known.
+            prior = parent.doc.view if parent.doc is not None else parent.pending_view
+            return ParentState(
+                session=session,
+                pending_view=(
+                    replace(prior, tile_offset=0, byte_nudge=0)
+                    if prior is not None
+                    else None
+                ),
+                pending_palette=palette,
+                inputs=(
+                    with_bindings(parent, slice_entry.compression_id, bound)
+                    if bound
+                    else parent.inputs
+                ),
+                reread=True,
+            )
+
+        self._jump_into_parent(slice_entry, target)
 
     def _jump_into_parent(
-        self,
-        parent: Entry,
-        child: Entry,
-        *,
-        session: EntrySession | None,
-        view: ViewOptions | None,
-        palette: PaletteSource | None,
+        self, child: Entry, target: Callable[[Entry], ParentState]
     ) -> None:
-        """Re-read ``parent`` under a supplied snapshot and land on ``child``'s
-        offset — the shared body of Jump to Source and Jump to Bookmark.
+        """Show ``child``'s parent file under the state ``target`` builds for it
+        and land on ``child``'s offset — the shared body of Jump to Source and
+        Jump to Bookmark, which differ only in *which* snapshot they hand over:
+        a slice's live settings, or a bookmark's recorded ones.
 
-        The two gestures differ only in *which* snapshot they hand over: a
-        slice's live settings, or a bookmark's recorded ones. From there the move
-        is identical — install the snapshot, drop the cached document so the
-        pending fields are consumed on the re-read, show the parent, and land
-        byte-exactly on the child's absolute offset.
-
-        The document is dropped by clearing it directly rather than through
-        :meth:`Workspace.drop_document`, which would *recompute* the pending
-        palette off the parent's own document and overwrite the one supplied
-        here — the whole point of the jump is to arrive under the child's
-        palette, not the parent's.
-
-        This is navigation, not an edit: nothing is pushed onto the undo stack.
+        One undo step (:class:`~celpix.ui.undo_commands.JumpToParentCommand`):
+        the snapshot replaces the parent's own recorded format, palette, view
+        and bindings, which is a change to what the project saves. A parent that
+        is not open is opened first, and that open is part of the same step — a
+        macro — so one Ctrl+Z takes back the whole jump, row and all.
         """
-        if session is not None:
-            parent.session = session
-        parent.pending_view = view
-        parent.pending_palette = palette
-        parent.doc = None
+        parent = self._workspace.find_file(child.path)
+        if parent is not None:
+            self._push_jump(parent, child, target)
+            return
+        opened = Entry(name=Path(child.path).name, kind=EntryKind.FILE, path=child.path)
+        self._undo_stack.beginMacro(f'jump to "{child.name}"')
+        try:
+            self._push_command(AddEntryCommand(self, opened, f"open {opened.name}"))
+            # The open has already reported a file that will not read, and a jump
+            # re-reading it would only say so twice.
+            if opened.doc is not None:
+                self._push_jump(opened, child, target)
+        finally:
+            self._undo_stack.endMacro()
+
+    def _push_jump(
+        self, parent: Entry, child: Entry, target: Callable[[Entry], ParentState]
+    ) -> None:
         if parent is self._workspace.current:
-            self._on_current_entry_changed(parent)  # reload in place
+            self._capture_session()  # the target reads the live view geometry
+        was = parent.doc
+        self._push_command(JumpToParentCommand(self, parent, child, target(parent)))
+        # A jump that landed always re-read into a new document; one that could
+        # not has reported why and left the old one in place.
+        if parent.doc is not was and self._workspace.current is parent:
+            self.statusBar().showMessage(f"Jumped to {child.name} in {parent.name}")
+
+    def _parent_state(self, parent: Entry) -> ParentState:
+        """What a jump would leave behind on ``parent`` right now — the command's
+        capture, taken as each direction leaves the state it undoes."""
+        if parent is self._workspace.current:
+            self._capture_session()  # the live toolbar is newer than the session
+        return ParentState(
+            session=replace(parent.session) if parent.session is not None else None,
+            pending_view=parent.pending_view,
+            pending_palette=parent.pending_palette,
+            inputs=parent.inputs,
+            doc=parent.doc,
+        )
+
+    def _apply_parent_state(
+        self, parent: Entry, state: ParentState, *, land: Entry | None = None
+    ) -> bool:
+        """Install ``state`` on ``parent`` and show it; land on ``land``'s offset.
+
+        A ``reread`` state is the jump itself: the parent's document is read
+        again under the supplied snapshot, since a new format, palette and view
+        all arrive through the load's pending fields. The unsaved bytes the old
+        document held are carried into the new one (:meth:`_carry_unsaved`) — a
+        jump changes how the file is *read*, never which bytes it has, so there
+        is nothing to confirm and nothing to lose. Any other state holds the
+        document itself and is simply put back.
+
+        False, with the parent exactly as it was, when the re-read fails.
+        """
+        previous = parent.doc
+        kept = (parent.session, parent.pending_view, parent.pending_palette)
+        kept_inputs = parent.inputs
+        # Copies: a load consumes and a capture rewrites these in place, and the
+        # command's state must survive to be applied again.
+        parent.session = replace(state.session) if state.session is not None else None
+        parent.pending_view = (
+            replace(state.pending_view) if state.pending_view is not None else None
+        )
+        parent.pending_palette = (
+            replace(state.pending_palette)
+            if state.pending_palette is not None
+            else None
+        )
+        parent.inputs = state.inputs
+        if state.reread:
+            # Cleared directly rather than through Workspace.drop_document, which
+            # would recompute the pending palette off the old document and
+            # overwrite the one just installed — the jump arrives under the
+            # child's palette, not the parent's.
+            parent.doc = None
+            live = (
+                previous.tilemap_data
+                if previous is not None and previous.is_tilemap and parent.pixel_dirty
+                else None
+            )
+            if not self._load_entry(parent, live=live) or not self._carry_unsaved(
+                previous, parent
+            ):
+                parent.doc = previous
+                parent.session, parent.pending_view, parent.pending_palette = kept
+                parent.inputs = kept_inputs
+                return False
+        else:
+            parent.doc = state.doc
+        if parent is self._workspace.current:
+            self._on_current_entry_changed(parent)  # show it again in place
         else:
             self._activate_entry(parent)
-        # Land only if the parent actually loaded - a vanished file or a bad
-        # codec leaves the previous view untouched.
-        if self._workspace.current is parent and self._doc is not None:
-            self._land_on_byte(child.slice_offset)
-            self.statusBar().showMessage(f"Jumped to {child.name} in {parent.name}")
+        if land is not None and self._workspace.current is parent and self._doc:
+            self._land_on_byte(land.slice_offset)
+        # The parent's format may have moved either way, and a map bound to it
+        # holds tiles decoded under the old one.
+        self._reresolve_bound_art(self._maps_drawing_from([parent]))
+        return True
+
+    def _carry_unsaved(self, previous: Document | None, parent: Entry) -> bool:
+        """Move ``previous``'s unsaved edits onto ``parent``'s freshly read
+        document; False — and the alert — if they cannot be carried.
+
+        The pixel buffer is the whole of a pixel file's edits, and the re-read
+        leaves it holding the file's own bytes; since the jump does not touch
+        which bytes the region has, the edited buffer fits the new document
+        exactly. A tilemap's cells come across in the read itself (``live``).
+        Palette edits come too, while the palette is still read from the same
+        place — under a different source they belong to a palette no longer on
+        screen, as they do after any palette switch, and undo brings them back.
+        """
+        doc = parent.doc
+        if previous is None or doc is None or previous.is_tilemap:
+            return True
+        if parent.pixel_dirty:
+            if not _same_bytes(previous.pixel_config, doc.pixel_config) or len(
+                previous.pixel_data
+            ) != len(doc.pixel_data):
+                self._alert(
+                    f"{parent.name} has unsaved changes that could not be carried "
+                    "into the jump. Write them first, then jump again.",
+                    title="celPix - jump",
+                )
+                return False
+            doc.pixel_data = previous.pixel_data
+        if parent.palette_dirty and previous.palette_config == doc.palette_config:
+            doc.palette = previous.palette
+            doc.palette_ctx = previous.palette_ctx
+            doc.palette_base_bytes = previous.palette_base_bytes
+            doc.palette_edits = set(previous.palette_edits)
+        return True
 
     # -- bookmarks -----------------------------------------------------------
     def _new_bookmark_current(self) -> None:
@@ -1741,23 +1945,28 @@ class EntriesMixin:
         """
         if bookmark.kind is not EntryKind.BOOKMARK:
             return
-        self._jump_into_parent(
-            self._parent_file_of(bookmark),
-            bookmark,
-            # Copies, never the originals: the parent's first load consumes its
-            # pending fields, and the bookmark must survive to be jumped to again.
-            session=replace(bookmark.session) if bookmark.session is not None else None,
-            view=(
-                replace(bookmark.pending_view)
-                if bookmark.pending_view is not None
-                else None
-            ),
-            palette=(
-                replace(bookmark.pending_palette)
-                if bookmark.pending_palette is not None
-                else None  # the snapshot renders through the default palette
-            ),
-        )
+
+        def target(parent: Entry) -> ParentState:
+            # Copies, never the originals: the parent's load consumes its pending
+            # fields, and the bookmark must survive to be jumped to again.
+            session = bookmark.session or parent.session
+            return ParentState(
+                session=replace(session) if session is not None else None,
+                pending_view=(
+                    replace(bookmark.pending_view)
+                    if bookmark.pending_view is not None
+                    else None
+                ),
+                pending_palette=(
+                    replace(bookmark.pending_palette)
+                    if bookmark.pending_palette is not None
+                    else None  # the snapshot renders through the default palette
+                ),
+                inputs=parent.inputs,
+                reread=True,
+            )
+
+        self._jump_into_parent(bookmark, target)
 
     def _use_bookmark_as_palette(self, bookmark: Entry) -> None:
         """Files dock ▸ Use as Palette: set the current view's palette to an
@@ -1783,10 +1992,27 @@ class EntriesMixin:
             and current.kind.has_document
             and current.path == bookmark.path
         )
+        if anchored or self._workspace.find_file(bookmark.path) is not None:
+            self._bookmark_palette_on_file(bookmark, anchored=anchored)
+            return
+        # The bookmark's file isn't open, so the gesture opens it — which is a
+        # row in the list like any other open, and one Ctrl+Z has to take back
+        # together with the palette it was opened for.
+        self._undo_stack.beginMacro(f'use "{bookmark.name}" as palette')
+        try:
+            self._load_pixel(bookmark.path)
+            self._bookmark_palette_on_file(bookmark, anchored=False)
+        finally:
+            self._undo_stack.endMacro()
+
+    def _bookmark_palette_on_file(self, bookmark: Entry, *, anchored: bool) -> None:
+        """The rest of :meth:`_use_bookmark_as_palette` once the bookmark's file
+        is open: show it unless the view is already ``anchored`` to it, then load
+        the Offset palette at the bookmark."""
         if not anchored:
             parent = self._workspace.find_file(bookmark.path)
             if parent is None:
-                parent = self._workspace.open_file(bookmark.path)
+                return
             if self._workspace.current is not parent:
                 self._activate_entry(parent)
             if self._workspace.current is not parent:
@@ -2056,3 +2282,9 @@ class EntriesMixin:
         if current is not None and current.doc is not None:
             self._restore_session(current)
         self._refresh_view()
+
+
+def _copied(source: PaletteSource | None) -> PaletteSource | None:
+    """A copy of ``source``: relocation re-points a palette source in place, so a
+    state that must survive the next run cannot share the live one."""
+    return replace(source) if source is not None else None

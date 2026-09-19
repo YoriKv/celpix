@@ -58,8 +58,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QAction, QIcon, QPalette
-from PySide6.QtWidgets import QLabel, QSizePolicy, QToolBar, QWidget
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QApplication, QLabel, QSizePolicy, QToolBar, QWidget
 
 from celpix.core import transform
 from celpix.core.tilemap import CellOp
@@ -69,12 +69,13 @@ from celpix.core.tilerearrangement import (
     TILE_ROTATE_CCW,
     TILE_ROTATE_CW,
 )
-from celpix.ui.icon_font import glyph_pixmap
+from celpix.ui.icon_font import glyph_icon
 from celpix.ui.main_window.capability_sync import Gesture
 from celpix.ui.main_window.selection import SELECTION_SHAPE_KEY, SelectionShape
 from celpix.ui.tools import TRANSFORM_SPECS, EditMode, TransformSpec
 from celpix.ui.widgets import (
     CompactComboBox,
+    ToolBarOverflow,
     add_labelled,
     counted,
     load_enum_setting,
@@ -246,6 +247,7 @@ class TransformMixin:
         # larger again on some desktops) would take a visible bite out of the
         # editing surface for four arrows.
         bar.setIconSize(QSize(_TRANSFORM_ICON, _TRANSFORM_ICON))
+        ToolBarOverflow(bar)  # the » that shows what a narrow window cuts off
         # Every group built below registers here, so a theme switch re-bakes all
         # five without this list having to be spelled out twice.
         self._transform_groups: list[_TransformGroup] = []
@@ -482,16 +484,16 @@ class TransformMixin:
     def _bake_transform_group(self, group: _TransformGroup) -> None:
         """Paint one group's four icons in the theme's button-text colour.
 
-        Disabled is left to Qt: unlike the tools rail, these buttons spend most
-        of their life *enabled* and the automatic fade is only asked to mark a
-        transform the current selection can't take — a passing state, not the
-        resting one.
+        The disabled face matters here more than anywhere: the buttons are
+        disabled whenever nothing is selected (:func:`glyph_icon` says why it is
+        baked).
         """
-        color = self.palette().color(QPalette.ColorRole.ButtonText)
+        palette = QApplication.palette()
         ratio = self.devicePixelRatioF()
-        box = QSize(_TRANSFORM_ICON, _TRANSFORM_ICON)
         for spec, action in zip(TRANSFORM_SPECS, group.actions, strict=True):
-            action.setIcon(QIcon(glyph_pixmap(spec.icon, color, box, ratio)))
+            action.setIcon(
+                glyph_icon(spec.icon, palette, size=_TRANSFORM_ICON, ratio=ratio)
+            )
 
     def _bake_transform_icons(self) -> None:
         """Re-bake every transform group's icons — see ``_rebake_icons``."""

@@ -117,7 +117,7 @@ class CompressionMixin:
             return
         view = self._doc.view
         window = self._doc.window_bytes(
-            view.tile_offset, view.columns * self._view_rows(), view.byte_nudge
+            self._offset, view.columns * self._view_rows(), view.byte_nudge
         )
         if not window:
             self._overlay.hide_overlay()

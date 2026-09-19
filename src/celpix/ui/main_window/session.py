@@ -102,9 +102,17 @@ class SessionMixin:
             return
         if entry.kind in (EntryKind.BOOKMARK, EntryKind.PALETTE):
             return  # no view of its own - selecting one in the list is inert
+        # A drag under the pointer belongs to the entry being left: it is
+        # abandoned rather than carried onto the next one.
+        self._abort_live_gestures()
         # Pixels floating over the entry being left belong to it, so they come
         # down before the view moves on rather than hovering over a stranger.
         self._commit_float()
+        # So does anything still being typed in a tool window: a text draft and
+        # an alphabet cell left open are edits to *this* entry, and landing them
+        # after the switch would put them on the next one.
+        self._text.commit_draft()
+        self._font_alphabet.commit_edit()
         # And its region settles on the way out, after that landing: leaving an
         # entry is where editing it stops, so the fold it owes is paid at a
         # moment nothing is waiting on rather than carried into whatever the user
@@ -1615,7 +1623,9 @@ class SessionMixin:
         # overwrite its restored session with stale, disabled widget values.
         if entry is None or entry.doc is None:
             return
-        entry.doc.view.tile_offset = self._offset
+        # The recorded origin, not the drawn one: View > Entire File draws from the
+        # file's start without that being where the entry was left.
+        entry.doc.view.tile_offset = self._recorded_offset()
         entry.doc.view.byte_nudge = self._nudge
         entry.session = EntrySession(
             pixel_preset_id=self._pixel_preset_id(),
@@ -1680,12 +1690,15 @@ class SessionMixin:
         # values just restored, and lock the controls to match.
         self._sync_pattern_selection()
         is_file = entry.kind is EntryKind.FILE
-        self._offset, self._nudge = view.tile_offset, view.byte_nudge
+        self._place_origin(view.tile_offset, view.byte_nudge)
         # The rearrangement belongs to the entry, like the offset: switching away
         # and back must find the tiles where they were left. Any drag in flight
-        # belonged to the entry being left, so it goes with it.
+        # belonged to the entry being left, so it goes with it. Stored unbounded,
+        # like the pinned regions below: a codec with bigger tiles leaves fewer of
+        # them, and bounding here would drop the rest of the map with no step to
+        # bring it back - :meth:`_active_tile_rearrangement` bounds on read.
         self._cancel_rearrange_drag()
-        self._tile_rearrangement = view.tile_rearrangement.bounded(entry.doc.tile_count)
+        self._tile_rearrangement = view.tile_rearrangement
         self._show_rearranged = view.show_rearranged
         self._sync_rearrange_actions()
         # A sprite map's frame count is the entry's too, and for the reason the

@@ -664,6 +664,18 @@ class Canvas(PanZoomSurface, QWidget):
         self._stamp_drag = False
         self._stamp_slot = None
 
+    def cancel_drag(self) -> None:
+        """Forget a left drag in progress without reporting its end.
+
+        For the controller abandoning a pixel or stamp gesture mid-drag (an undo
+        or an entry switch under a held button): the pointer's further moves and
+        its release then report nothing, so the abandoned gesture cannot be
+        resumed or committed by them.
+        """
+        self._pixel_dragging = False
+        self._last_pixel = None
+        self._end_stamp_drag()
+
     def set_stamp_preview(self, image: QImage | None) -> None:
         """Arm the stamp preview: ``image`` shown over the hovered cell.
 

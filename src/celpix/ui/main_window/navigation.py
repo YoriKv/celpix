@@ -388,10 +388,10 @@ class NavigationMixin:
         Pixmaps, so they are baked and not styled: re-run when the theme or the
         device scale changes (``_rebake_icons``).
         """
-        color = self.palette().color(QPalette.ColorRole.ButtonText)
+        palette = QApplication.palette()
         ratio = self.devicePixelRatioF()
         for button, glyph in self._step_arrows:
-            button.setIcon(glyph_icon(glyph, color, ratio=ratio))
+            button.setIcon(glyph_icon(glyph, palette, ratio=ratio))
 
     def _tile_offset_bar_style(self) -> str:
         """Accent-colored QSS for the file-position bar.
@@ -862,21 +862,23 @@ class NavigationMixin:
         return (tile + unit // 2) // unit * unit
 
     def _snap_offset_to_selection(self) -> None:
-        """Re-anchor the window on the selected tile, snapped to its row.
+        """Bring the window to the selected tile, snapped to its row.
 
-        For leaving View ▸ Entire File: the window collapses back to Rows around
-        offset 0 - the file's start, which is rarely where the user was reading.
-        The selection is: it is the thing they picked out of the whole-file view.
-        Snapped by the position bar's own rule above, and with no selection the
-        offset is left where it is.
+        For leaving View ▸ Entire File: the window collapses back to Rows at the
+        origin the entry recorded all along, which is not necessarily where the
+        user was looking in the whole-file view. The selection is - it is the
+        thing they picked out of it - so a selection the restored window does not
+        show moves the window onto it, snapped by the position bar's own rule. A
+        selection already in view, or none, leaves the recorded origin alone.
 
-        Assigns rather than going through :meth:`_set_offset`: following a view
-        change back to where the user was looking is not a navigation gesture to
-        undo, and the caller's own refresh clamps this to the last page.
+        An ordinary offset move (:meth:`_set_offset`), step and all: it moves the
+        origin a save records, so it is taken back the way any move is.
         """
         if self._doc is None or self._selected_tile is None:
             return
-        self._offset = self._snap_to_row(self._selected_tile)
+        if 0 <= self._selected_tile - self._offset < self._window_slots():
+            return
+        self._set_offset(self._snap_to_row(self._selected_tile))
 
     def _nav_end(self) -> None:
         if self._doc is not None:
@@ -909,10 +911,16 @@ class NavigationMixin:
         self._end_pixel_switch_run()
         if nudge is None:
             nudge = self._nudge
-        offset = self._doc.clamp_tile_offset(
-            offset, self._columns.value(), self._view_rows(), nudge
-        )
-        if (offset, nudge) == (self._offset, self._nudge):
+        if self._held_offset is not None:
+            # View > Entire File has the whole file on screen, so a tile move has
+            # nowhere to go; only the nudge can still move, and it moves the
+            # origin the entry records rather than the lifted window's.
+            offset = self._held_offset
+        else:
+            offset = self._doc.clamp_tile_offset(
+                offset, self._columns.value(), self._view_rows(), nudge
+            )
+        if (offset, nudge) == (self._recorded_offset(), self._nudge):
             # No move (e.g. a scrollbar drag past the end clamped to here) - still
             # snap the scrollbar/box back onto the clamped position.
             self._sync_nav()
@@ -926,7 +934,7 @@ class NavigationMixin:
             OffsetMoveCommand(
                 self,
                 entry,
-                before=(self._offset, self._nudge),
+                before=(self._recorded_offset(), self._nudge),
                 after=(offset, nudge),
             )
         )
@@ -934,13 +942,41 @@ class NavigationMixin:
     def _apply_offset(self, offset: int, nudge: int) -> None:
         """Land the view on an already-clamped position (commands only -
         gestures go through :meth:`_set_offset`, which clamps and pushes)."""
-        self._offset, self._nudge = offset, nudge
+        self._place_origin(offset, nudge)
         self._refresh_view()  # re-clamps defensively if cols/rows changed since
 
+    def _place_origin(self, offset: int, nudge: int) -> None:
+        """Ask for the view origin to be ``offset`` + ``nudge``, before a refresh.
+
+        Every write of a *new* position goes through here rather than assigning
+        ``_offset``, because it has to drop the origin View > Entire File was
+        holding (:attr:`_held_offset`): left in place, the refresh would clamp
+        the held one and quietly ignore the request.
+        """
+        self._offset, self._nudge = offset, nudge
+        self._held_offset = None
+
+    def _recorded_offset(self) -> int:
+        """The origin the entry records - what a save writes and a step restores.
+
+        The render origin ``_offset`` everywhere but under View > Entire File,
+        which draws the file from its start while holding this one aside.
+        """
+        return self._offset if self._held_offset is None else self._held_offset
+
     def _byte_position(self) -> int:
-        """The view origin as a byte position on the tile grid (0 = file start)."""
+        """The view origin as a byte position on the tile grid (0 = file start).
+
+        The origin *drawn* from - where the window on screen starts. What a
+        re-interpretation re-lands on is :meth:`_recorded_byte_position`.
+        """
         assert self._doc is not None
         return self._offset * self._doc.bytes_per_tile + self._nudge
+
+    def _recorded_byte_position(self) -> int:
+        """:meth:`_recorded_offset` as a byte position on the tile grid."""
+        assert self._doc is not None
+        return self._recorded_offset() * self._doc.bytes_per_tile + self._nudge
 
     def _set_byte_position(self, pos: int) -> None:
         """Move the view origin to byte ``pos`` of the tile grid (0 = file start).
@@ -1143,8 +1179,9 @@ class NavigationMixin:
         Takes an offset as it was *written down* (:meth:`_anchor_base`), not as
         the box shows it: its caller is Jump to Source, handing over a child's
         stored ``slice_offset``. Same byte→tile/nudge split as
-        :meth:`_set_byte_position`, but it applies the position directly - a
-        jump-to-source is navigation, not an edit.
+        :meth:`_set_byte_position`, but it applies the position directly: the
+        jump is already one step of its own (``JumpToParentCommand``), and its
+        undo puts back the parent's whole view, position included.
         """
         if self._doc is None:
             return

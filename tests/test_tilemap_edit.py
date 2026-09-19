@@ -1423,6 +1423,30 @@ def test_a_stamp_drag_is_one_undoable_step(qtbot, tmp_path) -> None:
     assert [c.index for c in window._doc.cells[:4]] == [1, 2, 3, 4]
 
 
+def test_an_undo_mid_stamp_drag_abandons_the_drag(qtbot, tmp_path) -> None:
+    """The drag previews in the live cells and records only on release, so an
+    undo under the held button must take the preview off first — otherwise the
+    undo's cells are painted over by the next move, and the release records the
+    stroke on top of an undone one."""
+    from PySide6.QtCore import Qt
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _stamping(qtbot, tmp_path, [Cell(index=c) for c in (1, 2, 3, 4)])
+    window._tile_source_panel.select_id(7)
+    window._on_stamp_pressed(0, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    depth = window._undo_stack.count()
+
+    window._on_stamp_pressed(1, Qt.MouseButton.LeftButton)
+    window._undo_stack.undo()  # the first stamp, while the second is live
+    assert [c.index for c in window._doc.cells[:4]] == [1, 2, 3, 4]
+    window._on_stamp_moved(2)
+    window._on_stamp_finished()
+    assert [c.index for c in window._doc.cells[:4]] == [1, 2, 3, 4]
+    assert window._undo_stack.count() == depth
+
+
 def test_a_sheet_stamp_lays_the_rows_settings_in_the_shown_row(qtbot, tmp_path) -> None:
     """A sheet pick lays the property row's settings whole — exactly what a
     canvas-swept brush lays, so the two picks agree about what a press
@@ -3568,3 +3592,129 @@ def test_a_source_wider_than_a_screenful_keeps_the_width_its_binding_strides_by(
     window._columns.setValue(1070)
     assert window._columns.value() == 1070
     assert window._doc.view.columns == 1070
+
+
+def _map_carved_from_rom(qtbot, tmp_path):
+    """A ROM holding 64 tiles of art and then a 32-cell map, with both carved out
+    as slices and the map bound to the art. Returns (window, rom, map, body)."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.context import PipelineContext
+    from celpix.core.tilemap import Cell
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+    from celpix.plugins.registry import default_registry
+    from celpix.project.workspace import TileMode, TileSource, new_slice
+
+    params = default_registry().preset("preset.tilemap.snes-bg").params
+    body = TilemapCodec().encode(
+        [Cell(index=at % 8) for at in range(32)], params, PipelineContext()
+    )
+    art = bytes((i * 7 + 3) & 0xFF for i in range(64 * 32))
+    path = tmp_path / "rom.bin"
+    path.write_bytes(art + body)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(path))
+    rom = window._workspace.current
+    tiles = new_slice(rom.path, "art", offset=0, length=len(art))
+    window._workspace.insert(tiles, len(window._workspace.entries))
+    carved = new_slice(rom.path, "map", offset=len(art), length=len(body))
+    carved.content_kind = ContentKind.TILEMAP
+    carved.tile_source = TileSource(mode=TileMode.ENTRY, entry=tiles)
+    window._workspace.insert(carved, len(window._workspace.entries))
+    window._activate_entry(carved)
+    return window, rom, carved, body
+
+
+def test_a_map_carved_from_a_file_folds_its_cells_into_it(qtbot, tmp_path) -> None:
+    """A map slice is a window of its file like any slice, so its edit folds into
+    the file's buffer — and what folds is the map's **cells**. The document's
+    pixel buffer is the tile bank it borrows through its binding, and folding that
+    spliced a bank's worth of art over the file at the map's offset (or, past the
+    end, refused the fold and left the cells out of every write of the file).
+    Undoing back to the saved cells takes them back out of the file too."""
+    from dataclasses import replace
+    from pathlib import Path
+
+    window, rom, carved, body = _map_carved_from_rom(qtbot, tmp_path)
+    on_disk = Path(rom.path).read_bytes()
+    start = len(on_disk) - len(body)
+    cells = list(carved.doc.cells)
+    cells[0] = replace(cells[0], index=5)
+    window._apply_cells(cells, "set cell reference")
+
+    window._activate_entry(rom)  # showing the file is where the fold lands
+    assert carved.fold_refused is None
+    assert bytes(rom.doc.pixel_data[:start]) == on_disk[:start]  # art untouched
+    assert bytes(rom.doc.pixel_data[start:]) == carved.doc.tilemap_data != body
+
+    window._undo_stack.undo()
+    window._activate_entry(carved)
+    window._activate_entry(rom)
+    assert bytes(rom.doc.pixel_data[start:]) == body
+
+
+def test_a_map_slice_edit_is_the_files_edit_and_writes_through_it(
+    qtbot, tmp_path
+) -> None:
+    """A cell edit on a map carved from a file dirties the file too, as a pixel
+    edit through a slice does, and undo hands the file its state back. Writing
+    the map goes through the file: the map's own data is its cells, so its route
+    is the map's pathway's rather than the borrowed tile bank's, and one write
+    leaves both rows clean."""
+    from dataclasses import replace
+    from pathlib import Path
+
+    window, rom, carved, body = _map_carved_from_rom(qtbot, tmp_path)
+    assert window._write_action.isEnabled()  # the map's cells are writable
+    cells = list(carved.doc.cells)
+    cells[0] = replace(cells[0], index=5)
+    window._apply_cells(cells, "set cell reference")
+    assert carved.pixel_dirty and rom.pixel_dirty
+
+    window._undo_stack.undo()
+    assert not carved.pixel_dirty and not rom.pixel_dirty
+    window._undo_stack.redo()
+
+    assert window._write_entry(carved)
+    assert not carved.pixel_dirty and not rom.pixel_dirty
+    on_disk = Path(rom.path).read_bytes()
+    assert on_disk[len(on_disk) - len(body) :] == carved.doc.tilemap_data != body
+
+
+def test_a_banks_format_switch_reaches_the_maps_bound_to_it(qtbot, tmp_path) -> None:
+    """A map holds a decoded copy of its bank, so a format switch on the bank —
+    and its undo — has to re-read the maps bound to it, or they go on drawing
+    the old format until something happens to drop them."""
+    window, _rom, carved, _body = _map_carved_from_rom(qtbot, tmp_path)
+    tiles = carved.tile_source.entry
+    window._activate_entry(tiles)
+    before = tiles.doc.pixel_config.interpret_preset_id
+    other = "preset.pixel.snes-2bpp"
+    assert before != other
+    window._apply_pixel_config(other, 0)
+    assert carved.doc.pixel_config.interpret_preset_id == other
+
+    window._apply_pixel_config(before, 0)
+    assert carved.doc.pixel_config.interpret_preset_id == before
+
+
+def test_a_cell_undo_reads_a_map_whose_document_was_dropped(qtbot, tmp_path) -> None:
+    """The cell command applies in place, so it can land on a map whose document
+    a write of another entry on the same file dropped. It used to stamp the
+    revision and write no cells, leaving the row dirty over the saved bytes and the
+    edit it named nowhere."""
+    from dataclasses import replace
+
+    window, rom, carved, _body = _map_carved_from_rom(qtbot, tmp_path)
+    cells = list(carved.doc.cells)
+    cells[0] = replace(cells[0], index=5)
+    window._apply_cells(cells, "set cell reference")
+    assert window._write_entry(carved) and not carved.pixel_dirty
+    window._activate_entry(rom)
+    window._workspace.drop_document(carved)  # what invalidate_path does to it
+
+    window._undo_stack.undo()
+    assert carved.doc is not None and carved.doc.cells[0].index == 0
+    assert carved.pixel_dirty  # unwritten: the file holds the edited cell
+    window._undo_stack.redo()
+    assert carved.doc.cells[0].index == 5 and not carved.pixel_dirty

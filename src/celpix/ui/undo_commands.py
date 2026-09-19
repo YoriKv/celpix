@@ -65,6 +65,8 @@ from celpix.ui.composite_dialog import CompositeParams
 from celpix.ui.container_dialog import ContainerEdit
 
 if TYPE_CHECKING:
+    from celpix.core.document import ViewOptions
+    from celpix.project.workspace import EntrySession
     from celpix.ui.main_window import MainWindow
 
 # QUndoStack only attempts mergeWith on commands whose id() match (and -1
@@ -98,6 +100,11 @@ class PaletteState:
     # change restores the right base, not just the right colors.
     base_bytes: bytes = b""
     edits: frozenset[int] = frozenset()
+    # The view's Palette Row. A shorter palette clamps it on the way in, so a
+    # before state that did not carry it would undo the colors and leave the row
+    # wherever the clamp pulled it. None lands no row and lets the clamp decide,
+    # which is all a forward state needs: the same palette clamps the same way.
+    palette_row: int | None = None
 
 
 class _StateCommand(QUndoCommand):
@@ -357,11 +364,12 @@ class ArrangementState:
     Custom on values that already match a preset is a real choice (it is how the
     controls unlock) and deriving would undo it.
 
-    Neither of those two is compared. The anchor is a position rather than a
-    setting, so a merged run that walks the arrangement back to its start must
-    still read as empty however far the view moved meanwhile; and a Pattern
-    picked on the values it already had moves nothing the file records, so it
-    unlocks the controls without costing a step.
+    Neither of those two is compared: a Pattern picked on the values it already
+    had moves nothing the file records, so it unlocks the controls without
+    costing a step. The anchor is a position rather than a setting, but a merged
+    run is only empty if it is back where it started as well
+    (:meth:`ArrangementCommand.mergeWith` checks it), since a re-cut along the
+    way can have clamped the view.
     """
 
     block_columns: int
@@ -423,7 +431,14 @@ class ArrangementCommand(_CurrentEntryCommand):
         ):
             return False
         self._after = other._after
-        if self._after == self._before:
+        # The anchor too, though the state's equality skips it: a re-cut can
+        # clamp the view on its way, and a run that walks the fields home after
+        # one has still moved the view - dissolving it would strand it there
+        # with no step to take it back.
+        if (
+            self._after == self._before
+            and self._after.byte_position == self._before.byte_position
+        ):
             self.setObsolete(True)
         return True
 
@@ -533,7 +548,8 @@ class PreviewPaletteFormatCommand(_InPlaceCommand):
     format change goes back to the file. In place, because the entry it belongs
     to is a PALETTE entry that can never be current.
 
-    A preview is read-only, so there is nothing here a re-read could lose — but
+    A preview is read-only, and the push site refuses a file with unsaved color
+    edits, so there is nothing here a re-read could lose — but
     the codec it lands on is written to the entry, and a file that decoded wrong
     is corrected by trying formats until one reads. Stepping back through those
     tries is the point.
@@ -590,6 +606,12 @@ class TilemapCellsCommand(_InPlaceCommand):
     and the user has still done something Ctrl+Z should answer. Such a step
     leaves the **revision** alone, so a file whose bytes did not move does not
     start reading dirty over a caret.
+
+    A map carved out of a file is a **slice**, and its cells are bytes of that
+    file's region: the edit is folded into the parent's buffer as it lands, so
+    the file carries the unsaved state too. Its revision rides in each half of
+    the state beside the map's own, exactly as :class:`PixelEditCommand` carries
+    its owners', so an undo hands the file back the state it was in before.
     """
 
     def __init__(
@@ -605,18 +627,31 @@ class TilemapCellsCommand(_InPlaceCommand):
     ) -> None:
         # The state is the cells *paired with* the data-pathway revision they leave
         # the entry at, so an undo hands back the exact unsaved-state it had before,
-        # and with the text caret that belongs to that side of the edit.
+        # and with the text caret that belongs to that side of the edit — then the
+        # other entries the edit lands in (a slice's parent file) with theirs.
+        owners = window._pixel_edit_owners(entry, [])
+        moved = after != before
+        after_revision = (
+            window._workspace.next_revision() if moved else entry.pixel_revision
+        )
         super().__init__(
             window,
             entry,
             text,
-            (before, entry.pixel_revision, caret[0] if caret else None),
+            (
+                before,
+                entry.pixel_revision,
+                caret[0] if caret else None,
+                tuple((owner, owner.pixel_revision) for owner in owners),
+            ),
             (
                 after,
-                entry.pixel_revision
-                if after == before
-                else window._workspace.next_revision(),
+                after_revision,
                 caret[1] if caret else None,
+                tuple(
+                    (owner, after_revision if moved else owner.pixel_revision)
+                    for owner in owners
+                ),
             ),
         )
         self._merge_run = run
@@ -635,18 +670,32 @@ class TilemapCellsCommand(_InPlaceCommand):
             return False
         # other's redo has already run, so its half of the pair is the live state.
         self._after = other._after
-        if self._after[0] == self._before[0] and self._after[2] == self._before[2]:
-            # The run typed its way back to the string it started from *and* to
-            # the caret it started at — drop the empty step, and hand the entry
-            # back the revision it had before it. A run that ended somewhere else
-            # in the string is kept: the caret is part of what an undo restores.
-            self.setObsolete(True)
+        if self._after[0] == self._before[0]:
+            # Back on the cells it started from, so back on the revision too: the
+            # last keystroke stamped a fresh one, and keeping it would have the
+            # row read dirty over bytes that are exactly what they were — the
+            # same rule a single caret-only keystroke follows in ``__init__``.
+            self._after = (
+                self._after[0],
+                self._before[1],
+                self._after[2],
+                self._before[3],
+            )
             self._window._workspace.set_pixel_revision(self._entry, self._before[1])
+            for owner, revision in self._before[3]:
+                self._window._workspace.set_pixel_revision(owner, revision)
+            if self._after[2] == self._before[2]:
+                # ...and to the caret it started at: the step is empty, so it is
+                # dropped. A run that ended somewhere else in the string is kept:
+                # the caret is part of what an undo restores.
+                self.setObsolete(True)
         return True
 
-    def _apply(self, state: tuple[list, int, int | None]) -> None:
-        cells, revision, caret = state
-        self._window._set_cells(self._entry, cells, revision)
+    def _apply(
+        self, state: tuple[list, int, int | None, tuple[tuple[Entry, int], ...]]
+    ) -> None:
+        cells, revision, caret, owners = state
+        self._window._set_cells(self._entry, cells, revision, owners)
         self._window._restore_text_caret(self._entry, caret)
 
 
@@ -792,6 +841,10 @@ class PixelConfigCommand(_CurrentEntryCommand):
     loading once; that result rides in ``preloaded`` and is consumed by the
     first ``redo()``, so pushing never double-loads and a doomed config never
     lands on the stack.
+
+    The **palette row** rides along because a new color count re-anchors it,
+    and a re-anchor worked out again on undo would measure from the live row
+    rather than the one the switch left.
     """
 
     def __init__(
@@ -800,11 +853,12 @@ class PixelConfigCommand(_CurrentEntryCommand):
         entry: Entry,
         text: str,
         *,
-        before: tuple[str, int],
-        after: tuple[str, int],
+        before: tuple[str, int, int],
+        after: tuple[str, int, int],
         preloaded: pipeline.PixelData | None = None,
     ) -> None:
-        super().__init__(window, entry, text, before, after)  # (preset_id, position)
+        # (preset_id, byte position, palette row)
+        super().__init__(window, entry, text, before, after)
         self._preloaded = preloaded
         self._pending: pipeline.PixelData | None = None
 
@@ -814,9 +868,12 @@ class PixelConfigCommand(_CurrentEntryCommand):
         self._pending, self._preloaded = self._preloaded, None
         super().redo()
 
-    def _apply(self, state: tuple[str, int]) -> None:
+    def _apply(self, state: tuple[str, int, int]) -> None:
         preloaded, self._pending = self._pending, None
-        self._window._apply_pixel_config(*state, preloaded=preloaded)
+        preset_id, position, palette_row = state
+        self._window._apply_pixel_config(
+            preset_id, position, preloaded=preloaded, palette_row=palette_row
+        )
 
 
 class PaletteCommand(_CurrentEntryCommand):
@@ -852,10 +909,10 @@ class ColorEditCommand(QUndoCommand):
     even after the view moves to a different graphic sharing (or not sharing) it.
 
     Only the edited entry is captured, not the whole palette: consecutive edits to
-    the *same* entry merge, so dragging a channel slider — which emits on every
-    step — collapses into a single undo step rather than flooding the stack. A
-    different entry (or any other command) breaks the run, exactly as it does for
-    :class:`OffsetMoveCommand`.
+    the *same* entry in the *same editor gesture* merge, so dragging a channel
+    slider — which emits on every step — collapses into a single undo step rather
+    than flooding the stack. A different entry, a new sitting of the editor, an
+    eyedropper pick, a paste (or any other command) breaks the run.
 
     Forking a Custom palette off a read-only source is *not* part of this command:
     the window pushes that separately as a :class:`PaletteCommand` first, so undo
@@ -872,8 +929,12 @@ class ColorEditCommand(QUndoCommand):
         before: int,
         after: int,
         pixel_owner: Entry | None = None,
+        gesture: int | None = None,
     ) -> None:
         super().__init__(f"edit color {index}")
+        # Which editor gesture made this edit; only edits of the same one merge
+        # (None never does - a paste is always its own step).
+        self._gesture = gesture
         self._window = window
         self._owner = owner
         self._doc = doc
@@ -905,6 +966,9 @@ class ColorEditCommand(QUndoCommand):
             or other._owner is not self._owner
             or other._doc is not self._doc
             or other._index != self._index
+            or other._pixel_owner is not self._pixel_owner
+            or self._gesture is None
+            or other._gesture != self._gesture
         ):
             return False
         self._after = other._after
@@ -1270,6 +1334,14 @@ class ReorderEntryCommand(_InPlaceCommand):
     The anchor is an :class:`~celpix.project.workspace.Entry`, held by identity
     like every other reference to one. It cannot go stale while this step is on
     the stack — a command that removed it would be undone before this one.
+
+    The undo half also carries the **whole flat list** as it stood. A neighbour
+    names a place on screen, where rows are grouped into sections, but the list
+    behind it is one sequence: ``None`` puts a file back at the end of that
+    sequence rather than at the end of its section, which reads the same and
+    saves differently. Captured here rather than at the push sites so no site
+    can forget it; the redo needs none, since from the restored list the move
+    lands exactly where it first did.
     """
 
     def __init__(
@@ -1280,10 +1352,14 @@ class ReorderEntryCommand(_InPlaceCommand):
         before: Entry | None,
         after: Entry | None,
     ) -> None:
-        super().__init__(window, entry, f'move "{entry.name}"', before, after)
+        flat = list(window._workspace.entries)
+        super().__init__(
+            window, entry, f'move "{entry.name}"', (before, flat), (after, None)
+        )
 
-    def _apply(self, state: Entry | None) -> None:
-        self._window._apply_reorder_entry(self._entry, state)
+    def _apply(self, state: tuple[Entry | None, list[Entry] | None]) -> None:
+        anchor, flat = state
+        self._window._apply_reorder_entry(self._entry, anchor, flat)
 
 
 class GroupOrderCommand(_InPlaceCommand):
@@ -1304,7 +1380,8 @@ class GroupOrderCommand(_InPlaceCommand):
 
     The lists hold the same entries by identity, so a redo after later edits still
     names the rows it moved; a command that removed one of them would be undone
-    before this one.
+    before this one. The undo half carries the whole flat list too, for the
+    reason :class:`ReorderEntryCommand` gives.
     """
 
     def __init__(
@@ -1316,10 +1393,12 @@ class GroupOrderCommand(_InPlaceCommand):
         before: list[Entry],
         after: list[Entry],
     ) -> None:
-        super().__init__(window, entry, text, before, after)
+        flat = list(window._workspace.entries)
+        super().__init__(window, entry, text, (before, flat), (after, None))
 
-    def _apply(self, state: list[Entry]) -> None:
-        self._window._apply_entry_order(state)
+    def _apply(self, state: tuple[list[Entry], list[Entry] | None]) -> None:
+        order, flat = state
+        self._window._apply_entry_order(order, flat)
 
 
 class PasteEntriesCommand(QUndoCommand):
@@ -1361,6 +1440,13 @@ class AddEntryCommand(QUndoCommand):
     Holds the constructed :class:`Entry` itself — undo removes it from the
     workspace but keeps the object, so redo restores it identically (same
     document, session, and identity for every later command that targets it).
+
+    Undo removes the entry **alone**. A file opened under a slice or bookmark
+    already in the list (one whose file was not open) adopts it — children are
+    matched by path — and closing the file the ordinary way would take the
+    adoptee with it, where the redo puts back only the file. Anything added
+    under the file *after* it is on the stack above this step, so by the time
+    this undo runs the only children left are the ones it found there.
     """
 
     def __init__(self, window: MainWindow, entry: Entry, text: str) -> None:
@@ -1374,7 +1460,7 @@ class AddEntryCommand(QUndoCommand):
 
     def undo(self) -> None:
         with self._window._undo_apply():
-            self._window._apply_close_entry(self._entry)
+            self._window._apply_close_entry(self._entry, with_children=False)
 
 
 class RemoveEntriesCommand(QUndoCommand):
@@ -1413,6 +1499,134 @@ class RemoveEntriesCommand(QUndoCommand):
     def undo(self) -> None:
         with self._window._undo_apply():
             self._window._apply_restore_entries(self._victims, self._was_current)
+
+
+@dataclass(frozen=True)
+class ParentState:
+    """Everything a jump changes on the file it jumps into: the four things a
+    save records for it, and the document they live on once it is loaded.
+
+    ``doc`` is held as the object itself, the way an undone removal holds an
+    ``Entry``: it carries the file's unsaved bytes, the palette it was showing
+    and the view it was left on, so putting it back returns all of them at once
+    and nothing has to be re-read. ``reread`` marks the state a jump *installs*
+    the first time — the child's snapshot, with no document yet — which the
+    apply reads the file under while keeping the bytes the old document held.
+    """
+
+    session: EntrySession | None
+    pending_view: ViewOptions | None
+    pending_palette: PaletteSource | None
+    inputs: dict
+    doc: Document | None = None
+    reread: bool = False
+
+
+class JumpToParentCommand(QUndoCommand):
+    """Jump to Source / Jump to Bookmark: the parent file shown under the child's
+    settings, landed on the child's offset.
+
+    A step because the jump rewrites the parent's own recorded state — its
+    format, palette, view and bindings are what a save writes for it — and the
+    parent's arrangement before the jump is nothing the rows left behind can
+    describe. The two directions are the same operation over a
+    :class:`ParentState` pair, but each captures the state it is leaving as it
+    goes, so a redo puts back the very document the undo took away rather than
+    re-reading, and the other way round. Only the first redo can refuse (the
+    file will not read under the child's settings); it then leaves the parent
+    as it was and marks itself obsolete, so the push drops it.
+    """
+
+    def __init__(
+        self, window: MainWindow, parent: Entry, child: Entry, target: ParentState
+    ) -> None:
+        super().__init__(f'jump to "{child.name}"')
+        self._window = window
+        self._parent = parent
+        self._child: Entry | None = child  # landed on by the first redo only
+        self._before: ParentState | None = None
+        self._after = target
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            leaving = self._window._parent_state(self._parent)
+            landed = self._window._apply_parent_state(
+                self._parent, self._after, land=self._child
+            )
+            if landed:
+                self._before = leaving
+            elif self._child is not None:
+                self.setObsolete(True)
+            self._child = None
+
+    def undo(self) -> None:
+        if self._before is None:
+            return
+        with self._window._undo_apply():
+            leaving = self._window._parent_state(self._parent)
+            if self._window._apply_parent_state(self._parent, self._before):
+                self._after = leaving
+
+
+@dataclass(frozen=True)
+class LocatedState:
+    """One entry's references as a Locate run found or left them.
+
+    The palette sources are held as copies: relocation re-points them in place,
+    and a later run over the same entry would otherwise rewrite the state this
+    one has to put back. A loaded entry keeps its document and that document's
+    palette alongside, since a palette that became reachable is loaded onto the
+    document in place — the colors it showed before are nowhere else.
+    """
+
+    path: str
+    extra_paths: tuple[str, ...]
+    name: str
+    missing_palette: PaletteSource | None
+    pending_palette: PaletteSource | None
+    doc: Document | None
+    palette: tuple | None  # (palette, config, ctx, base bytes, edits) of ``doc``
+
+
+class LocateFilesCommand(QUndoCommand):
+    """One File ▸ Locate Missing Files run: every reference it re-pointed.
+
+    The run is interactive — a file picker per missing file — so it is done
+    before the push, and the first redo is a no-op. After that both directions
+    are one shape: each touched entry's :class:`LocatedState`, captured as the
+    state is left so the other direction can return to it exactly, plus the
+    palette rows the run registered on the way (a file palette that became
+    reachable is registered the moment it loads), which undo takes back out and
+    redo re-inserts as the same objects.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        before: list[tuple[Entry, LocatedState]],
+        added: list[tuple[int, Entry]],
+        count: int,
+    ) -> None:
+        super().__init__(f"locate {count} file(s)")
+        self._window = window
+        self._states = before
+        self._added = added
+        self._done = True  # the run itself did the first redo's work
+
+    def redo(self) -> None:
+        if self._done:
+            self._done = False
+            return
+        self._swap(restore_added=True)
+
+    def undo(self) -> None:
+        self._swap(restore_added=False)
+
+    def _swap(self, *, restore_added: bool) -> None:
+        with self._window._undo_apply():
+            self._states = self._window._apply_located_states(
+                self._states, self._added, restore_added=restore_added
+            )
 
 
 @dataclass(frozen=True)

@@ -502,10 +502,12 @@ class EntryClipboardMixin:
     def _apply_unpaste_entries(self, placements: list[tuple[int, Entry]]) -> None:
         """Take the pasted rows back out — the command's undo.
 
-        Reverse order, and each one checked for still being there: a pasted file
-        and a pasted slice of it are two placements, and closing the file already
-        takes the slice with it.
+        Reverse order, each row taken out **alone**: a file the paste opened may
+        have adopted a slice or bookmark already in the list (one whose file was
+        not open), and closing it the ordinary way would take that row too —
+        while the redo puts back only the placements. The paste's own children
+        are placements of their own, so they go on their own turn.
         """
         for _index, entry in reversed(placements):
             if entry in self._workspace.entries:
-                self._apply_close_entry(entry)
+                self._apply_close_entry(entry, with_children=False)

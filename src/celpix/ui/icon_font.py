@@ -49,6 +49,7 @@ from PySide6.QtGui import (
     QIcon,
     QImage,
     QPainter,
+    QPalette,
     QPixmap,
 )
 
@@ -237,17 +238,34 @@ def glyph_pixmap(glyph: Glyph, color: QColor, box: QSize, ratio: float) -> QPixm
 
 
 def glyph_icon(
-    glyph: Glyph, color: QColor, size: int = 16, ratio: float = 1.0
+    glyph: Glyph,
+    palette: QPalette,
+    *,
+    size: int = 16,
+    ratio: float = 1.0,
+    color: QColor | None = None,
 ) -> QIcon:
-    """``glyph`` as a square :class:`QIcon` in ``color`` — for a button's face.
+    """``glyph`` as a square :class:`QIcon` for a button's face, in ``palette``.
 
-    The button counterpart to :func:`glyph_pixmap`: a one-pixmap icon is all a
-    button needs, since Qt derives the greyed form from it itself. ``size``
-    defaults to 16 because that is the icon size the styles give a button that
-    never asked for one, which is every caller so far; a button that sets its own
-    ``iconSize`` has to say so here too, or Qt scales this pixmap to fit.
+    Drawn in the palette's button-text ink, or ``color`` for a mark that has to
+    say something the theme's ink would not (the warning amber). The **disabled**
+    face is baked too, in the palette's disabled button-text, rather than left to
+    Qt: Qt derives it by fading the pixmap, which takes a light-on-dark glyph down
+    to a tenth of its opacity — gone on the dark theme, rather than greyed.
+
+    ``size`` defaults to 16 because that is the icon size the styles give a
+    button that never asked for one; a button that sets its own ``iconSize`` has
+    to say so here too, or Qt scales this pixmap to fit.
 
     The art is *baked* rather than styled, so a caller has to re-bake it when the
-    theme or the device scale changes — the window's ``_rebake_icons``.
+    theme or the device scale changes — the window's ``_rebake_icons``. On a
+    theme switch that has to read the **application** palette: the new one
+    reaches each widget through the event loop, so a widget's own is still the
+    outgoing theme at the moment the switch re-bakes.
     """
-    return QIcon(glyph_pixmap(glyph, color, QSize(size, size), ratio))
+    box = QSize(size, size)
+    ink = color if color is not None else palette.color(QPalette.ColorRole.ButtonText)
+    off = palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText)
+    icon = QIcon(glyph_pixmap(glyph, ink, box, ratio))
+    icon.addPixmap(glyph_pixmap(glyph, off, box, ratio), QIcon.Mode.Disabled)
+    return icon

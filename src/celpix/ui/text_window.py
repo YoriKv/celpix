@@ -843,6 +843,30 @@ class TextWindow(QWidget):
             return
         self.undo_requested.emit()
 
+    def redo(self) -> None:
+        """Ctrl+Y — land the draft first, then redo the session step.
+
+        The draft cannot simply ride along: a redo re-renders the string, so a
+        draft still standing in the field either vanishes under it or — where
+        the redo is of another entry — is written later over a string it was
+        never typed into. Written here it is an edit like any other, and the redo
+        that follows answers whatever is left above it on the stack.
+        """
+        self._commit()
+        self.redo_requested.emit()
+
+    def commit_draft(self) -> None:
+        """Write out a draft before the entry it was typed into is left.
+
+        The window is filled for one entry at a time, and a ``[...]`` still being
+        spelled belongs to that one: landing it after the view has moved on puts
+        it on the wrong document, or on none. So the host calls this while the
+        entry is still current (:meth:`~celpix.ui.main_window.session.
+        SessionMixin._activate_entry`).
+        """
+        if self.isVisible():
+            self._commit()
+
     def _revert(self) -> None:
         """Put the file's own string back in the field, discarding the draft.
 
@@ -972,7 +996,7 @@ class _TextEdit(QPlainTextEdit):
             self._owner.undo()
             return
         if event.matches(QKeySequence.StandardKey.Redo):
-            self._owner.redo_requested.emit()
+            self._owner.redo()
             return
         if event.matches(QKeySequence.StandardKey.Paste):
             self._owner.paste()

@@ -249,7 +249,7 @@ class WritingMixin:
         writable = (
             entry.doc.palette_config.write_enabled
             if entry.kind is EntryKind.PALETTE
-            else entry.doc.pixel_config.write_enabled
+            else entry.doc.data_config.write_enabled
         )
         if not writable:
             self._alert(
@@ -290,7 +290,10 @@ class WritingMixin:
             self._commit_float()
         self._capture_session()  # keep the current entry's session snapshot fresh
         palette_only = entry.palette_dirty and not entry.pixel_dirty
-        via_parent = not palette_only and entry.doc.pixel_config.writes_through_parent
+        # The entry's own data decides the route: a map carved from a file writes
+        # its cells through that file like any slice, whatever the tile bank it
+        # borrows its art from would do.
+        via_parent = not palette_only and entry.doc.data_config.writes_through_parent
         writes_region = not (palette_only or via_parent)
         try:
             if via_parent and not self._write_pixels_through_parent(entry):
@@ -371,7 +374,16 @@ class WritingMixin:
             if not (child.pixel_dirty or child is also or child in owed):
                 continue
             try:
-                shaped = pipeline.encoded_pixel_bytes(child.doc, self._registry)
+                # A map carved from the file folds its *cells*: its pixel buffer is
+                # the art it borrows through its binding, which belongs to another
+                # entry and to another offset — splicing that here would write a
+                # tile bank over the map's own bytes.
+                encode = (
+                    pipeline.encoded_tilemap_bytes
+                    if child.doc.is_tilemap
+                    else pipeline.encoded_pixel_bytes
+                )
+                shaped = encode(child.doc, self._registry)
             except PipelineError as exc:
                 if child is also:
                     raise  # the one being written reports its own failure
@@ -516,8 +528,16 @@ class WritingMixin:
         the one being dropped.
         """
         for bound in self._entries_bound_to(owner):
-            if bound is not self._workspace.current:
-                self._workspace.drop_document(bound)
+            if bound is self._workspace.current:
+                continue
+            if bound.pixel_dirty and bound.doc is not None and bound.doc.is_tilemap:
+                # A map's unsaved cells live in its document and nowhere else, so
+                # dropping it would throw the edit away for the sake of its art.
+                # Re-read instead, which carries the cells across
+                # (:meth:`~...tilemap_bar.TilemapBarMixin._reread_tilemap`).
+                self._reread_tilemap(bound, quiet=True)
+                continue
+            self._workspace.drop_document(bound)
 
     def _mark_region_saved(self, parent: Entry) -> None:
         """Mark clean everything whose unsaved bytes just went to disk with

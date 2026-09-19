@@ -2193,3 +2193,25 @@ def test_the_clipboard_buttons_act_on_the_picked_rows(qtbot, tmp_path) -> None:
     # one vocabulary whether a paste lost everything or one character of it.
     assert editor._badge.text() == "1 dropped"
     assert "outside the selected rows" in editor._badge.toolTip()
+
+
+def test_an_alphabet_cell_left_open_lands_on_its_font_when_the_view_moves(
+    qtbot, tmp_path
+) -> None:
+    """An open cell editor writes back when it closes, and by then the table may
+    have been refilled for another font — so it is settled while the entry it was
+    typed against is still the one on screen, as an edit of *that* font."""
+    from PySide6.QtWidgets import QLineEdit
+
+    window, bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="ABCDE")
+    window._refresh_view()
+    table = window._font_alphabet._table
+    table.editItem(table.item(1, COL_TEXT))
+    cell = table.findChildren(QLineEdit)[-1]
+    cell.setFocus()
+    cell.setText("Q")
+
+    window._activate_entry(bank)
+    assert bank.font_chars == "AQCDE"
+    window._undo_stack.undo()
+    assert bank.font_chars == "ABCDE"

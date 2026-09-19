@@ -227,15 +227,22 @@ def test_leaving_entire_file_re_anchors_on_the_selection(
     assert window._offset == 32
 
     # A selection past the last page still leaves a reachable window, and with no
-    # selection at all there is nothing to re-anchor on: the offset stays put.
+    # selection at all there is nothing to re-anchor on: the window comes back to
+    # the origin the entry kept all along, which the toggle never moved.
     window._entire_file.setChecked(True)
     window._select_tiles(63, 63)
     window._entire_file.setChecked(False)
     assert window._offset == 48  # the last page (64 tiles - a 16-tile window)
     window._entire_file.setChecked(True)
+    assert window._offset == 0  # drawn from the file's start...
+    assert window._doc.view.tile_offset == 48  # ...without that being a move
     window._clear_selection()
     window._entire_file.setChecked(False)
-    assert window._offset == 0  # where the whole-file view left it
+    assert window._offset == 48
+    # Following the selection out is an ordinary move, so it is undone as one -
+    # both of them, merged like any run of moves in one entry.
+    window._undo_stack.undo()
+    assert window._offset == 0
 
 
 def test_offset_scrollbar_jumps_and_stays_in_sync(qtbot, tmp_path, monkeypatch) -> None:
@@ -588,6 +595,15 @@ def test_theme_menu_repaints_the_app_and_persists(qtbot, tmp_path) -> None:
         # thing a repolish can't refresh: it has to name the new Highlight.
         accent = app.palette().color(QPalette.ColorRole.Highlight).name()
         assert accent in window._tile_offset_bar.styleSheet()
+        # The window's baked icons are re-baked in the same call, while its own
+        # palette is still the outgoing one - they have to come out in the new
+        # theme's ink, not the old (a black arrow on the dark surface).
+        image = window._transform_groups[0].actions[0].icon().pixmap(16).toImage()
+        ink = max(
+            (image.pixelColor(x, y) for x in range(16) for y in range(16)),
+            key=lambda color: color.alpha(),
+        )
+        assert ink.lightness() > 128
 
         reopened = MainWindow()
         qtbot.addWidget(reopened)

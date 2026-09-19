@@ -28,12 +28,12 @@ from PySide6.QtGui import (
     QKeySequence,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
-    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -43,6 +43,8 @@ from celpix.project.workspace import (
     Entry,
     PaletteMode,
 )
+from celpix.ui.glyphs import Glyph
+from celpix.ui.icon_font import glyph_icon
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.undo_commands import PaletteRowBaseCommand
 from celpix.ui.widgets import (
@@ -159,22 +161,19 @@ class PaletteDockMixin:
         # Step the palette offset one tile at a time (the tile-molester idiom):
         # nudging the source window by a whole tile is how you hunt for a
         # palette that sits a few tiles off the graphics. Shown with the offset
-        # field, in Offset mode only. The same style standard-icon arrows the
-        # navbar's tile steps use - triangle glyphs render inconsistently (see
-        # _build_navbar).
-        sp = QStyle.StandardPixmap
+        # field, in Offset mode only. The same icon-font arrows the navbar's tile
+        # steps wear, baked in _bake_palette_offset_arrows.
         self._palette_offset_prev = QPushButton()
-        self._palette_offset_prev.setIcon(self.style().standardIcon(sp.SP_ArrowLeft))
         self._palette_offset_prev.setToolTip("Palette offset back one tile")
         self._palette_offset_prev.setFixedWidth(28)
         self._palette_offset_prev.clicked.connect(lambda: self._step_palette_offset(-1))
         self._palette_offset_prev.hide()
         self._palette_offset_next = QPushButton()
-        self._palette_offset_next.setIcon(self.style().standardIcon(sp.SP_ArrowRight))
         self._palette_offset_next.setToolTip("Palette offset forward one tile")
         self._palette_offset_next.setFixedWidth(28)
         self._palette_offset_next.clicked.connect(lambda: self._step_palette_offset(1))
         self._palette_offset_next.hide()
+        self._bake_palette_offset_arrows()
 
         # Which external file the palette comes from (File/Emulator modes).
         self._palette_file_label = QLabel()
@@ -350,6 +349,20 @@ class PaletteDockMixin:
             [self._palette_dock.sizeHint().width()],
             Qt.Orientation.Horizontal,
         )
+
+    def _bake_palette_offset_arrows(self) -> None:
+        """Stamp the palette-offset steps in the theme's button-text color.
+
+        Pixmaps, so they are baked and not styled: re-run when the theme or the
+        device scale changes (``_rebake_icons``).
+        """
+        palette = QApplication.palette()
+        ratio = self.devicePixelRatioF()
+        for button, glyph in (
+            (self._palette_offset_prev, Glyph.ARROW_LEFT),
+            (self._palette_offset_next, Glyph.ARROW_RIGHT),
+        ):
+            button.setIcon(glyph_icon(glyph, palette, ratio=ratio))
 
     def _build_palette_menu(self) -> None:
         """Palette ▸ everything palette-flavoured: palette-from-selection,

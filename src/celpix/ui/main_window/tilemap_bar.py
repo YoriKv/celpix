@@ -57,8 +57,8 @@ from __future__ import annotations
 from dataclasses import replace
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QFileDialog,
     QHBoxLayout,
@@ -343,9 +343,7 @@ class TilemapBarMixin:
         """
         self._tile_binding_jump.setIcon(
             glyph_icon(
-                Glyph.TARGET,
-                self.palette().color(QPalette.ColorRole.ButtonText),
-                ratio=self.devicePixelRatioF(),
+                Glyph.TARGET, QApplication.palette(), ratio=self.devicePixelRatioF()
             )
         )
 
@@ -553,6 +551,8 @@ class TilemapBarMixin:
             self._cell_index.setValue(self._selected_cell_index())
 
     def _on_cell_index_change(self, value: int) -> None:
+        if self._applying_undo:
+            return
         self._set_cell_index(value)
 
     def _binding_note(self, entry: Entry, source: TileSource) -> str:
@@ -829,6 +829,14 @@ class TilemapBarMixin:
         )
         entry.tile_source = source  # before the switch back, so the reload reads it
         self._activate_entry(entry)
+        if self._workspace.current is not entry:
+            # The switch back failed (reported by the load): the map is not on
+            # screen, so there is no bind to push. Pushing anyway would leave a
+            # dead step — its redo cannot reach the map either, so it applies
+            # nothing — with the field it names already moved underneath it.
+            entry.tile_source = before.tile_source
+            self._refresh_tilemap_bar()
+            return
         self._rebind_tiles(entry, source, f"bind tiles to {bound.name}", before=before)
 
     def _jump_to_bound_tiles(self) -> None:

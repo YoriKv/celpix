@@ -1580,8 +1580,7 @@ class FileListPanel(QWidget):
             entry,
             enabled=entry.doc is not None
             and (
-                entry.kind is EntryKind.COMPOSITE
-                or entry.doc.pixel_config.write_enabled
+                entry.kind is EntryKind.COMPOSITE or entry.doc.data_config.write_enabled
             ),
         )
 

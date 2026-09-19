@@ -275,6 +275,18 @@ class MainWindow(
         # dialog is reused and retargeted as the palette selection moves, so the
         # eyedropper can reach the canvas and the swatch grid underneath it.
         self._color_editor: ColorEditorDialog | None = None
+        # What the open editor is pointed at - (palette owner, palette document,
+        # swatch index) - so any move of the palette underneath it (an entry
+        # switch, a mode change, an undo into another entry) retargets it rather
+        # than leaving Cancel armed with another swatch's color.
+        self._color_edit_target: tuple[Entry | None, Document, int] | None = None
+        # One number per editor gesture: bumped on every retarget and eyedropper
+        # pick, and carried by each ColorEditCommand so only edits of the same
+        # gesture merge - two sittings on one swatch stay two steps.
+        self._color_edit_gesture = 0
+        # The Custom fork this sitting of the editor pushed, if any: Cancel takes
+        # it back too when the edits it was made for have dissolved.
+        self._color_edit_fork: QUndoCommand | None = None
         # Top-left tile index of the view window. This offset is what scrolls
         # through the file - only the window is composed and rendered, so the
         # scroll area moves nothing but the (zoomed) window inside its viewport.
@@ -367,6 +379,9 @@ class MainWindow(
         # Which run of typing the next text edit belongs to, so consecutive
         # keystrokes merge into one undo step (``main_window/text.py``).
         self._text_run = 0
+        # The entry the text window was last filled for, so an edit that arrives
+        # after the view has moved on is not written into the wrong map.
+        self._text_entry = None
         # Whether a selection currently on its way *out* of the text window is
         # being applied, so the canvas selection it sets is not pushed straight
         # back in (``main_window/text.py``, ``_sync_text_selection``).
@@ -388,6 +403,9 @@ class MainWindow(
         # fontmap opens the text beside the alphabet that decides what it says.
         self._font_alphabet = FontAlphabetWindow(self)
         self._font_alphabet_dismissed = False
+        # The font the alphabet editor's table was last filled from: an edit is
+        # that table's, whichever entry is on screen when it lands.
+        self._font_alphabet_font = None
         self._font_alphabet.edited.connect(self._on_font_alphabet_edited)
         self._font_alphabet.dismissed.connect(self._on_font_alphabet_dismissed)
         self._font_alphabet.tile_selected.connect(self._on_font_alphabet_tile)
@@ -636,6 +654,10 @@ class MainWindow(
         """
         self._applying_undo = True
         try:
+            # A drag still under the pointer previews on live state and records
+            # only on release, so it is abandoned before the history moves
+            # anything under it (set first, so the abandon can push nothing).
+            self._abort_live_gestures()
             yield
         finally:
             self._applying_undo = False
@@ -727,9 +749,23 @@ class MainWindow(
             return  # already there
         self._push_command(ReorderEntryCommand(self, entry, before=was, after=before))
 
-    def _apply_reorder_entry(self, entry: Entry, before: Entry | None) -> None:
+    def _apply_reorder_entry(
+        self, entry: Entry, before: Entry | None, order: list[Entry] | None = None
+    ) -> None:
+        """Move ``entry`` in front of ``before``; then, for an undo, put the flat
+        list back in ``order`` exactly.
+
+        The neighbour alone is enough for the screen but not for the list behind
+        it: ``None`` sends a file to the very end, past other sections' files it
+        used to sit in front of, and the project would save — and read as
+        unsaved — in an order no gesture made. The neighbour move still runs
+        first, since it is what moves the row in the tree; the rows' order within
+        each group is the same either way, so the tree needs nothing further.
+        """
         if self._workspace.reorder(entry, before):
             self._files_panel.move_item(entry, before)
+        if order is not None:
+            self._workspace.restore_order(order)
 
     def _move_entries(self, entries: list[Entry], delta: int) -> None:
         """Step every row in ``entries`` one place — Alt+Up/Down, or Move Up/Down.
@@ -801,7 +837,9 @@ class MainWindow(
             GroupOrderCommand(self, entry, f"sort by {what}", before=was, after=order)
         )
 
-    def _apply_entry_order(self, order: list[Entry]) -> None:
+    def _apply_entry_order(
+        self, order: list[Entry], flat: list[Entry] | None = None
+    ) -> None:
         """Lay one group's rows out in ``order``.
 
         Right to left, each row moved in front of the one that follows it: after
@@ -812,9 +850,14 @@ class MainWindow(
         Spelled in the same "land in front of this row" moves a drag makes, so the
         model and the tree stay in step through the one place that knows how to
         keep them there.
+
+        ``flat`` is the whole list's order to land on afterwards — an undo's, for
+        the reason :meth:`_apply_reorder_entry` gives.
         """
         for at in range(len(order) - 2, -1, -1):
             self._apply_reorder_entry(order[at], order[at + 1])
+        if flat is not None:
+            self._workspace.restore_order(flat)
 
     def _sync_write_action(self) -> None:
         """Arm File ▸ Write for whatever the current view can actually save.
@@ -827,7 +870,7 @@ class MainWindow(
         """
         entry = self._workspace.current
         doc = entry.doc if entry is not None else None
-        writable = doc is not None and doc.pixel_config.write_enabled
+        writable = doc is not None and doc.data_config.write_enabled
         self._write_action.setEnabled(
             writable or self._linked_palette_entry() is not None
         )
@@ -995,15 +1038,19 @@ class MainWindow(
         if entry.kind.has_document:
             self._activate_entry(entry)
 
-    def _apply_close_entry(self, entry: Entry) -> None:
+    def _apply_close_entry(self, entry: Entry, *, with_children: bool = True) -> None:
         """Take ``entry`` (and, for a file, its slices) out of the workspace;
-        the current view repoints to a neighbour via the workspace."""
+        the current view repoints to a neighbour via the workspace.
+
+        ``with_children=False`` takes ``entry`` alone — the undo of an add, which
+        must not take along a slice or bookmark the added file merely adopted
+        (:meth:`~celpix.project.workspace.Workspace.close`)."""
         # Asked before the close, while the bindings still resolve: every map
         # drawing through this file (or through one of its slices) holds a decoded
         # copy of the art and would go on showing it.
-        going = [entry, *self._workspace.children_of(entry)]
+        going = [entry, *(self._workspace.children_of(entry) if with_children else ())]
         orphaned = self._maps_drawing_from(going)
-        self._workspace.close(entry)
+        self._workspace.close(entry, with_children=with_children)
         self._sync_locate_action()
         # The banks first: a composite losing a piece has to be re-assembled
         # before the maps drawing through it are re-read, or they would each

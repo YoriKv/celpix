@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QKeySequence, QUndoCommand
 from PySide6.QtWidgets import QMenu
 
 from celpix.core.document import Document
@@ -25,6 +25,7 @@ from celpix.pipeline import pipeline
 from celpix.project.workspace import (
     Entry,
     EntryKind,
+    PaletteMode,
 )
 from celpix.ui import clipboard
 from celpix.ui.color_editor import ColorEditorDialog
@@ -94,6 +95,7 @@ class ColorEditingMixin:
             dialog.editor.color_changed.connect(self._on_color_changed)
             dialog.editor.pick_toggled.connect(self._set_pick_mode)
             dialog.closed.connect(self._on_color_editor_closed)
+            dialog.rejected.connect(self._on_color_editor_cancelled)
             self._color_editor = dialog
         self._sync_color_editor(retarget=True)
         dialog.show()
@@ -107,6 +109,12 @@ class ColorEditingMixin:
         rewriting the inputs unconditionally would clobber a half-typed hex
         value. ``retarget`` additionally re-titles the window, re-reads the
         stored-as quantizer for the current mode, and re-arms Revert.
+
+        A palette that moved out from under the editor retargets it even when the
+        caller didn't ask: an entry switch, a mode change or an undo landing in
+        another entry leaves the same index selected on a *different* palette,
+        and an editor still armed with the old one's color would have Cancel
+        write it there.
         """
         dialog = self._color_editor
         doc = self._palette_doc()
@@ -116,12 +124,29 @@ class ColorEditingMixin:
         if index is None or index >= len(doc.palette):
             return
         color = doc.palette.color(index)
+        target = (self._palette_owner_entry(), doc, index)
+        if not self._is_color_edit_target(target):
+            retarget = True
         if retarget:
+            self._color_edit_target = target
+            self._color_edit_gesture += 1
+            self._color_edit_fork = None
             dialog.set_entry_label(self._color_entry_label(index))
             dialog.editor.set_alpha_enabled(self._palette_stores_alpha())
             dialog.editor.set_quantizer(self._palette_quantizer())
         if retarget or color != dialog.editor.color():
             dialog.editor.set_color(color, mark_original=retarget)
+
+    def _is_color_edit_target(self, target: tuple) -> bool:
+        """Whether ``target`` is the (owner, document, index) the editor is on -
+        by identity, since two graphics' palettes can hold equal colors."""
+        held = self._color_edit_target
+        return (
+            held is not None
+            and held[0] is target[0]
+            and held[1] is target[1]
+            and held[2] == target[2]
+        )
 
     def _color_entry_label(self, index: int) -> str:
         row, color = divmod(index, self._index_space())
@@ -173,11 +198,24 @@ class ColorEditingMixin:
         index = self._palette_panel.selected_index()
         if index is None:
             return
-        # Forking is its own undo step, so it happens before the edit itself.
-        if not self._palette_mode.holds_edits:
-            self._fork_custom_palette()
-        owner = self._palette_owner_entry()
         doc = self._palette_doc()
+        if doc is None:
+            return
+        if self._color_editor is not None and not self._is_color_edit_target(
+            (self._palette_owner_entry(), doc, index)
+        ):
+            # The palette moved under an editor no refresh has caught up with
+            # yet: the color is the old swatch's, not an edit of this one.
+            self._sync_color_editor(retarget=True)
+            return
+        # Forking is its own undo step, so it happens before the edit itself.
+        if self._palette_needs_fork():
+            self._fork_custom_palette()
+            self._color_edit_fork = self._top_command()
+            # The fork re-homed the palette; keep the editor on it, same gesture.
+            doc = self._palette_doc()
+            self._color_edit_target = (self._palette_owner_entry(), doc, index)
+        owner = self._palette_owner_entry()
         if owner is None or doc is None or index >= len(doc.palette):
             return
         before = doc.palette.color(index)
@@ -194,8 +232,50 @@ class ColorEditingMixin:
                 # A buffer-backed Offset palette persists through the pixel
                 # pathway of the entry whose buffer holds it; None otherwise.
                 pixel_owner=self._offset_palette_pixel_owner(),
+                gesture=self._color_edit_gesture,
             )
         )
+
+    def _palette_needs_fork(self) -> bool:
+        """Whether a color edit must fork the palette to Custom before landing.
+
+        Every mode that can't hold an edit does - and so does an Offset palette
+        with no way back to its bytes: one cut from a reordered region whose
+        owner can't write the region back has neither a file span of its own nor
+        a buffer to splice into, and the project keeps only its offset. An edit
+        left there would undo and redo like any other and then vanish on save.
+        """
+        if not self._palette_mode.holds_edits:
+            return True
+        if self._palette_mode is not PaletteMode.OFFSET or self._doc is None:
+            return False
+        return (
+            not self._doc.palette_config.write_enabled
+            and self._offset_palette_pixel_owner() is None
+        )
+
+    def _top_command(self) -> QUndoCommand | None:
+        """The command the last push left on top of the stack, or None."""
+        index = self._undo_stack.index()
+        return self._undo_stack.command(index - 1) if index > 0 else None
+
+    def _on_color_editor_cancelled(self) -> None:
+        """Cancel has reverted the edits; take back the fork they needed too.
+
+        An edit to a Default or Emulator palette first forks it into a Custom one
+        (its own step), and the revert only dissolves the edit - leaving the
+        entry switched to Custom, which a save records. When the fork this
+        sitting made is back on top with nothing after it, the sitting changed
+        nothing else, so it is undone as well.
+        """
+        fork = self._color_edit_fork
+        self._color_edit_fork = None
+        if (
+            fork is not None
+            and self._undo_stack.index() == self._undo_stack.count()
+            and self._top_command() is fork
+        ):
+            self._undo_stack.undo()
 
     def _apply_color_edit(
         self,
@@ -257,11 +337,16 @@ class ColorEditingMixin:
             return
         dialog.editor.set_pick_active(False)
         # set_color is deliberately signal-free, so the edit is pushed by hand.
+        # A pick is a gesture of its own: it must not merge into the slider
+        # drag before it.
+        self._color_edit_gesture += 1
         dialog.editor.set_color(argb)
         self._on_color_changed(argb)
 
     def _on_color_editor_closed(self) -> None:
         self._color_editor = None
+        self._color_edit_target = None
+        self._color_edit_fork = None
         self._set_pick_mode(False)
 
     # -- clipboard --------------------------------------------------------
@@ -358,25 +443,37 @@ class ColorEditingMixin:
         ]
         if not changed:
             return False
-        grouped = len(changed) > 1
+        fork = self._palette_needs_fork()
+        grouped = len(changed) > 1 or fork
         if grouped:
             self._undo_stack.beginMacro(f"paste {label}")
-        # Inside the macro, so undo peels the fork off with the edits.
-        if not self._palette_mode.holds_edits:
-            self._fork_custom_palette()
-        owner = self._palette_owner_entry()
-        doc = self._palette_doc()
-        if owner is not None and doc is not None:
-            for index, argb in changed:
-                before = doc.palette.color(index)
-                if before != argb:
-                    self._push_command(
-                        ColorEditCommand(
-                            self, owner, doc, index, before=before, after=argb
+        try:
+            # Inside the macro, so undo peels the fork off with the edits.
+            if fork:
+                self._fork_custom_palette()
+            owner = self._palette_owner_entry()
+            doc = self._palette_doc()
+            pixel_owner = self._offset_palette_pixel_owner()
+            if owner is not None and doc is not None:
+                for index, argb in changed:
+                    before = doc.palette.color(index)
+                    if before != argb:
+                        # No gesture: a paste is a step of its own and never
+                        # merges with an editor edit on the same swatch.
+                        self._push_command(
+                            ColorEditCommand(
+                                self,
+                                owner,
+                                doc,
+                                index,
+                                before=before,
+                                after=argb,
+                                pixel_owner=pixel_owner,
+                            )
                         )
-                    )
-        if grouped:
-            self._undo_stack.endMacro()
+        finally:
+            if grouped:
+                self._undo_stack.endMacro()
         return True
 
     def _show_palette_menu(self, pos) -> None:  # noqa: ANN001 — Qt supplies a QPoint

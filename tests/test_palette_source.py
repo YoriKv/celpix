@@ -176,6 +176,31 @@ def test_dropped_pal_becomes_a_palette_entry_applied_on_use(
     assert len(window._doc.palette) == 16
 
 
+def test_picking_a_new_palette_file_is_one_step(qtbot, tmp_path) -> None:
+    """Registering a file and switching to it are one gesture: one Ctrl+Z takes
+    the graphic off it *and* the file out of the Palettes list."""
+    from celpix.project.workspace import EntryKind
+
+    px = _make_snes_file(tmp_path)
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(bytes((i * 7 + 2) & 0xFF for i in range(2 * 16)))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    assert window._apply_file_palette(
+        str(pal),
+        preset_id=window._palette_preset_id(),
+        label="load palette",
+        status=lambda n: f"{n}",
+    )
+    assert window._palette_mode == "file"
+
+    window._undo_stack.undo()
+    assert window._palette_mode != "file"
+    assert not any(e.kind is EntryKind.PALETTE for e in window._workspace.entries)
+
+
 def test_palette_format_change_restamps_the_palette_entry(qtbot, tmp_path) -> None:
     """Re-picking the format while a registered .pal is on screen re-stamps the
     entry, so the next double-click decodes the way the user just chose - and
@@ -1522,6 +1547,44 @@ def test_custom_fork_undo_peels_the_edit_then_the_fork(
     stack.redo()
     assert window._palette_mode == "custom"
     assert window._doc.palette.color(3) == 0xFF123456
+
+
+def test_cancelling_the_editor_takes_back_the_fork_it_made(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Cancel dissolves the edits, and with them the Custom fork they needed -
+    a cancelled sitting leaves neither a step nor a changed palette mode."""
+    window = _open_for_color_edit(qtbot, tmp_path, monkeypatch)
+    stack = window._undo_stack
+    start = stack.index()
+    window._open_color_editor(3)
+    editor = window._color_editor.editor
+
+    editor._spins["R"].setValue(0x12)
+    assert window._palette_mode == "custom"
+    window._color_editor.reject()
+
+    assert window._palette_mode == "default"
+    assert stack.index() == start
+
+
+def test_two_sittings_of_the_editor_are_two_steps(qtbot, tmp_path, monkeypatch) -> None:
+    window = _open_for_color_edit(qtbot, tmp_path, monkeypatch)
+    stack = window._undo_stack
+    original = window._doc.palette.color(3)
+    window._on_color_changed(0xFF123456)  # fork + edit, no editor involved
+    window._open_color_editor(3)
+    window._color_editor.editor._spins["R"].setValue(0x80)
+    window._color_editor.accept()
+    window._open_color_editor(3)
+    window._color_editor.editor._spins["G"].setValue(0x80)
+    window._color_editor.accept()
+
+    stack.undo()  # the second sitting only
+    assert window._doc.palette.color(3) == 0xFF803456
+    stack.undo()
+    stack.undo()
+    assert window._doc.palette.color(3) == original
 
 
 def test_consecutive_edits_to_one_entry_merge_into_a_step(

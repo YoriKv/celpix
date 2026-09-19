@@ -130,6 +130,49 @@ def test_pencil_paints_one_pixel_as_single_undo(qtbot, tmp_path) -> None:
     assert _pixel(window, 2, 3) != 5
 
 
+def test_an_undo_mid_stroke_abandons_the_stroke(qtbot, tmp_path) -> None:
+    """A stroke is composed at the press and written at the release, so history
+    moving under the held button would have the release write stale pixels back
+    — resurrecting the very edit just undone. The stroke is dropped instead, and
+    so is a tool switched to mid-drag, which must not reach the stroke either."""
+    window = _window(qtbot, tmp_path)
+    window._tool = Tool.PENCIL
+    window._on_pixel_pressed(6, 6, Qt.MouseButton.LeftButton)
+    window._on_pixel_released(6, 6)
+    index = window._undo_stack.index()
+
+    window._on_pixel_pressed(2, 3, Qt.MouseButton.LeftButton)
+    window._on_tool_selected(Tool.SELECT)  # a number key under the held button
+    window._on_pixel_moved(3, 3)
+    window._undo_stack.undo()
+    window._on_pixel_moved(4, 3)
+    window._on_pixel_released(4, 3)
+    assert window._undo_stack.index() == index - 1
+    assert _pixel(window, 6, 6) != 5
+    assert all(_pixel(window, x, 3) != 5 for x in (2, 3, 4))
+
+
+def test_turning_a_float_is_a_step_undo_turns_back(qtbot, tmp_path) -> None:
+    """A float is selection state the history carries, so flipping one in the
+    air is a step: undo hands back the grid as it was, still floating."""
+    window = _window(qtbot, tmp_path)
+    window._tool = Tool.SELECT
+    window._marquee = QRect(0, 0, 3, 1)
+    window._pixel_copy()
+    window._pixel_paste()
+    original = window._float_grid
+    index = window._undo_stack.index()
+
+    window._transform_pixel_region(OP_FLIP_H)
+    assert window._undo_stack.index() == index + 1
+    flipped = window._float_grid
+    assert [flipped.get(x, 0) for x in range(3)] == [
+        original.get(x, 0) for x in (2, 1, 0)
+    ]
+    window._undo_stack.undo()
+    assert window._float_grid is original
+
+
 def test_pencil_drag_connects_samples(qtbot, tmp_path) -> None:
     window = _window(qtbot, tmp_path)
     window._tool = Tool.PENCIL
@@ -613,6 +656,19 @@ def test_moving_the_view_sets_a_floating_selection_down(qtbot, tmp_path) -> None
     assert window._float_grid is None
     window._set_offset(0)
     assert _pixel(window, 0, 0) == 0 and _pixel(window, 6, 6) == src
+
+
+def test_a_new_project_drops_a_floating_selection(qtbot, tmp_path) -> None:
+    """The float belongs to the project being discarded: it is neither carried
+    onto the next one nor landed on the way out."""
+    window = _window(qtbot, tmp_path)
+    window._tool = Tool.SELECT
+    window._marquee = QRect(0, 0, 2, 2)
+    _move_selection(window, (0, 0), (6, 6))
+    assert window._float_grid is not None
+    window._new_project()
+    assert window._float_grid is None and window._marquee is None
+    assert window._canvas._float_image is None
 
 
 def test_what_a_pixel_gesture_costs_on_the_undo_stack(qtbot, tmp_path) -> None:

@@ -109,10 +109,12 @@ def test_multi_drop_adds_entries_and_switching_restores_state(qtbot, tmp_path) -
         Qt.KeyboardModifier.NoModifier,
     )
     window.dropEvent(event)
-    # Both files became entries; the last dropped one is on screen.
+    # Both files became entries; the last dropped one is on screen. One drop is
+    # one gesture, so the two adds are one undo step.
     entries = window._workspace.entries
     assert [e.name for e in entries] == ["a.4bpp.sfc", "b.4bpp.sfc"]
     assert window._workspace.current is entries[1]
+    assert window._undo_stack.count() == 1
     assert window._doc.tile_count == 8
 
     # Give each entry distinct state: shrink b's window so its 8 tiles can
@@ -441,6 +443,44 @@ def test_alt_arrows_reorder_the_rows_and_undo_puts_them_back(qtbot, tmp_path) ->
     assert window._workspace.entries == [b, a, cut, other_cut]
     assert panel._items[cut].parent() is panel._items[a]
     assert tree.currentItem() is panel._items[cut]
+
+
+def test_undoing_a_move_restores_the_flat_order_across_sections(
+    qtbot, tmp_path
+) -> None:
+    # The rows are sectioned but the list behind them is one sequence: the last
+    # pixel file sits in front of a tilemap file there, and "last in its section"
+    # — the neighbour its undo names — must not send it past the tilemap.
+    from celpix.core.capabilities import ContentKind
+
+    window, (a, c) = _open_files(qtbot, tmp_path, "a", "c")
+    screen = tmp_path / "b.map"
+    screen.write_bytes(bytes(64))
+    window._load_pixel(str(screen), content_kind=ContentKind.TILEMAP)
+    b = window._workspace.entries[-1]
+    window._reorder_entry(c, a)
+    assert window._workspace.entries == [c, a, b]
+    window._undo_stack.undo()
+    assert window._workspace.entries == [a, c, b]
+    window._undo_stack.redo()
+    assert window._workspace.entries == [c, a, b]
+
+
+def test_undoing_an_open_keeps_the_slice_the_file_adopted(qtbot, tmp_path) -> None:
+    # A slice whose file isn't open is adopted when the file opens — children are
+    # matched by path — so an undo that closed the file the ordinary way took the
+    # slice too, and the redo brought back only the file.
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    cut = window._workspace.add_slice(str(px), "cut", 64, 64)
+    window._load_pixel(str(px))
+    parent = window._workspace.find_file(str(px))
+    assert window._workspace.children_of(parent) == [cut]
+    window._undo_stack.undo()
+    assert window._workspace.entries == [cut]
+    window._undo_stack.redo()
+    assert window._workspace.entries == [cut, parent]
 
 
 def _open_files(qtbot, tmp_path, *names):
@@ -1556,6 +1596,7 @@ def test_new_slice_inherits_parent_pixel_and_palette_not_toolbar(
 def test_jump_to_source_shows_slice_in_parent_at_absolute_offset(
     qtbot, tmp_path
 ) -> None:
+    from celpix.project import projectfile
     from celpix.project.workspace import EntrySession
 
     px = _make_snes_file(tmp_path)  # 8 tiles of 32 bytes = 256 bytes, snes-4bpp
@@ -1580,11 +1621,23 @@ def test_jump_to_source_shows_slice_in_parent_at_absolute_offset(
     )
     parent = window._workspace.find_file(str(px))
     assert window._pixel_preset_id() == "preset.pixel.snes-4bpp"  # parent's own
+    # An unsaved edit in the parent, which the jump's re-read must not discard.
+    parent.doc.replace_bytes(0, b"\xaa\xbb")
+    window._workspace.set_pixel_revision(parent, window._workspace.next_revision())
+    edited = parent.doc
 
-    # Jump is navigation, not an edit: nothing should land on the undo stack.
+    def saved() -> dict:
+        window._capture_session()
+        return projectfile.project_dict(
+            window._workspace, str(tmp_path / "p.celpix"), window._registry
+        )
+
+    was = saved()
+    # The jump rewrites the parent's recorded format, palette and view: one step.
     undo_before = window._undo_stack.count()
     window._jump_to_slice_source(slice_entry)
-    assert window._undo_stack.count() == undo_before
+    assert window._undo_stack.count() == undo_before + 1
+    assert parent.doc.pixel_data[:2] == b"\xaa\xbb" and parent.pixel_dirty
 
     # The parent is on screen showing the *whole* file (16 snes-2bpp tiles), not
     # the slice's bounded region (which would be 4 tiles).
@@ -1595,6 +1648,16 @@ def test_jump_to_source_shows_slice_in_parent_at_absolute_offset(
     assert parent.doc.pixel_config.interpret_preset_id == "preset.pixel.snes-2bpp"
     # The view origin lands byte-exactly on the slice's absolute file offset (64).
     assert window._offset_text() == "0x000040"
+    assert window._byte_position() == 64
+
+    # Undo hands back the very document the jump replaced - edit and all - and
+    # the parent reads as a save would have recorded it before the jump.
+    window._undo_stack.undo()
+    assert parent.doc is edited
+    assert window._pixel_preset_id() == "preset.pixel.snes-4bpp"
+    assert saved() == was
+    window._undo_stack.redo()
+    assert window._pixel_preset_id() == "preset.pixel.snes-2bpp"
     assert window._byte_position() == 64
 
 
@@ -1664,6 +1727,7 @@ def test_jump_to_source_opens_parent_when_closed(qtbot, tmp_path) -> None:
     assert window._workspace.find_file(str(px)) is None  # parent not open yet
 
     window._jump_to_slice_source(slice_entry)
+    assert window._undo_stack.count() == 1  # the open and the jump, one step
 
     # The parent, freshly opened, is on screen showing the whole file through
     # the slice's preset (16 snes-2bpp tiles). Its default-sized viewport swallows
@@ -1675,6 +1739,9 @@ def test_jump_to_source_opens_parent_when_closed(qtbot, tmp_path) -> None:
     assert window._doc.tile_count == 16  # the whole file, via the slice's preset
     assert window._pixel_preset_id() == "preset.pixel.snes-2bpp"
     assert parent.doc.pixel_config.interpret_preset_id == "preset.pixel.snes-2bpp"
+    # ...and undone, the parent goes again while the slice stays.
+    window._undo_stack.undo()
+    assert window._workspace.entries == [slice_entry]
 
 
 def test_project_save_and_load_restores_session(qtbot, tmp_path) -> None:
@@ -1808,11 +1875,10 @@ def test_bookmark_snapshots_live_view_and_jump_restores_it(qtbot, tmp_path) -> N
     window._set_byte_position(0)
     assert window._palette_mode == "default"
 
-    # The jump is navigation, not an edit: only the earlier creation is on the
-    # undo stack; landing the view must add nothing.
+    # The jump reconfigures the parent, which is one undo step.
     undo_before = window._undo_stack.count()
     window._jump_to_bookmark(bookmark)
-    assert window._undo_stack.count() == undo_before
+    assert window._undo_stack.count() == undo_before + 1
 
     # Every captured axis is restored on the parent: preset, palette mode+offset
     # (and the color it reads), viewport geometry, and the byte-exact origin.
@@ -2086,9 +2152,10 @@ def test_relocate_missing_corrects_path_loads_and_clears(
     # The ROM moves elsewhere on disk; the open entry now points at nothing.
     dest = tmp_path / "dest"
     dest.mkdir()
-    moved = dest / "rom.4bpp.sfc"
+    moved = dest / "rom2.4bpp.sfc"  # renamed too, so the row's name follows
     rom.rename(moved)
     entry.doc = None  # force a reload once the path is corrected
+    cut = window._workspace.add_slice(str(rom), "cut", 64, 64)
     assert data_missing(entry)
 
     # Accept the summary prompt, then point the file picker at the moved file.
@@ -2103,6 +2170,18 @@ def test_relocate_missing_corrects_path_loads_and_clears(
     assert entry.doc is not None and window._doc.tile_count == 8
     assert missing_paths(window._workspace) == []
     assert not window._locate_missing_action.isEnabled()
+
+    # The whole run is one step: undo points the file and its slice back at the
+    # old path, under the old name, and the entry is missing again.
+    depth = window._undo_stack.count()
+    window._undo_stack.undo()
+    assert (entry.path, cut.path, entry.name) == (str(rom), str(rom), rom.name)
+    assert data_missing(entry) and entry.doc is None
+    assert window._locate_missing_action.isEnabled()
+    window._undo_stack.redo()
+    assert window._undo_stack.count() == depth
+    assert (entry.path, cut.path, entry.name) == (str(moved), str(moved), moved.name)
+    assert window._doc is entry.doc and window._doc.tile_count == 8
 
 
 def test_relocate_missing_rejects_duplicate_open_file(

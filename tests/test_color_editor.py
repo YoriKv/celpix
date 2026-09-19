@@ -153,7 +153,7 @@ def test_alpha_input_appears_only_when_the_format_stores_it(qtbot) -> None:
     assert editor.color() >> 24 == 0x40
 
 
-def test_disabling_alpha_forces_the_color_opaque(qtbot) -> None:
+def test_disabling_alpha_is_not_an_edit(qtbot) -> None:
     editor = ColorEditor()
     qtbot.addWidget(editor)
     editor.set_alpha_enabled(True)
@@ -161,12 +161,14 @@ def test_disabling_alpha_forces_the_color_opaque(qtbot) -> None:
     seen: list[int] = []
     editor.color_changed.connect(seen.append)
 
-    # Retargeting to a format with no alpha must surface the loss now, as a
-    # real edit, rather than letting it vanish silently at encode time.
+    # The host turns alpha off mid-retarget, before the new swatch's color is
+    # installed: an edit emitted here would land the old swatch's color on the
+    # new one. The next real edit is what pins alpha.
     editor.set_alpha_enabled(False)
+    assert seen == []
 
-    assert editor.color() == 0xFFFF0000
-    assert seen == [0xFFFF0000]
+    editor._spins["R"].setValue(0x80)
+    assert seen == [0xFF800000]
 
 
 def test_typed_alpha_is_ignored_while_alpha_is_off(qtbot) -> None:

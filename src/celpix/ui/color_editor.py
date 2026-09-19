@@ -278,12 +278,11 @@ class ColorEditor(QWidget):
         for widget in (self._labels["A"], self._sliders["A"], self._spins["A"]):
             widget.setVisible(enabled)
         self._hex.setFixedWidth(96 if enabled else 80)
-        if not enabled and self._color >> 24 != 0xFF:
-            # Whatever alpha was showing can't survive; make that visible now
-            # rather than at write time.
-            self._apply(self._color | 0xFF000000)
-        else:
-            self._refresh_inputs()
+        # Only the inputs follow, never the color: this runs while the host is
+        # retargeting, and an emitted "edit" here would land the previous
+        # swatch's color, made opaque, on the one just selected. The next real
+        # edit pins alpha anyway (_apply).
+        self._refresh_inputs()
 
     def set_quantizer(self, quantize: Callable[[int], int] | None) -> None:
         """Set (or clear) the round-trip used for the "Stored as" preview.

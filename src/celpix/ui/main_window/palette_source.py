@@ -61,6 +61,7 @@ from celpix.ui.undo_commands import (
 )
 from celpix.ui.widgets import (
     select_combo_data,
+    signals_blocked,
 )
 
 # The session's palette format before any real one has been chosen. RGB888 is
@@ -510,7 +511,16 @@ class PaletteSourceMixin:
         if entry.session is not None:
             entry.session.palette_mode = PaletteMode.FILE
         if link.loaded and entry.doc is not None:
-            self._link_file_palette(entry, link.path, link.offset, link.preset_id)
+            try:
+                self._link_file_palette(entry, link.path, link.offset, link.preset_id)
+            except (PipelineError, OSError):
+                # Runs inside an undo: a raise would leave the rest of the
+                # consumers unlinked. The ordinary restore degrades instead - and
+                # re-marks a file that has gone missing, which the conversion
+                # this undoes had cleared.
+                self._restore_palette_source(
+                    entry, PaletteSource(path=link.path, offset=link.offset)
+                )
         else:
             entry.pending_palette = PaletteSource(path=link.path, offset=link.offset)
 
@@ -628,7 +638,31 @@ class PaletteSourceMixin:
         if self._doc is None:
             self.statusBar().showMessage("Open pixel data first.")
             return False
-        self._add_palette_file(path, quiet=True)  # register if the list lacks it
+        # Registering the file and switching to it are one gesture: a macro, so
+        # one Ctrl+Z takes both back rather than leaving a stray registration.
+        registering = self._workspace.find_palette(path) is None
+        if registering:
+            self._undo_stack.beginMacro(label)
+        try:
+            return self._switch_to_file_palette(
+                path, preset_id=preset_id, label=label, status=status
+            )
+        finally:
+            if registering:
+                self._undo_stack.endMacro()
+
+    def _switch_to_file_palette(
+        self,
+        path: str,
+        *,
+        preset_id: str,
+        label: str,
+        status: Callable[[int], str],
+    ) -> bool:
+        """:meth:`_apply_file_palette`'s body, run inside its macro."""
+        if self._workspace.find_palette(path) is None:
+            # A new registration remembers the codec it is first read with.
+            self._add_palette_file(path, preset_id=preset_id, quiet=True)
         entry = self._workspace.find_palette(path)
         assert entry is not None
         if entry.doc is not None:
@@ -641,7 +675,12 @@ class PaletteSourceMixin:
             cfg = doc.palette_config
             edits = frozenset(doc.palette_edits)
         else:
-            cfg = self._file_palette_config(path, 0, preset_id, entry.container_id)
+            # A file already registered decodes with the codec it remembers, as
+            # its double-click does - not whatever the dropdown was on, which the
+            # commit would then stamp onto the entry with nothing to undo it.
+            cfg = self._file_palette_config(
+                path, 0, entry.palette_preset_id or preset_id, entry.container_id
+            )
             try:
                 loaded = pipeline.load_palette(cfg, self._registry)
             except PipelineError as exc:
@@ -753,6 +792,7 @@ class PaletteSourceMixin:
             ctx=doc.palette_ctx,
             base_bytes=doc.palette_base_bytes,
             edits=frozenset(doc.palette_edits),
+            palette_row=self._palette_row.value(),
         )
 
     def _apply_palette_state(self, state: PaletteState) -> None:
@@ -778,6 +818,11 @@ class PaletteSourceMixin:
             self._doc.palette_edits = set(state.edits)
         self._set_palette_mode(state.mode)  # already signal-safe
         self._sync_palette_entry_format(state)
+        if state.palette_row is not None:
+            # Before the refresh, whose clamp holds it inside the palette just
+            # landed; blocked, since this is a restore and not a Palette Row move.
+            with signals_blocked(self._palette_row):
+                self._palette_row.setValue(state.palette_row)
         self._refresh_view()
 
     def _apply_file_palette_state(self, state: PaletteState) -> None:
@@ -874,23 +919,24 @@ class PaletteSourceMixin:
         """
         if mode.decodes_raw_bytes:
             self._set_session_palette_format(cfg.interpret_preset_id)
-        self._push_command(
-            PaletteCommand(
-                self,
-                self._workspace.current,
-                label,
-                before=self._capture_palette_state(),
-                after=PaletteState(
-                    cfg.interpret_preset_id,
-                    mode,
-                    loaded.palette,
-                    cfg,
-                    loaded.ctx,
-                    base_bytes=loaded.data,
-                    edits=edits,
-                ),
-            )
+        before = self._capture_palette_state()
+        after = PaletteState(
+            cfg.interpret_preset_id,
+            mode,
+            loaded.palette,
+            cfg,
+            loaded.ctx,
+            base_bytes=loaded.data,
+            edits=edits,
         )
+        # Re-committing the offset already in force, or re-applying the file the
+        # graphic already shows, lands where it started: no step for that.
+        if not _same_palette_state(before, after):
+            self._push_command(
+                PaletteCommand(
+                    self, self._workspace.current, label, before=before, after=after
+                )
+            )
         if status:
             self.statusBar().showMessage(status)
 
@@ -1077,9 +1123,11 @@ class PaletteSourceMixin:
         has to be changeable, because a file that decoded wrong (the error
         palette) is otherwise stuck with no graphic to be corrected through.
 
-        Re-read rather than re-decoded: a preview is read-only, so its document
-        holds nothing an edit could have put there and nothing is lost by going
-        back to the file.
+        Re-read rather than re-decoded: a preview is read-only, so going back to
+        the file loses nothing - unless the document is one a graphic edited
+        before it was closed, which the preview reuses. Its unsaved colors exist
+        nowhere else, so that re-read is refused until they are written or
+        undone.
 
         One undo step all the same, and for the reason the gesture exists: the
         codec it lands on is written to the entry, and correcting a file that
@@ -1092,6 +1140,13 @@ class PaletteSourceMixin:
             return
         after = self._palette_preset_id()
         if entry.palette_preset_id == after:
+            return
+        if entry.doc is not None and entry.palette_dirty:
+            select_combo_data(self._palette_preset, entry.palette_preset_id)
+            self.statusBar().showMessage(
+                f"{entry.name} has unsaved color edits - write or undo them "
+                "before reading it as another format."
+            )
             return
         self._push_command(
             PreviewPaletteFormatCommand(
@@ -1280,3 +1335,21 @@ class PaletteSourceMixin:
         forking Default → Custom keeps the palette exactly the size it was.
         """
         return Palette.default(FULL_PALETTE_COUNT)
+
+
+def _same_palette_state(before: PaletteState, after: PaletteState) -> bool:
+    """Whether a palette commit would land exactly where it starts.
+
+    ``write_enabled`` is left out of the config comparison: a graphic showing a
+    file palette holds a write-disabled mirror of the config its PALETTE entry
+    owns, and the two describe the same source.
+    """
+    return (
+        before.mode is after.mode
+        and before.preset_id == after.preset_id
+        and before.palette.colors == after.palette.colors
+        and before.base_bytes == after.base_bytes
+        and before.edits == after.edits
+        and replace(before.config, write_enabled=True)
+        == replace(after.config, write_enabled=True)
+    )

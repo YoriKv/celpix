@@ -59,6 +59,12 @@ class RenderingMixin:
     package docstring for why these are mixins.
     """
 
+    # View > Entire File shows the file from its first tile, but that is a way of
+    # looking, not a move: the origin the entry records (and a save writes) stays
+    # where the user left it, held here while the lifted window renders from
+    # ``_offset``. None whenever the two agree - see :meth:`_refresh_view`.
+    _held_offset: int | None = None
+
     def _on_view_change(self, *_args) -> None:
         if self._doc is not None:
             self._refresh_view()
@@ -96,16 +102,28 @@ class RenderingMixin:
         assert entry is not None  # a document implies a current entry
         view = self._doc.view
         before = ViewAxisState(
-            view.columns, view.rows, view.palette_row, self._offset, self._nudge
+            view.columns,
+            view.rows,
+            view.palette_row,
+            self._recorded_offset(),
+            self._nudge,
         )
+        columns = self._floored_columns(self._columns.value())
+        if columns != self._columns.value():
+            # Floored here rather than left to the settle: the step has to hold
+            # the width the map is drawn at, or a Cols typed between two stamps
+            # records a 47 that lands as the 46 already on screen - a step that
+            # changes nothing. The spin shows the floor at once, as it would have.
+            with signals_blocked(self._columns):
+                self._columns.setValue(columns)
         after = ViewAxisState(
-            self._columns.value(),
+            columns,
             self._rows.value(),
             self._palette_row.value(),
             # The position the gesture started from, not a new one: widening the
             # window can put it past the last page, and the refresh the apply
             # runs is what clamps it — the same path the gesture always took.
-            self._offset,
+            self._recorded_offset(),
             self._nudge,
         )
         if before == after:
@@ -129,8 +147,24 @@ class RenderingMixin:
         with signals_blocked(*(spin for spin, _ in spins)):
             for spin, value in spins:
                 spin.setValue(value)
-        self._offset, self._nudge = state.tile_offset, state.byte_nudge
+        self._place_origin(state.tile_offset, state.byte_nudge)
         self._refresh_view()  # re-clamps the position against the restored axes
+
+    def _floored_columns(self, columns: int) -> int:
+        """``columns`` as a dense stamped map would draw it - whole stamps only.
+
+        The same floor :attr:`~celpix.core.document.Document.stamp_columns`
+        applies, in the unit :meth:`_settle_tilemap_width` steps the spin by;
+        every other document draws the number it is given.
+        """
+        doc = self._doc
+        if doc is None or doc.columns_locked:
+            return columns
+        width, entries = doc.drawn_columns, doc.stamp_columns
+        if not width or not entries:
+            return columns
+        unit = width // entries
+        return max(1, columns // unit) * unit
 
     def _apply_view_toggle(self, attr: str, on: bool) -> None:
         """Land one of the entry's view switches (commands only - gestures push).
@@ -153,10 +187,11 @@ class RenderingMixin:
 
         View ▸ Entire File (:meth:`MainWindow._on_entire_file_change`) lifts the
         window to every row the data fills whenever Rows would cut the file
-        short, so the offset clamps to 0 and the whole file is on screen in one
-        piece instead of being paged through. Only ever a *rise*: a file that
-        already fits inside Rows is shown whole as it is, and shrinking the
-        canvas to it would move the picture for no gain.
+        short, so the window draws from the file's start and the whole file is on
+        screen in one piece instead of being paged through. The entry's own
+        origin is held aside meanwhile (:attr:`_held_offset`). Only ever a
+        *rise*: a file that already fits inside Rows is shown whole as it is,
+        and shrinking the canvas to it would move the picture for no gain.
 
         Rows itself stays the user's own number throughout - it is the setting a
         project stores and the one the spin comes back to when the toggle goes
@@ -253,7 +288,7 @@ class RenderingMixin:
         if tile_rearrangement.is_identity():
             # The ordinary case: the window is one contiguous run of slots, so the
             # walk's own addressing gives each one's first pixel directly.
-            origin = view.tile_offset * per_tile
+            origin = self._offset * per_tile  # the render origin, not the record
             offsets = [
                 origin
                 + tile_first_pixel(
@@ -270,7 +305,7 @@ class RenderingMixin:
             # whichever tile the rearrangement sends it, not the one it sits on.
             offsets = [
                 actual * per_tile
-                for actual in tile_rearrangement.actual_run(view.tile_offset, count)
+                for actual in tile_rearrangement.actual_run(self._offset, count)
             ]
         return [
             None if row is None else self._drawn_palette_row(row)
@@ -790,7 +825,7 @@ class RenderingMixin:
         assert self._doc is not None
         view = self._doc.view
         window_tiles = layout.columns * rows
-        tiles = self._decode_run(view.tile_offset, window_tiles) or []
+        tiles = self._decode_run(self._offset, window_tiles) or []
         biases = self._window_biases(layout.columns, rows)
         grid = pipeline.compose_tiles(tiles, layout, rows, biases)
         if biases is not None:
@@ -825,9 +860,16 @@ class RenderingMixin:
         # Re-clamp the offset next: a smaller file, or a bigger window (cols/rows),
         # can push the previous offset past the last page.
         rows = self._view_rows()  # the height on screen; Rows, or the whole file
-        self._offset = self._doc.clamp_tile_offset(
-            self._offset, cols, rows, self._nudge
+        # Two clamps, which agree unless View > Entire File lifted the window: the
+        # origin the entry records is clamped against Rows - the window a save and
+        # an entry switch come back to - and only the *render* starts wherever the
+        # lifted window clamps it (the file's start). Writing that back would move
+        # the saved position for a mere way of looking, and dirty the project.
+        recorded = self._doc.clamp_tile_offset(
+            self._recorded_offset(), cols, self._rows.value(), self._nudge
         )
+        self._offset = self._doc.clamp_tile_offset(recorded, cols, rows, self._nudge)
+        self._held_offset = recorded if recorded != self._offset else None
         self._clamp_palette_row(self._doc.palette)
         self._doc.view = ViewOptions(
             columns=cols,
@@ -837,7 +879,7 @@ class RenderingMixin:
             rows=self._rows.value(),
             zoom=self._zoom.value(),
             palette_row=self._palette_row.value(),
-            tile_offset=self._offset,
+            tile_offset=recorded,
             byte_nudge=self._nudge,
             block_columns=self._block_cols.value(),
             block_rows=self._block_rows.value(),
@@ -894,9 +936,9 @@ class RenderingMixin:
             engine, preset = self._registry.engine_for(
                 self._doc.pixel_config.interpret_preset_id
             )
-            window = self._doc.window_bytes(
-                view.tile_offset, cols * rows, view.byte_nudge
-            )
+            # From the render origin, which Entire File can hold apart from the
+            # one ``view`` records (see the clamps above).
+            window = self._doc.window_bytes(self._offset, cols * rows, view.byte_nudge)
             image, filled = self._render_arrangement(
                 window,
                 engine,

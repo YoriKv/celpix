@@ -189,10 +189,25 @@ class RearrangeMixin:
         also the fast path through the decode/encode choke points, and what a 2D
         pattern always gets (see :meth:`_rearrange_available`) — it is kept, not
         discarded, so leaving 2D brings the rearrangement back.
+
+        Bounded here, on the read, for the same reason: the stored map outlives a
+        codec whose bigger tiles leave fewer of them, and switching back must
+        find all of it (:meth:`_bounded_tile_rearrangement`).
         """
         if not self._rearrange_available() or not self._showing_rearranged():
             return TileRearrangement()
-        return self._rearrange_preview or self._tile_rearrangement
+        return self._rearrange_preview or self._bounded_tile_rearrangement()
+
+    def _bounded_tile_rearrangement(self) -> TileRearrangement:
+        """The stored rearrangement cut to the tiles the document has now.
+
+        What every gesture builds on and compares against, so a gesture reads the
+        map exactly as it is drawn. The stored one stays whole - a step's before
+        state is it, so an undo gives back anything the edit's bounding dropped.
+        """
+        if self._doc is None:
+            return self._tile_rearrangement
+        return self._tile_rearrangement.bounded(self._doc.tile_count)
 
     # -- toolbar -----------------------------------------------------------
     def _build_rearrange_actions(self, bar) -> None:  # noqa: ANN001 — a QToolBar
@@ -428,7 +443,7 @@ class RearrangeMixin:
         if new_map is None:
             return
         new_map = new_map.bounded(self._doc.tile_count)
-        if new_map == self._tile_rearrangement:
+        if new_map == self._bounded_tile_rearrangement():
             return
         label = self._drop_label(drag, moves)
         self._push_command(
@@ -478,11 +493,8 @@ class RearrangeMixin:
         """
         if not moves and not drag.orient:
             return None
-        tile_rearrangement = (
-            self._tile_rearrangement.swap_many(moves)
-            if moves
-            else self._tile_rearrangement
-        )
+        base = self._bounded_tile_rearrangement()
+        tile_rearrangement = base.swap_many(moves) if moves else base
         if drag.orient:
             carried = self._carried_tiles(drag)
             tile_rearrangement = tile_rearrangement.oriented(carried, drag.orient)
@@ -492,7 +504,8 @@ class RearrangeMixin:
         """The **actual** tile indices under the carried cells, for orienting."""
         layout = self._view_layout()
         shown = (self._cell_tile(layout, *pos) for pos in drag.positions)
-        return [self._tile_rearrangement.actual(v) for v in shown if v is not None]
+        base = self._bounded_tile_rearrangement()
+        return [base.actual(v) for v in shown if v is not None]
 
     @staticmethod
     def _orient_verb(orient: int) -> str:
@@ -583,13 +596,14 @@ class RearrangeMixin:
                 sources[dest] = src
         if not sources:
             return
-        turned = [self._tile_rearrangement.actual(v) for v in sources]
+        base = self._bounded_tile_rearrangement()
+        turned = [base.actual(v) for v in sources]
         new_map = (
-            self._tile_rearrangement.rearranged(sources)
+            base.rearranged(sources)
             .oriented(turned, op.tile_orient)
             .bounded(self._doc.tile_count)
         )
-        if new_map == self._tile_rearrangement:
+        if new_map == base:
             return
         self._push_command(
             TileRearrangementCommand(
@@ -619,13 +633,12 @@ class RearrangeMixin:
             self._show_rearrange_drag(self._rearrange_hover)
             return
         entry = self._workspace.current
-        tiles = [self._tile_rearrangement.actual(t) for t in self._selection_tiles()]
+        base = self._bounded_tile_rearrangement()
+        tiles = [base.actual(t) for t in self._selection_tiles()]
         if entry is None or not tiles:
             return
-        new_map = self._tile_rearrangement.oriented(tiles, flags).bounded(
-            self._doc.tile_count
-        )
-        if new_map == self._tile_rearrangement:
+        new_map = base.oriented(tiles, flags).bounded(self._doc.tile_count)
+        if new_map == base:
             return
         label = f"{self._orient_verb(flags)} {self._orient_object(len(tiles))}"
         self._push_command(

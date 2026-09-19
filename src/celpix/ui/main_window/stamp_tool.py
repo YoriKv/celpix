@@ -95,6 +95,9 @@ class StampToolMixin:
         # re-crossing one is free.
         self._stamp_before: list | None = None
         self._stamp_cells: list | None = None
+        # The document the stroke is being previewed in, which is where its
+        # before-cells go back if the stroke is abandoned (_abort_stamp_stroke).
+        self._stamp_doc = None
         self._stamp_touched: set[int] = set()
         # The rectangle a right drag picked — the brush a left press lays down,
         # its top-left cell landing under the cursor. Whole cell records when
@@ -297,6 +300,7 @@ class StampToolMixin:
         assert doc is not None and doc.cells is not None
         self._stamp_before = list(doc.cells)
         self._stamp_cells = list(doc.cells)
+        self._stamp_doc = doc
         self._stamp_touched = set()
         self._stamp_into(slot, held)
 
@@ -304,6 +308,26 @@ class StampToolMixin:
         held = self._held_tile_id()
         if held is not None and self._stamp_cells is not None:
             self._stamp_into(slot, held)
+
+    def _abort_stamp_stroke(self) -> bool:
+        """Take an uncommitted stamp stroke back off its document; True if one was live.
+
+        The stroke is painted into the live cells and recorded only on release,
+        so abandoning it means putting the press's cells back — onto the document
+        they were taken from, which by now need not be the one on screen. Pushes
+        nothing, since nothing was recorded (the caller,
+        :meth:`~...pixel_edit.PixelEditMixin._abort_live_gestures`, says when).
+        """
+        before, doc = self._stamp_before, self._stamp_doc
+        self._stamp_before = self._stamp_cells = None
+        self._stamp_doc = None
+        self._stamp_touched = set()
+        if before is None:
+            return False
+        if doc is not None and doc.cells is not None:
+            doc.cells = before
+            doc.resolve()
+        return True
 
     def _on_stamp_finished(self) -> None:
         """Commit the stroke as one step, or drop it if it changed nothing.
@@ -315,6 +339,7 @@ class StampToolMixin:
         """
         before, cells = self._stamp_before, self._stamp_cells
         self._stamp_before = self._stamp_cells = None
+        self._stamp_doc = None
         self._stamp_touched = set()
         doc = self._doc
         if doc is None or before is None or cells is None:

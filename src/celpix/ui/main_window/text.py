@@ -119,6 +119,7 @@ class TextMixin:
         # every render, and pushing from all of them is the loop that mirror is
         # careful not to be.
         opening = not self._text.isVisible()
+        self._text_entry = entry
         self._text.show_text(
             f"Text - {name}",
             text.body,
@@ -270,6 +271,13 @@ class TextMixin:
         """
         doc = self._doc
         if doc is None or not doc.is_fontmap or doc.font_alphabet is None:
+            return
+        if self._text_entry is not self._workspace.current:
+            # A draft landing after the view moved on — the window being put
+            # away over the next entry, say. The string was typed against the
+            # entry the window was filled for, so writing it here would put one
+            # map's text into another's cells; the switch commits the draft
+            # while it is still current, and this is the backstop behind it.
             return
         if fresh:
             self._text_run += 1

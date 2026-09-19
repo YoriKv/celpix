@@ -1204,7 +1204,26 @@ class Workspace:
         self.entries[:] = rest
         return True
 
-    def close(self, entry: Entry) -> list[Entry]:
+    def restore_order(self, order: list[Entry]) -> bool:
+        """Lay the whole list out in ``order`` — the same entries, rearranged.
+
+        The exact inverse of a :meth:`reorder`, which the neighbour it names
+        cannot always be: ``None`` sends a file to the end of the *flat* list,
+        while it came from the end of its own section with another section's
+        files possibly after it. The display reads the same either way, but the
+        saved order does not. False — and nothing touched — when ``order`` is
+        not a rearrangement of exactly the entries here, or already is the list.
+        """
+        if len(order) != len(self.entries) or {id(e) for e in order} != {
+            id(e) for e in self.entries
+        }:
+            return False
+        if order == self.entries:  # Entry is eq=False, so this compares identity
+            return False
+        self.entries[:] = order
+        return True
+
+    def close(self, entry: Entry, *, with_children: bool = True) -> list[Entry]:
         """Remove ``entry`` — and, for a file, the slices/bookmarks under it.
 
         A slice or bookmark nested under a closed parent would be an orphan in
@@ -1212,8 +1231,13 @@ class Workspace:
         first). Returns everything removed. If the current entry was among
         them, ``current`` moves to a list neighbour — skipping bookmarks,
         which cannot be current — or None when no candidate remains.
+
+        ``with_children=False`` removes ``entry`` alone. That is the undo of an
+        *add*: children are matched by path, so a file opened under a slice or
+        bookmark already in the list adopts it, and taking the adoptee out with
+        the file would lose a row the add never put there.
         """
-        removed = [entry, *self.children_of(entry)]
+        removed = [entry, *(self.children_of(entry) if with_children else ())]
         anchor = min(self.entries.index(e) for e in removed)
         for e in removed:
             self.entries.remove(e)

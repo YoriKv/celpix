@@ -28,13 +28,14 @@ from PySide6.QtWidgets import (
     QFileDialog,
 )
 
-from celpix.core.capabilities import Capability
+from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.errors import PipelineError
 from celpix.pipeline import importer
 from celpix.project import projectfile
 from celpix.project.workspace import (
     Entry,
     EntryKind,
+    Workspace,
     entry_export_name,
     export_basename,
     exportable_entries,
@@ -176,17 +177,58 @@ class TransferMixin:
         # Ctrl is also the platform's own drag-copy modifier, so it is already
         # held down for reasons of its own on some drags. That costs a prompt
         # that can be cancelled, which is the cheap direction to be wrong in.
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            for path in paths:
-                self._open_as_chosen(path)
-            return
-        for path in paths:  # every file becomes an entry; the last one is shown
-            # A palette suffix is palette data, not pixels - it lands in the
-            # Palettes section (hold Ctrl, or use the dialog, to say otherwise).
-            if path.lower().endswith(PALETTE_EXTENSIONS):
-                self._open_palette_data(path)
+        #
+        # Every question is asked before anything opens, so the opens that follow
+        # can run as one undo step without a prompt sitting in the middle of it.
+        ask = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        opens: list[tuple[str, ContentKind | None]] = []
+        for path in paths:
+            if ask:
+                kind = self._ask_content_kind(path)
+                if kind is None:
+                    continue  # cancelled: this one stays out, the rest still open
+            elif path.lower().endswith(PALETTE_EXTENSIONS):
+                # A palette suffix is palette data, not pixels - it lands in the
+                # Palettes section (hold Ctrl, or use the dialog, to say otherwise).
+                kind = ContentKind.PALETTE
             else:
-                self._load_pixel(path)
+                kind = None  # the container's own answer
+            opens.append((path, kind))
+        self._open_dropped(opens)
+
+    def _open_dropped(self, opens: list[tuple[str, ContentKind | None]]) -> None:
+        """Open each dropped file as ``kind`` — every one becomes an entry, and
+        the last is shown.
+
+        One drop is one gesture, so the files it adds undo together. The macro
+        is opened only when more than one row will really be added: an empty one
+        still lands on the stack as a step that does nothing, and a macro round a
+        single add is only a second name for it. Every *new* path pushes exactly
+        one add (an open path is just shown), which is what makes counting them
+        up front an honest answer.
+        """
+        new = {
+            Workspace.path_key(path)
+            for path, kind in opens
+            if (
+                self._workspace.find_palette(path)
+                if kind is ContentKind.PALETTE
+                else self._workspace.find_file(path)
+            )
+            is None
+        }
+        macro = len(new) > 1
+        if macro:
+            self._undo_stack.beginMacro(f"open {len(new)} files")
+        try:
+            for path, kind in opens:
+                if kind is ContentKind.PALETTE:
+                    self._open_palette_data(path)
+                else:
+                    self._load_pixel(path, content_kind=kind)
+        finally:
+            if macro:
+                self._undo_stack.endMacro()
 
     # -- export --------------------------------------------------------------
     _PNG_FILTER = "PNG image (*.png)"
@@ -393,8 +435,24 @@ class TransferMixin:
         path = self._choose_import_png()
         if path is None:
             return
-        self._set_offset(0)  # the destination has to be on screen to land on it
-        self._import_png_at(self._offset, path)
+        # Read and checked before the view moves: the move is an undo step of its
+        # own, and an import refused after it would leave that step behind with
+        # nothing to show for it.
+        incoming = self._read_import_png(path)
+        if incoming is None:
+            return
+        # The destination has to be on screen to land on it, and the move there
+        # and the import are one gesture - one Ctrl+Z. Only a real move takes the
+        # macro, since an empty one would still land on the stack as a step.
+        moving = self._offset != 0
+        if moving:
+            self._undo_stack.beginMacro("import image")
+        try:
+            self._set_offset(0)
+            self._land_import_png(self._offset, path, incoming)
+        finally:
+            if moving:
+                self._undo_stack.endMacro()
 
     def _import_png_here(self) -> None:
         """Canvas ▸ Import from PNG…: an image over the selection's anchor."""
@@ -467,19 +525,38 @@ class TransferMixin:
         remainder of an edge tile whose size isn't a whole number of tiles -
         keep whatever the file already holds.
         """
+        incoming = self._read_import_png(path)
+        if incoming is not None:
+            self._land_import_png(anchor, path, incoming)
+
+    def _read_import_png(self, path: str) -> importer.ImportedTiles | None:
+        """The image at ``path`` fitted to this view, or None — with the reason
+        already given — when it cannot be imported here at all.
+
+        Every refusal an import can meet before it writes, apart from the one
+        only the landing can know (no room at the anchor), so a caller that has
+        its own step to take first can ask before taking it.
+        """
         assert self._doc is not None
         if self._refuse_import():
-            return
+            return None
         image = QImage(path)
         if image.isNull():
             self._alert(f"Could not read {path} as an image.", title="celPix - import")
-            return
+            return None
         incoming = importer.import_argb(
             clipboard.image_to_argb(image), self._import_target()
         )
         if not incoming.tiles:
             self.statusBar().showMessage(f"{Path(path).name} has no pixels to import.")
-            return
+            return None
+        return incoming
+
+    def _land_import_png(
+        self, anchor: int, path: str, incoming: importer.ImportedTiles
+    ) -> None:
+        """Stamp an image :meth:`_read_import_png` accepted from ``anchor``, and
+        report what landed."""
         written = self._paste_pixel_rect(anchor, incoming, "import image")
         if not written:
             self.statusBar().showMessage("Nothing imported - no room at this offset.")

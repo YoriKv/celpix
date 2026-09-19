@@ -113,6 +113,7 @@ from itertools import count
 from PySide6.QtCore import QEvent, QItemSelectionModel, QPoint, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QImage, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import (
+    QAbstractItemDelegate,
     QAbstractItemView,
     QApplication,
     QCheckBox,
@@ -280,6 +281,8 @@ class FontAlphabetWindow(QWidget):
         self.setWindowTitle("Font Alphabet")
         self._positioned = False
         self._syncing = False
+        # Set while :meth:`commit_edit` is landing an open cell editor.
+        self._committing = False
         # The working copy: what the file says, as three values. Held rather than
         # re-read because every edit is expressed as a change to one of them and
         # the window is what knows which row was touched.
@@ -657,11 +660,47 @@ class FontAlphabetWindow(QWidget):
         """Hide — the entry on screen has no font alphabet, or was closed.
 
         Disarms the pan for the same reason :meth:`closeEvent` does: the space
-        release lands wherever the window went.
+        release lands wherever the window went. A cell still open for typing is
+        settled first, for the reason :meth:`commit_edit` gives.
         """
         self._sheet.set_pan_mode(False)
         if self.isVisible():
+            self.commit_edit()
             self.hide()
+
+    def commit_edit(self) -> None:
+        """Settle a table cell still open for typing, as the edit it is.
+
+        An open editor writes its value back when it closes, and by then the
+        table may have been refilled for another font — so the value would land
+        on that font's row of the same number, or on no font at all. The host
+        calls this before the table under the editor changes (an entry switch),
+        and :meth:`hide_overlay` calls it before putting the window away.
+
+        The editor is found through the window's own focus rather than asked of
+        the view, which has no public handle on it: an open cell editor holds
+        this window's focus, and a table not in its editing state has none.
+        """
+        if self._committing or (
+            self._table.state() != QAbstractItemView.State.EditingState
+        ):
+            return
+        viewport = self._table.viewport()
+        editor = self.focusWidget()
+        # Up to the editor itself: an editable combo keeps its focus on the line
+        # edit inside it, and the view knows only the outer widget.
+        while editor is not None and editor.parentWidget() is not viewport:
+            editor = editor.parentWidget()
+        if editor is None:
+            return
+        # Guarded because the commit is an edit, and the host's answer to an
+        # edit can refill this table — which would ask the same editor again.
+        self._committing = True
+        try:
+            self._table.commitData(editor)
+            self._table.closeEditor(editor, QAbstractItemDelegate.EndEditHint.NoHint)
+        finally:
+            self._committing = False
 
     def set_status(self, status: str, badge: Badge | None = None) -> None:
         self._status.showMessage(status)

@@ -320,15 +320,17 @@ class ViewMenuMixin:
     def _on_entire_file_change(self) -> None:
         """Persist the toggle, lock/release Rows, and re-render at the new height.
 
-        Leaving the mode takes the window back down to Rows, which would strand
-        it at the file's start - so it re-anchors on whatever tile the user
-        picked out of the full view (:meth:`_snap_offset_to_selection`).
+        The toggle is a way of looking, so it moves no position a save records:
+        the lifted window draws from the file's start while the entry keeps its
+        own origin (``RenderingMixin._held_offset``), and leaving the mode lands
+        back on it. What the user picked out of the full view is followed
+        afterwards, as an ordinary move (:meth:`_snap_offset_to_selection`).
         """
         save_bool_setting(ENTIRE_FILE_KEY, self._entire_file.isChecked())
         self._sync_entire_file()
+        self._on_view_change()
         if not self._entire_file.isChecked():
             self._snap_offset_to_selection()
-        self._on_view_change()
 
     def _build_pixel_aspect_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Pixel Aspect… — what shape one pixel is drawn at.
@@ -481,17 +483,21 @@ class ViewMenuMixin:
         """Re-paint the window's own painted icons against the live palette.
 
         Everything whose art is a pixmap this window baked: the codec filter's
-        funnel, the tilemap bar's jump, the navigation bar's step arrows, and the
-        transform bar's five groups of flip/rotate buttons. Called on a theme
-        switch rather than from a ``changeEvent`` like the panels that own their
-        own icons - Qt sends a burst of PaletteChange during construction, before
-        these widgets exist, and a window-level handler would have to guard
-        against its own half-built state.
+        funnel, the tilemap bar's jump, the navigation bar's and the palette
+        dock's step arrows, and the transform bar's five groups of flip/rotate
+        buttons. Each reads the **application** palette: the window's own is still
+        the outgoing theme's when a switch calls this (:func:`glyph_icon`).
+
+        Called on a theme switch rather than from a ``changeEvent`` like the
+        panels that own their own icons - Qt sends a burst of PaletteChange
+        during construction, before these widgets exist, and a window-level
+        handler would have to guard against its own half-built state.
         """
         self._bake_pixel_filter_icon()
         self._bake_inputs_badges()
         self._bake_binding_jump_icon()
         self._bake_step_arrow_icons()
+        self._bake_palette_offset_arrows()
         self._bake_transform_icons()
 
     def _build_grid_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu

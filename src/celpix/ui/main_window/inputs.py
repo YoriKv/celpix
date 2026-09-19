@@ -33,8 +33,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QMessageBox, QToolButton
+from PySide6.QtWidgets import QApplication, QMessageBox, QToolButton
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import NO_COMPRESSION
@@ -113,10 +112,9 @@ class InputsMixin:
             badge.setIcon(
                 glyph_icon(
                     Glyph.EXCLAMATION if problem else Glyph.INPUTS,
-                    WARNING_INK
-                    if problem
-                    else self.palette().color(QPalette.ColorRole.ButtonText),
+                    QApplication.palette(),
                     ratio=self.devicePixelRatioF(),
+                    color=WARNING_INK if problem else None,
                 )
             )
 

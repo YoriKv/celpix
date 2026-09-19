@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.1 - unreleased
+
+- Undo fixes
+- Button colors fixes
+- Other small bug fixes
+
 ## v1.0.0 - 2026-09-18
 
 - 1.0 release

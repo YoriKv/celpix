@@ -109,6 +109,48 @@ def test_pixel_preset_switch_round_trip(qtbot, tmp_path) -> None:
     assert window._doc.pixel_config.interpret_preset_id == "preset.pixel.snes-2bpp"
 
 
+def test_a_pixel_switch_carries_the_palette_row_it_re_anchored(qtbot, tmp_path) -> None:
+    # The row is re-anchored once, at push time, and both halves carry it: worked
+    # out again on undo it would measure from the live row (and a narrower count
+    # floors), so the row the switch started from would not come back.
+    window, _ = _open(qtbot, tmp_path)
+    stack = window._undo_stack
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.snes-2bpp")
+    )
+    window._palette_row.setValue(13)  # 2bpp: colors 52-55, inside 4bpp row 3
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.snes-4bpp")
+    )
+    assert window._palette_row.value() == 3
+
+    stack.undo()  # re-derived, 3 x 16 colors would floor back to row 12
+    assert window._palette_row.value() == window._doc.view.palette_row == 13
+    stack.redo()
+    assert window._palette_row.value() == 3
+
+
+def test_a_rearrangement_survives_a_switch_through_fewer_tiles(qtbot, tmp_path) -> None:
+    # Stored whole and bounded only on the read: an entry switch while a codec
+    # with bigger tiles has fewer of them must not drop the pairs past its end.
+    window, path = _open(qtbot, tmp_path)
+    file_entry = window._workspace.current
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.snes-2bpp")
+    )
+    many = window._doc.tile_count
+    stored = window._tile_rearrangement.swap_many([(0, many - 1)])
+    window._set_tile_rearrangement(stored)
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.snes-4bpp")
+    )
+    assert window._doc.tile_count < many
+    _add_slice(window, path)  # activates the slice
+    window._activate_entry(file_entry)
+    assert window._tile_rearrangement == stored
+    assert window._doc.view.tile_rearrangement == stored
+
+
 def test_palette_at_offset_round_trip_and_failed_load(qtbot, tmp_path) -> None:
     window, _ = _open(qtbot, tmp_path)
     stack = window._undo_stack

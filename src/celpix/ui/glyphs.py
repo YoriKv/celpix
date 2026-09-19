@@ -71,6 +71,9 @@ class Glyph(Enum):
     # thing beside it rather than as a link or an arrow into a box, which are
     # the other metaphors on offer and both say something about direction.
     INPUTS = "\ue429"  # tune
+    # The » at the end of a toolbar row too narrow for its controls. Drawn by Qt
+    # otherwise, in a fixed dark ink the dark theme hides; this is the same mark.
+    OVERFLOW = "\ueac9"  # keyboard_double_arrow_right
 
     # The transform bar's flip/rotate buttons, one pair per axis. The flips are
     # double-headed arrows rather than a mirror-and-dashed-line "flip" icon,

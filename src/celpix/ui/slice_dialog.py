@@ -40,7 +40,6 @@ from collections.abc import Callable
 from os.path import basename, getsize
 
 from PySide6.QtCore import QEvent
-from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -196,11 +195,7 @@ class SliceDialog(QDialog):
         self._inputs_badge = QToolButton()
         self._inputs_badge.setAutoRaise(True)
         self._inputs_badge.setIcon(
-            glyph_icon(
-                Glyph.INPUTS,
-                self.palette().color(QPalette.ColorRole.ButtonText),
-                ratio=self.devicePixelRatioF(),
-            )
+            glyph_icon(Glyph.INPUTS, self.palette(), ratio=self.devicePixelRatioF())
         )
         self._inputs_badge.setFixedHeight(self._decompress.sizeHint().height())
         self._inputs_badge.setToolTip(

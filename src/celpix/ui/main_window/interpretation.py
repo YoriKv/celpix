@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
@@ -68,6 +68,7 @@ from celpix.ui.widgets import (
     PRESET_COMBO_WIDTH,
     ChecklistPopupButton,
     CompactComboBox,
+    ToolBarOverflow,
     ZoomSpinBox,
     add_labelled,
     load_float_setting,
@@ -266,6 +267,7 @@ class InterpretationMixin:
         for index, bar in enumerate((codecs, arrange, view)):
             bar.setMovable(False)
             bar.layout().setSpacing(10)
+            ToolBarOverflow(bar)  # the » that shows what a narrow window cuts off
             self._canvas_column.insertWidget(index, bar)
 
         # Which pixel presets the dropdown lists lives on the workspace, so the
@@ -728,7 +730,9 @@ class InterpretationMixin:
             bitmap_width=self._bitmap_width.value(),
             columns=self._columns.value(),
             columns_before_bitmap=self._columns_before_bitmap,
-            byte_position=self._byte_position() if self._doc is not None else 0,
+            byte_position=(
+                self._recorded_byte_position() if self._doc is not None else 0
+            ),
             pattern=self._pattern.currentData(),
         )
 
@@ -755,7 +759,7 @@ class InterpretationMixin:
             bitmap_width=view.bitmap_width,
             columns=view.columns,
             columns_before_bitmap=self._columns_before_bitmap,
-            byte_position=self._byte_position(),
+            byte_position=self._recorded_byte_position(),
             pattern=self._pattern_choice,
         )
 
@@ -895,9 +899,7 @@ class InterpretationMixin:
         """
         self._pixel_filter.setIcon(
             glyph_icon(
-                Glyph.FUNNEL,
-                self.palette().color(QPalette.ColorRole.ButtonText),
-                ratio=self.devicePixelRatioF(),
+                Glyph.FUNNEL, QApplication.palette(), ratio=self.devicePixelRatioF()
             )
         )
 
@@ -939,15 +941,27 @@ class InterpretationMixin:
         if after == before:
             return desired
         switching = current not in desired
+        switch = None
         if switching:
+            target = next(
+                (p.id for p in self._all_pixel_presets() if p.id in desired), None
+            )
+            if target is None:
+                return all_ids - before  # unchanged
+            # Validated before the macro opens: a macro cannot be abandoned once
+            # begun, so a doomed switch inside one would still leave an empty
+            # step on the stack (and cut off the redo history on its way).
+            # With no document there is nothing to read, so the moved selection
+            # is the whole switch.
+            self._fill_pixel_combo(target)
+            if self._doc is not None:
+                switch = self._prepare_pixel_switch()
+                if switch is None:
+                    return all_ids - before  # unchanged
             self._undo_stack.beginMacro("filter pixel formats")
         try:
-            if switching:
-                target = next(
-                    (p.id for p in self._all_pixel_presets() if p.id in desired), None
-                )
-                if target is None or not self._try_switch_pixel(target):
-                    return all_ids - before  # unchanged
+            if switch is not None:
+                self._push_pixel_switch(switch)
             self._push_command(
                 PixelFilterCommand(self, "filter pixel formats", before, after)
             )
@@ -968,15 +982,6 @@ class InterpretationMixin:
         self._fill_pixel_combo(self._pixel_preset_id())
         # The filter is project state, so changing it can dirty the project.
         self._refresh_project_modified()
-
-    def _try_switch_pixel(self, target: str) -> bool:
-        """Move the dropdown to ``target`` and reinterpret through it, as an
-        ordinary undoable switch. With no document open there is nothing to read,
-        so it just moves the default selection and reports success."""
-        self._fill_pixel_combo(target)
-        if self._doc is None:
-            return True
-        return self._on_pixel_preset_change()
 
     # -- current selections ------------------------------------------------
     def _pixel_preset_id(self) -> str:
@@ -1080,7 +1085,9 @@ class InterpretationMixin:
             entry.session.palette_view_preset_id = preset_id
         if self._doc is None or not self._palette_view_active():
             return
-        self._apply_pixel_config(self._pixel_preset_id(), self._byte_position())
+        self._apply_pixel_config(
+            self._pixel_preset_id(), self._recorded_byte_position()
+        )
 
     def _palette_import_preset_id(self) -> str:
         """The format a palette *file* is read with (the dock's Import as…).
@@ -1336,19 +1343,32 @@ class InterpretationMixin:
         land. The first switch has none yet, so it seeds it from the live view.
 
         Returns whether the switch went through — False on an early bail (no
-        document) or a load failure (already reported, combo reverted), which
-        the filter uses to leave its own state untouched when a switch it drove
-        can't take.
+        document) or a load failure (already reported, combo reverted).
+        """
+        switch = self._prepare_pixel_switch()
+        if switch is None:
+            return False
+        self._push_pixel_switch(switch)
+        return True
+
+    def _prepare_pixel_switch(self) -> PixelConfigCommand | None:
+        """Validate the combo's format against the open bytes and build the
+        command that lands it, without pushing it; None when it cannot take
+        (already reported, combo reverted).
+
+        Split from the push so a caller that wraps the switch in a macro - the
+        filter popup - can find out it is doomed *before* opening one: a macro
+        cannot be abandoned once begun, and an empty one is still a step.
         """
         entry = self._workspace.current
         if self._doc is None or entry is None or self._applying_undo:
-            return False
+            return None
         if self._pixel_switch_target is None:
-            self._pixel_switch_target = self._byte_position()
+            self._pixel_switch_target = self._recorded_byte_position()
         # The doc still holds the outgoing interpretation here (only the combo
         # has moved), so the undo state reads straight off it.
         old_preset = self._doc.pixel_config.interpret_preset_id
-        before = (old_preset, self._byte_position())
+        before = (old_preset, self._recorded_byte_position(), self._palette_row.value())
         preset_id = self._pixel_preset_id()
         # Rebuild from the entry, not the old config: a slice keeps its bounds
         # and codec ids, and a file re-derives its container.
@@ -1359,21 +1379,46 @@ class InterpretationMixin:
             self._report(exc)
             # The doc never switched - snap the combo back onto its preset.
             select_combo_data(self._pixel_preset, old_preset)
-            return False
-        self._push_command(
-            PixelConfigCommand(
-                self,
-                entry,
-                f"switch pixel format to {self._pixel_preset.currentText()}",
-                before=before,
-                after=(preset_id, self._pixel_switch_target),
-                preloaded=px,
-            )
+            return None
+        # The re-anchored row is settled once, here, and carried: re-deriving it
+        # on every apply would measure from whatever row and swatch selection
+        # are live by then, so an undo would land a row nobody was on.
+        row = self._reanchored_palette_row(old_preset, preset_id)
+        return PixelConfigCommand(
+            self,
+            entry,
+            f"switch pixel format to {self._pixel_preset.currentText()}",
+            before=before,
+            after=(preset_id, self._pixel_switch_target, row),
+            preloaded=px,
         )
+
+    def _push_pixel_switch(self, switch: PixelConfigCommand) -> None:
+        """Push a switch :meth:`_prepare_pixel_switch` validated."""
+        self._push_command(switch)
         note = self._partial_tile_note()
         if note:
             self.statusBar().showMessage(f"Preset changed - {note}")
-        return True
+
+    def _reanchored_palette_row(self, old_preset: str, new_preset: str) -> int:
+        """The Palette Row that keeps pointing at the same colors across a
+        switch from ``old_preset`` to ``new_preset``.
+
+        The same row index means a different palette base under a new color
+        count, so the row is recomputed from the selected color (or the old
+        base). Under an unchanged count the row already means the same colors,
+        and is kept - re-anchoring there would only snap it onto a selected
+        swatch in some other row.
+        """
+        old_group = self._index_space(old_preset)
+        new_group = self._index_space(new_preset)
+        row = self._palette_row.value()
+        if old_group == new_group:
+            return row
+        anchor = self._palette_panel.selected_index()
+        if anchor is None:
+            anchor = row * old_group
+        return anchor // new_group
 
     def _pixel_data_for(
         self, cfg: PathwayConfig, *, reload: bool = False
@@ -1405,6 +1450,7 @@ class InterpretationMixin:
         preloaded: pipeline.PixelData | None = None,
         *,
         reload: bool = False,
+        palette_row: int | None = None,
     ) -> bool:
         """Re-interpret the current entry's bytes and land on ``byte_position``.
 
@@ -1417,16 +1463,20 @@ class InterpretationMixin:
 
         The view offset is a tile index, so it maps to a different *byte*
         position under a new bytes-per-tile - ``byte_position`` re-lands the
-        view exactly, with the sub-tile remainder becoming the byte nudge. The
-        palette row is likewise re-anchored: the same row index means a
-        different palette base under the new color count, so it is recomputed
-        from the selected color (or the old base) to keep pointing at the
-        same palette entries.
+        view exactly, with the sub-tile remainder becoming the byte nudge.
+
+        ``palette_row`` lands that row as given - what a command passes, having
+        settled it once at push time. Without one the row is re-anchored here
+        (:meth:`_reanchored_palette_row`), which only a direct re-application
+        such as a plugin refresh wants: it has no earlier state to be true to.
         """
         entry = self._workspace.current
         if self._doc is None or entry is None:
             return False
-        old_group = self._index_space(self._doc.pixel_config.interpret_preset_id)
+        if palette_row is None:
+            palette_row = self._reanchored_palette_row(
+                self._doc.pixel_config.interpret_preset_id, preset_id
+            )
         cfg = self._pixel_config(entry, preset_id)
         if preloaded is not None:
             px = preloaded
@@ -1441,16 +1491,28 @@ class InterpretationMixin:
         self._fill_pixel_combo(preset_id)
         self._adopt_pixel_data(px, cfg)
         # _refresh_view clamps the offset; the nudge stays < the new tile size.
-        self._offset, self._nudge = divmod(byte_position, px.bytes_per_tile)
-        anchor = self._palette_panel.selected_index()
-        if anchor is None:
-            anchor = self._palette_row.value() * old_group
+        self._place_origin(*divmod(byte_position, px.bytes_per_tile))
         # Signals blocked: _refresh_view below re-renders (and re-clamps) once.
         with signals_blocked(self._palette_row):
-            self._palette_row.setValue(anchor // self._index_space())
+            self._palette_row.setValue(palette_row)
         self._clear_selection()  # the same tile index covers different bytes now
         self._refresh_view()
+        self._retile_bound_maps(entry, preset_id)
         return True
+
+    def _retile_bound_maps(self, entry: Entry, preset_id: str) -> None:
+        """Re-read the maps drawing from ``entry`` now its format is ``preset_id``.
+
+        A map holds a decoded *copy* of its bank, read under the format the
+        bank's session names (:meth:`~...session.SessionMixin._tile_source_config`)
+        - and a session is otherwise only written on the way out of an entry. So
+        the format goes onto it here first, then every open map bound to it is
+        read again: without both, a switch (or its undo) left those maps drawing
+        the old format until something else happened to drop them.
+        """
+        if entry.session is not None:
+            entry.session.pixel_preset_id = preset_id
+        self._reresolve_bound_art(self._maps_drawing_from([entry]))
 
     def _end_pixel_switch_run(self) -> None:
         """Drop the scratch target when the pixel dropdown loses focus.
@@ -1507,7 +1569,7 @@ class InterpretationMixin:
             # edit and must not pollute the undo history.
             self._apply_pixel_config(
                 self._pixel_preset_id(),
-                self._byte_position(),
+                self._recorded_byte_position(),
                 reload=entry is None or not entry.pixel_dirty,
             )
             # Only a palette with an external source can be re-decoded; a

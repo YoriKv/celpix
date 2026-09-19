@@ -1,11 +1,15 @@
 """Standalone widget behaviour: the committing line edit's commit-on-finish /
 emit-if-valid / self-normalise contract, the checklist popup's clamp spring-back,
 the geometry of the tool-rail glyphs, and the pan/zoom surface's claimed
-backing."""
+backing, and the toolbar » lending its cut-off controls to a popup."""
 
 from __future__ import annotations
 
-from celpix.ui.widgets import ChecklistPopupButton, CommittingLineEdit
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QApplication, QSpinBox, QToolBar, QToolButton
+
+from celpix.ui.widgets import ChecklistPopupButton, CommittingLineEdit, ToolBarOverflow
 
 
 def _int_or_none(text: str) -> int | None:
@@ -402,3 +406,33 @@ def test_pixel_aspect_popup_offers_the_presets_and_keeps_an_unlisted_ratio(
     # And picking a row is what changes the answer.
     unlisted._group.buttons()[1].setChecked(True)
     assert unlisted.chosen() == PRESETS[1][0]
+
+
+def test_toolbar_overflow_lends_the_cut_off_controls_to_a_popup(qtbot) -> None:
+    bar = QToolBar()
+    qtbot.addWidget(bar)
+    spins = [QSpinBox() for _ in range(10)]
+    actions = [bar.addWidget(spin) for spin in spins]
+    actions[-2].setVisible(False)  # hidden by the app, not by the overflow
+    ToolBarOverflow(bar)
+    bar.resize(150, 30)
+    bar.show()
+    qtbot.waitExposed(bar)
+    button = bar.findChild(QToolButton, "qt_toolbar_ext_button")
+    assert button.isVisible() and button.isEnabled()
+
+    press = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(2, 2),
+        button.mapToGlobal(QPointF(2, 2)),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    QApplication.sendEvent(button, press)
+    assert spins[-1].isVisible()  # reachable in the popup
+    assert not spins[-2].isVisible()  # still the app's to show
+
+    QApplication.activePopupWidget().close()
+    assert bar.actions() == actions  # back, in order
+    assert spins[-1].parent() is bar

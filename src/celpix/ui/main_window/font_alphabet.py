@@ -127,9 +127,14 @@ class FontAlphabetMixin:
         can change the picture, and that route passes ``sheet=True``.
         """
         font = self._font_entry()
+        if font is not self._font_alphabet_font:
+            # A cell still open belongs to the table about to be refilled, so it
+            # lands on the font it was typed against before that table goes.
+            self._font_alphabet.commit_edit()
         if font is None or self._doc is None:
             self._font_alphabet.hide_overlay()
             return
+        self._font_alphabet_font = font
         if sheet:
             drawn = self._font_sheet()
             if drawn is None:
@@ -337,9 +342,16 @@ class FontAlphabetMixin:
         codes: tuple,
         label: str,
     ) -> None:
-        """One edit from the window, as an undo step on the bound font."""
-        font = self._font_entry()
-        if font is None or self._applying_undo:
+        """One edit from the window, as an undo step on the font it shows.
+
+        The font the table was **filled from**, not the one the current entry
+        names: an editor left open settles when it closes, which can be after
+        the view has moved to an entry bound to another font or to none
+        (:meth:`~celpix.ui.font_alphabet_window.FontAlphabetWindow.commit_edit`).
+        The values are that table's, so they are that font's.
+        """
+        font = self._font_alphabet_font
+        if font is None or self._applying_undo or not font.is_font_sheet:
             return
         before = self._font_state(font)
         after: FontAlphabetState = (

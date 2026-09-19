@@ -610,6 +610,19 @@ class Document:
         return self.cells is not None
 
     @property
+    def data_config(self) -> PathwayConfig:
+        """The pathway that reads — and writes back — this entry's *own* data.
+
+        The pixel pathway, except on a tilemap: a map's own data is its cells,
+        while its pixel pathway is the tile bank it is bound to, borrowed
+        read-only from another entry. Asking that one whether the map can be
+        written, or whether it writes through a parent, answers for the bank.
+        """
+        if self.is_tilemap and self.tilemap_config is not None:
+            return self.tilemap_config
+        return self.pixel_config
+
+    @property
     def is_indirect(self) -> bool:
         """Whether these cells name another map's cells rather than tiles.
 

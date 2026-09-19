@@ -891,6 +891,16 @@ def save(
     would scatter them. Routing it is the host's job (it is the one that knows
     the parent) — see :func:`encoded_pixel_bytes`.
     """
+    own = doc.data_config
+    if pixel and own.write_enabled and own.writes_through_parent:
+        raise PipelineError(
+            Stage.CONTAINER,
+            Pathway.TILEMAP if doc.is_tilemap else Pathway.PIXEL,
+            "this region is inside one its parent reorders, so its bytes "
+            "have no file position of their own; it must be written through "
+            "the parent",
+            "write",
+        )
     if pixel and doc.is_tilemap:
         # ``pixel`` means "the entry's own data", and a tilemap entry's own data
         # is its cells. Its pixel pathway points at whatever tile source it is
@@ -898,15 +908,6 @@ def save(
         # a side effect of saving the map (``docs/design/tilemap-entry.md`` §3).
         _save_tilemap(doc, reg)
     elif pixel and doc.pixel_config.write_enabled:
-        if doc.pixel_config.writes_through_parent:
-            raise PipelineError(
-                Stage.CONTAINER,
-                Pathway.PIXEL,
-                "this region is inside one its parent reorders, so its bytes "
-                "have no file position of their own; it must be written through "
-                "the parent",
-                "write",
-            )
         _save_pixel(doc, reg)
     if palette and doc.palette_config.write_enabled:
         _save_palette(doc, reg)
@@ -1470,16 +1471,49 @@ def _save_tilemap(doc: Document, reg: Registry) -> None:
     cfg = doc.tilemap_config
     if cfg is None or not cfg.write_enabled:
         return
+    data = _encode_tilemap(doc, reg)
+    _compress_unshape_write(cfg, data, doc.tilemap_ctx, reg, Pathway.TILEMAP)
+
+
+def _encode_tilemap(doc: Document, reg: Registry) -> bytes:
+    """``doc``'s settled cells through its own cell codec — the payload a save
+    writes, before compression and the container."""
+    cfg = doc.tilemap_config
+    assert cfg is not None
     engine, preset = reg.engine_for(cfg.interpret_preset_id, TilemapCodecPlugin)
     cells = doc.settled_cells
-    data = _run(
+    return _run(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
         lambda: engine.encode(cells, preset.params, doc.tilemap_ctx),
         "encode",
         plugin=preset.id,
     )
-    _compress_unshape_write(cfg, data, doc.tilemap_ctx, reg, Pathway.TILEMAP)
+
+
+def encoded_tilemap_bytes(doc: Document, reg: Registry) -> bytes:
+    """A tilemap's cells as a save would lay them down: encoded and compressed.
+
+    :func:`encoded_pixel_bytes` for the other pathway, and needed for the same
+    reason: a map carved as a **slice** is a window of its parent's buffer, and
+    its cells are its edit — where ``pixel_data`` on a tilemap document is the
+    art it borrows from another entry entirely, which the parent's region at
+    this offset has nothing to do with (``docs/design/slices-and-parents.md``).
+
+    A map that cannot be written — no cell pathway, or one read view-only —
+    raises rather than handing back bytes a fold would splice in regardless.
+    """
+    cfg = doc.tilemap_config
+    if cfg is None or not cfg.write_enabled:
+        raise PipelineError(
+            Stage.INTERPRET_TILEMAP,
+            Pathway.TILEMAP,
+            "this map is view-only, so it has no bytes to write back",
+            "encode",
+        )
+    return _compress_unshape(
+        cfg, _encode_tilemap(doc, reg), doc.tilemap_ctx, reg, Pathway.TILEMAP
+    )
 
 
 def encoded_pixel_bytes(doc: Document, reg: Registry) -> bytes:
