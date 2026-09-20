@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.3 - unreleased
+## v1.0.3 - 2026-09-20
 
 - Compress & Reshape plugin type, allows combining a compression & reshape plugin
 - File ▸ New Compress & Reshape Plugin… creates a custom compression & reshape plugin
