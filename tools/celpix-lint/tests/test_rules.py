@@ -846,3 +846,18 @@ def test_an_input_inside_the_declared_range_is_quiet(tmp_path, ids):
 def test_an_input_the_plugin_never_declared_is_a_warning(tmp_path, ids):
     report = lint(str(_project_with_input(tmp_path, {"parts": 4})), ids)
     assert _input_codes(report) == ["W913"]
+
+
+def test_live_without_celpix_says_it_fell_back(tmp_path, monkeypatch, capsys):
+    """--live is a stronger claim than the snapshot can back; when celPix cannot
+    be imported the run says so, instead of reporting clean against the snapshot
+    and then telling the user to re-run with the flag they already passed."""
+    from celpix_lint import cli, known
+
+    monkeypatch.setattr(known, "load_live", lambda: None)
+    path = tmp_path / "p.celpix"
+    path.write_text(json.dumps({"version": 1, "entries": []}))
+    cli.main(["--live", "--no-files", str(path)])
+    err = capsys.readouterr().err
+    assert "celPix is not importable here" in err
+    assert "Re-run with --live" not in err

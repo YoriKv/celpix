@@ -122,6 +122,24 @@ def test_a_dictionary_code_the_sheet_can_draw_is_left_alone(qtbot, tmp_path) -> 
     assert doc.drawn_positions == 3
 
 
+def test_a_named_code_past_the_sheet_does_not_shift_the_map(qtbot, tmp_path) -> None:
+    """A terminator given a code the sheet has no glyph for is punctuation.
+
+    The binding's fit shifts a base-0 map down by its lowest code when its
+    highest overflows the source. Counting a named break past the sheet as that
+    overflow moves a string with no code 0 down by its first letter, so every
+    glyph draws from the wrong tile while sibling strings holding a 0 draw right.
+    """
+    window, _bank, entry = _fontmap(
+        qtbot,
+        tmp_path,
+        [3, 4, 5, 9],  # "DEF" and an end code past the eight-tile sheet
+        named=(Glyph(9, "end", GlyphRole.BREAK),),
+    )
+    assert entry.tile_source.base_index == 0
+    assert window._doc.cell_tile_indices(window._doc.cells[0]) == [3]
+
+
 def _stacked_font(qtbot, tmp_path, codes, **kwargs):
     """A fontmap whose font's Pattern reads its 8 tiles as four 8x16 glyphs.
 

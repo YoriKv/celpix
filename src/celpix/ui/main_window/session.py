@@ -449,7 +449,9 @@ class SessionMixin:
         # case it exists for is a map bound to a slice numbered from elsewhere,
         # and a font sheet carved to be read as one numbers from its own zero.
         if glyph_layout is None:
-            self._fit_tile_base(entry, loaded.cells, tiles, cell_tiles)
+            font = entry.tile_source.entry if fontmap and entry.tile_source else None
+            named = frozenset(g.code for g in font.font_codes) if font else frozenset()
+            self._fit_tile_base(entry, loaded.cells, tiles, cell_tiles, named)
         entry.doc = Document(
             pixel_data=tiles.data,
             bytes_per_tile=tiles.bytes_per_tile,
@@ -577,7 +579,12 @@ class SessionMixin:
             doc.view.palette_regions = PaletteRegions.from_regions(regions)
 
     def _fit_tile_base(  # noqa: ANN001
-        self, entry: Entry, cells: list[Cell], tiles, cell_tiles: tuple[int, int]
+        self,
+        entry: Entry,
+        cells: list[Cell],
+        tiles,
+        cell_tiles: tuple[int, int],
+        named: frozenset[int] = frozenset(),
     ) -> None:
         """Shift a map onto a source it overflows, when its own indices say how.
 
@@ -594,6 +601,13 @@ class SessionMixin:
         does fit once shifted — a condition an absolutely-indexed map never meets.
         It also never overrides a base the user set, and never runs on a map with
         no binding to be judged against.
+
+        ``named`` is the codes a fontmap's font names in its alphabet. One of
+        those past the end of the sheet is punctuation — a terminator or a space
+        given a code the sheet has no glyph for — and draws nothing by design, so
+        it is not an overflow. Counting it would shift any string block that
+        holds no code 0 down by its lowest letter, while its siblings, each with
+        a space or terminator at 0, drew correctly.
         """
         source = entry.tile_source
         if source is None or not source.is_bound or source.base_index or not cells:
@@ -601,7 +615,11 @@ class SessionMixin:
         count = len(tiles.data) // max(1, tiles.bytes_per_tile)
         if not count:
             return  # unreadable binding: nothing to fit against
-        indices = [cell.index for cell in cells]
+        indices = [
+            cell.index for cell in cells if cell.index < count or cell.index not in named
+        ]
+        if not indices:
+            return
         low, high = min(indices), max(indices)
         # A cell covering several tiles reaches past its own index, so the span
         # has to allow for what the widest of them draws.

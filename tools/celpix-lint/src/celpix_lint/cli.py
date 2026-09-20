@@ -105,6 +105,15 @@ def main(argv: list | None = None) -> int:
         return 2
 
     ids = known_ids(prefer_live=args.live)
+    if args.live and not ids.authoritative:
+        # Said up front, not only under a W405: a clean report checked against
+        # the snapshot is a weaker claim than the one --live asked for.
+        print(
+            "--live: celPix is not importable here, so ids were checked against "
+            f"the {ids.source}.\nRun the linter in an environment with celPix "
+            "installed (the `registry` extra) to check live.",
+            file=sys.stderr,
+        )
     reports = [lint(path, ids, check_files=not args.no_files) for path in targets]
     for report in reports:
         report.diagnostics = _filter(report.diagnostics, args)
@@ -114,7 +123,7 @@ def main(argv: list | None = None) -> int:
         sys.stdout.write(render_json(reports))
     else:
         sys.stdout.write(render_text(reports, color=color))
-        _note_id_source(reports, ids)
+        _note_id_source(reports, ids, asked_live=args.live)
     return _status(reports, args.fail_on)
 
 
@@ -161,14 +170,14 @@ def _matches(code: str, patterns: tuple) -> bool:
     return any(code.startswith(pattern) for pattern in patterns)
 
 
-def _note_id_source(reports: list, ids) -> None:
+def _note_id_source(reports: list, ids, asked_live: bool = False) -> None:
     """Say which registry answered, but only when it changed a finding.
 
     An unconditional footer on every clean run is noise; a footer under a report
     full of "not a built-in id" warnings is the missing half of the sentence.
     """
-    if ids.authoritative or not ids.usable:
-        return
+    if ids.authoritative or not ids.usable or asked_live:
+        return  # a failed --live has already said so; "re-run with --live" is no help
     if not any(d.code == "W405" for report in reports for d in report.diagnostics):
         return
     print(

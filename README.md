@@ -62,6 +62,18 @@ Grab the build for your platform from the [Releases page](https://github.com/Yor
 
 Help -> Shortcuts (`F1`) to view a list of keyboard shortcuts.
 
+### Command line
+
+```
+celpix                          # just the editor
+celpix game.celpix              # open a project
+celpix game.sfc tiles.bin       # open one or more files
+celpix -t tilemap screen.bin    # -t/--type: pixels, tilemap or palette
+```
+
+A file's format is detected where it can be; `-t` is for raw data that has no way
+to announce what it is. `celpix --help` lists every option.
+
 ## Thank You
 
 Thanks to the following projects that I used as reference for this tool, and for

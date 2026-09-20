@@ -28,6 +28,17 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/celpix_lint"]
 
+[tool.uv]
+# uv rebuilds a local package only when a cache key changes, and by default the
+# only key is this file. `uvx --from ./tools/celpix-lint` would then keep running
+# the first wheel it built — old checks, and an id snapshot that predates every
+# plugin added since — however often the sources or `data/registry.json` change.
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "src/**/*.py" },
+  { file = "src/**/*.json" },
+]
+
 [tool.ruff]
 line-length = 88
 target-version = "py39"

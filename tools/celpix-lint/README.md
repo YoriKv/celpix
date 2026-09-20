@@ -116,7 +116,10 @@ claims:
   missing.
 - **`--live`** imports the installed celPix and asks its registry, your own
   dropped plugins included. That source *can* say an id resolves nowhere
-  (`E404`).
+  (`E404`). It needs celPix importable where the linter runs: `uvx --from
+  ./tools/celpix-lint` has no celPix in its environment, so there `--live` says
+  it fell back to the snapshot. Install the `registry` extra, or run the linter
+  from celPix's own environment.
 
 Either way, the `plugins/` folder beside the project file is read first. A
 project travels with its formats, so a preset only that folder provides is not
