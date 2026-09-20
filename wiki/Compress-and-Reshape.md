@@ -1,44 +1,33 @@
 # Compress & Reshape
 
-**Super Mario World**'s level backgrounds, which the game rearranges after it
-unpacks them.
+A slice's **Reshape** runs *before* decompression. For data the game unpacks
+and *then* rearranges, a **Compress & Reshape** plugin runs them in that order.
 
-A **reshape** reorders a region's bytes without changing how many there are. The
-Reshape picker on a slice runs *before* decompression, over the packed bytes. A
-game that unpacks a stream and *then* rearranges it needs the two the other way
-round, as one scheme: a **Compress & Reshape** plugin.
-
-This page uses the Super Mario World sample project
+Uses the Super Mario World sample project
 ([opening it](Plugin-Inputs#1-open-a-project-that-has-plugins)).
 
 ## 1. The problem
 
-A background is an RLE1 stream. `Layer 2 background — Mountains` is two screens
-of 16×27 blocks, side by side.
+The Mountains Layer 2 background is an RLE1 stream: two screens of 16×27 blocks,
+side by side.
 
 ![The background](images/pair-background.png)
 
-The game addresses the unpacked buffer a screen at a time: all of the first
-screen, then all of the second. Read through RLE1 alone, the right screen lands
-under the left.
-
-Right-click the entry ▸ **Edit…** and set **Compression** to **RLE1 (SMW, $FF
-$FF terminated)**:
+The unpacked data is screen by screen, so RLE1 alone puts the right screen under
+the left. Right-click ▸ **Edit…**, set **Compression** to **RLE1 (SMW, $FF $FF
+terminated)**:
 
 ![Edit Slice](images/pair-edit-slice-rle1.png)
 
 ![RLE1 alone](images/pair-rle1-only.png)
 
-The project has a reshape for the walk, **SMW level screens (16x27) laid
-across**. It cannot go in the slice's **Reshape** row: there it would shuffle the
-packed stream.
+The reshape **SMW level screens (16x27) laid across** fixes this, but in the
+**Reshape** row it would shuffle the packed bytes.
 
 ## 2. Make the pair
 
-**File ▸ New Compress & Reshape Plugin…**. It needs a saved project, because the
-plugin is written into the project's `plugins/` folder.
-
-Pick the two halves, and name the pair.
+**File ▸ New Compress & Reshape Plugin…** (needs a saved project; the plugin goes
+in `plugins/`).
 
 ![The pair](images/pair-dialog.png)
 
@@ -48,12 +37,11 @@ Pick the two halves, and name the pair.
 | **Then reshape** | SMW level screens (16x27) laid across |
 | **Name** | `SMW background (RLE1 + screens)` |
 
-**Saved as** shows the id and the file it will write. A name already in use is
-refused:
+Names must be unique:
 
 ![A name that is taken](images/pair-dialog-name-taken.png)
 
-The result is a few lines of data, so it loads with no prompt:
+The result is data only, so it loads without a trust prompt:
 
 ```toml
 id = "compression.smw-background-rle1-screens"
@@ -69,23 +57,17 @@ reshape = "reshape.smw-screens-across"
 
 ## 3. Use it
 
-The pair is a compression scheme like any other. **Edit…** the entry again and
-pick it, under **Project plugins**.
+**Edit…** the entry and pick the pair under **Project plugins**.
 
 ![In the picker](images/pair-compression-picker.png)
 
 ![The background, again](images/pair-using-it.png)
 
-On load it unpacks, then reshapes. On write it runs both backwards: the reshape's
-inverse, then the compressor. It finds the end of a stream if its compression
-half does, and any [inputs](Plugin-Inputs) that half declares are bound on the
-pair.
+Load unpacks then reshapes; write inverts both. [Inputs](Plugin-Inputs) of the
+compression half are bound on the pair.
 
 ## View-only pairs
 
-A pair writes only if both halves can run backwards. The dialog says so before it
-makes one:
+A pair writes only if both halves are reversible. The dialog warns first:
 
 ![A half with no way back](images/pair-dialog-view-only.png)
-
-Slices read through such a pair open view-only.
