@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.2 - unreleased
+## v1.0.2 - 2026-09-19
 
 - Command line options, mostly for opening files
 - Fontmap small fixes
