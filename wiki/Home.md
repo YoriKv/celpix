@@ -1,15 +1,12 @@
 # celPix
 
-A cross-platform graphics editor for retro games. It reads tiles, palettes,
-tilemaps and text from a ROM, compressed or not, and writes edits back in place.
+A cross-platform graphics viewer and editor for romhacking and research.
 
 - **[Getting Started](Getting-Started)**: from an unopened ROM to an edited
   Super Mario World overworld.
 
-The feature pages use the same cartridge:
+Individual feature tutorials:
 
-- **[Text and Fonts](Text-and-Fonts)**: a font's alphabet, and message boxes
-  edited as text.
 - **[VRAM Windows](VRAM-Windows)**: composites with gaps and partial sheets.
 - **[Pinned Palette Rows](Pinned-Palette-Rows)**: one sheet in several palette
   rows.
@@ -17,3 +14,5 @@ The feature pages use the same cartridge:
   the file.
 - **[Compress & Reshape](Compress-and-Reshape)**: maps rearranged after
   unpacking.
+- **[Text and Fonts](Text-and-Fonts)**: a font's alphabet, and message boxes
+  edited as text.
