@@ -1,0 +1,46 @@
+# Example Compress & Reshape preset. Files starting with "_" are ignored — copy
+# this file, drop the underscore, edit it, and press F5 in celPix to load it.
+# Presets are data: nothing here executes, so unlike a .py plugin there is no
+# confirmation step. File > New Compress & Reshape Plugin... writes one of these
+# into the open project for you.
+#
+# WHAT THE ENGINE DOES
+# --------------------
+# It pairs a compression scheme with a reshape, for a game that runs a second pass
+# over what its unpacker produced:
+#
+#   load:  decompress -> reshape
+#   save:  unshape    -> compress
+#
+# The Reshape picker on a slice cannot do this on its own, because that stage runs
+# BEFORE decompression, over the packed bytes. The pair sits in the Compression
+# picker and is an ordinary scheme to everything else: it finds its own end if its
+# compression half does, it saves if both halves can, and any inputs its
+# compression half declares are bound on the pair.
+#
+# The case it exists for is a map stored as DIFFERENCES. A picture of consecutive
+# tile numbers becomes a run of $01 once each byte is replaced by its step from
+# the one before, which packs to almost nothing. The loader unpacks the stream and
+# then sums it (on a Z80: XOR A / loop: ADD A,(HL) / LD (HL+),A). The symptom is a
+# decompressed "map" of mostly $00 and $01 that draws as noise.
+#
+# SHIPPED PRESETS BUILT ON IT
+# ---------------------------
+# None — which scheme a game pairs with which pass is the game's own business, so
+# this example carries a real, working pair to copy and adapt.
+
+id = "compression.rnc2-running-sum"
+name = "RNC method 2 + running sum"
+engine_id = "compression.compress-reshape"
+
+[params]
+
+# The compression scheme, by plugin id. Anything in the Compression picker except
+# "None" and another Compress & Reshape pair. This one is what Mortal Kombat II on
+# the Game Boy packs its title-screen maps with.
+compression = "compression.rnc2"
+
+# The reshape run over the decompressed bytes, by plugin id. Anything in the
+# Reshape picker except "None", including a bitswap or data-LUT preset of your
+# own. It is handed the whole decompressed stream as its region.
+reshape = "reshape.running-sum"

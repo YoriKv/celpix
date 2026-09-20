@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.3 - unreleased
+
+- Compress & Reshape plugin type, allows combining a compression & reshape plugin
+- File ▸ New Compress & Reshape Plugin… creates a custom compression & reshape plugin
+  local to the current project
+- Running sum reshape, usually used with compression
+
 ## v1.0.2 - 2026-09-19
 
 - Command line options, mostly for opening files

@@ -43,12 +43,12 @@ from celpix.plugins.builtins.containers import (
 )
 from celpix.plugins.builtins.d88 import D88Container
 from celpix.plugins.builtins.gb_rom import GbRomContainer, repair_checksums
-from celpix.plugins.builtins.sms_rom import SmsRomContainer, repair_checksum
 from celpix.plugins.builtins.n64_rom import (
     KEY_N64_SWAP,
     N64RomContainer,
     swap_groups,
 )
+from celpix.plugins.builtins.sms_rom import SmsRomContainer, repair_checksum
 from celpix.plugins.detect import (
     container_write_enabled,
     detect_container,

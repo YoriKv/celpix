@@ -386,3 +386,22 @@ def _pixel_aspect_dialog_never_blocks(monkeypatch):
     if module is None:
         return
     monkeypatch.setattr(module.PixelAspectDialog, "exec", lambda self: 0, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _compress_reshape_dialog_never_blocks(monkeypatch):
+    """Make the Compress & Reshape dialog's ``exec()`` return Rejected, not block.
+
+    Reachable by triggering File ▸ New Compress & Reshape Plugin…, and the same
+    rule as :func:`_container_dialog_never_blocks`: offscreen, ``exec()`` never
+    returns. Rejected is the safe default — the caller reads it as a cancel and
+    writes no file, so a test that lands here by accident leaves no plugin in its
+    project folder. Guarded like :func:`captured_alerts` so headless suites stay
+    Qt-free.
+    """
+    module = sys.modules.get("celpix.ui.compress_reshape_dialog")
+    if module is None:
+        return
+    monkeypatch.setattr(
+        module.CompressReshapeDialog, "exec", lambda self: 0, raising=False
+    )

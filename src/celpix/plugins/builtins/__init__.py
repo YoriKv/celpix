@@ -72,6 +72,7 @@ from .prs import PrsCompression
 from .pvr import PvrCompression
 from .raw_file import RawFileContainer
 from .rnc import Rnc1Compression, Rnc2Compression
+from .running_sum import RunningSumReshape
 from .scgcad import (
     CgxContainer,
     ColContainer,
@@ -123,6 +124,7 @@ def register_builtins(reg: Registry) -> None:
         PassthroughReshape(),
         M7VramReshape(),
         ByteSwapReshape(),
+        RunningSumReshape(),
         *split_part_plugins(),
         PassthroughCompression(),
         KonamiNesRle(),

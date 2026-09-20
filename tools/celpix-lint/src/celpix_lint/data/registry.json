@@ -341,6 +341,10 @@
         "pixels",
         "tilemap"
       ],
+      "reshape.running-sum": [
+        "pixels",
+        "tilemap"
+      ],
       "reshape.snes-m7-vram": [
         "pixels",
         "tilemap"

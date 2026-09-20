@@ -616,7 +616,9 @@ class SessionMixin:
         if not count:
             return  # unreadable binding: nothing to fit against
         indices = [
-            cell.index for cell in cells if cell.index < count or cell.index not in named
+            cell.index
+            for cell in cells
+            if cell.index < count or cell.index not in named
         ]
         if not indices:
             return

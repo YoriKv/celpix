@@ -78,9 +78,9 @@ from typing import Any
 
 from celpix.core.context import (
     KEY_TILEMAP_COLUMNS,
+    KEY_TILEMAP_PAGE_ROWS,
     KEY_TILEMAP_STAMP_CELLS,
     KEY_TILEMAP_STAMP_STRIDE,
-    KEY_TILEMAP_PAGE_ROWS,
     PipelineContext,
 )
 from celpix.core.errors import Stage

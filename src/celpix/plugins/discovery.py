@@ -9,10 +9,13 @@ editing package internals. The folder a file sits in *determines* its type:
   (``0x7C00``), trailing commas. A **``*.py`` code format**
   (:mod:`celpix.plugins.formats`) is a self-contained decode/encode registered
   via ``registry.register_format(...)`` and listed in the picker like any preset.
-- ``compression/`` and ``containers/`` take ``*.py`` plugins.
+- ``containers/`` takes ``*.py`` plugins.
 - ``reshape/`` takes ``*.py`` plugins plus ``*.toml`` presets for the bitswap and
   data-LUT engines, adapted into ordinary reshape plugins at load
   (:data:`RESHAPE_ENGINES`).
+- ``compression/`` takes ``*.py`` plugins plus ``*.toml`` presets pairing a
+  compression scheme with a reshape of its output, adapted the same way
+  (:data:`COMPRESSION_ENGINES`).
 
 Each plugin covers both directions of its stage, so a folder maps to exactly one
 stage. Because the folder is authoritative, preset TOMLs carry no ``stage``
@@ -60,6 +63,10 @@ from celpix.plugins.base import (
     missing_methods,
 )
 from celpix.plugins.bitswap import BITSWAP_ENGINE, bitswap_from_spec
+from celpix.plugins.compress_reshape import (
+    COMPRESS_RESHAPE_ENGINE,
+    compress_reshape_from_spec,
+)
 from celpix.plugins.data_lut import DATA_LUT_ENGINE, data_lut_from_spec
 from celpix.plugins.formats import adapt_format, format_behind
 from celpix.plugins.trust import (
@@ -91,8 +98,8 @@ FOLDER_STAGE: dict[str, Stage] = {
 # The interpret folders, whose *.toml files are presets and whose *.py files are
 # code formats. Derived from FOLDER_STAGE so a folder's stage is stated once, and
 # shared with the built-in loader since the shipped preset tree uses the same
-# names. (reshape/ takes presets of a different shape — see
-# :func:`_load_reshape_preset`.)
+# names. (reshape/ and compression/ take presets of a different shape — see
+# :func:`_load_reshape_preset` and :func:`_load_compression_preset`.)
 INTERPRET_FOLDER_STAGE: dict[str, Stage] = {
     folder: FOLDER_STAGE[folder] for folder in ("pixel", "palette", "tilemap")
 }
@@ -477,9 +484,13 @@ def load_directory(
     if not root.is_dir():
         return issues
     target: RegistryLike = SourceRegistry(reg, category) if category else reg
+    # Presets built *out of other plugins*, held back until the rest of the root
+    # is in: `compression/` sorts ahead of `reshape/`, and a .toml ahead of the
+    # .py beside it, so a pair loaded in scan order could not name either.
+    deferred: list[Path] = []
     for entry in sorted(root.iterdir()):
         if entry.is_dir() and entry.name in FOLDER_STAGE:
-            _load_typed_dir(target, entry, entry.name, issues, trust, confirm)
+            _load_typed_dir(target, entry, entry.name, issues, trust, confirm, deferred)
         elif (
             entry.is_file()
             and entry.suffix in (".toml", ".py")
@@ -493,6 +504,8 @@ def load_directory(
                     "compression/ or containers/",
                 )
             )
+    for path in deferred:
+        _load_compression_preset(target, path, issues)
     return issues
 
 
@@ -503,11 +516,14 @@ def _load_typed_dir(
     issues: list[PluginLoadIssue],
     trust: TrustStore | None,
     confirm: ConfirmCallback | None,
+    deferred: list[Path],
 ) -> None:
     """Load every plugin file directly inside one typed subfolder (non-recursive).
 
     ``_``-prefixed files are skipped: the convention for inert files, covering
-    both the seeded reference files and works in progress.
+    both the seeded reference files and works in progress. A ``compression/``
+    preset is appended to ``deferred`` rather than loaded, for the caller to build
+    once everything it may name is registered.
     """
     for entry in sorted(root.iterdir()):
         if not entry.is_file() or entry.name.startswith("_"):
@@ -518,12 +534,14 @@ def _load_typed_dir(
                 _load_preset(reg, entry, stage, issues)
             elif folder == "reshape":
                 _load_reshape_preset(reg, entry, issues)
+            elif folder == "compression":
+                deferred.append(entry)
             else:
                 issues.append(
                     PluginLoadIssue(
                         str(entry),
-                        f"presets are pixel/palette/tilemap/reshape only; "
-                        f"'{folder}/' takes .py code plugins",
+                        f"presets are pixel/palette/tilemap/reshape/compression "
+                        f"only; '{folder}/' takes .py code plugins",
                     )
                 )
         elif entry.suffix == ".py":
@@ -617,6 +635,39 @@ def _load_reshape_preset(
         reg.register(adapt(spec))
     except Exception as exc:  # noqa: BLE001 — report, don't abort startup
         issues.append(PluginLoadIssue(str(path), f"reshape preset load failed: {exc}"))
+
+
+# The compression preset engines, on the reshape table's rule: `engine_id` picks
+# the adapter. One inhabitant, and a different signature from a reshape adapter's
+# because what it builds is made of *registered plugins* rather than of numbers.
+COMPRESSION_ENGINES = {
+    COMPRESS_RESHAPE_ENGINE: compress_reshape_from_spec,
+}
+
+
+def _load_compression_preset(
+    reg: RegistryLike, path: Path, issues: list[PluginLoadIssue]
+) -> None:
+    """A ``compression/*.toml`` preset, adapted into a compression plugin.
+
+    Data, so ungated like every preset — it names code that has already passed the
+    trust gate or shipped with the app, and runs none of its own. A member that is
+    missing is therefore reported here, against this file: usually a project
+    plugin the user declined, which is the honest reason the pair is absent.
+    """
+    try:
+        spec = tomllib.loads(path.read_text(encoding="utf-8"))
+        adapt = COMPRESSION_ENGINES.get(spec.get("engine_id"))
+        if adapt is None:
+            raise ValueError(
+                f"engine_id {spec.get('engine_id')!r} is not a compression engine "
+                f"(expected one of {', '.join(sorted(COMPRESSION_ENGINES))})"
+            )
+        reg.register(adapt(spec, reg))
+    except Exception as exc:  # noqa: BLE001 — report, don't abort startup
+        issues.append(
+            PluginLoadIssue(str(path), f"compression preset load failed: {exc}")
+        )
 
 
 def _is_approved(

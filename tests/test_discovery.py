@@ -363,12 +363,12 @@ def test_loose_root_file_reported_and_unknown_folder_ignored(tmp_path) -> None:
 
 
 def test_preset_in_code_only_folder_is_reported(tmp_path) -> None:
-    _drop(tmp_path, "compression", "custom.toml", _PRESET)
+    _drop(tmp_path, "containers", "custom.toml", _PRESET)
     reg = default_registry()
 
     issues = discovery.load_directory(reg, str(tmp_path))
     assert len(issues) == 1
-    assert "pixel/palette/tilemap/reshape only" in issues[0].message
+    assert "takes .py code plugins" in issues[0].message
 
 
 def test_conflicting_legacy_stage_field_is_reported(tmp_path) -> None:
@@ -482,6 +482,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert (tmp_path / discovery.PLUGIN_README).is_file()
     seeded = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("_*"))
     assert seeded == [
+        "compression/_compress-reshape.toml",
         "compression/_example.py",
         "compression/_inputs.py",
         "containers/_example.py",

@@ -55,6 +55,11 @@ every parameter it takes.
 `reshape/` takes presets too: `_bitswap.toml` for boards that scramble the byte
 *address*, `_data-lut.toml` for boards that substitute byte *values*.
 
+`compression/` takes one kind: `_compress-reshape.toml` pairs a compression scheme
+with a reshape run over what it unpacks, for a game that sums, reorders or
+substitutes its data *after* decompressing it. **File ▸ New Compress & Reshape
+Plugin…** writes one into the open project without your needing the ids.
+
 **`.py` plugins are code**, for what the engines cannot express. They run with the
 app's privileges, so celPix asks before loading one the first time and remembers
 your answer; changing the file asks again.

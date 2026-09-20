@@ -64,7 +64,8 @@ from PySide6.QtWidgets import (
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError, Stage
 from celpix.core.palette import Palette
-from celpix.plugins.discovery import PluginLoadIssue
+from celpix.plugins.compress_reshape import write_preset
+from celpix.plugins.discovery import PROJECT_PLUGIN_DIRNAME, PluginLoadIssue
 from celpix.plugins.registry import Registry, default_registry
 from celpix.project import projectfile
 from celpix.project.workspace import (
@@ -79,6 +80,7 @@ from celpix.project.workspace import (
 from celpix.ui.animation_overlay import AnimationOverlay
 from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas
 from celpix.ui.color_editor import ColorEditorDialog
+from celpix.ui.compress_reshape_dialog import CompressReshapeDialog
 from celpix.ui.decompress_overlay import DecompressOverlay
 from celpix.ui.file_list_panel import FileListPanel
 from celpix.ui.font_alphabet_window import FontAlphabetWindow
@@ -1366,6 +1368,18 @@ class MainWindow(
         # A project can be opened, closed or first saved without a menu rebuild -
         # recompute the row whenever the File menu opens (as Export does).
         file_menu.aboutToShow.connect(self._sync_project_folder_action)
+        # No mnemonic, on the rule above. Armed with the project-folder row, by
+        # the same test: the file it writes goes beside the .celpix.
+        self._new_compress_reshape_action = make_action(
+            self,
+            "New Compress && Reshape Plugin…",
+            self._new_compress_reshape_plugin,
+            menu=file_menu,
+            tip="Pair a compression scheme with a reshape run over what\n"
+            "it unpacks, as a plugin in the open project's plugins/ folder.\n"
+            "For data a game transforms again after decompressing it.",
+            enabled=False,  # armed by an open project
+        )
         make_action(
             self,
             "Open plu&gins folder…",
@@ -1466,6 +1480,9 @@ class MainWindow(
     def _sync_project_folder_action(self) -> None:
         """Only a session with a project file behind it has a folder to open."""
         self._open_project_folder_action.setEnabled(self._project_path is not None)
+        self._new_compress_reshape_action.setEnabled(
+            self._project_path is not None and self._reload_plugins is not None
+        )
 
     def _open_project_folder(self) -> None:
         """File ▸ Open Project Folder — the folder the .celpix file sits in.
@@ -1480,6 +1497,38 @@ class MainWindow(
             self.statusBar().showMessage(
                 f"Cannot show {self._project_path} in a file manager."
             )
+
+    def _new_compress_reshape_plugin(self) -> None:
+        """File ▸ New Compress & Reshape Plugin… — write one into the project.
+
+        The pair is a preset file, so making one is writing a file and then
+        refreshing: the refresh is what registers it, through the same scan every
+        other project plugin arrives by, so there is no second way for a plugin to
+        come into being. It lands in the pickers under *Project plugins*, ready
+        for a slice's Compression to name.
+        """
+        if self._project_path is None or self._reload_plugins is None:
+            return
+        root = Path(self._project_path).parent / PROJECT_PLUGIN_DIRNAME
+        params = CompressReshapeDialog.ask(self, self._registry, root)
+        if params is None:
+            return
+        try:
+            path = write_preset(
+                root,
+                params.plugin_id,
+                params.name,
+                params.compression_id,
+                params.reshape_id,
+            )
+        except OSError as exc:
+            self._alert(f"Could not write the plugin:\n{exc}")
+            return
+        self._refresh_plugins()
+        self.statusBar().showMessage(
+            f"Added {params.name} to the project's plugins ({path.name}). "
+            "Choose it as a slice's Compression."
+        )
 
     def _open_plugins_folder(self) -> None:
         if self._plugin_dir is None:
