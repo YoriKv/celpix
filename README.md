@@ -65,14 +65,14 @@ Help -> Shortcuts (`F1`) to view a list of keyboard shortcuts.
 ### Command line
 
 ```
-celpix                          # just the editor
+celpix                          # open the editor
 celpix game.celpix              # open a project
 celpix game.sfc tiles.bin       # open one or more files
 celpix -t tilemap screen.bin    # -t/--type: pixels, tilemap or palette
 ```
 
-A file's format is detected where it can be; `-t` is for raw data that has no way
-to announce what it is. `celpix --help` lists every option.
+A file's format is automatically detected if possible `-t` is for raw data that
+can't be auto-detected. `celpix --help` lists every option.
 
 ## Thank You
 
