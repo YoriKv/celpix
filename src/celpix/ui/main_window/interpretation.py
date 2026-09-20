@@ -155,6 +155,15 @@ COLS_STAMPED_TIP = "Cells per row\nFixed by the stamp each of this file's entrie
 # hands back a value they did not type
 # (:attr:`~celpix.core.document.Document.stamp_columns`).
 COLS_STAMPS_TIP = "Cells per row\nRounded down to whole stamps"
+# And the paged map whose format does not say how its pages assemble, where Cols
+# is the control that does (:attr:`~celpix.core.document.Document.
+# assembly_choices`). It has to say the unit, because the spin will not take the
+# number typed: only arrangements that show every page are widths here.
+COLS_PAGES_TIP = (
+    "Cells per row, in whole pages\n"
+    "This file is several pages and does not say how they sit:\n"
+    "set how many go side by side. Snaps to layouts that use every page"
+)
 
 # The Block W×H spins' width. Wide enough for the one digit every arrangement in
 # hand uses, with room to read a two-digit value typed into Custom — the range
@@ -436,11 +445,13 @@ class InterpretationMixin:
         # locked it (:meth:`~...rendering.RenderingMixin._settle_tilemap_width`).
         self._columns_label = add_labelled(view, "Cols:", self._columns, COLS_TIP)
 
-        # A paged assembly and a dense stamp each take Cols over and have **no
-        # control at all**: every format that does either states its own layout, so
-        # there was never a choice to offer. That is why the caption above has to
-        # say what locked it (:data:`COLS_ASSEMBLED_TIP`,
-        # :data:`COLS_STAMPED_TIP`) — there is nothing on screen to infer it from.
+        # A stated page assembly and a stated stamp each take Cols over and have
+        # **no control at all**: the file says its own layout, so there is no
+        # choice to offer. That is why the caption above has to say what locked it
+        # (:data:`COLS_ASSEMBLED_TIP`, :data:`COLS_STAMPED_TIP`) — there is nothing
+        # on screen to infer it from. Pages the file does *not* lay out are the
+        # one case Cols stays live over, as the pages-across control
+        # (:data:`COLS_PAGES_TIP`).
 
         # How many tile-rows the window shows - the "render N rows" view setting.
         # Kept on self with its caption because View > Entire File locks the pair
@@ -506,7 +517,7 @@ class InterpretationMixin:
             "Treat these tiles as letters, so a fontmap bound to\n"
             "this sheet reads its codes as words\n"
             "What they spell is typed in View > Font Alphabet\n"
-            "Unticking keeps the table, but stops it being read"
+            "Unticking deletes that alphabet, after asking"
         )
         self._use_as_font.toggled.connect(self._on_use_as_font_change)
         # The **action**, not the widget, is what :meth:`_sync_use_as_font` hides

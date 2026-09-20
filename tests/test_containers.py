@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import struct
 from dataclasses import replace
 
@@ -49,6 +50,8 @@ from celpix.plugins.builtins.n64_rom import (
     swap_groups,
 )
 from celpix.plugins.builtins.sms_rom import SmsRomContainer, repair_checksum
+from celpix.plugins.builtins.snes_rom import SnesRomContainer
+from celpix.plugins.builtins.snes_rom import repair_checksum as repair_snes_checksum
 from celpix.plugins.detect import (
     container_write_enabled,
     detect_container,
@@ -236,6 +239,20 @@ def _noise(n: int, seed: int = 0) -> bytes:
     return bytes(((i * 7 + seed) & 0xFF) for i in range(n))
 
 
+def _snes_rom(size: int = 0x10000, at: int = 0x7FC0, mode: int = 0x20) -> bytearray:
+    """An image with an internal header at ``at`` and a stale checksum pair.
+
+    Random rather than :func:`_noise`, whose 256-byte period gives every chunk of
+    a length the same sum - a mirroring bug that counted the wrong chunk would
+    add up right."""
+    rom = bytearray(random.Random(size ^ at).randbytes(size))
+    rom[at : at + 21] = b"TEST CART".ljust(21)
+    rom[at + 0x15] = mode
+    rom[at + 0x17] = (size // 1024 - 1).bit_length()  # log2 KiB, rounded up
+    rom[at + 0x3C : at + 0x3E] = b"\x00\x80"  # reset vector $8000
+    return rom
+
+
 def _d88_disk(tracks, header: int = 0x2B0) -> bytes:
     """A D88 disk: each track None (unformatted) or ``(R, N, data, 0Eh field)``s."""
     body = bytearray()
@@ -278,6 +295,12 @@ _CONTAINER_SAMPLES = {
         ),
     ),
     "container.n64-rom": ("f.v64", b"\x37\x80\x40\x12" + _noise(0x2000 - 4, 7)),
+    # Headered, so the pair of round-trip tests also hold it to the copier
+    # header: read past it, written behind it, never summed.
+    "container.snes-rom": (
+        "f.smc",
+        repair_snes_checksum(_noise(512, 12) + bytes(_snes_rom())),
+    ),
     "container.sms-rom": (
         "f.sms",
         repair_checksum(
@@ -516,6 +539,91 @@ def test_gb_write_leaves_a_headerless_file_alone() -> None:
     # Too short to hold a header: inventing one would corrupt whatever it is.
     out = GbRomContainer().write(b"\xaa" * 64, WriteTarget(b""), PipelineContext())
     assert out == b"\xaa" * 64
+
+
+def _snes_pair(image: bytes, at: int) -> tuple[int, int]:
+    """``(complement, checksum)`` as stored in the header at ``at``."""
+    return (
+        int.from_bytes(image[at + 0x1C : at + 0x1E], "little"),
+        int.from_bytes(image[at + 0x1E : at + 0x20], "little"),
+    )
+
+
+def test_snes_write_repairs_the_pair_behind_a_copier_header() -> None:
+    # The copier header is this container's own to skip: offsets are the
+    # cartridge's on the way in, and on the way out the 512 bytes are kept and
+    # stay outside the sum.
+    copier = _noise(512, 13)
+    rom = copier + bytes(_snes_rom())
+    ctx = PipelineContext()
+    payload = SnesRomContainer().read(ReadSource(rom), ctx)
+    assert (payload, ctx.get(KEY_SOURCE_OFFSET)) == (rom[512:], 512)
+
+    edited = bytearray(payload)
+    edited[0x4000:0x4010] = bytes(range(16))
+    out = SnesRomContainer().write(bytes(edited), WriteTarget(rom), PipelineContext())
+
+    image = bytearray(out[512:])
+    complement, checksum = _snes_pair(image, 0x7FC0)
+    image[0x7FDC:0x7FE0] = b"\xff\xff\x00\x00"  # what the pair is summed as
+    assert checksum == sum(image) & 0xFFFF
+    assert complement == checksum ^ 0xFFFF
+    # Only the pair and the edit differ; nothing else was rewritten.
+    assert out[:512] == copier
+    assert out[512 : 512 + 0x7FDC] == bytes(edited[:0x7FDC])
+    assert out[512 + 0x7FE0 :] == bytes(edited[0x7FE0:])
+
+
+def test_snes_checksum_mirrors_an_odd_sized_image() -> None:
+    # 176 KiB is 128 + 32 + 16: the 16 repeats to fill out the 32, and that 64
+    # repeats to fill out the 128 - the rule at both of its levels.
+    rom = _snes_rom(0x2C000)
+    out = SnesRomContainer().write(bytes(rom), WriteTarget(b""), PipelineContext())
+    summed = bytearray(out)
+    summed[0x7FDC:0x7FE0] = b"\xff\xff\x00\x00"
+    first, second, third = summed[:0x20000], summed[0x20000:0x28000], summed[0x28000:]
+    expected = sum(first) + 2 * (sum(second) + 2 * sum(third))
+    assert _snes_pair(out, 0x7FC0)[1] == expected & 0xFFFF
+
+
+def test_snes_header_is_found_by_score_not_by_position() -> None:
+    # A HiROM image whose LoROM position holds the more tempting of two decoys:
+    # a complementary pair, a title, a size and a reset vector, everything but
+    # the map mode. The real header still outscores it, so the write lands at
+    # $FFDC and the decoy keeps its bytes.
+    rom = _snes_rom(0x20000, at=0xFFC0, mode=0x31)
+    rom[0x7FC0:0x8000] = _snes_rom(0x20000)[0x7FC0:0x8000]
+    rom[0x7FC0 + 0x15] = 0x31  # says HiROM, which is not what sits at $7FC0
+    rom[0x7FDC:0x7FE0] = rom[0xFFDC:0xFFE0] = b"\x34\x12\xcb\xed"
+    out = SnesRomContainer().write(bytes(rom), WriteTarget(b""), PipelineContext())
+    assert out[0x7FC0:0x8000] == rom[0x7FC0:0x8000]
+    complement, checksum = _snes_pair(out, 0xFFC0)
+    assert complement == checksum ^ 0xFFFF
+    assert (complement, checksum) != (0x1234, 0xEDCB)
+
+    # Nothing convincing anywhere: a reset vector below $8000 is no cartridge's,
+    # so even a complementary pair beside it is left exactly as it is.
+    bogus = _snes_rom()
+    bogus[0x7FDC:0x7FE0] = b"\x34\x12\xcb\xed"
+    bogus[0x7FFC:0x7FFE] = b"\x00\x10"
+    target = WriteTarget(b"")
+    assert SnesRomContainer().write(bytes(bogus), target, PipelineContext()) == bogus
+
+
+def test_snes_rom_claims_no_file_on_its_own(tmp_path) -> None:
+    """It is picked by hand: a perfectly good cartridge still opens as it always
+    has, plain bytes bare and the copier header's when it carries one — which is
+    what keeps a save from rewriting a checksum nobody asked it to."""
+    reg = default_registry()
+
+    def detected(name: str, content: bytes) -> str:
+        f = tmp_path / name
+        f.write_bytes(content)
+        return detect_container(reg, str(f))
+
+    lorom = repair_snes_checksum(bytes(_snes_rom()))
+    assert detected("lo.sfc", lorom) == RAW_CONTAINER
+    assert detected("lo.smc", bytes(512) + lorom) == "container.copier-header"
 
 
 def test_n64_round_trips_each_byte_order() -> None:

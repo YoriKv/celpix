@@ -86,6 +86,7 @@ from .scgcad import (
 from .slz import Slz16Compression, Slz24Compression
 from .sms_rom import SmsRomContainer
 from .snes_rle import Rle1Compression, Rle2Compression
+from .snes_rom import SnesRomContainer
 from .sonic2_tiles import Sonic2TilesCompression
 from .split_planes import split_part_plugins
 from .tilemap_codec import TilemapCodec
@@ -102,6 +103,7 @@ def register_builtins(reg: Registry) -> None:
     for plugin in (
         RawFileContainer(),
         CopierHeaderContainer(),
+        SnesRomContainer(),
         INesContainer(),
         SmdContainer(),
         SnesInterleavedContainer(),

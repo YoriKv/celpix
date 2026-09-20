@@ -946,6 +946,27 @@ class Document:
         return resolve_pages_across(self.view.pages_across, columns, rows, pages)
 
     @property
+    def assembly_choices(self) -> tuple[int, ...]:
+        """The pages-across values the **user** may pick between, or ``()``.
+
+        Empty wherever there is nothing to choose: an unpaged document, and a
+        file whose format **states** its assembly (:attr:`stated_pages_across`),
+        where offering another would invite shearing a picture whose shape is not
+        in question. What is left is the file that holds pages and says nothing
+        about how they sit — a bare cell format stating a page size and the counts
+        it comes in. There the default is a guess
+        (:func:`~celpix.core.tilemap.default_pages_across`), eight pages tie
+        between two and four across, and only the user knows which the game means.
+
+        A single arrangement is no choice either, so a one-page file answers
+        ``()`` like an unpaged one.
+        """
+        if not self.pages or self.stated_pages_across:
+            return ()
+        options = page_assemblies(self.pages)
+        return options if len(options) > 1 else ()
+
+    @property
     def assembled_columns(self) -> int:
         """How many cells across the assembly fixes this document at, or 0 for none.
 
@@ -1080,13 +1101,20 @@ class Document:
         the spin mirrors them and is disabled; a dense map whose format states
         nothing has a width only because the user has one, and taking the spin
         away would leave no way to supply it (``docs/design/tilemap-entry.md``
-        §3.1).
+        §3.1). A page assembly the file does **not** state is the same case one
+        level up: the width is a whole number of pages, and how many is the
+        user's to say.
 
         The row plane locks at **any page count**, which the assembly cannot do:
         a single nametable page holds one page and assembles nothing, and is as
         unreadable at 31 across as four of them are (:attr:`row_plane_columns`).
         """
-        if self.assembled_columns or self.row_plane_columns:
+        if self.row_plane_columns:
+            return True
+        # An assembly the file does not state is still a width in whole pages,
+        # but *which* one is the user's: Cols stays live there and is the control
+        # that picks it (:attr:`assembly_choices`).
+        if self.assembled_columns and not self.assembly_choices:
             return True
         chain = self.chain
         return chain is not None and chain.dense and bool(self.stated_columns)

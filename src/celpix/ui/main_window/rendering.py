@@ -27,6 +27,7 @@ from the tail of the same cycle rather than each watching for its own trigger.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, tile_first_pixel
@@ -39,6 +40,7 @@ from celpix.ui.main_window.interpretation import (
     COLS_ASSEMBLED_TIP,
     COLS_CELLS_TIP,
     COLS_FRAMES_TIP,
+    COLS_PAGES_TIP,
     COLS_ROW_PLANE_TIP,
     COLS_STAMPED_TIP,
     COLS_STAMPS_TIP,
@@ -147,6 +149,15 @@ class RenderingMixin:
         with signals_blocked(*(spin for spin, _ in spins)):
             for spin, value in spins:
                 spin.setValue(value)
+        doc = self._doc
+        if doc is not None and doc.assembly_choices:
+            # Where Cols is the pages-across control, the width *is* the choice:
+            # it goes on the view here so the refresh below lays the pages out at
+            # it, and so both directions of the command land it — the project
+            # stores the assembly, not the width it implies (:meth:`_pages_across`).
+            across = state.columns // max(1, doc.page_size[0])
+            if across in doc.assembly_choices:
+                doc.view = replace(doc.view, pages_across=across)
         self._place_origin(state.tile_offset, state.byte_nudge)
         self._refresh_view()  # re-clamps the position against the restored axes
 
@@ -160,11 +171,32 @@ class RenderingMixin:
         doc = self._doc
         if doc is None or doc.columns_locked:
             return columns
+        if doc.assembly_choices:
+            return self._assembly_columns(columns)
         width, entries = doc.drawn_columns, doc.stamp_columns
         if not width or not entries:
             return columns
         unit = width // entries
         return max(1, columns // unit) * unit
+
+    def _assembly_columns(self, columns: int) -> int:
+        """``columns`` as the nearest arrangement that shows every page.
+
+        Cols is the pages-across control on a map whose file holds pages and does
+        not say how they assemble (:attr:`~celpix.core.document.Document.
+        assembly_choices`), and only the divisors of the page count are
+        arrangements — three across of eight pages leaves a hole. Snapped **in the
+        direction the number moved**, not to the nearest: eight pages of 32 step
+        128 -> 96, and 96 is as far from 64 as from 128, so nearest would hand
+        back the 128 the user just stepped off and the arrow would do nothing.
+        """
+        doc = self._doc
+        page_columns, _rows = doc.page_size
+        widths = [across * page_columns for across in doc.assembly_choices]
+        current = doc.drawn_columns
+        if columns < current:
+            return max((w for w in widths if w <= columns), default=widths[0])
+        return min((w for w in widths if w >= columns), default=widths[-1])
 
     def _apply_view_toggle(self, attr: str, on: bool) -> None:
         """Land one of the entry's view switches (commands only - gestures push).
@@ -447,19 +479,20 @@ class RenderingMixin:
         setting Cols to 47 on a 2x2 map draws 46, because a row that ends halfway
         through a stamp puts the other half at the start of the next.
 
-        **There is no assembly control.** Every paged format celPix reads states
-        its own layout — a screen file's four quadrants are one 64x64 tilemap and
-        the editor's own loader says which corner each goes in
-        (:attr:`~celpix.core.document.Document.stated_pages_across`) — so the
-        arrangement was never the user's to pick, and a picker would have been
-        inviting them to shear a picture whose shape is not in question. The model
-        still resolves an unstated assembly through ``view.pages_across`` and
-        :func:`~celpix.core.tilemap.default_pages_across`, so a format that holds
-        pages without stating their layout still lays out sensibly; what went is
-        the widget, not the mechanism.
-
-        What is left here is the width, which where the file states one is not a
-        choice either: it *is* the assembly (or the stamp), and the spin mirrors it.
+        **Cols is the assembly control, and only where there is one to make.** A
+        format that states its layout — a screen file's four quadrants are one
+        64x64 tilemap and the editor's own loader says which corner each goes in
+        (:attr:`~celpix.core.document.Document.stated_pages_across`) — leaves
+        nothing to pick, and a picker there would be inviting the user to shear a
+        picture whose shape is not in question: the spin mirrors the width and is
+        locked. A format that holds pages and says nothing about how they sit is
+        the other case (:attr:`~celpix.core.document.Document.assembly_choices`).
+        The default there is a guess, so Cols stays live, moves a page at a time
+        and snaps to the arrangements that show every page
+        (:meth:`_assembly_columns`). No second widget, because an assembly *is* a
+        width: "two pages across" and "64 cells across" are one statement, and a
+        separate box would be a second place to say it that the first could
+        disagree with.
         """
         doc = self._doc
         width = doc.drawn_columns if doc is not None else 0
@@ -469,7 +502,13 @@ class RenderingMixin:
         # chain, so it is the number that actually did the flooring however the
         # width was arrived at (:attr:`~...Document.stamp_columns`).
         entries = doc.stamp_columns if doc is not None else 0
-        self._columns.setSingleStep(width // entries if width and entries else 1)
+        if doc is not None and doc.assembly_choices:
+            # A page at a time: the arrangements are whole pages across, and the
+            # gesture snaps on to the ones that show every page
+            # (:meth:`_assembly_columns`).
+            self._columns.setSingleStep(doc.page_size[0])
+        else:
+            self._columns.setSingleStep(width // entries if width and entries else 1)
         if not width:
             # Nothing here fixes a width: an ordinary tilemap, a sprite object, or
             # no document at all — `drawn_columns` is 0 for each. Cols is left
@@ -515,7 +554,7 @@ class RenderingMixin:
             # order :attr:`~...Document.drawn_columns` resolves them, since a
             # paged nametable is locked by two things at once and the assembly is
             # the one that decided the number.
-            if doc is not None and doc.pages:
+            if doc is not None and doc.pages and not doc.assembly_choices:
                 tip = COLS_ASSEMBLED_TIP
             elif doc is not None and doc.row_plane_columns:
                 tip = COLS_ROW_PLANE_TIP
@@ -525,6 +564,8 @@ class RenderingMixin:
             tip = COLS_TIP
         elif doc.is_sprite:
             tip = COLS_FRAMES_TIP
+        elif doc.assembly_choices:
+            tip = COLS_PAGES_TIP
         else:
             # A live spin on a map that still stamps: the number is the user's,
             # and it is theirs in whole stamps (:meth:`_settle_tilemap_width`).
@@ -542,10 +583,11 @@ class RenderingMixin:
         **states** its assembly was never asked either, so it stores 0 too rather
         than a copy of a fact the container republishes on every read.
 
-        Otherwise a passthrough of what the document already holds. Nothing in the
-        UI can set it since the picker went, so the only value it can carry is a
-        project's own — and carrying it is what keeps the field a working part of
-        the model rather than one that quietly empties on the first save.
+        Otherwise a passthrough of what the document already holds, which is a
+        project's own value or the one a Cols gesture put there
+        (:meth:`_apply_view_axes`). 0 survives as "never asked": a map nobody has
+        moved Cols on keeps opening on the default arrangement, so a better
+        default later is not pinned out by a number no one chose.
         """
         doc = self._doc
         if doc is None or not doc.pages or doc.stated_pages_across:

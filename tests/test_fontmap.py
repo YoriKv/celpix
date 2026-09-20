@@ -485,6 +485,22 @@ def test_an_undeclared_sheet_has_no_alphabet_to_edit(qtbot, tmp_path) -> None:
     assert window._font_entry() is None
 
 
+def test_ticking_use_as_font_opens_the_editor_with_its_sheet(qtbot, tmp_path) -> None:
+    """The tick is an *edit*, and an edit skips redrawing the sheet - rightly,
+    while the window is open on it. But the tick is also what opens the window,
+    and one opened with the drawing skipped is a table with no rows to type a
+    letter into: the state the declaration exists to get the user out of."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    assert not window._font_alphabet.isVisible()
+
+    window._use_as_font.setChecked(True)
+
+    assert window._font_alphabet.isVisible()
+    assert window._font_alphabet._table.rowCount() > 0
+
+
 def _binding_gesture(qtbot, tmp_path, codes):
     """A fontmap and an undeclared sheet, with the Tiles combo about to be set.
 

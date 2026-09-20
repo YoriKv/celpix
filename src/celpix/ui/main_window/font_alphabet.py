@@ -125,8 +125,15 @@ class FontAlphabetMixin:
         decoded, laid out and rasterized — and not one pixel of it moves when a
         character is typed into the table beside it. Only the document changing
         can change the picture, and that route passes ``sheet=True``.
+
+        The skip only holds while the window is **already showing this font's
+        sheet**. An edit can also be what opens it — ticking Use as Font lands
+        here through :meth:`_apply_font_alphabet` — and a window opened with the
+        drawing skipped is a table with no rows under a sheet with no tiles.
         """
         font = self._font_entry()
+        if not (self._font_alphabet.isVisible() and font is self._font_alphabet_font):
+            sheet = True
         if font is not self._font_alphabet_font:
             # A cell still open belongs to the table about to be refilled, so it
             # lands on the font it was typed against before that table goes.

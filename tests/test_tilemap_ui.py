@@ -832,6 +832,44 @@ def test_a_screen_assembles_its_four_pages_and_edits_land_on_the_right_cell(
     assert panel._columns.isEnabled()
 
 
+def test_cols_picks_the_assembly_of_pages_a_file_does_not_lay_out(
+    qtbot, tmp_path
+) -> None:
+    """The other side of the screen file above: a bare map that is several pages
+    long under a format stating a page size, with **nothing saying how they
+    sit**. The default is only a guess there - a game's eight pages are as likely
+    two across as four - so Cols stays live and is the control that picks.
+
+    It moves in whole pages and lands only on arrangements that show every page,
+    snapping the way the number moved: four pages step 64 -> 96, and nearest
+    would hand back the 64 just stepped off. The choice is stored as the assembly
+    rather than the width, and one undo step takes it back."""
+    from celpix.core.capabilities import ContentKind
+
+    path = tmp_path / "four-pages.map"
+    path.write_bytes(bytes(4 * 32 * 32 * 2))  # four 32x32 pages of 16-bit cells
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    doc = window._doc
+
+    assert doc.pages == 4 and not doc.stated_pages_across
+    assert doc.assembly_choices == (1, 2, 4)
+    assert window._columns.isEnabled() and window._columns.value() == 64
+    assert window._pages_across() == 0  # opened on the default: nobody has chosen
+
+    window._columns.setValue(96)  # one page wider, which three across cannot be
+    assert window._columns.value() == 128 and window._doc.pages_across == 4
+    assert window._canvas._image.width() == 128 * 8
+    assert window._pages_across() == 4  # what a project stores
+
+    window._undo_stack.undo()
+    assert window._columns.value() == 64 and window._doc.pages_across == 2
+
+    window._columns.setValue(40)  # narrower: down to the one arrangement below
+    assert window._columns.value() == 32 and window._doc.pages_across == 1
+
+
 def test_a_dense_map_that_states_no_width_keeps_cols_live(qtbot, tmp_path) -> None:
     """The other half of the lock above. A dense map's entries are one per stamp
     and no filler — a plain rectangle — so its width is the same free preference
