@@ -80,6 +80,7 @@ from celpix.core.context import (
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_PAGE_ROWS,
     KEY_TILEMAP_STAMP_CELLS,
+    KEY_TILEMAP_STAMP_COLUMN_MAJOR,
     KEY_TILEMAP_STAMP_STRIDE,
     PipelineContext,
 )
@@ -277,6 +278,9 @@ def _publish_stamp(params: dict[str, Any], ctx: PipelineContext) -> None:
     Records packed end to end, four cells to a 2x2 metatile, stamp at stride
     2 whatever width the table is displayed at; stating the stride here is what
     lets such a table be viewed sixteen metatiles across and still stamp.
+    ``stamp_order = "column"`` is the same record stored down each column
+    (upper-left, lower-left, upper-right, lower-right): the stride is then the
+    step between the stamp's columns, and its rows are adjacent cells.
 
     Both are read by the map bound to this one (``session._chain_stamp_cells``,
     ``_chain_source_columns``), never by this map, so a referrer's own preset
@@ -296,6 +300,15 @@ def _publish_stamp(params: dict[str, Any], ctx: PipelineContext) -> None:
             ctx.set(KEY_TILEMAP_STAMP_STRIDE, max(1, int(stride)))
         except (TypeError, ValueError):
             pass
+    order = params.get("stamp_order", "row")
+    if order not in ("row", "column"):
+        raise ValueError(f"stamp_order must be 'row' or 'column', got {order!r}")
+    if order == "column":
+        # Required rather than defaulted: the fallback stride is the width the
+        # table is viewed at, which is a row step and means nothing down a column.
+        if stride is None:
+            raise ValueError('stamp_order = "column" needs a stamp_stride')
+        ctx.set(KEY_TILEMAP_STAMP_COLUMN_MAJOR, True)
 
 
 def _endian(params: dict[str, Any]) -> str:

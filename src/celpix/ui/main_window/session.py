@@ -23,7 +23,6 @@ dropped and re-read (see :meth:`~SessionMixin._load_entry`).
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import NamedTuple
 
 from PySide6.QtGui import QImage
 
@@ -32,29 +31,22 @@ from celpix.core.aspect import parse as parse_aspect
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_PIXEL_ASPECT,
-    KEY_PIXEL_PRESET,
-    KEY_TILE_PALETTE_ROW_BASE,
     KEY_TILE_PALETTE_ROWS,
-    KEY_TILEMAP_CELL_TILES,
-    KEY_TILEMAP_PALETTE_ROW_BASE,
-    KEY_TILEMAP_STAMP_CELLS,
-    KEY_TILEMAP_STAMP_STRIDE,
-    PipelineContext,
 )
-from celpix.core.document import CellChain, Document
-from celpix.core.errors import PipelineError, Stage
+from celpix.core.document import Document
+from celpix.core.errors import PipelineError
 from celpix.core.notices import warn
-from celpix.core.paletteregions import PaletteRegion, PaletteRegions
-from celpix.core.tilemap import VRAM_ROW_STRIDE, Cell
+from celpix.core.tilemap import Cell
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_COMPRESSION, STAGE_DEFAULT_PRESET, FileRef
+from celpix.plugins.base import NO_COMPRESSION
+from celpix.project import documents
+from celpix.project.documents import BoundTiles
 from celpix.project.workspace import (
     Entry,
     EntryKind,
     EntrySession,
     PaletteMode,
-    TileMode,
     TileSource,
     backfill_slice_length,
     composite_config,
@@ -66,24 +58,6 @@ from celpix.project.workspace import (
 )
 from celpix.ui.tools import EditMode
 from celpix.ui.widgets import select_combo_data, signals_blocked
-
-# What a tilemap entry falls back to when nothing else named a cell codec — a
-# container normally supplies one (``detect.tilemap_preset_for``), so this is
-# for a tilemap that was carved out by hand rather than detected.
-_DEFAULT_TILEMAP_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_TILEMAP]
-_DEFAULT_PIXEL_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
-
-
-class _BoundTiles(NamedTuple):
-    """The art a tilemap entry draws from, ready to become the document's
-    pixel half — or an empty stand-in when nothing is bound."""
-
-    data: bytes
-    bytes_per_tile: int
-    tile_width: int
-    tile_height: int
-    ctx: PipelineContext
-    config: PathwayConfig
 
 
 class SessionMixin:
@@ -261,23 +235,7 @@ class SessionMixin:
             cfg = self._pixel_config(entry, session.pixel_preset_id)
             self._files_panel.refresh_entry(entry)
         px, cfg = self._apply_pixel_preset_hint(entry, px, cfg)
-        entry.doc = Document(
-            pixel_data=px.data,
-            bytes_per_tile=px.bytes_per_tile,
-            tile_width=px.tile_width,
-            tile_height=px.tile_height,
-            palette=self._fallback_palette(),
-            pixel_config=cfg,
-            palette_config=self._placeholder_palette_config(session.palette_preset_id),
-            pixel_ctx=px.ctx,
-            # A bank states where its own rows count from, and its per-tile table
-            # (seeded as pinned regions below) counts from exactly there. Nothing
-            # in a preset can say it — it is a fact about this file — so the
-            # declared answer is 0 and the header is the only other voice.
-            palette_row_base=self._row_base_for(
-                entry, 0, stated=False, bank=px.ctx.get(KEY_TILE_PALETTE_ROW_BASE)
-            ),
-        )
+        entry.doc = documents.pixel_document(entry, px, cfg)
         self._apply_restored_state(entry)
         # After the restore: a project that stored regions of its own has just
         # put them back, and the file's are only a starting point.
@@ -321,83 +279,20 @@ class SessionMixin:
             if not quiet:
                 self._report(exc)
             return False
+        if backfill_slice_length(entry, loaded.ctx):
+            # The pixel path's rule, for the same reason: a map sliced without a
+            # length is bounded by the extent its decompressor found, or a write
+            # that repacks larger runs on into whatever follows it in the file.
+            cfg = self._tilemap_config(entry, self._tilemap_preset_id(entry))
+            self._files_panel.refresh_entry(entry)
         through = self._bound_tilemap(entry)
         if through is not None:
             # Bound to another tilemap rather than to art: these cells index that
             # map's *cells*, and the tiles come from whatever it is itself bound
             # to. Two hops, and the second is an ordinary binding — which is as
             # far as it goes (:meth:`_bound_tilemap`).
-            entry.doc = Document(
-                pixel_data=through.pixel_data,
-                bytes_per_tile=through.bytes_per_tile,
-                tile_width=through.tile_width,
-                tile_height=through.tile_height,
-                palette=self._fallback_palette(),
-                pixel_config=replace(through.pixel_config, write_enabled=False),
-                palette_config=self._placeholder_palette_config(
-                    session.palette_preset_id
-                ),
-                pixel_ctx=through.pixel_ctx,
-                cells=loaded.cells,
-                # `resolved_cells` follows from this and is not passed: the
-                # document derives it, so an edit can re-derive it the same way.
-                #
-                # The stamp size is whichever side states it — this format's own
-                # declaration where it has one (a metatile table knows its own
-                # stamp), else the source's published context (a PNL panel's
-                # header says how big a stamp its callers index in, and a
-                # layout's own file has no idea). Whether this file holds an
-                # entry per stamp or one per drawn position is only ever its own
-                # format's constant, so that is declared rather than published
-                # (`docs/design/tilemap-entry.md` §3.1).
-                chain=CellChain(
-                    through.cells or [],
-                    loaded.palette_rows,
-                    stamp=self._chain_stamp_cells(entry, through),
-                    source_columns=self._chain_source_columns(through),
-                    dense=self._tilemap_is_dense(entry),
-                ),
-                # Writable, like any other tilemap: a cell edit here restamps, and
-                # what it writes back is this file's own entry table. The *pixel*
-                # config stays read-only above - the art belongs to the map at the
-                # end of the chain, and a restamp must never reach it.
-                tilemap_config=cfg,
-                tilemap_ctx=loaded.ctx,
-                tilemap_data=loaded.data,
-                # This entry's own record size, unlike the drawing geometry below
-                # it: what the hex dump shows here is this file's cells.
-                cell_bytes=loaded.cell_bytes,
-                # The geometry is the source map's, because what is drawn is its
-                # cells: how many tiles one covers, and where its own base puts
-                # them, are answers this entry has no version of.
-                cell_tiles=through.cell_tiles,
-                cell_row_stride=through.cell_row_stride,
-                tile_base_index=through.tile_base_index,
-                # The source map's too: what is expanded into tiles is its cells,
-                # so the field they wrap inside is its format's.
-                index_mask=through.index_mask,
-                # The source map's rows are what get drawn, so its base applies -
-                # unless this entry states one of its own.
-                palette_row_base=self._row_base_for(entry, through.palette_row_base),
-                # Rows are stated if *either* side states them — the referrer's
-                # win where its format has the field, the source's come through
-                # where it does not (:func:`_resolve_through`). Either way the
-                # view must not add a palette row over the top.
-                cells_carry_palette_rows=(
-                    through.cells_carry_palette_rows or loaded.palette_rows
-                ),
-                # **This entry's own**, unlike everything above it that comes off
-                # the source, and the two tilemap documents have to pass the same
-                # thing here. What it sizes is a *write*: a row assignment grows
-                # to the group the referrer's format stores one row for, snapped
-                # against the referrer's own cells and its own width
-                # (:meth:`~celpix.core.document.Document.palette_row_group`). How
-                # the source groups its rows has nothing to do with which of
-                # *this* file's entries share a stored one — and a construction
-                # site that left it out would write a single cell where the
-                # codec's encode then recolours the other three.
-                palette_row_granularity=loaded.row_granularity,
-                column_major=loaded.column_major,
+            entry.doc = documents.chained_document(
+                self._registry, entry, loaded, cfg, through
             )
             self._apply_restored_state(entry)
             self._apply_tilemap_columns(entry, restored=restored)
@@ -425,158 +320,23 @@ class SessionMixin:
                 )
             return True
         tiles = self._load_bound_tiles(entry, quiet=quiet)
-        # The cell size is the header's answer over the preset's assumption: the
-        # file is a better authority on its own geometry than a preset written
-        # for the format in general.
-        cell_tiles = loaded.ctx.get(KEY_TILEMAP_CELL_TILES) or loaded.cell_tiles
-        # A **fontmap**'s cell draws whatever one glyph of its font is, which the
-        # cell format has no opinion about: it says how many bytes a code is and
-        # nothing about how many tiles the letter takes. So the grouping comes
-        # from the font (:meth:`_glyph_layout_for`) — but only where the format
-        # has not claimed the cell covers several tiles itself, since two answers
-        # to "how many tiles is one cell" cannot both be right and the format's
-        # is about the file being read.
-        fontmap = self._tilemap_is_fontmap(entry)
-        glyph_layout = self._glyph_layout_for(entry) if fontmap else None
-        if glyph_layout is not None and cell_tiles == (1, 1):
-            cell_tiles = (glyph_layout.block_columns, glyph_layout.block_rows)
-        else:
-            glyph_layout = None
-        # Not under a glyph layout: the fit asks whether the map's indices
-        # overflow the source *in tiles*, and there they are block numbers with a
-        # base counted in blocks — so the arithmetic is in the wrong unit and its
-        # wrong answer would move a whole font sideways. Nothing is lost: the
-        # case it exists for is a map bound to a slice numbered from elsewhere,
-        # and a font sheet carved to be read as one numbers from its own zero.
-        if glyph_layout is None:
-            font = entry.tile_source.entry if fontmap and entry.tile_source else None
-            named = frozenset(g.code for g in font.font_codes) if font else frozenset()
-            self._fit_tile_base(entry, loaded.cells, tiles, cell_tiles, named)
-        entry.doc = Document(
-            pixel_data=tiles.data,
-            bytes_per_tile=tiles.bytes_per_tile,
-            tile_width=tiles.tile_width,
-            tile_height=tiles.tile_height,
-            palette=self._fallback_palette(),
-            pixel_config=tiles.config,
-            palette_config=self._placeholder_palette_config(session.palette_preset_id),
-            pixel_ctx=tiles.ctx,
-            cells=loaded.cells,
-            # View-only where the cells are subsprites, for the same reason a
-            # stamp layout is: what a canvas gesture would edit is not settled
-            # (``Document.cells_editable``).
-            tilemap_config=(
-                replace(cfg, write_enabled=False) if loaded.frames else cfg
-            ),
-            tilemap_ctx=loaded.ctx,
-            tilemap_data=loaded.data,
-            cell_bytes=loaded.cell_bytes,
-            cell_tiles=cell_tiles,
-            # The stride is the *fixed-offset* way of finding a cell's other
-            # tiles, and a glyph layout is the general one — so they are never
-            # both set, and a font's neighbours come out of the placement.
-            cell_row_stride=(
-                0
-                if glyph_layout is not None or cell_tiles == (1, 1)
-                else self._declared_cell_row_stride(entry)
-            ),
-            glyph_layout=glyph_layout,
-            index_mask=loaded.index_mask,
-            palette_row_base=self._row_base_for(
-                entry,
-                loaded.palette_row_base,
-                stated=loaded.ctx.get(KEY_TILEMAP_PALETTE_ROW_BASE) is not None,
-                bank=tiles.ctx.get(KEY_TILE_PALETTE_ROW_BASE),
-            ),
-            tile_base_index=(
-                entry.tile_source.base_index if entry.tile_source is not None else 0
-            ),
-            sprite_frames=loaded.frames,
-            # The pair the frames above were **built at**, which the load settled
-            # from the entry's own choice: read back rather than re-derived, so
-            # the bar cannot show a setting the picture is not in.
-            sprite_size_pair=loaded.size_pair,
-            cells_carry_palette_rows=loaded.palette_rows,
-            # The chained document above passes this too, and for the same
-            # reason: it is a fact about the format whose cells this entry holds.
-            palette_row_granularity=loaded.row_granularity,
-            column_major=loaded.column_major,
-            text_layout=fontmap,
-            font_alphabet=self._font_alphabet_for(entry, loaded.cell_bytes),
+        entry.doc = documents.tilemap_document(
+            self._registry, self._workspace, entry, loaded, cfg, tiles
         )
         self._apply_restored_state(entry)
         self._apply_tilemap_columns(entry, restored=restored)
         return True
 
     def _apply_pixel_preset_hint(self, entry: Entry, px, cfg):  # noqa: ANN001
-        """Adopt the format the container says its payload is in, if it says.
-
-        A tile bank that records its own bit depth should not need one guessed:
-        2bpp, 4bpp and 8bpp all decode into something that *looks* like graphics,
-        so a wrong pick is plausible garbage rather than an obvious error.
-
-        Only the geometry is re-derived — :func:`reinterpret_pixel_data` re-reads
-        nothing, so this costs a recompute rather than a second pass over the
-        file. Applied only on a **fresh** entry: once a project has stored a
-        format, or the user has picked one, that is the answer and a re-read must
-        not overrule it.
-        """
-        wanted = str(px.ctx.get(KEY_PIXEL_PRESET, "") or "")
-        session = entry.session
-        if not wanted or session is None or entry.pending_view is not None:
-            return px, cfg
-        if wanted == session.pixel_preset_id:
-            return px, cfg
-        try:
-            regeared = pipeline.reinterpret_pixel_data(
-                px.data, px.ctx, cfg, self._registry
-            )
-        except PipelineError:
-            return px, cfg  # the hint named something this build hasn't got
-        session.pixel_preset_id = wanted
-        return regeared, self._pixel_config(entry, wanted)
+        """:func:`~celpix.project.documents.apply_pixel_preset_hint`, settling."""
+        return documents.apply_pixel_preset_hint(
+            entry, px, cfg, self._registry, self._pixel_config
+        )
 
     def _seed_tile_palette_rows(self, entry: Entry, table: bytes) -> None:
-        """Turn a bank's per-tile palette rows into pinned palette regions.
-
-        The file is saying what pinned regions otherwise have to be told by hand
-        — which palette row each tile is meant to be read under — so it seeds
-        them and they behave like any other pin from there: visible, editable,
-        and saved with the project.
-
-        The table's rows are stored as the file states them, which is **relative
-        to the entry's palette row base** (the same header states both). So they
-        are pinned unshifted and the base reaches them at render, like a cell's
-        row — which is what lets the base spin re-aim a whole bank at the palette
-        that actually got loaded without rewriting a region.
-
-        Runs of equal rows collapse into one region each, because that is what a
-        region *is*; a bank of 1024 tiles usually resolves to a few dozen.
-
-        Row 0 is pinned like any other. It is a row the file *named*, not an
-        absence of one — the only other implementation of the format renders it
-        through the same base-plus-attribute arithmetic as rows 1-7, and a
-        surveyed 4bpp bank uses all eight values with 0 the commonest at 39% of
-        tiles. Leaving it out would let exactly those tiles drift with the view's
-        palette row selector while their neighbours stayed put, so the picture
-        stops matching the file the moment the view is not on row 0.
-        """
-        doc = entry.doc
-        if doc is None or not table or doc.bytes_per_tile <= 0:
-            return
-        per_tile = doc.tile_width * doc.tile_height
-        if per_tile <= 0:
-            return
-        regions, start, row = [], 0, table[0]
-        for index in range(1, len(table) + 1):
-            here = table[index] if index < len(table) else None
-            if here != row:
-                regions.append(
-                    PaletteRegion(start * per_tile, (index - start) * per_tile, row)
-                )
-                start, row = index, here
-        if regions:
-            doc.view.palette_regions = PaletteRegions.from_regions(regions)
+        """:func:`~celpix.project.documents.seed_tile_palette_rows`, on its document."""
+        if entry.doc is not None:
+            documents.seed_tile_palette_rows(entry.doc, table)
 
     def _fit_tile_base(  # noqa: ANN001
         self,
@@ -586,49 +346,8 @@ class SessionMixin:
         cell_tiles: tuple[int, int],
         named: frozenset[int] = frozenset(),
     ) -> None:
-        """Shift a map onto a source it overflows, when its own indices say how.
-
-        A map's cells and the entry supplying its tiles routinely number from
-        different places — the art is often a *slice*, whose tiles start at 0
-        whatever the map calls them. The map itself says by how much: scan its
-        indices, and if the lowest one is the amount by which the highest
-        overflows the source, the map is the same picture shifted and
-        ``-min`` lands it (:class:`~celpix.project.workspace.TileSource`).
-
-        Deliberately narrow, because the guess has a wrong answer as well as a
-        right one. A map bound to a *whole* bank indexes it absolutely and needs
-        no shift, so this only fires when the map does not fit as it stands and
-        does fit once shifted — a condition an absolutely-indexed map never meets.
-        It also never overrides a base the user set, and never runs on a map with
-        no binding to be judged against.
-
-        ``named`` is the codes a fontmap's font names in its alphabet. One of
-        those past the end of the sheet is punctuation — a terminator or a space
-        given a code the sheet has no glyph for — and draws nothing by design, so
-        it is not an overflow. Counting it would shift any string block that
-        holds no code 0 down by its lowest letter, while its siblings, each with
-        a space or terminator at 0, drew correctly.
-        """
-        source = entry.tile_source
-        if source is None or not source.is_bound or source.base_index or not cells:
-            return
-        count = len(tiles.data) // max(1, tiles.bytes_per_tile)
-        if not count:
-            return  # unreadable binding: nothing to fit against
-        indices = [
-            cell.index
-            for cell in cells
-            if cell.index < count or cell.index not in named
-        ]
-        if not indices:
-            return
-        low, high = min(indices), max(indices)
-        # A cell covering several tiles reaches past its own index, so the span
-        # has to allow for what the widest of them draws.
-        across, down = max(1, cell_tiles[0]), max(1, cell_tiles[1])
-        reach = high + (down - 1) * VRAM_ROW_STRIDE + (across - 1)
-        if low and reach >= count and reach - low < count:
-            entry.tile_source = replace(source, base_index=-low)
+        """:func:`~celpix.project.documents.fit_tile_base`."""
+        documents.fit_tile_base(entry, cells, tiles, cell_tiles, named)
 
     def _row_base_for(
         self,
@@ -638,128 +357,30 @@ class SessionMixin:
         stated: bool = True,
         bank: int | None = None,
     ) -> int:
-        """The palette row ``entry``'s named rows count their row 0 from.
-
-        Four answers, most specific first, resolved here so the document carries
-        the base **in force** and every render reads one number rather than
-        choosing between several. One question for both kinds of entry: what a
-        tilemap's cells count from, a tile bank's pinned rows count from too.
-
-        The entry's own value wins outright: what no file can know is which
-        palette got loaded (:attr:`~celpix.project.workspace.Entry.palette_row_base`).
-        Then the map's own header, where its format has one — ``stated`` is
-        whether ``declared`` came from the file rather than from the preset. A
-        pixel entry has no such field, so it passes ``stated=False`` and a
-        declared 0.
-
-        Then, and this is the one that needs saying, **the bank's**. A sprite
-        object names a 3-bit palette row and carries nothing to count it from,
-        so the preset's 8 is standing in for the commonest case rather than
-        reading anything; the tile bank those subsprites draw from *does* state
-        a base, and it is the same origin its own per-tile row table counts from
-        (:data:`~celpix.core.context.KEY_TILE_PALETTE_ROW_BASE`). Where the art
-        says, the art wins over a constant. The preset is the last resort, for a
-        bank whose header is absent or a format with no such field at all.
-        """
-        chosen = entry.palette_row_base
-        if chosen is not None:
-            return chosen
-        if stated or bank is None:
-            return declared
-        return bank
+        """:func:`~celpix.project.documents.row_base_for`."""
+        return documents.row_base_for(entry, declared, stated=stated, bank=bank)
 
     def _tilemap_preset_id(self, entry: Entry) -> str:
-        """The cell format ``entry``'s own file is read under.
-
-        A container names one when the file is opened
-        (``detect.tilemap_preset_for``), so the fallback is for a tilemap carved
-        out by hand, which had no container to have said.
-        """
-        return entry.tilemap_preset_id or _DEFAULT_TILEMAP_PRESET
+        """:func:`~celpix.project.documents.tilemap_preset_id`."""
+        return documents.tilemap_preset_id(entry)
 
     def _tilemap_declares(self, entry: Entry, name: str) -> object:
-        """What ``entry``'s cell **format** declares under ``name``, or None.
-
-        The format's answer and not the document's, which is the whole of what
-        these declarations are for: they are readable before anything is loaded
-        or bound, so the binding bar can describe an entry it has not read yet.
-        An object with no tile source is still an object, and a stamp layout with
-        none is still a stamp layout (:meth:`_tilemap_is_sprite`,
-        :meth:`_tilemap_is_indirect`).
-
-        None for a preset id nothing is registered under, which is the same
-        answer as a preset that declares nothing: a format celPix does not have
-        cannot have claimed anything about its cells.
-        """
-        return self._preset_declares(self._tilemap_preset_id(entry), name)
+        """:func:`~celpix.project.documents.tilemap_declares`."""
+        return documents.tilemap_declares(self._registry, entry, name)
 
     def _preset_declares(self, preset_id: str, name: str) -> object:
-        """The same, of a **format** rather than of an entry.
-
-        What the cell-format picker needs: the entry still holds the old format
-        at the moment a switch is being weighed, so the question has to be asked
-        of the id about to be applied.
-        """
-        try:
-            preset = self._registry.preset(preset_id)
-        except KeyError:
-            return None
-        return preset.params.get(name)
+        """:func:`~celpix.project.documents.preset_declares` — of a format rather
+        than an entry, which the cell-format picker needs while a switch is being
+        weighed and the entry still holds the old one."""
+        return documents.preset_declares(self._registry, preset_id, name)
 
     def _tilemap_is_fontmap(self, entry: Entry) -> bool:
-        """Whether ``entry``'s **format** says its cells are character codes.
-
-        A *fontmap* is the tilemap variant whose cells index a font rather than
-        an arbitrary tile bank, so they can be read as words
-        (``docs/design/fontmap-entry.md``). Declared rather than inferred, for
-        the reason every one of these is: it has to answer before anything is
-        loaded or bound, and a string with no font picked is still a string —
-        which is precisely when the user wants the text window, to be told the
-        codes mean nothing yet.
-        """
-        return self._tilemap_declares(entry, "layout") == "text"
+        """:func:`~celpix.project.documents.is_fontmap`."""
+        return documents.is_fontmap(self._registry, entry)
 
     def _glyph_layout_for(self, entry: Entry) -> BlockLayout | None:
-        """How the bound font groups its tiles into glyphs, or None for one each.
-
-        **The font sheet's own arrangement**, read off the entry supplying the
-        tiles: its Cols and the Pattern picker's block. That is the whole of what
-        an 8x16 font needs said — a glyph is two tiles, and which two is decided
-        by how wide the sheet is and whether the bottoms follow the tops or sit
-        under them. A Link to the Past's dialogue font is the interleaved case,
-        and reading the Pattern reproduces the game's own
-        ``top = ((c & $F0) << 1) | (c & $0F)`` exactly
-        (``docs/design/fontmap-entry.md`` §4).
-
-        Taken from the arrangement rather than from a field of its own because
-        there is nothing a field could say that this does not already: the user
-        sets the Pattern to make the sheet legible, and a sheet that reads as
-        letters is a sheet whose blocks *are* the letters. The cost is that the
-        Pattern stops being display-only on a font entry — changing it re-letters
-        every string drawn through it — which is the honest price of the fact
-        living in one place.
-
-        **None wherever the grouping is 1x1**, which is every 8x8 font and so
-        nearly every font: a glyph is then a tile, the cells number tiles, and
-        every path below is the one that was there before.
-
-        Read off the font's document where it has one and off its restored view
-        where it has not, because a map routinely loads before the sheet it draws
-        from and the arrangement is the sheet's either way.
-        """
-        source = entry.tile_source
-        font = source.entry if source is not None else None
-        if font is None or not font.is_font_sheet:
-            return None
-        view = font.doc.view if font.doc is not None else font.pending_view
-        if view is None or (view.block_columns <= 1 and view.block_rows <= 1):
-            return None
-        return BlockLayout(
-            max(1, view.columns),
-            view.block_columns,
-            view.block_rows,
-            view.block_order,
-        )
+        """:func:`~celpix.project.documents.glyph_layout_for`."""
+        return documents.glyph_layout_for(entry)
 
     def _resync_glyph_layouts(self, font: Entry) -> None:
         """Carry ``font``'s arrangement onto every open fontmap drawn through it.
@@ -796,89 +417,22 @@ class SessionMixin:
             doc.layout_cache = None
 
     def _tilemap_flag_break(self, entry: Entry) -> bool:
-        """Whether ``entry``'s format ends a line on a bit rather than a code.
+        """:func:`~celpix.project.documents.flag_break`."""
+        return documents.flag_break(self._registry, entry)
 
-        Asked of the **codec**, which is the only thing that knows where a cell's
-        bits go. It is the one piece of a stream's punctuation the alphabet
-        cannot state: every other kind is a code, and this one is a *bit*, so it
-        has nowhere to sit in a table of codes. The alphabet is told all the
-        same, because a newline typed into such a stream costs no cell
-        (:attr:`~celpix.core.font.FontAlphabet.flag_break`).
-
-        False for a codec that was never asked, the same direction every optional
-        method here defaults: a line break that costs a cell is always writable,
-        where a bit inferred onto a format that has not got one would be written
-        into its bytes.
-        """
-        try:
-            preset = self._registry.preset(self._tilemap_preset_id(entry))
-            engine = self._registry.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
-        except KeyError:
-            return False
-        ask = getattr(engine, "has_line_flag", None)
-        return bool(ask is not None and ask(preset.params))
-
-    def _font_alphabet_for(self, entry: Entry, cell_bytes: int):
-        """The lookup ``entry``'s codes read through — the font's, whole.
-
-        Reached from here because ``entry`` is the string and the table is the
-        **font's**: whatever ``entry`` is bound to, read off that entry's own data
-        (:attr:`~celpix.project.workspace.Entry.font_chars`,
-        :attr:`~celpix.project.workspace.Entry.font_codes` and the origin
-        :attr:`~celpix.project.workspace.Entry.font_base` beside them). Letters
-        and punctuation both, since a cell format states no codes of its own
-        (:func:`~celpix.pipeline.pipeline.load_font_alphabet`) — two streams
-        punctuated differently are two font entries over the same tiles.
-
-        Read only from a sheet that says it is a font — **Use as Font**
-        (:attr:`~celpix.project.workspace.Entry.use_as_font`). Unticking keeps the
-        table, since it is the user's work, so reading it anyway would leave the
-        tick meaning nothing. That is the whole of the gate, which is why the
-        entry's own four fields are the only source of a glyph table: anything
-        filled in from the file behind them would be read with the tick off.
-
-        ``cell_bytes`` sets how wide an unmapped code prints, so a one-byte
-        stream says ``[$1F]`` and a two-byte one ``[$FFFE]``. It is the stream's
-        measure and not the font's: the same sheet may be indexed at either
-        width, and a code shown at the wrong one does not type back.
-        """
-        if not self._tilemap_is_fontmap(entry):
-            return None
-        bound = self._binding_target(entry.tile_source) if entry.tile_source else None
-        font = bound if bound is not None and bound.is_font_sheet else None
-        return pipeline.load_font_alphabet(
-            font.font_chars if font is not None else "",
-            font.font_codes if font is not None else (),
-            code_digits=max(1, cell_bytes) * 2,
-            base=font.font_base if font is not None else 0,
-            flag_break=self._tilemap_flag_break(entry),
+    def _font_alphabet_for(self, entry: Entry, cell_bytes: int):  # noqa: ANN201
+        """:func:`~celpix.project.documents.font_alphabet_for`."""
+        return documents.font_alphabet_for(
+            self._registry, self._workspace, entry, cell_bytes
         )
 
     def _tilemap_is_sprite(self, entry: Entry) -> bool:
-        """Whether ``entry``'s **format** says its cells are subsprites.
-
-        A *sprite map* is the tilemap variant whose cells are freely-placed
-        subsprites grouped into frames rather than positions in a grid
-        (``docs/design/tilemap-entry.md`` §6). Declared rather than inferred, so
-        it answers before anything is loaded (:meth:`_tilemap_declares`): an
-        object with no tile source is still an object, and its size pair is still
-        the control it needs.
-        """
-        return self._tilemap_declares(entry, "layout") == "sprite"
+        """:func:`~celpix.project.documents.is_sprite`."""
+        return documents.is_sprite(self._registry, entry)
 
     def _tilemap_states_subsprite_size(self, entry: Entry) -> bool:
-        """Whether ``entry``'s **format** gives each subsprite its own rectangle.
-
-        The sprite records split two ways on this. Most hold a size *bit* picking
-        between two squares the file never records, so the pair is a setting the
-        user supplies (:data:`~celpix.core.sprite.DEFAULT_SUBSPRITE_TILES`); a
-        Mega Drive record holds the console's own size nibble and states a
-        rectangle outright, so there is nothing to resolve and no pair to offer.
-
-        Declared rather than inferred, on the rule every one of these follows: it
-        has to answer before anything is loaded or bound.
-        """
-        return self._tilemap_declares(entry, "subsprite_size") == "stated"
+        """:func:`~celpix.project.documents.states_subsprite_size`."""
+        return documents.states_subsprite_size(self._registry, entry)
 
     def _tilemap_columns_hint(self, entry: Entry) -> int:
         """The width the entry's format states, or 0 when it states none.
@@ -892,155 +446,44 @@ class SessionMixin:
         return doc.stated_columns
 
     def _chain_stamp_cells(self, entry: Entry, through: Document) -> tuple[int, int]:
-        """How many of ``through``'s **cells** one of ``entry``'s coordinates names.
-
-        Whichever side states it, the referrer first. A format whose
-        coordinates always name a fixed block declares ``stamp_cells = [w, h]``
-        in its preset — a metatile table knows its own stamp, and needs no
-        container on the source to say so. Otherwise the **source's** published
-        answer (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_CELLS`, a PNL
-        panel's header saying how its callers index it). ``(1, 1)`` for a pair
-        that states nothing, which is the reading that leaves a chain resolving
-        one coordinate to one cell — and for a malformed declaration, since a
-        wrong guess here would expand the map to a multiple of its size.
-        """
-        stated = self._tilemap_declares(
-            entry, "stamp_cells"
-        ) or through.tilemap_ctx.get(KEY_TILEMAP_STAMP_CELLS)
-        try:
-            across, down = stated or (1, 1)
-            return max(1, int(across)), max(1, int(down))
-        except (TypeError, ValueError):
-            return (1, 1)
+        """:func:`~celpix.project.documents.chain_stamp_cells`."""
+        return documents.chain_stamp_cells(self._registry, entry, through)
 
     @staticmethod
     def _chain_source_columns(through: Document) -> int:
-        """The stride between a stamp's rows, in cells of the **source**.
+        """:func:`~celpix.project.documents.chain_source_columns`."""
+        return documents.chain_source_columns(through)
 
-        The source's own answer first (:data:`~celpix.core.context.
-        KEY_TILEMAP_STAMP_STRIDE`): a table of packed records stamps at the
-        record's width whatever it is displayed at, and publishing that is what
-        lets it be shown as a sheet. Else the width its format states;
-        otherwise the width its cells are laid at is the view's, and file order
-        is drawn order there. A stride of 1 in that case would walk a stamp's
-        second row along the same source row instead of down one.
-        """
-        stride = through.tilemap_ctx.get(KEY_TILEMAP_STAMP_STRIDE)
-        try:
-            if stride and int(stride) >= 1:
-                return int(stride)
-        except (TypeError, ValueError):
-            pass
-        return through.stated_columns or max(1, through.view.columns)
+    @staticmethod
+    def _chain_column_major(through: Document) -> bool:
+        """:func:`~celpix.project.documents.chain_stamp_column_major`."""
+        return documents.chain_stamp_column_major(through)
 
     def _declared_cell_row_stride(self, entry: Entry) -> int:
-        """The stride between a metatile cell's tile rows, in tiles of the bank.
-
-        ``cell_row_stride`` in the preset params, for a format whose metatile's
-        rows are not a VRAM row apart — a table of consecutive tiles is its own
-        width (2 for a 2x2 cell). The default stays the console VRAM row, which
-        is what every metatile format that declares nothing means: a cell's
-        lower tiles sit directly under its upper ones in the bank.
-        """
-        try:
-            stride = int(self._tilemap_declares(entry, "cell_row_stride"))  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return VRAM_ROW_STRIDE
-        return stride if stride > 0 else VRAM_ROW_STRIDE
+        """:func:`~celpix.project.documents.declared_cell_row_stride`."""
+        return documents.declared_cell_row_stride(self._registry, entry)
 
     def _tilemap_is_indirect(self, entry: Entry) -> bool:
-        """Whether ``entry``'s **format** says its cells are coordinates.
-
-        Declared rather than inferred, so it is an answer before any binding
-        exists (:meth:`_tilemap_declares`) — which is the only thing it is for.
-        Chaining itself is generic and gated on depth (:meth:`_bound_tilemap`), so
-        this never decides what a map may draw through; it decides how the bar
-        reads while nothing is bound yet. A stamp layout with no source is still a
-        stamp layout, and should be offered PNL panels first and no Base tile rather
-        than being described as a map that merely has not picked its art.
-        """
-        return bool(self._tilemap_declares(entry, "indirect"))
+        """:func:`~celpix.project.documents.is_indirect`."""
+        return documents.is_indirect(self._registry, entry)
 
     def _tilemap_is_dense(self, entry: Entry) -> bool:
-        """Whether ``entry``'s **format** holds one entry per stamp.
-
-        The referring half of a stamped chain, and the only part of one that is
-        not the source's to answer (:attr:`~celpix.core.document.CellChain.dense`).
-        A stamp layout has a slot per drawn position and only its corners are read;
-        a map of 16x16 metatiles over an 8x8 bank has a slot per stamp and no
-        filler at all. Which shape a file is, is fixed by its format rather than by
-        anything in its bytes — every file of that format is the same shape — so it
-        is declared in the preset beside ``indirect`` rather than published on the
-        context the way the source's stamp size has to be.
-
-        False for a format that declares nothing, which is every one in the shipped
-        tree: a stamped chain stays the sparse reading it has always been unless a
-        format asks for the other, and a wrong guess here would expand a map to
-        four times its size.
-        """
-        return bool(self._tilemap_declares(entry, "stamp_dense"))
+        """:func:`~celpix.project.documents.is_dense`."""
+        return documents.is_dense(self._registry, entry)
 
     def _binding_target(self, source: TileSource) -> Entry | None:
-        """The open entry ``source`` names, or None when it names nothing usable.
-
-        The one place a binding becomes a usable entry
-        (:class:`~celpix.project.workspace.TileSource`). Everything that asks
-        where a map's tiles come from resolves it here — the depth gate below, the
-        chained load, the pathway that reads the tiles, and the bar's combo, note
-        and jump button — so a binding that no longer names anything reads the
-        same way to all of them instead of each carrying its own check.
-
-        The check is that the entry is still **open**, which is the one thing
-        holding it by identity cannot answer on its own: a closed entry is a live
-        object that undo may yet put back, so the binding keeps it and simply does
-        not resolve while it is out of the list. Scanned by identity rather than
-        by ``in``, which would ask :class:`Entry` for an equality it deliberately
-        does not have.
-        """
-        if source.mode is not TileMode.ENTRY:
-            return None
-        entry = source.entry
-        if entry is None or not any(
-            open_ is entry for open_ in self._workspace.entries
-        ):
-            return None
-        return entry
+        """:func:`~celpix.project.documents.binding_target` — the one place a
+        binding becomes a usable entry, for every reader of one."""
+        return documents.binding_target(self._workspace, source)
 
     def _draws_through_tilemap(self, entry: Entry) -> bool:
-        """Whether ``entry``'s binding names another tilemap rather than art.
-
-        Read off the **binding**, not off a loaded document, which is what makes
-        it safe to ask while loading: the answer needs no pipeline run, so the
-        depth gate in :meth:`_bound_tilemap` can settle a chain before anything
-        is read and a pair of maps pointed at each other cannot recurse.
-        """
-        if entry.content_kind is not ContentKind.TILEMAP:
-            return False
-        source = entry.tile_source
-        bound = self._binding_target(source) if source is not None else None
-        return (
-            bound is not None
-            and bound is not entry
-            and bound.content_kind is ContentKind.TILEMAP
-        )
+        """:func:`~celpix.project.documents.draws_through_tilemap`."""
+        return documents.draws_through_tilemap(self._workspace, entry)
 
     def _can_supply_tiles(self, entry: Entry, candidate: Entry) -> bool:
-        """Whether ``candidate`` is a source ``entry`` could draw through.
-
-        The one rule behind both the binding combo and the "From file..." check,
-        so what is offered and what is accepted cannot disagree: art always, and
-        a tilemap only while it reaches art itself.
-
-        Never the entry itself, which would bind it to its own bytes, and never a
-        bookmark, which marks a position rather than holding content.
-        """
-        if candidate is entry or candidate.kind is EntryKind.BOOKMARK:
-            return False
-        if candidate.content_kind is ContentKind.PIXELS:
-            return True
-        if candidate.content_kind is not ContentKind.TILEMAP:
-            return False
-        return not self._draws_through_tilemap(candidate)
+        """:func:`~celpix.project.documents.can_supply_tiles` — behind both the
+        binding combo and the "From file..." check, so they cannot disagree."""
+        return documents.can_supply_tiles(self._workspace, entry, candidate)
 
     def _bound_tilemap(self, entry: Entry) -> Document | None:
         """The tilemap ``entry`` draws through, loaded — or None if it draws art.
@@ -1403,12 +846,13 @@ class SessionMixin:
                 source=cells,
                 stamp=self._chain_stamp_cells(other, through),
                 source_columns=self._chain_source_columns(through),
+                stamp_column_major=self._chain_column_major(through),
             )
             doc.resolve()
             current = current or other is self._workspace.current
         return current
 
-    def _load_bound_tiles(self, entry: Entry, *, quiet: bool = False) -> _BoundTiles:
+    def _load_bound_tiles(self, entry: Entry, *, quiet: bool = False) -> BoundTiles:
         """The tiles a tilemap entry draws from, or an empty stand-in.
 
         A binding that cannot be read degrades to no tiles rather than failing
@@ -1437,76 +881,19 @@ class SessionMixin:
             if not quiet:
                 self._report_tile_binding(entry, exc)
             return self._no_tiles()
-        return _BoundTiles(
+        return BoundTiles(
             px.data, px.bytes_per_tile, px.tile_width, px.tile_height, px.ctx, cfg
         )
 
     def _live_bound_tiles(
         self, source: TileSource, cfg: PathwayConfig
-    ) -> _BoundTiles | None:
-        """The bound entry's **loaded** art, taken from its document rather than read.
+    ) -> BoundTiles | None:
+        """:func:`~celpix.project.documents.live_bound_tiles`."""
+        return documents.live_bound_tiles(self._workspace, source, cfg)
 
-        A binding names an entry and not a path precisely so the map draws what
-        that entry currently holds (:class:`
-        ~celpix.project.workspace.TileSource`) — and an entry's unsaved edits live
-        only in its document, so re-reading the pathway would show the file as it
-        was on disk. That is the difference between a bank edited in its own view
-        showing through in the map straight away and not showing at all until
-        both are saved; with pixel editing *through* a map it is sharper still,
-        since a rebind re-reads and would take an undeposited edit back out
-        (``docs/design/tilemap-entry.md`` §8.4).
-
-        **The same rule as** :func:`~celpix.project.workspace.entry_view_bytes`,
-        which is that rule's single definition — "the live document's bytes when
-        one is loaded, else the region read fresh" — and this is a second
-        implementation of it rather than a caller. They are not merged because
-        that function returns ``(data, base)`` and drops the
-        :class:`~celpix.core.context.PipelineContext` a bound read has to carry,
-        and because the geometry below has no counterpart there. Anything that
-        changes what "live bytes" means has to change both; that is the cost of
-        the split, recorded here so it is not discovered.
-
-        None when there is no document to take, which is the ordinary case on a
-        project load: entries are lazy, and the pathway read below is what fills
-        this in. The config still comes from the bound entry either way, so the
-        two routes produce the same bytes — this one just cannot be stale.
-
-        The **geometry** is taken from that document too, not from the config: a
-        document read under one pixel preset and a config naming another would
-        cut the same buffer into different tiles.
-        """
-        bound = self._binding_target(source)
-        doc = bound.doc if bound is not None else None
-        if doc is None or doc.is_tilemap:
-            return None
-        return _BoundTiles(
-            doc.pixel_data,
-            doc.bytes_per_tile,
-            doc.tile_width,
-            doc.tile_height,
-            doc.pixel_ctx,
-            cfg,
-        )
-
-    def _no_tiles(self) -> _BoundTiles:
-        """The stand-in for an unbound or unreadable source: geometry, no bytes.
-
-        The tile size still comes from a real codec so the cells have a size to
-        be drawn at — a blank map at the right scale reads as "no tiles yet",
-        where a zero-sized one reads as a broken window.
-        """
-        preset_id = self._pixel_preset_id() or _DEFAULT_PIXEL_PRESET
-        cfg = PathwayConfig(
-            source=FileRef(""), interpret_preset_id=preset_id, write_enabled=False
-        )
-        try:
-            engine, preset = self._registry.engine_for(preset_id)
-            width, height = engine.tile_size(preset.params)
-            per_tile = engine.bytes_per_tile(preset.params)
-        except Exception:  # noqa: BLE001 — a stand-in must not be able to fail
-            width = height = 8
-            per_tile = 32
-        return _BoundTiles(b"", per_tile, width, height, PipelineContext(), cfg)
+    def _no_tiles(self) -> BoundTiles:
+        """:func:`~celpix.project.documents.no_tiles`, at the combo's format."""
+        return documents.no_tiles(self._registry, self._pixel_preset_id())
 
     def _tilemap_config(self, entry: Entry, preset_id: str) -> PathwayConfig:
         """The pathway that reads ``entry``'s own file as cells.
@@ -1523,39 +910,10 @@ class SessionMixin:
         return tilemap_config_for(entry, preset_id, self._registry, self._workspace)
 
     def _tile_source_config(self, entry: Entry, source: TileSource) -> PathwayConfig:
-        """The pathway that reads the tiles ``source`` points at.
-
-        Resolved through the bound entry's own config, so the tiles are read
-        exactly as that entry reads them — its container, its reshape, its pixel
-        codec, and, when it has unsaved edits, its live buffer rather than the
-        stale file (``pixel_config_for``). That is what makes an edit to the art
-        show through in the map straight away, and why binding names an entry
-        rather than a file: a file would have to restate all of it.
-        """
-        bound = self._binding_target(source)
-        if bound is None:
-            name = source.entry.name if source.entry is not None else "nothing"
-            raise KeyError(f"the tiles are bound to {name}, which is not open")
-        if not self._can_supply_tiles(entry, bound):
-            # Refused here as well as at the binding, because a source can gain a
-            # binding of its own after this one was made and nothing re-asks
-            # (:meth:`_tile_bank_owner`). Without it the map reads a file of
-            # *coordinates* through a pixel codec and draws it as art — a picture
-            # the bar is at that moment describing as not resolved.
-            raise KeyError(f"{bound.name} draws through a tilemap itself")
-        preset = (
-            bound.session.pixel_preset_id
-            if bound.session is not None
-            else self._pixel_preset_id()
-        )
-        # Read exactly as that entry reads itself, but **never written**: the
-        # tiles belong to the bound entry, which saves them itself. Without this
-        # the map's own Write would deposit into a second file the user never
-        # asked to save (``docs/design/tilemap-entry.md`` §3).
-        return replace(
-            self._pixel_config(bound, preset),
-            write_enabled=False,
-            writes_through_parent=False,
+        """:func:`~celpix.project.documents.tile_source_config`, through this
+        window's :meth:`_pixel_config` so a bound slice's parent settles first."""
+        return documents.tile_source_config(
+            self._workspace, entry, source, self._pixel_config, self._pixel_preset_id()
         )
 
     def _report_tile_binding(self, entry: Entry, exc: Exception) -> None:

@@ -808,6 +808,13 @@ def tile_source_ids(doc: Document, limit: int | None = None) -> Sequence[int]:
     across, down = max(1, unit[0]), max(1, unit[1])
     if across == 1 and down == 1:
         return span
+    if chain is not None and chain.stamp_column_major:
+        # The same test with the axes swapped: a column's cells are adjacent and
+        # the stride steps between columns (`stamp_offset`).
+        stride = max(down, stride)
+        return [
+            at for at in span if at % stride % down == 0 and at // stride % across == 0
+        ]
     stride = max(across, stride)
     return [
         at
@@ -885,6 +892,7 @@ def tile_source_image(
                 doc.stamp_cells,
                 chain.source_columns,
                 carry_rows=False,
+                column_major=chain.stamp_column_major,
             )
         ]
     tiles, layout = expand_cells(doc, reg, cells, columns, doc.stamp_tiles)

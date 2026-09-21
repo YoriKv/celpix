@@ -47,6 +47,7 @@ from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import RAW_CONTAINER, FileRef
 from celpix.plugins.detect import detect_container
+from celpix.project import documents
 from celpix.project.workspace import (
     Entry,
     PaletteMode,
@@ -444,23 +445,8 @@ class PaletteSourceMixin:
         preset_id: str,
         container_id: str = RAW_CONTAINER,
     ) -> PathwayConfig:
-        """The writable pathway a PALETTE entry reads and writes its ``.pal`` with.
-
-        Source and dest are the same file, so a color edit re-encodes into exactly
-        the bytes it was read from (the whole file for a plain ``.pal``).
-
-        ``container_id`` is what cuts the colors out of a file that holds more
-        than colors — an authoring tool's palette with its metadata block after
-        them. It rides on both ends for the same reason a graphic's does: the
-        container that unwrapped the file is the one that has to re-wrap it, so
-        an edit writes back the colors and leaves that block alone.
-        """
-        return PathwayConfig(
-            source=FileRef(path, offset=offset),
-            dest=FileRef(path, offset=offset),
-            interpret_preset_id=preset_id,
-            container_id=container_id,
-        )
+        """:func:`~celpix.project.documents.file_palette_config`."""
+        return documents.file_palette_config(path, offset, preset_id, container_id)
 
     def _file_palette_colors(self, palette: Entry) -> list[int]:
         """The colors a removed file palette hands each graphic as a custom copy.
@@ -711,27 +697,8 @@ class PaletteSourceMixin:
     def _emulator_palette_config(
         self, path: str
     ) -> tuple[emustate.StateFormat, PathwayConfig]:
-        """Detect the emulator state at ``path`` and build its palette config.
-
-        The console is auto-detected from the file's bytes/extension, and the
-        palette codec is the one that console dictates (BGR555 for SNES, the NES
-        master-palette index table, …) - not whatever the format dropdown was
-        on. View-only: the state is a memory dump, never a palette we write back.
-        Raises :class:`emustate.StateError` (unrecognised / palette not located)
-        or the usual pipeline/OS errors; the read window is floored to what fits.
-        """
-        data = Path(path).read_bytes()
-        fmt, region = emustate.locate_palette(data)
-        # A locator extracts the palette out of a container/memory image rather
-        # than pointing at a file offset, so those bytes feed the pipeline direct.
-        length = min(
-            len(region.data),
-            pipeline.palette_read_bytes(region.count, region.preset_id, self._registry),
-        )
-        ref = FileRef(path, offset=0, length=length, data=region.data)
-        return fmt, PathwayConfig(
-            source=ref, interpret_preset_id=region.preset_id, write_enabled=False
-        )
+        """:func:`~celpix.project.documents.emulator_palette_config`."""
+        return documents.emulator_palette_config(path, self._registry)
 
     def _open_emulator_state(self) -> bool:
         """Load a palette from an emulator save state; ``False`` on cancel/failure
@@ -1324,17 +1291,8 @@ class PaletteSourceMixin:
         return loaded, cfg
 
     def _fallback_palette(self) -> Palette:
-        """The generated palette shown until a real one is loaded — full length.
-
-        Sized to the whole 256 rather than one palette row's worth: the generator
-        puts a contrasting row first, a **grayscale ramp second** and distinct
-        colors after, none of which exists at all if only the format's index
-        space is asked for (a 4bpp view would stop at 16 — one row, no ramp).
-        At full length every palette row the row spin can reach is populated, so
-        single-channel data can be read as a ramp by stepping to row 1, and
-        forking Default → Custom keeps the palette exactly the size it was.
-        """
-        return Palette.default(FULL_PALETTE_COUNT)
+        """:func:`~celpix.project.documents.fallback_palette`."""
+        return documents.fallback_palette()
 
 
 def _same_palette_state(before: PaletteState, after: PaletteState) -> bool:

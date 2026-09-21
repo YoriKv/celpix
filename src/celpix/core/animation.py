@@ -55,12 +55,29 @@ class Sequence:
 
     Empty where the file's group is empty, which most of them are: a file has
     room for sixteen or thirty-two and typically fills a handful.
+
+    ``loop`` is the step playback returns to after the last one. Most formats
+    have no such field and restart at 0, the default; an engine that records a
+    wrap target — a walk cycle whose first steps are the start of the stride —
+    states it, and a player that ignored it would replay the lead-in every lap.
+    A value past the last step is kept as the file said and read as 0 by
+    :meth:`following`, the same "keep what is impossible, act sanely" rule the
+    frame numbers follow.
     """
 
     steps: tuple[Step, ...] = ()
+    loop: int = 0
 
     def __bool__(self) -> bool:
         return bool(self.steps)
+
+    def following(self, step: int) -> int:
+        """The step that plays after ``step``: the next, or ``loop`` after the last."""
+        if not self.steps:
+            return 0
+        if step + 1 < len(self.steps):
+            return step + 1
+        return self.loop if 0 <= self.loop < len(self.steps) else 0
 
     @property
     def ticks(self) -> int:

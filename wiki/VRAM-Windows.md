@@ -1,78 +1,91 @@
 # VRAM Windows
 
-A **composite** mirrors a VRAM window: entries laid end to end as one tile
-source. [Getting Started](Getting-Started#6-assemble-the-tile-window) builds a
-simple one. This page covers the rest, in the Super Mario World sample project
-([opening it](Plugin-Inputs#1-open-a-project-that-has-plugins)).
+A **composite** is a copy of an area of video memory (VRAM). It puts entries one
+after another and uses them as one tile source.
+[Getting Started](Getting-Started#6-assemble-the-tile-window) makes a simple
+composite. This page shows the other features.
+
+This page uses the Super Mario World sample project. To open it, see
+[Plugin Inputs](Plugin-Inputs#1-open-a-project-that-has-plugins).
 
 ## 1. A window is what video memory holds
 
-The `?`-block, coin and water are copied in from an animation sheet at load.
+When a level loads, the game copies the `?`-block, coin and water tiles from an
+animation sheet into VRAM. The composite includes these tiles.
 
 ![A level's background window](images/vram-bg-window.png)
 
-Right-click ▸ **Edit…**, and widen the dialog.
+1. Right-click ▸ **Edit…**.
+2. Make the dialog wider so that all columns show.
 
 ![Its pieces](images/vram-bg-pieces.png)
 
-**At**, **Tile**, **Bytes**: start and size of each run. A row ending
-`[0x001800–0x001880]` is a **byte range** of an entry (here 4 tiles of `GFX33`),
-counted in unpacked bytes, so it can cut into compressed sheets.
+**At**, **Tile** and **Bytes** give the start and the size of each piece.
 
-> The dialog can move or remove ranges but not create them; **Add source…** adds
-> whole entries. Ranges live in the project file:
+A row that ends with a range, for example `[0x001800-0x001880]`, is a **byte
+range**. It uses only part of an entry. This example is 4 tiles of `GFX33`. The
+range counts unpacked bytes, so it can use part of a compressed sheet.
+
+> The dialog can move or remove ranges. It cannot make new ones. **Add
+> source…** adds a whole entry. Ranges are stored in the project file:
 >
 > ```json
 > { "entry_index": 115, "measured": 128, "offset": 6144, "length": 128 }
 > ```
 
-Sprite windows place Mario's tiles from `GFX32` the same way.
+Sprite windows use the same method to add Mario's tiles from `GFX32`.
 
 ![A sprite window](images/vram-sprite-window.png)
 
 ## 2. A gap, held open
 
-A slot is 128 tiles; one `THE END` sheet is 64. A **blank** run pads the slot so
-later sheets stay aligned.
+Each VRAM slot is 128 tiles. One `THE END` sheet is only 64 tiles. A **blank**
+piece fills the rest of the slot, so the sheets after it stay in the correct
+place.
 
 ![A window with a gap](images/vram-blank-window.png)
 
-**File ▸ New Composite View…**, **Add source…** twice, **Add blank**, set its
-**Bytes** to 2048 (64 tiles of 4bpp), add the last two sheets.
+1. **File ▸ New Composite View…**.
+2. Click **Add source…** two times and add the first two sheets.
+3. Click **Add blank**.
+4. Set the **Bytes** of the blank to 2048. This is 64 tiles of 4bpp.
+5. Add the last two sheets.
 
 ![Add blank](images/vram-blank-sized.png)
 
-> Sizes read zero until first assembled:
+> The sizes show 0 until the composite is opened for the first time:
 
 ![Measured](images/vram-blank-by-hand-pieces.png)
 
 ## 3. A map through a window
 
-`Overworld Layer 2` uses the overworld main map window as its **Tiles**.
+The **Tiles** setting of `Overworld Layer 2` is the overworld main map window.
 
 ![The overworld](images/vram-map.png)
 
-In **Tile Source**, clicking a cell rings its tile, in the cell's palette row.
+In the **Tile Source** tab, click a cell. A ring shows the tile that the cell
+uses. The tile shows in the palette row of the cell.
 
 ![The tile a cell draws](images/vram-map-tile-source.png)
 
-The ring button beside **Tiles** opens the source; **Navigate ▸ Back**
-(Alt+Left) returns.
+To open the tile source, click the ring button next to **Tiles**. To go back:
+**Navigate ▸ Back** (Alt+Left).
 
 ![Jumped to the source](images/vram-map-jump.png)
 
 ## 4. Editing through a window
 
-Drawing on a composite edits the entry that owns the tile.
+When you draw on a composite, celPix edits the entry that the tile comes from.
 
 ![Drawing on a window](images/vram-paint.png)
 
-This tile appears four times in the window; all four update.
+This tile is in the window four times. All four copies change.
 
 ![What became unsaved](images/vram-paint-unsaved.png)
 
-Drawing on a blank does nothing.
+Drawing on a blank piece has no effect.
 
 ![Drawing on a gap](images/vram-paint-blank.png)
 
-**Pixel Mode** on the map also paints through the window to the sheet.
+You can also draw on the map in **Pixel Mode**. celPix edits the sheet through
+the window.

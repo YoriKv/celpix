@@ -360,9 +360,13 @@ class AnimationOverlay(QWidget):
                     if not sequence:
                         continue
                     steps = len(sequence.steps)
-                    self._sequence.addItem(
-                        f"Sequence {at} - {steps} step{'s' if steps != 1 else ''}", at
-                    )
+                    label = f"Sequence {at} - {steps} step{'s' if steps != 1 else ''}"
+                    # Said where it is not the default, in the status line's
+                    # 1-based numbering: otherwise playback skipping the first
+                    # steps after one pass looks like a fault.
+                    if 0 < sequence.loop < steps:
+                        label += f", loops to step {sequence.loop + 1}"
+                    self._sequence.addItem(label, at)
             self._step = 0
         elif keep is not None:
             select_combo_data(self._sequence, keep)
@@ -432,10 +436,19 @@ class AnimationOverlay(QWidget):
             self._arm()
 
     def _advance(self, by: int) -> None:
+        """Step forward as playback does, or back through every step.
+
+        Forward follows the sequence's own wrap (:meth:`Sequence.following`), so
+        Next shows what plays next. Back is plain arithmetic over the whole run,
+        which is what keeps a lead-in the loop skips reachable by hand.
+        """
         sequence = self._current
         if sequence is None or not sequence.steps:
             return
-        self._step = (self._step + by) % len(sequence.steps)
+        if by > 0:
+            self._step = sequence.following(self._step)
+        else:
+            self._step = (self._step + by) % len(sequence.steps)
         self._refresh()
         if self._play.isChecked():
             self._arm()

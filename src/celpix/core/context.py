@@ -144,6 +144,13 @@ KEY_TILEMAP_STAMP_CELLS = "tilemap.stamp-cells"
 # forces such a table to be shown two cells wide to stamp correctly
 # (``ui/main_window/session.py``, ``_chain_source_columns``).
 KEY_TILEMAP_STAMP_STRIDE = "tilemap.stamp-stride"
+# bool: the source stores a stamp's cells **down each column** — upper-left,
+# lower-left, upper-right, lower-right for a 2x2 — so the stride above is the
+# step between the stamp's *columns* and its rows are adjacent cells. Super Mario
+# World's Map16 tables are this shape. Published beside the stride by the packed
+# engine from a ``stamp_order = "column"`` preset parameter and read by the map
+# bound to the table (``ui/main_window/session.py``, ``_chain_column_major``).
+KEY_TILEMAP_STAMP_COLUMN_MAJOR = "tilemap.stamp-column-major"
 # int: how many cell *rows* one **page** holds, for a format whose file is several
 # independent maps end to end rather than one — a screen file is four 32x32
 # screens (``docs/graphics-formats-reference/scgcad-formats.md`` §2). Published
@@ -328,6 +335,11 @@ HINT_INFO: dict[str, tuple[str, str]] = {
         "How many cells apart a stamp's rows sit in this map's\n"
         "cell list. Records packed end to end stamp at their own\n"
         "width, however wide the table is shown.",
+    ),
+    KEY_TILEMAP_STAMP_COLUMN_MAJOR: (
+        "Stamp order",
+        "A stamp's cells are stored down each column, so the\n"
+        "stride steps between its columns rather than its rows.",
     ),
     KEY_TILEMAP_PAGE_ROWS: (
         "Page height",

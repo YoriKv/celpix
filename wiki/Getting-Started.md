@@ -1,80 +1,105 @@
 # Getting Started
 
-The overworld of **Super Mario World** (`Super Mario World (USA).sfc`): a
-palette, four tile sheets and a map. Addresses are hex file offsets; the ROM is
-headerless, so `$04:A533` is `$22533`.
+This tutorial edits the **Mountains** background in **Super Mario World**
+(`Super Mario World (USA).sfc`). This is the background with tall spotted hills
+in the intro level and in Yoshi's House.
 
-> **Work on a copy of the ROM.** celPix writes in place and keeps no backup.
+You will set up:
+
+- a palette
+- four tile sheets
+- a stamp table
+- a map
+
+All addresses are hex file offsets. The ROM has no header, so SNES address
+`$0C:D900` is file offset `$65900`.
+
+> **Use a copy of the ROM.** celPix writes to the file in place. It does not
+> make a backup.
 
 ## 1. Open the ROM and save a project
 
 ![The empty window](images/01-empty-window.png)
 
-**File ▸ Open pixel data…**, then **File ▸ Save Project As…** (Ctrl+Shift+S) as
-`smw.celpix` beside the ROM. A project stores references and settings, not
-bytes.
+1. **File ▸ Open pixel data…**, then open the ROM.
+2. **File ▸ Save Project As…** (Ctrl+Shift+S). Save it as `smw.celpix`
+   in the same folder as the ROM.
+
+A project stores offsets and settings. It does not store a copy of the ROM
+data.
 
 ![The ROM, open](images/01-rom-open.png)
 
 ## 2. Find the graphics
 
-The tile sheets are compressed 3bpp, back to back. Type `$459F9` in **Offset**
-under the canvas and press Enter. Set **Pixel** to **SNES 3bpp (8x8)**.
+The tile sheets are 3bpp and compressed. They are stored one after another.
+
+1. In **Offset** under the canvas, type `$459F9` and press Enter.
+2. Set **Pixel** to **SNES 3bpp (8x8)**.
 
 ![The first sheet's bytes, still packed](images/02-raw-bytes.png)
 
-Set **Compression** to **LZ2 improved (SMW, Yoshi's Island)**. A **Decompressed
-view** window shows the unpacked sheet.
+3. Set **Compression** to **LZ2 improved (SMW, Yoshi's Island)**. The
+   **Decompressed view** window shows the unpacked sheet.
 
 ![The first sheet, unpacked](images/02-lz2-preview.png)
 
-The status line gives the packed size: `structure 0x838 B`. **Jump to Next**
-skips to the next sheet: `$459F9`, `$46231`, `$46CBB`…
+The status line shows the packed size, for example `structure 0x838 B`.
+
+4. Click **Jump to Next** to go to the next sheet. The sheets start at `$459F9`,
+   `$46231`, `$46CBB`, and so on.
 
 ![The next sheet](images/02-jump-to-next.png)
 
-> **LZ2 improved** unpacks the same as **LZ2** but packs about 10% smaller.
-> Packed sheets leave no free space, so an edited sheet must pack no larger.
+> **LZ2 improved** unpacks the same data as **LZ2**. It packs about 10% smaller.
+> There is no free space between the sheets, so an edited sheet must not pack
+> larger than the original.
 
-> **Scan** stops on anything LZ2 can unpack. **Smart Scan** also checks that the
-> result looks like graphics.
+> **Scan** stops at any data that LZ2 can unpack. **Smart Scan** also checks
+> that the result looks like graphics.
 
-Go to `$5547E`, the first overworld sheet.
+5. Go to `$54C66`. This sheet has the hill graphics.
 
-![The overworld's first sheet](images/02-gfx1c-preview.png)
+![The hills' sheet](images/02-gfx1b-preview.png)
 
 ## 3. Take a palette from a save state
 
-The game builds its palette at runtime, so take it from an emulator save state
-(Mesen or Snes9x) made on the overworld. In the **Palette** dock, change
-**Default** to **Emulator State** and pick the file.
+The game builds its palette while it runs. The ROM has no palette to read, so
+take it from an emulator save state (Mesen or Snes9x).
+
+1. In the emulator, start a new game. Make a save state in the first level
+   after the file select screen (the intro level).
+2. In the **Palette** dock, change **Default** to **Emulator State**.
+3. Select the save state file.
 
 ![The console's palette](images/03-palette-loaded.png)
 
-A 3bpp tile uses 8 colours. Set **Palette Row** to 8, or click a swatch in that
-row.
-
-![The sheet in its own colours](images/03-palette-row.png)
+The hills use palette row 0. Row 0 is selected by default.
 
 ## 4. Carve the sheets as slices
 
-A slice is a region of the file saved as its own entry.
+A slice is a region of the file that is saved as its own entry.
 
-**File ▸ New Slice from View** fills in offset, compression and length. Name it
-`GFX1C`.
+1. **File ▸ New Slice from View**. The offset, compression and length are
+   filled in.
+2. Name the slice `GFX1B` and click OK.
 
 ![New Slice from View](images/04-new-slice-from-view.png)
 
 ![The first slice](images/04-first-slice.png)
 
-For the other three, select the ROM in **Files**, **File ▸ New Slice…**, set
-**Compression** to LZ2 improved and leave **Length** blank.
+Make the other three slices:
+
+1. Select the ROM in **Files**.
+2. **File ▸ New Slice…**.
+3. Enter the name and offset from the table.
+4. Set **Compression** to **LZ2 improved**. Leave **Length** blank.
 
 | Name | Offset |
 | --- | --- |
-| `GFX1D` | `$55C88` |
-| `GFX08` | `$4A657` |
-| `GFX1E` | `$5667F` |
+| `GFX14` | `$51348` |
+| `GFX17` | `$529B4` |
+| `GFX15` | `$51AE8` |
 
 ![New Slice](images/04-new-slice-dialog.png)
 
@@ -82,93 +107,150 @@ For the other three, select the ROM in **Files**, **File ▸ New Slice…**, set
 
 ## 5. Edit pixels
 
-Open `GFX1C`, set **Zoom** to 6 and press **Pixel Mode** (E). Tools: Select,
-Pencil, Eyedropper, Fill, Line, Rect, Ellipse (1–9). Pick a colour in the
-Palette dock and draw.
+1. Open `GFX1B`.
+2. Set **Zoom** to 6.
+3. Click **Pixel Mode** (E).
+4. Select a tool: Select, Pencil, Eyedropper, Fill, Line, Rect or Ellipse (keys
+   1 to 9).
+5. Select a colour in the **Palette** dock and draw.
 
 ![Drawing on a tile](images/05-pixel-edit.png)
 
-`●` marks unsaved changes. Each stroke is one **Edit ▸ Undo** (Ctrl+Z).
+A `●` next to an entry means it has unsaved changes. **Edit ▸ Undo** (Ctrl+Z)
+undoes one stroke.
 
 ![Undo](images/05-undo.png)
 
 ## 6. Assemble the tile window
 
-The map indexes tiles `$000`–`$1FF` in the VRAM window the four sheets load
-into. A **composite** is that window: entries laid end to end as one tile
-source.
+The background uses tile numbers `$000` to `$1FF`. These numbers point into the
+area of video memory (VRAM) that the four sheets are loaded into. A
+**composite** puts entries one after another to make that area.
 
-**File ▸ New Composite View…**. **Add source…** in load order: `GFX1C`, `GFX1D`,
-`GFX08`, `GFX1E`. Name it `Overworld tiles`.
+1. **File ▸ New Composite View…**.
+2. Click **Add source…** and add the sheets in this order: `GFX14`, `GFX17`,
+   `GFX1B`, `GFX15`.
+3. Name the composite `Level tiles` and click OK.
 
 ![New Composite View](images/06-composite-dialog.png)
 
-> Sizes read zero until the composite is first assembled.
+> The sizes show 0 until the composite is opened for the first time.
 
-Set the palette to the save state again, **Palette Row** 8, **Rows** 32.
+4. Set the palette to the save state again.
+5. Set **Rows** to 32.
 
 ![512 tiles](images/06-composite-open.png)
 
-Right-click ▸ **Edit…** shows where each sheet landed.
+To see where each sheet is placed: right-click ▸ **Edit…**.
 
 ![The pieces, measured](images/06-composite-edit.png)
 
-## 7. Carve the map
+## 7. Carve the stamp table
 
-The map is one byte per tile, RLE2-packed at `$22533`. RLE2 has no end marker,
-so give a length. Select the ROM, **File ▸ New Slice…**:
+The background is made of 16×16 **stamps**. Each stamp is four tilemap words.
+Each word gives a tile number, a palette row and flip settings. The game calls
+these Map16 blocks. The table has 256 stamps.
+
+1. Select the ROM in **Files**.
+2. **File ▸ New Slice…**, with these values:
 
 | | |
 | --- | --- |
 | **Content** | Tilemap |
-| **Name** | `Overworld Layer 2` |
-| **Offset** | `$22533` |
-| **Length** | `$1AF8` |
-| **Compression** | RLE2 (SMW, no terminator) |
+| **Name** | `Background stamps` |
+| **Offset** | `$69100` |
+| **Length** | `$800` |
+| **Compression** | None |
 
-![The map's slice](images/07-tilemap-slice-dialog.png)
+![The table's slice](images/07-stamps-slice-dialog.png)
 
-Set **Tilemap** to **Tile map (8-bit index only)** and **Cols** to 32.
+3. Set **Tilemap** to **SNES stamp table (2x2 words, down each column)**.
+4. Under the canvas, set **Tiles** to `Level tiles`.
 
-![The map, with no tiles](images/07-tilemap-unbound.png)
+![The stamp table](images/07-stamps-bound.png)
 
-Set **Tiles** (under the canvas) to `Overworld tiles`.
+The four words of each stamp are stored in this order: upper-left, lower-left,
+upper-right, lower-right. Because of this, the table looks like strips when you
+view it directly. The map in the next step draws each stamp correctly.
 
-![The overworld](images/07-tilemap-bound.png)
+## 8. Carve the map
 
-The map is eight stacked 32×32 pages.
+The map has one byte per stamp. It is compressed with RLE1 at `$65900`. RLE1
+data has an end marker, so leave **Length** blank.
 
-![Pages, stacked](images/07-tilemap-zoom-1.png)
+1. Select the ROM in **Files**.
+2. **File ▸ New Slice…**, with these values:
 
-## 8. Edit the map
+| | |
+| --- | --- |
+| **Content** | Tilemap |
+| **Name** | `Mountains` |
+| **Offset** | `$65900` |
+| **Compression** | RLE1 (SMW, $FF $FF terminated) |
 
-Press **Edit Tiles** (T) and open the **Tile Source** tab. Left-click picks a
-tile, right-drag picks a block of them. Click the map to place them.
+![The map's slice](images/08-map-slice-dialog.png)
 
-![Stamping a hill](images/08-stamp.png)
+3. Set **Tilemap** to **Metatile index map (byte -> 2x2 record of a packed
+   table)**.
+4. Set **Cols** to 32.
 
-Right-click the map to pick up the tile under the pointer.
+![The map, with no stamps](images/08-map-unbound.png)
 
-## 9. Write the ROM
+5. Set **Tiles** to `Background stamps`.
 
-![Unsaved](images/09-unsaved.png)
+![Mountains](images/08-map-bound.png)
 
-**File ▸ Write All** (Ctrl+Shift+W), then **File ▸ Save Project** (Ctrl+S).
+The map has two screens. Each screen is 16×27 stamps. The second screen shows
+below the first.
 
-![Written](images/09-written.png)
+The cross you drew in step 5 shows on each hill edge that uses that tile.
 
-Each stream must repack into its old space. A hill in the lake splits a long run
-into three, and the write is refused:
+![Both screens](images/08-map-zoom-1.png)
 
-![A map that no longer fits](images/09-write-refused.png)
+## 9. Edit the map
 
-Undo it, or free space elsewhere in the map. Test in an emulator.
+1. Click **Edit Tiles** (T).
+2. Open the **Tile Source** tab. It shows the stamps in the table.
+   - Left-click selects one stamp.
+   - Right-drag selects a range of stamps.
+3. Click the map to place the selected stamps.
+
+For example, right-drag from the middle of the cloud to its right end. Then
+click the map two times at the right end of the first cloud. The cloud is now
+longer.
+
+![A longer cloud](images/09-stamp.png)
+
+Right-click the map to pick up the stamp under the pointer.
+
+## 10. Write the ROM
+
+![Unsaved](images/10-unsaved.png)
+
+1. **File ▸ Write All** (Ctrl+Shift+W).
+2. **File ▸ Save Project** (Ctrl+S).
+
+![Written](images/10-written.png)
+
+Each compressed entry must fit in its original space after it is packed again.
+The longer cloud fits.
+
+A new cloud in the empty sky does not fit. The sky is one long run of empty
+stamps. A cloud in the middle of the run makes the packed data larger. celPix
+refuses the write:
+
+![A map that no longer fits](images/10-write-refused.png)
+
+To fix this, undo the change, or remove data somewhere else in the map. Test
+the ROM in an emulator.
 
 ## Where this goes
 
-- [Text and Fonts](Text-and-Fonts): message boxes as text.
+- [Compress & Reshape](Compress-and-Reshape): show the two screens of this map
+  side by side.
 - [VRAM Windows](VRAM-Windows): composites with gaps and partial sheets.
-- [Pinned Palette Rows](Pinned-Palette-Rows): one sheet in several palette rows.
-- [Plugin Inputs](Plugin-Inputs): this map in colour, using its second
-  attribute stream.
-- [Compress & Reshape](Compress-and-Reshape): maps rearranged after unpacking.
+- [Pinned Palette Rows](Pinned-Palette-Rows): one sheet in more than one
+  palette row.
+- [Plugin Inputs](Plugin-Inputs): the overworld map, which stores part of each
+  cell in a second stream.
+- [Text and Fonts](Text-and-Fonts): edit message boxes as text.

@@ -1349,6 +1349,77 @@ def test_a_mega_drive_subsprite_is_a_rectangle_read_down_its_columns() -> None:
     assert codec.encode([cell], params, ctx) == raw
 
 
+def test_a_sprite_record_preset_reads_what_the_mega_drive_codec_reads() -> None:
+    """The table-driven engine's claim is that a sprite record is data. So the
+    Mega Drive record, stated as fields, must give the dedicated codec's frames
+    piece for piece — offsets signed, the size nibble a rectangle, the tiles down
+    each column — and a save must hand back every byte, the mirror included."""
+    from celpix.plugins.builtins.md_sprite import MdSpriteCodec
+    from celpix.plugins.builtins.sprite_record import SpriteRecordCodec
+
+    raw = _md_record(x=-24, y=-8, tile=0x3C8, across=2, down=3, palette=2) + _md_record(
+        x=5, y=17, tile=0x012, across=4, down=1, palette=1
+    )
+    ctx = PipelineContext()
+    md = MdSpriteCodec()
+    md_params = _params(default_registry(), "preset.tilemap.md-sprite")
+    params = {
+        "layout": "sprite",
+        "column_major": True,
+        "record": [
+            {"name": "y", "type": "s8"},
+            {"name": "size", "type": "u8", "bits": "....ccrr"},
+            {"name": "attr", "type": "u16", "bits": "oppv hiii iiii iiii"},
+            {"name": "x", "type": "s8"},
+            {"name": "x_mirror", "type": "s8"},
+        ],
+    }
+    engine = SpriteRecordCodec()
+    cells = engine.decode(raw, params, ctx)
+    want = md.frames(md.decode(raw, md_params, ctx), md_params, ctx)
+    assert engine.frames(cells, params, ctx) == want
+    assert engine.encode(cells, params, ctx) == raw
+
+
+def test_a_sprite_record_frames_by_its_header_and_keeps_the_header() -> None:
+    """With a frame header the run is frames back to back, each counting its own
+    pieces; the header's other bytes are the file's and ride through a save, and
+    the count is rewritten from the frame rather than trusted."""
+    from celpix.plugins.builtins.sprite_record import SpriteRecordCodec
+
+    params = {
+        "layout": "sprite",
+        "record": [
+            {"name": "x", "type": "s16"},
+            {"name": "y", "type": "s16"},
+            {"name": "attr", "type": "u16", "bits": "..pp hvii iiii iiii"},
+        ],
+        "frame_header": {"bytes": 4, "count_at": 2, "count_type": "u16"},
+    }
+
+    def piece(x: int, y: int, attr: int) -> bytes:
+        return b"".join(v.to_bytes(2, "big", signed=True) for v in (x, y)) + attr.to_bytes(
+            2, "big"
+        )
+
+    raw = (
+        b"\xab\xcd\x00\x02" + piece(-3, 4, 0x2805) + piece(8, 0, 0x0006)
+        + b"\x11\x22\x00\x01" + piece(0, -16, 0x0407)
+    )  # fmt: skip
+    ctx = PipelineContext()
+    engine = SpriteRecordCodec()
+    cells = engine.decode(raw, params, ctx)
+    frames = engine.frames(cells, params, ctx)
+    assert [len(f) for f in frames] == [2, 1]
+    first = frames[0][0]
+    assert (first.x, first.y, first.index, first.palette_row, first.flip_h) == (-3, 4, 5, 2, True)
+    assert frames[1][0].flip_v and frames[1][0].y == -16
+    assert engine.encode(cells, params, ctx) == raw
+    # A piece moved out of the first frame is counted where it now is.
+    moved = engine.encode(cells[:1] + cells[2:], params, ctx)
+    assert moved[:4] == b"\xab\xcd\x00\x01"
+
+
 def test_a_mega_drive_run_says_when_its_mirror_offsets_disagree() -> None:
     """The one way this format is misread has no other symptom: a byte X plus a
     mirrored-frame X is the same six bytes as a signed word X, so the wrong
@@ -3217,6 +3288,21 @@ def test_steps_naming_a_frame_the_file_lacks_are_counted_not_dropped() -> None:
     assert len(groups[0].steps) == 3  # kept, at their own step numbers
 
 
+def test_a_sequence_wraps_to_its_loop_step_and_survives_a_bad_one() -> None:
+    """A walk cycle whose first steps are its lead-in names the step to wrap to;
+    replaying the lead-in every lap is the bug. A wrap target past the end is the
+    file's to keep and the player's to read as 0, like a frame it lacks."""
+    from celpix.core.animation import Sequence, Step
+
+    steps = tuple(Step(8, f) for f in range(10))
+    walk = Sequence(steps, loop=7)
+    assert [walk.following(s) for s in (0, 6, 8, 9)] == [1, 7, 9, 7]
+    assert Sequence(steps).following(9) == 0  # no loop stated: restart
+    assert Sequence(steps, loop=40).following(9) == 0
+    assert Sequence(steps, loop=40).loop == 40  # kept as stated
+    assert Sequence(()).following(0) == 0
+
+
 def test_an_object_publishes_the_sequences_in_the_tail_it_cuts_away(tmp_path) -> None:
     """The table sits past the records and past the header, in the part the
     container preserves opaquely — so the container is the only thing holding both
@@ -3759,3 +3845,39 @@ def test_the_packed_engine_publishes_a_source_tables_stamp_and_stride() -> None:
     TilemapCodec().decode(bytes(range(16)), {"bytes": 2}, plain)
     assert plain.get(KEY_TILEMAP_STAMP_CELLS) is None
     assert plain.get(KEY_TILEMAP_STAMP_STRIDE) is None
+
+
+def test_a_table_stored_down_each_column_stamps_its_records_upright() -> None:
+    """The shipped column-first stamp table, end to end: records stored UL, LL,
+    UR, LR resolve through a metatile index map as UL UR / LL LR. Read row-first
+    every stamp would come out mirrored about its diagonal — the defect a
+    transposed record draws without failing."""
+    from celpix.core.context import (
+        KEY_TILEMAP_STAMP_COLUMN_MAJOR,
+        KEY_TILEMAP_STAMP_STRIDE,
+    )
+    from celpix.core.tilemap import expand_stamps
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+    from celpix.plugins.registry import default_registry
+
+    preset = default_registry().preset("preset.tilemap.snes-stamp-table-column")
+    ctx = PipelineContext()
+    # Two records, tiles numbered by where the hardware draws them: 10 UL,
+    # 11 UR, 12 LL, 13 LR — stored down each column.
+    words = [10, 12, 11, 13, 20, 22, 21, 23]
+    table = TilemapCodec().decode(
+        b"".join(w.to_bytes(2, "little") for w in words), preset.params, ctx
+    )
+    stride = ctx.get(KEY_TILEMAP_STAMP_STRIDE)
+    column_major = bool(ctx.get(KEY_TILEMAP_STAMP_COLUMN_MAJOR))
+
+    # a map naming record 1 then record 0 (corners 4 and 0), one row, dense
+    drawn = expand_stamps(
+        [Cell(index=4), Cell(index=0)], table, 2, (2, 2), stride,
+        carry_rows=False, dense=True, column_major=column_major,
+    )  # fmt: skip
+    assert [c.index for c in drawn] == [20, 21, 10, 11, 22, 23, 12, 13]
+
+    # the order means nothing without a stride saying how far a column steps
+    with pytest.raises(ValueError, match="stamp_stride"):
+        TilemapCodec().decode(b"\0\0", {"bytes": 2, "stamp_order": "column"}, ctx)

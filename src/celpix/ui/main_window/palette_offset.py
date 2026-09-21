@@ -49,12 +49,11 @@ from celpix.core.palette import FULL_PALETTE_COUNT
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import NO_RESHAPE, FileRef
+from celpix.project import documents
 from celpix.project.workspace import (
     Entry,
     EntryKind,
     PaletteMode,
-    entry_view_bytes,
-    reorders_bytes,
 )
 
 
@@ -149,97 +148,36 @@ class PaletteOffsetMixin:
             self._load_palette_at_offset(target)
 
     def _palette_offset_owner(self, entry: Entry | None) -> Entry | None:
-        """The FILE entry whose coordinates ``entry``'s Offset palette is in.
-
-        ``entry`` itself when it is a whole file; its **parent** when it is a
-        slice, because a slice's palette offsets are parent-absolute and
-        deliberately reach outside its own window - a graphics block's palette
-        usually lives elsewhere in the ROM (``docs/design/palette-editing.md``
-        §2). ``None`` when the parent is not open: with no entry there is no
-        container or reshape to honour, and the file's own bytes are what the
-        offset means.
-        """
-        if entry is None:
-            return None
-        if entry.kind is EntryKind.FILE:
-            return entry
-        return self._workspace.find_file(entry.path)
+        """:func:`~celpix.project.documents.palette_offset_owner`."""
+        return documents.palette_offset_owner(self._workspace, entry)
 
     def _offset_palette_files(self, entry: Entry) -> tuple[str, ...]:
-        """The files ``entry``'s Offset palette offsets address.
-
-        The **owner's** (:meth:`_palette_offset_owner`), which for a slice is the
-        parent whose coordinates its offsets are already in; its own list when
-        the parent is not open, which is that same list — a slice carries the
-        parent's files precisely so an offset into a joined region keeps meaning
-        one thing (:func:`~celpix.project.workspace.slice_of`).
-
-        Asked of the *entry* rather than read off ``doc.pixel_config``, which is
-        the same answer for a pixel document and the wrong file entirely for a
-        **tilemap**: a map's pixel pathway is the bound bank's, so an unbound one
-        offers no file at all and a bank in another file offers the wrong one.
-        The map's own bytes are its ``tilemap_config``, and its palette offsets
-        are in that lineage's coordinates like any other entry's.
-        """
-        owner = self._palette_offset_owner(entry)
-        return owner.paths if owner is not None else entry.paths
+        """:func:`~celpix.project.documents.offset_palette_files`."""
+        return documents.offset_palette_files(self._workspace, entry)
 
     def _reordered_view(self, owner: Entry) -> tuple[bytes, int] | None:
-        """``owner``'s view buffer plus the offset its first byte sits at, or
-        ``None`` when reading the file would give the same bytes anyway.
-
-        A container that merely skips a header leaves every remaining byte where
-        it was, so offsets still name file bytes and the palette keeps reading
-        the file - which is also what keeps its write half. A **permuting**
-        container or an active reshape makes the buffer a different address space
-        from the file, and then the buffer is the only place the offset means
-        anything at all.
-
-        The owner's live bytes are used when it is loaded, so an Offset palette
-        sees a dirty parent's unsaved edits exactly as a slice of it would;
-        otherwise the region is read fresh (``workspace.entry_view_bytes`` — the
-        same read a slice of the owner performs, so the two can never disagree).
-        """
-        if not reorders_bytes(owner, self._registry):
-            return None
-        self._settle_region(owner)
-        return entry_view_bytes(
-            owner,
+        """:func:`~celpix.project.documents.reordered_view`, settling the owner
+        first so a dirty parent's unsaved edits are what the palette reads."""
+        return documents.reordered_view(
             self._registry,
-            owner.session.pixel_preset_id
-            if owner.session is not None
-            else self._pixel_preset_id(),
             self._workspace,
+            owner,
+            self._settle_region,
+            self._pixel_preset_id(),
         )
 
     def _offset_palette_space(
         self, entry: Entry
     ) -> tuple[tuple[bytes, int] | None, int]:
-        """The address space ``entry``'s Offset palette reads: ``(view, end)``.
-
-        ``view`` is the owner's ``(buffer, base)`` when it reorders bytes —
-        offsets then index the buffer at ``offset - base`` — else ``None``,
-        meaning offsets are file offsets into the joined files. ``end`` is one
-        past the highest offset addressable in that space, whichever it is: the
-        shared answer behind both the read window
-        (:meth:`_offset_palette_source`) and the step buttons' clamp.
-
-        ``base`` mirrors the owner's own anchor (``_anchor_base``), because a
-        palette offset is written in the owner's coordinates: under an active
-        reshape those are 0-based buffer positions, so the base is 0; under a
-        permuting container they keep the recorded start (those are the ROM's real
-        addresses — an ``.smd`` body begins past its copier header), so the base is
-        that start.
-        """
-        owner = self._palette_offset_owner(entry)
-        view = self._reordered_view(owner) if owner is not None else None
-        if view is not None:
-            data, base = view
-            if owner is not None and owner.reshape_id != NO_RESHAPE:
-                base = 0
-            return (data, base), base + len(data)
-        paths = self._offset_palette_files(entry)
-        return None, sum(Path(p).stat().st_size for p in paths)
+        """:func:`~celpix.project.documents.offset_palette_space` — the shared
+        answer behind both the read window and the step buttons' clamp."""
+        return documents.offset_palette_space(
+            self._registry,
+            self._workspace,
+            entry,
+            self._settle_region,
+            self._pixel_preset_id(),
+        )
 
     def _offset_palette_pixel_owner(self) -> Entry | None:
         """The FILE entry whose pixel buffer holds the on-screen Offset palette,
@@ -305,51 +243,23 @@ class PaletteOffsetMixin:
         preset_id: str | None = None,
         entry: Entry | None = None,
     ) -> tuple[FileRef | None, bool]:
-        """The read window for an Offset palette at ``byte_off``, and whether a
-        color edit can be written back through it.
+        """:func:`~celpix.project.documents.offset_palette_source`.
 
-        ``byte_off`` is in the **owning file entry's** view coordinates - the same
-        numbers the offset box and the status bar show. Where the file is its own
-        buffer that is a file offset, and the window is read (and written)
-        straight from disk. Where the owner reorders bytes the window is cut from
-        its view buffer instead, and the *palette pathway* comes back write-off:
-        a length-bounded ``FileRef`` into the file cannot say where a permuted
-        splice belongs. Color edits still persist - through the buffer owner's
-        **pixel** pathway instead (:meth:`_offset_palette_pixel_owner`), whose
-        Write carries the whole region through ``unshape`` and the container
-        (``docs/design/palette-editing.md`` §2).
-
-        Floored to whole entries - the color codecs reject a partial trailing
-        one, so clamping at the end alone is not enough. ``(None, ...)`` when not
-        even one entry fits. ``preset_id`` overrides the combo when sizing
-        colors for a non-current entry's palette format, and ``entry`` names
-        whose palette is being resolved - both default to the live document, and
-        both are passed when a project restore loads an entry that is not (yet)
-        the one on screen.
+        ``byte_off`` is in the **owning file entry's** view coordinates — the same
+        numbers the offset box and the status bar show. ``preset_id`` and
+        ``entry`` default to the combo and the live document; both are passed when
+        a project restore loads an entry that is not (yet) the one on screen.
         """
         entry = entry if entry is not None else self._workspace.current
         assert entry is not None
-        fmt = preset_id or self._palette_preset_id()
-        view, end = self._offset_palette_space(entry)
-        writable = view is None
-        base = 0 if view is None else view[1]
-        avail = end - byte_off if byte_off >= base else 0
-        colors = min(
-            FULL_PALETTE_COUNT,
-            pipeline.palette_entry_capacity(avail, fmt, self._registry),
-        )
-        if colors <= 0:
-            return None, writable
-        length = pipeline.palette_read_bytes(colors, fmt, self._registry)
-        # The owner's whole file list: the offset addresses the joined region, so
-        # a several-chip one cannot be answered from its first chip alone.
-        paths = self._offset_palette_files(entry)
-        if view is None:
-            return FileRef(paths, offset=byte_off, length=length), True
-        data, base = view
-        return (
-            FileRef(paths, offset=byte_off, length=length, data=data, data_base=base),
-            False,
+        return documents.offset_palette_source(
+            self._registry,
+            self._workspace,
+            entry,
+            byte_off,
+            preset_id or self._palette_preset_id(),
+            self._settle_region,
+            self._pixel_preset_id(),
         )
 
     def _file_palette_source(self, path: str, byte_off: int) -> FileRef | None:

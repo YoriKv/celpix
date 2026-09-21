@@ -1,0 +1,28 @@
+# A table of 2x2 stamps whose four SNES BG words are stored **down each column**:
+# upper-left, lower-left, upper-right, lower-right. Eight bytes a record, each word
+# `preset.tilemap.snes-bg`'s cell exactly. Super Mario World's Map16 tables are
+# this shape, and its level backgrounds and overworld are one-byte maps into them.
+#
+# What makes it a stamp source rather than a plain map is what it publishes for
+# the map bound to it (docs/design/tilemap-entry.md §3.1): one coordinate names a
+# 2x2 of its cells, and because a column's two cells are adjacent, the stamp's
+# second *column* sits two cells on. The referring map is
+# `preset.tilemap.metatile-index`, which turns record k into its first cell, 4k.
+#
+# No page geometry, unlike `snes-bg`: a table is not a screen, and one of 256
+# records is exactly one 32x32 page's worth of cells, which would be locked to a
+# shape it has not got. The table draws in file order at whatever width it is
+# shown, so its own view reads as a ribbon; the map drawn through it is the
+# picture.
+id = "preset.tilemap.snes-stamp-table-column"
+name = "SNES stamp table (2x2 words, down each column)"
+engine_id = "codec.tilemap.packed"
+category = "Nintendo"
+
+[params]
+bytes = 2
+endian = "little"
+fields = "vhop ppii iiii iiii"
+stamp_cells = [2, 2]
+stamp_stride = 2
+stamp_order = "column"

@@ -270,6 +270,9 @@ class CellChain:
     the layout's file does not know it, so the same layout draws differently
     against a differently divided panel. ``(1, 1)`` is the ordinary chain, where
     one coordinate names one cell and there is no stamp to expand.
+    ``stamp_column_major`` is the source's too: its stamps are stored down each column,
+    so ``source_columns`` steps between a stamp's columns instead
+    (:func:`~celpix.core.tilemap.stamp_offset`).
 
     ``dense`` is the **referrer's**, and it is the one field here that is not the
     source's answer — which is why it is a field set from the referring format
@@ -286,6 +289,7 @@ class CellChain:
     stamp: tuple[int, int] = (1, 1)
     source_columns: int = 0
     dense: bool = False
+    stamp_column_major: bool = False
 
 
 @dataclass
@@ -519,6 +523,7 @@ class Document:
                 chain.source_columns,
                 carry_rows=chain.carry_rows,
                 dense=chain.dense,
+                column_major=chain.stamp_column_major,
             )
             return
         self.resolved_cells = [

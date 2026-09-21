@@ -296,6 +296,18 @@ def resolve_cell(
     )
 
 
+def stamp_offset(dx: int, dy: int, stride: int, *, column_major: bool) -> int:
+    """How far from a stamp's corner its cell ``(dx, dy)`` sits in the source.
+
+    A source lays a stamp's cells out **row by row** — the rows ``stride`` apart,
+    their cells adjacent — or, where it states ``column_major``, **down each
+    column**: the columns ``stride`` apart and a column's cells adjacent, which
+    is how a table storing a 2x2 record as upper-left, lower-left, upper-right,
+    lower-right reads (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_COLUMN_MAJOR`).
+    """
+    return dx * stride + dy if column_major else dx + dy * stride
+
+
 def expand_stamp(
     cell: Cell,
     source: list[Cell],
@@ -303,6 +315,7 @@ def expand_stamp(
     source_columns: int,
     *,
     carry_rows: bool,
+    column_major: bool = False,
 ) -> list[Cell]:
     """The source cells one stamp coordinate draws, in drawn (row-major) order.
 
@@ -325,7 +338,10 @@ def expand_stamp(
     stride = max(1, source_columns)
     return [
         resolve_cell(
-            cell, source, carry_rows=carry_rows, at=cell.index + dx + dy * stride
+            cell,
+            source,
+            carry_rows=carry_rows,
+            at=cell.index + stamp_offset(dx, dy, stride, column_major=column_major),
         )
         for dy in range(down)
         for dx in range(across)
@@ -380,6 +396,7 @@ def expand_stamps(
     *,
     carry_rows: bool,
     dense: bool = False,
+    column_major: bool = False,
 ) -> list[Cell]:
     """Resolve a stamped map into one source cell per **drawn position**.
 
@@ -441,7 +458,12 @@ def expand_stamps(
             out.append(BLANK)
             continue
         entry = cells[at]
-        offset = position % width % across + position // width % down * stride
+        offset = stamp_offset(
+            position % width % across,
+            position // width % down,
+            stride,
+            column_major=column_major,
+        )
         out.append(
             resolve_cell(entry, source, carry_rows=carry_rows, at=entry.index + offset)
         )

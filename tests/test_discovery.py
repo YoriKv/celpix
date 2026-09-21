@@ -505,6 +505,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         "tilemap/_indirect-record.toml",
         "tilemap/_md-sprite.toml",
         "tilemap/_packed.toml",
+        "tilemap/_sprite-record.toml",
     ]
 
     # A stale reference file is replaced rather than left behind, so the examples

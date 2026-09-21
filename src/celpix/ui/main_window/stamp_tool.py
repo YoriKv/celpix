@@ -843,6 +843,7 @@ class StampToolMixin:
             doc.stamp_cells,
             chain.source_columns,
             carry_rows=chain.carry_rows,
+            column_major=chain.stamp_column_major,
         )
 
     def _refuse_stamp(self) -> None:

@@ -8,9 +8,10 @@
 4. [Carve the sheets](Getting-Started#4-carve-the-sheets-as-slices)
 5. [Edit pixels](Getting-Started#5-edit-pixels)
 6. [The tile window](Getting-Started#6-assemble-the-tile-window)
-7. [Carve the map](Getting-Started#7-carve-the-map)
-8. [Edit the map](Getting-Started#8-edit-the-map)
-9. [Write the ROM](Getting-Started#9-write-the-rom)
+7. [The stamp table](Getting-Started#7-carve-the-stamp-table)
+8. [Carve the map](Getting-Started#8-carve-the-map)
+9. [Edit the map](Getting-Started#9-edit-the-map)
+10. [Write the ROM](Getting-Started#10-write-the-rom)
 
 **Features**
 

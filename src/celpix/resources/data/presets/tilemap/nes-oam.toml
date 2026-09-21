@@ -1,0 +1,30 @@
+# An NES sprite list in the console's own OAM order: four bytes a sprite,
+# Y, tile, attributes, X. Games keep their metasprites the same way — a run of
+# these with the offsets relative to the object rather than the screen — and
+# that is what this reads: one frame of 8x8 pieces at signed offsets.
+#
+# The attribute byte is the PPU's: bit 7 vertical flip, bit 6 horizontal flip,
+# bit 5 behind the background, bits 1-0 the sprite palette. Bits 4-2 are unused
+# by the hardware and carried as the file has them.
+#
+# The two offsets are signed, as a metasprite's are; an OAM dump's unsigned
+# screen positions read as the same bytes and simply sit wrapped. 8x16 sprites
+# are a PPU mode rather than a record field, so pieces draw 8x8.
+#
+# Sprite palettes are rows 4-7 of the NES palette, so the row this format names
+# counts from 4.
+id = "preset.tilemap.nes-oam"
+name = "NES sprite list (OAM order)"
+category = "Nintendo"
+engine_id = "codec.tilemap.sprite-record"
+
+[params]
+layout = "sprite"
+subsprite_size = "stated"
+palette_row_base = 4
+record = [
+  { name = "y",    type = "s8" },
+  { name = "tile", type = "u8", bits = "iiii iiii" },
+  { name = "attr", type = "u8", bits = "vho. ..pp" },
+  { name = "x",    type = "s8" },
+]

@@ -10,9 +10,9 @@
 # This is the stated-rectangle engine, for a record that names a **rectangle**
 # instead of picking between two squares. Its size byte is the Mega Drive VDP's
 # own nibble, so one record covers anything from one tile to a 4x4 block, and the
-# record's tiles run *down each column*. It is the **only** sprite record with a
-# preset to copy: the other three celPix reads are formats, one bespoke codec
-# apiece with nothing to parameterise. Anything in rows wants _packed.toml.
+# record's tiles run *down each column*. It checks the record's mirrored X as it
+# reads, which is what tells its two six-byte variants apart. A record in any
+# other field order wants _sprite-record.toml; anything in rows, _packed.toml.
 #
 # SHIPPED PRESETS BUILT ON IT
 # ---------------------------

@@ -1,55 +1,62 @@
 # Text and Fonts
 
-A string is a tilemap over a font sheet. An **alphabet** on the font maps tiles
-to characters, so every string using that font reads as text.
+A text string is a tilemap that uses a font sheet. An **alphabet** on the font
+gives a character to each tile. Every string that uses the font can then be read
+as text.
 
-Start from a saved project with the ROM open ([Getting Started](Getting-Started)
-step 1).
+Before you start, save a project with the ROM open. See
+[Getting Started](Getting-Started) step 1.
 
 ## 1. Carve the font
 
-Set **Pixel** to **SNES 2bpp (8x8)**, go to `$5CB7B`, set **Compression** to
-**LZ2 (SMW, Yoshi's Island)**.
+1. Set **Pixel** to **SNES 2bpp (8x8)**.
+2. Go to `$5CB7B`.
+3. Set **Compression** to **LZ2 (SMW, Yoshi's Island)**.
 
 ![The font, unpacked](images/text-01-font-preview.png)
 
-**File ▸ New Slice from View**, name it `GFX2A font`.
+4. **File ▸ New Slice from View**. Name the slice `GFX2A font`.
 
 ![The slice, filled in](images/text-02-font-slice-dialog.png)
 
-**Rows** 8, **Zoom** 3, palette from a save state
-([Getting Started](Getting-Started#3-take-a-palette-from-a-save-state)),
-**Palette Row** 6.
+5. Set **Rows** to 8 and **Zoom** to 3.
+6. Take the palette from a save state. See
+   [Getting Started](Getting-Started#3-take-a-palette-from-a-save-state).
+7. Set **Palette Row** to 6.
 
 ![The font sheet](images/text-02-font-slice.png)
 
 ## 2. Spell it
 
-Tick **Use as Font** on the toolbar to open **Font Alphabet** (also **View ▸
-Font Alphabet…**).
+1. On the toolbar, tick **Use as Font**. The **Font Alphabet** window opens. You
+   can also open it with **View ▸ Font Alphabet…**.
 
 ![The alphabet, empty](images/text-03-alphabet-empty.png)
 
-Click a start tile and paste (Ctrl+V); characters fill one per tile.
+2. Click a start tile and paste (Ctrl+V). celPix puts one character on each
+   tile. Do this for each row of the table:
 
 | Click tile | Paste |
 | --- | --- |
-| `$00` | `ABCDEFGHIJKLMNOPQRSTUVWXYZ!.-,? ` (ending in the space) |
+| `$00` | `ABCDEFGHIJKLMNOPQRSTUVWXYZ!.-,? ` (the last character is a space) |
 | `$40` | `abcdefghijklmnopqrstuvwxyz#()'` |
 | `$64` | `12345670` |
 
 ![The alphabet, filled](images/text-03-alphabet-filled.png)
 
-**Characters** captions each spelled tile when zoomed in.
+**Characters** shows the character on each tile when you zoom in.
 
 ![Captions](images/text-03-alphabet-captions.png)
 
-For one tile: click, Enter, type, Enter. **Fill with…** offers `A-Z 0-9, from 0`
-and `ASCII, from $20`; **Base code** shifts the start.
+To set one tile: click it, press Enter, type the character, and press Enter.
+
+**Fill with…** has two presets: `A-Z 0-9, from 0` and `ASCII, from $20`.
+**Base code** changes the first code.
 
 ## 3. Carve the text
 
-Select the ROM, **File ▸ New Slice…**:
+1. Select the ROM.
+2. **File ▸ New Slice…**, with these values:
 
 | | |
 | --- | --- |
@@ -61,28 +68,33 @@ Select the ROM, **File ▸ New Slice…**:
 
 ![The text's slice](images/text-04-text-slice-dialog.png)
 
-The top bit of a line's last character ends the line. Set **Tilemap** to **[F]
-Text run (8-bit, high bit ends a line)** and **Cols** to 18.
+In this format, the top bit of the last character of a line ends the line.
 
-**[F]** formats open the **Text** window. Unbound, cells read as hex.
+3. Set **Tilemap** to **[F] Text run (8-bit, high bit ends a line)**.
+4. Set **Cols** to 18.
+
+A format marked **[F]** opens the **Text** window. With no font bound, the cells
+show as hex codes.
 
 ![No alphabet yet](images/text-04-text-unbound.png)
 
-Set **Tiles** to `GFX2A font`.
+5. Set **Tiles** to `GFX2A font`.
 
 ![The messages](images/text-04-text-bound.png)
 
-Amber marks line ends on the canvas. Short lines misalign the grid; the Text
-window is the reliable view.
+On the canvas, amber marks the end of each line. Short lines move the grid out
+of line. Use the Text window to read the text.
 
-> Binding to a sheet without **Use as Font** offers to tick it.
+> If you bind to a sheet that does not have **Use as Font** ticked, celPix offers
+> to tick it.
 
-Unspelled codes show as hex, e.g. `[$60][$61]` `[$62][$63]` (Yoshi's paw print).
-Selecting one in the Text window selects its cell.
+Codes with no character show as hex. For example, `[$60][$61]` `[$62][$63]` is
+Yoshi's paw print. If you select a code in the Text window, celPix selects its
+cell.
 
 ![Codes with no letter](images/text-04-text-unknown-codes.png)
 
-Reopen with **View ▸ Text…**.
+To open the Text window again: **View ▸ Text…**.
 
 ## 4. Type
 
@@ -90,46 +102,56 @@ Type over `Welcome!` in the Text window.
 
 ![An edited message](images/text-05-text-edited.png)
 
-The region stays full (`2854 / 2854 cells`); typing overwrites. One run of typing
-is one undo.
+The region is always full (`2854 / 2854 cells`). Typing replaces the characters
+that are there. One run of typing is one undo step.
 
-- Backspace/Delete blank a cell without closing the gap.
-- **Insert** shifts text right; overflow is dropped (`'U' pushed off the end`).
-- Enter sets the end-of-line bit on the previous character.
-- Unmapped characters become blanks (`'@' has no code in this font`).
+- Backspace and Delete make a cell blank. They do not close the gap.
+- **Insert** moves the text to the right. Text that goes past the end is lost
+  (`'U' pushed off the end`).
+- Enter sets the end-of-line bit on the character before it.
+- A character that is not in the font becomes a blank (`'@' has no code in this
+  font`).
 
 ![Insert, and what it costs](images/text-05-text-insert.png)
 
 ## 5. A second region, the same alphabet
 
-**File ▸ New Slice…**: Tilemap, `Level names`, `$21AC5`, length `$1CC`, same
-**[F]** format, **Tiles** `GFX2A font`, **Cols** 19.
+1. **File ▸ New Slice…**, with these values:
+   - **Content**: Tilemap
+   - **Name**: `Level names`
+   - **Offset**: `$21AC5`
+   - **Length**: `$1CC`
+2. Set **Tilemap** to the same **[F]** format.
+3. Set **Tiles** to `GFX2A font`.
+4. Set **Cols** to 19.
 
 ![The level names](images/text-06-level-names.png)
 
-`[$38]`…`[$3C]` is `YELLOW` in a condensed face: six letters over five tiles, so
-none map to a character.
+Codes `[$38]` to `[$3C]` spell `YELLOW` in a narrow font. The six letters use
+five tiles, so no tile matches one character.
 
-**File ▸ Write All** (Ctrl+Shift+W), **File ▸ Save Project** (Ctrl+S).
+5. **File ▸ Write All** (Ctrl+Shift+W).
+6. **File ▸ Save Project** (Ctrl+S).
 
 ![Written](images/text-07-written.png)
 
-> Unticking **Use as Font** deletes the alphabet (after confirming; undoable).
+> If you untick **Use as Font**, celPix deletes the alphabet. It asks first, and
+> you can undo it.
 
 ## In the sample project
 
 ![The sample's message boxes](images/text-09-sample-messages.png)
 
-The castle cutscenes use the same font with a 16-bit cell format:
+The castle cutscenes use the same font. Their cells are 16 bits:
 
 ![A castle line](images/text-09-sample-castle-line.png)
 
-In `GFX28`, rows with **Role** **control** are named codes: `mario1`–`mario5`
-read as `[mario1]` etc.
+In `GFX28`, a row with **Role** set to **control** is a named code. Codes
+`mario1` to `mario5` show as `[mario1]` and so on.
 
 ![Named codes](images/text-09-sample-named-codes.png)
 
-**Append** adds codes past the sheet's end; here `$85` and `$86` are `'` and `"`
-from the next sheet.
+**Append** adds codes after the end of the sheet. Here, `$85` and `$86` are `'`
+and `"` from the next sheet.
 
 ![Rows past the sheet](images/text-09-sample-appended-rows.png)

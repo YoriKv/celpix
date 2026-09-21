@@ -44,11 +44,13 @@ every parameter it takes.
 - `_color-indexed.toml` — palette bytes index a table baked into the hardware
 - `tilemap/_packed.toml` — a cell is one packed integer: tile number in the low
   bits, attributes above it (nearly every hardware map)
-- `_md-sprite.toml` — parts carrying signed pixel offsets, drawn as frames rather
-  than laid out in rows, each record *stating* its own rectangle. The only sprite
-  record with an example here: the other three celPix reads are **formats**, one
-  bespoke codec apiece with nothing to parameterise, so there is no TOML for them
-  to be an example of (see the `.py` section below)
+- `_sprite-record.toml` — parts carrying signed pixel offsets, drawn as frames
+  rather than laid out in rows, with the record written out field by field: any
+  sprite list whose pieces are records back to back, in any field order
+- `_md-sprite.toml` — the Mega Drive VDP's own sprite record, which checks its
+  mirrored X as it reads. The other sprite readers celPix ships are **formats**,
+  one bespoke codec apiece, so there is no TOML for them to be an example of
+  (see the `.py` section below)
 - `_indirect-record.toml` — one byte per 16x16 metatile, naming a *record* of a
   definition table rather than a tile: how a side-scroller keeps a level
 

@@ -27,6 +27,14 @@
           "minimum": 1,
           "required": false,
           "stride": 1
+        },
+        {
+          "key": "size",
+          "kind": "integer",
+          "maximum": 2097152,
+          "minimum": 0,
+          "required": false,
+          "stride": 1
         }
       ]
     },
@@ -311,6 +319,10 @@
         "pixels",
         "tilemap"
       ],
+      "codec.tilemap.sprite-record": [
+        "pixels",
+        "tilemap"
+      ],
       "format.tilemap.nes-nametable": [
         "pixels",
         "tilemap"
@@ -526,6 +538,7 @@
       "preset.tilemap.md-bg",
       "preset.tilemap.md-sprite",
       "preset.tilemap.metatile-index",
+      "preset.tilemap.nes-oam",
       "preset.tilemap.ngp-bg",
       "preset.tilemap.ngpc-bg",
       "preset.tilemap.pce-bat",
@@ -537,6 +550,7 @@
       "preset.tilemap.snes-bg-16x16",
       "preset.tilemap.snes-bg-swapped",
       "preset.tilemap.snes-mode7",
+      "preset.tilemap.snes-stamp-table-column",
       "preset.tilemap.text-16bit",
       "preset.tilemap.text-16bit-be",
       "preset.tilemap.text-8bit",

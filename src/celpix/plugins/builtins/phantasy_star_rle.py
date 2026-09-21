@@ -45,6 +45,19 @@ Edge cases, settled from the game's Z80 loaders rather than the prose:
   four-part stream read as two — gives two equal parts and cannot be told from a
   real tilemap; it decodes half the stream and reports that extent.
 
+**A stated size takes the parts' slack.** Where a game's loader is told how many
+bytes to expect — a size word ahead of the stream, a map's width times its
+height — its packer is free to leave a byte of slack on some parts and not on
+others, and one did: a Mega Drive cartridge whose streams are this grammar has
+parts one byte apart in 39 of its 148 (``docs/rom-mapping/console-mega-drive.md``
+§5). The loader never notices, because the shortest part still covers its share
+of the size. So a second optional input, ``size``, states the decoded length:
+with it the decoder accepts parts that differ, requires each to cover its share
+(``k, k + parts, …`` below ``size``), and weaves exactly ``size`` bytes, dropping
+the slack; the encoder writes the parts that length splits into, a remainder and
+all. Without it nothing changes, so the unequal parts that expose a wrong part
+count on the Master System still do.
+
 The terminators make the scheme **self-delimiting**: the byte after the last
 part's ``$00`` is the structure's true end, reported as its compressed size. A
 buffer that ends before the last terminator is an error unless partial.
@@ -74,6 +87,8 @@ INPUT_PARTS = "interleave"
 TILE_PARTS = 4
 #: A tilemap: one part per byte of the 2-byte cell.
 TILEMAP_PARTS = 2
+#: The input key the decoded length is bound under.
+INPUT_SIZE = "size"
 # A bound on the input spin, not a property of the scheme: the loader picks the
 # count, and a level map decompressed to RAM one part per **row** takes as many
 # parts as it has rows -- 12 on Alex Kidd in Shinobi World, whose to-RAM entry
@@ -97,16 +112,19 @@ def _fail(reason: str) -> ValueError:
 
 
 def decompress(
-    data: bytes, *, parts: int = TILE_PARTS, partial: bool = False
+    data: bytes, *, parts: int = TILE_PARTS, size: int = 0, partial: bool = False
 ) -> tuple[bytes, int, bool]:
     """Decode ``parts`` parts and weave them back into interleaved order.
 
     Returns ``(output, consumed, complete)``. ``complete`` is true when every
-    part's terminator was inside ``data`` and the parts agree in length, which
-    makes ``consumed`` the structure's true byte length. With ``partial`` a
-    buffer ending early, or parts of unequal length, give the best-effort weave
-    (zeros where a part has no byte) instead of raising.
+    part's terminator was inside ``data`` and the parts agree in length — or,
+    with ``size``, each covers its share of it — which makes ``consumed`` the
+    structure's true byte length. With ``partial`` a buffer ending early, or
+    parts that fall short, give the best-effort weave (zeros where a part has no
+    byte) instead of raising.
     """
+    if size < 0:
+        raise ValueError(f"size must not be negative, not {size}")
     if parts < 1:
         raise ValueError(f"part count must be at least 1, not {parts}")
     decoded: list[bytearray] = []
@@ -145,6 +163,18 @@ def decompress(
             break
 
     lengths = [len(part) for part in decoded]
+    if size:
+        shares = [len(range(k, size, parts)) for k in range(parts)]
+        covered = len(decoded) == parts and all(
+            have >= need for have, need in zip(lengths, shares, strict=True)
+        )
+        if not ran_out and not covered and not partial:
+            raise _fail(
+                f"its {parts} parts decode to {', '.join(map(str, lengths))} bytes, "
+                f"short of the {', '.join(map(str, shares))} a {size:,}-byte "
+                "stream needs; the part count or the size is likely wrong"
+            )
+        return _weave(decoded, parts, size), i, not ran_out and covered
     even = len(decoded) == parts and len(set(lengths)) == 1
     if not ran_out and not even and not partial:
         raise _fail(
@@ -154,24 +184,33 @@ def decompress(
     return _weave(decoded, parts), i, not ran_out and even
 
 
-def _weave(decoded: list[bytearray], parts: int) -> bytes:
-    """Part *k*'s *i*-th byte at ``k + parts * i`` — the loader's write order."""
+def _weave(decoded: list[bytearray], parts: int, size: int = 0) -> bytes:
+    """Part *k*'s *i*-th byte at ``k + parts * i`` — the loader's write order.
+
+    ``size`` cuts the weave there, and a part's bytes past its share of it are
+    the packer's slack, dropped.
+    """
     width = max((len(part) for part in decoded), default=0)
-    out = bytearray(width * parts)
+    out = bytearray(size or width * parts)
     for k, part in enumerate(decoded):
-        out[k : k + parts * len(part) : parts] = part
+        lane = len(range(k, len(out), parts))
+        out[k : len(out) : parts] = bytes(part[:lane]).ljust(lane, b"\0")
     return bytes(out)
 
 
-def compress(data: bytes, *, parts: int = TILE_PARTS) -> bytes:
+def compress(data: bytes, *, parts: int = TILE_PARTS, size: int = 0) -> bytes:
     """Take ``data`` apart into ``parts`` parts and run-length code each.
 
-    Refuses data that is not a whole number of parts: the decoder weaves equal
-    parts, so a remainder has nowhere to go.
+    Without ``size``, refuses data that is not a whole number of parts: the
+    decoder weaves equal parts, so a remainder has nowhere to go. With it the
+    decoder knows where the data stops, so the parts may differ by the
+    remainder — and ``data`` must be that long.
     """
     if parts < 1:
         raise ValueError(f"part count must be at least 1, not {parts}")
-    if len(data) % parts:
+    if size and len(data) != size:
+        raise ValueError(f"{len(data):,} bytes to pack, but the stated size is {size:,}")
+    if not size and len(data) % parts:
         raise ValueError(
             f"{len(data):,} bytes is not a whole number of {parts}-part groups "
             f"({len(data) % parts} left over)"
@@ -195,6 +234,10 @@ def _parts(ctx: PipelineContext) -> int:
     # The host delivers the spec's default when nothing is bound; a caller that
     # never seeded inputs at all gets the same default rather than a KeyError.
     return int((ctx.get(KEY_INPUTS) or {}).get(INPUT_PARTS, TILE_PARTS))
+
+
+def _size(ctx: PipelineContext) -> int:
+    return int((ctx.get(KEY_INPUTS) or {}).get(INPUT_SIZE, 0))
 
 
 class PhantasyStarRleCompression:
@@ -221,16 +264,35 @@ class PhantasyStarRleCompression:
                     "The bytes do not say; the game's loader does."
                 ),
             ),
+            InputSpec(
+                INPUT_SIZE,
+                "Decoded size",
+                InputKind.INTEGER,
+                required=False,
+                default=0,
+                minimum=0,
+                maximum=_MAX_PART * _MAX_PARTS,
+                unit="byte",
+                tooltip=(
+                    "The bytes the stream decodes to, where the game's\n"
+                    "loader is told: a size word, a map's width x height x 2.\n"
+                    "Lets the parts differ by a packer's slack byte and\n"
+                    "drops it. 0 requires every part to be the same length."
+                ),
+            ),
         ),
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
         out, consumed, complete = decompress(
-            data, parts=_parts(ctx), partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL))
+            data,
+            parts=_parts(ctx),
+            size=_size(ctx),
+            partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL)),
         )
         ctx.set(KEY_COMPRESSED_SIZE, consumed)
         ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
         return out
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return compress(data, parts=_parts(ctx))
+        return compress(data, parts=_parts(ctx), size=_size(ctx))

@@ -2865,6 +2865,35 @@ def test_the_arrangement_bar_is_furniture_for_a_pixel_document(qtbot, tmp_path) 
     assert window._arrange_toolbar.isEnabled()
 
 
+def test_a_tilemap_sliced_without_a_length_is_bounded_by_what_it_unpacked(
+    qtbot, tmp_path
+) -> None:
+    """A compressed map sliced with Length blank takes the extent its decompressor
+    found, as a pixel slice does. Left unbounded, a write that repacks larger has
+    no slot to be refused by and runs on over whatever follows the map."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.plugins.builtins.snes_rle import compress
+    from celpix.project.workspace import new_slice
+
+    packed = compress(bytes([0] * 40 + [1, 2, 3] + [0] * 21), terminated=True)
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(16) + packed + b"\xaa" * 64)  # the next structure
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    sliced = new_slice(
+        window._workspace.current.path, "map", offset=16,
+        compression_id="compression.rle1",
+    )  # fmt: skip
+    sliced.content_kind = ContentKind.TILEMAP
+    sliced.tilemap_preset_id = "preset.tilemap.index-8bit"
+    window._workspace.insert(sliced, len(window._workspace.entries))
+    window._activate_entry(sliced)
+    assert sliced.doc is not None
+    assert sliced.slice_length == len(packed)
+
+
 def test_a_source_that_states_a_stamp_stride_is_stamped_at_it_not_at_its_width(
     qtbot, tmp_path
 ) -> None:
@@ -2904,3 +2933,66 @@ def test_a_source_that_states_a_stamp_stride_is_stamped_at_it_not_at_its_width(
     qtbot.addWidget(window)
     assert window._chain_source_columns(table(2, 32)) == 2
     assert window._chain_source_columns(table(None, 32)) == 32
+
+
+def test_a_script_builds_the_document_the_window_does(qtbot, tmp_path) -> None:
+    """``project.documents.load_document`` is how a script gets the picture the
+    app draws, and the promise is that it is the *same* document, not a second
+    reading of the project. So the window and the headless loader open one saved
+    project — a bank on an Offset palette, a panel drawing from it, a stamp layout
+    drawing through the panel — and every document must agree on what it draws:
+    bytes, cells after the chain, stamp, base, colours, width."""
+    import json
+
+    from celpix.core.tilemap import Cell
+    from celpix.plugins.registry import default_registry
+    from celpix.project.documents import load_document
+    from celpix.project.projectfile import load_project, save_project
+    from celpix.project.workspace import TileMode, TileSource, Workspace
+
+    cells = [Cell(index=i % 7 + 1, palette_row=1) for i in range(64)]
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_pnl_file(tmp_path, cells)))
+    panel = window._workspace.entries[1]
+    panel.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(panel)
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=0), Cell(index=2)])))
+    layout = window._workspace.current
+    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry=panel)
+    window._reload_tilemap(layout)
+    path = tmp_path / "p.celpix"
+    save_project(window._workspace, str(path))
+    # The bank reads its colours from an offset in its own file.
+    body = json.loads(path.read_text())
+    bank = next(e for e in body["entries"] if e["kind"] == "file")
+    bank["session"]["palette_mode"] = "offset"
+    bank["palette"] = {"offset": 64}
+    path.write_text(json.dumps(body))
+
+    app = MainWindow()
+    qtbot.addWidget(app)
+    app._load_project(str(path))
+    for entry in app._workspace.entries:
+        app._activate_entry(entry)
+
+    registry = default_registry()
+    loaded = load_project(str(path))
+    workspace = Workspace()
+    workspace.replace(loaded.entries, loaded.current)
+    for ours, theirs in zip(workspace.entries, app._workspace.entries, strict=True):
+        doc, want = load_document(ours, registry, workspace).doc, theirs.doc
+        assert doc.pixel_data == want.pixel_data, ours.name
+        assert doc.palette.colors[:64] == want.palette.colors[:64], ours.name
+        assert doc.view.columns == want.view.columns, ours.name
+        assert doc.is_tilemap == want.is_tilemap, ours.name
+        if doc.is_tilemap:
+            assert doc.stamp_cells == want.stamp_cells, ours.name
+            assert doc.tile_base_index == want.tile_base_index, ours.name
+            assert [(c.index, c.palette_row) for c in doc.drawn_cells] == [
+                (c.index, c.palette_row) for c in want.drawn_cells
+            ], ours.name
+    assert doc.stamp_cells == (2, 2)  # the layout really went through the chain

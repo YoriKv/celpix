@@ -2603,3 +2603,25 @@ def test_lz4w_pack_previous_without_preceding_data_warns_and_packs_plain() -> No
     packed = plugin.compress(b"ABABABAB", ctx)
     assert lz4w.decompress(packed)[0] == b"ABABABAB"
     assert [n.summary for n in notices(ctx)] == ["Packed without the preceding data"]
+
+
+def test_phantasy_star_rle_takes_a_stated_size_over_its_parts_slack() -> None:
+    """A packer that leaves a slack byte on some parts and not others makes
+    parts that disagree, which without a size is exactly the wrong-part-count
+    tell and must stay one. With the loader's size stated, each part only has to
+    cover its share; the weave stops there and the slack is dropped."""
+    # 10 bytes in 4 parts: shares 3, 3, 2, 2. Parts 0 and 3 carry a slack byte.
+    lanes = [b"\x01\x05\x09\xee", b"\x02\x06\x0a", b"\x03\x07", b"\x04\x08\xee"]
+    stream = b"".join(bytes((0x80 | len(lane),)) + lane + b"\x00" for lane in lanes)
+    with pytest.raises(ValueError, match="part count is likely wrong"):
+        phantasy_star_rle.decompress(stream, parts=4)
+    assert phantasy_star_rle.decompress(stream, parts=4, size=10) == (
+        bytes(range(1, 11)),
+        len(stream),
+        True,
+    )
+    with pytest.raises(ValueError, match="short of"):
+        phantasy_star_rle.decompress(stream, parts=4, size=13)
+    # A remainder the size accounts for packs, and reads back to the same bytes.
+    packed = phantasy_star_rle.compress(bytes(range(1, 11)), parts=4, size=10)
+    assert phantasy_star_rle.decompress(packed, parts=4, size=10)[0] == bytes(range(1, 11))

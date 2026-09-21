@@ -1,33 +1,38 @@
 # Compress & Reshape
 
-A slice's **Reshape** runs *before* decompression. For data the game unpacks
-and *then* rearranges, a **Compress & Reshape** plugin runs them in that order.
+The **Reshape** setting of a slice runs *before* decompression. Some games unpack
+data and *then* rearrange it. A **Compress & Reshape** plugin does the two steps
+in that order.
 
-Uses the Super Mario World sample project
-([opening it](Plugin-Inputs#1-open-a-project-that-has-plugins)).
+This page uses the Super Mario World sample project. To open it, see
+[Plugin Inputs](Plugin-Inputs#1-open-a-project-that-has-plugins).
 
 ## 1. The problem
 
-The Mountains Layer 2 background is an RLE1 stream: two screens of 16×27 blocks,
-side by side.
+The Mountains Layer 2 background is an RLE1 stream. It has two screens of 16×27
+stamps. In the game, the screens are side by side.
 
 ![The background](images/pair-background.png)
 
-The unpacked data is screen by screen, so RLE1 alone puts the right screen under
-the left. Right-click ▸ **Edit…**, set **Compression** to **RLE1 (SMW, $FF $FF
-terminated)**:
+The unpacked data stores one screen after the other. With RLE1 only, the right
+screen shows below the left screen.
+
+1. Right-click ▸ **Edit…**.
+2. Set **Compression** to **RLE1 (SMW, $FF $FF terminated)**.
 
 ![Edit Slice](images/pair-edit-slice-rle1.png)
 
 ![RLE1 alone](images/pair-rle1-only.png)
 
-The reshape **SMW level screens (16x27) laid across** fixes this, but in the
-**Reshape** row it would shuffle the packed bytes.
+The reshape **SMW level screens (16x27) laid across** puts the screens side by
+side. But in the **Reshape** setting, it runs before decompression, so it would
+rearrange the packed bytes.
 
 ## 2. Make the pair
 
-**File ▸ New Compress & Reshape Plugin…** (needs a saved project; the plugin goes
-in `plugins/`).
+1. **File ▸ New Compress & Reshape Plugin…**. The project must be saved
+   first. celPix puts the plugin in the `plugins/` folder.
+2. Enter these values:
 
 ![The pair](images/pair-dialog.png)
 
@@ -37,11 +42,11 @@ in `plugins/`).
 | **Then reshape** | SMW level screens (16x27) laid across |
 | **Name** | `SMW background (RLE1 + screens)` |
 
-Names must be unique:
+Each name must be unique:
 
 ![A name that is taken](images/pair-dialog-name-taken.png)
 
-The result is data only, so it loads without a trust prompt:
+The plugin is a data file. celPix loads it without asking for trust:
 
 ```toml
 id = "compression.smw-background-rle1-screens"
@@ -57,17 +62,20 @@ reshape = "reshape.smw-screens-across"
 
 ## 3. Use it
 
-**Edit…** the entry and pick the pair under **Project plugins**.
+1. Right-click ▸ **Edit…**.
+2. Under **Project plugins**, select the pair.
 
 ![In the picker](images/pair-compression-picker.png)
 
 ![The background, again](images/pair-using-it.png)
 
-Load unpacks then reshapes; write inverts both. [Inputs](Plugin-Inputs) of the
-compression half are bound on the pair.
+When celPix loads the entry, it unpacks the data and then reshapes it. When it
+writes the entry, it does the two steps in reverse. If the compression has
+[inputs](Plugin-Inputs), you bind them on the pair.
 
 ## View-only pairs
 
-A pair writes only if both halves are reversible. The dialog warns first:
+celPix can write a pair only if both steps can be reversed. If one step cannot
+be reversed, the dialog shows a warning:
 
 ![A half with no way back](images/pair-dialog-view-only.png)

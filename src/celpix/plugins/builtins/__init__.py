@@ -56,6 +56,7 @@ from .lz_command import Lz1, Lz1Improved, Lz2, Lz2Improved
 from .lzss_ring import LzssRingCompression
 from .m7_vram import M7VramReshape
 from .md_sprite import MdSpriteCodec
+from .sprite_record import SpriteRecordCodec
 from .n64_rom import N64RomContainer
 from .namco_lz import NamcoLzCompression, StrikeLzCompression
 from .nemesis import NemesisCompression
@@ -174,6 +175,7 @@ def register_builtins(reg: Registry) -> None:
         IndexedColorCodec(),
         TilemapCodec(),
         MdSpriteCodec(),
+        SpriteRecordCodec(),
         IndirectRecordCodec(),
     ):
         reg.register(plugin)
