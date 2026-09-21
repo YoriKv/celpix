@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.4 - unreleased
+## v1.0.4 - 2026-09-20
 
 - SNES ROM container that automatically fixes the internal header's checksum
 - Cols picks how a tilemap's pages sit side by side when there are multiple pages
