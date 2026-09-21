@@ -209,7 +209,9 @@ def compress(data: bytes, *, parts: int = TILE_PARTS, size: int = 0) -> bytes:
     if parts < 1:
         raise ValueError(f"part count must be at least 1, not {parts}")
     if size and len(data) != size:
-        raise ValueError(f"{len(data):,} bytes to pack, but the stated size is {size:,}")
+        raise ValueError(
+            f"{len(data):,} bytes to pack, but the stated size is {size:,}"
+        )
     if not size and len(data) % parts:
         raise ValueError(
             f"{len(data):,} bytes is not a whole number of {parts}-part groups "

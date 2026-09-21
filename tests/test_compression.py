@@ -2624,4 +2624,6 @@ def test_phantasy_star_rle_takes_a_stated_size_over_its_parts_slack() -> None:
         phantasy_star_rle.decompress(stream, parts=4, size=13)
     # A remainder the size accounts for packs, and reads back to the same bytes.
     packed = phantasy_star_rle.compress(bytes(range(1, 11)), parts=4, size=10)
-    assert phantasy_star_rle.decompress(packed, parts=4, size=10)[0] == bytes(range(1, 11))
+    assert phantasy_star_rle.decompress(packed, parts=4, size=10)[0] == bytes(
+        range(1, 11)
+    )

@@ -56,7 +56,6 @@ from .lz_command import Lz1, Lz1Improved, Lz2, Lz2Improved
 from .lzss_ring import LzssRingCompression
 from .m7_vram import M7VramReshape
 from .md_sprite import MdSpriteCodec
-from .sprite_record import SpriteRecordCodec
 from .n64_rom import N64RomContainer
 from .namco_lz import NamcoLzCompression, StrikeLzCompression
 from .nemesis import NemesisCompression
@@ -90,6 +89,7 @@ from .snes_rle import Rle1Compression, Rle2Compression
 from .snes_rom import SnesRomContainer
 from .sonic2_tiles import Sonic2TilesCompression
 from .split_planes import split_part_plugins
+from .sprite_record import SpriteRecordCodec
 from .tilemap_codec import TilemapCodec
 from .tim import TimClutContainer, TimContainer
 from .tpl_palette import TplPaletteContainer

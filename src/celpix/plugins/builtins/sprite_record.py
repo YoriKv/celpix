@@ -93,17 +93,23 @@ class _Layout:
         if not isinstance(spec, list) or not spec:
             raise ValueError("a sprite record needs a `record` list of fields")
         self.order = "little" if params.get("endian") == "little" else "big"
-        legend = resolve_legend(_LEGEND, params.get("legend"), frozenset(_LEGEND.values()))
+        legend = resolve_legend(
+            _LEGEND, params.get("legend"), frozenset(_LEGEND.values())
+        )
         self.fields: list[tuple[str, int, int, bool, dict]] = []
         at = 0
         seen: set[str] = set()
         for field in spec:
             name, kind = str(field.get("name", "")), str(field.get("type", ""))
             if kind not in _TYPES:
-                raise ValueError(f"field {name!r}: type must be one of {', '.join(_TYPES)}")
+                raise ValueError(
+                    f"field {name!r}: type must be one of {', '.join(_TYPES)}"
+                )
             width = _TYPES[kind]
             bits = field.get("bits")
-            placed = parse_layout(bits, legend, width * 8) if isinstance(bits, str) else {}
+            placed = (
+                parse_layout(bits, legend, width * 8) if isinstance(bits, str) else {}
+            )
             for part in placed:
                 if part in seen:
                     raise ValueError(f"{part!r} is placed by two fields of the record")
@@ -111,11 +117,17 @@ class _Layout:
             self.fields.append((name, at, width, kind.startswith("s"), placed))
             at += width
         if at * 8 > _HEADER_SHIFT:
-            raise ValueError(f"a record is at most {_HEADER_SHIFT // 8} bytes, not {at}")
+            raise ValueError(
+                f"a record is at most {_HEADER_SHIFT // 8} bytes, not {at}"
+            )
         self.size = at
         self.has_rows = "palette" in seen
-        self.index_bits = sum(w for _s, w in self._placement("index")[1]) if "index" in seen else 0
-        self.row_bits = sum(w for _s, w in self._placement("palette")[1]) if self.has_rows else 0
+        self.index_bits = (
+            sum(w for _s, w in self._placement("index")[1]) if "index" in seen else 0
+        )
+        self.row_bits = (
+            sum(w for _s, w in self._placement("palette")[1]) if self.has_rows else 0
+        )
         header = params.get("frame_header")
         if header is None:
             self.header = None
@@ -137,14 +149,18 @@ class _Layout:
     def value(self, record: bytes, name: str) -> int | None:
         for field, at, width, signed, _placed in self.fields:
             if field == name:
-                return int.from_bytes(record[at : at + width], self.order, signed=signed)
+                return int.from_bytes(
+                    record[at : at + width], self.order, signed=signed
+                )
         return None
 
     def part(self, record: bytes, part: str, default: int = 0) -> int:
         for _name, at, width, _signed, placed in self.fields:
             if part in placed:
                 chunks, sw = placed[part]
-                return gather(int.from_bytes(record[at : at + width], self.order), chunks, sw)
+                return gather(
+                    int.from_bytes(record[at : at + width], self.order), chunks, sw
+                )
         return default
 
     def with_parts(self, record: bytes, parts: dict[str, int]) -> bytes:
@@ -213,7 +229,9 @@ class SpriteRecordCodec:
         stage=Stage.INTERPRET_TILEMAP,
     )
 
-    def decode(self, data: bytes, params: dict[str, Any], ctx: PipelineContext) -> list[Cell]:
+    def decode(
+        self, data: bytes, params: dict[str, Any], ctx: PipelineContext
+    ) -> list[Cell]:
         layout = _Layout(params)
         cells: list[Cell] = []
         at, size = 0, layout.size
@@ -224,7 +242,9 @@ class SpriteRecordCodec:
         length, count_at, count_width = layout.header
         while at + length <= len(data):
             header = data[at : at + length]
-            count = int.from_bytes(header[count_at : count_at + count_width], layout.order)
+            count = int.from_bytes(
+                header[count_at : count_at + count_width], layout.order
+            )
             end = at + length + count * size
             if end > len(data):
                 raise ValueError(
@@ -233,13 +253,21 @@ class SpriteRecordCodec:
                 )
             for i in range(count):
                 first = at + length + i * size
-                cells.append(_cell(layout, data[first : first + size], header if i == 0 else None))
+                cells.append(
+                    _cell(
+                        layout, data[first : first + size], header if i == 0 else None
+                    )
+                )
             if not count:
-                raise ValueError(f"the frame at {at:#x} holds no pieces, which a run cannot carry")
+                raise ValueError(
+                    f"the frame at {at:#x} holds no pieces, which a run cannot carry"
+                )
             at = end
         return cells
 
-    def encode(self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext) -> bytes:
+    def encode(
+        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
+    ) -> bytes:
         layout = _Layout(params)
         out = bytearray()
         for frame in _group(cells, layout.header is not None):
@@ -263,7 +291,9 @@ class SpriteRecordCodec:
         # renderer asks each subsprite instead.
         return (1, 1)
 
-    def frames(self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext) -> list[Frame]:
+    def frames(
+        self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
+    ) -> list[Frame]:
         layout = _Layout(params)
         out = []
         for frame in _group(cells, layout.header is not None):
@@ -298,7 +328,9 @@ class SpriteRecordCodec:
         bits = _Layout(params).row_bits
         return (1 << bits) - 1 if bits else 0
 
-    def transform_cell(self, cell: Cell, op: CellOp, params: dict[str, Any]) -> Cell | None:
+    def transform_cell(
+        self, cell: Cell, op: CellOp, params: dict[str, Any]
+    ) -> Cell | None:
         """Both mirrors where the record has the bits, and no turn."""
         layout = _Layout(params)
         placed = {p for _n, _a, _w, _s, pl in layout.fields for p in pl}

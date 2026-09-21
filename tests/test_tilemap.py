@@ -1398,9 +1398,9 @@ def test_a_sprite_record_frames_by_its_header_and_keeps_the_header() -> None:
     }
 
     def piece(x: int, y: int, attr: int) -> bytes:
-        return b"".join(v.to_bytes(2, "big", signed=True) for v in (x, y)) + attr.to_bytes(
-            2, "big"
-        )
+        return b"".join(
+            v.to_bytes(2, "big", signed=True) for v in (x, y)
+        ) + attr.to_bytes(2, "big")
 
     raw = (
         b"\xab\xcd\x00\x02" + piece(-3, 4, 0x2805) + piece(8, 0, 0x0006)
@@ -1412,7 +1412,13 @@ def test_a_sprite_record_frames_by_its_header_and_keeps_the_header() -> None:
     frames = engine.frames(cells, params, ctx)
     assert [len(f) for f in frames] == [2, 1]
     first = frames[0][0]
-    assert (first.x, first.y, first.index, first.palette_row, first.flip_h) == (-3, 4, 5, 2, True)
+    assert (first.x, first.y, first.index, first.palette_row, first.flip_h) == (
+        -3,
+        4,
+        5,
+        2,
+        True,
+    )
     assert frames[1][0].flip_v and frames[1][0].y == -16
     assert engine.encode(cells, params, ctx) == raw
     # A piece moved out of the first frame is counted where it now is.
