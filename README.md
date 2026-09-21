@@ -62,6 +62,8 @@ Grab the build for your platform from the [Releases page](https://github.com/Yor
 
 Help -> Shortcuts (`F1`) to view a list of keyboard shortcuts.
 
+Check out the [Getting Started](https://github.com/YoriKv/celpix/wiki/Getting-Started) guides on the wiki.
+
 ### Command line
 
 ```
