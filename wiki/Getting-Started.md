@@ -1,5 +1,7 @@
 # Getting Started
 
+An example project setup using `Super Mario World (USA).sfc`.
+
 This tutorial edits the **Mountains** background in **Super Mario World**
 (`Super Mario World (USA).sfc`). This is the background with tall spotted hills
 in the intro level and in Yoshi's House.
