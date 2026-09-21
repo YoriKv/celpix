@@ -71,6 +71,7 @@ from celpix.project.workspace import (
     TileSource,
     Workspace,
     can_compose,
+    can_supply_palette,
     palette_source_for,
     path_exists,
 )
@@ -87,7 +88,7 @@ from celpix.project.workspace import (
 # detail: an id names what an entry was opened *with*, so a rename with no
 # forwarding address resets that entry to pass-through, which reads as data
 # loss. That mapping lives in `plugins/aliases.py`.
-PROJECT_VERSION = 3
+PROJECT_VERSION = 4
 PROJECT_EXTENSION = ".celpix"
 
 # The two alphabet presets celPix used to ship, by the id an older project names
@@ -194,9 +195,31 @@ def _migrate_2_to_3(data: dict[str, object]) -> dict[str, object]:
     return data
 
 
+def _migrate_3_to_4(data: dict[str, object]) -> dict[str, object]:
+    """v3 → v4: bindings, presets and palettes may use what a v3 build does not
+    know — the RLE codec's ``size_word`` inputs, a sprite record's ``arrays``, an
+    Offset palette on a composite (read from its first piece's file), and a
+    palette read out of **another entry**'s bytes (``palette_mode: "entry"``
+    beside ``palette: {"entry": <position>, "offset": N}``,
+    ``docs/design/palette-editing.md``).
+
+    Purely additive, so there is nothing to rewrite: every v3 file means the
+    same at v4. A v3 composite could not hold an Offset palette through the UI,
+    and one written by hand now reads the offset it names rather than falling
+    back to the default colours. The bump exists for the other direction, as
+    2 → 3's did. A v3 build fails those slices with a misleading message, draws
+    those frames scrambled, parses the unknown palette mode as ``default``, and
+    **drops the size-word bindings and the palette's entry reference on its next
+    save**. The number is what makes it warn before it does
+    (``docs/design/project-format.md`` §2).
+    """
+    return data
+
+
 _MIGRATIONS: dict[int, Callable[[dict[str, object]], dict[str, object]]] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
+    3: _migrate_3_to_4,
 }
 
 
@@ -459,7 +482,12 @@ def _entry_dict(
             ]
     palette = palette_source_for(entry)
     if palette is not None:
-        data["palette"] = _palette_dict(palette, base_dir)
+        data["palette"] = _palette_dict(
+            palette,
+            base_dir,
+            positions,
+            session.palette_mode if session is not None else PaletteMode.DEFAULT,
+        )
     return data
 
 
@@ -519,11 +547,32 @@ def _glyph_dict(glyph: Glyph) -> dict[str, object]:
     return data
 
 
-def _palette_dict(palette: PaletteSource, base_dir: str | None) -> dict[str, object]:
+def _palette_dict(
+    palette: PaletteSource,
+    base_dir: str | None,
+    positions: dict[int, int],
+    mode: PaletteMode,
+) -> dict[str, object]:
+    """One entry's palette source as JSON — the shape its mode reads.
+
+    The **entry** shape is the one that needs ``positions`` and ``mode``: a
+    palette read out of another entry's bytes holds that entry itself, and a file
+    cannot name an object, so this is where it becomes a position and
+    :func:`_bind_palette_entries` is where it becomes an object again — the same
+    two-places rule :func:`_tile_source_dict` states, for the same reason.
+    ``-1`` for a source no longer in the list, which round-trips to the default
+    palette rather than to whatever now sits at a stale index.
+    """
     if palette.colors is not None:
         return {"colors": [f"#{color & 0xFFFFFFFF:08X}" for color in palette.colors]}
     if palette.path is not None:
         return {"path": _store_path(palette.path, base_dir), "offset": palette.offset}
+    if palette.entry is not None or mode is PaletteMode.ENTRY:
+        # The mode as well as the object, so an entry whose source could not be
+        # resolved still writes the shape its mode reads. Left to the object
+        # alone it would write a bare ``offset``, which the next load takes for
+        # an offset into this entry's own file.
+        return {"entry": positions.get(id(palette.entry), -1), "offset": palette.offset}
     return {"offset": palette.offset}
 
 
@@ -568,6 +617,13 @@ class CopiedEntry:
     #: an entry is not a value, so without this a pasted composite arrives with
     #: its list emptied (``docs/design/composite-entry.md``).
     piece_sources: tuple[int, ...] = ()
+    #: The position an **ENTRY-mode palette** named, or ``None`` on a row whose
+    #: palette comes from anywhere else — the same join again, for the fourth
+    #: kind of reference a row can hold (``docs/design/palette-editing.md``).
+    #: ``-1`` for a source that was not part of the copy. ``None`` rather than
+    #: ``-1`` for "no such reference", so a row with an ordinary palette is left
+    #: alone instead of having one resolved onto it.
+    palette_source_index: int | None = None
     #: One ``(plugin id, key, position)`` per **input binding** that names an
     #: entry, in the order :func:`~celpix.project.inputs.iter_bindings` walks
     #: them — the same join again, for the third kind of reference a row can
@@ -644,10 +700,25 @@ def entries_from_payload(raw: object) -> list[CopiedEntry]:
                 tile_source=binding[0] if binding is not None else None,
                 tile_source_index=binding[1] if binding is not None else -1,
                 piece_sources=tuple(at for _piece, at in pieces),
+                palette_source_index=_palette_entry_index(record),
                 input_sources=input_sources,
             )
         )
     return out
+
+
+def _palette_entry_index(raw: dict) -> int | None:
+    """The entry position an entry-shaped ``palette`` block named, else ``None``.
+
+    Handed back beside the record for the reason every other cross-entry
+    reference is: the entry it names may not exist here at all, and a
+    :class:`~celpix.project.workspace.PaletteSource` naming nothing is what the
+    restore already degrades on.
+    """
+    palette = raw.get("palette")
+    if not isinstance(palette, dict) or "entry" not in palette:
+        return None
+    return _int(palette.get("entry"), -1)
 
 
 def inputs_payload(entry: Entry, all_entries: list[Entry], session: str) -> dict:
@@ -713,6 +784,7 @@ def load_project(path: str) -> LoadedProject:
     # After the bindings and for the same reason: both turn a stored position
     # back into an object, and both can only do it once every entry exists.
     _bind_composite_pieces(data.get("entries", []), parsed)
+    _bind_palette_entries(data.get("entries", []), parsed)
     _bind_inputs(data.get("entries", []), parsed)
     index = _int(data.get("current"), -1)
     current = parsed[index] if 0 <= index < len(parsed) else None
@@ -1247,6 +1319,42 @@ def _bind_composite_pieces(raw_entries: list, parsed: list[Entry | None]) -> Non
         entry.pieces = tuple(pieces)
 
 
+def _bind_palette_entries(raw_entries: list, parsed: list[Entry | None]) -> None:
+    """Point every entry-shaped palette source at the entry its position named.
+
+    Resolved against ``parsed`` **including the entries that failed to parse**,
+    for the reason :func:`_bind_tile_sources` gives: a stored index counts those,
+    so resolving against the survivors would shift every reference past a dropped
+    one onto its neighbour.
+
+    Forward references are ordinary here — a graphic routinely sits before the
+    composite assembling its colours — which is why this runs as a second pass
+    rather than inside :func:`_entry_from_dict`. A position naming nothing, or
+    naming something that cannot supply a palette
+    (:func:`~celpix.project.workspace.can_supply_palette` — a map, a bookmark, a
+    palette file, or the entry itself), leaves the source naming nothing and the
+    entry opens on the default palette with the load's usual notice.
+
+    ``palette_entry`` is set alongside the pending source, so the reverse lookup
+    answers for an entry nobody has activated yet.
+    """
+    for raw, entry in zip(raw_entries, parsed, strict=True):
+        if entry is None or not isinstance(raw, dict):
+            continue
+        source = entry.pending_palette
+        if source is None or entry.session is None:
+            continue
+        if entry.session.palette_mode is not PaletteMode.ENTRY:
+            continue
+        palette = raw.get("palette")
+        at = _int(palette.get("entry"), -1) if isinstance(palette, dict) else -1
+        target = parsed[at] if at is not None and 0 <= at < len(parsed) else None
+        if target is None or not can_supply_palette(entry, target):
+            continue
+        source.entry = target
+        entry.palette_entry = target
+
+
 def _palette_regions(raw: dict) -> PaletteRegions:
     """Stored pinned regions, skipping any triple that isn't three ints.
 
@@ -1327,6 +1435,12 @@ def _palette_from(raw: object, base_dir: str) -> PaletteSource | None:
         return PaletteSource(
             path=_resolve_path(path, base_dir), offset=_int(raw.get("offset"), 0)
         )
+    if "entry" in raw:
+        # The entry it names may not be parsed yet, so the object is left for
+        # :func:`_bind_palette_entries` once every entry exists. Until then this
+        # is an entry-shaped source naming nothing, which the restore degrades
+        # to the default palette exactly as an unresolvable one does.
+        return PaletteSource(offset=_int(raw.get("offset"), 0), entry=None)
     if "offset" in raw:
         return PaletteSource(offset=_int(raw.get("offset"), 0))
     return None

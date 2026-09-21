@@ -516,6 +516,58 @@ def test_palette_mode_and_block_must_agree(project, entry, mode, block, code):
     assert code in codes
 
 
+@pytest.mark.parametrize(
+    "block, code",
+    [
+        # Out of range, so it names nothing at all.
+        ({"entry": 9, "offset": 0}, "E542"),
+        # Names a palette file, which has no pixel bytes to decode as colours.
+        ({"entry": 1, "offset": 0}, "E543"),
+        # `entry` is read before `offset`, so an offset palette holding one is
+        # read as somebody else's bytes.
+        ({"entry": 0, "offset": 8}, "E625"),
+    ],
+)
+def test_an_entry_sourced_palette_must_name_a_readable_entry(
+    project, entry, block, code
+):
+    """The fourth positional reference a record can hold, checked the way the
+    other three are: in range, and pointing at something that can answer."""
+    mode = "offset" if code == "E625" else "entry"
+    codes = project(
+        {
+            "version": 1,
+            "entries": [
+                entry(session={"palette_mode": mode}, palette=block),
+                {
+                    "kind": "palette",
+                    "name": "p",
+                    "path": "p.pal",
+                    "palette_preset_id": "preset.palette.bgr555",
+                },
+            ],
+        },
+        files={"rom.sfc": 0x1000, "p.pal": 512},
+    )
+    assert code in codes
+
+
+def test_an_entry_sourced_palette_naming_an_open_pixel_entry_is_quiet(project, entry):
+    """The negative case, which is what a linter over a format this tolerant is
+    for: a well-formed entry palette must raise nothing at all."""
+    codes = project(
+        {
+            "version": 1,
+            "entries": [
+                entry(session={"palette_mode": "entry"}, palette={"entry": 1}),
+                entry(name="colours"),
+            ],
+        },
+        files=ROM,
+    )
+    assert not [code for code in codes if code.startswith(("E5", "E6", "W6"))]
+
+
 def test_palette_mode_with_no_block(project, entry):
     codes = project(
         {"version": 1, "entries": [entry(session={"palette_mode": "offset"})]},

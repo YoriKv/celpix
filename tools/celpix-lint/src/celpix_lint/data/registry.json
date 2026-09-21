@@ -19,6 +19,24 @@
           "stride": 1
         }
       ],
+      "compression.nes-ppu-list": [
+        {
+          "key": "page",
+          "kind": "integer",
+          "maximum": 11264,
+          "minimum": 8192,
+          "required": false,
+          "stride": 1
+        },
+        {
+          "key": "fill",
+          "kind": "integer",
+          "maximum": 255,
+          "minimum": 0,
+          "required": false,
+          "stride": 1
+        }
+      ],
       "compression.phantasy-star-rle": [
         {
           "key": "interleave",
@@ -32,6 +50,30 @@
           "key": "size",
           "kind": "integer",
           "maximum": 2097152,
+          "minimum": 0,
+          "required": false,
+          "stride": 1
+        },
+        {
+          "key": "size_word",
+          "kind": "flag",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "required": false,
+          "stride": 1
+        },
+        {
+          "key": "size_unit",
+          "kind": "integer",
+          "maximum": 65536,
+          "minimum": 1,
+          "required": false,
+          "stride": 1
+        },
+        {
+          "key": "size_big_endian",
+          "kind": "flag",
+          "maximum": 4294967295,
           "minimum": 0,
           "required": false,
           "stride": 1
@@ -127,6 +169,10 @@
         "tilemap"
       ],
       "compression.nemesis": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.nes-ppu-list": [
         "pixels",
         "tilemap"
       ],
@@ -433,6 +479,7 @@
       "preset.palette.grb333-be",
       "preset.palette.msx-indexed",
       "preset.palette.nes-indexed",
+      "preset.palette.nes-screen",
       "preset.palette.ngp-gray",
       "preset.palette.pce-grb333",
       "preset.palette.rgb444",
@@ -519,6 +566,7 @@
       "preset.pixel.sms-4bpp",
       "preset.pixel.snes-2bpp",
       "preset.pixel.snes-3bpp",
+      "preset.pixel.snes-3bpp-as-4bpp",
       "preset.pixel.snes-4bpp",
       "preset.pixel.snes-8bpp",
       "preset.pixel.snes-8bpp-bank",
@@ -551,6 +599,7 @@
       "preset.tilemap.snes-bg-swapped",
       "preset.tilemap.snes-mode7",
       "preset.tilemap.snes-stamp-table-column",
+      "preset.tilemap.stamp-table-8bit-column",
       "preset.tilemap.text-16bit",
       "preset.tilemap.text-16bit-be",
       "preset.tilemap.text-8bit",
@@ -559,7 +608,7 @@
     ],
     "reshape": []
   },
-  "project_version": 3,
+  "project_version": 4,
   "renamed": {
     "codec.color-indexed": "codec.palette.indexed",
     "codec.color-mask": "codec.palette.mask",

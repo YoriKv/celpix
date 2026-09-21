@@ -488,7 +488,7 @@ class TilemapBarMixin:
 
         Like All Frames: nothing is re-read, because no index moves — only the
         colour table the render resolves them through changes, one entry of it
-        per palette row (:func:`~celpix.ui.render_bridge._clear_zeros`) — and it
+        per palette row (:func:`~celpix.ui.render_bridge.clear_zeros`) — and it
         is one undo step, because which cells read as empty is the entry's
         answer and the project file keeps it. The refresh is what lands it, via
         the view capture at the top of that cycle.

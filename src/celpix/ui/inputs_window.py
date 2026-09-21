@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix.core.address import format_hex, parse_hex
+from celpix.core.address import format_hex, hex_digits, parse_hex
 from celpix.core.errors import Stage
 from celpix.plugins.base import InputKind, InputSpec
 from celpix.project.inputs import (
@@ -223,8 +223,8 @@ class RegionRow(_Row):
         with signals_blocked(self._source, self._offset, self._length):
             if isinstance(binding, RegionBinding):
                 self._select_source(self._source, binding.entry)
-                self._offset.setText(format_hex(binding.offset))
-                self._length.setText(format_hex(binding.length))
+                self._offset.setText(format_hex(binding.offset, prefix=False))
+                self._length.setText(format_hex(binding.length, prefix=False))
             else:
                 self._source.setCurrentIndex(0)
                 self._offset.clear()
@@ -259,13 +259,14 @@ class IntegerRow(_Row):
             "offset, so an edit there is followed"
         )
         self._form.currentIndexChanged.connect(self._on_form_change)
+        width = hex_digits(spec.maximum)
         self._literal = self._hex_field(
             f"The value (hex; $ and 0x accepted),\n"
-            f"{spec.minimum:#x} to {spec.maximum:#x}"
+            f"{format_hex(spec.minimum, width)} to {format_hex(spec.maximum, width)}"
         )
         if spec.default is not None and not spec.required:
             # Left empty, the codec is handed the default: say which.
-            self._literal.setPlaceholderText(f"{spec.default:#x}")
+            self._literal.setPlaceholderText(f"{spec.default:X}")
         self._source = self._source_combo()
         self._source.currentIndexChanged.connect(lambda _i: self.changed.emit())
         self._offset = self._hex_field("Offset of the number (hex)")
@@ -348,13 +349,13 @@ class IntegerRow(_Row):
             if isinstance(binding, IntegerFromBytes):
                 self._form.setCurrentIndex(1)
                 self._select_source(self._source, binding.entry)
-                self._offset.setText(format_hex(binding.offset))
+                self._offset.setText(format_hex(binding.offset, prefix=False))
                 self._width.setValue(binding.width)
                 self._endian.setCurrentIndex(1 if binding.little_endian else 0)
             else:
                 self._form.setCurrentIndex(0)
                 self._literal.setText(
-                    f"{binding:#x}"
+                    f"{binding:X}"
                     if isinstance(binding, int) and not isinstance(binding, bool)
                     else ""
                 )

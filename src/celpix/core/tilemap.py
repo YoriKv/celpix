@@ -753,3 +753,37 @@ def page_order(
         x, y = layout.slot_to_pos(position)
         order[y * width + x] = position
     return tuple(order)
+
+
+#: A drawn position no cell fills — the tail of a short last row of records.
+NO_CELL = -1
+
+
+@lru_cache(maxsize=16)
+def record_order(
+    across: int, down: int, records: int, per_row: int, column_major: bool
+) -> tuple[int, ...]:
+    """Which cell each drawn position shows, for a table of **records**.
+
+    A record is ``across`` x ``down`` consecutive cells — a metatile's four tile
+    numbers, a sprite frame's eight — and a table of them is drawn ``per_row``
+    records to a row, each as its own rectangle. The same placement a page
+    assembly makes (:func:`page_order`), asked of a much smaller page, with the
+    two things a table needs that a screen file does not: the cells of a record
+    may run **down each column** (``TL BL TR BR``), and the record count is
+    whatever the table holds, so the last row may be short. Its missing
+    positions are :data:`NO_CELL` rather than the file's next cells, which would
+    draw them somewhere they are not.
+    """
+    across, down = max(1, across), max(1, down)
+    per_row = max(1, per_row)
+    size = across * down
+    width = per_row * across
+    rows = ceil_div(max(0, records), per_row)
+    order = [NO_CELL] * (rows * down * width)
+    for record in range(max(0, records)):
+        rx, ry = record % per_row, record // per_row
+        for k in range(size):
+            dy, dx = (k % down, k // down) if column_major else divmod(k, across)
+            order[(ry * down + dy) * width + rx * across + dx] = record * size + k
+    return tuple(order)

@@ -12,7 +12,9 @@ and Qt's PNG writer turns that into a palette PNG — so an exported sheet opens
 a sprite editor as an indexed image, with the palette and index identity intact.
 Colors
 keep the codec's own alpha; index 0 is exported opaque like any other entry (its
-color is preserved, not forced transparent) — see ``docs/design/export.md``.
+color is preserved, not forced transparent) unless a tilemap's **Transparent 0**
+box is ticked, which the export follows as the canvas does — see
+``docs/design/export.md``.
 
 This lives on the ``ui`` side because it produces ``QImage`` and uses Qt's image
 writer; the decode+compose core it calls (``pipeline.decode_and_compose``) is the
@@ -21,8 +23,13 @@ same Qt-free arrangement path the live view uses.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from PySide6.QtCore import QRect
 from PySide6.QtGui import QImage
 
+from celpix.core import gif
+from celpix.core.animation import Sequence
 from celpix.core.arrangement import BlockLayout, tile_first_pixel
 from celpix.core.document import Document
 from celpix.pipeline import pipeline
@@ -51,8 +58,8 @@ def _palette_biases(
     view = doc.view
     if not view.show_palette_regions or view.palette_regions.is_empty():
         return None
-    index_space = min(
-        256, 1 << pipeline.pixel_bpp(doc.pixel_config.interpret_preset_id, registry)
+    index_space = pipeline.palette_row_size(
+        doc.pixel_config.interpret_preset_id, registry
     )
     wrap = doc.palette_row_wrap(index_space)
     per_tile = doc.tile_width * doc.tile_height
@@ -104,15 +111,21 @@ def _tilemap_image(doc: Document, registry: Registry, columns: int) -> QImage:
     screen (``rendering.RenderingMixin._render_tilemap``).
     """
     drawn = pipeline.tilemap_image(doc, registry, columns)
-    index_space = min(
-        256, 1 << pipeline.pixel_bpp(doc.pixel_config.interpret_preset_id, registry)
+    index_space = pipeline.palette_row_size(
+        doc.pixel_config.interpret_preset_id, registry
     )
     top = min(256, drawn.palette_rows * index_space)
     base = 0 if doc.cells_carry_palette_rows else doc.view.palette_row * index_space
+    table = [doc.palette.color(base + i) for i in range(top)]
+    if doc.view.transparent_zero:
+        # The map's own Transparent 0 box, honoured here as on the canvas: a
+        # backdrop the user has cleared on screen leaves as a hole too, where the
+        # pixel path below never clears — its box does not exist to be ticked.
+        # The table starts on a row boundary either way, so every row's index 0
+        # sits at a multiple of ``index_space``.
+        table = render_bridge.clear_zeros(table, index_space)
     return render_bridge.paint_hidden(
-        render_bridge.indexed_image(
-            drawn.grid, [doc.palette.color(base + i) for i in range(top)]
-        ),
+        render_bridge.indexed_image(drawn.grid, table),
         drawn.hidden,
     )
 
@@ -152,8 +165,8 @@ def document_image(doc: Document, registry: Registry) -> QImage:
     if grid.bytes_per_pixel == 4:
         # Direct-color: no palette; the ARGB carries its own alpha.
         return render_bridge.render(grid, doc.palette)
-    index_space = min(
-        256, 1 << pipeline.pixel_bpp(doc.pixel_config.interpret_preset_id, registry)
+    index_space = pipeline.palette_row_size(
+        doc.pixel_config.interpret_preset_id, registry
     )
     if biases is not None:
         # Pinned regions: the row is already in the indices, so the table cannot
@@ -196,3 +209,97 @@ def save_raw(doc: Document, path: str) -> None:
     failure, for the caller to report."""
     with open(path, "wb") as handle:
         handle.write(raw_bytes(doc))
+
+
+def sequence_frames(
+    strip: QImage, rects: list[QRect], sequence: Sequence
+) -> list[QImage | None]:
+    """The picture each step of ``sequence`` shows, in play order.
+
+    Cut from the animation player's strip, so a frame exported is the frame the
+    player draws — colour rule, Transparent 0 and all. None where a step names a
+    frame the file does not hold: the player shows nothing there, and so does
+    the export, rather than a plausible stand-in.
+
+    The steps are taken once through, lead-in included. A sequence that loops
+    back past its first steps cannot say so in either output format.
+    """
+    return [
+        strip.copy(rects[step.frame]) if 0 <= step.frame < len(rects) else None
+        for step in sequence.steps
+    ]
+
+
+def _argb(image: QImage) -> list[int]:
+    """``image``'s pixels as ``0xAARRGGBB`` ints, row-major."""
+    image = image.convertToFormat(QImage.Format.Format_ARGB32)
+    return [
+        image.pixel(x, y) for y in range(image.height()) for x in range(image.width())
+    ]
+
+
+def save_sequence_gif(
+    strip: QImage, rects: list[QRect], sequence: Sequence, rate: int, path: str
+) -> None:
+    """Write ``sequence`` as a looping GIF, timed at ``rate`` ticks per second.
+
+    Raises ``ValueError`` (nothing to write, or more colours than a GIF holds)
+    or ``OSError`` for the caller to report.
+    """
+    if not rects or not sequence.steps:
+        raise ValueError("the sequence has no steps")
+    size = rects[0].size()
+    frames = sequence_frames(strip, rects, sequence)
+    delays = gif.delays_cs([step.duration for step in sequence.steps], rate)
+    data = gif.encode(
+        size.width(),
+        size.height(),
+        [
+            (None if frame is None else _argb(frame), delay)
+            for frame, delay in zip(frames, delays, strict=True)
+        ],
+    )
+    Path(path).write_bytes(data)
+
+
+def _blank_like(strip: QImage, rect: QRect) -> QImage:
+    """An empty frame for a step naming a frame the file does not hold.
+
+    Kept indexed, through the strip's own table, wherever that table has a clear
+    entry to fill with — so a PNG sequence stays one kind of file throughout.
+    Only a strip with no transparency to borrow falls back to ARGB.
+    """
+    if strip.format() == QImage.Format.Format_Indexed8:
+        table = strip.colorTable()
+        clear = next((i for i, c in enumerate(table) if c >> 24 == 0), None)
+        if clear is not None:
+            blank = strip.copy(rect)
+            blank.fill(clear)
+            return blank
+    blank = QImage(rect.size(), QImage.Format.Format_ARGB32)
+    blank.fill(0)
+    return blank
+
+
+def save_sequence_pngs(
+    strip: QImage, rects: list[QRect], sequence: Sequence, stem: str
+) -> list[str]:
+    """Write ``sequence`` as one PNG per step, ``<stem>-01.png`` onward.
+
+    Numbered from 1 like the player's status line, and padded so the files sort
+    in play order. Returns the paths written; raises ``ValueError`` when there
+    is nothing to write and ``OSError`` on the first file that could not be.
+    """
+    if not rects or not sequence.steps:
+        raise ValueError("the sequence has no steps")
+    frames = sequence_frames(strip, rects, sequence)
+    digits = max(2, len(str(len(frames))))
+    written = []
+    for at, frame in enumerate(frames, 1):
+        if frame is None:
+            frame = _blank_like(strip, rects[0])
+        path = f"{stem}-{at:0{digits}d}.png"
+        if not save_png(frame, path):
+            raise OSError(f"Could not write {path}.")
+        written.append(path)
+    return written

@@ -69,7 +69,7 @@ Roughly, by family:
 | `E2xx` `W2xx` | Entry shape — the kind, the keys that kind actually reads, the scalars. |
 | `E3xx` | The files on disk: missing references, offsets past the end, one file open twice. |
 | `E4xx` | Plugin and preset ids, and containers framing the wrong kind of entry. |
-| `E5xx` | References between entries: parents, joined regions, tile bindings, composite pieces. |
+| `E5xx` | References between entries: parents, joined regions, tile bindings, composite pieces, the entry a palette is read from. |
 | `E6xx` | `session` and `palette`, and whether the mode and the block agree. |
 | `E7xx` | The `view` block, the tile rearrangement, the pinned palette regions. |
 | `E8xx` | The `font` alphabet. |

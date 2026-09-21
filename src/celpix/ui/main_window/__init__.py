@@ -2,8 +2,8 @@
 
 :class:`~celpix.ui.main_window.window.MainWindow` is one class assembled from
 mixins, one per surface it drives - navigation, interpretation, palette (source,
-dock, color editing and pinned regions), selection, the clipboard verbs over it
-and the tile-byte read/write underneath both, transforms, pixel editing,
+offset, entry, dock, color editing and pinned regions), selection, the clipboard
+verbs over it and the tile-byte read/write underneath both, transforms, pixel editing,
 rearrange, session, tilemap (the binding bar, cell editing, the tile source dock
 and the stamp tool), capability sync, rendering, the View menu, entries, writing,
 transfer, compression. They are mixins rather than

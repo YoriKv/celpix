@@ -44,6 +44,7 @@ below is written to survive that rather than to reject it.
 
 from __future__ import annotations
 
+from celpix.core.address import format_hex
 from celpix.core.animation import read_parallel_sequences
 from celpix.core.context import (
     KEY_SOURCE_OFFSET,
@@ -231,7 +232,7 @@ class SprContainer:
         return (
             ContainerField(
                 "Signature",
-                f"{signature} at {trailer_at + TRAILER:#06x}"
+                f"{signature} at {format_hex(trailer_at + TRAILER, 4)}"
                 if signature
                 else "none - identified by suffix alone",
                 "This family puts its signature at the *end*, past a\n"
@@ -249,7 +250,8 @@ class SprContainer:
             ),
             ContainerField(
                 "Trailer",
-                f"{format_size(len(trailer))} at {trailer_at:#06x}, preserved",
+                f"{format_size(len(trailer))} at "
+                f"{format_hex(trailer_at, 4)}, preserved",
                 "40 frame numbers, then 40 durations, then a flag byte.\n"
                 "That split is read off the corpus rather than off the\n"
                 "writer, which emits both blocks opaquely - so the player\n"

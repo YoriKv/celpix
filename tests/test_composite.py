@@ -673,13 +673,14 @@ def test_an_edit_reaches_composites_across_the_slice_boundary(qtbot, tmp_path) -
     assert over_slice.doc.pixel_data[:TILE] == painted
 
 
-def test_an_offset_palette_is_refused_on_a_composite_and_says_why(
+def test_an_offset_palette_on_a_composite_reads_its_first_piece_file(
     qtbot, tmp_path, monkeypatch
 ) -> None:
-    """A composite has no file for a palette offset to name, so the mode is
-    greyed in the picker, the selection action with it, and a load asked for
-    anyway says so — rather than "not enough data at that offset", which was
-    the wrong diagnosis the empty file list used to produce."""
+    """A composite borrows its first file-backed piece's coordinates, so Offset
+    mode reads that file at a parent-absolute offset — where a ROM keeps the
+    colours for a VRAM window. A composite of pads only has no file, and the
+    picker, the selection action and the load all say so rather than reporting
+    "not enough data at that offset"."""
     from celpix.project.workspace import PaletteMode
 
     window, first, second, composite = _window_with_composite(qtbot, tmp_path)
@@ -689,17 +690,18 @@ def test_an_offset_palette_is_refused_on_a_composite_and_says_why(
 
     combo = window._palette_mode_combo
     offset_item = combo.model().item(combo.findData(PaletteMode.OFFSET))
-    assert not offset_item.isEnabled()
-    assert not window._palette_from_selection_action.isEnabled()
-    assert not window._load_palette_at_offset(0)
-    assert alerts and "composite view has no file" in alerts[0]
-    assert window._palette_mode is not PaletteMode.OFFSET
-
-    # And back on a file, all three are available again.
-    window._activate_entry(first)
-    window._select_tiles(0, 0)
     assert offset_item.isEnabled()
-    assert window._palette_from_selection_action.isEnabled()
+    assert window._palette_offset_owner(composite) is first
+    assert window._load_palette_at_offset(0)
+    assert not alerts
+    assert window._doc.palette_config.source.paths == first.paths
+
+    pads = new_composite("pads", (CompositePiece(length=TILE),))
+    window._workspace.entries.append(pads)
+    window._activate_entry(pads)
+    assert not offset_item.isEnabled()
+    assert not window._load_palette_at_offset(0)
+    assert alerts and "no piece from a file" in alerts[0]
 
 
 def test_editing_the_list_rebuilds_the_composite_and_its_maps(qtbot, tmp_path) -> None:

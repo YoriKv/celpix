@@ -30,6 +30,8 @@ from celpix.core.context import (
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_PAGE_ROWS,
     KEY_TILEMAP_PAGES_ACROSS,
+    KEY_TILEMAP_RECORD_COLUMN_MAJOR,
+    KEY_TILEMAP_RECORD_SHAPE,
     PipelineContext,
 )
 from celpix.core.font import FontAlphabet, Text
@@ -37,11 +39,13 @@ from celpix.core.palette import Palette, palette_row_count
 from celpix.core.paletteregions import PaletteRegions
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, drawn_frames
 from celpix.core.tilemap import (
+    NO_CELL,
     Cell,
     column_order,
     expand_stamps,
     page_assemblies,
     page_order,
+    record_order,
     resolve_cell,
     resolve_pages_across,
     stamp_origin,
@@ -50,6 +54,9 @@ from celpix.core.tilemap import (
 from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef
+
+#: What a position no cell fills draws: nothing, painted as a hidden position.
+_NO_CELL_DRAWN = Cell(visible=False)
 
 
 class GridMode(str, Enum):
@@ -972,6 +979,47 @@ class Document:
         return options if len(options) > 1 else ()
 
     @property
+    def record_shape(self) -> tuple[int, int]:
+        """The record the cells come in, ``(across, down)``, or ``(0, 0)``.
+
+        What the format published (:data:`~celpix.core.context.
+        KEY_TILEMAP_RECORD_SHAPE`) — a metatile table's 2x2, a frame table's 2x4
+        — and only where it can be honoured: a whole number of records, on a
+        map that is its own picture. A paged file is laid out by its assembly,
+        a column-major map by its columns, and a chained map draws its source's
+        cells rather than its own, so none of those takes a record layout.
+        """
+        shape = self.tilemap_ctx.get(KEY_TILEMAP_RECORD_SHAPE)
+        cells = self.cells
+        if (
+            not shape
+            or cells is None
+            or self.is_sprite
+            or self.pages
+            or self.column_major
+            or self.chain is not None
+        ):
+            return (0, 0)
+        across, down = int(shape[0]), int(shape[1])
+        if across * down <= 1 or len(cells) % (across * down):
+            return (0, 0)
+        return (across, down)
+
+    @property
+    def records_across(self) -> int:
+        """How many records a row of the picture holds, or 0 for no records.
+
+        The view's Cols rounded down to whole records, the way a dense stamped
+        map rounds it to whole stamps: the width is still the user's to choose,
+        but a record cut in half by the row's end would be two halves of
+        nothing.
+        """
+        across, _down = self.record_shape
+        if not across:
+            return 0
+        return max(1, self.view.columns // across)
+
+    @property
     def assembled_columns(self) -> int:
         """How many cells across the assembly fixes this document at, or 0 for none.
 
@@ -1087,6 +1135,9 @@ class Document:
         plane = self.row_plane_columns
         if plane:
             return plane
+        records = self.records_across
+        if records:
+            return records * self.record_shape[0]
         chain = self.chain
         # The same condition :meth:`resolve` expands a dense map under: with no
         # width at all there is no stamped resolution to be wide, so there is no
@@ -1134,10 +1185,16 @@ class Document:
         permutes nothing.
         """
         across = self.pages_across
-        if across <= 1:
+        if across > 1:
+            columns, rows = self.page_size
+            return page_order(columns, rows, self.pages, across)
+        records = self.records_across
+        if not records:
             return None
-        columns, rows = self.page_size
-        return page_order(columns, rows, self.pages, across)
+        width, height = self.record_shape
+        count = len(self.cells or ()) // (width * height)
+        column_major = bool(self.tilemap_ctx.get(KEY_TILEMAP_RECORD_COLUMN_MAJOR))
+        return record_order(width, height, count, records, column_major)
 
     @property
     def spells_out(self) -> bool:
@@ -1180,7 +1237,13 @@ class Document:
         """
         cells = self.drawn_cells
         order = self.cell_order
-        laid = cells if order is None else [cells[at] for at in order]
+        laid = (
+            cells
+            if order is None
+            # A short last row of records leaves positions no cell fills; they
+            # draw as hidden positions, which is what the picture has there.
+            else [_NO_CELL_DRAWN if at == NO_CELL else cells[at] for at in order]
+        )
         alphabet = self.font_alphabet
         if not self.spells_out or alphabet is None:
             return laid, None
@@ -1249,7 +1312,10 @@ class Document:
         document but a fontmap over a font with a dictionary.
         """
         if not self.spells_out:
-            return len(self.drawn_cells)
+            order = self.cell_order
+            # A record layout's last row may be short, and its holes are
+            # positions too: the picture is a whole rectangle of them.
+            return len(self.drawn_cells) if order is None else len(order)
         return len(self._drawn_layout()[0])
 
     def drawn_span(self, first: int, last: int) -> tuple[int, int]:
@@ -1297,6 +1363,10 @@ class Document:
         order = self.cell_order
         if order is not None and 0 <= position < len(order):
             position = order[position]
+            if position == NO_CELL:
+                # Out of range on purpose, so every caller's bounds check
+                # refuses it: there is no cell here to edit.
+                return len(self.cells or ())
         chain = self.chain
         # The width the picture was *resolved* at, so the entry a click snaps to
         # is the entry that position draws (:attr:`stamp_columns`) — and the

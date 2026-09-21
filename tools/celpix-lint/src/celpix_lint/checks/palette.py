@@ -120,9 +120,9 @@ def _palette(ctx: Context, entry: EntryView, mode: str | None) -> None:
 def _shape(ctx: Context, entry: EntryView, raw: dict, mode: str | None) -> None:
     """Does the block hold what the mode will look for?
 
-    The reader picks by *shape*, in order — colors, then path, then offset — so
-    a block can be well-formed and still be read as a different source than the
-    mode names.
+    The reader picks by *shape*, in order — colors, then path, then entry, then
+    offset — so a block can be well-formed and still be read as a different
+    source than the mode names.
     """
     has = {key: key in raw for key in PALETTE_KEYS}
     if not any(has.values()):
@@ -156,7 +156,8 @@ def _shape(ctx: Context, entry: EntryView, raw: dict, mode: str | None) -> None:
             detail="The entry falls back to the generated default palette.",
         )
         return
-    # `colors` wins over `path` wins over `offset`, whatever the mode says.
+    # `colors` wins over `path` wins over `entry` wins over `offset`, whatever
+    # the mode says.
     if needed != "colors" and has["colors"]:
         ctx.error(
             "E623",
@@ -167,15 +168,29 @@ def _shape(ctx: Context, entry: EntryView, raw: dict, mode: str | None) -> None:
             detail="A custom palette is stored in the project itself; remove it, or "
             'set `palette_mode` to "custom".',
         )
-    elif needed == "offset" and has["path"]:
+    elif needed in ("offset", "entry") and has["path"]:
         ctx.error(
             "E624",
-            '`palette` holds `path`, which is read before `offset` — the "offset" '
-            "source is ignored",
+            f"`palette` holds `path`, which is read before `{needed}` — the "
+            f'"{mode}" source is ignored',
             pointer=entry.at("palette", "path"),
             entry=entry,
+            detail='An "offset" palette is read from the entry\'s own file and an '
+            '"entry" one from another entry\'s bytes; set `palette_mode` to "file" '
+            "if the separate file is what was meant.",
+        )
+    elif needed == "offset" and has["entry"]:
+        # The one pair the new shape adds: `entry` sits between `path` and
+        # `offset` in the reader's order, so a block holding both reads as an
+        # entry-sourced palette while the mode says the file's own bytes.
+        ctx.error(
+            "E625",
+            '`palette` holds `entry`, which is read before `offset` — the "offset" '
+            "source is ignored",
+            pointer=entry.at("palette", "entry"),
+            entry=entry,
             detail='An "offset" palette is read from the entry\'s own file; set '
-            '`palette_mode` to "file" if the separate file is what was meant.',
+            '`palette_mode` to "entry" if another entry\'s bytes were meant.',
         )
 
 
@@ -245,6 +260,12 @@ def _source_file(ctx: Context, entry: EntryView, raw: dict, mode: str | None) ->
             pointer=entry.at("palette", "path"),
             entry=entry,
         )
+        return
+    if mode == "entry":
+        # Its offset indexes **another entry's** resolved bytes, which is a
+        # buffer nothing here can measure — it may be a decompressed stream, or a
+        # composite assembled at load. Which entry it names is a cross-reference
+        # and is checked with the others (`crossref.py`).
         return
     if mode == "emulator" and is_int(offset) and offset:
         ctx.info(

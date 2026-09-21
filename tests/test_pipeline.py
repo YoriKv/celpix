@@ -289,6 +289,23 @@ def test_pixel_bpp_derived_from_geometry(preset_id, expected_bpp) -> None:
     assert pipeline.pixel_bpp(preset_id, reg) == expected_bpp
 
 
+def test_a_3bpp_sheet_loaded_as_4bpp_reads_the_same_pixels_in_16_colour_rows() -> None:
+    """The SNES expands 3bpp sheets to 4bpp as it uploads them, so a cell's row 1
+    is colours 16-31. The preset must decode exactly what plain 3bpp does and
+    change only the row size; the pixels still store 0-7."""
+    reg = default_registry()
+    plain, loaded = "preset.pixel.snes-3bpp", "preset.pixel.snes-3bpp-as-4bpp"
+    assert pipeline.pixel_bpp(loaded, reg) == 3
+    assert pipeline.palette_row_size(plain, reg) == 8
+    assert pipeline.palette_row_size(loaded, reg) == 16
+
+    data = bytes((i * 37 + 11) & 0xFF for i in range(24 * 4))
+    ctx = PipelineContext()
+    a = reg.engine_for(plain)
+    b = reg.engine_for(loaded)
+    assert a[0].decode(data, a[1].params, ctx) == b[0].decode(data, b[1].params, ctx)
+
+
 def test_bitmap_params_only_re_cuts_codecs_that_take_a_tile_size() -> None:
     # A bitmap width re-cuts the tile grid so whole tiles span the width - but
     # only where that means anything. Direct-color addresses whole bytes per

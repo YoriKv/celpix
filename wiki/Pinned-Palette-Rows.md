@@ -17,21 +17,21 @@ background's colours.
 
 1. Select `GFX14`.
 2. Set **Selection** to **Rectangle**.
-3. Set **Palette Row** to 10.
+3. Set **Palette Row** to 5.
 4. Select tiles `$10` to `$15`: the green pipe.
 
-![Row 10, and a selection](images/pins-select.png)
+![Row 5, and a selection](images/pins-select.png)
 
 5. Click **Pin**. Also in **Palette ▸ Pin Selection to Palette Row** and the
    canvas right-click menu.
 
 ![The canvas menu](images/pins-canvas-menu.png)
 
-6. Set **Palette Row** back to 0. The pipe stays in row 10.
+6. Set **Palette Row** back to 0. The pipe stays in row 5.
 
 ![Pinned](images/pins-pinned.png)
 
-7. Pin tiles `$16` to `$19`, the `?`-block, to row 12.
+7. Pin tiles `$16` to `$19`, the `?`-block, to row 6.
 
 A white ring shows the row of the view. A blue ring shows the row of the
 selection.
@@ -44,9 +44,6 @@ To remove pins:
 - **Palette ▸ Unpin All** removes all pins.
 
 You can undo both.
-
-> The rows are 8 colours each, because the sheet is 3bpp. The console's rows
-> are 16 colours, so its row 5 is row 10 here.
 
 ## 2. Show and hide pins
 
@@ -91,5 +88,5 @@ Each pin is `[first pixel, count, row]`. Pixels are counted in tile order, 64
 pixels per tile:
 
 ```json
-"palette_regions": [[1024, 384, 10], [1408, 256, 12]]
+"palette_regions": [[1024, 384, 5], [1408, 256, 6]]
 ```

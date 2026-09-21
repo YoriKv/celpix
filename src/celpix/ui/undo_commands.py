@@ -105,6 +105,12 @@ class PaletteState:
     # wherever the clamp pulled it. None lands no row and lets the clamp decide,
     # which is all a forward state needs: the same palette clamps the same way.
     palette_row: int | None = None
+    # ENTRY mode's source: the entry whose bytes these colours were decoded from
+    # (:attr:`~celpix.project.workspace.Entry.palette_entry`). Carried here for
+    # the reason ``base_bytes`` is — the config names the offset and holds the
+    # bytes, but a pathway config has nowhere to put an *entry*, so undoing a
+    # re-pick would leave the binding on whichever source was chosen last.
+    source_entry: Entry | None = None
 
 
 class _StateCommand(QUndoCommand):
@@ -929,6 +935,7 @@ class ColorEditCommand(QUndoCommand):
         before: int,
         after: int,
         pixel_owner: Entry | None = None,
+        pixel_owners: tuple[Entry, ...] = (),
         gesture: int | None = None,
     ) -> None:
         super().__init__(f"edit color {index}")
@@ -945,17 +952,24 @@ class ColorEditCommand(QUndoCommand):
         # undo hands the owner back the exact unsaved-state it had before.
         self._before_revision = owner.palette_revision
         self._after_revision = window._workspace.next_revision()
-        # A buffer-backed Offset palette persists through the *pixel* pathway of
-        # the entry whose buffer holds it (its own pathway can't write a span of
-        # a permuted region) — so that entry's pixel revision is tokened on both
-        # sides too, exactly as the palette revision is above.
+        # A palette that lives in somebody else's bytes persists through *their*
+        # pixel pathway — a buffer-backed Offset palette inside a reordered
+        # region, or an Entry palette read out of another entry altogether — so
+        # ``pixel_owner`` is the entry the freshly encoded window is spliced into.
         self._pixel_owner = pixel_owner
-        self._before_pixel_revision = (
-            pixel_owner.pixel_revision if pixel_owner is not None else 0
-        )
-        self._after_pixel_revision = (
-            window._workspace.next_revision() if pixel_owner is not None else 0
-        )
+        # And the entries that splice is also an edit to, each tokened on both
+        # sides exactly as the palette revision is above. A **list** because one
+        # colour can reach more than one: an Entry palette read out of a
+        # composite lands in whichever pieces its window crosses, and a piece
+        # that is itself a slice brings its parent along — the same widening
+        # :class:`PixelEditCommand` already went through
+        # (``docs/design/composite-entry.md``). The *after* token is shared (one
+        # edit, one state) while each *before* differs, any of those entries
+        # having been at an unsaved state of its own.
+        owners = pixel_owners or ((pixel_owner,) if pixel_owner is not None else ())
+        after_pixel = window._workspace.next_revision() if owners else 0
+        self._before_pixel_owners = tuple((e, e.pixel_revision) for e in owners)
+        self._after_pixel_owners = tuple((e, after_pixel) for e in owners)
 
     def id(self) -> int:
         return COLOR_EDIT_ID
@@ -973,7 +987,7 @@ class ColorEditCommand(QUndoCommand):
             return False
         self._after = other._after
         self._after_revision = other._after_revision  # other's redo already ran
-        self._after_pixel_revision = other._after_pixel_revision
+        self._after_pixel_owners = other._after_pixel_owners
         if self._after == self._before:
             # The run landed back on the original color — drop the empty step,
             # and with it the dirty mark the swallowed edits stamped on.
@@ -981,19 +995,19 @@ class ColorEditCommand(QUndoCommand):
             self._window._workspace.set_palette_revision(
                 self._owner, self._before_revision
             )
-            if self._pixel_owner is not None:
-                self._window._workspace.set_pixel_revision(
-                    self._pixel_owner, self._before_pixel_revision
-                )
+            for entry, revision in self._before_pixel_owners:
+                self._window._workspace.set_pixel_revision(entry, revision)
         return True
 
     def redo(self) -> None:
-        self._apply(self._after, self._after_revision, self._after_pixel_revision)
+        self._apply(self._after, self._after_revision, self._after_pixel_owners)
 
     def undo(self) -> None:
-        self._apply(self._before, self._before_revision, self._before_pixel_revision)
+        self._apply(self._before, self._before_revision, self._before_pixel_owners)
 
-    def _apply(self, argb: int, revision: int, pixel_revision: int) -> None:
+    def _apply(
+        self, argb: int, revision: int, pixel_owners: tuple[tuple[Entry, int], ...]
+    ) -> None:
         with self._window._undo_apply():
             # A PALETTE entry can never be current, so a file-palette edit applies
             # without switching the view; a graphic-owned edit first returns to the
@@ -1008,7 +1022,7 @@ class ColorEditCommand(QUndoCommand):
                     argb,
                     revision,
                     pixel_owner=self._pixel_owner,
-                    pixel_revision=pixel_revision,
+                    pixel_owners=pixel_owners,
                 )
 
 

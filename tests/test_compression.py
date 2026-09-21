@@ -2627,3 +2627,70 @@ def test_phantasy_star_rle_takes_a_stated_size_over_its_parts_slack() -> None:
     assert phantasy_star_rle.decompress(packed, parts=4, size=10)[0] == bytes(
         range(1, 11)
     )
+
+
+def test_phantasy_star_rle_reads_and_rewrites_a_size_word_ahead_of_it() -> None:
+    """The word is the stated size in its unit and order, the consumed count
+    covers it, and a save writes it for the length it packs — the reason the
+    slice owns it rather than a literal `size` binding."""
+    codec = PhantasyStarRleCompression()
+    lanes = [b"\x01\x05\x09\xee", b"\x02\x06\x0a", b"\x03\x07", b"\x04\x08\xee"]
+    body = b"".join(bytes((0x80 | len(lane),)) + lane + b"\x00" for lane in lanes)
+    for inputs, word in (
+        ({"size_word": True, "size": 99}, b"\x0a\x00"),  # LE bytes; `size` ignored
+        ({"size_word": True, "size_unit": 2, "size_big_endian": True}, b"\x00\x05"),
+    ):
+        ctx = PipelineContext()
+        ctx.set(KEY_INPUTS, inputs)
+        assert codec.decompress(word + body + b"\xff", ctx) == bytes(range(1, 11))
+        assert ctx.get(KEY_COMPRESSED_SIZE) == 2 + len(body)
+        longer = codec.compress(bytes(range(1, 13)), ctx)
+        assert longer[:2] == (b"\x0c\x00" if len(inputs) == 2 else b"\x00\x06")
+        assert codec.decompress(longer, ctx) == bytes(range(1, 13))
+    with pytest.raises(ValueError, match="whole number of the size word"):
+        codec.compress(bytes(11), ctx)  # 11 bytes is not whole 2-byte words
+
+
+def test_nes_ppu_list_replays_into_a_page_and_saves_into_its_own_records() -> None:
+    """The last write to a cell wins and is the one a save rewrites; the earlier
+    write under it keeps its byte. A repeated run takes one value back, and a
+    cell no record writes has nowhere to go — both refused, not approximated."""
+    from celpix.plugins.builtins.nes_ppu_list import NesPpuListCompression
+
+    stream = bytes(
+        [0x20, 0x21, 0x44, 0x26]  # $2021: $26 four times
+        + [0x20, 0x22, 0x02, 0x0A, 0x0B]  # $2022: A B, over the run
+        + [0x20, 0x40, 0x82, 0x11, 0x12]  # $2040 down a column: $2040, $2060
+        + [0x23, 0xC0, 0x01, 0x55]  # an attribute byte
+        + [0x3F, 0x00, 0x01, 0x0F]  # a palette write: outside the page
+        + [0xFF, 0xEE]  # the ROM-table terminator, then the next thing
+    )
+    codec = NesPpuListCompression()
+    ctx = PipelineContext()
+    ctx.set(KEY_INPUTS, {"fill": 0x24})
+    page = codec.decompress(stream, ctx)
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(stream) - 1
+    assert len(page) == 0x400
+    assert page[0x21:0x26] == bytes([0x26, 0x0A, 0x0B, 0x26, 0x24])
+    assert (page[0x40], page[0x60], page[0x3C0], page[0x3C1]) == (0x11, 0x12, 0x55, 0)
+
+    ctx.set(KEY_SURROUND, b"\x99" + stream)
+    ctx.set(KEY_SURROUND_START, 1)
+    assert codec.compress(page, ctx) == stream[:-1]
+    edited = bytearray(page)
+    edited[0x23] = 0x0C  # a visible cell of an ordinary record
+    edited[0x21] = edited[0x24] = 0x27  # the run's visible cells, alike
+    saved = codec.compress(bytes(edited), ctx)
+    assert (saved[3], saved[8]) == (0x27, 0x0C)
+    assert codec.decompress(saved + b"\xff", ctx)[0x21:0x25] == bytes(
+        [0x27, 0x0A, 0x0C, 0x27]
+    )
+    edited[0x24] = 0x28
+    with pytest.raises(ValueError, match="repeated"):
+        codec.compress(bytes(edited), ctx)
+    edited = bytearray(page)
+    edited[0x100] = 0x01
+    with pytest.raises(ValueError, match="not written"):
+        codec.compress(bytes(edited), ctx)
+    with pytest.raises(ValueError, match="not a PPU address"):
+        codec.decompress(bytes([0x55, 0x00, 0x01, 0x00, 0x00]), PipelineContext())

@@ -26,6 +26,7 @@ from celpix.project.workspace import (
     Entry,
     EntryKind,
     PaletteMode,
+    entry_palette_entry,
 )
 from celpix.ui import clipboard
 from celpix.ui.color_editor import ColorEditorDialog
@@ -221,6 +222,11 @@ class ColorEditingMixin:
         before = doc.palette.color(index)
         if before == argb:
             return
+        refusal = self._color_edit_refusal(index)
+        if refusal is not None:
+            self.statusBar().showMessage(refusal)
+            return
+        pixel_owner = self._palette_pixel_owner()
         self._push_command(
             ColorEditCommand(
                 self,
@@ -229,12 +235,56 @@ class ColorEditingMixin:
                 index,
                 before=before,
                 after=argb,
-                # A buffer-backed Offset palette persists through the pixel
-                # pathway of the entry whose buffer holds it; None otherwise.
-                pixel_owner=self._offset_palette_pixel_owner(),
+                # A palette living in somebody else's bytes persists through that
+                # entry's pixel pathway; None where the palette writes its own.
+                pixel_owner=pixel_owner,
+                pixel_owners=self._palette_pixel_owners(pixel_owner, index),
                 gesture=self._color_edit_gesture,
             )
         )
+
+    def _palette_pixel_owner(self) -> Entry | None:
+        """The entry whose pixel bytes a color edit has to be spliced into.
+
+        Two palettes live in somebody else's region and so have no writable
+        pathway of their own: a buffer-backed **Offset** palette inside a
+        reordered owner, and an **Entry** palette read out of another entry
+        altogether. ``None`` for every other mode, where either the palette's own
+        pathway writes it (a ``.pal``, a plain Offset window) or nothing is ever
+        encoded at all (Default, Custom).
+        """
+        return self._offset_palette_pixel_owner() or self._entry_palette_pixel_owner()
+
+    def _palette_pixel_owners(
+        self, pixel_owner: Entry | None, index: int
+    ) -> tuple[Entry, ...]:
+        """Every entry editing colour ``index`` is also an edit to, in stamping order.
+
+        One for a reordered Offset owner — the file the region belongs to, whose
+        whole buffer that palette's write carries — and, for an Entry palette
+        read out of a composite, whichever pieces that one colour's **read unit**
+        falls in plus any parent they owe a fold to
+        (``docs/design/composite-entry.md``). The unit and not the window: a
+        colour must not dirty a piece whose bytes it never touched.
+        """
+        if pixel_owner is None:
+            return ()
+        if self._palette_mode is PaletteMode.ENTRY:
+            return self._palette_entry_owners(pixel_owner, index)
+        return (pixel_owner,)
+
+    def _color_edit_refusal(self, index: int) -> str | None:
+        """Why this color cannot be edited where it sits, or None if it can.
+
+        One mode has an answer: an **Entry** palette whose bytes fall on a
+        composite's pad, or in a run whose source is closed, has nowhere the edit
+        could be deposited (:meth:`~...palette_entry.PaletteEntryMixin.
+        _entry_palette_refusal`). Every other mode either holds the edit or forks
+        to Custom first (:meth:`_palette_needs_fork`).
+        """
+        if self._palette_mode is not PaletteMode.ENTRY:
+            return None
+        return self._entry_palette_refusal(index)
 
     def _palette_needs_fork(self) -> bool:
         """Whether a color edit must fork the palette to Custom before landing.
@@ -286,7 +336,7 @@ class ColorEditingMixin:
         revision: int,
         *,
         pixel_owner: Entry | None = None,
-        pixel_revision: int = 0,
+        pixel_owners: tuple[tuple[Entry, int], ...] = (),
     ) -> None:
         """Land one color on ``doc`` - :class:`ColorEditCommand`'s apply.
 
@@ -295,7 +345,25 @@ class ColorEditingMixin:
         palette by reference, so the edit swaps in a new one
         (:meth:`Palette.with_color`).
         """
-        doc.palette = doc.palette.with_color(index, argb)
+        # Where the hardware draws one stored colour at several entries (the NES
+        # backdrop in every row's first slot), the edit is to all of them, and
+        # only the owner - the first - is marked and so written back.
+        shared = (
+            pipeline.shared_palette_entries(
+                doc.palette_config.interpret_preset_id,
+                index,
+                len(doc.palette),
+                self._registry,
+            )
+            if doc.palette_config.write_enabled
+            else (index,)
+        )
+        palette = doc.palette
+        for member in shared:
+            if member < len(palette):
+                palette = palette.with_color(member, argb)
+        doc.palette = palette
+        index = shared[0]
         # Mark the entry so Write splices just this one back, leaving every
         # other entry's bytes exactly as they were read (a color codec doesn't
         # round-trip bytes - see Document.palette_base_bytes). The mark survives an
@@ -309,13 +377,29 @@ class ColorEditingMixin:
         # write_enabled is off and it dirties nothing.
         if doc.palette_config.write_enabled:
             self._workspace.set_palette_revision(owner, revision)
-        # A buffer-backed Offset palette (inside a reordered region) has no file
-        # span of its own: the edit persists by landing in the buffer owner's
-        # pixel bytes, whose ordinary Write carries it through unshape and the
-        # container - so it is that entry's *pixel* pathway that goes dirty.
+        # A palette that lives in somebody else's bytes has no file span of its
+        # own: the edit persists by landing in that entry's pixel bytes, whose
+        # ordinary Write puts them on disk - so it is *its* pixel pathway that
+        # goes dirty, and every entry the splice crosses with it.
         if pixel_owner is not None:
-            self._sync_offset_palette_bytes(doc, pixel_owner)
-            self._workspace.set_pixel_revision(pixel_owner, pixel_revision)
+            # Which of the two it is, asked of the **binding** rather than of the
+            # session's mode: a session's mode is only written on an entry
+            # switch, so the graphic on screen would answer for the mode it was
+            # opened with. An owner that *is* this entry's palette source is the
+            # entry case by construction; an Offset owner is never one.
+            if entry_palette_entry(owner) is pixel_owner:
+                # ``index`` is the **marked** one, which is what was encoded into
+                # the splice base — the one whose read unit the deposit carries.
+                moved = self._sync_entry_palette_bytes(doc, pixel_owner, index)
+                # Every *other* graphic reading any of those bytes as its palette
+                # is now showing colours that have moved
+                # (``_redecode_entry_palettes`` is the one place that is
+                # answered); this one holds them already.
+                self._redecode_entry_palettes(moved, skip=owner)
+            else:
+                self._sync_offset_palette_bytes(doc, pixel_owner)
+            for entry, pixel_revision in pixel_owners:
+                self._workspace.set_pixel_revision(entry, pixel_revision)
         # A file palette is shown by every graphic that references it: push the new
         # colors onto all of them so one edit updates them together.
         if owner.kind is EntryKind.PALETTE:
@@ -441,6 +525,17 @@ class ColorEditingMixin:
             for k in range(span)
             if palette.color(start + k) != colors[k]
         ]
+        # The parts of a paste that can be honoured are, which is the rule a
+        # stroke over a composite's pad already follows: an Entry palette whose
+        # window crosses bytes nothing owns takes the colors beside them and
+        # says so, rather than refusing the whole gesture.
+        refusals = [self._color_edit_refusal(at) for at, _argb in changed]
+        changed = [
+            pair for pair, why in zip(changed, refusals, strict=True) if why is None
+        ]
+        refused = next((why for why in refusals if why is not None), None)
+        if refused is not None:
+            self.statusBar().showMessage(refused)
         if not changed:
             return False
         fork = self._palette_needs_fork()
@@ -453,7 +548,7 @@ class ColorEditingMixin:
                 self._fork_custom_palette()
             owner = self._palette_owner_entry()
             doc = self._palette_doc()
-            pixel_owner = self._offset_palette_pixel_owner()
+            pixel_owner = self._palette_pixel_owner()
             if owner is not None and doc is not None:
                 for index, argb in changed:
                     before = doc.palette.color(index)
@@ -469,6 +564,12 @@ class ColorEditingMixin:
                                 before=before,
                                 after=argb,
                                 pixel_owner=pixel_owner,
+                                # Per colour, not per paste: each one lands in
+                                # its own read unit, so each one's owners are
+                                # the entries *that* unit falls in.
+                                pixel_owners=self._palette_pixel_owners(
+                                    pixel_owner, index
+                                ),
                             )
                         )
         finally:

@@ -104,6 +104,23 @@ def quantize_color(argb: int, preset_id: str, reg: Registry) -> int:
     return quantize_palette(Palette([argb]), preset_id, reg).color(0)
 
 
+def shared_palette_entries(
+    preset_id: str, index: int, count: int, reg: Registry
+) -> tuple[int, ...]:
+    """The entries of a ``count``-entry palette that show ``index``'s colour.
+
+    Owner first — the one entry whose bytes an edit to any of them is written
+    to. ``(index,)`` for every format but one whose hardware draws a stored
+    colour at several positions (the NES backdrop; ``ColorCodecPlugin.
+    shared_entries``), and for a preset this build has not got.
+    """
+    if not preset_id or not reg.has_preset(preset_id):
+        return (index,)
+    engine, preset = reg.engine_for(preset_id, ColorCodecPlugin)
+    shared = getattr(engine, "shared_entries", None)
+    return tuple(shared(index, preset.params, count)) if shared else (index,)
+
+
 def quantize_palette(palette: Palette, preset_id: str, reg: Registry) -> Palette:
     """``palette`` as it comes back after a round trip through ``preset_id``.
 
@@ -219,3 +236,24 @@ def pixel_bpp(preset_id: str, reg: Registry) -> int:
         return ceil_div(engine.bytes_per_tile(preset.params) * 8, pixels)
 
     return _run(Stage.INTERPRET_PIXEL, Pathway.PIXEL, _bpp, plugin=preset.id)
+
+
+def palette_row_size(preset_id: str, reg: Registry) -> int:
+    """How many colours one palette row holds for a pixel preset.
+
+    Normally ``1 << bpp``: a 4bpp tile reaches 16 colours, so its rows are 16
+    apart. A preset may state ``palette_bpp`` when the hardware sizes rows by a
+    wider depth than the stored tile has. The SNES is the case in hand: a game
+    that keeps its sheets as 3bpp expands them to 4bpp as it uploads them, and a
+    background cell's palette row then names 16 colours, not 8. Read at 3bpp with
+    8-colour rows, every cell in row 1 or higher draws from the wrong colours.
+
+    Never smaller than the tile's own depth, since rows narrower than a tile's
+    colours would overlap. Capped at 256, as the palette maths are.
+    """
+    bits = pixel_bpp(preset_id, reg)
+    _engine, preset = reg.engine_for(preset_id, PixelCodecPlugin)
+    stated = preset.params.get("palette_bpp")
+    if stated is not None:
+        bits = max(bits, int(stated))
+    return min(256, 1 << bits)

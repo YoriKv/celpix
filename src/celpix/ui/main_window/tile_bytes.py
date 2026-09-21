@@ -420,13 +420,51 @@ class TileBytesMixin:
         and because an undo reaching another entry has already switched to it by
         the time this runs.
         """
+        touched = self._land_byte_edit(entry, splices, revision, owners)
+        # An entry whose *palette* is decoded out of these bytes is stale the
+        # same way a map's copy is, and cannot be patched either — the window is
+        # a decode rather than a splice. Every entry the landing moved bytes in
+        # is in the list, the composites it rebuilt included, since a palette
+        # read from one of them has just as certainly moved
+        # (``docs/design/palette-editing.md``).
+        self._redecode_entry_palettes(touched)
+        self._refresh_view()
+
+    def _land_byte_edit(
+        self,
+        entry: Entry,
+        splices: list[tuple[int, bytes]],
+        revision: int | None = None,
+        owners: tuple[tuple[Entry, int], ...] = (),
+    ) -> list[Entry]:
+        """Put ``splices`` into ``entry``'s bytes and everything derived from them.
+
+        **The one landing sequence**, whatever moved the bytes: a pixel edit's
+        apply, and a colour edit on a palette that lives in this entry
+        (:meth:`~...palette_entry.PaletteEntryMixin._sync_entry_palette_bytes`).
+        One method because it is eight steps in an order that matters, and two
+        copies of that are free to disagree — the hazard :meth:`_composite_runs`
+        describes one level down.
+
+        What the callers keep is only what is theirs. ``revision``/``owners`` are
+        the *pixel* command's tokens and are omitted by the colour one, which
+        stamps its own owners from :class:`~celpix.ui.undo_commands.
+        ColorEditCommand` (the Offset case never reaches here at all, so the
+        stamping cannot live inside). The re-decode of other palettes and the
+        single ``_refresh_view`` are the callers' too, since only they know which
+        consumer already holds the new colours.
+
+        Returns ``entry``, the pieces it was cut up into and every composite
+        rebuilt over them — every entry whose bytes moved, in the order they were
+        first reached.
+        """
         # A lazily-loaded owner: an edit deposited into an entry the user has
         # never activated still has to reach its buffer, since that buffer is
         # what a write of it puts on disk.
         if entry.doc is None:
             self._load_entry(entry, quiet=True)
         if entry.doc is None:
-            return
+            return []
         # Any fold this region owes is paid **before** the new bytes land: the
         # file's own edit drops every slice document below (`_propagate_pixel_edit`),
         # and a debt still pending at that point names documents that no longer
@@ -444,7 +482,7 @@ class TileBytesMixin:
         # same shape a tilemap already has, where the map reads clean and the
         # bank it painted into reads dirty. Stamping it anyway left it listed by
         # every "unsaved changes" prompt with no gesture able to satisfy them.
-        if entry.kind is not EntryKind.COMPOSITE:
+        if revision is not None and entry.kind is not EntryKind.COMPOSITE:
             self._workspace.set_pixel_revision(entry, revision)
         for owner, owner_revision in owners:
             self._workspace.set_pixel_revision(owner, owner_revision)
@@ -471,7 +509,7 @@ class TileBytesMixin:
         # offset in a join is not an offset in the piece it came from. Maps bound
         # to `keep` need nothing: the re-sync above already patched them.
         self._reresolve_bound_art(self._maps_drawing_from(rebuilt))
-        self._refresh_view()
+        return [entry, *deposited, *rebuilt]
 
     def _pixel_edit_owners(
         self, entry: Entry, splices: list[tuple[int, bytes]]

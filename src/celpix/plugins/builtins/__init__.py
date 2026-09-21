@@ -60,6 +60,7 @@ from .n64_rom import N64RomContainer
 from .namco_lz import NamcoLzCompression, StrikeLzCompression
 from .nemesis import NemesisCompression
 from .nes_nametable import NesNametableFormat
+from .nes_ppu_list import NesPpuListCompression
 from .nibble_planar_codec import NibblePlanarCodec
 from .object_codec import ObjectCodec, ObzCodec, SprCodec
 from .packbits import PackBitsCompression
@@ -132,6 +133,7 @@ def register_builtins(reg: Registry) -> None:
         PassthroughCompression(),
         KonamiNesRle(),
         KonamiFdsRle(),
+        NesPpuListCompression(),
         KonamiLz1kCompression(),
         KonamiLz4kCompression(),
         Rle1Compression(),

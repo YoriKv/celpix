@@ -1140,14 +1140,16 @@ class SelectionMixin:
         """
         assert self._doc is not None
         direct = self._is_direct_color()
-        space = self._index_space()
-        base = self._palette_row.value() * space
+        base = self._palette_row.value() * self._index_space()
+        # The pixel's own range, not the row's: a 3bpp sheet in 16-colour rows can
+        # store only the first 8 of them.
+        values = self._pixel_values()
         return importer.ImportTarget(
             tile_width=self._doc.tile_width,
             tile_height=self._doc.tile_height,
             colors=()
             if direct
-            else tuple(self._doc.palette.color(base + i) for i in range(space)),
+            else tuple(self._doc.palette.color(base + i) for i in range(values)),
             direct_color=direct,
         )
 

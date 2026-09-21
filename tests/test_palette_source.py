@@ -414,7 +414,7 @@ def test_load_palette_from_selection(qtbot, tmp_path, monkeypatch) -> None:
     # The dock reflects the switch to Offset mode, with the offset field armed.
     assert window._palette_mode_combo.currentData() == "offset"
     assert window._palette_offset_edit.isEnabled()
-    assert window._palette_offset_edit.text() == "0x000020"
+    assert window._palette_offset_edit.text() == "000020"
 
     # Reloading pixels must not clobber the from-selection palette...
     window._apply_pixel_config(window._pixel_preset_id(), window._byte_position())
@@ -890,7 +890,7 @@ def test_palette_offset_box_commit_loads_at_offset(
     assert window._doc.palette.colors[0] == 0xFFFFFFFF
     assert window._doc.palette_config.source.offset == 32
     assert window._doc.palette_config.write_enabled is True
-    assert window._palette_offset_edit.text() == "0x000020"  # normalised
+    assert window._palette_offset_edit.text() == "000020"  # normalised
 
 
 def test_palette_mode_file_cancel_reverts_dropdown(
@@ -921,7 +921,7 @@ def test_palette_offset_box_follows_address_format(
     window._on_slots_selected(1, 1)
     window._load_palette_from_selection()
     _select_address_format(window, "snes-lorom")
-    assert window._palette_offset_edit.text() == "$00:8020"
+    assert window._palette_offset_edit.text() == "00:8020"
 
 
 def test_palette_panel_arrows_move_selection_and_palette_row_follows(
@@ -1490,7 +1490,7 @@ def test_offset_palette_lands_on_the_offset_shown_past_a_header(qtbot, tmp_path)
     # A slice offset is written in those same coordinates, so New Slice… must
     # prefill the address on screen rather than the config's requested 0 — which
     # is what it did, putting every slice of a headered file a header short.
-    assert window._offset_text() == f"0x{chr_start:06X}"
+    assert window._offset_text() == f"{chr_start:06X}"
     assert window._slice_prefill_offset() == chr_start
 
 
@@ -1739,6 +1739,9 @@ def test_the_dock_previews_a_palette_file_read_only_with_nothing_open(
         PaletteMode.DEFAULT: True,
         PaletteMode.FILE: True,
         PaletteMode.OFFSET: False,
+        # Entry needs a graphic *and* another open entry to read it out of, so
+        # with nothing open at all it fails both.
+        PaletteMode.ENTRY: False,
         PaletteMode.EMULATOR: False,
         PaletteMode.CUSTOM: False,
     }

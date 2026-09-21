@@ -155,6 +155,10 @@ COLS_STAMPED_TIP = "Cells per row\nFixed by the stamp each of this file's entrie
 # hands back a value they did not type
 # (:attr:`~celpix.core.document.Document.stamp_columns`).
 COLS_STAMPS_TIP = "Cells per row\nRounded down to whole stamps"
+# A table of records — metatiles, sprite frames — drawn each as a rectangle: the
+# width is the user's, in whole records (:attr:`~celpix.core.document.Document.
+# records_across`).
+COLS_RECORDS_TIP = "Cells per row\nRounded down to whole records"
 # And the paged map whose format does not say how its pages assemble, where Cols
 # is the control that does (:attr:`~celpix.core.document.Document.
 # assembly_choices`). It has to say the unit, because the spin will not take the
@@ -1198,11 +1202,28 @@ class InterpretationMixin:
             preset_id = doc.pixel_config.interpret_preset_id
         if preset_id is not None:
             try:
-                bpp = pipeline.pixel_bpp(preset_id, self._registry)
-                return min(256, 1 << bpp)
+                return pipeline.palette_row_size(preset_id, self._registry)
             except (KeyError, PipelineError):
                 pass
-        return min(256, 1 << self._pixel_bpp())
+        return pipeline.palette_row_size(self._pixel_preset_id(), self._registry)
+
+    def _pixel_values(self) -> int:
+        """How many values one pixel can store: ``1 << bpp``, capped at 256.
+
+        Usually the same as :meth:`_index_space`, and different exactly where a
+        format's palette rows are wider than its pixels (``palette_bpp``): a 3bpp
+        SNES sheet sits in 16-colour rows but still stores only 0-7. Whatever puts
+        a value *into* a pixel - the pen, a pasted image - is bounded by this, so
+        a colour from the upper half of the row is not silently wrapped.
+        """
+        doc = self._doc
+        preset_id = self._pixel_preset_id()
+        if doc is not None and doc.is_tilemap:
+            preset_id = doc.pixel_config.interpret_preset_id
+        try:
+            return min(256, 1 << pipeline.pixel_bpp(preset_id, self._registry))
+        except (KeyError, PipelineError):
+            return min(256, 1 << self._pixel_bpp())
 
     def _effective_bitmap_width(self) -> int:
         """The bitmap width actually in force — 0 unless the 2D walk is on.
@@ -1523,6 +1544,12 @@ class InterpretationMixin:
         """
         if entry.session is not None:
             entry.session.pixel_preset_id = preset_id
+        # The row reads the session's format too, and on a **composite** it is
+        # what files the row under Pixels or under Palettes: a join of colour
+        # tables read as swatches *is* one (``docs/design/palette-editing.md``).
+        # So the refresh is asked for here, where the format lands, rather than
+        # left to whatever happens to repaint the row next.
+        self._files_panel.refresh_entry(entry)
         self._reresolve_bound_art(self._maps_drawing_from([entry]))
 
     def _end_pixel_switch_run(self) -> None:

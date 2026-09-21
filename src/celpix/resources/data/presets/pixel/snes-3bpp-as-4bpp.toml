@@ -1,0 +1,22 @@
+# SNES 3bpp, as the console holds it: the same bytes as `snes-3bpp`, read in
+# 16-colour palette rows.
+#
+# Many SNES games store their sheets as 3bpp to save space, then expand each tile
+# to 4bpp as they upload it to VRAM. The background then draws them as 4bpp: a
+# tilemap cell's palette row names 16 colours, and row 1 starts at colour 16. Read
+# with `snes-3bpp`, a row is 8 colours, so every cell in row 1 or higher draws
+# from the wrong part of the palette. `palette_bpp` sizes the rows by the depth
+# the hardware draws at; the pixels still store 0-7.
+id = "preset.pixel.snes-3bpp-as-4bpp"
+name = "SNES 3bpp, loaded as 4bpp (8x8)"
+engine_id = "codec.pixel.planar"
+category = "Nintendo"
+
+[params]
+bpp = 3
+planes = [
+  { base = 0, stride = 2 },
+  { base = 1, stride = 2 },
+  { base = 16, stride = 1 },
+]
+palette_bpp = 4

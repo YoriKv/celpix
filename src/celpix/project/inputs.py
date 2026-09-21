@@ -34,6 +34,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from celpix.core.address import format_hex
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.core.errors import PipelineError, Stage
@@ -466,9 +467,9 @@ def _cut(
     if start < 0 or start + length > len(data):
         where = binding.entry.name if binding.entry is not None else "the file"
         raise _Unresolved(
-            f"{spec.label} at {binding.offset:#x} for {length} bytes\n"
+            f"{spec.label} at {format_hex(binding.offset)} for {length} bytes\n"
             f"reaches past the end of {where} ({len(data)} bytes\n"
-            f"from {base:#x})."
+            f"from {format_hex(base)})."
         )
     return bytes(data[start : start + length])
 

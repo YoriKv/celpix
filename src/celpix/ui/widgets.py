@@ -1058,20 +1058,21 @@ def value_spin(low: int, high: int, value: int, on_change) -> QSpinBox:  # noqa:
 
 
 def hex_spin(low: int, high: int, tip: str, value: int = 0) -> QSpinBox:
-    """A ``$``-prefixed hex spin — the toolbars' one way of showing an address.
+    """A hex spin — the toolbars' one way of showing an address.
 
     A spin rather than a free-text field so these numbers clamp and step like
     the rest of the bar, and hex because that is how every one of them is
     written down elsewhere: a bank layout, a tile index in a map, a code in a
     character table. The tooltip is suffixed rather than each caller remembering
-    to say so, since a box showing ``$20`` for thirty-two is only unambiguous
-    once the reader knows which base it is in.
+    to say so, since a box showing ``20`` for thirty-two is only unambiguous
+    once the reader knows which base it is in. No ``$`` prefix: like every
+    address input, the box holds bare digits - the prefix belongs where a
+    number is shown, not where it is typed.
     """
     spin = QSpinBox()
     spin.setRange(low, high)
     spin.setValue(value)
     spin.setDisplayIntegerBase(16)
-    spin.setPrefix("$")
     spin.setKeyboardTracking(False)
     spin.setToolTip(f"{tip} (hex)")
     return spin

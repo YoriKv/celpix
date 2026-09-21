@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.0.5 - unreleased
+
+- Composite views can now be used as a palette
+- Export gif or png sequence from animation viewer
+- Export pngs with transparency if "Transparent 0" is checked
+- Added size header option to RLE compression
+- More options for sprite record presets
+- Removed $ and 0x prefixes from address/offset inputs, they'll still parse correctly
+  if pasted in
+- Project version 4 due to project format changes
+- Some SNES and NES codec improvements
+
 ## v1.0.4 - 2026-09-20
 
 - SNES ROM container that automatically fixes the internal header's checksum

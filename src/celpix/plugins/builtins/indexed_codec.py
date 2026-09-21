@@ -7,6 +7,14 @@ palettes). Decode is a table lookup; encode is **nearest entry by Manhattan RGB
 distance**, the table having no inverse since several slots can share a color.
 The table is the preset's data (``colors``, a list of ``0xRRGGBB``), so a new
 fixed palette is a data file.
+
+**Shared entries.** ``shared_every = N`` says the hardware draws entry 0 in
+place of every *N*-th entry — the NES draws colour 0 of every background row
+from its one backdrop slot, and its first sprite slot *is* that slot
+(``docs/rom-mapping/console-nes.md`` §3). Decode shows what the screen shows;
+the stored bytes at those positions are real but never displayed, so they are
+left exactly as they are. An edit to any of the tied entries lands on entry 0
+(:meth:`IndexedColorCodec.shared_entries`), the one byte that decides them all.
 """
 
 from __future__ import annotations
@@ -41,13 +49,40 @@ class IndexedColorCodec:
     ) -> Palette:
         table = self._table(params)
         n = len(table)
-        return Palette([table[b] if b < n else MISSING_COLOR for b in data])
+        colors = [table[b] if b < n else MISSING_COLOR for b in data]
+        every = self._shared_every(params)
+        if every and colors:
+            for i in range(every, len(colors), every):
+                colors[i] = colors[0]
+        return Palette(colors)
 
     def encode(
         self, palette: Palette, params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
         table = self._table(params)
         return bytes(self._nearest(table, argb) for argb in palette.colors)
+
+    def shared_entries(
+        self, index: int, params: dict[str, Any], count: int
+    ) -> tuple[int, ...]:
+        """Every entry that shows the same colour as ``index``, owner first.
+
+        ``(index,)`` for an ordinary entry. For one of the tied entries it is
+        all of them, entry 0 first: the colour an edit gives one of them is
+        what the screen shows at all of them, and entry 0 is the byte that says
+        so. The stored bytes of the others are never written through here.
+        """
+        every = self._shared_every(params)
+        if not every or index % every:
+            return (index,)
+        return tuple(range(0, max(count, index + 1), every))
+
+    @staticmethod
+    def _shared_every(params: dict[str, Any]) -> int:
+        every = int(params.get("shared_every", 0) or 0)
+        if every < 0:
+            raise ValueError(f"shared_every must be 0 or positive, got {every}")
+        return every
 
     def bytes_per_entry(self, params: dict[str, Any]) -> int:
         # Always one byte: an entry *is* an index into the master table, and both

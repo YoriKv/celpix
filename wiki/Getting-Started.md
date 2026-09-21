@@ -37,7 +37,8 @@ data.
 The tile sheets are 3bpp and compressed. They are stored one after another.
 
 1. In **Offset** under the canvas, type `$459F9` and press Enter.
-2. Set **Pixel** to **SNES 3bpp (8x8)**.
+2. Set **Pixel** to **SNES 3bpp, loaded as 4bpp (8x8)**. The game expands these
+   sheets to 4bpp when it loads them, so their palette rows are 16 colours.
 
 ![The first sheet's bytes, still packed](images/02-raw-bytes.png)
 

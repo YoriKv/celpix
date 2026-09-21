@@ -2677,6 +2677,45 @@ def test_a_step_naming_a_frame_the_file_lacks_says_so_and_warns(
     assert player._step == 0
 
 
+def test_the_player_exports_gifs_and_png_sequences(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Each step becomes one image in play order, a step naming a missing frame
+    a blank one rather than a stand-in; the GIF carries one frame per step and
+    "all" writes every sequence that holds anything."""
+    from PySide6.QtGui import QImage, QImageReader
+    from PySide6.QtWidgets import QFileDialog
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_obj_with_sequence(tmp_path, [(2, 0), (2, 200)])))
+    window._show_animation()
+    player = window._animation
+    out = tmp_path / "out"
+    out.mkdir()
+
+    gif_path = out / "walk.gif"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *a, **k: (str(gif_path), "")
+    )
+    player.export_requested.emit(True, False)
+    reader = QImageReader(str(gif_path))
+    assert reader.imageCount() == 2
+    assert reader.size() == player._rects[0].size()
+
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(out))
+    player.export_requested.emit(False, True)
+    pngs = sorted(p.name for p in out.glob("*.png"))
+    assert pngs == ["anim-seq0-01.png", "anim-seq0-02.png"]
+    blank = QImage(str(out / "anim-seq0-02.png"))
+    assert blank.size() == player._rects[0].size()
+    assert all(
+        blank.pixel(x, y) >> 24 == 0
+        for y in range(blank.height())
+        for x in range(blank.width())
+    )
+
+
 def test_the_player_is_offered_only_where_there_is_something_to_play(
     qtbot, tmp_path
 ) -> None:

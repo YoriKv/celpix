@@ -43,6 +43,7 @@ no per-cell visibility to map them onto yet, so they ride through untouched
 
 from __future__ import annotations
 
+from celpix.core.address import format_hex
 from celpix.core.animation import read_sequences
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
@@ -289,7 +290,7 @@ def _metadata_fields(data: bytes, at: int) -> list[ContainerField]:
     return [
         ContainerField(
             "Signature",
-            f"{SIGNATURE.decode()} at {at:#06x}"
+            f"{SIGNATURE.decode()} at {format_hex(at, 4)}"
             if block[: len(SIGNATURE)] == SIGNATURE
             else "absent",
             "The 16 bytes that identify this file's family, and what\n"
@@ -407,7 +408,7 @@ class ScrContainer:
             ),
             ContainerField(
                 "Cell size byte",
-                f"0x{raw_byte:02X} at {SCR_HEADER_AT + SCR_TILE_SIZE:#06x}"
+                f"0x{raw_byte:02X} at {format_hex(SCR_HEADER_AT + SCR_TILE_SIZE, 4)}"
                 f" - {size[0]}x{size[1]} tiles per cell",
                 "8 * (value + 1) pixels. Read small, a 16x16 screen draws\n"
                 "one quarter of every cell and drops the rest, so this is\n"
@@ -415,7 +416,8 @@ class ScrContainer:
             ),
             ContainerField(
                 "Base character word",
-                f"0x{base_word:04X} at {SCR_HEADER_AT + 0x47:#06x} - not applied",
+                f"0x{base_word:04X} at {format_hex(SCR_HEADER_AT + 0x47, 4)}"
+                " - not applied",
                 "It reads like a base tile index and is not one: added to\n"
                 "every cell it sends the screen off the end of the bank,\n"
                 "and neither candidate meaning survives the corpus. The\n"
@@ -424,7 +426,7 @@ class ScrContainer:
             ContainerField(
                 "Clear codes",
                 f"{format_size(max(0, len(data) - SCR_HEADER_AT - HEADER))}"
-                f" at {SCR_HEADER_AT + HEADER:#06x}, preserved",
+                f" at {format_hex(SCR_HEADER_AT + HEADER, 4)}, preserved",
                 "A per-cell draw/don't-draw the artist set. celPix has no\n"
                 "per-cell visibility to map it onto, so it rides through a\n"
                 "save untouched rather than being regenerated.",
@@ -531,14 +533,15 @@ class PnlContainer:
             *_metadata_fields(data, 0),
             ContainerField(
                 "Tile table",
-                f"{format_size(PNL_TABLE)} at {HEADER:#06x} - the payload",
+                f"{format_size(PNL_TABLE)} at {format_hex(HEADER, 4)} - the payload",
                 f"0x{PNL_TABLE // 2:X} cells, laid out {PANEL_COLUMNS} wide.\n"
                 "Each word is one 8x8 tile; a 16x16 unit is stored as\n"
                 "four adjacent words rather than as one bigger cell.",
             ),
             ContainerField(
                 "Registration table",
-                f"{format_size(PNL_TABLE)} at {HEADER + PNL_TABLE:#06x}, preserved",
+                f"{format_size(PNL_TABLE)} at "
+                f"{format_hex(HEADER + PNL_TABLE, 4)}, preserved",
                 "The same size again, following the tiles. Bit 15 marks\n"
                 "a cell the tool handed out as part of a panel, and it is\n"
                 "the tool's own draw test - clear renders as background.\n"
@@ -555,7 +558,7 @@ class PnlContainer:
             ),
             ContainerField(
                 "Cell size byte",
-                f"0x{data[0x62]:02X} at 0x000062 - not read"
+                f"0x{data[0x62]:02X} at {format_hex(0x62, 4)} - not read"
                 if len(data) > 0x62
                 else "absent",
                 "A header byte shaped like a cell size and not one:\n"
@@ -612,7 +615,7 @@ class MapContainer:
             *_metadata_fields(source.data, 0),
             ContainerField(
                 "Entry table",
-                f"{format_size(MAP_PAYLOAD)} at {HEADER:#06x} - the payload",
+                f"{format_size(MAP_PAYLOAD)} at {format_hex(HEADER, 4)} - the payload",
                 f"0x{MAP_PAYLOAD // 2:X} entries, laid out {MAP_COLUMNS} wide -\n"
                 "a screen's shape, which is what a layout is made from.\n"
                 "The width is fixed by the format, so it is published\n"
@@ -753,7 +756,7 @@ class ObjContainer:
             ContainerField(
                 "Animation table",
                 f"{format_size(groups * OBJ_SEQUENCE_STEPS * 2)}"
-                f" at {payload + HEADER:#06x}, "
+                f" at {format_hex(payload + HEADER, 4)}, "
                 f"{_live_sequences(data, payload + HEADER, groups, OBJ_SEQUENCE_STEPS)}"
                 f" of {groups} sequences used",
                 "Runs of (duration, frame) naming frames in the payload.\n"
@@ -828,7 +831,8 @@ class ObzContainer:
             ),
             ContainerField(
                 "Animation table",
-                f"{format_size(OBZ_SIZE - OBZ_PAYLOAD)} at {OBZ_PAYLOAD:#06x}, "
+                f"{format_size(OBZ_SIZE - OBZ_PAYLOAD)} at "
+                f"{format_hex(OBZ_PAYLOAD, 4)}, "
                 f"{_live_sequences(source.data, OBZ_PAYLOAD, *OBZ_TABLE)}"
                 f" of {OBZ_SEQUENCES} sequences used",
                 "16 sequences of 64 (duration, frame), read for playback\n"
@@ -982,7 +986,7 @@ class ColContainer:
             ContainerField(
                 "Metadata block",
                 f"{format_size(COL_SIZE - COL_PAYLOAD)}"
-                f" at {COL_HEADER_AT:#06x}, preserved",
+                f" at {format_hex(COL_HEADER_AT, 4)}, preserved",
                 "Spliced around on write, so editing a colour leaves the\n"
                 "tool's own metadata as it found it. Not a second bank of\n"
                 "colours - a screen picks which 128-colour half to draw\n"
@@ -1200,9 +1204,12 @@ class CgxContainer:
                 # - a resize past the family's sizes, not a save, since a save
                 # puts back the length the read produced. Refused so the bank
                 # stays a bank.
-                sizes = ", ".join(f"{size:#x}" for size in sorted(CGX_BY_PAYLOAD))
+                sizes = ", ".join(
+                    format_hex(size, None) for size in sorted(CGX_BY_PAYLOAD)
+                )
                 raise ValueError(
-                    f"a tile bank holds {sizes} bytes of tiles and {len(data):#x} "
+                    f"a tile bank holds {sizes} bytes of tiles and "
+                    f"{format_hex(len(data), None)} "
                     "is none of them; the bank at the destination was left as it is"
                 )
             # Not one of the three payload sizes and nothing to protect: the same
@@ -1237,7 +1244,7 @@ class CgxContainer:
         else:
             base = _cgx_row_base(data, payload, bpp)
             table = (
-                f"{format_size(CGX_ROW_TABLE)} at {payload + HEADER:#06x}"
+                f"{format_size(CGX_ROW_TABLE)} at {format_hex(payload + HEADER, 4)}"
                 f", counted from row {base}"
             )
         return (

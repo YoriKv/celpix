@@ -215,7 +215,7 @@ def test_slice_entry_views_bounded_region_with_view_relative_addresses(
     # reads 0 however far into the parent the region sits — while the offset it
     # is anchored at (what a palette offset or a jump-to-source speaks in) stays
     # the parent's.
-    assert window._offset_text() == "0x000000"
+    assert window._offset_text() == "000000"
     assert window._anchor_base() == 64
     assert not window._change_container_action.isEnabled()
     assert window._write_action.isEnabled()
@@ -256,7 +256,7 @@ def test_slice_addresses_read_view_relative_while_offsets_stay_anchored(
     window._address_edit.setText("0x20")  # the *slice's* second tile
     window._address_edit.commit()
     assert window._offset == 1
-    assert window._offset_text() == "0x000020"
+    assert window._offset_text() == "000020"
     # That same tile is anchored at parent byte 0x60, which is what an Offset
     # palette stores - it reaches outside the slice by design.
     assert window._initial_palette_offset() == 0x60
@@ -1463,7 +1463,7 @@ def test_edit_slice_updates_coordinates_and_reloads(
     assert window._doc is entry.doc
     assert window._doc.tile_count == 3
     assert window._anchor_base() == 32
-    assert window._offset_text() == "0x000000"
+    assert window._offset_text() == "000000"
 
 
 def test_edit_slice_keeps_the_view_across_the_re_read(
@@ -1647,7 +1647,7 @@ def test_jump_to_source_shows_slice_in_parent_at_absolute_offset(
     assert window._pixel_preset_id() == "preset.pixel.snes-2bpp"
     assert parent.doc.pixel_config.interpret_preset_id == "preset.pixel.snes-2bpp"
     # The view origin lands byte-exactly on the slice's absolute file offset (64).
-    assert window._offset_text() == "0x000040"
+    assert window._offset_text() == "000040"
     assert window._byte_position() == 64
 
     # Undo hands back the very document the jump replaced - edit and all - and
@@ -2522,6 +2522,25 @@ def test_window_title_names_project_and_marks_it_unsaved(qtbot, tmp_path):
     assert not window._project_is_dirty()
 
 
+def test_an_upgraded_project_opens_unsaved(qtbot, tmp_path):
+    """The upgrade happens on load with no prompt, and the file on disk is still
+    at the old version - so the session reads as edited until a save keeps it,
+    and quitting without one leaves the file untouched."""
+    (tmp_path / "x.bin").write_bytes(b"\x00" * 0x400)
+    project = tmp_path / "p.celpix"
+    project.write_text(
+        json.dumps({"version": 1, "current": 0, "entries": [{"path": "x.bin"}]}),
+        encoding="utf-8",
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_project(str(project))
+    assert window.isWindowModified()
+
+    window._save_project_to(str(project))
+    assert not window.isWindowModified()
+
+
 def test_open_project_folder_is_armed_only_while_a_project_is_open(qtbot, tmp_path):
     """The row opens the folder the .celpix file sits in, so it has nothing to
     open until the session has one - and loses it again on a new project. The
@@ -3263,6 +3282,7 @@ def test_a_project_plugins_cell_format_reaches_the_files_list(qtbot, tmp_path) -
     """
     from celpix.plugins.discovery import load_user_plugins, project_plugin_dir
     from celpix.plugins.registry import default_registry
+    from celpix.project import projectfile
 
     px = _make_snes_file(tmp_path)
     plugins = tmp_path / "plugins" / "tilemap"
@@ -3281,7 +3301,9 @@ def test_a_project_plugins_cell_format_reaches_the_files_list(qtbot, tmp_path) -
     project.write_text(
         json.dumps(
             {
-                "version": 1,
+                # The current version: an older one opens upgraded and so
+                # unsaved, and the New Project below would stop to ask.
+                "version": projectfile.PROJECT_VERSION,
                 "current": 0,
                 "entries": [
                     {"kind": "file", "name": "art", "path": str(px)},

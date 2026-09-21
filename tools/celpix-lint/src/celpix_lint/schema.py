@@ -22,7 +22,7 @@ from __future__ import annotations
 
 #: The reader's own :data:`celpix.project.projectfile.PROJECT_VERSION`. A file
 #: claiming more than this is one a newer celPix wrote.
-KNOWN_PROJECT_VERSION = 3
+KNOWN_PROJECT_VERSION = 4
 
 # -- enumerations (celpix.project.workspace, celpix.core) ------------------
 #: ``EntryKind`` — how an entry is *bounded*.
@@ -32,7 +32,7 @@ KINDS_WITH_DOCUMENT = ("file", "slice", "composite")
 #: ``ContentKind`` — what an entry's bytes *are*.
 CONTENT_KINDS = ("pixels", "tilemap", "palette")
 #: ``PaletteMode``.
-PALETTE_MODES = ("default", "file", "offset", "emulator", "custom")
+PALETTE_MODES = ("default", "file", "offset", "entry", "emulator", "custom")
 #: ``TileMode``. ``none`` means unbound and the writer never emits it.
 TILE_MODES = ("none", "entry")
 #: ``SlotFill``. ``ff`` is the default and is omitted when written.
@@ -211,7 +211,7 @@ FONT_KEYS = frozenset({"use", "base", "prepend", "append", "chars", "codes"})
 GLYPH_KEYS = frozenset({"code", "text", "name", "role", "description", "params"})
 TILE_SOURCE_KEYS = frozenset({"mode", "entry_index", "base_index"})
 PIECE_KEYS = frozenset({"entry_index", "offset", "length", "measured"})
-PALETTE_KEYS = frozenset({"colors", "path", "offset"})
+PALETTE_KEYS = frozenset({"colors", "path", "offset", "entry"})
 
 #: Which key a palette mode needs in the entry's ``palette`` block. ``default``
 #: needs none — it *is* the absence of a source.
@@ -220,6 +220,9 @@ PALETTE_MODE_NEEDS = {
     "file": "path",
     "emulator": "path",
     "offset": "offset",
+    # A position in ``entries``, resolved back to the entry whose resolved bytes
+    # the colours are decoded from (``docs/design/palette-editing.md``).
+    "entry": "entry",
 }
 
 #: The stage each id-bearing key is looked up in.

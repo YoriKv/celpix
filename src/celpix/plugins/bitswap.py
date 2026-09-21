@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from celpix.core.address import format_hex
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo, check_declared_stage
@@ -108,9 +109,9 @@ def _permute(data: bytes, src_of: tuple[int, ...]) -> bytes:
     whole = (len(data) // span) * span
     if not whole:
         raise ValueError(
-            f"region ({len(data):#x} bytes) is smaller than this table's "
-            f"{span:#x}-byte span, so nothing would be reshaped - the table "
-            "and the region disagree about the hardware"
+            f"region ({format_hex(len(data), None)} bytes) is smaller than this "
+            f"table's {format_hex(span, None)}-byte span, so nothing would be "
+            "reshaped - the table and the region disagree about the hardware"
         )
     chunk, dst = _chunk_plan(src_of)
     out = bytearray(len(data))

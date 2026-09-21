@@ -1,0 +1,36 @@
+# NES palette RAM as the screen shows it: nes-indexed's 64 colours, plus the
+# PPU's one rule the bytes do not state — colour 0 of every row is drawn from the
+# backdrop, entry 0 ($3F00), and $3F10 is that same slot. So entries 4, 8, 12, 16
+# ... show entry 0's colour whatever they hold, and an edit to any of them is an
+# edit to the backdrop. Pick this for a 32-, 16- or 4-byte palette read straight
+# out of a ROM or a state; pick nes-indexed to see and edit the stored bytes.
+# (docs/rom-mapping/console-nes.md §3). The colour table is nes-indexed's, and a
+# test holds the two to it.
+#
+# Under View as Palette the rule counts from the first entry shown, so scroll a
+# swatch view to the palette's start to read it this way.
+id = "preset.palette.nes-screen"
+name = "NES/Famicom (64-color indexed, shared backdrop)"
+engine_id = "codec.palette.indexed"
+category = "Nintendo"
+
+[params]
+shared_every = 4
+colors = [
+  0x5D5D5D, 0x00218E, 0x120BAF, 0x3900A6,
+  0x5B0078, 0x6C0033, 0x670500, 0x4E1C00,
+  0x293100, 0x044400, 0x004D00, 0x004809,
+  0x00384F, 0x000000, 0x000000, 0x000000,
+  0xA8A8A8, 0x0F54ED, 0x3E33FF, 0x761BFF,
+  0xA510CE, 0xBD156D, 0xB7290D, 0x934800,
+  0x5E6A00, 0x288500, 0x019200, 0x008C30,
+  0x007595, 0x000000, 0x000000, 0x000000,
+  0xFFFFFF, 0x59A7FF, 0x8F83FF, 0xCB67FF,
+  0xFC5BFF, 0xFF61C1, 0xFF7757, 0xEA990A,
+  0xB1BE00, 0x76DA00, 0x48E823, 0x32E17F,
+  0x38C9EC, 0x454545, 0x000000, 0x000000,
+  0xFFFFFF, 0xB9DAFF, 0xD0CBFF, 0xEABFFF,
+  0xFEBAFF, 0xFFBCE5, 0xFFC6B8, 0xF6D594,
+  0xDFE482, 0xC6F087, 0xB2F6A1, 0xA8F3CA,
+  0xAAE9F7, 0xB0B0B0, 0x000000, 0x000000,
+]

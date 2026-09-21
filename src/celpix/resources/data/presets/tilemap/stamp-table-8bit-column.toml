@@ -1,0 +1,29 @@
+# A table of 2x2 stamps whose four one-byte tile numbers are stored **down each
+# column**: upper-left, lower-left, upper-right, lower-right. Four bytes a
+# record, each a bare tile index — `preset.tilemap.index-8bit`'s cell. The
+# metatile tables of Super Mario Bros. are this shape; its scenery columns are
+# one-byte maps into them.
+#
+# The byte-cell sibling of `snes-stamp-table-column`, and a stamp source for
+# the same reason (docs/design/tilemap-entry.md §3.1): one coordinate names a
+# 2x2 of its cells, and because a column's two cells are adjacent, the stamp's
+# second *column* sits two cells on. The referring map is an indirect-record
+# preset — `metatile-index` plus whatever the game's record numbering needs —
+# which turns record k into its first cell, 4k.
+#
+# Its records are contiguous, so the table draws each metatile whole, as many
+# across as Cols holds (docs/design/tilemap-entry.md §6, records). It has no
+# palette field, so on its own it draws in the view's palette row; the map
+# drawn through it gets each record's colours.
+id = "preset.tilemap.stamp-table-8bit-column"
+name = "Stamp table (2x2 bytes, down each column)"
+engine_id = "codec.tilemap.packed"
+category = "Generic"
+
+[params]
+bytes = 1
+endian = "little"
+fields = "iiii iiii"
+stamp_cells = [2, 2]
+stamp_stride = 2
+stamp_order = "column"

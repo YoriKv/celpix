@@ -55,6 +55,7 @@ from celpix.project.workspace import (
     TileSource,
     Workspace,
     backfill_slice_length,
+    can_supply_palette,
     composite_config,
     composite_layout,
     entry_view_bytes,
@@ -402,6 +403,26 @@ def binding_target(workspace: Workspace, source: TileSource) -> Entry | None:
     return entry
 
 
+def palette_entry_target(
+    workspace: Workspace, entry: Entry, source: Entry | None
+) -> Entry | None:
+    """The open entry an ENTRY palette names, or None when it names nothing usable.
+
+    :func:`binding_target`'s twin, and the same two questions in the same order:
+    the entry has to still be **open** — which holding it by identity cannot
+    answer, a closed entry being a live object undo may yet put back — and it has
+    to be something this consumer may read
+    (:func:`~celpix.project.workspace.can_supply_palette`). Scanned by identity
+    rather than with ``in``, which would ask :class:`Entry` for an equality it
+    deliberately does not have.
+    """
+    if source is None:
+        return None
+    if not any(open_ is source for open_ in workspace.entries):
+        return None
+    return source if can_supply_palette(entry, source) else None
+
+
 def draws_through_tilemap(workspace: Workspace, entry: Entry) -> bool:
     """Whether ``entry``'s binding names another tilemap rather than art.
 
@@ -720,13 +741,20 @@ def palette_offset_owner(workspace: Workspace, entry: Entry | None) -> Entry | N
 
     ``entry`` itself when it is a whole file; its **parent** when it is a slice,
     because a slice's palette offsets are parent-absolute and deliberately reach
-    outside its own window. ``None`` when the parent is not open — or for a
-    **composite**, which comes from no file and so has no coordinates at all.
+    outside its own window. ``None`` when the parent is not open.
+
+    A **composite** comes from no file, so it borrows the coordinates of its
+    first piece that has an entry — the file a VRAM window's first bank sits in,
+    which is where a ROM keeps the colours for it. ``None`` for a composite of
+    pads only. Reordering the pieces across files moves the owner with them.
     """
     if entry is None:
         return None
     if entry.kind is EntryKind.FILE:
         return entry
+    if entry.kind is EntryKind.COMPOSITE:
+        first = next((p.entry for p in entry.pieces if p.entry is not None), None)
+        return palette_offset_owner(workspace, first) if first is not entry else None
     return workspace.find_file(entry.path)
 
 
@@ -827,6 +855,115 @@ def offset_palette_source(
     return FileRef(
         paths, offset=byte_off, length=length, data=data, data_base=base
     ), False
+
+
+def entry_palette_source(
+    registry,  # noqa: ANN001
+    workspace: Workspace,
+    source: Entry,
+    byte_off: int,
+    preset_id: str,
+    settle: Callable[[Entry], None] | None = None,
+    fallback_preset: str = DEFAULT_PIXEL_PRESET,
+) -> FileRef | None:
+    """The read window an ENTRY palette takes out of ``source``'s resolved bytes.
+
+    :func:`offset_palette_source`'s twin for the other cross-entry palette
+    reference, sized by the same two rules — floored to whole colour entries,
+    because the codecs reject a partial trailing one, and capped at a full
+    palette. ``None`` when not even one entry fits.
+
+    ``byte_off`` indexes the source's **resolved** data from 0 — what it looks
+    like once its own container, reshape and decompressor have run, which is the
+    same space a composite piece's range addresses
+    (:class:`~celpix.project.workspace.CompositePiece`). The bytes ride on the
+    ref inline, so the read never touches disk and never runs a second set of
+    byte stages over a buffer that has already been through its own.
+
+    The window is **not** writable on its own account: the colours belong to the
+    source's bytes, and an edit rides that entry's pixel pathway exactly as a
+    reordered Offset palette rides its owner's
+    (``docs/design/palette-editing.md``).
+
+    ``settle`` pays whatever fold the source owes before its buffer is believed,
+    the way :func:`reordered_view` does for an Offset owner.
+    """
+    if settle is not None:
+        settle(source)
+    session = source.session
+    preset = session.pixel_preset_id if session is not None else fallback_preset
+    data, _base = entry_view_bytes(source, registry, preset, workspace)
+    avail = len(data) - byte_off if byte_off >= 0 else 0
+    colors = min(
+        FULL_PALETTE_COUNT, pipeline.palette_entry_capacity(avail, preset_id, registry)
+    )
+    if colors <= 0:
+        return None
+    length = pipeline.palette_read_bytes(colors, preset_id, registry)
+    return FileRef(
+        # A composite comes from no file, so its own name is what the address
+        # display and any error message have to call this buffer.
+        source.paths or (source.name or "entry",),
+        offset=byte_off,
+        length=length,
+        data=data,
+        data_base=0,
+    )
+
+
+def entry_palette_config(
+    entry: Entry,
+    source: PaletteSource,
+    registry,  # noqa: ANN001
+    workspace: Workspace,
+    settle: Callable[[Entry], None] | None = None,
+    preset_id: str | None = None,
+) -> PathwayConfig:
+    """The pathway ``entry`` reads its ENTRY-mode palette through.
+
+    One builder for every route into the mode — the project restore, the headless
+    load and the dock's own re-decode — so what a reopened project shows and what
+    the gesture produced cannot differ. Raises where the app degrades to the
+    default palette: a source that is no longer open, or one with too few bytes
+    left at the stated offset for a single colour.
+
+    The **consumer** owns the colour format, which is the whole difference from
+    File mode: these are bytes in somebody else's buffer, and how to read them is
+    a fact about the picture being coloured rather than about the entry holding
+    them. *Which* of the consumer's two answers is the live one depends on the
+    route, so ``preset_id`` is explicit rather than always the session's: a
+    loaded entry's format is on its **document's** palette config, and its
+    session's copy is only written on an entry switch — so the entry on screen
+    would otherwise be re-decoded at whatever format it was opened with, silently
+    undoing a Format pick. The session's is right for the restore route alone,
+    where there is no live config yet.
+    """
+    session = entry.session
+    assert session is not None
+    wanted = preset_id or session.palette_preset_id
+    target = palette_entry_target(workspace, entry, source.entry)
+    if target is None:
+        named = source.entry.name if source.entry is not None else "nothing"
+        raise PipelineError(
+            Stage.CONTAINER,
+            Pathway.PALETTE,
+            f"the palette is read from {named}, which is not open",
+            plugin=wanted,
+        )
+    ref = entry_palette_source(
+        registry, workspace, target, source.offset, wanted, settle
+    )
+    if ref is None:
+        raise PipelineError(
+            Stage.CONTAINER,
+            Pathway.PALETTE,
+            f"not enough data at that offset in {target.name}",
+            plugin=wanted,
+        )
+    # Never writable on its own account: the bytes are the source's, so a colour
+    # edit rides that entry's pixel pathway instead
+    # (``docs/design/palette-editing.md``).
+    return PathwayConfig(source=ref, interpret_preset_id=wanted, write_enabled=False)
 
 
 def file_palette_config(
@@ -1103,6 +1240,8 @@ def restored_palette(
             file_palette_config(source.path, source.offset, preset, container),
             write_enabled=False,
         )
+    elif session.palette_mode is PaletteMode.ENTRY:
+        cfg = entry_palette_config(entry, source, registry, workspace)
     elif session.palette_mode is PaletteMode.EMULATOR and source.path is not None:
         _fmt, cfg = emulator_palette_config(source.path, registry)
     elif source.path is not None:

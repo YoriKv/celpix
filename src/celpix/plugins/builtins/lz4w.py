@@ -73,6 +73,7 @@ Format provenance and the cross-check against that packer are in
 
 from __future__ import annotations
 
+from celpix.core.address import format_hex
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
@@ -171,7 +172,8 @@ def decompress(
                     at = pos - distance * WORD
                     if previous is None:
                         raise _fail(
-                            f"the block at {pos - 2 * WORD:#x} copies from "
+                            "the block at "
+                            f"{format_hex(pos - 2 * WORD, None)} copies from "
                             f"{distance:,} words before the stream's read "
                             "position - the data that precedes the stream in "
                             "ROM, which nothing here supplies"
@@ -181,7 +183,8 @@ def decompress(
                     end = at + length * WORD
                     if at < 0 or end > before + n:
                         raise _fail(
-                            f"source-relative match at {pos - 2 * WORD:#x} "
+                            "source-relative match at "
+                            f"{format_hex(pos - 2 * WORD, None)} "
                             "reaches outside the preceding data"
                         )
                     # The 68000 reads straight through into the compressed

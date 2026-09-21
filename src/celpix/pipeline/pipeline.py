@@ -30,6 +30,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
+from celpix.core.address import format_hex
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
@@ -72,11 +73,13 @@ from celpix.pipeline.metrics import (
     palette_entry_size,
     palette_has_alpha,
     palette_read_bytes,
+    palette_row_size,
     pixel_bpp,
     pixel_is_direct_color,
     pixel_tile_bytes,
     quantize_color,
     quantize_palette,
+    shared_palette_entries,
     tilemap_cell_bytes,
 )
 from celpix.pipeline.pathway import PathwayConfig
@@ -178,11 +181,13 @@ __all__ = [
     "palette_entry_size",
     "palette_has_alpha",
     "palette_read_bytes",
+    "palette_row_size",
     "patch_tile_bank",
     "pixel_bpp",
     "pixel_is_direct_color",
     "pixel_tile_bytes",
     "quantize_color",
+    "shared_palette_entries",
     "quantize_palette",
     "read_region",
     "reinterpret_pixel_data",
@@ -1697,7 +1702,7 @@ def _compress_unshape(
             Stage.CONTAINER,
             pathway,
             f"result ({len(shaped)} bytes) exceeds the {target.length}-byte slot "
-            f"at {target.offset:#x} in {target.path}",
+            f"at {format_hex(target.offset)} in {target.path}",
             "write",
         )
     if (
@@ -1709,9 +1714,9 @@ def _compress_unshape(
             Stage.RESHAPE,
             pathway,
             f"result ({len(shaped)} bytes) must fill the {target.length}-byte "
-            f"slot at {target.offset:#x} in {target.path} exactly: a reshape's "
-            "boundaries are fractions of the region, so a shorter region is a "
-            "different reshape",
+            f"slot at {format_hex(target.offset)} in {target.path} exactly: "
+            "a reshape's boundaries are fractions of the region, so a shorter "
+            "region is a different reshape",
             "unshape",
         )
     if (

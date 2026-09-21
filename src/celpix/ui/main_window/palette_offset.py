@@ -30,10 +30,12 @@ step buttons clamp against the same end the read window is sized from, so holdin
 an arrow at the edge stops rather than raising the past-EOF alert a typed offset
 would.
 
-What is not here: the other four load modes and the commit every one of them ends
+What is not here: the other five load modes and the commit every one of them ends
 in (:mod:`~celpix.ui.main_window.palette_source`), the dock widgets this drives
 (:mod:`~celpix.ui.main_window.palette_dock`), and what a colour edit does once it
-has an owner (:mod:`~celpix.ui.main_window.color_editing`).
+has an owner (:mod:`~celpix.ui.main_window.color_editing`). The offset field and
+its step buttons are shared with **Entry** mode, which asks the same question of
+another entry's buffer (:mod:`~celpix.ui.main_window.palette_entry`).
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ from celpix.project.workspace import (
     Entry,
     EntryKind,
     PaletteMode,
+    entry_view_bytes,
 )
 
 
@@ -69,19 +72,23 @@ class PaletteOffsetMixin:
     def _offset_palette_refusal(self, entry: Entry | None) -> str | None:
         """Why ``entry`` cannot hold an Offset palette, or None if it can.
 
-        A **composite** is the one refusal. An Offset palette addresses a byte
-        of a file in its owner's coordinates, and a composite has no file: its
-        bytes are its pieces' and its offsets are positions in a join that
-        exists only in memory (``Entry.paths`` is empty for the same reason).
-        Said here, once, so the mode picker, the selection action and the load
-        itself agree — left to the load, the refusal arrived as "not enough data
-        at that offset", which is a wrong diagnosis of the right answer.
+        A **composite of pads only** is the one refusal. An Offset palette
+        addresses a byte of a file in its owner's coordinates; a composite
+        borrows its first file-backed piece's
+        (:func:`~celpix.project.documents.palette_offset_owner`), and one with
+        no such piece has no file at all. Said here, once, so the mode picker,
+        the selection action and the load itself agree — left to the load, the
+        refusal arrived as "not enough data at that offset", which is a wrong
+        diagnosis of the right answer.
         """
-        if entry is not None and entry.kind is EntryKind.COMPOSITE:
+        if (
+            entry is not None
+            and entry.kind is EntryKind.COMPOSITE
+            and self._palette_offset_owner(entry) is None
+        ):
             return (
-                "A composite view has no file of its own to read a palette from. "
-                "Load the palette on one of its pieces, or use File, Custom or "
-                "Emulator mode here."
+                "This composite view has no piece from a file to read a palette "
+                "from. Add one, or use File, Custom or Emulator mode here."
             )
         return None
 
@@ -98,44 +105,57 @@ class PaletteOffsetMixin:
         return self._tile_anchor_offset(self._anchor_tile())
 
     def _palette_offset_text(self) -> str:
-        """The palette offset field's text provider; safe with no document."""
-        if self._doc is None or self._palette_mode is not PaletteMode.OFFSET:
+        """The palette offset field's text provider; safe with no document.
+
+        Shared with Entry mode, which uses the same field for the same kind of
+        number — a byte position in a buffer — differing only in whose
+        (``docs/design/palette-editing.md``).
+        """
+        if self._doc is None or not self._palette_mode_has_offset():
             return ""
-        return self._format_offset(self._doc.palette_config.source.offset)
+        return self._format_offset(self._doc.palette_config.source.offset, prefix=False)
+
+    def _palette_mode_has_offset(self) -> bool:
+        """Whether the dock's offset field means something in the live mode."""
+        return self._palette_mode in (PaletteMode.OFFSET, PaletteMode.ENTRY)
 
     def _on_palette_offset_committed(self, byte_off: int) -> None:
         # On failure the commit's own unconditional refresh reverts the text.
-        if self._doc is not None:
-            self._load_palette_at_offset(byte_off)
+        if self._doc is None:
+            return
+        if self._palette_mode is PaletteMode.ENTRY:
+            source = self._entry_palette_target()
+            if source is not None:
+                self._load_palette_from_entry(source, byte_off)
+            return
+        self._load_palette_at_offset(byte_off)
 
     def _step_palette_offset(self, delta_tiles: int) -> None:
-        """Nudge the Offset-mode palette by ``delta_tiles`` whole tiles.
+        """Nudge the palette window by ``delta_tiles`` whole tiles.
 
         The ◄/► buttons: one tile of the current pixel format is the step, so
         walking the palette window a tile at a time hunts for the colors a few
         tiles off the graphics. Clamped so a step never runs before byte 0 or
         past the last position a full palette entry still fits - holding an
         arrow at the edge simply stops, without the past-EOF alert a typed
-        offset would raise. Reuses the Offset-mode load, so each step is an
-        ordinary undoable palette change.
+        offset would raise. Reuses each mode's own load, so a step is an
+        ordinary undoable palette change either way.
         """
         entry = self._workspace.current
-        if (
-            self._doc is None
-            or entry is None
-            or self._palette_mode is not PaletteMode.OFFSET
-        ):
+        if self._doc is None or entry is None or not self._palette_mode_has_offset():
             return
         step = self._doc.bytes_per_tile
         entry_size = pipeline.palette_entry_size(
             self._palette_preset_id(), self._registry
         )
         try:
-            end = self._offset_palette_space(entry)[1]
+            end = self._palette_offset_end(entry)
         except OSError as exc:
             self._alert(
                 f"Cannot read the palette source: {exc}", title="celPix - palette"
             )
+            return
+        if end is None:
             return
         last = end - entry_size  # last offset a whole entry still fits at
         if last < 0:
@@ -144,8 +164,35 @@ class PaletteOffsetMixin:
         # is just arithmetic on it.
         current = self._doc.palette_config.source.offset
         target = min(max(0, current + delta_tiles * step), last)
-        if target != current:
-            self._load_palette_at_offset(target)
+        if target == current:
+            return
+        if self._palette_mode is PaletteMode.ENTRY:
+            source = self._entry_palette_target()
+            if source is not None:
+                self._load_palette_from_entry(source, target)
+            return
+        self._load_palette_at_offset(target)
+
+    def _palette_offset_end(self, entry: Entry) -> int | None:
+        """One past the last byte the palette window may reach, per mode.
+
+        The owning file's buffer for Offset mode, the source entry's resolved
+        data for Entry mode, and ``None`` where there is no source to measure —
+        which is what makes a step over a closed one stop rather than raise.
+        """
+        if self._palette_mode is not PaletteMode.ENTRY:
+            return self._offset_palette_space(entry)[1]
+        source = self._entry_palette_target(entry)
+        if source is None:
+            return None
+        preset = (
+            source.session.pixel_preset_id
+            if source.session is not None
+            else self._pixel_preset_id()
+        )
+        self._settle_region(source)
+        data, _base = entry_view_bytes(source, self._registry, preset, self._workspace)
+        return len(data)
 
     def _palette_offset_owner(self, entry: Entry | None) -> Entry | None:
         """:func:`~celpix.project.documents.palette_offset_owner`."""

@@ -37,10 +37,12 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSpinBox,
     QStatusBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -116,6 +118,10 @@ class AnimationFrame(PanZoomSurface, QWidget):
         self._update_size()
         self.update()
 
+    def strip(self) -> QImage:
+        """The composed sheet the frames are cut from."""
+        return self._strip
+
     def show_frame(self, source: QRect | None) -> None:
         """Draw the strip's ``source`` rectangle — or nothing, for a missing frame."""
         self._source = source or QRect()
@@ -177,6 +183,11 @@ class AnimationOverlay(QWidget):
     # each step of a drag. One recompose per burst is imperceptible here and the
     # difference between a player that is open and one that is in the way.
     refresh_requested = Signal()
+    # Export ▸ one of four: (as GIF rather than PNGs, every sequence rather than
+    # the one showing). Asked of the window, which owns the dialogs, the default
+    # folder and the entry's name; the frames themselves are this window's to
+    # hand over (:meth:`export_source`).
+    export_requested = Signal(bool, bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Tool)
@@ -255,6 +266,36 @@ class AnimationOverlay(QWidget):
         )
         self._zoom.valueChanged.connect(self._frame.set_zoom)
 
+        # One button, four choices: a menu rather than four buttons, since an
+        # export is occasional and the header is the transport's.
+        self._export = QToolButton()
+        self._export.setText("Export")
+        self._export.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._export.setToolTip(
+            "Save sequences as animated GIFs or numbered PNGs\n"
+            "Frames are exported at 1x, timed at this Rate"
+        )
+        menu = QMenu(self._export)
+        self._export_one = [
+            menu.addAction(
+                "Export as &GIF…", lambda: self.export_requested.emit(True, False)
+            ),
+            menu.addAction(
+                "Export as &PNG Sequence…",
+                lambda: self.export_requested.emit(False, False),
+            ),
+        ]
+        menu.addSeparator()
+        menu.addAction(
+            "Export &All as GIFs…", lambda: self.export_requested.emit(True, True)
+        )
+        menu.addAction(
+            "Export All as P&NG Sequences…",
+            lambda: self.export_requested.emit(False, True),
+        )
+        self._export.setMenu(menu)
+
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.addWidget(self._sequence, 1)
@@ -265,6 +306,7 @@ class AnimationOverlay(QWidget):
         header.addWidget(self._rate)
         header.addWidget(QLabel("Zoom"))
         header.addWidget(self._zoom)
+        header.addWidget(self._export)
 
         self._status = QStatusBar()
         self._status.setSizeGripEnabled(False)
@@ -412,6 +454,23 @@ class AnimationOverlay(QWidget):
         self._frame.set_pan_mode(False)
         super().closeEvent(event)
 
+    # -- export --------------------------------------------------------------
+    def export_source(
+        self, every: bool
+    ) -> tuple[QImage, list[QRect], list[tuple[int, Sequence]], int]:
+        """What an export writes: the strip, its frame rectangles, the
+        ``(number, sequence)`` pairs to write and the tick rate.
+
+        The sequence showing, or with ``every`` each one that holds a step —
+        the ones the picker offers, under the numbers it gives them.
+        """
+        if every:
+            chosen = [(at, seq) for at, seq in enumerate(self._sequences) if seq]
+        else:
+            at = self._sequence.currentData()
+            chosen = [] if at is None else [(at, self._sequences[at])]
+        return self._frame.strip(), self._rects, chosen, self._rate.value()
+
     # -- playback ------------------------------------------------------------
     @property
     def _current(self) -> Sequence | None:
@@ -469,11 +528,13 @@ class AnimationOverlay(QWidget):
             self._frame.show_frame(None)
             self._status.showMessage("No sequences" if not self._sequences else "Empty")
             apply_badge(self._badge, None)
-            for control in (self._play, self._prev, self._next):
+            for control in (self._play, self._prev, self._next, *self._export_one):
                 control.setEnabled(False)
+            self._export.setEnabled(any(self._sequences) and bool(self._rects))
             return
-        for control in (self._play, self._prev, self._next):
+        for control in (self._play, self._prev, self._next, *self._export_one):
             control.setEnabled(True)
+        self._export.setEnabled(bool(self._rects))
         step = sequence.steps[self._step]
         known = 0 <= step.frame < self._frames
         self._frame.show_frame(self._rects[step.frame] if known else None)

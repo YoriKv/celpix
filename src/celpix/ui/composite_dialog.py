@@ -12,9 +12,12 @@ is read at whatever depth its consumer wants rather than its sources'.
 
 **Runs are measured in bytes**, and the two position columns say the same place
 twice on purpose. *At* is the byte the run starts on, which is what a VRAM upload
-table is written in and what a piece's own range addresses; *Tile* is that same
-place in the index space a tilemap sees, which is what a cell means. Both are
-derived from the list above them, so a move or a removal re-answers every row.
+table is written in and what a piece's own range addresses; the second is that
+same place in the index space the entry's own format reads — *Tile* for a tile
+window, which is what a cell means, and *Color* where the entry is read through
+the palette-swatch codec, which is what a colour table's rows mean
+(``docs/design/palette-editing.md``). Both are derived from the list above them,
+so a move or a removal re-answers every row.
 
 **A blank row is the only editable length.** A source row's is its entry's own
 size, or a range a project stated; neither is this dialog's to invent, and it
@@ -86,6 +89,7 @@ class CompositeDialog(QDialog):
         entry: Entry,
         candidates: list[Entry],
         tile_bytes: int,
+        unit_label: str = "Tile",
         name: str = "",
         pieces: tuple[CompositePiece, ...] = (),
         title: str = "New Composite View",
@@ -105,7 +109,11 @@ class CompositeDialog(QDialog):
         self._name.setToolTip("Name in the Files list")
 
         self._list = QTreeWidget()
-        self._list.setHeaderLabels(["At", "Tile", "Source", "Bytes"])
+        # The second position column is named for what the entry's own format
+        # reads a unit as, because that is what the user is transcribing against:
+        # tiles for a tile window, colours for one read through the palette-swatch
+        # codec (``docs/design/palette-editing.md``).
+        self._list.setHeaderLabels(["At", unit_label, "Source", "Bytes"])
         self._list.setRootIsDecorated(False)
         self._list.setUniformRowHeights(True)
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -277,7 +285,7 @@ class CompositeDialog(QDialog):
                 item.setText(3, format_hex(piece.extent))
             at += piece.extent
         tiles = at // self._tile_bytes
-        self._total.setText(f"{format_hex(at)} bytes ({tiles} tiles)")
+        self._total.setText(f"{format_hex(at, None)} bytes ({tiles} tiles)")
         self._sync_buttons()
 
     def _sync_buttons(self) -> None:
@@ -352,6 +360,7 @@ class CompositeDialog(QDialog):
         entry: Entry,
         candidates: list[Entry],
         tile_bytes: int,
+        unit_label: str = "Tile",
         name: str = "",
         pieces: tuple[CompositePiece, ...] = (),
         title: str = "New Composite View",
@@ -361,6 +370,7 @@ class CompositeDialog(QDialog):
             entry=entry,
             candidates=candidates,
             tile_bytes=tile_bytes,
+            unit_label=unit_label,
             name=name,
             pieces=pieces,
             title=title,

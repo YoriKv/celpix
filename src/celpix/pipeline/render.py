@@ -44,7 +44,7 @@ from celpix.core.index_grid import IndexGrid
 from celpix.core.sprite import Frame, Subsprite, frame_bounds
 from celpix.core.tilemap import Cell, expand_stamp
 from celpix.pipeline._stage import _run, tile_params
-from celpix.pipeline.metrics import pixel_bpp
+from celpix.pipeline.metrics import palette_row_size
 from celpix.plugins.base import PixelCodecPlugin
 from celpix.plugins.registry import Registry
 
@@ -549,7 +549,7 @@ def expand_cells(
     unit = block or doc.cell_tiles
     across, down = max(1, unit[0]), max(1, unit[1])
     blank = IndexGrid(doc.tile_width, doc.tile_height)
-    space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
+    space = palette_row_size(doc.pixel_config.interpret_preset_id, reg)
     source = tile_bank(doc, reg)
     count = len(source)
     base = doc.palette_row_base
@@ -662,7 +662,7 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
     (``docs/design/tilemap-entry.md`` §8) — and ``columns`` means cells across
     for a grid and *frames* across for a sprite object.
     """
-    space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
+    space = palette_row_size(doc.pixel_config.interpret_preset_id, reg)
     base = doc.palette_row_base
     rows = doc.palette_row_wrap(space)
     hidden: tuple[tuple[int, int, int, int], ...] = ()
@@ -928,7 +928,7 @@ def glyph_sheet(
     tiles = tile_bank(doc, reg)
     ids = list(range(layout.blocks(len(tiles))))
     blank = IndexGrid(doc.tile_width, doc.tile_height)
-    shift = palette_row * (1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg))
+    shift = palette_row * palette_row_size(doc.pixel_config.interpret_preset_id, reg)
     across = max(1, layout.block_columns)
     down = max(1, layout.block_rows)
     drawn: dict[int, object] = {}
@@ -1083,7 +1083,7 @@ def sprite_image(
     )
     image = IndexGrid(across * width, sheet.down * height)
     source = tile_bank(doc, reg)
-    space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
+    space = palette_row_size(doc.pixel_config.interpret_preset_id, reg)
     rows = doc.palette_row_wrap(space)
     for at, frame in enumerate(frames):
         ox = (at % across) * width - left
@@ -1283,7 +1283,7 @@ def subsprite_sheet(
     )
     image = IndexGrid(columns * cell_w, rows_of_cells * cell_h)
     source = tile_bank(doc, reg)
-    space = 1 << pixel_bpp(doc.pixel_config.interpret_preset_id, reg)
+    space = palette_row_size(doc.pixel_config.interpret_preset_id, reg)
     rows = doc.palette_row_wrap(space)
     boxes: list[tuple[int, int, int, int]] = []
     for slot, (at, index) in enumerate(records):

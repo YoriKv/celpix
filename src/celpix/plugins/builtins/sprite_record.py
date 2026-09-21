@@ -25,6 +25,13 @@ preset:
     ]
     frame_header = { bytes = 6, count_at = 4, count_type = "u16" }
 
+**Parallel arrays.** ``arrays = [["y"], ["x", "tile"]]`` stores the record's
+fields as groups, each ``count`` elements long, one after the other inside the
+frame — the Master System sprite table's own shape, all the Ys and then the
+(X, tile) pairs. The groups list the record's fields once each, in order, so a
+piece is still exactly the record it would be back to back; ``frame_header`` is
+required, since its count is where one array ends.
+
 **Fields.** ``type`` is ``u8``, ``s8``, ``u16``, ``s16``, ``u32`` or ``s32``,
 multi-byte fields in the preset's ``endian`` (big unless it says little). A field
 named ``x`` or ``y`` is the piece's offset from the object's origin. A field with
@@ -61,6 +68,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from celpix.core.address import format_hex
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.sprite import Frame, Subsprite
@@ -139,6 +147,31 @@ class _Layout:
                 raise ValueError("frame_header's count must sit inside its bytes")
             self.header = (length, count_at, _TYPES[count_type])
         self.column_major = bool(params.get("column_major", False))
+        self.arrays = self._arrays(params.get("arrays"))
+
+    def _arrays(self, spec: Any) -> tuple[tuple[int, int], ...] | None:
+        """``arrays``: the record's fields as parallel arrays, each group stored
+        as ``count`` consecutive elements — ``(offset in the record, width)`` per
+        group. The groups must list the record's fields once each, in order, so
+        a piece still reads as exactly the record it would be back to back."""
+        if spec is None:
+            return None
+        if self.header is None:
+            raise ValueError(
+                "`arrays` needs a `frame_header`: its count is what says where "
+                "one array ends and the next begins"
+            )
+        names = [name for name, _at, _w, _s, _p in self.fields]
+        if not isinstance(spec, list) or [n for g in spec for n in g] != names:
+            raise ValueError(
+                f"`arrays` must group the record's fields {names} in order, "
+                f"each once; got {spec}"
+            )
+        width = {name: w for name, _at, w, _s, _p in self.fields}
+        at = {name: a for name, a, _w, _s, _p in self.fields}
+        return tuple(
+            (at[group[0]], sum(width[n] for n in group)) for group in spec if group
+        )
 
     def _placement(self, part: str):  # noqa: ANN202
         for _name, _at, _width, _signed, placed in self.fields:
@@ -209,6 +242,19 @@ def _record(layout: _Layout, cell: Cell) -> bytes:
     return layout.with_parts(stored, {p: v for p, v in parts.items() if p in placed})
 
 
+def _piece(layout: _Layout, data: bytes, first: int, count: int, i: int) -> bytes:
+    """Piece ``i`` of the frame whose pieces start at ``first``: a record back to
+    back, or its slice of every parallel array joined back into one."""
+    if layout.arrays is None:
+        at = first + i * layout.size
+        return data[at : at + layout.size]
+    out, base = bytearray(), first
+    for _start, width in layout.arrays:
+        out += data[base + i * width : base + (i + 1) * width]
+        base += count * width
+    return bytes(out)
+
+
 def _group(cells: list[Cell], framed: bool) -> list[list[Cell]]:
     if not framed:
         return [cells] if cells else []
@@ -248,19 +294,22 @@ class SpriteRecordCodec:
             end = at + length + count * size
             if end > len(data):
                 raise ValueError(
-                    f"the frame at {at:#x} holds {count} pieces, running "
+                    f"the frame at {format_hex(at, None)} holds {count} pieces, "
+                    "running "
                     f"{end - len(data)} bytes past the data"
                 )
             for i in range(count):
-                first = at + length + i * size
                 cells.append(
                     _cell(
-                        layout, data[first : first + size], header if i == 0 else None
+                        layout,
+                        _piece(layout, data, at + length, count, i),
+                        header if i == 0 else None,
                     )
                 )
             if not count:
                 raise ValueError(
-                    f"the frame at {at:#x} holds no pieces, which a run cannot carry"
+                    f"the frame at {format_hex(at, None)} holds no pieces, "
+                    "which a run cannot carry"
                 )
             at = end
         return cells
@@ -279,8 +328,12 @@ class SpriteRecordCodec:
                     count_width, layout.order
                 )
                 out += header
-            for cell in frame:
-                out += _record(layout, cell)
+            records = [_record(layout, cell) for cell in frame]
+            if layout.arrays is None:
+                out += b"".join(records)
+            else:
+                for start, width in layout.arrays:
+                    out += b"".join(r[start : start + width] for r in records)
         return bytes(out)
 
     def bytes_per_cell(self, params: dict[str, Any]) -> int:

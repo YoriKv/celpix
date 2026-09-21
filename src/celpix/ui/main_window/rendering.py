@@ -41,6 +41,7 @@ from celpix.ui.main_window.interpretation import (
     COLS_CELLS_TIP,
     COLS_FRAMES_TIP,
     COLS_PAGES_TIP,
+    COLS_RECORDS_TIP,
     COLS_ROW_PLANE_TIP,
     COLS_STAMPED_TIP,
     COLS_STAMPS_TIP,
@@ -173,6 +174,10 @@ class RenderingMixin:
             return columns
         if doc.assembly_choices:
             return self._assembly_columns(columns)
+        record = doc.record_shape[0]
+        if record:
+            # Whole records only, as a dense map keeps whole stamps.
+            return max(1, columns // record) * record
         width, entries = doc.drawn_columns, doc.stamp_columns
         if not width or not entries:
             return columns
@@ -507,6 +512,8 @@ class RenderingMixin:
             # gesture snaps on to the ones that show every page
             # (:meth:`_assembly_columns`).
             self._columns.setSingleStep(doc.page_size[0])
+        elif doc is not None and doc.record_shape[0]:
+            self._columns.setSingleStep(doc.record_shape[0])
         else:
             self._columns.setSingleStep(width // entries if width and entries else 1)
         if not width:
@@ -569,7 +576,10 @@ class RenderingMixin:
         else:
             # A live spin on a map that still stamps: the number is the user's,
             # and it is theirs in whole stamps (:meth:`_settle_tilemap_width`).
-            tip = COLS_STAMPS_TIP if doc.drawn_columns else COLS_CELLS_TIP
+            if doc.record_shape[0]:
+                tip = COLS_RECORDS_TIP
+            else:
+                tip = COLS_STAMPS_TIP if doc.drawn_columns else COLS_CELLS_TIP
         self._columns.setToolTip(tip)
         self._columns_label.setToolTip(tip)
         self._columns_label.setEnabled(self._columns.isEnabled())

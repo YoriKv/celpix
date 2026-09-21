@@ -180,6 +180,18 @@ KEY_TILEMAP_PAGE_ROWS = "tilemap.page-rows"
 # leaves its own page height beside somebody else's arrangement
 # (:mod:`celpix.plugins.builtins.nes_nametable`).
 KEY_TILEMAP_PAGES_ACROSS = "tilemap.pages-across"
+# tuple[int, int]: the **record** a table's cells come in — ``(across, down)``
+# cells that belong together, stored consecutively: a 2x2 metatile's four tile
+# numbers, a 2x4 sprite frame's eight. Published by the packed engine from a
+# preset's ``record_shape``, or from a stamp source whose stamps are contiguous
+# records. What it buys is the picture: each record is drawn as its own
+# rectangle, as many across as fit the view's Cols, instead of the table's cells
+# running on as one ribbon (``docs/design/tilemap-entry.md`` §6). Unlike a page
+# it states no width and no count, so the last row of records may be short.
+KEY_TILEMAP_RECORD_SHAPE = "tilemap.record-shape"
+# bool: the record above stores its cells **down each column** — upper-left,
+# lower-left, upper-right, lower-right for a 2x2 — rather than across each row.
+KEY_TILEMAP_RECORD_COLUMN_MAJOR = "tilemap.record-column-major"
 # "little" | "big": the byte order a container knows its cells are in, where that
 # is a property of the *file* rather than of its format. The S-CG-CAD sprite
 # object is the case it exists for: 26 of the 1,341 in the corpus come from a

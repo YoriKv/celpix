@@ -12,8 +12,9 @@
 # a new console's sprite list — or a game's own — is this file and no code.
 # _md-sprite.toml is the Mega Drive VDP's record specifically, with its mirror
 # check; this reads that record too (below) and every other byte-aligned one.
-# What it cannot read is a sprite whose pieces are not records back to back —
-# parallel arrays, pieces interleaved with their art — which is code.
+# It also reads fields stored as parallel arrays (`arrays`, below). What it
+# cannot read is a frame reached through pointers — pieces interleaved with
+# their art, an animation table naming frames and art apart — which is code.
 #
 # The record below is a compiled engine's 10-byte piece:
 #   x.w  x_mirrored.w  y.w  pad.b  size.b  attribute.w
@@ -68,6 +69,20 @@ record = [
 # decode refuses it.)
 #
 # frame_header = { bytes = 6, count_at = 4, count_type = "u16" }
+
+# Fields stored as parallel arrays rather than records back to back: each group
+# is `count` elements long, one after the other inside the frame. The groups
+# list the record's fields once each, in order, and need a frame_header (its
+# count says where one array ends). The Master System sprite table's shape —
+# every Y, then every (X, tile) pair — with
+#   record = [
+#     { name = "y",    type = "s8" },
+#     { name = "x",    type = "s8" },
+#     { name = "tile", type = "u8", bits = "iiiiiiii" },
+#   ]
+# is
+#
+# arrays = [["y"], ["x", "tile"]]
 
 # The Mega Drive VDP record, for comparison — the same engine, one frame:
 #   record = [

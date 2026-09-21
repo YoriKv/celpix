@@ -11,9 +11,9 @@
 #
 # No page geometry, unlike `snes-bg`: a table is not a screen, and one of 256
 # records is exactly one 32x32 page's worth of cells, which would be locked to a
-# shape it has not got. The table draws in file order at whatever width it is
-# shown, so its own view reads as a ribbon; the map drawn through it is the
-# picture.
+# shape it has not got. Its records are contiguous, so the table draws each
+# metatile whole, as many across as Cols holds (docs/design/tilemap-entry.md
+# §6, records); the map drawn through it is the picture.
 id = "preset.tilemap.snes-stamp-table-column"
 name = "SNES stamp table (2x2 words, down each column)"
 engine_id = "codec.tilemap.packed"

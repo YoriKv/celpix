@@ -53,12 +53,12 @@ def test_typing_hex_offset_jumps_byte_exact(qtbot, tmp_path, monkeypatch) -> Non
     window._address_edit.setText("0x210")  # tile 16 plus a 16-byte nudge
     window._address_edit.commit()
     assert (window._offset, window._nudge) == (16, 16)
-    assert window._address_edit.text() == "0x000210"  # normalised, byte-exact
+    assert window._address_edit.text() == "000210"  # normalised, byte-exact
     # Past the end clamps to the last full page, which sits on the tile grid.
     window._address_edit.setText("0xFFFF")
     window._address_edit.commit()
     assert (window._offset, window._nudge) == (32, 0)
-    assert window._address_edit.text() == "0x000400"
+    assert window._address_edit.text() == "000400"
 
 
 def test_byte_nudge_steps_wrap_and_clamp(qtbot, tmp_path, monkeypatch) -> None:
@@ -69,7 +69,7 @@ def test_byte_nudge_steps_wrap_and_clamp(qtbot, tmp_path, monkeypatch) -> None:
     window._nav_bytes(1)
     assert (window._offset, window._nudge) == (0, 1)
     assert window._nudge_info.text() == "+1 B"
-    assert window._address_edit.text() == "0x000001"
+    assert window._address_edit.text() == "000001"
     # Tile-based moves keep the nudge — it is alignment, not position.
     window._nav_rows(1)
     assert (window._offset, window._nudge) == (16, 1)
@@ -138,12 +138,12 @@ def test_the_address_format_dropdown_drives_the_offset_box(
     window._address_edit.setText("nonsense")
     window._address_edit.commit()
     assert window._offset == before
-    assert window._address_edit.text() == f"0x{before * 32:06X}"
+    assert window._address_edit.text() == f"{before * 32:06X}"
 
     # A banked preset re-renders the displayed text and parses typed addresses
     # under the new layout, and fills the spins it is described by.
     _select_address_format(window, "snes-lorom")
-    assert window._address_edit.text() == "$00:8200"
+    assert window._address_edit.text() == "00:8200"
     assert window._bank_size.isEnabled()
     assert (
         window._bank_size.value(),
@@ -153,17 +153,17 @@ def test_the_address_format_dropdown_drives_the_offset_box(
     window._address_edit.setText("$00:8400")  # byte 0x400 -> tile 32
     window._address_edit.commit()
     assert window._offset == 32
-    assert window._address_edit.text() == "$00:8400"
+    assert window._address_edit.text() == "00:8400"
 
     # Hand-editing a spin flips the dropdown to Custom - the preset no longer
     # describes the settings - and re-renders under the edited layout. Re-selecting
     # the preset restores its values.
     window._bank_first.setValue(0x40)  # e.g. SuperFX-style bank numbering
     assert window._addr_format.currentData() == "custom"
-    assert window._address_edit.text() == "$40:8400"
+    assert window._address_edit.text() == "40:8400"
     _select_address_format(window, "snes-lorom")
     assert window._bank_first.value() == 0x00
-    assert window._address_edit.text() == "$00:8400"
+    assert window._address_edit.text() == "00:8400"
 
     # ExHiROM/ExLoROM are piecewise mappings the three-spin model can't express:
     # selecting one hides the settings entirely and renders through the split
@@ -171,7 +171,7 @@ def test_the_address_format_dropdown_drives_the_offset_box(
     window._nav_home()
     _select_address_format(window, "snes-exhirom")
     assert window._bank_settings.isHidden()
-    assert window._address_edit.text() == "$C0:0000"
+    assert window._address_edit.text() == "C0:0000"
     _select_address_format(window, "snes-lorom")
     assert not window._bank_settings.isHidden()
 

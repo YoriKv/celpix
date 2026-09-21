@@ -241,11 +241,10 @@ class PixelEditMixin:
             if self._pen_argb is not None:
                 return self._pen_argb
             return self._doc.palette.color(selected if selected is not None else 0)
-        space = self._index_space()
-        base = self._palette_row.value() * space
+        base = self._palette_row.value() * self._index_space()
         if selected is None:
             return 0
-        return max(0, min(selected - base, space - 1))
+        return max(0, min(selected - base, self._pixel_values() - 1))
 
     def _sync_paint_preview(self) -> None:
         """Arm the canvas's one-pixel pen preview for the active drawing tool.

@@ -26,6 +26,18 @@ place it is written, and a project's preset supplies the numbers:
     out as a grid *N* records across, so the table reads as a sheet: record
     *k*'s corner is then ``(k // N) * N * record_cells + (k % N) * record_columns``.
 
+``group_bits`` / ``group_starts`` / ``group_rows``
+    for a byte whose **top bits choose a sub-table**. ``group_bits`` of them
+    (0, the default, for none) name one of ``2 ** group_bits`` groups, the bits
+    below them a record within it, and ``group_starts`` lists the record each
+    group begins at in the bound table — so the four tables a byte of
+    ``PPRRRRRR`` reaches can sit end to end at whatever sizes they have. With
+    ``group_rows`` the group is also the cell's **palette row**, which is how a
+    metatile carries its colour where the attribute plane is filled from it: the
+    table a record is in *is* its row. The row is then the record's consequence
+    and not a field of its own, so an edit that changes only the row writes
+    nothing new; choosing a record in another group is what moves it.
+
 The chain's other parameters ride on the preset beside these and are read by
 the host: ``indirect`` (the cells are coordinates, so the binding bar offers
 tables ahead of banks), ``stamp_cells`` or the source's published stamp,
@@ -38,9 +50,10 @@ it falls inside — the same rule ``Document.cell_at`` applies to a click anywhe
 within a stamp, and the only honest answer for a file that has no way to name
 a quarter of a record.
 
-Three projects read through it: Alex Kidd in Shinobi World and The Story of
+Four projects read through it: Alex Kidd in Shinobi World and The Story of
 Melroon over packed two-cell-wide tables, Super Mario World's Map16 index maps
-over a table reshaped eight blocks across.
+over a table reshaped eight blocks across, and Super Mario Bros.' scenery
+columns over four grouped tables.
 """
 
 from __future__ import annotations
@@ -65,6 +78,41 @@ def _geometry(params: dict[str, Any]) -> tuple[int, int, int]:
             f"non-negative, got {cells}, {columns}, {across}"
         )
     return cells, columns, across
+
+
+def _groups(params: dict[str, Any]) -> tuple[int, list[int]]:
+    """``(record bits, group starts)``, or ``(8, [0])`` for an ungrouped byte."""
+    bits = int(params.get("group_bits", 0))
+    if not bits:
+        return 8, [0]
+    starts = [int(start) for start in params.get("group_starts", ())]
+    if not 0 < bits < 8 or len(starts) != 1 << bits or starts != sorted(starts):
+        raise ValueError(
+            f"group_bits = {bits} needs {1 << bits} ascending group_starts, "
+            f"got {starts}"
+        )
+    return 8 - bits, starts
+
+
+def record_of(byte: int, params: dict[str, Any]) -> tuple[int, int]:
+    """``(record, group)`` a stored byte names."""
+    low, starts = _groups(params)
+    group = byte >> low
+    return starts[group] + (byte & ((1 << low) - 1)), group
+
+
+def byte_of(record: int, params: dict[str, Any]) -> int:
+    """The byte naming ``record`` — :func:`record_of`'s inverse.
+
+    Where groups overlap in reach, the **last** group starting at or before the
+    record is the one it belongs to: a group's table ends where the next
+    begins, so an earlier group reaching that far is reaching past its own end.
+    """
+    low, starts = _groups(params)
+    group = max(g for g, start in enumerate(starts) if start <= max(record, starts[0]))
+    # Masked rather than checked, as the packed engine masks a too-wide field:
+    # a record past the byte costs its high bits, not the whole save.
+    return (group << low) | ((record - starts[group]) & ((1 << low) - 1))
 
 
 def corner(record: int, params: dict[str, Any]) -> int:
@@ -102,15 +150,21 @@ class IndirectRecordCodec:
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> list[Cell]:
-        return [Cell(index=corner(byte, params)) for byte in data]
+        rows = bool(params.get("group_rows"))
+        cells = []
+        for byte in data:
+            record, group = record_of(byte, params)
+            cells.append(
+                Cell(index=corner(record, params), palette_row=group if rows else 0)
+            )
+        return cells
 
     def encode(
         self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
-        # Masked rather than checked, as the packed engine masks a too-wide
-        # field: a value past the byte costs its high bits, not the whole save.
         return bytes(
-            containing_record(cell.index, params) & MAX_RECORD for cell in cells
+            byte_of(containing_record(cell.index, params), params) & MAX_RECORD
+            for cell in cells
         )
 
     def bytes_per_cell(self, params: dict[str, Any]) -> int:
@@ -123,18 +177,20 @@ class IndirectRecordCodec:
 
     def index_limit(self, params: dict[str, Any]) -> int:
         """The highest coordinate a stored byte can name — the last record's corner."""
-        return corner(MAX_RECORD, params)
+        return corner(record_of(MAX_RECORD, params)[0], params)
 
     def palette_row_limit(self, params: dict[str, Any]) -> int | None:
+        # None even with `group_rows`: the row follows the record (the module
+        # docstring), so there is no field an assigned row could be stored in.
         return None
 
     def has_palette_rows(self, params: dict[str, Any]) -> bool:
-        """No: the row a stamped position draws through is the source cell's.
+        """Only with ``group_rows``; otherwise the row is the source cell's.
 
         Declared rather than left silent, since the host reads a missing answer
         as *true* and would lay a view-wide row over the table's own.
         """
-        return False
+        return bool(params.get("group_rows"))
 
     def palette_row_granularity(self, params: dict[str, Any]) -> tuple[int, int]:
         return (1, 1)

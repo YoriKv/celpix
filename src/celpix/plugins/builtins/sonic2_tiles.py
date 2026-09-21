@@ -55,6 +55,7 @@ contract. The encoder picks the cheapest of the four types per tile.
 
 from __future__ import annotations
 
+from celpix.core.address import format_hex
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
@@ -102,7 +103,8 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     bits_end = offset + (count + 3) // 4
     if bits_end > n and not partial:
         raise _fail(
-            f"type bitstream ends at {bits_end:#x}, past the {n:#x}-byte buffer"
+            f"type bitstream ends at {format_hex(bits_end, None)}, "
+            f"past the {format_hex(n, None)}-byte buffer"
         )
 
     out = bytearray()
@@ -186,7 +188,8 @@ def compress(data: bytes) -> bytes:
     offset = HEADER_BYTES + len(body)
     if offset > _MAX_WORD:
         raise ValueError(
-            f"the raw data ends at {offset:#x}, past the 16-bit bitstream offset"
+            f"the raw data ends at {format_hex(offset, None)}, "
+            "past the 16-bit bitstream offset"
         )
     out = bytearray(HEADER)
     out += count.to_bytes(2, "little") + offset.to_bytes(2, "little") + body

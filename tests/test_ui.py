@@ -554,7 +554,7 @@ def test_copier_header_is_detected_and_skipped(qtbot, tmp_path) -> None:
     assert bytes(window._doc.pixel_data) == body
     # Offsets stay file-absolute, so ROM addresses still mean what they say.
     assert window._anchor_base() == 512
-    assert window._offset_text() == "0x000200"
+    assert window._offset_text() == "000200"
 
 
 def test_side_panels_claim_canvas_editing_shortcuts(qtbot) -> None:
@@ -727,9 +727,17 @@ def test_menu_mnemonics_never_collide(qtbot, tmp_path, opened_menus) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(px))
-    window._workspace.add_slice(str(px), "slice", 64, 64)
+    cut = window._workspace.add_slice(str(px), "slice", 64, 64)
     window._add_palette_file(str(pal))
     window._new_bookmark_current()
+    # A composite read as swatches: the fullest of the five menus, since it is
+    # the only row that carries both Open Swatches and Use as Palette.
+    from celpix.project.workspace import CompositePiece, new_composite
+
+    composite = new_composite("CGRAM", (CompositePiece(cut),))
+    composite.session = window._seed_session(composite)
+    composite.session.pixel_preset_id = "preset.pixel.view-as-palette"
+    window._workspace.insert(composite, len(window._workspace.entries))
 
     found: list[str] = []
     for action in window.menuBar().actions():
@@ -751,7 +759,8 @@ def test_menu_mnemonics_never_collide(qtbot, tmp_path, opened_menus) -> None:
 
     for i in range(tree.topLevelItemCount()):
         visit(tree.topLevelItem(i))
-    assert len(kinds) == 4  # file, slice, palette, bookmark - all four covered
+    # file, slice, palette, bookmark, composite - all five covered
+    assert len(kinds) == 5
 
     window._show_canvas_menu(QPoint(4, 4))
     found += clashes(opened_menus[-1], "canvas")

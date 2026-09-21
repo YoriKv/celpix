@@ -1426,6 +1426,40 @@ def test_a_sprite_record_frames_by_its_header_and_keeps_the_header() -> None:
     assert moved[:4] == b"\xab\xcd\x00\x01"
 
 
+def test_a_sprite_record_reads_its_fields_as_parallel_arrays() -> None:
+    """`arrays` stores each group `count` elements long — the Master System
+    sprite table's shape, every Y then every (X, tile) pair — and a save
+    scatters the pieces back the same way. Groups that do not partition the
+    record in order are refused."""
+    from celpix.plugins.builtins.sprite_record import SpriteRecordCodec
+
+    params = {
+        "layout": "sprite",
+        "record": [
+            {"name": "y", "type": "s8"},
+            {"name": "x", "type": "s8"},
+            {"name": "tile", "type": "u8", "bits": "iiiiiiii"},
+        ],
+        "frame_header": {"bytes": 3, "count_at": 2, "count_type": "u8"},
+        "arrays": [["y"], ["x", "tile"]],
+    }
+    raw = (
+        b"\x10\x08\x02" + b"\x00\x08" + b"\xfc\x00\x04\x01"
+        + b"\x08\x08\x01" + b"\xf0" + b"\x00\x05"
+    )  # fmt: skip
+    ctx = PipelineContext()
+    engine = SpriteRecordCodec()
+    cells = engine.decode(raw, params, ctx)
+    frames = engine.frames(cells, params, ctx)
+    assert [[(p.x, p.y, p.index) for p in f] for f in frames] == [
+        [(-4, 0, 0), (4, 8, 1)],
+        [(0, -16, 5)],
+    ]
+    assert engine.encode(cells, params, ctx) == raw
+    with pytest.raises(ValueError, match="in order"):
+        engine.decode(raw, {**params, "arrays": [["x", "tile"], ["y"]]}, ctx)
+
+
 def test_a_mega_drive_run_says_when_its_mirror_offsets_disagree() -> None:
     """The one way this format is misread has no other symptom: a byte X plus a
     mirrored-frame X is the same six bytes as a signed word X, so the wrong
@@ -2098,6 +2132,36 @@ def test_the_indirect_record_engine_names_a_records_corner_and_snaps_back() -> N
     assert codec.index_limit(grid) == (255 // 8) * 32 + (255 % 8) * 2
 
 
+def test_grouped_records_pick_a_sub_table_and_its_palette_row() -> None:
+    """A byte's top bits choose which of several tables laid end to end the
+    record is in, and with ``group_rows`` that choice is the cell's row too; a
+    record is written back through the group whose table it falls in."""
+    from celpix.plugins.builtins.indirect_record import IndirectRecordCodec
+
+    codec = IndirectRecordCodec()
+    ctx = PipelineContext()
+    grouped = {
+        "record_cells": 4,
+        "group_bits": 2,
+        "group_starts": [0, 39, 85, 95],
+        "group_rows": True,
+    }
+    cells = codec.decode(bytes([0x00, 0x05, 0x40, 0x83, 0xC1]), grouped, ctx)
+    assert [(c.index, c.palette_row) for c in cells] == [
+        (0, 0),
+        (20, 0),
+        (156, 1),
+        (4 * 88, 2),
+        (4 * 96, 3),
+    ]
+    assert codec.encode(cells, grouped, ctx) == bytes([0x00, 0x05, 0x40, 0x83, 0xC1])
+    # record 40 is group 1's second, though group 0's six bits could name it too
+    assert codec.encode([Cell(index=4 * 40)], grouped, ctx) == bytes([0x41])
+    assert codec.has_palette_rows(grouped) and not codec.has_palette_rows({})
+    with pytest.raises(ValueError, match="ascending group_starts"):
+        codec.decode(b"\x00", {"group_bits": 2, "group_starts": [0, 1]}, ctx)
+
+
 def test_a_dense_stamped_map_fixes_its_own_width_and_restamps_by_the_stamp() -> None:
     """The document end: the file's width counts entries, so the picture is wider
     than the file states and the layout has to take that from the document rather
@@ -2531,6 +2595,58 @@ def test_pages_assemble_into_the_grid_the_view_asks_for() -> None:
     assert order[64 * 32 + 32] == 3072
     # One page across is the file's own order, which is what it was read as.
     assert page_order(32, 32, 4, 1) == tuple(range(4096))
+
+
+def test_a_table_of_records_draws_each_record_whole_with_a_short_last_row() -> None:
+    """A stamp table whose records are contiguous publishes them as records, and
+    the document lays each out as its own rectangle — column order puts TL BL TR
+    BR where they belong — as many across as Cols holds. The last row may be
+    short; its empty positions answer no cell. A stride wider than the stamp is
+    a real map and publishes nothing."""
+    from dataclasses import replace
+
+    from celpix.core.document import Document
+    from celpix.core.tilemap import NO_CELL, record_order
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+
+    # Two records across, three records: the third sits alone on the second row.
+    assert record_order(2, 2, 3, 2, True) == (
+        0, 2, 4, 6,
+        1, 3, 5, 7,
+        8, 10, NO_CELL, NO_CELL,
+        9, 11, NO_CELL, NO_CELL,
+    )  # fmt: skip
+
+    table = {"bytes": 1, "fields": "iiii iiii", "stamp_cells": [2, 2],
+             "stamp_stride": 2, "stamp_order": "column"}  # fmt: skip
+    ctx = PipelineContext()
+    cells = TilemapCodec().decode(bytes(range(12)), table, ctx)
+    wide = PipelineContext()
+    TilemapCodec().decode(bytes(range(12)), {**table, "stamp_stride": 8}, wide)
+    assert not wide.get("tilemap.record-shape")
+
+    doc = Document(
+        pixel_data=b"",
+        bytes_per_tile=16,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id=SNES_BG, write_enabled=False
+        ),
+        palette_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id="", write_enabled=False
+        ),
+        cells=cells,
+        tilemap_ctx=ctx,
+    )
+    doc.view = replace(doc.view, columns=5)  # rounded down to two records
+    assert doc.drawn_columns == 4 and doc.drawn_positions == 16
+    laid = doc.laid_out_cells
+    assert [c.index for c in laid[:8]] == [0, 2, 4, 6, 1, 3, 5, 7]
+    assert not laid[10].visible
+    assert doc.cell_at(4) == 1 and doc.cell_at(9) == 10
+    assert doc.cell_at(10) == len(cells)  # no cell there to edit
 
 
 def test_the_other_two_formats_state_their_widths() -> None:

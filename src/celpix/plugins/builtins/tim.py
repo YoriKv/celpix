@@ -63,6 +63,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from celpix.core.address import format_hex
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import KEY_PIXEL_PRESET, KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
@@ -308,7 +309,8 @@ class TimContainer:
             ),
             ContainerField(
                 "Pixels",
-                f"{format_size(layout.image_bytes)} at {layout.image_start:#08x}",
+                f"{format_size(layout.image_bytes)} at "
+                f"{format_hex(layout.image_start)}",
                 "Where the image block's payload begins, past its own\n"
                 "12-byte header and past the CLUT block ahead of it.\n"
                 "Every address in the view is anchored here.",
@@ -416,7 +418,7 @@ def _clut_field(layout: TimLayout) -> ContainerField:
     return ContainerField(
         "Color table",
         f"{layout.clut_count} x {layout.clut_width} entries"
-        f" at {layout.clut_start:#08x} ({total} total)",
+        f" at {format_hex(layout.clut_start)} ({total} total)",
         "BGR555 entries, bit 15 being the GPU's semi-transparency\n"
         "flag rather than color. A file may carry several palettes\n"
         "for one image; they follow each other end to end, so the\n"

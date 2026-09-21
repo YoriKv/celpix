@@ -34,7 +34,7 @@ TRANSPARENT = 0x00000000
 HIDDEN_BACKGROUND = QColor(0x00, 0x00, 0x00)
 
 
-def _clear_zeros(table: list[int], stride: int) -> list[int]:
+def clear_zeros(table: list[int], stride: int) -> list[int]:
     """``table`` with every palette row's index 0 made fully transparent.
 
     The console's rule, applied at the one seam where indices become pixels: index
@@ -69,7 +69,7 @@ def render(
     direct-color :class:`~celpix.core.argb_grid.ArgbGrid` already carries ARGB and
     is blitted straight to ``Format_ARGB32``, ignoring the palette.
 
-    ``transparent_zero`` clears index 0 (:func:`_clear_zeros`). Only entry 0 is
+    ``transparent_zero`` clears index 0 (:func:`clear_zeros`). Only entry 0 is
     cleared here: the whole table is already one palette row, offset by
     ``palette_base``, so index 0 of *this* row is the only index 0 there is.
     """
@@ -79,7 +79,7 @@ def render(
     # through. A too-short palette yields the magenta sentinel per Palette.color.
     table = [palette.color(palette_base + i) for i in range(256)]
     if transparent_zero:
-        table = _clear_zeros(table, 256)
+        table = clear_zeros(table, 256)
     return indexed_image(grid, table)
 
 
@@ -112,7 +112,7 @@ def render_pinned(
         return _render_argb(grid)
     table = [palette.color(i) for i in range(256)]
     if transparent_zero:
-        table = _clear_zeros(table, row_stride or 256)
+        table = clear_zeros(table, row_stride or 256)
     return indexed_image(grid, table)
 
 

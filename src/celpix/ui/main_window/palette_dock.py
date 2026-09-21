@@ -123,7 +123,7 @@ class PaletteDockMixin:
         holder.setMinimumSize(full.width() + frame, full.height() + frame)
 
         # Same compact treatment as the pixel dropdown, and narrower than it: this
-        # is a fixed list of five short mode labels rather than a registry of
+        # is a fixed list of six short mode labels rather than a registry of
         # format names, so it needs about the width of "Emulator State" and no
         # room for a plugin to widen it later.
         self._palette_mode_combo = CompactComboBox(120)
@@ -132,6 +132,7 @@ class PaletteDockMixin:
             ("Default", PaletteMode.DEFAULT),
             ("File", PaletteMode.FILE),
             ("Offset", PaletteMode.OFFSET),
+            ("Entry", PaletteMode.ENTRY),
             ("Emulator State", PaletteMode.EMULATOR),
             ("Custom", PaletteMode.CUSTOM),
         ):
@@ -153,7 +154,9 @@ class PaletteDockMixin:
         )
         self._palette_offset_edit.setFixedWidth(104)
         self._palette_offset_edit.setToolTip(
-            "Palette offset in the pixel file\nEnter to load"
+            "Where the palette starts: a byte offset in the\n"
+            "pixel file, or in the entry it is read from\n"
+            "Enter to load"
         )
         self._palette_offset_edit.hide()
         self._palette_offset_edit.committed.connect(self._on_palette_offset_committed)
@@ -422,10 +425,13 @@ class PaletteDockMixin:
         """
         self._palette_mode = mode
         select_combo_data(self._palette_mode_combo, mode)
-        is_offset = mode is PaletteMode.OFFSET
-        self._palette_offset_edit.setVisible(is_offset)
-        self._palette_offset_prev.setVisible(is_offset)
-        self._palette_offset_next.setVisible(is_offset)
+        # Both byte-offset modes share the one field and its tile steps: the
+        # number means a position in a buffer either way, and the only difference
+        # is whose buffer (``docs/design/palette-editing.md`` §2).
+        has_offset = mode in (PaletteMode.OFFSET, PaletteMode.ENTRY)
+        self._palette_offset_edit.setVisible(has_offset)
+        self._palette_offset_prev.setVisible(has_offset)
+        self._palette_offset_next.setVisible(has_offset)
         # Mid-commit the box refreshes itself afterwards; don't fight it.
         if not self._palette_offset_edit.hasFocus():
             self._palette_offset_edit.refresh()
@@ -531,10 +537,13 @@ class PaletteDockMixin:
 
         Offset is greyed on a **composite** as well, which has no file for an
         offset to name (:meth:`~...palette_offset.PaletteOffsetMixin.
-        _offset_palette_refusal`).
+        _offset_palette_refusal`), and Entry wherever nothing else open could
+        supply the bytes — the same rule the picker filters by, so the dropdown
+        never opens a menu with one disabled row in it.
         """
         graphic = self._doc is not None
         no_offsets = self._offset_palette_refusal(self._workspace.current) is not None
+        no_sources = not self._palette_entry_candidates(self._workspace.current)
         for index in range(self._palette_mode_combo.count()):
             mode = PaletteMode.parse(self._palette_mode_combo.itemData(index))
             # Default stays selectable with nothing open: it is the resting
@@ -542,6 +551,8 @@ class PaletteDockMixin:
             # standalone palette away again.
             enabled = graphic or mode in (PaletteMode.FILE, PaletteMode.DEFAULT)
             if mode is PaletteMode.OFFSET and no_offsets:
+                enabled = False
+            if mode is PaletteMode.ENTRY and no_sources:
                 enabled = False
             item = self._palette_mode_combo.model().item(index)
             if item is not None:
@@ -555,6 +566,26 @@ class PaletteDockMixin:
         file, marked missing; otherwise the path is read off the live config -
         or off the previewed entry, which has no document behind it.
         """
+        entry = self._workspace.current
+        if self._palette_mode is PaletteMode.ENTRY and entry is not None:
+            # Not a file: the source is a row of this project, which may be a
+            # composite and so have no path at all. Its name is the whole answer,
+            # marked when it is no longer open.
+            source = entry.palette_entry
+            if source is None:
+                self._palette_file_label.hide()
+                return
+            gone = self._entry_palette_target(entry) is None
+            name = source.name + (" (not open)" if gone else "")
+            metrics = self._palette_file_label.fontMetrics()
+            self._palette_file_label.setText(
+                metrics.elidedText(name, Qt.TextElideMode.ElideMiddle, 120)
+            )
+            self._palette_file_label.setToolTip(
+                f"The palette is read from {source.name}"
+            )
+            self._palette_file_label.show()
+            return
         path, missing = None, False
         doc = self._palette_doc()
         if doc is not None and self._palette_mode.has_external_file:

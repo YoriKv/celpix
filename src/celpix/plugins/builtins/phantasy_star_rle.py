@@ -58,6 +58,16 @@ the slack; the encoder writes the parts that length splits into, a remainder and
 all. Without it nothing changes, so the unequal parts that expose a wrong part
 count on the Master System still do.
 
+**A size word may sit ahead of the stream.** Tec Toy's loaders on both the
+Master System and the Mega Drive skip a 16-bit size before the parts — little-
+endian bytes or tiles on one, big-endian words on the other
+(``docs/rom-mapping/console-master-system.md`` §5). With ``size_word`` the slice
+starts at that word: the decoder reads it as ``size`` (times ``size_unit``, in
+``size_big_endian`` order), the consumed count includes it, and the encoder
+writes it back for the length it packs — so an edit that changes the length
+keeps the word the loader reads. A bound ``size`` is ignored then; the word is
+the stated size.
+
 The terminators make the scheme **self-delimiting**: the byte after the last
 part's ``$00`` is the structure's true end, reported as its compressed size. A
 buffer that ends before the last terminator is an error unless partial.
@@ -69,6 +79,9 @@ round-tripping is the contract.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+from celpix.core.address import format_hex
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
@@ -89,6 +102,12 @@ TILE_PARTS = 4
 TILEMAP_PARTS = 2
 #: The input key the decoded length is bound under.
 INPUT_SIZE = "size"
+#: The input keys of the size word ahead of a stream.
+INPUT_SIZE_WORD = "size_word"
+INPUT_SIZE_UNIT = "size_unit"
+INPUT_SIZE_BIG_ENDIAN = "size_big_endian"
+#: The size word's width, the one every known instance uses.
+SIZE_WORD_BYTES = 2
 # A bound on the input spin, not a property of the scheme: the loader picks the
 # count, and a level map decompressed to RAM one part per **row** takes as many
 # parts as it has rows -- 12 on Alex Kidd in Shinobi World, whose to-RAM entry
@@ -111,8 +130,39 @@ def _fail(reason: str) -> ValueError:
     return ValueError(f"corrupt Phantasy Star RLE stream: {reason}")
 
 
+@dataclass(frozen=True)
+class SizeWord:
+    """A 16-bit size ahead of the stream: ``unit`` bytes per count, and its order."""
+
+    unit: int = 1
+    big_endian: bool = False
+
+    def read(self, data: bytes) -> int:
+        order = "big" if self.big_endian else "little"
+        return int.from_bytes(data[:SIZE_WORD_BYTES], order) * self.unit
+
+    def write(self, size: int) -> bytes:
+        if size % self.unit:
+            raise ValueError(
+                f"{size:,} bytes is not a whole number of the size word's "
+                f"{self.unit}-byte units ({size % self.unit} left over)"
+            )
+        count = size // self.unit
+        if count >= 1 << 8 * SIZE_WORD_BYTES:
+            raise ValueError(
+                f"{size:,} bytes is {count:,} units, past what a 16-bit size word holds"
+            )
+        order = "big" if self.big_endian else "little"
+        return count.to_bytes(SIZE_WORD_BYTES, order)
+
+
 def decompress(
-    data: bytes, *, parts: int = TILE_PARTS, size: int = 0, partial: bool = False
+    data: bytes,
+    *,
+    parts: int = TILE_PARTS,
+    size: int = 0,
+    partial: bool = False,
+    header: SizeWord | None = None,
 ) -> tuple[bytes, int, bool]:
     """Decode ``parts`` parts and weave them back into interleaved order.
 
@@ -123,6 +173,18 @@ def decompress(
     parts that fall short, give the best-effort weave (zeros where a part has no
     byte) instead of raising.
     """
+    if header is not None:
+        if len(data) < SIZE_WORD_BYTES:
+            if not partial:
+                raise _fail("source ends inside its size word")
+            return b"", len(data), False
+        out, consumed, complete = decompress(
+            data[SIZE_WORD_BYTES:],
+            parts=parts,
+            size=header.read(data),
+            partial=partial,
+        )
+        return out, consumed + SIZE_WORD_BYTES, complete
     if size < 0:
         raise ValueError(f"size must not be negative, not {size}")
     if parts < 1:
@@ -156,7 +218,7 @@ def decompress(
                 part += bytes((data[i],)) * control
                 i += 1
             if len(part) > _MAX_PART:
-                raise _fail(f"part {k} passes {_MAX_PART:#x} bytes")
+                raise _fail(f"part {k} passes {format_hex(_MAX_PART, None)} bytes")
         if ran_out:
             if not partial:
                 raise _fail(f"source ends inside part {k} of {parts}")
@@ -198,14 +260,24 @@ def _weave(decoded: list[bytearray], parts: int, size: int = 0) -> bytes:
     return bytes(out)
 
 
-def compress(data: bytes, *, parts: int = TILE_PARTS, size: int = 0) -> bytes:
+def compress(
+    data: bytes,
+    *,
+    parts: int = TILE_PARTS,
+    size: int = 0,
+    header: SizeWord | None = None,
+) -> bytes:
     """Take ``data`` apart into ``parts`` parts and run-length code each.
 
     Without ``size``, refuses data that is not a whole number of parts: the
     decoder weaves equal parts, so a remainder has nowhere to go. With it the
     decoder knows where the data stops, so the parts may differ by the
-    remainder — and ``data`` must be that long.
+    remainder — and ``data`` must be that long. With ``header`` the stream is
+    stated by a size word written ahead of it, for ``data``'s own length.
     """
+    if header is not None:
+        word = header.write(len(data))
+        return word + compress(data, parts=parts, size=len(data))
     if parts < 1:
         raise ValueError(f"part count must be at least 1, not {parts}")
     if size and len(data) != size:
@@ -240,6 +312,16 @@ def _parts(ctx: PipelineContext) -> int:
 
 def _size(ctx: PipelineContext) -> int:
     return int((ctx.get(KEY_INPUTS) or {}).get(INPUT_SIZE, 0))
+
+
+def _header(ctx: PipelineContext) -> SizeWord | None:
+    inputs = ctx.get(KEY_INPUTS) or {}
+    if not inputs.get(INPUT_SIZE_WORD):
+        return None
+    return SizeWord(
+        unit=int(inputs.get(INPUT_SIZE_UNIT, 1)),
+        big_endian=bool(inputs.get(INPUT_SIZE_BIG_ENDIAN)),
+    )
 
 
 class PhantasyStarRleCompression:
@@ -279,7 +361,45 @@ class PhantasyStarRleCompression:
                     "The bytes the stream decodes to, where the game's\n"
                     "loader is told: a size word, a map's width x height x 2.\n"
                     "Lets the parts differ by a packer's slack byte and\n"
-                    "drops it. 0 requires every part to be the same length."
+                    "drops it. 0 requires every part to be the same length.\n"
+                    "Ignored when a size word states it."
+                ),
+            ),
+            InputSpec(
+                INPUT_SIZE_WORD,
+                "Size word",
+                InputKind.FLAG,
+                required=False,
+                default=False,
+                tooltip=(
+                    "The stream starts with a 16-bit decoded size,\n"
+                    "which the slice includes: read as the size,\n"
+                    "and rewritten for the length a save packs."
+                ),
+            ),
+            InputSpec(
+                INPUT_SIZE_UNIT,
+                "Size word unit",
+                InputKind.INTEGER,
+                required=False,
+                default=1,
+                minimum=1,
+                maximum=0x10000,
+                unit="byte",
+                tooltip=(
+                    "Bytes per count of the size word: 1 for bytes,\n"
+                    "2 for 16-bit words, 32 for Master System tiles."
+                ),
+            ),
+            InputSpec(
+                INPUT_SIZE_BIG_ENDIAN,
+                "Size word big-endian",
+                InputKind.FLAG,
+                required=False,
+                default=False,
+                tooltip=(
+                    "The size word's byte order: off for a Z80 game\n"
+                    "(low byte first), on for a 68000 one."
                 ),
             ),
         ),
@@ -291,10 +411,14 @@ class PhantasyStarRleCompression:
             parts=_parts(ctx),
             size=_size(ctx),
             partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL)),
+            header=_header(ctx),
         )
         ctx.set(KEY_COMPRESSED_SIZE, consumed)
         ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
         return out
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return compress(data, parts=_parts(ctx), size=_size(ctx))
+        header = _header(ctx)
+        return compress(
+            data, parts=_parts(ctx), size=0 if header else _size(ctx), header=header
+        )

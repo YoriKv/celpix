@@ -130,12 +130,21 @@ class WritingMixin:
         if palette is None or palette.doc is None or not palette.palette_dirty:
             palette = None
         owners = self._unsaved_owners(entry)
+        # A palette read out of another entry's bytes is that entry's to write,
+        # the way a painted bank is — named apart from the tile owners because
+        # what landed there is colours (``docs/design/palette-editing.md``).
+        palette_owners = [
+            e
+            for e in self._unsaved_palette_owners(entry)
+            if not any(e is seen for seen in owners)
+        ]
         wrote_entry = self._write_entry(entry)
         # After the map, so the map's own write is what a failure on the bank is
         # reported against; the order is otherwise free, since a save skips the
         # cached documents of entries that are still dirty when it invalidates
         # its path (``Workspace.invalidate_path``).
-        wrote_owners = [owner for owner in owners if self._write_entry(owner)]
+        wrote_owners = [owner for owner in owners if self._write_owner(owner)]
+        wrote_palette_owners = [e for e in palette_owners if self._write_owner(e)]
         wrote_palette = palette is not None and self._write_entry(palette)
         # Report what actually went to disk: a palette-only write leaves the
         # graphic alone, and Default/Custom/Emulator palettes have no file
@@ -155,10 +164,25 @@ class WritingMixin:
             wrote = "palette"
         landed = [f"{entry.name} ({wrote})"] if wrote_entry else []
         landed += [f"{owner.name} (tiles)" for owner in wrote_owners]
+        landed += [f"{owner.name} (colors)" for owner in wrote_palette_owners]
         if wrote_palette:
             landed.append(palette.name)
         if landed:
             self.statusBar().showMessage(f"Wrote {_and_list(landed)}.")
+
+    def _write_owner(self, owner: Entry) -> bool:
+        """Write an entry whose bytes another view holds — if it still has any.
+
+        Writing one slice of a file writes the **whole region**: the parent's
+        buffer holds every slice's folded edits, so the write marks its siblings
+        saved and drops their documents
+        (:meth:`~celpix.project.workspace.Workspace.invalidate_path`). A second
+        piece of the same file has therefore already gone out by the time this
+        reaches it, and has nothing left to write from. False is the honest
+        report — nothing further landed — rather than an assertion on a document
+        the first write deliberately took away.
+        """
+        return owner.doc is not None and self._write_entry(owner)
 
     def _unsaved_owners(self, entry: Entry) -> list[Entry]:
         """The entries holding ``entry``'s bytes, where those have unsaved edits.
@@ -194,6 +218,27 @@ class WritingMixin:
         if owner is entry or owner.doc is None:
             return []
         return [owner] if owner.pixel_dirty else []
+
+    def _unsaved_palette_owners(self, entry: Entry) -> list[Entry]:
+        """The entries holding ``entry``'s **palette** bytes, where those are dirty.
+
+        Empty for every mode but ENTRY, whose colours live in another entry's
+        buffer: a colour edit was deposited there and that entry's Write is what
+        puts it on disk, exactly as a painted tile bank's is
+        (``docs/design/palette-editing.md``). A composite source has as many
+        owners as it has pieces, and answers with them.
+
+        An Offset palette needs nothing here: its owner is the entry's own file
+        (or its parent), which the write already routes through.
+        """
+        source = self._entry_palette_target(entry)
+        if source is None:
+            return []
+        if source.kind is EntryKind.COMPOSITE:
+            return self._dirty_composite_pieces(source)
+        if source is entry or source.doc is None:
+            return []
+        return [source] if source.pixel_dirty else []
 
     def _dirty_composite_pieces(self, entry: Entry) -> list[Entry]:
         """``entry``'s source pieces with unsaved pixel edits, each named once.

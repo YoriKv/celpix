@@ -1,4 +1,5 @@
-"""References between entries: parents, tile bindings and composite pieces.
+"""References between entries: parents, tile bindings, composite pieces and
+the entry a palette is read out of.
 
 Everything here is positional or path-matched, and both are fragile under hand
 editing in the same way: **an index counts every entry, including ones the
@@ -10,7 +11,13 @@ that is the single most expensive edit an agent can make to one of these files.
 from __future__ import annotations
 
 from celpix_lint.context import Context, EntryView
-from celpix_lint.schema import PIECE_KEYS, TILE_MODES, TILE_SOURCE_KEYS, is_int
+from celpix_lint.schema import (
+    KINDS_WITH_DOCUMENT,
+    PIECE_KEYS,
+    TILE_MODES,
+    TILE_SOURCE_KEYS,
+    is_int,
+)
 
 
 def check(ctx: Context) -> None:
@@ -20,6 +27,7 @@ def check(ctx: Context) -> None:
             continue
         _tile_source(ctx, view)
         _pieces(ctx, view)
+        _palette_entry(ctx, view)
     _binding_cycles(ctx)
 
 
@@ -404,6 +412,70 @@ def _one_piece(ctx: Context, view: EntryView, at: int, piece: object) -> None:
             entry=view,
             detail="The piece becomes a blank run of the recorded length.",
         )
+
+
+def _palette_entry(ctx: Context, view: EntryView) -> None:
+    """``palette.entry``: the entry whose bytes these colours are decoded from.
+
+    The fourth positional reference a record can hold, and it degrades the way
+    the other three do — a position naming nothing, or naming something that
+    cannot supply pixel bytes, leaves the entry on the generated default palette
+    with the load saying so (``docs/design/palette-editing.md``).
+    """
+    raw = view.raw.get("palette")
+    if not isinstance(raw, dict) or "entry" not in raw:
+        return
+    where = view.at("palette", "entry")
+    index = raw["entry"]
+    if not is_int(index):
+        ctx.error(
+            "E540",
+            f"`palette.entry` is {index!r}, not an integer",
+            pointer=where,
+            entry=view,
+            detail="The entry falls back to the generated default palette.",
+        )
+        return
+    if index == -1:
+        ctx.warn(
+            "W541",
+            "`palette.entry` is -1 — the palette source is no longer in the list",
+            pointer=where,
+            entry=view,
+            detail="-1 is what celPix writes for a source that has been closed. The "
+            "entry opens on the generated default palette.",
+        )
+        return
+    if not 0 <= index < len(ctx.entries):
+        ctx.error(
+            "E542",
+            f"`palette.entry` is {index}, outside the {len(ctx.entries)} entries",
+            pointer=where,
+            entry=view,
+            detail="The entry falls back to the generated default palette.",
+        )
+        return
+    target = ctx.entries[index]
+    problem = _cannot_supply_palette(view, target)
+    if problem:
+        ctx.error(
+            "E543",
+            f"`palette.entry` {index} names {_describe(target)}, which {problem}",
+            pointer=where,
+            entry=view,
+            detail="The entry falls back to the generated default palette.",
+        )
+
+
+def _cannot_supply_palette(view: EntryView, target: EntryView) -> str:
+    """celPix's ``can_supply_palette``: not itself, shown, pixels only."""
+    if target.index == view.index:
+        return "is the entry itself"
+    if target.kind not in KINDS_WITH_DOCUMENT:
+        return f"is a {target.kind}, which has no buffer of its own to read"
+    if target.content_kind != "pixels":
+        return f"holds {target.content_kind}, and only pixel bytes decode as colours"
+    return ""
 
 
 def _cannot_compose(view: EntryView, target: EntryView) -> str:

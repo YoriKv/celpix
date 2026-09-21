@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from celpix.core.address import format_hex
 from celpix.core.arrangement import (
     BlockLayout,
 )
@@ -161,13 +162,16 @@ class CompressionMixin:
             self._overlay.hide_overlay()
             return
 
-        parts = [f"{len(raw):#x} B raw from {len(window):#x} B window"]
+        parts = [
+            f"{format_hex(len(raw), None)} B raw from "
+            f"{format_hex(len(window), None)} B window"
+        ]
         consumed = ctx.get(KEY_COMPRESSED_SIZE)
         badge = None
         if consumed and ctx.get(KEY_DECOMPRESS_COMPLETE):
             # The structure's own end was inside the window: report its true
             # extent, and arm Jump-to-Next at the byte right after it.
-            parts.append(f"structure {consumed:#x} B")
+            parts.append(f"structure {format_hex(consumed, None)} B")
             self._structure_extent = (self._byte_position(), consumed)
             after = self._byte_position() + consumed
             if after < len(self._doc.pixel_data):
@@ -191,7 +195,7 @@ class CompressionMixin:
             # the decoder read it. Jump-to-Next stays off - "the byte after this
             # structure" means nothing when the structure had no end.
             if consumed:
-                parts.append(f"slice {consumed:#x} B")
+                parts.append(f"slice {format_hex(consumed, None)} B")
                 self._structure_extent = (self._byte_position(), consumed)
             badge = Badge(
                 "end of view window",

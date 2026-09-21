@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
+from celpix.core.address import format_hex
 from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.core.document import Document, ViewOptions
@@ -43,6 +44,7 @@ from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.pipeline import inspect_container
 from celpix.plugins.base import (
     NO_COMPRESSION,
+    PALETTE_PRESET_PARAM,
     STAGE_DEFAULT_PRESET,
     FileRef,
     InputKind,
@@ -66,6 +68,7 @@ from celpix.project.workspace import (
     PaletteSource,
     SliceParams,
     composite_preset_id,
+    interpret_params_for,
     missing_paths,
     new_composite,
     one_disk_scan,
@@ -541,17 +544,21 @@ class EntriesMixin:
         # Snapshotting before that would leave the project reading dirty the
         # instant it opened, for changes the user never made.
         self._saved_project = self._project_snapshot()
+        # An upgraded project is an unsaved one: the file on disk is still at the
+        # old version, so the baseline says so and the session reads as edited.
+        # Save keeps the upgrade, quitting without saving leaves the file as it
+        # was - the same choice as any other edit, and no dialog of its own.
+        if loaded.migrated_from is not None and self._saved_project is not None:
+            self._saved_project["version"] = loaded.migrated_from
         # The replace above titled the window from the restored entry (no project
-        # path was set yet); now that one is, retitle to name the project file.
+        # path was set yet); now that one is, retitle to name the project file -
+        # which also raises the unsaved marker for an upgrade.
         self._refresh_window_title()
-        # An upgrade is worth a line but not a dialog: nothing was lost, and the
-        # only thing the user can act on is that the next save rewrites the file
-        # at the new version - which is what makes it worth saying at all.
         upgraded = (
             ""
             if loaded.migrated_from is None
             else f" Upgraded from format version {loaded.migrated_from}"
-            f" - saving writes version {projectfile.PROJECT_VERSION}."
+            f" - save to keep version {projectfile.PROJECT_VERSION}."
         )
         self.statusBar().showMessage(
             f"Loaded project {Path(path).name} "
@@ -1066,6 +1073,7 @@ class EntriesMixin:
             entry=entry,
             candidates=list(self._workspace.entries),
             tile_bytes=self._composite_tile_bytes(entry),
+            unit_label=self._composite_unit_label(entry),
             name=self._unused_composite_name(),
         )
         if params is None:
@@ -1119,6 +1127,37 @@ class EntriesMixin:
         except PipelineError:
             return 0
 
+    def _composite_unit_label(self, entry: Entry) -> str:
+        """What the dialog's running-position column is counting.
+
+        Tiles, except where the entry is read through the **palette-swatch**
+        codec: there one read unit is one colour word, the swatch it draws is
+        what the user is transcribing, and calling that a tile would name the
+        wrong thing in the one place the number is being checked against a
+        colour table (``docs/design/palette-editing.md``).
+
+        A **packed** colour format is the exception to the exception — a Game Boy
+        palette byte is four shades in one unit, which the swatch codec draws as
+        one tile several swatches wide — so the unit there really is a tile and
+        the label stays.
+        """
+        session = entry.session
+        preset = (
+            session.pixel_preset_id
+            if session is not None
+            else composite_preset_id(entry, self._registry)
+        )
+        params = interpret_params_for(entry, preset, self._registry)
+        colour = params.get(PALETTE_PRESET_PARAM)
+        if not isinstance(colour, str) or not colour:
+            return "Tile"
+        try:
+            if pipeline.palette_entries_per_unit(colour, self._registry) != 1:
+                return "Tile"
+        except (PipelineError, KeyError):
+            return "Tile"
+        return "Color"
+
     def _edit_composite(self, entry: Entry) -> None:
         """The files dock's Edit… on a composite — re-list its pieces in place.
 
@@ -1134,6 +1173,7 @@ class EntriesMixin:
             entry=entry,
             candidates=list(self._workspace.entries),
             tile_bytes=self._composite_tile_bytes(entry),
+            unit_label=self._composite_unit_label(entry),
             name=entry.name,
             pieces=entry.pieces,
             title="Edit Composite View",
@@ -1237,9 +1277,11 @@ class EntriesMixin:
                     f"{spec.label}: unbound" + ("" if spec.required else " (optional)")
                 )
             elif isinstance(binding, RegionBinding):
-                parts.append(f"{spec.label}: {binding.offset:#x}, {binding.length} B")
+                parts.append(
+                    f"{spec.label}: {format_hex(binding.offset)}, {binding.length} B"
+                )
             elif isinstance(binding, IntegerFromBytes):
-                parts.append(f"{spec.label}: read at {binding.offset:#x}")
+                parts.append(f"{spec.label}: read at {format_hex(binding.offset)}")
             else:
                 parts.append(f"{spec.label}: {binding}")
         return "; ".join(parts)

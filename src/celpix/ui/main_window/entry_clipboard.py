@@ -37,7 +37,12 @@ from os.path import basename, exists
 
 from celpix.project import projectfile
 from celpix.project.inputs import iter_bindings, names_entry, with_bindings
-from celpix.project.workspace import Entry, EntryKind, Workspace
+from celpix.project.workspace import (
+    Entry,
+    EntryKind,
+    Workspace,
+    entry_palette_entry,
+)
 from celpix.ui import clipboard
 from celpix.ui.undo_commands import PasteEntriesCommand
 from celpix.ui.widgets import counted
@@ -57,11 +62,15 @@ _MULTIPLE_KINDS = (*_CHILD_KINDS, EntryKind.COMPOSITE)
 #: _live_bindings`, beside the numbered slots a composite's pieces use. Negative
 #: so it can never collide with a piece index.
 TILE_SLOT = -1
+#: The slot an **ENTRY-mode palette**'s source is remembered under — the entry
+#: whose bytes this row's colours are decoded from
+#: (``docs/design/palette-editing.md``). One per row, like the tile binding.
+PALETTE_SLOT = -2
 #: Where the slots for a row's **input bindings** start, counting down: the
 #: *n*-th binding that names an entry (in :func:`~celpix.project.inputs.
-#: iter_bindings` order) sits at ``INPUT_SLOT_BASE - n``. Below the tile slot so
-#: the three kinds of reference a row can hold never share a number.
-INPUT_SLOT_BASE = -2
+#: iter_bindings` order) sits at ``INPUT_SLOT_BASE - n``. Below the two above so
+#: the four kinds of reference a row can hold never share a number.
+INPUT_SLOT_BASE = -3
 
 
 def _named_bindings(entry: Entry):  # noqa: ANN202 — Iterator[tuple[str, str, RegionBinding | IntegerFromBytes]]
@@ -142,6 +151,9 @@ class EntryClipboardMixin:
             source = entry.tile_source
             if source is not None and source.entry is not None:
                 bound[(at, TILE_SLOT)] = source.entry
+            palette_source = entry_palette_entry(entry)
+            if palette_source is not None:
+                bound[(at, PALETTE_SLOT)] = palette_source
             for slot, piece in enumerate(entry.pieces):
                 if piece.entry is not None:
                     bound[(at, slot)] = piece.entry
@@ -414,9 +426,11 @@ class EntryClipboardMixin:
     ) -> None:
         """Point every reference a copied row holds back at an entry.
 
-        Two kinds of row hold one: a **tilemap**, at the bank it draws, and a
+        Three kinds of row hold one: a **tilemap**, at the bank it draws, a
         **composite view**, at each of the entries its runs are assembled from
-        (``docs/design/composite-entry.md``). Both are resolved the same way,
+        (``docs/design/composite-entry.md``), and any row whose palette is read
+        from another entry's bytes (``docs/design/palette-editing.md``). All are
+        resolved the same way,
         because both are the same problem — an entry is not a value, so a copy
         cannot carry one — and two things can answer it, asked in this order:
 
@@ -433,11 +447,12 @@ class EntryClipboardMixin:
           when it was taken would by then name whatever had moved into that place.
 
         Anything else — a copy pasted into another window, or into the same one
-        after the target was closed — resolves to nothing, and the two kinds
-        degrade the way each already does elsewhere: a map goes **unbound**
-        (placeholder cells, re-pointable, never somebody else's tiles), and a
-        composite's run becomes a **pad of the length it had**, so the pieces
-        after it stay on the index every map addressing them expects.
+        after the target was closed — resolves to nothing, and each kind degrades
+        the way it already does elsewhere: a map goes **unbound** (placeholder
+        cells, re-pointable, never somebody else's tiles), a composite's run
+        becomes a **pad of the length it had**, so the pieces after it stay on
+        the index every map addressing them expects, and a palette falls back to
+        the generated default with the load's own notice.
         """
         by_source = {
             record.source_index: record.entry
@@ -459,6 +474,14 @@ class EntryClipboardMixin:
                     if found is not None
                     else None
                 )
+            pending = record.entry.pending_palette
+            if pending is not None and record.palette_source_index is not None:
+                # The palette's own reference, resolved by the same two answers.
+                # Left naming nothing where neither can: the restore then reports
+                # it and the row opens on the generated default palette.
+                found = target_for(record, record.palette_source_index, PALETTE_SLOT)
+                pending.entry = found
+                record.entry.palette_entry = found
             if record.entry.pieces:
                 record.entry.pieces = tuple(
                     replace(piece, entry=target_for(record, at, slot))

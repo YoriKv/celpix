@@ -25,6 +25,7 @@ See ``docs/graphics-formats-reference/implementation-guide.md`` §5.
 
 from __future__ import annotations
 
+from celpix.core.address import format_hex
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins.base import (
@@ -118,7 +119,8 @@ class GbRomContainer:
                 ContainerField(
                     "Checksums",
                     "no header to repair",
-                    f"A file under {_HEADER_END:#x} bytes holds no cartridge\n"
+                    f"A file under {format_hex(_HEADER_END, None)} bytes "
+                    "holds no cartridge\n"
                     "header, so a save writes it through untouched rather\n"
                     "than inventing one.",
                 )

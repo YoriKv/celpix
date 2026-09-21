@@ -40,6 +40,7 @@ aliases, and command 7 in long form collides with the ``0xFF`` terminator
 
 from __future__ import annotations
 
+from celpix.core.address import format_hex
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
@@ -139,7 +140,7 @@ def decompress(
             length = (cmd & 0x1F) + 1
             op = cmd & 0xE0
         if len(out) + length > _MAX_OUT:
-            raise _fail(f"output exceeds the {_MAX_OUT:#x}-byte cap")
+            raise _fail(f"output exceeds the {format_hex(_MAX_OUT, None)}-byte cap")
 
         if op == _OP_LITERAL:
             if i + length > n:
@@ -174,7 +175,8 @@ def decompress(
             i += 2
             if off >= len(out):
                 raise _fail(
-                    f"backreference into unwritten output ({off:#x} >= {len(out):#x})"
+                    "backreference into unwritten output "
+                    f"({format_hex(off, None)} >= {format_hex(len(out), None)})"
                 )
             # Overlap-aware: a copy reaching past `len(out)` re-reads bytes this
             # command just produced, which is the format's run-extension idiom.
@@ -268,7 +270,8 @@ def compress(data: bytes, *, big_endian_offsets: bool) -> bytes:
     n = len(data)
     if n > _MAX_OUT:
         raise ValueError(
-            f"data is {n:#x} bytes; LZ structures cap at {_MAX_OUT:#x} (one 64 KB bank)"
+            f"data is {format_hex(n, None)} bytes; LZ structures cap at "
+            f"{format_hex(_MAX_OUT, None)} (one 64 KB bank)"
         )
     if n == 0:
         return bytes((_TERMINATOR,))
@@ -375,7 +378,8 @@ def compress_improved(data: bytes, *, big_endian_offsets: bool) -> bytes:
     n = len(data)
     if n > _MAX_OUT:
         raise ValueError(
-            f"data is {n:#x} bytes; LZ structures cap at {_MAX_OUT:#x} (one 64 KB bank)"
+            f"data is {format_hex(n, None)} bytes; LZ structures cap at "
+            f"{format_hex(_MAX_OUT, None)} (one 64 KB bank)"
         )
     if n == 0:
         return bytes((_TERMINATOR,))

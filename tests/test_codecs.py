@@ -751,6 +751,8 @@ _INTENTIONAL_PIXEL_ALIASES = frozenset(
         # texture labelled with a handheld's name reads as the wrong file.
         frozenset({"preset.pixel.gba-4bpp", "preset.pixel.psx-4bpp"}),
         frozenset({"preset.pixel.8bpp-linear", "preset.pixel.psx-8bpp"}),
+        # The same pixels in 16-colour palette rows: the row size is the point.
+        frozenset({"preset.pixel.snes-3bpp", "preset.pixel.snes-3bpp-as-4bpp"}),
     }
 )
 
@@ -818,3 +820,27 @@ def test_wide_planar_preset_matches_the_region_split_layout(
                 ), f"tile {code} pixel ({x},{y})"
 
     assert join.unshape(engine.encode(grids, params, ctx), ctx) == region
+
+
+def test_nes_screen_shares_the_backdrop_and_edits_land_on_it() -> None:
+    """Entry 0 is drawn in every row's first slot, at any palette length, and
+    an edit to any tied entry is owned by entry 0; the table is nes-indexed's."""
+    from celpix.pipeline.pipeline import shared_palette_entries
+
+    reg = _REG
+    engine, preset = reg.engine_for("preset.palette.nes-screen")
+    assert (
+        preset.params["colors"]
+        == reg.preset("preset.palette.nes-indexed").params["colors"]
+    )
+    for size in (4, 16, 32):
+        data = bytes([0x22] + [0x0F] * (size - 1))
+        pal = engine.decode(data, preset.params, PipelineContext())
+        assert [pal.color(i) == pal.color(0) for i in range(size)] == [
+            i % 4 == 0 for i in range(size)
+        ]
+    assert shared_palette_entries("preset.palette.nes-screen", 4, 32, reg) == (
+        0, 4, 8, 12, 16, 20, 24, 28,
+    )  # fmt: skip
+    assert shared_palette_entries("preset.palette.nes-screen", 5, 32, reg) == (5,)
+    assert shared_palette_entries("preset.palette.nes-indexed", 4, 32, reg) == (4,)

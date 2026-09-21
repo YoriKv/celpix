@@ -789,6 +789,19 @@ class ColorCodecPlugin(Plugin, Protocol):
         """How many palette entries one :meth:`bytes_per_entry` unit holds."""
         ...
 
+    # shared_entries is optional too, and absent means every entry is its own:
+    # the palette-side twin of TilemapCodecPlugin.palette_row_granularity.
+    def shared_entries(
+        self, index: int, params: dict[str, Any], count: int
+    ) -> tuple[int, ...]:
+        """The entries the hardware draws in ``index``'s colour, owner first.
+
+        Where a console shows one stored colour at several positions — the NES
+        backdrop in every row's first slot — an edit to any of them is an edit
+        to all of them, and only the first (the owner) is written back.
+        """
+        ...
+
 
 class TilemapCodecPlugin(Plugin, Protocol):
     """The tilemap-side view interpretation: bytes ⇄ a :class:`CellGrid`.

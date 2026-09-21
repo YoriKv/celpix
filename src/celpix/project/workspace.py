@@ -140,6 +140,11 @@ class PaletteMode(str, Enum):
     OFFSET = "offset"  # raw bytes at an offset in the entry's own pixel file
     EMULATOR = "emulator"  # pulled from an emulator save state (view-only)
     CUSTOM = "custom"  # colors stored in the .celpix project itself
+    # Raw bytes at an offset in **another open entry's** resolved data. A game
+    # that builds one colour table out of several ROM places assembles those
+    # places as a composite view, and this is what lets a graphic read the
+    # result as its palette (``docs/design/palette-editing.md``).
+    ENTRY = "entry"
 
     @classmethod
     def parse(cls, value: object) -> PaletteMode:
@@ -167,18 +172,23 @@ class PaletteMode(str, Enum):
         Narrower than :attr:`is_real`: CUSTOM is real but exists only in the
         project, so a format re-decode or plugin refresh has nothing to load.
         """
-        return self in (PaletteMode.FILE, PaletteMode.OFFSET, PaletteMode.EMULATOR)
+        return self in (
+            PaletteMode.FILE,
+            PaletteMode.OFFSET,
+            PaletteMode.EMULATOR,
+            PaletteMode.ENTRY,
+        )
 
     @property
     def decodes_raw_bytes(self) -> bool:
         """Whether the palette is decoded from raw bytes through a color codec,
         so the format picker can *reinterpret* those bytes.
 
-        FILE and OFFSET read a file; an EMULATOR state's console dictates the
-        initial codec, but the picker still lets the user override how its bytes
-        are read. DEFAULT and CUSTOM carry their own colors (generated, or ARGB
-        stored in the project), so no codec choice applies — CUSTOM shows the
-        format it carries, but read-only.
+        FILE and OFFSET read a file and ENTRY another entry's resolved bytes; an
+        EMULATOR state's console dictates the initial codec, but the picker still
+        lets the user override how its bytes are read. DEFAULT and CUSTOM carry
+        their own colors (generated, or ARGB stored in the project), so no codec
+        choice applies — CUSTOM shows the format it carries, but read-only.
 
         Coincides with :attr:`has_source` — anything with bytes to re-read has
         bytes to reinterpret — and is defined from it so the two cannot drift.
@@ -188,7 +198,12 @@ class PaletteMode(str, Enum):
     @property
     def has_external_file(self) -> bool:
         """Whether the colors come from a file of their own, whose name the
-        palette dock shows and whose loss degrades the entry."""
+        palette dock shows and whose loss degrades the entry.
+
+        False for ENTRY, whose source is another *entry* rather than a file: the
+        entry may be a composite, which comes from no file at all, and the row
+        it names is in the same project rather than on disk beside it.
+        """
         return self in (PaletteMode.FILE, PaletteMode.EMULATOR)
 
     @property
@@ -199,6 +214,12 @@ class PaletteMode(str, Enum):
         never written back — so an edit on either forks to Custom first. Named
         here with the other mode questions rather than as a literal mode set at
         each editing entry point.
+
+        True for ENTRY: the colours live in another entry's bytes, and an edit
+        is deposited there exactly as a pixel edit on that entry would be. Where
+        those particular bytes have no writable owner — a composite's pad — the
+        edit is refused rather than forked, because forking would silently sever
+        the link to the ROM (``docs/design/palette-editing.md``).
         """
         return self not in (PaletteMode.DEFAULT, PaletteMode.EMULATOR)
 
@@ -219,15 +240,26 @@ class PaletteSource:
     Exactly one shape is meaningful (``docs/design/project-format.md`` §4.3):
     inline ``colors`` (ARGB ints — the **custom** palette, which has no external
     source and lives entirely in the project), an external palette file ``path``
-    (+ ``offset`` into it), or just an ``offset`` into the
-    entry's own pixel file. A live entry keeps this information on its
-    document's palette config; this form exists for entries whose document
-    isn't loaded yet (project restore) and is consumed on first activation.
+    (+ ``offset`` into it), another open ``entry`` (+ ``offset`` into its
+    resolved bytes), or just an ``offset`` into the entry's own pixel file. A
+    live entry keeps this information on its document's palette config — and,
+    for the entry shape, on :attr:`Entry.palette_entry`, a file having no way to
+    name an object; this form exists for entries whose document isn't loaded yet
+    (project restore) and is consumed on first activation.
+
+    ``entry`` is the source :class:`Entry` **itself**, held by identity for the
+    reason :attr:`TileSource.entry` and :attr:`CompositePiece.entry` are: a
+    positional index names a different entry the moment anything ahead of it is
+    closed or reordered, so the palette would follow the number rather than the
+    bytes the user pointed at. The project file stores the position instead,
+    computed on save and resolved back on load, in
+    :mod:`~celpix.project.projectfile` and nowhere else.
     """
 
     colors: list[int] | None = None
     path: str | None = None
     offset: int = 0
+    entry: Entry | None = None
 
 
 class TileMode(str, Enum):
@@ -602,6 +634,18 @@ class Entry:
     missing_palette: PaletteSource | None = None
     # PALETTE entries only: the palette codec the file was imported with.
     palette_preset_id: str | None = None
+    # ENTRY palette mode only: the open entry whose resolved bytes this entry's
+    # colours are decoded from, held by identity like :attr:`TileSource.entry`
+    # (``docs/design/palette-editing.md``). The live half of
+    # :attr:`PaletteSource.entry`, which is what a restore and a save speak in —
+    # the document's palette config carries the offset and the bytes but has
+    # nowhere to put an object, and a config is plain pipeline data that must
+    # not learn what an entry is.
+    #
+    # A binding whose source has been **closed** still holds it and answers "not
+    # open", exactly as a tile binding does, which is what makes undoing the
+    # close restore the colours for free.
+    palette_entry: Entry | None = None
 
     # What the entry's bytes *are*, independent of how the entry is bounded
     # (`docs/design/tilemap-entry.md` §2). ``kind`` above answers a different
@@ -1010,6 +1054,27 @@ class Workspace:
                 users.append(entry)
         return users
 
+    def palette_entry_consumers(self, source: Entry) -> list[Entry]:
+        """The entries whose ENTRY-mode palette is decoded from ``source``.
+
+        :meth:`palette_consumers`' twin for the other cross-entry palette
+        reference, and matched by **identity** rather than by path for the
+        reason a composite piece is: the binding names the entry itself, so a
+        file and a slice of it are different sources even where their bytes
+        overlap, and a composite has no path to be matched by at all.
+
+        The audience for a change to ``source``'s bytes: each of these holds a
+        palette decoded out of them, so an edit — to the source, to a piece of
+        it, or from another consumer — reaches them only if it is put there.
+        Both loaded and unloaded consumers are returned; an unloaded one
+        re-decodes on its next load anyway, which is why the caller filters.
+        """
+        return [
+            entry
+            for entry in self.entries
+            if entry.kind.has_document and entry_palette_entry(entry) is source
+        ]
+
     def slices_of(self, entry: Entry) -> list[Entry]:
         """The SLICE entries carved from ``entry``'s file, in list order.
 
@@ -1386,6 +1451,52 @@ class Workspace:
             callback(entry)
 
 
+def section_kind(entry: Entry, registry: Registry | None = None) -> ContentKind:
+    """Which section of the open-entries list ``entry``'s row is filed under.
+
+    Almost always :attr:`Entry.content_kind` — the headings name what the bytes
+    *are*, so that is what files them. The one exception is a **composite view
+    read as swatches**: a join of a ROM's colour tables, byte ranges and pads and
+    all, *is* the colour table a game assembles, and a colour table belongs with
+    the palettes whatever kind of entry holds it
+    (``docs/design/palette-editing.md``).
+
+    Its ``content_kind`` stays PIXELS, deliberately and unchanged: that is what
+    its capability set, :func:`can_compose` and :func:`can_supply_palette` are
+    asked, and a composite is pixels to every one of them
+    (``docs/design/composite-entry.md`` §1). Which *section* a row is filed under
+    is a separate question, and this is the only place it is answered — so the
+    tree, the position a new row lands at and the by-type sort cannot disagree
+    about it.
+
+    **Only a composite.** A file or a slice read as swatches is a graphics file
+    being *looked at* through a colour codec, which is a way of looking and not
+    what the row is; the picker puts it back a moment later. A composite is
+    assembled out of nothing but those runs, so the format is a statement about
+    the entry itself.
+
+    ``registry`` is what resolves the format to its engine. Without one — a panel
+    built before the window has wired one up — every row files by its content
+    kind, which is the right answer for everything but a swatch composite.
+    """
+    if entry.kind is not EntryKind.COMPOSITE or registry is None:
+        return entry.content_kind
+    session = entry.session
+    # A composite the user has never opened has no session yet; its seed is the
+    # same answer :func:`composite_preset_id` gives the view it is about to get,
+    # so a freshly assembled colour table is filed correctly on the first pass.
+    preset = (
+        session.pixel_preset_id
+        if session is not None
+        else composite_preset_id(entry, registry)
+    )
+    if not preset or not registry.has_preset(preset):
+        return entry.content_kind
+    if registry.preset(preset).engine_id != PALETTE_SWATCH_ENGINE:
+        return entry.content_kind
+    return ContentKind.PALETTE
+
+
 #: What **by type** means, in the order the rows land: the picture first, then
 #: the three readings of a map — an even grid, the same cells placed freely, the
 #: same cells read as words — and the palettes applied onto all of them last.
@@ -1412,6 +1523,7 @@ def sorted_entries(
     key: SortKey,
     *,
     layout: Callable[[Entry], str] | None = None,
+    registry: Registry | None = None,
 ) -> list[Entry]:
     """``entries`` in ``key`` order — one group of rows, rearranged.
 
@@ -1437,23 +1549,33 @@ def sorted_entries(
     is a question for the preset registry rather than for the entry, and only the
     type sort asks it: without one every map ranks as a plain tilemap, which is
     what an unrecognised format is anyway.
+
+    ``registry`` is what the *section* question needs (:func:`section_kind`), so
+    that a swatch composite sorts with the palettes it is filed among rather than
+    with the pixel entries it is not.
     """
     if key is SortKey.OFFSET:
         return sorted(entries, key=lambda e: (e.slice_offset, _natural_key(e.name)))
     if key is SortKey.TYPE:
-        return sorted(entries, key=lambda e: _type_rank(e, layout))
+        return sorted(entries, key=lambda e: _type_rank(e, layout, registry))
     return sorted(entries, key=lambda e: _natural_key(e.name))
 
 
-def _type_rank(entry: Entry, layout: Callable[[Entry], str] | None) -> int:
+def _type_rank(
+    entry: Entry,
+    layout: Callable[[Entry], str] | None,
+    registry: Registry | None = None,
+) -> int:
     """Where ``entry`` sits in :data:`_TYPE_ORDER`.
 
     A bookmark is ranked by being one (:data:`_BOOKMARK_RANK`) rather than by its
     content kind, which it never had a reason to set. A tilemap is asked what its
-    format lays its cells out as; everything else is its content kind and nothing
-    more. An unknown answer either way ranks with the plain reading of the kind it
-    belongs to, since a map celPix has no format for is still a map and sorting is
-    not the place to say otherwise.
+    format lays its cells out as; everything else is asked which **section** it is
+    filed under (:func:`section_kind`) — the same question the tree asks, so a
+    sort can never put a row somewhere its heading says it is not. An unknown
+    answer either way ranks with the plain reading of the kind it belongs to,
+    since a map celPix has no format for is still a map and sorting is not the
+    place to say otherwise.
     """
     if entry.kind is EntryKind.BOOKMARK:
         return _BOOKMARK_RANK
@@ -1461,7 +1583,7 @@ def _type_rank(entry: Entry, layout: Callable[[Entry], str] | None) -> int:
         declared = layout(entry)
         if declared in _TYPE_ORDER:
             return _TYPE_ORDER[declared]
-    return _TYPE_ORDER.get(entry.content_kind.value, 0)
+    return _TYPE_ORDER.get(section_kind(entry, registry).value, 0)
 
 
 def _natural_key(name: str) -> tuple[tuple[int, object], ...]:
@@ -1914,6 +2036,33 @@ def can_compose(entry: Entry, candidate: Entry) -> bool:
     )
 
 
+def can_supply_palette(entry: Entry, candidate: Entry) -> bool:
+    """Whether ``candidate``'s bytes could be read as ``entry``'s palette.
+
+    The one rule behind both the picker that offers sources and the loader that
+    reads them, so what is offered and what is accepted cannot disagree — the
+    discipline :func:`can_compose` follows, for the same reason.
+
+    **Anything with a document, holding pixels.** Bytes are bytes: a palette
+    read out of a ROM is a run of colour words wherever it sits, so a file, a
+    slice of one and a composite view assembling several all qualify, and the
+    source need not be showing itself as swatches. What is excluded is what has
+    no buffer of its own to read — a bookmark, a palette entry — and a tilemap,
+    whose ``pixel_data`` is a borrowed copy of somebody else's art.
+
+    **No cycle is possible**, so there is nothing here to guard against one: a
+    palette is decoded from *pixel* bytes, and no entry's pixel bytes are ever
+    decoded from a palette. A chain of two is the longest there is — a composite
+    of slices, read as somebody's colours — and each link is already resolved by
+    the rule that owns it.
+    """
+    return (
+        candidate is not entry
+        and candidate.kind.has_document
+        and candidate.content_kind is ContentKind.PIXELS
+    )
+
+
 def _piece_problem(
     entry: Entry, piece: CompositePiece, workspace: Workspace | None
 ) -> str | None:
@@ -2205,6 +2354,10 @@ def palette_source_for(entry: Entry) -> PaletteSource | None:
         return PaletteSource(path=source.path, offset=source.offset)
     if mode is PaletteMode.OFFSET:
         return PaletteSource(offset=source.offset)
+    if mode is PaletteMode.ENTRY:
+        # The object, not a path: a composite source has none, and the position
+        # a project stores is computed at save time and nowhere else.
+        return PaletteSource(entry=entry.palette_entry, offset=source.offset)
     if mode is PaletteMode.EMULATOR:
         # Only the state file's path is stored; where the palette sits inside it
         # (and which console codec decodes it) is re-detected on restore, so a
@@ -2297,8 +2450,43 @@ def entry_palette_path(entry: Entry) -> str | None:
     return None
 
 
+def entry_palette_entry(entry: Entry) -> Entry | None:
+    """The entry ``entry``'s ENTRY-mode palette is decoded from, or ``None``.
+
+    :func:`entry_palette_path`'s twin for the other cross-entry reference, and
+    read from wherever the entry currently keeps it for the same three reasons:
+    the degraded source (loaded, but its source has been closed), the live
+    binding (loaded and healthy), or the pending source (not yet activated).
+
+    Deliberately **not** gated on ``session.palette_mode``, where the path twin
+    is: a session's mode is only written on an entry switch, so the graphic on
+    screen — the one whose source is most likely to be closed or edited out from
+    under it — would answer for the mode it had when it was opened. The binding
+    itself is the live fact, and it is cleared wherever the palette moves
+    somewhere else (:meth:`~celpix.ui.main_window.palette_source.
+    PaletteSourceMixin._apply_palette_state`).
+    """
+    if entry.missing_palette is not None and entry.missing_palette.entry is not None:
+        return entry.missing_palette.entry
+    if entry.palette_entry is not None:
+        return entry.palette_entry
+    if entry.pending_palette is not None:
+        return entry.pending_palette.entry
+    return None
+
+
 def palette_missing(entry: Entry) -> bool:
-    """Whether the entry's external palette file is referenced but gone."""
+    """Whether the palette source the entry references can no longer be reached.
+
+    An external file that has gone from disk, or — for an ENTRY palette — a
+    source entry that has been closed. The second is recorded rather than
+    probed: ``missing_palette`` is set only where a restore degraded, so a
+    source naming an entry *is* the "it was not open" answer, and asking the
+    list again would need a workspace this module-level question has not got.
+    """
+    source = entry.missing_palette
+    if source is not None and source.entry is not None:
+        return True
     path = entry_palette_path(entry)
     return path is not None and not path_exists(path)
 

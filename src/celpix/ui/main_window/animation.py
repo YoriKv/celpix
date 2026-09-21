@@ -21,11 +21,16 @@ Two things it has to get right, and neither is the window's to know:
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QFileDialog
 
 from celpix.pipeline import pipeline
+from celpix.project.workspace import export_basename
+from celpix.ui import export
+from celpix.ui.widgets import ask_save_path
 
 
 class AnimationMixin:
@@ -111,3 +116,67 @@ class AnimationMixin:
         # stroke. The window coalesces the burst (`request_refresh`), so an open
         # player costs one recompose per burst instead of one per repaint.
         self._animation.request_refresh()
+
+    def _export_animation(self, as_gif: bool, every: bool) -> None:
+        """The player's Export menu: sequences to a GIF each, or to numbered PNGs.
+
+        Written from the strip the player holds rather than a fresh compose, so
+        the file is the motion on screen. One sequence as a GIF asks for a file;
+        anything writing several files asks for a folder and names them
+        ``<entry>-seq<N>`` by the sequence's number in the picker, so an "all"
+        export and a single one land under the same names.
+        """
+        strip, rects, chosen, rate = self._animation.export_source(every)
+        entry = self._workspace.current
+        if not chosen or not rects or entry is None:
+            return
+        base = export_basename(entry)
+        folder_default = self._export_dir(entry)
+        if as_gif and not every:
+            at, _ = chosen[0]
+            path = ask_save_path(
+                self._animation,
+                "Export Animation as GIF",
+                str(Path(folder_default) / f"{base}-seq{at}.gif"),
+                "GIF image (*.gif)",
+                ".gif",
+            )
+            if path is None:
+                return
+            targets = [(path, chosen[0][1])]
+        else:
+            folder = QFileDialog.getExistingDirectory(
+                self._animation, "Export animation to folder", folder_default
+            )
+            if not folder:
+                return
+            targets = [
+                (str(Path(folder) / f"{base}-seq{at}"), sequence)
+                for at, sequence in chosen
+            ]
+        files = 0
+        try:
+            for target, sequence in targets:
+                if as_gif:
+                    if not target.lower().endswith(".gif"):
+                        target += ".gif"
+                    export.save_sequence_gif(strip, rects, sequence, rate, target)
+                    files += 1
+                else:
+                    files += len(
+                        export.save_sequence_pngs(strip, rects, sequence, target)
+                    )
+        except (OSError, ValueError) as exc:
+            self._alert(
+                f"Could not export the animation: {exc}", title="celPix - export"
+            )
+            return
+        where = (
+            targets[0][0]
+            if len(targets) == 1 and as_gif
+            else str(Path(targets[0][0]).parent)
+        )
+        self.statusBar().showMessage(
+            f"Exported {len(targets)} sequence{'s' if len(targets) != 1 else ''}"
+            f" of {entry.name} ({files} file{'s' if files != 1 else ''}) to {where}."
+        )

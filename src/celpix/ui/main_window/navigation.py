@@ -1009,10 +1009,17 @@ class NavigationMixin:
             bank_base=self._bank_first.value(),
         )
 
-    def _format_offset(self, byte_off: int) -> str:
-        """Render a byte offset in the active address format (box + status text)."""
+    def _format_offset(self, byte_off: int, *, prefix: bool = True) -> str:
+        """Render a byte offset in the active address format.
+
+        ``prefix=False`` for the text of an address input box, which holds the
+        bare digits (``8000`` / ``00:8000``); status text and the dump's address
+        column keep the ``0x`` / ``$`` that says what the number is.
+        """
         layout = self._bank_layout()
-        return format_hex(byte_off) if layout is None else layout.format(byte_off)
+        if layout is None:
+            return format_hex(byte_off, prefix=prefix)
+        return layout.format(byte_off, prefix=prefix)
 
     def _parse_address(self, text: str) -> int | None:
         """Parse the offset box's text as a file byte offset, or None if invalid."""
@@ -1127,7 +1134,7 @@ class NavigationMixin:
         """
         if self._doc is None:
             return ""
-        return self._format_offset(self._tile_address(self._offset))
+        return self._format_offset(self._tile_address(self._offset), prefix=False)
 
     def _jump_to_address(self, byte_off: int) -> None:
         """Jump to an address the box shows - its commit handler.

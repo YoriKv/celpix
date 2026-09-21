@@ -71,10 +71,12 @@ from celpix.project.workspace import (
     Entry,
     EntryKind,
     SortKey,
+    can_supply_palette,
     data_missing,
     entry_notices,
     entry_palette_path,
     palette_missing,
+    section_kind,
 )
 from celpix.ui import clipboard
 from celpix.ui.glyphs import Glyph
@@ -369,6 +371,9 @@ class FileListPanel(QWidget):
     change_container_requested = Signal(object)  # Entry (FILE/PALETTE) — its container
     container_info_requested = Signal(object)  # Entry (FILE/PALETTE) — what it read
     use_palette_requested = Signal(object)  # Entry (a PALETTE) — apply to the view
+    # Entry (FILE/SLICE/COMPOSITE) — read the current graphic's palette out of
+    # this row's bytes (``docs/design/palette-editing.md``).
+    use_entry_as_palette_requested = Signal(object)
     edit_slice_requested = Signal(object)  # Entry (a SLICE) — edit its coordinates
     inputs_requested = Signal(object)  # Entry — what its formats need from elsewhere
     copy_inputs_requested = Signal(object)  # Entry — its bindings to the clipboard
@@ -389,6 +394,9 @@ class FileListPanel(QWidget):
         self._registry = registry
         # Answered by the window once it is wired up (:meth:`set_inputs_probe`).
         self._inputs_probe: Callable[[Entry], bool] = lambda _entry: False
+        # Likewise (:meth:`set_row_order`); appending is the honest stand-in for
+        # a panel nobody has told about a list.
+        self._row_order: Callable[[Entry], Entry | None] = lambda _entry: None
         self._tree = _EntryTree()
         self._tree.setHeaderHidden(True)
         self._tree.setColumnCount(2)
@@ -519,7 +527,7 @@ class FileListPanel(QWidget):
         )
         parent_item = self._items.get(parent) if parent is not None else None
         if parent_item is None:
-            parent_item = self._section_root(entry.content_kind)
+            parent_item = self._section_root(self.section_of(entry))
         anchor = self._items.get(before) if before is not None else None
         at = (
             parent_item.indexOfChild(anchor)
@@ -844,6 +852,58 @@ class FileListPanel(QWidget):
         """
         self._inputs_probe = probe
 
+    def set_row_order(self, probe: Callable[[Entry], Entry | None]) -> None:
+        """Who answers "which row does this one go in front of?" for a re-file.
+
+        The workspace's question, not the panel's: the order of the rows is the
+        user's and only the list knows it (:meth:`add_entry`). The panel needs it
+        for the one case where a row that already exists has to be put somewhere
+        else — a composite whose format made it a colour table, or stopped making
+        it one (:meth:`section_of`).
+        """
+        self._row_order = probe
+
+    def section_of(self, entry: Entry) -> ContentKind:
+        """:func:`~celpix.project.workspace.section_kind` against this panel's
+        registry — the one question every placement here is decided by."""
+        return section_kind(entry, self._registry)
+
+    def _refile(self, entry: Entry, item: QTreeWidgetItem) -> bool:
+        """Move ``entry``'s row into the section it now belongs to; True if it did.
+
+        The **one** deliberate exception to :meth:`refresh_entry`'s rule that a
+        row does not move. That rule is about order *within* a group — a slice
+        re-pointed to another offset stays where the user put it — and this is
+        not a reorder at all: the row has changed which group it is in, and a
+        heading that no longer describes the rows under it is worse than a row
+        that moved. It happens when a composite's pixel format is switched to or
+        from the swatch codec, undo and redo included
+        (``docs/design/palette-editing.md``).
+
+        Only a **top-level** row can: the sections hold those, while a slice or a
+        bookmark hangs off its own file's item and is not filed by section at all.
+        Removing and re-adding is how it is done rather than a reparent, because
+        that is the one path that creates and retires the headings, applies the
+        live filter and honours the workspace's order for the new position.
+        """
+        parent = item.parent()
+        if parent is None or parent.data(0, Qt.ItemDataRole.UserRole) is not None:
+            return False  # nested under its file: not a section's row at all
+        if parent is self._sections.get(self.section_of(entry)):
+            return False
+        was_current = self._current is entry
+        was_selected = item.isSelected()
+        self.remove_entry(entry)
+        self.add_entry(entry, None, self._row_order(entry))
+        if was_current:
+            self.set_current(entry)
+        elif was_selected:
+            moved = self._items.get(entry)
+            if moved is not None:
+                with signals_blocked(self._tree):  # a re-file is not a click
+                    moved.setSelected(True)
+        return True
+
     def set_registry(self, registry: Registry | None) -> None:
         """Point the panel at a rebuilt registry, and re-render what reads it.
 
@@ -862,24 +922,33 @@ class FileListPanel(QWidget):
         closing one has to let them go again.
         """
         self._registry = registry
-        for entry, item in self._items.items():
-            self._refresh_item(entry, item)
+        # A copy: a re-file below removes and re-adds, which rewrites the map.
+        for entry, item in list(self._items.items()):
+            if not self._refile(entry, item):
+                self._refresh_item(entry, item)
 
     def refresh_entry(self, entry: Entry) -> None:
         """Re-render one entry's label — the dirty marker, a backfilled length, a
         notice its load raised.
 
-        The row does **not** move for it. A slice re-pointed to another offset
-        stays where the user put it: the order is theirs from the moment the row
-        exists (:meth:`add_entry`), and a list that rearranged itself under an
-        edit would undo an arrangement nothing asked it to.
+        The row does **not** move for it *within* its group. A slice re-pointed
+        to another offset stays where the user put it: the order is theirs from
+        the moment the row exists (:meth:`add_entry`), and a list that rearranged
+        itself under an edit would undo an arrangement nothing asked it to.
+
+        It does move **between** groups, which is the one thing that is not a
+        reorder: a row whose section has changed is under a heading that no
+        longer describes it (:meth:`_refile`).
         """
         item = self._items.get(entry)
-        if item is not None:
-            self._refresh_item(entry, item)
-            # A rename is the label the filter matches on, so the row may have
-            # just stopped matching — or started.
-            self._refilter()
+        if item is None:
+            return
+        if self._refile(entry, item):
+            return  # re-added, which rendered and re-filtered it on the way in
+        self._refresh_item(entry, item)
+        # A rename is the label the filter matches on, so the row may have
+        # just stopped matching — or started.
+        self._refilter()
 
     # -- filtering -----------------------------------------------------------
     def focus_filter(self) -> None:
@@ -1042,7 +1111,7 @@ class FileListPanel(QWidget):
             tip += f"\n{what}"
         if entry.kind is EntryKind.SLICE:
             tip += f"\nOffset {format_hex(entry.slice_offset)}\nLength " + (
-                format_hex(entry.slice_length)
+                format_hex(entry.slice_length, None)
                 if entry.slice_length is not None
                 else "to be discovered"
             )
@@ -1353,10 +1422,19 @@ class FileListPanel(QWidget):
         The Palettes header carries no entry and is not selectable, so it cannot
         arrive as one; a row already on screen re-selecting itself is not an
         activation either, and the window would ignore it anyway.
+
+        **A row filed under Palettes is selected, never opened.** That is what a
+        ``.pal`` has always done — it is *applied* onto whatever is on screen
+        rather than shown — and a swatch composite filed there behaves the same
+        way, because the first click of its double-click would otherwise open it
+        and there would be no gesture left for applying it
+        (:meth:`_on_double_clicked`).
         """
         selected = self.selected_entries()
         self.selection_changed.emit()
         if len(selected) == 1 and selected[0] is not self._current:
+            if self.section_of(selected[0]) is ContentKind.PALETTE:
+                return
             self.entry_activated.emit(selected[0])
 
     def _current_entry(self) -> Entry | None:
@@ -1423,6 +1501,17 @@ class FileListPanel(QWidget):
             self.jump_to_bookmark_requested.emit(entry)
         elif entry.kind is EntryKind.PALETTE:
             self.use_palette_requested.emit(entry)
+        elif self.section_of(entry) is ContentKind.PALETTE:
+            # A swatch composite: filed with the palettes, so its double-click
+            # means what theirs does. Where there is nothing to apply it to —
+            # nothing open, or the row is what is open — it opens instead, which
+            # is the only other thing a double-click could sensibly mean
+            # (``docs/design/palette-editing.md``). Rename stays on the context
+            # menu, as it does for a ``.pal``.
+            if self._current is not None and can_supply_palette(self._current, entry):
+                self.use_entry_as_palette_requested.emit(entry)
+            else:
+                self.entry_activated.emit(entry)
         else:
             self._begin_rename(entry)
 
@@ -1822,6 +1911,17 @@ class FileListPanel(QWidget):
             # it, so there is neither a coordinate space to anchor a slice in nor
             # a source to jump to (``docs/design/composite-entry.md``). Edit…
             # re-lists its pieces, and Write goes out through them.
+            #
+            # Filed under Palettes, a click no longer opens it, so there has to
+            # be a way to say so: **Open** is that way, and it is offered only
+            # there, since everywhere else the row's own click already is it.
+            if self.section_of(entry) is ContentKind.PALETTE:
+                # Named for what opening it shows, which also leaves the letter
+                # free: every one in "Open" is taken in this menu already.
+                self._entry_action(
+                    menu, "Open &Swatches", self.entry_activated.emit, entry
+                )
+                menu.addSeparator()
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
             self._entry_action(
                 menu, "&Edit…", self.edit_composite_requested.emit, entry
@@ -1869,6 +1969,17 @@ class FileListPanel(QWidget):
             )
             menu.addSeparator()
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
+            menu.addSeparator()
+        # Every row whose bytes could be read as colours offers it, whatever kind
+        # it is: a ROM's palette table is a file, a slice or a composite view
+        # assembling several of them, and which of those it happens to be says
+        # nothing about the answer (``docs/design/palette-editing.md``). Gated on
+        # the same rule the palette dock's picker filters by, asked of the entry
+        # on screen, since that is what the colours would be applied to.
+        if self._current is not None and can_supply_palette(self._current, entry):
+            self._entry_action(
+                menu, "Use &as Palette", self.use_entry_as_palette_requested.emit, entry
+            )
             menu.addSeparator()
         live = self._add_order_actions(menu, entry, acting)
         # Paste Inputs is the fourth row a multi-row selection leaves live: it

@@ -46,8 +46,28 @@ def parse_hex(text: str) -> int | None:
         return None
 
 
-def format_hex(offset: int) -> str:
-    return f"0x{offset:06X}"
+def format_hex(value: int, digits: int | None = 6, *, prefix: bool = True) -> str:
+    """``value`` as ``0x``-prefixed uppercase hex, zero-padded to ``digits``.
+
+    The width is the range the number lives in rather than the number itself,
+    so a column of offsets lines up and a reader can tell a header field from a
+    file position: the default six digits cover a file offset (16 MB), a caller
+    whose numbers live in a 64 KB structure passes 4. ``digits=None`` fits the
+    value alone in whole bytes (``0x0800``), for a size or an offset that stands
+    by itself in a sentence. A value wider than ``digits`` is never truncated.
+
+    ``prefix=False`` is the spelling an input box holds, where the field itself
+    says the number is hex and a prefix is only something to select around when
+    retyping.
+    """
+    if digits is None:
+        digits = hex_digits(value)
+    return f"{'0x' if prefix else ''}{value:0{digits}X}"
+
+
+def hex_digits(limit: int) -> int:
+    """Hex digits for numbers up to ``limit``: whole bytes, at least one."""
+    return max(1, ceil_div(limit.bit_length(), 8)) * 2
 
 
 @dataclass(frozen=True)
@@ -74,10 +94,13 @@ class BankLayout:
         """Hex digits of the largest in-bank address (min 4, the common width)."""
         return max(4, ceil_div((self.addr_base + self.bank_size - 1).bit_length(), 4))
 
-    def format(self, offset: int) -> str:
+    def format(self, offset: int, *, prefix: bool = True) -> str:
+        """``$BB:AAAA`` for display; ``prefix=False`` gives an input box's
+        ``BB:AAAA`` (see :func:`format_hex`)."""
         bank, in_bank = divmod(offset, self.bank_size)
         addr = self.addr_base + in_bank
-        return f"${self.bank_base + bank:02X}:{addr:0{self.addr_digits}X}"
+        sign = "$" if prefix else ""
+        return f"{sign}{self.bank_base + bank:02X}:{addr:0{self.addr_digits}X}"
 
     def parse(self, text: str) -> int | None:
         """Parse ``$BB:AAAA`` / ``BB:AAAA`` / bare ``BBAAAA`` into a file offset.
@@ -120,10 +143,10 @@ class SplitBankLayout:
     second: BankLayout  # the window holding file bytes [split, ...)
     split: int  # file byte where the second window takes over
 
-    def format(self, offset: int) -> str:
+    def format(self, offset: int, *, prefix: bool = True) -> str:
         if offset < self.split:
-            return self.first.format(offset)
-        return self.second.format(offset - self.split)
+            return self.first.format(offset, prefix=prefix)
+        return self.second.format(offset - self.split, prefix=prefix)
 
     def parse(self, text: str) -> int | None:
         offset = self.first.parse(text)

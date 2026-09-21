@@ -214,7 +214,7 @@ def test_the_slice_dialog_shows_the_codecs_bindings_only_under_that_codec(
     qtbot.addWidget(dialog)
     assert (
         dialog._inputs.text()
-        == "Key table: 0x100, 4 B; Output size: unbound (optional); Invert: no"
+        == "Key table: 0x000100, 4 B; Output size: unbound (optional); Invert: no"
     )
     dialog._decompress.setCurrentIndex(dialog._decompress.findData(NO_COMPRESSION))
     assert dialog._inputs.text() == ""
@@ -271,7 +271,7 @@ def test_the_slice_dialogs_badge_edits_the_codec_the_dialog_has_picked(
     }
     assert form.windowModality() == Qt.WindowModality.ApplicationModal
     dialog.refresh_inputs()  # what returning to the dialog does
-    assert dialog._inputs.text().startswith("Key table: 0x100, 4 B")
+    assert dialog._inputs.text().startswith("Key table: 0x000100, 4 B")
 
     # The next open from the toolbar gives the modal stack back.
     form.hide()

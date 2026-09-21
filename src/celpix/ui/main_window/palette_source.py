@@ -1,9 +1,9 @@
 """Where the palette's colors come from, and how a change to that is committed.
 
-The five load modes (:class:`~celpix.project.workspace.PaletteMode`) and their
+The six load modes (:class:`~celpix.project.workspace.PaletteMode`) and their
 loaders: a standalone ``.pal``, raw bytes at an offset in the entry's own pixel
-file, an emulator save state, the generated default, and a Custom palette stored
-in the project.
+file, raw bytes in **another open entry**, an emulator save state, the generated
+default, and a Custom palette stored in the project.
 
 Two rules run through it. Every gesture ends in :meth:`_commit_palette`, so a
 palette change is always a before/after pair on the session stack and a failed
@@ -12,13 +12,15 @@ nowhere to write an edit - the generated default, a save state we never write
 back - **forks to Custom** rather than failing, so the edit lands somewhere that
 persists (``docs/design/palette-editing.md``).
 
-Two of the five modes need more than a loader, and each has a module of its own
-beside this one. Offset mode's address arithmetic - whose coordinates the number
-is in, which address space it indexes, how far it may run - is
-:mod:`~celpix.ui.main_window.palette_offset`. Registering a palette file in the
+Three of the six need more than a loader, and each has a module of its own beside
+this one. Offset mode's address arithmetic - whose coordinates the number is in,
+which address space it indexes, how far it may run - is
+:mod:`~celpix.ui.main_window.palette_offset`. Entry mode's source, and where a
+colour edit on somebody else's bytes lands, is
+:mod:`~celpix.ui.main_window.palette_entry`. Registering a palette file in the
 session and writing one back out, with the format bookkeeping that round trip
-needs, is :mod:`~celpix.ui.main_window.palette_transfer`. Both still end here, in
-the commit; what they are is the source, not the change to it.
+needs, is :mod:`~celpix.ui.main_window.palette_transfer`. All three still end
+here, in the commit; what they are is the source, not the change to it.
 """
 
 from __future__ import annotations
@@ -88,7 +90,7 @@ _ERROR_PALETTE_COUNT = 16
 
 
 class PaletteSourceMixin:
-    """The palette's source: the five load modes, their loaders, and the commit.
+    """The palette's source: the six load modes, their loaders, and the commit.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a
     standalone object: it reads and writes the window's own widgets and its
@@ -480,6 +482,9 @@ class PaletteSourceMixin:
         if entry.session is not None:
             entry.session.palette_mode = PaletteMode.CUSTOM
         entry.missing_palette = None
+        # The colours are the project's now, so whatever entry they used to be
+        # read out of is no longer this graphic's palette source.
+        entry.palette_entry = None
         if entry.doc is not None:
             entry.doc.palette = Palette(list(colors))
             entry.doc.palette_config = self._placeholder_palette_config(preset_id)
@@ -532,6 +537,18 @@ class PaletteSourceMixin:
             entry.missing_palette = source
             doc.palette = self._fallback_palette()
             return False
+        if session.palette_mode is PaletteMode.ENTRY and self._palette_entry_gone(
+            entry, source
+        ):
+            # A **closed** source is this mode's missing file, and degrades the
+            # same way: the mode is kept for display, the colours fall back to
+            # the generated palette, and the reference is stashed so the row
+            # stays marked, a save goes on naming it, and undoing the close puts
+            # the colours back (``docs/design/palette-editing.md``).
+            entry.missing_palette = source
+            entry.palette_entry = source.entry
+            doc.palette = self._fallback_palette()
+            return False
         try:
             if session.palette_mode is PaletteMode.FILE and source.path is not None:
                 # A file palette is owned by its PALETTE entry; register/load it
@@ -540,7 +557,12 @@ class PaletteSourceMixin:
                     entry, source.path, source.offset, session.palette_preset_id
                 )
                 return True
-            if session.palette_mode is PaletteMode.EMULATOR and source.path is not None:
+            if session.palette_mode is PaletteMode.ENTRY:
+                cfg = self._entry_palette_config(entry, source)
+                entry.palette_entry = source.entry
+            elif (
+                session.palette_mode is PaletteMode.EMULATOR and source.path is not None
+            ):
                 # Re-detect the save state: the palette offset and the console's
                 # codec are derived from the file, not carried in the project.
                 _fmt, cfg = self._emulator_palette_config(source.path)
@@ -751,6 +773,7 @@ class PaletteSourceMixin:
         """
         doc = self._palette_doc()
         assert doc is not None
+        entry = self._workspace.current
         return PaletteState(
             preset_id=doc.palette_config.interpret_preset_id,
             mode=self._palette_mode,
@@ -760,6 +783,7 @@ class PaletteSourceMixin:
             base_bytes=doc.palette_base_bytes,
             edits=frozenset(doc.palette_edits),
             palette_row=self._palette_row.value(),
+            source_entry=entry.palette_entry if entry is not None else None,
         )
 
     def _apply_palette_state(self, state: PaletteState) -> None:
@@ -773,6 +797,15 @@ class PaletteSourceMixin:
         """
         assert self._doc is not None
         select_combo_data(self._palette_preset, state.preset_id)
+        entry = self._workspace.current
+        if entry is not None:
+            # The binding an ENTRY palette is read through travels on the state,
+            # so stepping back through a re-pick lands on the source that was
+            # showing. Cleared for every other mode, where it would otherwise sit
+            # on the entry naming a source nothing reads.
+            entry.palette_entry = state.source_entry
+            if state.source_entry is not None:
+                entry.missing_palette = None
         if state.mode is PaletteMode.FILE:
             self._apply_file_palette_state(state)
         else:
@@ -862,6 +895,7 @@ class PaletteSourceMixin:
         label: str,
         status: str | None = None,
         edits: frozenset[int] = frozenset(),
+        source_entry: Entry | None = None,
     ) -> None:
         """Push one palette-source change (before→after) and optionally note it.
 
@@ -877,7 +911,11 @@ class PaletteSourceMixin:
         already-edited file palette passes its live ``edits`` so the switch doesn't
         forget which entries are outstanding.
 
-        A commit that decodes raw bytes (a File/Offset/Emulator import, or a
+        ``source_entry`` is the entry an ENTRY-mode palette was read from, and
+        ``None`` for every other mode — which is what takes the binding *off* an
+        entry whose palette has moved somewhere else.
+
+        A commit that decodes raw bytes (a File/Offset/Emulator/Entry import, or a
         format re-decode) is a format being *chosen*, so it advances the session
         default the next Custom-from-default fork will inherit. Default and
         Custom commits carry no such choice and leave it alone. Only forward
@@ -895,6 +933,7 @@ class PaletteSourceMixin:
             loaded.ctx,
             base_bytes=loaded.data,
             edits=edits,
+            source_entry=source_entry,
         )
         # Re-committing the offset already in force, or re-applying the file the
         # graphic already shows, lands where it started: no step for that.
@@ -914,6 +953,7 @@ class PaletteSourceMixin:
         mode: PaletteMode,
         label: str,
         status: Callable[[int], str] | None = None,
+        source_entry: Entry | None = None,
     ) -> bool:
         """Decode ``cfg``'s palette and land it as one undoable change.
 
@@ -938,6 +978,7 @@ class PaletteSourceMixin:
             mode=mode,
             label=label,
             status=status(len(loaded.palette)) if status is not None else None,
+            source_entry=source_entry,
         )
         return True
 
@@ -972,6 +1013,15 @@ class PaletteSourceMixin:
                 self._set_palette_mode(self._palette_mode)
         elif mode is PaletteMode.OFFSET:
             if not self._load_palette_at_offset(self._initial_palette_offset()):
+                self._set_palette_mode(self._palette_mode)
+        elif mode is PaletteMode.ENTRY:
+            # Which entry has to be asked before anything can be read, so the
+            # pick is part of choosing the mode rather than a state it lands in:
+            # a cancelled pick reverts the dropdown, like a cancelled file open.
+            source = self._pick_palette_entry()
+            if source is None or not self._load_palette_from_entry(
+                source, 0, self._seed_palette_format_from(source)
+            ):
                 self._set_palette_mode(self._palette_mode)
         elif mode is PaletteMode.EMULATOR:
             if not self._open_emulator_state():
@@ -1077,8 +1127,15 @@ class PaletteSourceMixin:
             select_combo_data(self._palette_preset, before.preset_id)
             return
         loaded, cfg = result
+        entry = self._workspace.current
         self._commit_palette(
-            cfg, loaded, mode=self._palette_mode, label="change palette format"
+            cfg,
+            loaded,
+            mode=self._palette_mode,
+            label="change palette format",
+            # A re-decode moves nothing but the codec, so an ENTRY palette keeps
+            # the source it was already reading.
+            source_entry=entry.palette_entry if entry is not None else None,
         )
 
     def _reload_previewed_palette(self) -> None:
@@ -1240,6 +1297,22 @@ class PaletteSourceMixin:
             source = refloored(lambda: self._offset_palette_source(offset)[0])
             if source is None:
                 return None
+        elif self._palette_mode is PaletteMode.ENTRY:
+            # Re-cut from the source entry rather than re-floored over the bytes
+            # already on the ref: those are that entry's *whole* buffer, so the
+            # inline path below would read a ROM's worth of colours. The builder
+            # is the one the original load used, which caps the window at a full
+            # palette and settles the source first.
+            bound = self._entry_palette_target()
+            if bound is None:
+                self._alert(
+                    "The entry this palette is read from is not open.",
+                    title="celPix - palette",
+                )
+                return None
+            source = refloored(lambda: self._entry_palette_source(bound, offset))
+            if source is None:
+                return None
         elif source.length is not None and source.data is None:
             path = source.path
             source = refloored(lambda: self._file_palette_source(path, offset))
@@ -1304,6 +1377,7 @@ def _same_palette_state(before: PaletteState, after: PaletteState) -> bool:
     """
     return (
         before.mode is after.mode
+        and before.source_entry is after.source_entry
         and before.preset_id == after.preset_id
         and before.palette.colors == after.palette.colors
         and before.base_bytes == after.base_bytes

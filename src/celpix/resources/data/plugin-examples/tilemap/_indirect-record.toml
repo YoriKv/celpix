@@ -43,3 +43,14 @@ indirect = true
 stamp_cells = [2, 2]
 stamp_dense = true
 column_major = false
+
+# A byte whose top bits choose a table. Where several tables sit end to end -
+# one per palette row, each only as long as it needs - the top `group_bits` of
+# the byte name the table and the rest the record in it; `group_starts` is
+# each table's first record, counted through the whole run, and `group_rows`
+# makes the table the cell's palette row. Super Mario Bros. is the worked case
+# (two bits, tables of 39, 46, 10 and 6). Leave `group_bits` at 0 for a plain
+# byte.
+# group_bits = 2
+# group_starts = [0, 39, 85, 95]
+# group_rows = true

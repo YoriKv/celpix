@@ -40,6 +40,7 @@ why other readers get this format wrong by assuming type 0, is in
 
 from __future__ import annotations
 
+from celpix.core.address import format_hex
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import KEY_PALETTE_PRESET, KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
@@ -187,7 +188,7 @@ class TplPaletteContainer:
             ),
             ContainerField(
                 "Entries",
-                f"{count} at {HEADER_SIZE:#04x}",
+                f"{count} at {format_hex(HEADER_SIZE, 2)}",
                 "Counted from the file's length rather than read: the\n"
                 "entries run to the end and there is no count field. A\n"
                 "save therefore rewrites the file's length rather than\n"

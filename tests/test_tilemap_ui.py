@@ -249,6 +249,12 @@ def test_transparent_zero_clears_a_blank_cell_on_every_palette_row(
     assert image.pixel(0, 0) >> 24 == 0xFF  # the solid tile is untouched
     assert image.pixel(8, 0) >> 24 == 0  # blank on row 0
     assert image.pixel(16, 0) >> 24 == 0  # blank on row 2 — the stride case
+    # And the PNG export follows the box, on both rows, rather than writing the
+    # backdrop back in as an opaque slab.
+    from celpix.ui import export
+
+    exported = export.document_image(window._doc, window._registry)
+    assert [exported.pixel(x, 0) >> 24 for x in (0, 8, 16)] == [0xFF, 0, 0]
 
     # One undo step, like All Frames beside it: no index moved and nothing was
     # re-read, but which cells read as empty is the entry's answer and the

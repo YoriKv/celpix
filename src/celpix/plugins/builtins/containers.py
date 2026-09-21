@@ -22,6 +22,7 @@ PRG banks, and any tail the read dropped for being less than a whole block.
 
 from __future__ import annotations
 
+from celpix.core.address import format_hex
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.notices import warn
@@ -216,11 +217,11 @@ class INesContainer:
                 "program code after the header.",
             ),
         ]
-        end = "end of file" if length is None else f"{start + length:#08x}"
+        end = "end of file" if length is None else format_hex(start + length)
         fields.append(
             ContainerField(
                 "Payload span",
-                f"{start:#08x} to {end}",
+                f"{format_hex(start)} to {end}",
                 "The bytes handed on to be decoded. A save splices back\n"
                 "over exactly this range, the header and program banks\n"
                 "coming through untouched.",

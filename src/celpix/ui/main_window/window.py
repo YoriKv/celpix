@@ -102,6 +102,7 @@ from celpix.ui.main_window.interpretation import (
 )
 from celpix.ui.main_window.navigation import NavigationMixin
 from celpix.ui.main_window.palette_dock import PaletteDockMixin
+from celpix.ui.main_window.palette_entry import PaletteEntryMixin
 from celpix.ui.main_window.palette_offset import PaletteOffsetMixin
 from celpix.ui.main_window.palette_regions import PaletteRegionsMixin
 from celpix.ui.main_window.palette_source import (
@@ -167,6 +168,7 @@ class MainWindow(
     InputsMixin,
     PaletteSourceMixin,
     PaletteOffsetMixin,
+    PaletteEntryMixin,
     PaletteTransferMixin,
     PaletteDockMixin,
     ColorEditingMixin,
@@ -369,6 +371,7 @@ class MainWindow(
         self._overlay = DecompressOverlay(self)
         self._animation = AnimationOverlay(self)
         self._animation.refresh_requested.connect(self._show_animation)
+        self._animation.export_requested.connect(self._export_animation)
         # The player's neighbour: the same file read as its parts rather than as
         # its motion. Its own Cols and Zoom, so a change to either asks for the
         # sheet to be composed again through the same path a refresh takes.
@@ -582,11 +585,19 @@ class MainWindow(
         self._files_panel.change_container_requested.connect(self._change_container_for)
         self._files_panel.container_info_requested.connect(self._show_container_info)
         self._files_panel.use_palette_requested.connect(self._use_palette_entry)
+        self._files_panel.use_entry_as_palette_requested.connect(
+            self._use_entry_as_palette
+        )
         self._files_panel.edit_slice_requested.connect(self._edit_slice)
         self._files_panel.inputs_requested.connect(self._show_inputs)
         self._files_panel.copy_inputs_requested.connect(self._copy_inputs)
         self._files_panel.paste_inputs_requested.connect(self._paste_inputs)
         self._files_panel.set_inputs_probe(self._inputs_available)
+        # Where a row that has changed section goes: the order is the list's, and
+        # only the workspace knows it (:meth:`_next_row`).
+        self._files_panel.set_row_order(
+            lambda e: self._next_row(e, self._workspace.parent_of(e))
+        )
         self._files_panel.edit_composite_requested.connect(self._edit_composite)
         self._files_panel.jump_to_source_requested.connect(self._jump_to_slice_source)
         self._files_panel.jump_to_bookmark_requested.connect(self._jump_to_bookmark)
@@ -630,18 +641,23 @@ class MainWindow(
         whichever of the two this entry belongs to, and the answer is the first
         later entry in it. ``None`` (append) for the last of its group, which is
         every ordinary open and every new slice carved past the existing ones.
+
+        Which heading a top-level row sits under is the one question
+        :func:`~celpix.project.workspace.section_kind` answers, asked here
+        through the panel so this and the tree cannot place a row differently.
         """
         entries = self._workspace.entries
         later = entries[entries.index(entry) + 1 :]
         if parent is not None:
             siblings = self._workspace.children_of(parent)
             return next((e for e in later if e in siblings), None)
+        section = self._files_panel.section_of(entry)
         return next(
             (
                 e
                 for e in later
                 if self._workspace.parent_of(e) is None
-                and e.content_kind is entry.content_kind
+                and self._files_panel.section_of(e) is section
             ),
             None,
         )
@@ -824,13 +840,19 @@ class MainWindow(
         A **type** sort needs what each map's format declares its cells to be,
         which is the registry's answer and not the entry's — so it is handed in
         from here, where the same declaration already decides whether a map opens
-        as a string or as a set of objects (:meth:`_tilemap_declares`).
+        as a string or as a set of objects (:meth:`_tilemap_declares`). The
+        registry goes with it for the second question of the same shape: which
+        section a row is filed under, so a sort ranks a swatch composite with the
+        palettes it sits among (:func:`~celpix.project.workspace.section_kind`).
         """
         if self._applying_undo:
             return
         was = self._files_panel.sibling_entries(entry)
         order = sorted_entries(
-            was, key, layout=lambda e: str(self._tilemap_declares(e, "layout") or "")
+            was,
+            key,
+            layout=lambda e: str(self._tilemap_declares(e, "layout") or ""),
+            registry=self._registry,
         )
         if order == was:  # Entry is eq=False, so this compares identity
             return
@@ -874,7 +896,11 @@ class MainWindow(
         doc = entry.doc if entry is not None else None
         writable = doc is not None and doc.data_config.write_enabled
         self._write_action.setEnabled(
-            writable or self._linked_palette_entry() is not None
+            writable
+            or self._linked_palette_entry() is not None
+            # An Entry palette is written by the entry its colours live in, so a
+            # view-only graphic reading one still has something to save.
+            or self._entry_palette_target() is not None
         )
         self._sync_entry_scope()  # a veto that runs after every owner
 
@@ -1061,6 +1087,11 @@ class MainWindow(
         # the list the same way maps bound to the closed entry did.
         rebuilt = self._reassemble_composites(going)
         self._reresolve_bound_art(orphaned + self._maps_drawing_from(rebuilt))
+        # A palette read out of a closed entry degrades the way a binding onto
+        # one does — the mode is kept, the colours fall back, the row is marked —
+        # and the reference is held, so undoing the close puts them back.
+        self._degrade_entry_palettes(going)
+        self._redecode_entry_palettes(rebuilt)
         # Closing the bank a map is painted through takes its pixels away without
         # the view moving, so the mode has to be re-asked here as well as on an
         # entry switch (``session.SessionMixin._drop_unavailable_edit_mode``).
@@ -1095,6 +1126,7 @@ class MainWindow(
         self._reresolve_bound_art(
             self._maps_drawing_from(restored) + self._maps_drawing_from(rebuilt)
         )
+        self._redecode_entry_palettes(restored + rebuilt)
         if any(entry is was_current for _, entry in victims):
             self._activate_entry(was_current)
 

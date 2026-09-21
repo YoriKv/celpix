@@ -79,6 +79,8 @@ from typing import Any
 from celpix.core.context import (
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_PAGE_ROWS,
+    KEY_TILEMAP_RECORD_COLUMN_MAJOR,
+    KEY_TILEMAP_RECORD_SHAPE,
     KEY_TILEMAP_STAMP_CELLS,
     KEY_TILEMAP_STAMP_COLUMN_MAJOR,
     KEY_TILEMAP_STAMP_STRIDE,
@@ -311,6 +313,45 @@ def _publish_stamp(params: dict[str, Any], ctx: PipelineContext) -> None:
         ctx.set(KEY_TILEMAP_STAMP_COLUMN_MAJOR, True)
 
 
+def _publish_records(cells: int, params: dict[str, Any], ctx: PipelineContext) -> None:
+    """State the record a table's cells come in, so each draws as a rectangle.
+
+    Stated outright by ``record_shape = [across, down]`` (with ``record_order``,
+    ``"row"`` or ``"column"``) for a table nothing stamps from — a sprite frame
+    kept as its tile numbers. Otherwise it follows from a stamp source's own
+    declarations wherever those describe **contiguous** records: a stamp whose
+    rows (or, stored down each column, whose columns) sit exactly one stamp
+    apart is a run of consecutive cells. A stride wider than that means the
+    stamps are windows on a real map, and a map is drawn as the map it is.
+
+    Not claimed on a paged file, whose assembly is already the layout, nor where
+    the cell count is not a whole number of records — the same honesty a page
+    count keeps: a table read under the wrong cell size is left looking wrong.
+    """
+    shape = params.get("record_shape")
+    order = params.get("record_order", "row")
+    if shape is None:
+        stamp = params.get("stamp_cells")
+        stride = params.get("stamp_stride")
+        if not isinstance(stamp, (list, tuple)) or len(stamp) != 2 or stride is None:
+            return
+        order = params.get("stamp_order", "row")
+        across, down = int(stamp[0]), int(stamp[1])
+        if int(stride) != (down if order == "column" else across):
+            return
+        shape = (across, down)
+    if not isinstance(shape, (list, tuple)) or len(shape) != 2:
+        raise ValueError(f"record_shape must be [across, down], got {shape!r}")
+    if order not in ("row", "column"):
+        raise ValueError(f"record_order must be 'row' or 'column', got {order!r}")
+    across, down = max(1, int(shape[0])), max(1, int(shape[1]))
+    size = across * down
+    if size == 1 or not cells or cells % size or ctx.get(KEY_TILEMAP_PAGE_ROWS):
+        return
+    ctx.set(KEY_TILEMAP_RECORD_SHAPE, (across, down))
+    ctx.set(KEY_TILEMAP_RECORD_COLUMN_MAJOR, order == "column")
+
+
 def _endian(params: dict[str, Any]) -> str:
     order = str(params.get("endian", "little"))
     if order not in ("little", "big"):
@@ -374,6 +415,7 @@ class TilemapCodec:
             )
         _publish_pages(len(cells), params, ctx)
         _publish_stamp(params, ctx)
+        _publish_records(len(cells), params, ctx)
         return cells
 
     def encode(

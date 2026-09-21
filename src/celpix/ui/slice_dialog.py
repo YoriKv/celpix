@@ -148,9 +148,11 @@ class SliceDialog(QDialog):
 
         self._name = QLineEdit(name)
         self._name.setToolTip("Name in the Files list; blank uses the placeholder")
-        self._offset = QLineEdit(format_hex(offset))
+        self._offset = QLineEdit(format_hex(offset, prefix=False))
         self._offset.setToolTip("File offset (hex; $ and 0x accepted)")
-        self._length = QLineEdit(format_hex(length) if length is not None else "")
+        self._length = QLineEdit(
+            format_hex(length, prefix=False) if length is not None else ""
+        )
         self._length.setToolTip(
             "Byte length (hex); blank lets a decompressor find the end"
         )
@@ -371,7 +373,9 @@ class SliceDialog(QDialog):
             return
         if offset >= size or (length is not None and offset + length > size):
             noun = "region's" if len(self._paths) > 1 else "file's"
-            self._fail(f"Region runs past the {noun} end ({format_hex(size)} bytes).")
+            self._fail(
+                f"Region runs past the {noun} end ({format_hex(size, None)} bytes)."
+            )
             return
         # Default name from the *validated* values, not the placeholder text.
         name = self._name.text().strip() or default_slice_name(

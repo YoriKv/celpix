@@ -124,3 +124,17 @@ def test_bank_round_trip_through_format_and_parse(preset_id: str) -> None:
 def test_hex_round_trip() -> None:
     for offset in (0, 0x200, 0x123456):
         assert parse_hex(format_hex(offset)) == offset
+
+
+@pytest.mark.parametrize(
+    ("value", "digits", "text"),
+    [
+        (0x800, None, "0x0800"),  # fitted widths round up to whole bytes
+        (0, None, "0x00"),
+        (0x10000, None, "0x010000"),
+        (0x62, 4, "0x0062"),
+        (0x1234567, 6, "0x1234567"),  # a width pads, never truncates
+    ],
+)
+def test_hex_width(value: int, digits: int | None, text: str) -> None:
+    assert format_hex(value, digits) == text

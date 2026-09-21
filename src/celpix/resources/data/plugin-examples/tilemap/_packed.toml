@@ -143,6 +143,16 @@ endian = "little"
 # stamp correctly. Left out, the stride is the width the table is shown at.
 # stamp_stride = 2
 
+# The record a table's cells come in, for a table that is a list of fixed
+# groups rather than one picture — a sprite frame kept as its 2x4 tile numbers,
+# a metatile's 2x2. Each record is then drawn whole, as many across as Cols
+# holds, instead of the cells running on as a ribbon. `record_order = "column"`
+# is a record stored down each column (TL BL TR BR). A stamp table whose
+# `stamp_stride` equals its stamp's side needs neither: its stamps are its
+# records already.
+# record_shape = [2, 4]
+# record_order = "row"
+
 # The stride between a metatile cell's tile *rows* in the bank, for a format
 # whose cell covers several tiles (`cell_tiles`). The default is the console
 # VRAM row of 16 tiles — a cell's lower tiles sit directly under its upper
