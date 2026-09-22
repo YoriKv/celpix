@@ -1,23 +1,21 @@
-"""Example palette code format: NES/Famicom with a *custom* PPU master palette.
+"""Worked palette example: NES/Famicom with a user-supplied master palette.
 
-Copy this file, drop the leading underscore, edit it, and press F5 in celPix
-(code plugins ask for confirmation the first time, since they run with the app's
-privileges).
+To use: copy, remove the leading "_", edit, press F5. Code plugins run with the
+app's privileges, so celPix asks before loading one. ``_example.py`` is the
+minimal palette format; read it first.
 
-celPix ships "NES/Famicom (64-color indexed)", but its 64 RGB colors are baked in.
-The NES PPU doesn't store RGB at all — a palette byte is a 6-bit index (0..63)
-into a *master palette* the hardware or emulator decides, and everyone has a
-favourite. This format lets you supply your own, so tiles preview in the colors
-your target emulator shows.
+An NES palette byte is a 6-bit index into the PPU's 64-colour master palette,
+whose RGB values differ between emulators. The shipped "NES/Famicom (64-color
+indexed)" preset fixes one table; this format loads yours.
 
-**Providing your palette:** drop a standard 192-byte ``.pal`` file (64 entries of
-R,G,B, what emulators load) beside the plugin, named to match it. Activated as
-``nes-custom.py``, it reads ``nes-custom.pal`` from the same folder; with no such
-file it falls back to the baked default below, so the format always works.
+Companion file: a 192-byte ``.pal`` (64 entries of R, G, B) beside the plugin,
+with the plugin's name: ``nes-custom.py`` reads ``nes-custom.pal``. Without one
+the table below is used. The file is read when the plugin loads; press F5 after
+changing it.
 
-Like the built-in indexed codec, decode is a table lookup and encode is
-nearest-entry by RGB distance — the master palette has duplicate colors, so it
-has no exact inverse.
+Decode is a table lookup. Encode selects the nearest entry by RGB distance; the
+master palette contains duplicate colours, so an index naming a duplicate is
+rewritten as the first match.
 """
 
 from pathlib import Path
@@ -25,9 +23,7 @@ from pathlib import Path
 from celpix.core.palette import MISSING_COLOR, Palette
 from celpix.plugins import FormatInfo
 
-# Fallback master palette (0xRRGGBB), used when no companion .pal is found: one
-# common NES rendering, so the example is self-contained. Replace it by dropping
-# your own .pal beside the plugin rather than editing these numbers.
+# Fallback master palette (0xRRGGBB), used when no companion .pal is found.
 _DEFAULT_MASTER = [
     0x5D5D5D, 0x00218E, 0x120BAF, 0x3900A6, 0x5B0078, 0x6C0033, 0x670500, 0x4E1C00,
     0x293100, 0x044400, 0x004D00, 0x004809, 0x00384F, 0x000000, 0x000000, 0x000000,
@@ -39,19 +35,19 @@ _DEFAULT_MASTER = [
     0xDFE482, 0xC6F087, 0xB2F6A1, 0xA8F3CA, 0xAAE9F7, 0xB0B0B0, 0x000000, 0x000000,
 ]  # fmt: skip
 
-_MASTER_COLORS = 64  # NES master palette size; 512-entry (emphasis) .pal files
-_PAL_BYTES = _MASTER_COLORS * 3  # are read as their base 64 only.
+# A 512-entry (emphasis) .pal is read as its first 64 entries.
+_MASTER_COLORS = 64
+_PAL_BYTES = _MASTER_COLORS * 3
 
 
 def _load_master_palette():
-    """The 64 master colors: from the companion ``.pal`` if present and valid,
-    else the baked default. Called once at register() time, the master palette
-    being fixed for the session."""
+    """The 64 master colours: the companion ``.pal`` if present and long enough,
+    else the default. ``__file__`` is the plugin's own path."""
     try:
         raw = Path(__file__).with_suffix(".pal").read_bytes()
     except OSError:
         return list(_DEFAULT_MASTER)
-    if len(raw) < _PAL_BYTES:  # truncated/not a .pal — don't half-apply it
+    if len(raw) < _PAL_BYTES:  # truncated or not a .pal
         return list(_DEFAULT_MASTER)
     return [
         (raw[i * 3] << 16) | (raw[i * 3 + 1] << 8) | raw[i * 3 + 2]
@@ -60,12 +56,12 @@ def _load_master_palette():
 
 
 class NesCustomPalette:
-    """Indexed NES palette whose 64-color master table the user supplies."""
+    """One index byte per entry into a 64-colour table."""
 
     info = FormatInfo(id="format.palette.nes-custom", name="NES/Famicom (Custom)")
 
     def __init__(self):
-        # Render as opaque ARGB; the master table is built once at load.
+        # Opaque ARGB, built once per load.
         self._table = [0xFF000000 | c for c in _load_master_palette()]
 
     def decode(self, data, ctx):
@@ -76,7 +72,7 @@ class NesCustomPalette:
         return bytes(self._nearest(argb) for argb in palette.colors)
 
     def bytes_per_entry(self):
-        return 1  # one index byte per entry — how celPix sizes palette reads
+        return 1
 
     def _nearest(self, argb):
         r, g, b = (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF

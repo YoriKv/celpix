@@ -481,37 +481,6 @@ def test_a_grey_format_reduces_a_colour_by_luma() -> None:
     assert engine.decode(raw, params, PipelineContext()).color(0) == 0xFF494949
 
 
-def test_a_palette_stated_component_by_component_still_reads() -> None:
-    """A user's plugins folder is not ours to rewrite.
-
-    Presets out there give each component its own hex mask, a split channel as an
-    ordered list of chunks, and a shade as one mask plus `gray`. All three keep
-    reading, and have to agree with the layout that says the same thing.
-    """
-    engine, params = _color_engine("preset.palette.rgb555-split-be")
-    per_component = {
-        "bytes_per_entry": 2,
-        "byte_order": "big",
-        "masks": {"r": [0xF000, 0x0008], "g": [0x0F00, 0x0004], "b": [0x00F0, 0x0002]},
-    }
-    raw = b"\xf0\x04"
-    assert engine.decode(raw, per_component, PipelineContext()).color(
-        0
-    ) == engine.decode(raw, params, PipelineContext()).color(0)
-
-    shade_engine, shade_params = _color_engine("preset.palette.ngp-gray")
-    stated = {
-        "bytes_per_entry": 1,
-        "byte_order": "little",
-        "invert": True,
-        "gray": True,
-        "masks": {"r": 0x07},
-    }
-    assert shade_engine.encode(
-        Palette([0xFFFF0000]), stated, PipelineContext()
-    ) == shade_engine.encode(Palette([0xFFFF0000]), shade_params, PipelineContext())
-
-
 def test_a_layout_must_account_for_every_bit_of_its_entry() -> None:
     """A component the layout does not place is written back as zero, so a bit
     nobody named loses a channel's precision on the first save. Checking the
@@ -844,3 +813,66 @@ def test_nes_screen_shares_the_backdrop_and_edits_land_on_it() -> None:
     )  # fmt: skip
     assert shared_palette_entries("preset.palette.nes-screen", 5, 32, reg) == (5,)
     assert shared_palette_entries("preset.palette.nes-indexed", 4, 32, reg) == (4,)
+
+
+_RECORD = [{"name": "attr", "type": "u16", "bits": "iiii iiii iiii iiii"}]
+
+
+@pytest.mark.parametrize(
+    ("stage", "engine_id", "size", "params", "key"),
+    [
+        (
+            Stage.INTERPRET_PIXEL,
+            "codec.pixel.direct-color",
+            "bytes_per_tile",
+            {"fields": "rrrr rggg gggb bbbb", "byte_order": "Little"},
+            "byte_order",
+        ),
+        (
+            Stage.INTERPRET_PALETTE,
+            "codec.palette.mask",
+            "bytes_per_entry",
+            {"fields": ".bbb bbgg gggr rrrr", "byte_order": "be"},
+            "byte_order",
+        ),
+        (
+            Stage.INTERPRET_PIXEL,
+            "codec.pixel.packed",
+            "bytes_per_tile",
+            {"bpp": 4, "msb_first": "false"},
+            "msb_first",
+        ),
+        (
+            Stage.INTERPRET_TILEMAP,
+            "codec.tilemap.sprite-record",
+            "bytes_per_cell",
+            {"record": _RECORD, "endian": "BIG"},
+            "endian",
+        ),
+        (
+            Stage.INTERPRET_TILEMAP,
+            "codec.tilemap.md-sprite",
+            "bytes_per_cell",
+            {"x_bytes": 3},
+            "x_bytes",
+        ),
+        (
+            Stage.INTERPRET_TILEMAP,
+            "codec.tilemap.md-sprite",
+            "bytes_per_cell",
+            {"mirror_x": 1},
+            "mirror_x",
+        ),
+    ],
+)
+def test_a_closed_set_parameter_refuses_a_value_outside_it(
+    stage: Stage, engine_id: str, size: str, params: dict, key: str
+) -> None:
+    """Reading such a parameter by testing for one value makes a typo the
+    *opposite* setting: a misspelt byte order reads big-endian, a quoted
+    ``"false"`` is truthy. Each draws a plausible picture in the wrong colours
+    or places, so the value is refused by name instead
+    (:mod:`celpix.plugins._params`)."""
+    engine = default_registry().plugin(stage, engine_id)
+    with pytest.raises(ValueError, match=f"{key} must be"):
+        getattr(engine, size)(params)

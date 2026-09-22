@@ -60,6 +60,7 @@ from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, Frame, frame_bounds
 from celpix.core.tilemap import Cell
 from celpix.pipeline._stage import (
     _acquire,
+    _cell_settler,
     _pixel_geometry,
     _probe,
     _run,
@@ -120,6 +121,7 @@ from celpix.pipeline.render import (
     tilemap_tiles,
     tiles_per_stripe,
 )
+from celpix.plugins._params import flag, one_of
 from celpix.plugins.base import (
     NO_COMPRESSION,
     NO_RESHAPE,
@@ -535,6 +537,12 @@ class TilemapData(NamedTuple):
     unless the format keeps its rows in a plane coarser than its cells, which
     an NES nametable does
     (:meth:`~celpix.plugins.base.TilemapCodecPlugin.palette_row_granularity`).
+
+    ``settler`` is the codec's own cell settle bound with its params, or None for
+    a format with nothing to derive from another field
+    (:func:`~celpix.pipeline._stage._cell_settler`). A callable and not the engine,
+    because what reads it is the Qt-free model
+    (:attr:`~celpix.core.document.Document.cell_settler`).
     """
 
     cells: list[Cell]
@@ -549,6 +557,7 @@ class TilemapData(NamedTuple):
     palette_row_base: int = 0
     row_granularity: tuple[int, int] = (1, 1)
     column_major: bool = False
+    settler: Callable[[list[Cell]], list[Cell]] | None = None
 
 
 def load_tilemap_data(
@@ -588,6 +597,12 @@ def load_tilemap_data(
     if live is not None:
         data = live + data[len(live) :]
     engine, preset = reg.engine_for(cfg.interpret_preset_id, TilemapCodecPlugin)
+    _run(
+        Stage.INTERPRET_TILEMAP,
+        Pathway.TILEMAP,
+        lambda: _check_declarations(preset.params),
+        plugin=preset.id,
+    )
     # Seeded and **left** on the context, unlike the byte stages: this context
     # becomes the document's ``tilemap_ctx``, and every later cell encode — a
     # stamp, a save — reads its inputs from there (:func:`encode_cells`).
@@ -738,7 +753,29 @@ def load_tilemap_data(
         row_base,
         grain,
         bool(preset.params.get("column_major", False)),
+        # Bound here beside the declarations because it is the same "what does
+        # this format say about its cells" question, but it is a transform rather
+        # than an answer, so it travels as a callable the model can apply per edit.
+        _cell_settler(engine, preset.params, ctx=ctx, plugin=preset.id),
     )
+
+
+def _check_declarations(params: dict) -> None:
+    """Refuse a closed-set declaration the host would otherwise misread.
+
+    The host reads these off the preset by comparing against the one value it
+    acts on, so a typo is not an error but the *other* reading: ``layout =
+    "sprit"`` opens a sprite list as a plain grid, and ``stamp_dense = "false"``
+    (a string, so truthy) is dense. Checked with the load, where the engine's own
+    parameters are, so the preset is named in the report
+    (:mod:`celpix.plugins._params`).
+    """
+    if "layout" in params:
+        one_of(params, "layout", ("text", "sprite"), None)
+    if "subsprite_size" in params:
+        one_of(params, "subsprite_size", ("stated",), None)
+    for key in ("column_major", "indirect", "stamp_dense"):
+        flag(params, key)
 
 
 def load_font_alphabet(

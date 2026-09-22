@@ -1,56 +1,54 @@
-# Example tilemap preset — a map whose byte names a record of a definition table.
+# Example preset: `codec.tilemap.indirect-record` — a byte names a metatile record.
 #
-# Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
+# To use: copy, remove the leading "_", edit, press F5. See _packed.toml for
+# what a preset is.
 #
-# WHICH ENGINE IS WHICH
-# ---------------------
-# This is the indirect-record engine, for the level-map shape a side-scroller
-# keeps: one byte per 16x16 metatile, no filler, each byte the *number* of a
-# record in a metatile table that holds four tile numbers apiece. celPix draws
-# such a map as a dense stamped chain (tilemap-entry.md sec 3.1) and resolves a
-# stamp from a source *cell*, so the engine turns the record number into the
-# record's first cell on the way in and back into the number on the way out.
-# A map whose cells already hold cell positions wants _packed.toml.
+# ENGINE
+#   A level map of one byte per metatile. Each byte is the number of a record in
+#   a definition table (another tilemap entry, bound as this map's source) that
+#   holds the metatile's tile numbers. The engine converts the record number to
+#   the record's first cell in the table on decode, and back on encode, so the
+#   map draws as a dense chain of stamps (tilemap-entry.md sec 3.1). A map whose
+#   cells already hold cell positions uses _packed.toml with `indirect`.
 #
-# SHIPPED PRESETS BUILT ON IT
-# ---------------------------
-#   metatile-index  one byte per 2x2 record of a packed, two-cell-wide table -
-#                   the ordinary side-scroller map. A game's own geometry (a
-#                   grid-laid table, a column-major file) is a project preset
-#                   like this one: Alex Kidd's level maps, Melroon's area maps
-#                   and Super Mario World's Map16 index maps are the three in
-#                   the sample projects.
+#   The format has no flips and no writable palette row. Sample projects with
+#   their own preset on this engine: alex-kidd, smw, smb, ferias-frustradas,
+#   ferias-frustradas-sms.
+#
+# SHIPPED PRESETS ON THIS ENGINE
+#   metatile-index   the params below: 2x2 records stored end to end.
 
 id = "preset.tilemap.example-indirect-record"
 name = "Example indirect record map (byte -> metatile record)"
 engine_id = "codec.tilemap.indirect-record"
 
 [params]
-# Cells per record: four for a 2x2 metatile of a two-cell-wide table, so
-# record k's first cell is 4k. This is the packed case (records end to end);
-# `records_across = 0` says so.
+
+# Cells per record. Default 4. With records stored end to end, record k starts
+# at cell k * record_cells.
 record_cells = 4
+
+# For a table laid out as a grid N records across (0, the default: end to end).
+# Record k then starts at
+#   (k // N) * N * record_cells + (k % N) * record_columns
+# record_columns (default 2) is the record's width in cells.
 records_across = 0
-# Only read for a table a reshape has laid out as a grid N records across,
-# where a record's corner is (k // N) * N * record_cells + (k % N) * this.
 record_columns = 2
 
-# The chain's own declarations, read by the host rather than the engine
-# (tilemap-entry.md sec 3.1): the cells are coordinates into another map, one
-# entry per stamp with no filler, and - for a map stored down each column, as
-# a stream cut one part per row comes out - column-major.
+# Read by the host, not the engine. `indirect`: cells are coordinates into
+# another map. `stamp_cells`: source cells one coordinate names, [across, down].
+# `stamp_dense`: one entry per stamp. `column_major`: the map is stored down
+# each column (display only).
 indirect = true
 stamp_cells = [2, 2]
 stamp_dense = true
 column_major = false
 
-# A byte whose top bits choose a table. Where several tables sit end to end -
-# one per palette row, each only as long as it needs - the top `group_bits` of
-# the byte name the table and the rest the record in it; `group_starts` is
-# each table's first record, counted through the whole run, and `group_rows`
-# makes the table the cell's palette row. Super Mario Bros. is the worked case
-# (two bits, tables of 39, 46, 10 and 6). Leave `group_bits` at 0 for a plain
-# byte.
+# Several tables end to end, selected by the byte's top bits. `group_bits`
+# (1-7; default 0, off): how many top bits select the table; the rest are the
+# record within it. `group_starts`: each table's first record, 2^group_bits
+# ascending values. `group_rows` (default false): the table number is the
+# cell's palette row. Super Mario Bros.: two bits, tables of 39, 46, 10 and 6.
 # group_bits = 2
 # group_starts = [0, 39, 85, 95]
 # group_rows = true

@@ -253,31 +253,6 @@ def test_a_layout_takes_the_letters_its_own_notes_use() -> None:
         codec.decode(b"\x00\x00", {"fields": "iiii iiii", "legend": {"i": "tile"}}, ctx)
 
 
-def test_a_cell_stated_field_by_field_still_reads() -> None:
-    """A user's plugins folder is not ours to rewrite.
-
-    Presets out there place each field on its own, so the engine keeps reading
-    them — including a split index as an ordered chunk list, which is the one
-    shape whose meaning is not recoverable if it stops being understood.
-    """
-    registry = default_registry()
-    codec, ctx = TilemapCodec(), PipelineContext()
-    per_field = {
-        "bytes": 2,
-        "endian": "little",
-        "index": [{"shift": 11, "bits": 1}, {"shift": 0, "bits": 8}],
-        "palette": {"shift": 8, "bits": 3},
-        "flip_h": {"shift": 13, "bits": 1},
-        "flip_v": {"shift": 14, "bits": 1},
-        "priority": {"shift": 15, "bits": 1},
-    }
-    raw = b"\xa5\x2d"
-    assert codec.decode(raw, per_field, ctx) == codec.decode(
-        raw, _params(registry, "preset.tilemap.gbc-bg"), ctx
-    )
-    assert codec.encode(codec.decode(raw, per_field, ctx), per_field, ctx) == raw
-
-
 @pytest.mark.parametrize(
     ("preset_id", "want"),
     [
@@ -310,24 +285,6 @@ def test_cell_fields_names_exactly_what_the_layout_places(
     assert fields.get("palette_row") == codec.palette_row_limit(params)
     assert ("visible" in fields) == codec.has_visibility(params)
     assert ("ends_line" in fields) == codec.has_line_flag(params)
-
-
-def test_cell_fields_reads_the_per_field_preset_form_too() -> None:
-    """The legacy shift/bits statement answers the same as its layout twin."""
-    registry = default_registry()
-    codec = TilemapCodec()
-    per_field = {
-        "bytes": 2,
-        "endian": "little",
-        "index": [{"shift": 11, "bits": 1}, {"shift": 0, "bits": 8}],
-        "palette": {"shift": 8, "bits": 3},
-        "flip_h": {"shift": 13, "bits": 1},
-        "flip_v": {"shift": 14, "bits": 1},
-        "priority": {"shift": 15, "bits": 1},
-    }
-    assert codec.cell_fields(per_field) == codec.cell_fields(
-        _params(registry, "preset.tilemap.gbc-bg")
-    )
 
 
 def test_the_terminator_is_the_codecs_answer_not_the_presets() -> None:
@@ -1491,6 +1448,7 @@ def test_a_mega_drive_word_x_keeps_offsets_a_byte_could_not_hold() -> None:
     field only as wide as the other member's would fold ``+200`` to ``-56`` and
     look like a second misreading.
     """
+    from celpix.core.notices import notices
     from celpix.plugins.builtins.md_sprite import MdSpriteCodec
 
     codec = MdSpriteCodec()
@@ -1505,6 +1463,9 @@ def test_a_mega_drive_word_x_keeps_offsets_a_byte_could_not_hold() -> None:
     (sub,) = codec.frames([cell], params, ctx)[0]
     assert (sub.x, sub.y) == (200, -8)
     assert codec.encode([cell], params, ctx) == raw
+    # No mirror field, so nothing to check: the notice recommends this reading
+    # and must not fire on it.
+    assert not notices(ctx)
 
     back = bytes((0, 0)) + (1).to_bytes(2, "big") + (-200 & 0xFFFF).to_bytes(2, "big")
     (cell,) = codec.decode(back, params, ctx)
@@ -1779,7 +1740,7 @@ def test_a_cell_format_states_how_high_its_reference_can_go() -> None:
     assert codec.index_limit(_params(registry, "preset.tilemap.scgcad-map")) == 0x3FFF
     assert codec.index_limit(_params(registry, SNES_BG)) == 0x3FF
     # A format with no index field has no reference to set at all.
-    assert codec.index_limit({"bytes": 2}) is None
+    assert codec.index_limit({"fields": "ffff ffff ffff ffff"}) is None
 
 
 def test_a_restamped_layout_saves_its_own_coordinates(tmp_path) -> None:
@@ -2157,9 +2118,60 @@ def test_grouped_records_pick_a_sub_table_and_its_palette_row() -> None:
     assert codec.encode(cells, grouped, ctx) == bytes([0x00, 0x05, 0x40, 0x83, 0xC1])
     # record 40 is group 1's second, though group 0's six bits could name it too
     assert codec.encode([Cell(index=4 * 40)], grouped, ctx) == bytes([0x41])
+    # ...so the record alone is not an inverse, and a cell nobody touched goes
+    # back as the byte it was read as: group 0 reaching past its own end here,
+    # and two tables starting together below.
+    odd = codec.decode(bytes([0x28]), grouped, ctx)
+    assert (odd[0].index, odd[0].palette_row) == (4 * 40, 0)
+    assert codec.encode(odd, grouped, ctx) == bytes([0x28])
+    shared = {**grouped, "group_starts": [0, 40, 40, 80]}
+    twins = bytes([0x41, 0x81])
+    assert codec.encode(codec.decode(twins, shared, ctx), shared, ctx) == twins
     assert codec.has_palette_rows(grouped) and not codec.has_palette_rows({})
     with pytest.raises(ValueError, match="ascending group_starts"):
         codec.decode(b"\x00", {"group_bits": 2, "group_starts": [0, 1]}, ctx)
+
+
+def test_a_grouped_record_edit_settles_the_row_it_moved_to() -> None:
+    """With ``group_rows`` the row is the record's consequence, so an edit that
+    moves a cell to a record in another table has changed its colour and nothing
+    else would have said so — it would draw in the row it came from and reload in
+    the row it went to. ``settle_cells`` re-derives the row from the byte the
+    encode will write, and carries that byte with it so the two cannot drift."""
+    from celpix.plugins.builtins.indirect_record import IndirectRecordCodec
+
+    codec = IndirectRecordCodec()
+    ctx = PipelineContext()
+    grouped = {
+        "record_cells": 4,
+        "group_bits": 2,
+        "group_starts": [0, 39, 85, 95],
+        "group_rows": True,
+    }
+    cells = codec.decode(bytes([0x00, 0x28, 0x40]), grouped, ctx)
+
+    # A decoded list is settled, and says so by identity — which is what lets the
+    # settle sit on both ends of every edit.
+    assert codec.settle_cells(cells, grouped) is cells
+    # Record 50 is in group 1's table (39 onward), so the cell moves row with it.
+    moved = list(cells)
+    moved[0] = replace(cells[0], index=4 * 50)
+    settled = codec.settle_cells(moved, grouped)
+    assert (settled[0].palette_row, settled[0].flags) == (1, 0x4B)
+    # The byte it settled on is the byte the encode writes, so a reload draws the
+    # rows the model is holding.
+    written = codec.encode(settled, grouped, ctx)
+    assert written == codec.encode(moved, grouped, ctx)
+    reread = codec.decode(written, grouped, ctx)
+    assert [c.palette_row for c in reread] == [c.palette_row for c in settled]
+    assert codec.settle_cells(settled, grouped) is settled
+    # The untouched neighbour keeps the row of the byte it was read as, group 0
+    # reaching past its own end and all.
+    assert (settled[1].palette_row, settled[1].flags) == (0, 0x28)
+    # Nothing to derive without `group_rows`, or without groups at all.
+    plain = codec.decode(bytes([0x28]), {"record_cells": 4}, ctx)
+    assert codec.settle_cells(plain, {"record_cells": 4}) is plain
+    assert codec.settle_cells(cells, {**grouped, "group_rows": False}) is cells
 
 
 def test_a_dense_stamped_map_fixes_its_own_width_and_restamps_by_the_stamp() -> None:
@@ -3572,7 +3584,7 @@ def test_a_nametable_declares_the_four_cells_that_share_one_stored_row() -> None
     (``docs/design/tilemap-entry.md`` §4). Cells can still arrive disagreeing —
     a paste carries the rows it was cut with — and the quadrant's **top-left**
     cell wins, the same rule
-    :meth:`~celpix.core.document.Document.snapped_palette_rows` applies on the
+    :meth:`~celpix.core.document.Document.settle_cells` applies on the
     way in. The two are asserted here because a drift between them is invisible
     until a file is reloaded.
     """
@@ -3635,9 +3647,9 @@ def test_a_row_group_is_the_quadrant_the_file_can_actually_hold() -> None:
     # The snap settles what a paste leaves disagreeing, by the codec's own rule.
     mixed = list(cells)
     mixed[33] = Cell(index=0, palette_row=2)
-    assert page.snapped_palette_rows(mixed)[33].palette_row == cells[0].palette_row
+    assert page.settle_cells(mixed)[33].palette_row == cells[0].palette_row
     # Nothing to settle costs nothing: the same list comes back.
-    assert page.snapped_palette_rows(cells) is cells
+    assert page.settle_cells(cells) is cells
 
 
 def test_a_save_settles_row_groups_however_the_cells_were_written(tmp_path) -> None:
@@ -3729,7 +3741,7 @@ def test_a_save_settles_row_groups_however_the_cells_were_written(tmp_path) -> N
 
     settled = doc.settled_cells
     assert [cell.palette_row for cell in settled[:2]] == [0, 0]  # the first won
-    assert doc.snapped_palette_rows(settled) is settled  # idempotent, so it may sit
+    assert doc.settle_cells(settled) is settled  # idempotent, so it may sit
     assert doc.cells[5].palette_row == 3  # and nothing was written back to the model
 
     save(doc, registry, palette=False)
@@ -3964,7 +3976,7 @@ def test_the_packed_engine_publishes_a_source_tables_stamp_and_stride() -> None:
     # and a preset saying neither publishes neither, so an ordinary map is
     # still stamped at the width it is viewed
     plain = PipelineContext()
-    TilemapCodec().decode(bytes(range(16)), {"bytes": 2}, plain)
+    TilemapCodec().decode(bytes(range(16)), {"fields": "iiii iiii iiii iiii"}, plain)
     assert plain.get(KEY_TILEMAP_STAMP_CELLS) is None
     assert plain.get(KEY_TILEMAP_STAMP_STRIDE) is None
 
@@ -4002,4 +4014,67 @@ def test_a_table_stored_down_each_column_stamps_its_records_upright() -> None:
 
     # the order means nothing without a stride saying how far a column steps
     with pytest.raises(ValueError, match="stamp_stride"):
-        TilemapCodec().decode(b"\0\0", {"bytes": 2, "stamp_order": "column"}, ctx)
+        TilemapCodec().decode(
+            b"\0\0", {"fields": "iiii iiii iiii iiii", "stamp_order": "column"}, ctx
+        )
+
+
+def test_the_host_settles_a_deriving_codec_through_the_document(tmp_path) -> None:
+    """The wiring, end to end and headless: the codec's settle is bound by the
+    decode, travels to the document the app builds, and runs inside the one place
+    a cell list is settled — so a restamp that crosses a table reaches the model
+    already in the row a reload would give it, with no gesture taught about it."""
+    from celpix.plugins.base import Preset
+    from celpix.project.documents import load_document
+    from celpix.project.workspace import Entry, EntryKind, EntrySession, Workspace
+
+    registry = default_registry()
+    registry.register_preset(
+        Preset(
+            id="preset.tilemap.grouped-records",
+            name="Grouped metatile ids",
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id="codec.tilemap.indirect-record",
+            params={
+                "record_cells": 4,
+                "group_bits": 2,
+                "group_starts": [0, 39, 85, 95],
+                "group_rows": True,
+                "indirect": True,
+                "stamp_cells": [2, 2],
+                "stamp_dense": True,
+            },
+        )
+    )
+    path = tmp_path / "area.map"
+    path.write_bytes(bytes([0x00, 0x28, 0x40, 0x83]))
+    entry = Entry(
+        name="area.map",
+        kind=EntryKind.FILE,
+        path=str(path),
+        content_kind=ContentKind.TILEMAP,
+        tilemap_preset_id="preset.tilemap.grouped-records",
+    )
+    entry.session = EntrySession("preset.pixel.snes-4bpp", "preset.palette.bgr555")
+    workspace = Workspace()
+    workspace.entries.append(entry)
+
+    doc = load_document(entry, registry, workspace).doc
+    assert doc.cell_settler is not None
+    assert doc.settle_cells(doc.cells) is doc.cells  # what a decode gives is settled
+
+    moved = list(doc.cells)
+    moved[0] = replace(moved[0], index=4 * 50)  # record 50: group 1's table
+    settled = doc.settle_cells(moved)
+
+    assert settled[0].palette_row == 1
+    doc.cells = settled
+    written = encode_cells(
+        doc.settled_cells,
+        doc.tilemap_config.interpret_preset_id,
+        registry,
+        doc.tilemap_ctx,
+    )
+    engine, preset = registry.engine_for("preset.tilemap.grouped-records")
+    reread = engine.decode(written, preset.params, PipelineContext())
+    assert [c.palette_row for c in reread] == [c.palette_row for c in settled]

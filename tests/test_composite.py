@@ -704,6 +704,65 @@ def test_an_offset_palette_on_a_composite_reads_its_first_piece_file(
     assert alerts and "no piece from a file" in alerts[0]
 
 
+def test_reading_a_composite_opens_the_files_its_slices_are_cut_from(
+    qtbot, tmp_path
+) -> None:
+    """A composite asked anything in its **own** coordinates answers out of a
+    file one of its pieces belongs to, and an Offset palette is exactly that. A
+    piece cut from a file nobody opened left the mode refused for having "no
+    piece from a file" while the file sat on disk, so reading the composite opens
+    it."""
+    from celpix.project.workspace import PaletteMode, new_slice
+
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(range(256)) * 8)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    # The slice alone, its parent file never opened - what a project may hold.
+    cut = new_slice(str(rom), "gfx", 0x200, TILE * 2)
+    cut.session = _session()
+    composite = new_composite("window", (CompositePiece(cut),))
+    window._workspace.entries += [cut, composite]
+    assert window._workspace.find_file(str(rom)) is None
+
+    window._activate_entry(composite)
+
+    parent = window._workspace.find_file(str(rom))
+    assert parent is not None
+    assert window._palette_offset_owner(composite) is parent
+    assert window._offset_palette_refusal(composite) is None
+    combo = window._palette_mode_combo
+    assert combo.model().item(combo.findData(PaletteMode.OFFSET)).isEnabled()
+
+
+def test_writing_a_composite_writes_its_own_offset_palette(qtbot, tmp_path) -> None:
+    """A composite has no file, so "write it" means write the pieces its strokes
+    were deposited into — plus its **own** Offset palette, which lands in the file
+    its first file-backed piece came from and rides no piece's pixel pathway. Left
+    out, the colour stayed unsaved while the message said nothing had changed, and
+    the documents on that file kept the bytes from before: a composite's file list
+    is empty, so nothing else would have dropped them."""
+    from pathlib import Path
+
+    window, first, second, composite = _window_with_composite(qtbot, tmp_path)
+    window._select_tiles(0, 0)
+    assert window._load_palette_at_offset(0)
+    before = Path(first.path).read_bytes()
+
+    window._palette_panel.select_index(1)
+    window._on_color_changed(0xFF00FF00)
+    assert composite.palette_dirty
+
+    window._write_entry_checked(composite)
+
+    assert not composite.palette_dirty
+    assert Path(first.path).read_bytes() != before
+    assert "palette" in window.statusBar().currentMessage()
+    # The owner's own document held the pre-edit bytes, and its file list is the
+    # only place that file was ever named.
+    assert first.doc is None
+
+
 def test_editing_the_list_rebuilds_the_composite_and_its_maps(qtbot, tmp_path) -> None:
     """Edit… on a composite re-lists its pieces, and the join on screen has to
     follow — as does every map drawing through it. It did not: the rebuild

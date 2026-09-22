@@ -231,11 +231,42 @@ def sequence_frames(
 
 
 def _argb(image: QImage) -> list[int]:
-    """``image``'s pixels as ``0xAARRGGBB`` ints, row-major."""
+    """``image``'s pixels as ``0xAARRGGBB`` ints, row-major.
+
+    Read off the buffer rather than one ``QImage.pixel`` call per pixel, which is
+    what the whole of a GIF export used to cost: ``Format_ARGB32`` stores each
+    pixel as a single host-order word, which is already the int wanted. Rows are
+    padded to a multiple of four bytes, so the stride is read from the image
+    rather than taken to be its width.
+    """
     image = image.convertToFormat(QImage.Format.Format_ARGB32)
-    return [
-        image.pixel(x, y) for y in range(image.height()) for x in range(image.width())
-    ]
+    width = image.width()
+    stride = image.bytesPerLine() // 4
+    words = memoryview(image.constBits()).cast("I")
+    return [words[y * stride + x] for y in range(image.height()) for x in range(width)]
+
+
+def _step_pixels(
+    strip: QImage, rects: list[QRect], sequence: Sequence
+) -> list[list[int] | None]:
+    """Each step's pixels as :func:`_argb` ints, converted **once per frame**.
+
+    A sequence names the same frame over and over — a two-frame flap held for a
+    hundred steps — and the cut, the conversion and the compression are all per
+    *pixel*. The repeats come back as the same list object, which is how the
+    encoder keys and compresses each distinct frame once too
+    (:func:`~celpix.core.gif.encode`). None where a step names a frame the file
+    does not hold, as :func:`sequence_frames` answers for the PNG side.
+    """
+    converted: dict[int, list[int] | None] = {}
+    for step in sequence.steps:
+        if step.frame not in converted:
+            converted[step.frame] = (
+                _argb(strip.copy(rects[step.frame]))
+                if 0 <= step.frame < len(rects)
+                else None
+            )
+    return [converted[step.frame] for step in sequence.steps]
 
 
 def save_sequence_gif(
@@ -249,15 +280,12 @@ def save_sequence_gif(
     if not rects or not sequence.steps:
         raise ValueError("the sequence has no steps")
     size = rects[0].size()
-    frames = sequence_frames(strip, rects, sequence)
+    frames = _step_pixels(strip, rects, sequence)
     delays = gif.delays_cs([step.duration for step in sequence.steps], rate)
     data = gif.encode(
         size.width(),
         size.height(),
-        [
-            (None if frame is None else _argb(frame), delay)
-            for frame, delay in zip(frames, delays, strict=True)
-        ],
+        list(zip(frames, delays, strict=True)),
     )
     Path(path).write_bytes(data)
 

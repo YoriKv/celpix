@@ -1,52 +1,51 @@
-# Example tilemap preset — a sprite object whose parts are rectangles.
+# Example preset: `codec.tilemap.md-sprite` — the Mega Drive VDP sprite record.
 #
-# Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
+# To use: copy, remove the leading "_", edit, press F5. See _packed.toml for
+# what a preset is.
 #
-# A sprite engine: frames of parts at signed pixel offsets rather than cells in
-# rows.
+# ENGINE
+#   A sprite map: parts placed at signed pixel offsets, drawn as one frame per
+#   entry. Record layout:
 #
-# WHICH ENGINE IS WHICH
-# ---------------------
-# This is the stated-rectangle engine, for a record that names a **rectangle**
-# instead of picking between two squares. Its size byte is the Mega Drive VDP's
-# own nibble, so one record covers anything from one tile to a 4x4 block, and the
-# record's tiles run *down each column*. It checks the record's mirrored X as it
-# reads, which is what tells its two six-byte variants apart. A record in any
-# other field order wants _sprite-record.toml; anything in rows, _packed.toml.
+#       y.b  size.b  attr.w  x (1 or 2 bytes)  [x_mirror.b]
 #
-# SHIPPED PRESETS BUILT ON IT
-# ---------------------------
-#   md-sprite       the Mega Drive sprite list this engine exists for, and the
-#                   only one shipped on it.
+#   size   `....ccrr`: width and height in tiles, each minus 1 (1x1 to 4x4).
+#          A part's tiles run down each column.
+#   attr   `oppv hiii iiii iiii`: priority, palette row, flips, 11-bit tile.
+#
+#   There is no frame header: the entry must start at the first record. For any
+#   other field order use _sprite-record.toml. Sprite maps open read-only in
+#   the app.
+#
+# SHIPPED PRESETS ON THIS ENGINE
+#   md-sprite   the same params as below.
 
 id = "preset.tilemap.example-md-sprite"
 name = "Example rectangular sprite object"
 engine_id = "codec.tilemap.md-sprite"
 
 [params]
-# Cells are freely-placed parts grouped into frames (tilemap-entry.md sec 6).
-layout = "sprite"
 
-# ...and records that **state** each part's rectangle, rather than choosing
-# between two squares. Leave it out for a record that holds a size *bit*: which
-# two squares that bit picks between is nobody's parameter — no file records it
-# — so the bar offers the pair per entry and the project keeps it.
+# Required on this engine: cells are sprite parts, and each part states its own
+# size, so the toolbar offers no size pair.
+layout = "sprite"
 subsprite_size = "stated"
 
-# The X offset's width in bytes. 1 is a signed byte; 2 is a signed word.
+# Width of X in bytes: 1 (default, signed byte) or 2 (signed big-endian word).
+# Any other value is an error.
 x_bytes = 1
 
-# Whether a trailing byte holds the X the part takes when the object is drawn
-# mirrored — always -(x + width_in_pixels).
+# A trailing signed byte holds the X used when the object is drawn mirrored:
+# -(x + width_in_pixels). Default true.
 #
-# This pair is the one thing to get right, and the one that fails quietly: a
-# record with a byte X *and* a mirror byte is the same six bytes as one with a
-# signed word X, so the wrong choice draws a plausible object with its pieces in
-# the wrong places. celPix checks the mirror field against the X it should be and
-# says so in the status notices — if a run comes out strewn across the canvas,
-# swap these two.
+# x_bytes = 1 with mirror_x = true and x_bytes = 2 with mirror_x = false are
+# both six bytes, and the wrong choice draws the parts in the wrong places
+# without failing. With mirror_x set, each mirror byte is checked against its X
+# and a mismatch raises a notice on the entry: try the other pair.
 mirror_x = true
 
-# Byte order of the record's attribute word — the 11-bit tile, both flips, the
-# palette row and the priority bit.
+# Byte order of the attribute word: "big" (default) or "little".
 endian = "big"
+
+# Palette row that a part's row 0 means. Default 0.
+# palette_row_base = 0

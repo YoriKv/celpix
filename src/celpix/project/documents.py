@@ -58,6 +58,7 @@ from celpix.project.workspace import (
     can_supply_palette,
     composite_config,
     composite_layout,
+    composite_preset_id,
     entry_view_bytes,
     pixel_config_for,
     record_composite_layout,
@@ -653,6 +654,11 @@ def chained_document(
         # **This entry's own**: what it sizes is a *write*, snapped against the
         # referrer's own cells (`Document.palette_row_group`).
         palette_row_granularity=loaded.row_granularity,
+        # This entry's own too, and for the same reason: what it settles is the
+        # referrer's cells, which are what a write of this entry encodes. A
+        # metatile-id map is exactly this shape — a chain whose byte derives its
+        # palette row from the record it names.
+        cell_settler=loaded.settler,
         column_major=loaded.column_major,
     )
 
@@ -726,6 +732,7 @@ def tilemap_document(
         sprite_size_pair=loaded.size_pair,
         cells_carry_palette_rows=loaded.palette_rows,
         palette_row_granularity=loaded.row_granularity,
+        cell_settler=loaded.settler,
         column_major=loaded.column_major,
         text_layout=fontmap,
         font_alphabet=font_alphabet_for(registry, workspace, entry, loaded.cell_bytes),
@@ -857,6 +864,30 @@ def offset_palette_source(
     ), False
 
 
+def source_view_preset(
+    source: Entry,
+    registry,  # noqa: ANN001
+    fallback_preset: str = DEFAULT_PIXEL_PRESET,
+) -> str:
+    """The pixel format ``source``'s own buffer is read at, for a cross-entry read.
+
+    Its session's, as the entry on screen is read. A **composite** the user has
+    never opened has no session yet and cannot take the caller's format either:
+    its buffer is *assembled* at a pixel format — un-ranged pieces are rounded up
+    to a whole tile of it (:func:`~celpix.project.workspace.composite_layout`) —
+    so reading one at the stage default would shift every byte after a ragged
+    piece. Its seed is the same answer the view it is about to get will take
+    (:func:`~celpix.project.workspace.composite_preset_id`), which is what keeps
+    the colours a consumer reads out of it from changing the moment it is opened.
+    """
+    session = source.session
+    if session is not None:
+        return session.pixel_preset_id
+    if source.kind is EntryKind.COMPOSITE:
+        return composite_preset_id(source, registry)
+    return fallback_preset
+
+
 def entry_palette_source(
     registry,  # noqa: ANN001
     workspace: Workspace,
@@ -890,9 +921,12 @@ def entry_palette_source(
     """
     if settle is not None:
         settle(source)
-    session = source.session
-    preset = session.pixel_preset_id if session is not None else fallback_preset
-    data, _base = entry_view_bytes(source, registry, preset, workspace)
+    data, _base = entry_view_bytes(
+        source,
+        registry,
+        source_view_preset(source, registry, fallback_preset),
+        workspace,
+    )
     avail = len(data) - byte_off if byte_off >= 0 else 0
     colors = min(
         FULL_PALETTE_COUNT, pipeline.palette_entry_capacity(avail, preset_id, registry)

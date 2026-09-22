@@ -281,6 +281,17 @@ class WritingMixin:
                 for piece in self._dirty_composite_pieces(entry)
                 if self._write_entry(piece)
             ]
+            # Its **own palette** is the one thing a composite has to write for
+            # itself: an Offset palette on one is read out of the file its first
+            # file-backed piece came from, and that window belongs to no piece's
+            # pixel pathway (``docs/design/palette-editing.md`` §2). Left out, the
+            # colour edit stayed unsaved while this said nothing had changed.
+            if (
+                entry.palette_dirty
+                and entry.doc.palette_config.write_enabled
+                and self._write_entry(entry)
+            ):
+                written.append(f"{entry.name}'s palette")
             self.statusBar().showMessage(
                 f"Wrote {_and_list(written)}."
                 if written
@@ -359,8 +370,15 @@ class WritingMixin:
             self._report_refused_folds(entry)
         # Invalidated even for a palette-only write: in Offset mode the palette's
         # target *is* this entry's own file, so other entries on it are stale too.
-        # Every file of a region, since a save can have rewritten any of them.
-        for path in entry.paths:
+        # Every file of a region, since a save can have rewritten any of them —
+        # and the palette's own, because a **composite** has no paths to name and
+        # its Offset palette is written into the file a piece came from
+        # (:func:`~celpix.project.documents.offset_palette_files`). Nothing else
+        # would then have dropped the stale documents on it.
+        touched = list(entry.paths)
+        if entry.doc.palette_config.write_enabled:
+            touched += entry.doc.palette_config.source.paths
+        for path in touched:
             self._workspace.invalidate_path(path, keep=entry)
         self._refresh_stale_current()
         return True
@@ -453,7 +471,7 @@ class WritingMixin:
         parent.pending_folds.clear()
         return folded
 
-    def _propagate_pixel_edit(self, entry: Entry) -> None:
+    def _propagate_pixel_edit(self, entry: Entry, keep: Entry | None = None) -> None:
         """Carry a pixel edit across the file/slice boundary **as it lands**.
 
         The file's buffer is the authority for its bytes, so an edit made
@@ -476,6 +494,17 @@ class WritingMixin:
         the two is what let one edit acquire *several* owners — a composite's
         pieces — without this method having to know how many
         (``docs/design/composite-entry.md``).
+
+        ``keep`` is a slice whose document the caller is **holding** and so cannot
+        have taken away: an Entry-mode palette read out of the consumer's own
+        parent lands its colour in the file, and the consumer is one of the slices
+        below it (:meth:`~...palette_entry.PaletteEntryMixin.
+        _sync_entry_palette_bytes`). Dropped, the window goes on drawing a
+        document the entry no longer has — with the palette the edit was just made
+        on inside it — and every later edit lands in a fresh one nobody sees. It
+        is the same exemption :meth:`~...tile_bytes.TileBytesMixin.
+        _reassemble_composites` takes for the entry a stroke was made on, and it
+        is safe for the same reason: those bytes are on screen already.
         """
         if entry.kind is EntryKind.SLICE:
             parent = self._workspace.find_file(entry.path)
@@ -499,6 +528,8 @@ class WritingMixin:
         elif entry.kind is EntryKind.FILE:
             for child in self._workspace.children_of(entry):
                 if child.kind is not EntryKind.SLICE or child.doc is None:
+                    continue
+                if child is keep:
                     continue
                 # A slice whose fold was refused keeps its document: the buffer
                 # does not hold its edits, so re-deriving it from the buffer

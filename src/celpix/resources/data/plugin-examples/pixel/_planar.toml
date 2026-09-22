@@ -1,64 +1,50 @@
-# Example preset for the `codec.pixel.planar` engine. Files starting with "_" are
-# ignored — copy this file, drop the underscore, edit it, and press F5 in celPix.
+# Example preset: `codec.pixel.planar` — bitplane tiles.
 #
-# A preset names one built-in engine and fills in its parameters. This folder has
-# one example per pixel engine; pick the one whose layout matches your format.
-# Sitting in pixel/ is what makes it an interpret-pixel format — no stage field.
+# To use: copy, remove the leading "_", edit, press F5. "_" files are ignored and
+# rewritten at startup.
 #
-# WHAT THE ENGINE DOES
-# --------------------
-# **Bitplane** formats: bit k of a pixel's index comes from a separate byte called
-# plane k, and within a byte pixel x is bit 7 - x. That eight-pixel group is the
-# engine's fixed unit; a tile is a whole number of them, so wide tiles are a
-# parameter rather than a different engine. All that varies between planar formats
-# is which byte each plane is read from:
+# A preset is data: it names one engine (`engine_id`) and sets its `[params]`.
+# The folder sets the stage; no `stage` key is needed. There is one example per
+# pixel engine in this folder. Params are checked on first use, not at load: an
+# invalid preset loads and then fails on the entry that uses it. Values are
+# strict: a boolean must be true or false (not a string), and a parameter with
+# a fixed set of values rejects any other.
 #
-#     offset(k, y, g) = base[k] + stride[k] * y + group_stride[k] * g
+# ENGINE
+#   Bit k of a pixel's index is read from plane k. Within a plane byte, pixel x
+#   of an eight-pixel group is bit 7 - x. Plane k's byte for pixel row y and
+#   group g (g = x // 8):
 #
-# with y the pixel row and g the eight-pixel group across it (g = x / 8).
+#       offset = base[k] + stride[k] * y + group_stride[k] * g
 #
-# SHIPPED PRESETS BUILT ON IT
-# ---------------------------
-#   snes-2bpp          bpp 2, planes {0,2} and {1,2} — the two planes alternate
-#                      byte by byte down the tile.
-#   nes-2bpp           bpp 2, planes {0,1} and {8,1} — plane 1 sits in the second
-#                      half of the tile instead of interleaving.
-#   sms-4bpp           bpp 4, planes {k,4} — four planes interleaved per row.
-#   4bpp-planar-16x16  tile_width 16 with group_stride 4: the row's second
-#                      eight-pixel group is four bytes further on.
-#   1bpp-16x11-ff6     group_stride -1 — that tile stores its right half *first*.
+# SHIPPED PRESETS ON THIS ENGINE
+#   snes-2bpp          planes {0,2} {1,2}: interleaved byte by byte.
+#   nes-2bpp           planes {0,1} {8,1}: plane 1 in the tile's second half.
+#   sms-4bpp           planes {k,4}: four planes interleaved per row.
+#   4bpp-planar-16x16  tile_width 16, group_stride 4.
+#   1bpp-16x11-ff6     group_stride -1: the right half is stored first.
 
-# Unique id (never shown; keep it stable) and the name the format picker shows.
-id = "preset.pixel.example-planar"
-name = "Example planar 2bpp (GB-style)"
+id = "preset.pixel.example-planar"  # unique and stable; never shown
+name = "Example planar 2bpp (GB-style)"  # shown in the format picker
 engine_id = "codec.pixel.planar"
 
 [params]
 
-# How many bitplanes, i.e. bits per pixel. 1 to 8, and `planes` must hold exactly
-# this many entries — one per bit of the index.
+# Bits per pixel, 1-8. Must equal the number of `planes` entries.
 bpp = 2
 
-# Where each plane's byte lives inside the tile. Entry k describes plane k, which
-# supplies bit k, so entry 0 is the *low* bit.
-#
-#   base          byte offset of that plane on row 0, group 0.
-#   stride        bytes per pixel row. Interleaved formats use the plane count (2
-#                 here); formats keeping each plane in its own block of the tile
-#                 use 1 and separate the planes with `base` instead.
-#   group_stride  bytes per eight-pixel group across the row. Only meaningful
-#                 above tile_width 8 — omit it, or leave it 0, otherwise. May be
-#                 negative, for a tile storing its right half first.
-#
-# Every offset these produce has to land inside the tile, which is
-# tile_width * tile_height * bpp / 8 bytes — 16 here.
+# One entry per plane. Entry k supplies bit k; entry 0 is the low bit.
+#   base          required. Byte offset of the plane at row 0, group 0.
+#   stride        required. Bytes between pixel rows.
+#   group_stride  default 0. Bytes between eight-pixel groups in a row. Used
+#                 when tile_width > 8. May be negative.
+# Every offset must fall inside the tile: tile_width * tile_height * bpp / 8
+# bytes (16 here). Planes are not checked for overlap.
 planes = [
-  { base = 0, stride = 2, group_stride = 0 },  # plane 0: bytes 0, 2, 4, ...
-  { base = 1, stride = 2, group_stride = 0 },  # plane 1: bytes 1, 3, 5, ...
+  { base = 0, stride = 2, group_stride = 0 },  # bytes 0, 2, 4, ...
+  { base = 1, stride = 2, group_stride = 0 },  # bytes 1, 3, 5, ...
 ]
 
-# Pixel size of one tile; both default to 8. The width must be a whole number of
-# eight-pixel groups (8, 16, 24, ...), a pixel being one bit of one byte. The
-# height is free — 16x11 and 16x12 tiles both ship.
+# Tile size in pixels. Default 8 each. tile_width must be a multiple of 8.
 tile_width = 8
 tile_height = 8

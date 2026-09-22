@@ -735,10 +735,10 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         False,
         0x80,
     )
-    # A dict the host would have seeded: the table bound, the optional integer
-    # left to its default, which is the case needing no binding at all.
+    # The dict the host seeds with the table bound and the optional integer
+    # unbound: an integer with a default is delivered as that default.
     bound = PipelineContext()
-    bound.set(KEY_INPUTS, {"table": b"AB" + b"\xc0\xde"})
+    bound.set(KEY_INPUTS, {"table": b"AB" + b"\xc0\xde", "first_code": 0x80})
     raw = b"hello \xc0\xdeAB"
     packed = bp.compress(raw, bound)
     assert bp.decompress(packed, bound) == raw
@@ -964,3 +964,68 @@ def register(registry):
     assert "bytes_per_entry" in issues[0].message
     with pytest.raises(KeyError):
         reg.preset("format.palette.nosize")
+
+
+_CRASHING_PIXEL_FORMAT = """
+from celpix.core.index_grid import IndexGrid
+from celpix.plugins import FormatInfo, InputSpec
+
+
+class Raw:
+    info = FormatInfo(
+        id="format.pixel.raw-slice",
+        name="raw slice",
+        inputs=(InputSpec("table", "Table"),),
+    )
+
+    def decode(self, data, ctx):
+        return [IndexGrid(8, 8, data[:16])]  # 16 stored bytes are not 64 indices
+
+    def encode(self, tiles, ctx):
+        return b""
+
+    def bytes_per_tile(self):
+        return 16
+
+    def tile_size(self):
+        return (8, 8)
+
+
+def register(registry):
+    registry.register_format(Raw())
+"""
+
+
+def test_a_dropped_in_codec_is_reported_by_its_own_line_and_unused_inputs(
+    tmp_path,
+) -> None:
+    """Two things a plugin's author is otherwise left to guess.
+
+    Its **inputs** are declared on a stage that is never handed any, so nothing
+    would ever offer to bind them: a warning, and the format still registers.
+
+    Its **crash** is caught a call deeper, inside the host — the grid refusing
+    the wrong number of bytes — and the line to report is the plugin's own, not
+    the check that caught it.
+    """
+    from celpix.core.errors import Pathway, PipelineError
+    from celpix.pipeline._stage import _run
+
+    _drop(tmp_path, "pixel", "raw_slice.py", _CRASHING_PIXEL_FORMAT)
+    reg = default_registry()
+    (issue,) = discovery.load_directory(reg, str(tmp_path), confirm=_ALLOW)
+    assert issue.warning and not issue.declined
+    assert "table" in issue.message and "never used" in issue.message
+    engine = reg.plugin(Stage.INTERPRET_PIXEL, "format.pixel.raw-slice")
+
+    with pytest.raises(PipelineError) as caught:
+        _run(
+            Stage.INTERPRET_PIXEL,
+            Pathway.PIXEL,
+            lambda: engine.decode(bytes(16), {}, PipelineContext()),
+            plugin="format.pixel.raw-slice",
+        )
+    summary = caught.value.summary()
+    assert "format.pixel.raw-slice failed in the interpret-pixel stage" in summary
+    assert "ValueError: data length 16 != 64" in summary
+    assert "Raised at raw_slice.py, line 14, in decode." in summary

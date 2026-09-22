@@ -49,12 +49,14 @@ from typing import Any
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.palette import Palette
+from celpix.plugins._params import byte_order, flag
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._fields import bit_width
 from celpix.plugins.builtins._mask import (
     GRAY,
     argb_to_value,
     color_masks,
+    layout_text,
     shift_widths,
     value_to_argb,
 )
@@ -106,10 +108,7 @@ class ColorCodec:
         if bits is None and "bytes_per_entry" not in params:
             # The layout already says how wide an entry is, so a preset need not
             # say it twice; one that does is cross-checked by ``color_masks``.
-            text = params.get("fields")
-            if not isinstance(text, str):
-                raise ValueError("an entry needs a width - give bytes_per_entry")
-            bits = bit_width(text)
+            bits = bit_width(layout_text(params))
         if bits is None:
             size = int(params["bytes_per_entry"])
             if size <= 0:
@@ -139,13 +138,6 @@ class ColorCodec:
                 unit_bytes, per_unit = 1, 8 // entry_bits
         masks = color_masks(params, entry_bits)
         shade = masks.pop(GRAY, None)
-        if shade is None and params.get("gray", False):
-            if len(masks) != 1:
-                raise ValueError(
-                    f"gray takes exactly one field - the shade's own - got "
-                    f"{sorted(masks) or 'none'}"
-                )
-            shade = masks.popitem()[1]
         gray = shade is not None
         if gray:
             # Fanned out here so decode needs no special case: three components
@@ -156,8 +148,8 @@ class ColorCodec:
             unit_bytes=unit_bytes,
             per_unit=per_unit,
             entry_bits=entry_bits,
-            order=params.get("byte_order", "little"),
-            invert=bool(params.get("invert", False)),
+            order=byte_order(params, "byte_order", "little"),
+            invert=flag(params, "invert"),
             gray=gray,
             masks=masks,
         )

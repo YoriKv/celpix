@@ -61,12 +61,19 @@ class Notice:
 
     ``source`` names what produced it — a plugin id — so a notice stays
     attributable once several stages have contributed to the same pathway.
+
+    ``report`` is set where the notice stands for a plugin that **crashed** and
+    was worked around rather than one that chose to say something: the
+    exception and its traceback (:func:`~celpix.core.errors.fault_report`). It
+    is what makes the UI raise the notice as a dialog, since a tooltip has no
+    room for a traceback and a plugin's author needs one.
     """
 
     level: NoticeLevel
     summary: str
     detail: str = ""
     source: str = ""
+    report: str = ""
 
     @property
     def is_warning(self) -> bool:
@@ -79,6 +86,7 @@ def add_notice(
     summary: str,
     detail: str = "",
     source: str = "",
+    report: str = "",
 ) -> None:
     """Append a notice to ``ctx``.
 
@@ -87,14 +95,18 @@ def add_notice(
     decompressor's must both survive.
     """
     existing = notices(ctx)
-    ctx.set(KEY_NOTICES, (*existing, Notice(level, summary, detail, source)))
+    ctx.set(KEY_NOTICES, (*existing, Notice(level, summary, detail, source, report)))
 
 
 def warn(
-    ctx: PipelineContext, summary: str, detail: str = "", source: str = ""
+    ctx: PipelineContext,
+    summary: str,
+    detail: str = "",
+    source: str = "",
+    report: str = "",
 ) -> None:
     """Record a :attr:`NoticeLevel.WARNING` — the common case, spelled short."""
-    add_notice(ctx, NoticeLevel.WARNING, summary, detail, source)
+    add_notice(ctx, NoticeLevel.WARNING, summary, detail, source, report)
 
 
 def inform(

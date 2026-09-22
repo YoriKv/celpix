@@ -1,37 +1,34 @@
-"""Worked compression example: a codec that needs bytes from somewhere else.
+"""Worked compression example: a codec that reads data from outside its stream.
 
-Copy this file, drop the leading underscore, and press F5 in celPix (code plugins
-ask for confirmation the first time, since they run with the app's privileges).
+To use: copy, remove the leading "_", edit, press F5. Code plugins run with the
+app's privileges, so celPix asks before loading one. ``_example.py`` is the
+minimal compression plugin; read it first.
 
-``_example.py`` alongside this file is the minimal shape. This one adds the
-answer for a format whose description is **not all in the bytes it is handed**: a
-phrase table shared by forty streams and stored ahead of them, a length kept in a
-table, a fact the file records nowhere because the game's code knows it. No slice
-can cover the stream *and* the table, because the table is shared and not
-adjacent.
+A stage is handed one byte range. A format that also depends on data elsewhere
+(a table shared by many streams, a count the file does not store) declares an
+``InputSpec`` for each item. The user binds each input per entry in the Inputs
+window: File > Inputs..., or the badge beside the Compression and Tilemap
+pickers. celPix resolves the bindings and delivers the values, read-only, in
+``ctx.get(KEY_INPUTS)`` as a dict keyed by ``InputSpec.key``.
 
-So the plugin **declares** what it needs, and the entry **binds** each
-declaration to where its file keeps it — Inputs… on the codecs toolbar, or the
-row in the Slice dialog. celPix resolves the bindings and hands the values over
-on the context, read-only. Nothing about it is on screen until a format that
-declares something is chosen. Two stages may declare: compression, and the
-interpret-tilemap engines (a sprite mapping whose positions are a parallel
-array). Containers are already handed the whole source, so they need none.
+Rules
+- Only compression plugins and tilemap code formats may declare inputs. A
+  tilemap format passes them as ``FormatInfo(..., inputs=(...))``. Declared on
+  any other stage they are ignored, and celPix warns at load.
+- Kinds: ``REGION`` (bytes), ``INTEGER`` and ``FLAG`` (bool).
+- A required input is always present when a method runs. If it is unbound or
+  invalid, celPix runs the stage as pass-through, marks the entry and names the
+  input to bind.
+- An optional input that is unbound and has no ``default`` is absent from the
+  dict. A flag is always present: ``bool(default)`` when unbound.
+- ``KEY_INPUTS`` is set for ``decompress``, ``compress``, the live preview and
+  Scan.
+- Inputs are never written back. ``compress`` must raise for data the bound
+  inputs cannot represent.
+- ``InputSpec.key`` is stored in project files: renaming it orphans bindings.
 
-**The toy scheme** is byte-pair encoding: a packed byte below ``first_code`` is a
-literal, and one at or above it is the number of a two-byte phrase in a table
-kept elsewhere in the file. Two inputs, one of each kind:
-
-- ``table`` — a **region**, required. Nothing decodes without it.
-- ``first_code`` — an **integer**, optional with a default, for the one fact that
-  is nearly always the same and occasionally is not. The shipped "Phantasy Star"
-  RLE declares exactly this shape.
-
-**Every failure opens degraded rather than crashing.** An unbound required input,
-a region running past its source, a number out of range: celPix puts the stage on
-pass-through, marks the entry and says which input to bind. So by the time a
-method here runs, a required input is present and an optional one is present or
-defaulted — which is why ``inputs["table"]`` below is not guarded.
+Format: byte-pair encoding. A byte below ``first_code`` is a literal; a byte at
+or above it selects a two-byte phrase from a table stored elsewhere in the file.
 """
 
 from celpix.core.context import (
@@ -52,19 +49,18 @@ class ExampleBytePair:
         id="compression.example-byte-pair",
         name="Example byte-pair (shared phrase table)",
         stage=Stage.COMPRESSION,
-        # The extent is the slice's, not the data's: no terminator, nothing for
-        # Scan to find. The minimal example is the other way round.
+        # No end marker: the slice sets the extent, and Scan does not apply.
         self_delimiting=False,
         inputs=(
             InputSpec(
-                "table",
-                "Phrase table",
+                "table",  # key
+                "Phrase table",  # label shown in the Inputs window
                 InputKind.REGION,
-                # `stride` is bytes per element: celPix counts the region in
-                # phrases for the user and refuses a length that is not a whole
-                # number of them, which catches an offset a byte out.
+                # Element size in bytes. A bound length must be a multiple of
+                # it, and the UI counts the region in `unit`s.
                 stride=_PHRASE,
                 unit="phrase",
+                # Qt does not wrap tooltips: break lines at about 60 characters.
                 tooltip=(
                     "The two-byte phrases the codes name, in code\n"
                     "order. Shared by every stream in the file, so\n"
@@ -76,11 +72,10 @@ class ExampleBytePair:
                 "First code",
                 InputKind.INTEGER,
                 required=False,
-                # An optional integer with a default needs no binding anywhere —
-                # it resolves to this, so the preview and Scan read it too. That
-                # is what makes `default` worth setting rather than leaving the
-                # value absent.
+                # Delivered when the input is unbound, so the common case needs
+                # no binding.
                 default=_DEFAULT_FIRST_CODE,
+                # A bound value outside this range is rejected.
                 minimum=1,
                 maximum=0xFF,
                 tooltip=(
@@ -93,19 +88,9 @@ class ExampleBytePair:
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        """Expand literals and codes against the bound table.
-
-        ``KEY_INPUTS`` holds **this stage's** resolved inputs, keyed by spec key
-        — the pipeline seeds it right before the stage runs and puts back what
-        was there after, so a later cell encode never decodes against this
-        dict. An absent optional input is absent from the mapping rather than
-        ``None``, so ``get`` tells "not bound" from any real value; one with a
-        ``default`` arrives as the default and never reaches the fallback
-        below.
-        """
         inputs = ctx.get(KEY_INPUTS) or {}
-        table: bytes = inputs["table"]
-        first = inputs.get("first_code", _DEFAULT_FIRST_CODE)
+        table: bytes = inputs["table"]  # required: always present
+        first: int = inputs["first_code"]  # has a default: always present
         out = bytearray()
         for byte in data:
             if byte < first:
@@ -116,26 +101,16 @@ class ExampleBytePair:
                 raise ValueError(f"code 0x{byte:02X} is past the phrase table")
             out += table[at : at + _PHRASE]
         ctx.set(KEY_COMPRESSED_SIZE, len(data))
-        # No end marker, so "we read to here" is never "the structure ends here".
+        # No end marker, so the structure is never known to be complete.
         ctx.set(KEY_DECOMPRESS_COMPLETE, False)
         return bytes(out)
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        """Re-pack against the same table — inputs are seeded for save too.
-
-        **An input is never written back.** The table is a fact this stream is
-        decoded *against*; whoever owns those bytes still owns them. So an edit
-        the bound table cannot spell is **refused, with a message**, rather than
-        packed into something the game would read as a different picture. That
-        refusal is the contract's whole answer to a read-only fact, and skipping
-        it is how a plugin corrupts a save.
-
-        Greedy, so a re-pack need not be byte-identical to what was read — what
-        has to hold is that ``decompress(compress(x)) == x``.
-        """
+        """Greedy, so the output may differ from the original packed bytes. The
+        requirement is ``decompress(compress(x)) == x``."""
         inputs = ctx.get(KEY_INPUTS) or {}
         table: bytes = inputs["table"]
-        first = inputs.get("first_code", _DEFAULT_FIRST_CODE)
+        first: int = inputs["first_code"]
         codes = {
             table[at : at + _PHRASE]: first + at // _PHRASE
             for at in range(0, len(table) - _PHRASE + 1, _PHRASE)
@@ -152,9 +127,10 @@ class ExampleBytePair:
                 out.append(data[i])
                 i += 1
             else:
+                # The table is read-only, so this data cannot be stored.
                 raise ValueError(
                     f"0x{data[i]:02X} at {i} is neither a literal nor a phrase "
-                    "this table spells - the edit cannot be written back"
+                    "in the table - the edit cannot be written back"
                 )
         return bytes(out)
 

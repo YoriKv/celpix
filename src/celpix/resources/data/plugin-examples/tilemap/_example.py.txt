@@ -1,75 +1,63 @@
-"""Example tilemap code format. Copy this file, drop the leading underscore,
-edit it, and press F5 in celPix (code plugins ask for confirmation the first
-time, since they run with the app's privileges).
+"""Example tilemap code format: a 3-byte cell with a split tile number.
 
-A tilemap is a file of *references*: each cell names a tile that lives in some
-other entry you bind the map to, plus how to draw it. A code format implements
-one directly, for cell layouts the packed engine's parameters cannot express.
-Try a preset first — see _packed.toml, which covers any format whose cell is one
-packed integer.
+To use: copy, remove the leading "_", edit, press F5. Code plugins run with the
+app's privileges, so celPix asks before loading one.
 
-Reach for code when the cell is *not* one integer: a value that has to be
-computed rather than read out of a field, a run-length scheme where one stored
-cell yields several, or records that are not all the same length.
+A tilemap holds references: each cell names a tile in the tile bank the map is
+bound to, plus how to draw it. A code format implements one cell layout directly
+and appears in the format picker like a preset. Use it when a cell is not one
+fixed-width integer: computed values, run-length schemes, variable-length
+records. This layout is expressible as a preset (_packed.toml: ``bytes = 3``,
+``fields = "ffff ffii ..op ppvh iiii iiii"``, little-endian) and is used here
+because it exercises every method.
 
-The format below is none of those: it is the smallest thing that exercises every
-method. The packed engine reads it as ``bytes = 3`` beside
-``fields = "ffff ffii ..op ppvh iiii iiii"``, byte for byte — a tile number split
-across two bytes is a preset, not a reason to write code.
+Contract
+- Required methods: ``decode``, ``encode``, ``bytes_per_cell``, ``cell_tiles``.
+- ``decode`` and ``encode`` are stateless and buffer-relative. ``decode`` returns
+  a flat list of cells in file order; celPix lays it out as a grid.
+- ``encode`` is the exact inverse of ``decode``.
+- ``Cell`` fields: ``index``, ``palette_row``, ``priority``, ``flip_h``,
+  ``flip_v``, ``visible``, ``ends_line``, ``flags``. ``decode`` must fill every
+  field the format stores: a field left at its default is written back as that
+  default. Put bits celPix has no field for in ``flags``.
 
-decode and encode must be buffer-relative and stateless — they walk whatever
-bytes they are given, with no notion of where the buffer sits in the file. Laying
-the flat list out as a grid is celPix's job: a tilemap file rarely records its
-own width, so the view has to be able to try one.
+Optional methods. Each declares an editing capability; an omitted method means
+the capability is not offered.
+- ``index_limit()``: highest tile number. Without it cells cannot be pointed at
+  a tile (the Cell control and Edit Tiles are unavailable).
+- ``palette_row_limit()``: highest palette row; allows assigning a row.
+- ``has_palette_rows()``: False for a format with no palette row, so the view's
+  palette row control applies. Omitted means True.
+- ``transform_cell(cell, op)``: the cell after ``op``, or None to refuse.
+- ``cell_fields()``: every stored field with its highest value; the per-cell
+  property controls are built from it. Omitted, it is assembled from the
+  methods above and can never include ``priority`` or ``flags``.
+- ``has_line_flag()``: True when ``ends_line`` is stored (text formats).
+- ``has_visibility()``: True when ``visible`` is stored; Clear cells then
+  clears it.
+- ``palette_row_granularity()``: cells ``(across, down)`` sharing one stored
+  palette row. An NES nametable returns ``(2, 2)``.
+- ``settle_cells(cells)``: the cells with every field the format *derives* from
+  another put back in step - a palette row that follows the tile number, say.
+  Called on every edit and again before an encode, so return the same list object
+  when nothing changed, never a different length.
+- Sprite formats only: ``size_pair()``, the two part sizes a size bit selects,
+  and ``frames(cells, ctx)``, the parts grouped into frames.
 
-**A Cell has eight fields, and every one is yours to fill or to leave.**
-``index``, ``palette_row``, ``priority``, ``flip_h``, ``flip_v``, ``visible``,
-``ends_line``, ``flags``. What a field defaults to on decode is what encode will
-write back, so a field your format *has* and your decode ignores is zeroed on the
-next save — silently, and for the whole file.
+Declarations. Facts celPix needs before decoding go in
+``FormatInfo(declares={...})``:
+  ``layout``            "text" (character codes) or "sprite" (parts at offsets)
+  ``subsprite_size``    "stated": sprite parts carry their own size
+  ``palette_row_base``  palette row that a cell's row 0 means
+  ``indirect``, ``source_hint``, ``stamp_cells``, ``stamp_dense``,
+  ``column_major``, ``cell_row_stride``: as described in _packed.toml
+Example: ``FormatInfo(id=..., name=..., declares={"layout": "text"})``.
+A format takes no parameters: values its own methods use are class constants.
+The packed engine's other params (``stamp_stride``, ``record_shape``, page
+geometry) have no effect as declarations.
 
-**Then say what a cell can do.** Eight optional methods, where leaving one out
-means "do not infer this for me". That makes ``index_limit`` the one to write
-first — **a format that omits it cannot have its cells pointed at a tile at
-all**, and the Cell spin and Edit Tiles simply refuse, with no error to read.
-
-Five are below. The three this format cannot answer are ``has_line_flag`` (it
-ends no line on a bit), ``has_visibility`` (no drawn bit, so Clear cells has
-nothing to clear) and ``palette_row_granularity`` (its row is a field of the
-cell word, one answer per cell — an NES nametable, whose quarter-resolution
-plane colours a 2x2 square of cells at a time, returns ``(2, 2)``).
-
-A ``layout = "sprite"`` format has two more, neither of which a grid format
-wants: ``size_pair()``, the two squares a size *bit* picks between, and
-``frames(cells, ctx)``, which groups the parts into the drawings the view lays
-out side by side.
-
-**What a format says about its cells' *kind* it declares.** ``layout``
-(``"text"`` for a fontmap, ``"sprite"`` for parts placed at pixel offsets rather
-than in a grid), ``indirect``, ``stamp_dense``, ``stamp_cells``,
-``column_major``, ``source_hint`` and ``cell_row_stride`` are not parameters of
-the decode: they are facts celPix has to know *before* a byte is read — an
-object with no tiles bound to it is still an object — so they ride on the
-``FormatInfo``:
-
-    info = FormatInfo(
-        id="format.tilemap.my-text",
-        name="My text run",
-        declares={"layout": "text"},
-    )
-
-Keep ``declares`` to exactly that: what the **app** has to be told. Anything your
-own methods would read is a constant in the class instead, because a format takes
-no parameters at all — which is the whole difference between one and an engine,
-and why a format needs no companion preset. ``cell_tiles`` is not among them: the
-host asks the codec, so it is the method below and not a declaration.
-
-**What the bytes do not say, a format asks for.** A cell layout described partly
-somewhere else — a parallel array of positions, a part count the game's code
-knows rather than the file — declares an ``InputSpec`` per fact and reads the
-resolved values off the context, and the entry binds each one to where its file
-keeps it. Tilemap and compression are the two stages that may; see
-``compression/_inputs.py``.
+Inputs. A format that needs data from outside its bytes declares
+``FormatInfo(..., inputs=(InputSpec(...),))``; see ``compression/_inputs.py``.
 """
 
 from celpix.core.tilemap import Cell, CellOp
@@ -88,13 +76,12 @@ class SplitCell:
     byte 2  tile number, high 2 bits; bits 2-7 are the format's own
     """
 
-    # The id doubles as the picker entry's stable identity; the name is shown.
-    # No `declares` here: these cells are an ordinary grid naming ordinary tiles,
-    # which is what celPix assumes of a tilemap that says nothing.
+    # `id` is stable and stored in project files; `name` is shown in the picker.
+    # No `declares`: a plain grid of tile references is the default.
     info = FormatInfo(id="format.tilemap.example-split", name="Example split cell")
 
     def decode(self, data, ctx):
-        """bytes -> cells (whole cells only; a trailing partial cell is dropped)."""
+        """bytes -> list[Cell]. A trailing partial cell is dropped."""
         size = self.bytes_per_cell()
         cells = []
         for at in range(0, len(data) - size + 1, size):
@@ -103,36 +90,19 @@ class SplitCell:
                 Cell(
                     index=low | ((high & 0x03) << 8),
                     palette_row=(attr >> 2) & 0x07,
-                    # Carried, never rendered — but a bit dropped here is a bit
-                    # gone from the file on the next save.
-                    priority=(attr >> 5) & 0x01,
+                    priority=(attr >> 5) & 0x01,  # stored, not rendered
                     flip_h=bool(attr & 0x01),
                     flip_v=bool(attr & 0x02),
-                    # Bits with no meaning here: carry them, or a save quietly
-                    # zeroes them.
-                    flags=high >> 2,
-                    # `visible` and `ends_line` are the fields this format has
-                    # no bit for, so they keep their defaults: every position
-                    # drawn, nothing ending a line. Set `visible` from a
-                    # drawn/enable bit — and say `has_visibility`, or Clear
-                    # cells has nothing to clear — and `ends_line` from the bit
-                    # a *text* format sets on a line's last character, which
-                    # reaches no pixel, only the newline View > Text shows, and
-                    # wants `has_line_flag` beside it or the text window refuses
-                    # to let a break be typed. Neither makes the map a
-                    # **fontmap**: that is `layout`, which the format *declares*
-                    # rather than reads — see the module docstring.
+                    flags=high >> 2,  # unknown bits, preserved on write
+                    # `visible` and `ends_line` keep their defaults: this
+                    # format stores neither.
                 )
             )
         return cells
 
     def encode(self, cells, ctx):
-        """cells -> bytes; the exact inverse of decode.
-
-        A value too wide for its field is masked rather than raising: a cell can
-        arrive from a format with a wider index, and refusing the write would
-        make the whole map unsaveable over one cell.
-        """
+        """cells -> bytes. Values are masked to their fields: raising would
+        make a map unsaveable over one out-of-range cell."""
         out = bytearray()
         for cell in cells:
             index = cell.index & 0x3FF
@@ -147,52 +117,26 @@ class SplitCell:
         return bytes(out)
 
     def bytes_per_cell(self):
-        # How many bytes one cell occupies — celPix slices the byte window and
-        # places an edited cell back in the buffer with this.
         return 3
 
     def cell_tiles(self):
-        # How many tiles one cell draws, (across, down). (1, 1) unless a cell is
-        # a metatile — and check before saying otherwise: a format that stores a
-        # 16x16 block as four adjacent cells is (1, 1), and claiming (2, 2) draws
-        # every block four times over.
+        # Tiles one cell draws, (across, down). (2, 2) for a cell that is a 16x16
+        # metatile; a metatile stored as four adjacent cells is (1, 1).
         return (1, 1)
 
-    # ---- optional, and the difference between a readable map and an editable one
+    # ---- optional methods (see the module docstring)
 
     def index_limit(self):
-        """The highest tile number a cell can hold — **write this one**.
-
-        Without it nothing can point a cell at a tile: the host refuses what a
-        codec has not been asked about rather than inferring a field width and
-        masking the user's number down on save. None for a format whose cells
-        genuinely have no index.
-        """
         return (1 << _INDEX_BITS) - 1
 
     def palette_row_limit(self):
-        """The same for the colour field, and what lets a row be *assigned* to a
-        selection. None where a format has nowhere to put one."""
         return (1 << _PALETTE_BITS) - 1
 
     def has_palette_rows(self):
-        """Whether the format gives a cell a row at all — about *reading*, where
-        the safe default is the other way round: omit this and celPix assumes
-        rows, so a format that carries them is not shifted by a view-wide row on
-        top. False for a bare tile number, and the palette row control supplies
-        the colours instead."""
         return True
 
     def transform_cell(self, cell, op):
-        """``cell`` as ``op`` leaves it, or None where this format cannot say it.
-
-        Only the codec knows which bits mean a flip, so the tool names the
-        operation and asks. **None is the whole refusal protocol** — the host
-        probes with a blank cell first and tells the user once, rather than
-        setting a bit encode then drops on save. Omit the method and every
-        transform is refused, which is the safe direction; the rotations are
-        refused here because the record has no bit for one.
-        """
+        # This format has no rotation bit, so rotations are refused.
         if op is CellOp.FLIP_H:
             return cell.flipped_h()
         if op is CellOp.FLIP_V:
@@ -200,15 +144,7 @@ class SplitCell:
         return None
 
     def cell_fields(self):
-        """Every field a cell stores, named as the Cell spells it, each with its
-        highest value — one answer instead of a probe per field, and what celPix
-        generates the per-cell property controls from.
-
-        Omit it and the answer is assembled from the methods above, each in its
-        own safe direction. What that assembly can never grant is ``priority``
-        or ``flags``: no other probe speaks for them, so a format with those
-        fields declares them here or its users get no control over them.
-        """
+        # Keys are Cell attribute names; values are each field's highest value.
         return {
             "index": (1 << _INDEX_BITS) - 1,
             "palette_row": (1 << _PALETTE_BITS) - 1,

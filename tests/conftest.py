@@ -60,7 +60,7 @@ def captured_alerts(monkeypatch):
     monkeypatch.setattr(
         module.MainWindow,
         "_alert",
-        lambda self, message, *, title="celPix", detail="": alerts.append(
+        lambda self, message, *, title="celPix", detail="", error=False: alerts.append(
             (title, message)
         ),
         raising=False,

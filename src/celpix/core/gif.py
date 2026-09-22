@@ -75,9 +75,22 @@ def encode(
     )
     lookup: dict[int, int] = {_CLEAR: 0} if transparent else {}
     colours: list[int] = [0] if transparent else []
+    # A sequence names the same frame over and over, and the caller hands a
+    # repeat back as the *same* pixels object (``ui.export._step_pixels``), so
+    # both per-pixel passes below — the keying here and the compression at the
+    # bottom — are done once per distinct frame and shared by identity. A caller
+    # that builds a fresh list per step simply gets the work it asked for.
+    blank: list[int] = []
+    seen: dict[int, list[int]] = {}
     for pixels, _ in frames:
         if pixels is None:
-            keyed.append([0] * size)
+            if not blank:
+                blank = [0] * size
+            keyed.append(blank)
+            continue
+        shared = seen.get(id(pixels))
+        if shared is not None:
+            keyed.append(shared)
             continue
         if len(pixels) != size:
             raise ValueError("frame size does not match the image")
@@ -103,6 +116,7 @@ def encode(
     out += table
     # NETSCAPE2.0: loop forever — a sequence is a cycle, as the player plays it.
     out += b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00"
+    compressed: dict[int, bytes] = {}
     for indices, (_, delay) in zip(keyed, frames, strict=True):
         # Graphic control: disposal 2 (restore to background), transparency flag.
         packed = 0x08 | (1 if transparent else 0)
@@ -110,7 +124,9 @@ def encode(
         out += struct.pack("<BHHHHB", 0x2C, 0, 0, width, height, 0)
         min_size = max(2, bits)
         out.append(min_size)
-        data = _lzw(indices, min_size)
+        data = compressed.get(id(indices))
+        if data is None:
+            data = compressed[id(indices)] = _lzw(indices, min_size)
         for at in range(0, len(data), 255):
             chunk = data[at : at + 255]
             out.append(len(chunk))

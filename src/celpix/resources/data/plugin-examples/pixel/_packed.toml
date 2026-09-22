@@ -1,28 +1,22 @@
-# Example preset for the `codec.pixel.packed` engine. Copy, drop the underscore,
-# edit, press F5. See _planar.toml for what a preset is; this folder has one
-# example per pixel engine.
+# Example preset: `codec.pixel.packed` — packed (linear) tiles.
 #
-# WHAT THE ENGINE DOES
-# --------------------
-# **Packed** (linear) formats: a pixel's index is a sub-byte field stored whole,
-# with no planes. A byte holds 8 / bpp pixels and a row is
-# tile_width / pixels_per_byte bytes, read left to right. Nothing in that is tied
-# to eight-pixel rows, so the tile size is a parameter.
+# To use: copy, remove the leading "_", edit, press F5. See _planar.toml for
+# what a preset is.
 #
-# SHIPPED PRESETS BUILT ON IT
-# ---------------------------
-#   genesis-4bpp           bpp 4, msb_first true — high nibble is the left pixel.
-#                          Also Mega Drive/32X, X68000 and MSX.
-#   gba-4bpp               bpp 4, msb_first false — the other nibble order.
-#   vb-2bpp                bpp 2, msb_first false — four pixels a byte, pixel 0
-#                          in the low bits.
-#   ngp-2bpp-swapped       reverse_bytes true — the second byte of a row drives
-#                          its *left* pixels.
-#   4bpp-linear-16x16-lsb  tile_width/height 16: a row is eight bytes running the
-#                          full 16 pixels, the commonest wide arcade tile.
-#   8bpp-linear            bpp 8 — one whole byte per pixel, a straight copy.
-#                          SNES Mode 7, Nintendo DS 2D, generic 8bpp.
-#   snes-8bpp-bank         bpp 8 at 128x128: a whole Mode 7 bank as one "tile".
+# ENGINE
+#   A pixel's index is one field of `bpp` bits stored whole. A byte holds
+#   8 / bpp pixels; a row is tile_width / (8 / bpp) bytes, left to right.
+#   For 3bpp and 6bpp see _packed-straddling.toml. For pixels wider than a byte
+#   (colour, not an index) see _direct-color.toml.
+#
+# SHIPPED PRESETS ON THIS ENGINE
+#   genesis-4bpp           bpp 4, msb_first. Mega Drive, 32X, X68000, MSX.
+#   gba-4bpp               bpp 4, low nibble first.
+#   vb-2bpp                bpp 2, pixel 0 in the low bits.
+#   ngp-2bpp-swapped       bpp 2, msb_first, reverse_bytes.
+#   4bpp-linear-16x16-lsb  bpp 4, 16x16 tile.
+#   8bpp-linear            bpp 8: one byte per pixel. SNES Mode 7, generic 8bpp.
+#   snes-8bpp-bank         bpp 8, 128x128: a Mode 7 bank as one tile.
 
 id = "preset.pixel.example-packed"
 name = "Example packed 4bpp"
@@ -30,34 +24,28 @@ engine_id = "codec.pixel.packed"
 
 [params]
 
-# Bits per pixel. Must divide 8 — 1, 2, 4 or 8 — so a pixel's field fits a byte a
-# whole number of times. At 8 the field *is* the byte (hardware docs call it
-# chunky) and the tile size below is completely free. Pixels wider than a byte
-# carry colour rather than an index: those are _direct-color.toml.
+# Bits per pixel: 1, 2, 4 or 8. With nibble_stride set: 2, 4 or 8.
 bpp = 4
 
-# Is pixel 0 of a byte in its **high** field or its low one? At 4bpp: which nibble
-# is the left pixel.
-#   true   Genesis / MSX / X68000 4bpp, Neo Geo Pocket 2bpp
-#   false  GBA 4bpp, Virtual Boy 2bpp   (the default)
+# Position of pixel 0 within a byte. Default false.
+#   true   high field first (Mega Drive 4bpp: high nibble is the left pixel)
+#   false  low field first (GBA 4bpp, Virtual Boy 2bpp)
 msb_first = true
 
-# Read each row's bytes right-to-left. This is the byte order *along a row*, not
-# endianness inside a value — the Neo Geo Pocket ordering, where a row's second
-# byte holds its leftmost pixels.
-#   false  ordinary left-to-right   (the default)
+# Read each row's bytes right to left. Default false. Byte order along the row,
+# not endianness: on the Neo Geo Pocket a row's second byte holds its left
+# pixels.
 reverse_bytes = false
 
-# Split each pixel's index across *two* bytes this many apart: the nearer byte
-# carries its **high** bpp/2 bits, the further one the low. Arcade boards that
-# wired each half of an index to its own ROM land here once a two-part region join
-# has interleaved the halves, which is stride 1.
-#   0   off   (the default)
-#   n   the two half-index streams alternate in runs of n bytes; n has to divide
-#       half the tile, and bpp has to be even.
+# Split each index across two bytes `n` bytes apart: the first holds the high
+# bpp / 2 bits, the second the low. Default 0 (off). Requires an even bpp, and
+# n must divide half the tile's byte size. For boards that keep each half of
+# the index in its own ROM: after a two-part region join has interleaved the
+# halves, n is 1.
 nibble_stride = 0
 
-# Pixel size of one tile; both default to 8. The width must be a whole number of
-# the pixels a byte holds — two here, at 4bpp — so that a row is whole bytes.
+# Tile size in pixels. Default 8 each. tile_width must be a multiple of the
+# pixels one byte holds (2 at 4bpp). With nibble_stride, a byte holds
+# 8 / (bpp / 2) pixels.
 tile_width = 8
 tile_height = 8

@@ -73,6 +73,7 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.sprite import Frame, Subsprite
 from celpix.core.tilemap import Cell, CellOp
+from celpix.plugins._params import byte_order, flag
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._fields import parse_layout, resolve_legend
 from celpix.plugins.builtins._mask import gather, scatter
@@ -100,7 +101,7 @@ class _Layout:
         spec = params.get("record")
         if not isinstance(spec, list) or not spec:
             raise ValueError("a sprite record needs a `record` list of fields")
-        self.order = "little" if params.get("endian") == "little" else "big"
+        self.order = byte_order(params, "endian", "big")
         legend = resolve_legend(
             _LEGEND, params.get("legend"), frozenset(_LEGEND.values())
         )
@@ -146,7 +147,7 @@ class _Layout:
             if count_type not in _TYPES or count_at + _TYPES[count_type] > length:
                 raise ValueError("frame_header's count must sit inside its bytes")
             self.header = (length, count_at, _TYPES[count_type])
-        self.column_major = bool(params.get("column_major", False))
+        self.column_major = flag(params, "column_major")
         self.arrays = self._arrays(params.get("arrays"))
 
     def _arrays(self, spec: Any) -> tuple[tuple[int, int], ...] | None:

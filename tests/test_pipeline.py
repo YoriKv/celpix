@@ -420,11 +420,16 @@ def test_a_code_format_carries_its_optional_codec_methods() -> None:
         def entries_per_unit(self):
             return 4
 
+        def shared_entries(self, index, count):
+            return (0, index) if index else (0,)
+
     reg = default_registry()
     engine, preset = adapt_format(_Packed(), Stage.INTERPRET_PALETTE)
     reg.register(engine)
     reg.register_preset(preset)
     assert pipeline.palette_entries_per_unit("format.palette.packed", reg) == 4
+    # `params` sits between this one's two arguments, not after them.
+    assert engine.shared_entries(4, {}, 16) == (0, 4)
 
 
 def test_a_broken_optional_probe_degrades_instead_of_failing_the_load(
@@ -496,6 +501,25 @@ def test_a_broken_optional_probe_degrades_instead_of_failing_the_load(
     fine = loaded("palette_row_granularity", lambda: (2, 2))
     assert fine.row_granularity == (2, 2)
     assert not notices(fine.ctx)
+
+    # The one optional method that is a *transform* rather than an answer, and so
+    # is asked on every edit rather than once at load: a settle that crashes, or
+    # that hands back something that is not the same cells, leaves them exactly as
+    # they were. A dropped cell would move every cell after it in the file, which
+    # is a corrupted save rather than a missing feature.
+    held = [Cell(index=1), Cell(index=2)]
+    for give in (lambda c: 1 / 0, lambda c: c[:1], lambda c: None):
+        data = loaded("settle_cells", give)
+        assert data.settler is not None  # the format defines it; it just fails
+        assert data.settler(held) is held
+        note = notices(data.ctx)[0]
+        assert note.is_warning and "settle" in note.summary
+        # ...and stood down, not re-entered per keystroke for the rest of the day.
+        assert data.settler(held) is held
+        assert len(notices(data.ctx)) == 1
+    good = loaded("settle_cells", lambda c: [replace(x, palette_row=1) for x in c])
+    assert [cell.palette_row for cell in good.settler(held)] == [1, 1]
+    assert not notices(good.ctx)
 
 
 def test_missing_source_file_hard_stops(tmp_path) -> None:

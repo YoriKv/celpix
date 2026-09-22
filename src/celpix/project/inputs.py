@@ -40,7 +40,13 @@ from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import STAGE_DEFAULT_PRESET, FileRef, InputKind, InputSpec
+from celpix.plugins.base import (
+    INPUT_STAGES,
+    STAGE_DEFAULT_PRESET,
+    FileRef,
+    InputKind,
+    InputSpec,
+)
 from celpix.plugins.registry import Registry
 
 if TYPE_CHECKING:
@@ -123,11 +129,6 @@ class IntegerFromBytes:
 InputBinding = RegionBinding | IntegerFromBytes | int | bool
 #: One plugin's bindings, by the spec's key.
 Bindings = dict[str, InputBinding]
-
-#: The stages an entry can bind inputs for, in pipeline order. Compression and
-#: the tilemap codec are the two real cases; a container is handed its whole
-#: source and needs none, and no pixel or palette format has asked yet.
-INPUT_STAGES: tuple[Stage, ...] = (Stage.COMPRESSION, Stage.INTERPRET_TILEMAP)
 
 # The widest integer a binding may read from bytes: a 64-bit word.
 _MAX_INT_WIDTH = 8

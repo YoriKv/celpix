@@ -41,6 +41,7 @@ from __future__ import annotations
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QMenu
 
+from celpix.core.address import format_hex
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError
 from celpix.pipeline import pipeline
@@ -214,7 +215,10 @@ class PaletteEntryMixin:
                 title="celPix - palette",
             )
             return False
-        where = self._format_offset(byte_off)
+        # A plain byte offset: this indexes the source's resolved buffer from 0,
+        # which no bank layout describes (:meth:`~...palette_offset.
+        # PaletteOffsetMixin._format_palette_offset`).
+        where = format_hex(byte_off)
         return self._load_and_commit_palette(
             PathwayConfig(
                 source=ref,
@@ -374,7 +378,7 @@ class PaletteEntryMixin:
         ]
 
     def _sync_entry_palette_bytes(
-        self, doc: Document, source: Entry, index: int
+        self, doc: Document, source: Entry, index: int, consumer: Entry | None = None
     ) -> list[Entry]:
         """Deposit colour ``index``'s bytes into ``source``'s pixel data.
 
@@ -390,6 +394,13 @@ class PaletteEntryMixin:
         undo as well as redo and the source's buffer always mirrors the palette
         on screen. The revisions are the command's, stamped by the caller.
 
+        ``consumer`` is the entry ``doc`` belongs to, and it is handed down as the
+        document the landing may **not** take away: the source can be the
+        consumer's own parent file, and a landing there drops every slice below it
+        (:meth:`~...writing.WritingMixin._propagate_pixel_edit`) — the consumer
+        among them, leaving the window drawing an orphan while the palette it is
+        showing is the one this edit was made on.
+
         Returns every entry whose bytes the deposit moved, so the caller can
         re-decode the *other* palettes read out of them in one pass.
         """
@@ -400,7 +411,7 @@ class PaletteEntryMixin:
         splices = self._palette_unit_splices(doc, source, index)
         if not splices:
             return []
-        return self._land_byte_edit(source, splices)
+        return self._land_byte_edit(source, splices, keep=consumer)
 
     def _palette_entry_owners(self, source: Entry, index: int) -> tuple[Entry, ...]:
         """Every entry editing colour ``index`` here is also an edit to.

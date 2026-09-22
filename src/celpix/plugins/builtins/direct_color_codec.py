@@ -26,6 +26,7 @@ from celpix.core.argb_grid import ArgbGrid
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins._byteops import or_all
+from celpix.plugins._params import byte_order
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._fields import bit_width
 from celpix.plugins.builtins._mask import (
@@ -34,6 +35,7 @@ from celpix.plugins.builtins._mask import (
     color_masks,
     decode_tables,
     encode_tables,
+    layout_text,
 )
 from celpix.plugins.builtins._tile import flatten_tiles, require_whole_tiles
 
@@ -51,24 +53,21 @@ class DirectColorCodec:
 
     @staticmethod
     def _config(params: dict[str, Any]) -> tuple[int, str, dict[str, tuple[int, ...]]]:
-        text = params.get("fields")
         if "bytes_per_pixel" in params:
             bpx = int(params["bytes_per_pixel"])
-        elif isinstance(text, str):
+        else:
             # The layout already says how wide a pixel is; one that is not a
             # whole number of bytes could not be strided over the buffer.
-            width = bit_width(text)
+            width = bit_width(layout_text(params))
             if width % 8:
                 raise ValueError(
                     f"a pixel has to be a whole number of bytes, and the layout "
                     f"describes {width} bits"
                 )
             bpx = width // 8
-        else:
-            raise ValueError("a pixel needs a width - give bytes_per_pixel")
         if bpx <= 0:
             raise ValueError("bytes_per_pixel must be positive")
-        order = params.get("byte_order", "little")
+        order = byte_order(params, "byte_order", "little")
         masks = color_masks(params, bpx * 8)
         shade = masks.pop(GRAY, None)
         if shade is not None:

@@ -103,7 +103,8 @@ class PaletteDockMixin:
         the swatch grid, in the left column under Files.
 
         Built after _build_navbar, whose address-format machinery the offset
-        field here shares (_parse_address / _palette_offset_text), after
+        field here shares in Offset mode (_parse_palette_offset /
+        _palette_offset_text), after
         _build_files_dock, whose dock it splits, and before _build_toolbar - the
         palette format combo is created here, not on the codecs toolbar.
         """
@@ -145,12 +146,14 @@ class PaletteDockMixin:
             self._on_palette_mode_change
         )
 
-        # Same parse + rendering conventions as the navbar offset box (shared
-        # address-format dropdown and bank settings). The header is per-mode:
-        # this field shows only in Offset mode, the file label only in the
-        # file-backed modes - both managed by _set_palette_mode.
+        # The navbar offset box's parse + rendering conventions in Offset mode,
+        # where the number is a position in this entry's own file; plain hex in
+        # Entry mode, where it indexes another entry's buffer and no bank layout
+        # describes it (_format_palette_offset). The header is per-mode: this
+        # field shows in those two modes, the file label only in the file-backed
+        # ones - both managed by _set_palette_mode.
         self._palette_offset_edit = CommittingLineEdit(
-            self._parse_address, self._palette_offset_text
+            self._parse_palette_offset, self._palette_offset_text
         )
         self._palette_offset_edit.setFixedWidth(104)
         self._palette_offset_edit.setToolTip(
@@ -161,9 +164,9 @@ class PaletteDockMixin:
         self._palette_offset_edit.hide()
         self._palette_offset_edit.committed.connect(self._on_palette_offset_committed)
 
-        # Step the palette offset one tile at a time (the tile-molester idiom):
-        # nudging the source window by a whole tile is how you hunt for a
-        # palette that sits a few tiles off the graphics. Shown with the offset
+        # Step the palette offset one tile at a time: nudging the source window by
+        # a whole tile is how you hunt for a palette that sits a few tiles off the
+        # graphics. Shown with the offset
         # field, in Offset mode only. The same icon-font arrows the navbar's tile
         # steps wear, baked in _bake_palette_offset_arrows.
         self._palette_offset_prev = QPushButton()

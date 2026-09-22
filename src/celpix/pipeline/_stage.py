@@ -34,7 +34,13 @@ from typing import TypeVar
 from celpix.core.arrangement import bitmap_tile_size
 from celpix.core.context import PipelineContext
 from celpix.core.document import Document
-from celpix.core.errors import Pathway, PipelineError, Stage
+from celpix.core.errors import (
+    Pathway,
+    PipelineError,
+    Stage,
+    fault_origin,
+    fault_report,
+)
 from celpix.core.notices import warn
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef, PixelCodecPlugin, ReadSource, SourceFile
@@ -112,15 +118,83 @@ def _probe(
     try:
         return read(ask(params))
     except Exception as exc:  # noqa: BLE001 — a probe must not fail the load
+        origin = fault_origin(exc)
         warn(
             ctx,
             f"The format could not answer {name}(), so its default was used",
-            f"{exc}\n"
-            f"Read as if the format had not defined {name},\n"
+            f"{type(exc).__name__}: {exc}\n"
+            + (f"Raised at {origin}.\n" if origin else "")
+            + f"Read as if the format had not defined {name},\n"
             f"which is what a format staying quiet means.",
             source=plugin,
+            report=fault_report(exc),
         )
         return default
+
+
+def _cell_settler(
+    engine,  # noqa: ANN001 — a tilemap codec, reached by getattr
+    params: dict,
+    *,
+    ctx: PipelineContext,
+    plugin: str = "",
+) -> Callable[[list], list] | None:
+    """``cells -> cells`` for a codec's own settle, or **None** where it has none.
+
+    :func:`_probe`'s shape for the one optional method that is not a question
+    about the format but a **transform of the cells**
+    (:meth:`~celpix.plugins.base.TilemapCodecPlugin.settle_cells`), so it cannot
+    be answered once at load and stored: it is applied per edit, and the model
+    layer holds no registry to reach the engine with. A closure over the engine
+    and its params is the whole of what it needs, and ``None`` — a format with
+    nothing to derive, which is every format but one — costs the edit path a
+    single ``is None``.
+
+    **Guarded like a probe, and disarmed after the first fault.** A method that
+    raises is read as one that was never written, so the cells go back untouched;
+    but this one is asked on every edit, and re-entering a crash per mouse move
+    would record the same notice thousands of times. So the first fault stands the
+    settle down for the life of the document, which is also what "read as if the
+    format had not defined it" means.
+
+    The answer is checked for the two promises the host actually relies on — a
+    list, of the same length — because a settle that dropped a cell would move
+    every cell after it in the file, and that is a corrupted save rather than a
+    missing feature.
+    """
+    ask = getattr(engine, "settle_cells", None)
+    if ask is None:
+        return None
+    live = [True]
+
+    def settle(cells: list) -> list:
+        if not live[0]:
+            return cells
+        try:
+            out = ask(cells, params)
+            if not isinstance(out, list) or len(out) != len(cells):
+                raise TypeError(  # noqa: TRY301 — one report for both refusals
+                    f"settle_cells returned {type(out).__name__} of "
+                    f"{len(out) if isinstance(out, list) else '?'} "
+                    f"for {len(cells)} cells"
+                )
+        except Exception as exc:  # noqa: BLE001 — a settle must not fail an edit
+            live[0] = False
+            origin = fault_origin(exc)
+            warn(
+                ctx,
+                "The format could not settle its cells, so they were left as they are",
+                f"{type(exc).__name__}: {exc}\n"
+                + (f"Raised at {origin}.\n" if origin else "")
+                + "Read as if the format had not defined settle_cells,\n"
+                "and not asked again for this document.",
+                source=plugin,
+                report=fault_report(exc),
+            )
+            return cells
+        return out
+
+    return settle
 
 
 def _with_tile_size(engine, params: dict, size: tuple[int, int]) -> dict:  # noqa: ANN001

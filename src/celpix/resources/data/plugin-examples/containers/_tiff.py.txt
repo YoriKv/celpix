@@ -1,44 +1,34 @@
 """Worked container example: baseline TIFF (``.tif`` / ``.tiff``).
 
-Copy this file, drop the leading underscore, and press F5 in celPix (code plugins
-ask for confirmation the first time, since they run with the app's privileges).
+To use: copy, remove the leading "_", edit, press F5. Code plugins run with the
+app's privileges, so celPix asks before loading one. ``_example.py`` is the
+minimal container; read it first.
 
-``_example.py`` alongside this file is the minimal shape. This is a real format,
-and a good one to learn containers from because its framing is a *lookup* rather
-than a fixed header. A TIFF does not store its pixels at a known offset: it stores
-a directory (the IFD) whose entries say where the image data sits, in one or more
-"strips" scattered anywhere in the file. So ``read`` parses the directory and
-hands celPix the strips joined end to end, and ``write`` puts edited bytes back
-strip by strip — the general container job, where the byte range the codec edits
-has no fixed relationship to the file.
+This example shows a container whose payload has no fixed position in the file.
 
-**Layout.** ``II``/``MM`` picks the byte order for every number in the file, then
-magic 42, then the offset of the first IFD. An IFD is an entry count followed by
-12-byte entries — tag, type, count, and either the value itself when it fits in
-four bytes or an offset to it. Three tags matter here: ``StripOffsets`` (273),
-``StripByteCounts`` (279) and ``Compression`` (259).
+Layout: ``II`` or ``MM`` sets the byte order of every number, followed by the
+magic 42 and the offset of the first IFD. An IFD is an entry count and 12-byte
+entries: tag, type, count, and the value (when it fits in four bytes) or its
+offset. Tags used: ``StripOffsets`` (273), ``StripByteCounts`` (279),
+``Compression`` (259). The image data is one or more strips anywhere in the
+file.
 
-**Compression.** Baseline TIFF's own PackBits is a *celPix* compression plugin,
-not a container concern: this hands over the strips exactly as stored and reports
-which scheme they use, and the user picks "PackBits" in the Compression dropdown
-to unpack them.
+Behaviour
+- ``read`` returns the strips joined end to end. ``write`` copies the edited
+  bytes back strip by strip and returns the whole file.
+- Compression is not undone here. The strips are returned as stored and the
+  scheme is reported; the user selects "PackBits" in the Compression picker.
+- Notices: ``warn`` and ``inform`` (``celpix.core.notices``) attach a message to
+  the entry when the read succeeds with a caveat. Both appear in the entry's
+  tooltip; a warning also marks it in the Files list. Raise when the read
+  cannot proceed. Notices recorded before a raise are kept.
+- Save As passes an empty destination. The strip map exists only in the source
+  file, so ``read`` stores the source on the context and ``write`` copies it
+  with the edits applied. celPix's iNES and TIM containers do the same.
+  File > New File... has no source, and ``write`` raises.
 
-**Telling the user something.** Two channels: raise when the read cannot proceed
-and nothing opens, or call ``warn``/``inform`` when it *can* proceed but the
-result deserves a caveat — an unsupported compression, strips joined out of a
-scattered file. Notices mark the entry in the files list and spell themselves out
-in its tooltip. A plugin may record notices and *then* raise, so a hard failure
-carries what led up to it.
-
-**Saving somewhere else.** A Save As hands ``write`` an *empty* destination, and
-this container cannot rebuild a TIFF from pixels alone — the strip map is in the
-file. So the read stashes the image it came from and the write copies that, edits
-spliced in. Every container whose framing is a lookup rather than a fixed header
-needs the same.
-
-**What it doesn't do**, being an example: tiled TIFFs (``TileOffsets``, tag 324),
-multi-page files (only the first IFD is read), BigTIFF, and any compression beyond
-none/PackBits. Each is more parsing, not a different shape.
+Not supported: tiled TIFFs (``TileOffsets``, tag 324), pages after the first,
+BigTIFF, compression other than none and PackBits.
 """
 
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
@@ -52,11 +42,8 @@ from celpix.plugins import (
     format_size,
 )
 
-# The file this pathway's strips were read out of, so a Save As can put them back
-# into a copy of it. A container whose framing cannot be *regenerated* from the
-# payload needs this: the strip map lives in the IFD, and with no file at the
-# destination there is no IFD to look it up in. Keys of your own are fine on the
-# context — celPix only reads the ones it defines.
+# The source file's bytes, stored by `read` for a Save As. Plugins may use their
+# own context keys; celPix reads only the keys it defines.
 KEY_TIFF_SOURCE = "tiff.source"
 
 _LITTLE = b"II*\x00"  # byte order + magic 42, together the whole signature
@@ -66,9 +53,7 @@ _TAG_COMPRESSION = 259
 _TAG_STRIP_OFFSETS = 273
 _TAG_STRIP_BYTE_COUNTS = 279
 
-# The IFD value types this container understands. The three tags it wants are all
-# counts and offsets, so BYTE/SHORT/LONG cover them; an entry of any other type
-# is skipped rather than guessed at.
+# IFD value types read: BYTE, SHORT, LONG. Entries of other types are skipped.
 _TYPE_SIZES = {1: 1, 3: 2, 4: 4}
 
 _COMPRESSION_NAMES = {1: "none", 32773: "PackBits"}
@@ -82,8 +67,7 @@ def _entry(raw: bytes, order: str, at: int) -> tuple[int, list[int]]:
     size = _TYPE_SIZES.get(type_id, 0)
     if size == 0 or count == 0:
         return tag, []
-    # The last four bytes are the value itself when it fits, and a pointer to it
-    # when it doesn't — the piece of TIFF that catches everybody out.
+    # The last four bytes hold the value when it fits, otherwise its offset.
     field = at + 8
     start = (
         field if size * count <= 4 else int.from_bytes(raw[field : field + 4], order)
@@ -121,38 +105,24 @@ class TiffContainer:
         name="TIFF image (strip data)",
         stage=Stage.CONTAINER,
         extensions=(".tif", ".tiff"),
-        # Both byte orders, so a TIFF is claimed whichever machine wrote it.
+        # With magic declared, detection uses magic only: `extensions` is then
+        # the default suffix in File > New File.... One probe per byte order.
         magic=((0, _LITTLE), (0, _BIG)),
-        # The tag the Files list shows beside a filename: "board.tif (TIFF)".
         short_name="TIFF",
-        # The strips are joined end to end, so a position in the result names no
-        # position in the file. This is the default and is spelled out because it
-        # is the interesting fact about this container: a slice of it and an
-        # offset palette on it resolve against these bytes rather than the file's.
-        # The declaration to think twice about is the other one — see _example.py.
+        # The default, stated for clarity: joined strips do not keep their file
+        # positions, so slices and offset palettes address the joined payload.
         preserves_offsets=False,
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
-        """The image strips, joined — the bytes a pixel codec should see."""
-        # The host has already acquired the file's bytes, so a container is a
-        # pure transform of them and never opens source.path.
+        """The image strips, joined end to end."""
         raw = source.data
         strips, compression = _strips(raw)
-        # Provenance is the first strip: where the data now held begins in the
-        # file, which is what the address display and a save-back want. The
-        # strips after it are not contiguous, so the write below cannot be a
-        # single splice.
-        ctx.set(KEY_SOURCE_OFFSET, strips[0][0])
-        # Kept so a Save As has a TIFF to write into; see `write`.
-        ctx.set(KEY_TIFF_SOURCE, raw)
+        # The payload starts at the first strip.
+        ctx.set(KEY_SOURCE_OFFSET, source.base + strips[0][0])
+        ctx.set(KEY_TIFF_SOURCE, raw)  # for Save As; see `write`
         name = _COMPRESSION_NAMES.get(compression, f"unsupported ({compression})")
-        # Advisory, like everything on the context: which Compression entry to
-        # pick, without this container deciding for them.
-        ctx.set("tiff.compression", name)
-        # A *notice* is the other half: the entry above is for another stage to
-        # read, this is for the person looking at the result. Raise instead when
-        # the read cannot proceed (see _strips).
+        ctx.set("tiff.compression", name)  # advisory, for other stages
         if compression not in _COMPRESSION_NAMES:
             warn(
                 ctx,
@@ -177,25 +147,11 @@ class TiffContainer:
         return joined
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
-        """Put edited bytes back into the strips they were read out of.
+        """Copy the edited bytes back into their strips; return the whole file.
 
-        ``dest.offset`` is not consulted: the strips say where the bytes go and
-        they are not contiguous, so no single file offset could describe the
-        destination. Return the file *whole* instead — the edit lands in several
-        places at once, and everything between the strips is carried across
-        untouched.
-
-        **Handle the empty destination.** A Save As gives ``dest.existing == b""``
-        and the strip map lives in the file, so there is nothing to look it up in;
-        writing the strips alone would emit a bare pixel run that is not a TIFF. A
-        Save As is a *copy of the document*, so the bytes go back into a copy of
-        the file they came from — what the read stashed. celPix's own iNES and PVR
-        plugins do the same.
-
-        The strips are a fixed set of slots, so the edited data has to be exactly
-        the size it was read as. It always is for an ordinary tile edit; a
-        re-compression that packed to a different size is refused rather than
-        written half-way.
+        ``dest.offset`` is not used: the strips are not contiguous, so no single
+        offset describes the destination. The edited data must be exactly the
+        size that was read; a different size is refused.
         """
         existing = dest.existing
         if not existing:
@@ -222,16 +178,13 @@ class TiffContainer:
     def describe(
         self, source: ReadSource, ctx: PipelineContext
     ) -> tuple[ContainerField, ...]:
-        """Rows for the container-info popup — optional, and display-only.
+        """Rows for the Container Info popup. Display only.
 
-        Reached with ``getattr``, so a container without one reports nothing, and
-        run *after* a successful read: raising here costs the rows, not the file.
-
-        Report what the format says and what you did with it. ``value`` is this
-        file's answer, quoted the way the format quotes it; ``detail`` is the part
-        a hex editor cannot give — why the value matters, or why you ignored it.
-        Hard-wrap ``detail`` at about 60 characters: it becomes a tooltip, and Qt
-        does not wrap those.
+        Called after ``read`` whether or not it succeeded, with the same source
+        and context. An exception here discards the rows and nothing else.
+        ``value`` is the file's value as the format quotes it; ``detail`` is a
+        tooltip saying what the container did with it (break lines at about 60
+        characters).
         """
         try:
             strips, compression = _strips(source.data)

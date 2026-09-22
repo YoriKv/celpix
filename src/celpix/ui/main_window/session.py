@@ -23,6 +23,7 @@ dropped and re-read (see :meth:`~SessionMixin._load_entry`).
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 from PySide6.QtGui import QImage
 
@@ -135,6 +136,9 @@ class SessionMixin:
         if entry.doc is None and not self._load_entry(entry):
             self._show_unavailable(entry)
             return
+        # Here as well as after a load, because a quiet load (a bulk caller, a
+        # bound source) reports nothing and this is where its entry is first seen.
+        self._warn_entry_faults(entry)
         # A file's buffer is the authority for its bytes, but its slices hold
         # their edits in derived buffers of their own until something reconciles
         # them - so reconcile before showing it. Looking at a ROM has to show
@@ -181,9 +185,13 @@ class SessionMixin:
             entry.session = self._seed_session(entry)
         session = entry.session
         if entry.content_kind is ContentKind.TILEMAP:
-            return self._load_tilemap_entry(entry, quiet=quiet, live=live)
+            loaded = self._load_tilemap_entry(entry, quiet=quiet, live=live)
+            if loaded and not quiet:
+                self._warn_entry_faults(entry)
+            return loaded
         layout = None
         if entry.kind is EntryKind.COMPOSITE:
+            self._open_composite_files(entry)
             # The format is the entry's own, like any other pixel entry's — a
             # composite is read at whatever depth its consumer wants, which is
             # not always a depth its sources use (``docs/design/composite-entry.md``).
@@ -581,6 +589,47 @@ class SessionMixin:
             if other.kind is EntryKind.COMPOSITE
             and any(piece.entry is owner for piece in other.pieces)
         ]
+
+    def _open_composite_files(self, entry: Entry) -> None:
+        """Open the files ``entry``'s pieces are cut from, wherever one is closed.
+
+        A composite owns no bytes, so anything asked in **its own** coordinates is
+        answered by a file one of its pieces belongs to — which an Offset palette
+        is, and it is the only thing about a composite that is
+        (``docs/design/palette-editing.md`` §2,
+        :func:`~celpix.project.documents.palette_offset_owner`). A piece that is a
+        *slice* of a file nobody opened left that question with no answer at all:
+        the mode was refused for having "no piece from a file" while the file sat
+        right there on disk. So reading a composite brings those files into the
+        list, once, rather than every consumer learning to look behind a slice for
+        one.
+
+        The row is added the way a jump to a closed parent adds one
+        (:meth:`~...entries.EntriesMixin._jump_into_parent`) — a plain FILE on the
+        raw container, since a slice's offsets are file-absolute and a detected
+        header skip would move the base out from under them — and **not** through
+        an undo command: it follows from the composite being read rather than from
+        a gesture, and there is no step for an undo to take back.
+
+        Only a slice hides a file. A FILE piece *is* the row, and one that has
+        left the list is the ordinary closed-source case the assembly already
+        degrades — a second row over the same path would not put the piece back on
+        it. A composite can never be a piece
+        (:func:`~celpix.project.workspace.can_compose`), so there is no nesting to
+        walk. A file no longer on disk is left alone, the way every other missing
+        file here is: the composite still assembles, and the run it could not read
+        goes blank and says so
+        (:func:`~celpix.project.workspace.composite_layout`).
+        """
+        for piece in entry.pieces:
+            source = piece.entry
+            if source is None or source.kind is not EntryKind.SLICE:
+                continue
+            if self._workspace.find_file(source.path) is not None:
+                continue
+            if not Path(source.path).is_file():
+                continue
+            self._workspace.open_file(source.path, source.extra_paths)
 
     def _composite_layout(self, entry: Entry, preset_id: str = ""):
         """Assemble ``entry``'s pieces, settling each one's region first.

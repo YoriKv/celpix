@@ -3002,3 +3002,66 @@ def test_a_script_builds_the_document_the_window_does(qtbot, tmp_path) -> None:
                 (c.index, c.palette_row) for c in want.drawn_cells
             ], ours.name
     assert doc.stamp_cells == (2, 2)  # the layout really went through the chain
+
+
+def test_a_crashing_optional_codec_method_is_warned_about_once(
+    qtbot, tmp_path, captured_alerts
+) -> None:
+    """An optional method that raises is read as one never written, which keeps
+    the entry open and would otherwise be silent: a control missing from the bar
+    and nothing saying a crash is why. One warning dialog per plugin and method,
+    however many times the bar asks.
+    """
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.errors import Stage
+    from celpix.core.tilemap import Cell
+    from celpix.plugins import FormatInfo
+    from celpix.plugins.formats import adapt_format
+
+    class _Broken:
+        info = FormatInfo(id="format.tilemap.broken-limit", name="broken limit")
+
+        def decode(self, data, ctx):
+            return [Cell(index=byte) for byte in data]
+
+        def encode(self, cells, ctx):
+            return bytes(cell.index & 0xFF for cell in cells)
+
+        def bytes_per_cell(self):
+            return 1
+
+        def cell_tiles(self):
+            return (1, 1)
+
+        def index_limit(self):
+            return 1 // 0
+
+        def has_palette_rows(self):  # asked by the load, not by the bar
+            raise KeyError("rows")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    engine, preset = adapt_format(_Broken(), Stage.INTERPRET_TILEMAP)
+    window._registry.register(engine)
+    window._registry.register_preset(preset)
+    path = tmp_path / "table.bin"
+    path.write_bytes(bytes(4))
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    entry = window._workspace.current
+    entry.tilemap_preset_id = preset.id
+    window._reload_tilemap(entry)
+    captured_alerts.clear()
+    window._codec_faults_seen.clear()
+
+    # The load's own probe: recorded as a notice, raised as a dialog.
+    window._warn_entry_faults(entry)
+    assert [title for title, _ in captured_alerts] == ["celPix - plugin warning"]
+    assert "has_palette_rows" in captured_alerts[0][1]
+    assert "KeyError" in captured_alerts[0][1]
+
+    # The bar's probe: the entry stays usable, the crash is named once.
+    assert window._cell_index_limit() is None
+    assert window._cell_index_limit() is None
+    assert len(captured_alerts) == 2
+    assert "index_limit() raised ZeroDivisionError" in captured_alerts[1][1]
+    assert "in index_limit" in captured_alerts[1][1]

@@ -145,34 +145,6 @@ def _scale_down(comp8: int, width: int) -> int:
     return comp8 >> (8 - width)
 
 
-def parse_masks(raw_masks: dict[str, Any]) -> dict[str, tuple[int, ...]]:
-    """Read the ``masks`` param into ``{component: chunks}``, skipping absent ones.
-
-    Masks are hex integers in TOML (``0x7C00``); strings (``"0x7C00"``) are also
-    accepted, as is a **list** of them for a split field, most significant chunk
-    first (``[0xF000, 0x0008]``). Either way the result is a tuple, so the rest of
-    the kernel has one shape to handle. A component is left out by omitting its
-    key.
-    """
-    masks: dict[str, tuple[int, ...]] = {}
-    for comp in COMPONENTS:
-        value = raw_masks.get(comp)
-        if not value:
-            continue
-        raw = value if isinstance(value, (list, tuple)) else (value,)
-        chunks = tuple(int(c, 0) if isinstance(c, str) else int(c) for c in raw)
-        seen = 0
-        for chunk in chunks:
-            if not chunk:
-                raise ValueError(f"mask {comp!r}: a chunk may not be empty")
-            if chunk & seen:
-                raise ValueError(f"mask {comp!r}: chunks overlap")
-            chunk_shift_width(chunk)  # rejects a gap inside one chunk
-            seen |= chunk
-        masks[comp] = chunks
-    return masks
-
-
 def color_masks(params: dict[str, Any], width: int) -> dict[str, tuple[int, ...]]:
     """Where each component sits, read off the preset's ``fields`` layout.
 
@@ -185,19 +157,25 @@ def color_masks(params: dict[str, Any], width: int) -> dict[str, tuple[int, ...]
     colour to its luma on the way in, where a truecolor pixel carries the field
     to R, G and B and lets them meet again on the way out.
     """
+    legend = resolve_legend(COLOR_LEGEND, params.get("legend"), COLOR_FIELDS)
+    return {
+        name: chunks
+        for name, (chunks, _sw) in parse_layout(
+            layout_text(params), legend, width
+        ).items()
+    }
+
+
+def layout_text(params: dict[str, Any]) -> str:
+    """The preset's ``fields`` layout, which both colour codecs require."""
     text = params.get("fields")
-    if isinstance(text, str):
-        legend = resolve_legend(COLOR_LEGEND, params.get("legend"), COLOR_FIELDS)
-        return {
-            name: chunks
-            for name, (chunks, _sw) in parse_layout(text, legend, width).items()
-        }
-    if "masks" in params:
-        return parse_masks(params["masks"])
-    raise ValueError(
-        "the preset does not say where the colour components sit - give "
-        "`fields`, one letter per bit, most significant first"
-    )
+    if not isinstance(text, str):
+        unread = " (`masks` is not read)" if "masks" in params else ""
+        raise ValueError(
+            "the preset does not say where the colour components sit - give "
+            f"`fields`, one letter per bit, most significant first{unread}"
+        )
+    return text
 
 
 def shift_widths(

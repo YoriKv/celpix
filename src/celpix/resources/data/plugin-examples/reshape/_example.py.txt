@@ -1,30 +1,24 @@
-"""Example reshape. Copy this file, drop the leading underscore, edit it, and
-press F5 in celPix (code plugins ask for confirmation the first time, since
-they run with the app's privileges).
+"""Example reshape plugin: swap the two halves of a region.
 
-A reshape is a **region-scoped byte reordering**: a length-preserving permutation
-applied to the *whole* region — an arcade board's plane-per-chip split joined back
-together, an interleaved ROM pair woven into one stream. It runs between the
-container and the decompressor, so compression and the pixel codec see bytes in
-one contiguous, decodable order.
+To use: copy, remove the leading "_", edit, press F5. Code plugins run with the
+app's privileges, so celPix asks before loading one.
 
-It is not a compression scheme: no extent, no end marker, nothing to scan for, and
-correct only over the entire buffer, its boundaries being fractions of
-``len(data)``. That is also why celPix blanks the address display and refuses to
-carve slices while a reshape is active — view positions no longer name file
-offsets.
+A reshape is a length-preserving reordering of a whole region, such as joining
+an arcade board's per-chip bitplanes or de-interleaving a ROM pair. It runs
+after the container and before decompression.
 
-**``unshape`` is optional**, and is ``reshape``'s exact inverse, run on save so
-every byte returns where it came from. A reordering understood well enough to view
-but not to restore ships ``reshape`` alone, and celPix opens its data read-only.
+Contract
+- ``reshape`` runs on load and receives the entire region, never a window.
+- ``unshape`` is its exact inverse and runs on save. It is optional; without it
+  the data opens read-only.
+- The output length must equal the input length.
+- While a reshape is active, view addresses count from the start of the
+  reordered buffer, not the file.
+- Test ``unshape(reshape(x)) == x`` for odd and even lengths. The pair is not
+  checked at runtime, and a mismatch corrupts saves.
 
-**Address permutations need no code**: a board that rotates address lines or
-substitutes byte values through a table wants a TOML preset — see _bitswap.toml
-and _data-lut.toml. Code is for reorderings neither engine expresses, like the
-shipped split-plane joins.
-
-This toy reshape swaps the two halves of the region; some boards store the second
-half of a sprite sheet first.
+An address-line permutation or a byte-value substitution needs no code: see
+_bitswap.toml and _data-lut.toml.
 """
 
 from celpix.core.context import PipelineContext
@@ -34,32 +28,19 @@ from celpix.plugins import PluginInfo
 
 class ExampleSwapHalves:
     info = PluginInfo(
-        # Ids are namespaced by stage. The folder this file sits in declares the
-        # stage, so the line below is optional — stated anyway, as the other
-        # examples do, so the file describes itself wherever it is read.
-        id="reshape.example-swap-halves",
+        id="reshape.example-swap-halves",  # stable; stored in project files
         name="Example half swap",
+        # Optional in a plugin folder, which sets the stage itself.
         stage=Stage.RESHAPE,
     )
 
     def reshape(self, data: bytes, ctx: PipelineContext) -> bytes:
-        """Whole region in, whole region out — never a window of one.
-
-        An odd byte has no partner half, so it passes through at the end rather
-        than being folded in: "the last byte is not interpreted" beats shearing
-        the whole image by one.
-        """
+        # An odd trailing byte has no partner and passes through unchanged.
         half = len(data) // 2
         return data[half : half * 2] + data[:half] + data[half * 2 :]
 
     def unshape(self, data: bytes, ctx: PipelineContext) -> bytes:
-        """The exact inverse, so a save writes back byte-identical files.
-
-        A half swap is its own inverse; most reshapes are not. celPix trusts the
-        pair blindly and a mismatch corrupts saves, so test the round trip:
-        ``unshape(reshape(x)) == x`` for odd and even lengths.
-        """
-        return self.reshape(data, ctx)
+        return self.reshape(data, ctx)  # a half swap is its own inverse
 
 
 def register(registry):

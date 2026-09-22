@@ -46,6 +46,7 @@ from celpix.core.errors import Stage
 from celpix.core.notices import warn
 from celpix.core.sprite import Frame, Subsprite
 from celpix.core.tilemap import Cell, CellOp
+from celpix.plugins._params import byte_order, flag, one_of
 from celpix.plugins.base import PluginInfo
 
 MD_SPRITE_ENGINE = "codec.tilemap.md-sprite"
@@ -70,13 +71,13 @@ def _layout(params: dict[str, Any]) -> tuple[int, bool, str]:
     """``(x width in bytes, is there a mirror byte, attribute byte order)``.
 
     The three things that vary across the family, all defaulted to the form that
-    has been read out of a real file. Out-of-range values fall back rather than
-    raising — a hand-edited preset should still draw something.
+    has been read out of a real file. A value outside its set raises rather than
+    falling back: both x widths give a six-byte record that draws *something*,
+    so a fallback would hide the typo behind a plausible object.
     """
-    x_bytes = 2 if params.get("x_bytes") == 2 else 1
-    mirror = bool(params.get("mirror_x", True))
-    order = params.get("endian", "big")
-    return x_bytes, mirror, "little" if order == "little" else "big"
+    x_bytes = one_of(params, "x_bytes", (1, 2), 1)
+    mirror = flag(params, "mirror_x", True)
+    return x_bytes, mirror, byte_order(params, "endian", "big")
 
 
 def record_size(params: dict[str, Any]) -> int:
@@ -225,9 +226,10 @@ class MdSpriteCodec:
         the signed-word-X one are the same six bytes, and the wrong reading draws
         a plausible object with its pieces in the wrong places rather than
         failing. A run whose mirror fields are not the flipped X they should be
-        says so, and names the parameter to try.
+        says so, and names the parameter to try. A record with no mirror field
+        has nothing to check, and is the reading the notice recommends.
         """
-        if cells and not mirrors_x(cells, params):
+        if cells and _layout(params)[1] and not mirrors_x(cells, params):
             warn(
                 ctx,
                 "this run's mirror offsets do not match its X offsets",

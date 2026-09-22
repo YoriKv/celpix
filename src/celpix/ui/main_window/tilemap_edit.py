@@ -240,7 +240,8 @@ class TilemapEditMixin:
             return None
         try:
             top = ask(preset.params)
-        except Exception:  # noqa: BLE001 — a probe must not break the bar
+        except Exception as exc:  # noqa: BLE001 — a probe must not break the bar
+            self._codec_fault(preset.id, "index_limit", exc)
             return None
         return top if top and top > 0 else None
 
@@ -298,7 +299,8 @@ class TilemapEditMixin:
             return None
         try:
             top = ask(preset.params)
-        except Exception:  # noqa: BLE001 — a probe must not break the bar
+        except Exception as exc:  # noqa: BLE001 — a probe must not break the bar
+            self._codec_fault(preset.id, "palette_row_limit", exc)
             return None
         return top if top and top > 0 else None
 
@@ -320,7 +322,8 @@ class TilemapEditMixin:
             return False
         try:
             return bool(ask(preset.params))
-        except Exception:  # noqa: BLE001 — a probe must not break the gesture
+        except Exception as exc:  # noqa: BLE001 — a probe must not break the gesture
+            self._codec_fault(preset.id, "has_visibility", exc)
             return False
 
     def _cell_fields(self) -> dict[str, int]:
@@ -346,7 +349,8 @@ class TilemapEditMixin:
         if ask is not None:
             try:
                 stated = dict(ask(preset.params))
-            except Exception:  # noqa: BLE001 — a probe must not break the bar
+            except Exception as exc:  # noqa: BLE001 — a probe must not break the bar
+                self._codec_fault(preset.id, "cell_fields", exc)
                 return {}
             return {
                 name: limit
@@ -360,7 +364,8 @@ class TilemapEditMixin:
                 return None
             try:
                 return asked(preset.params)
-            except Exception:  # noqa: BLE001 — a probe must not break the bar
+            except Exception as exc:  # noqa: BLE001 — a probe must not break the bar
+                self._codec_fault(preset.id, name, exc)
                 return None
 
         fields: dict[str, int] = {}
@@ -376,8 +381,8 @@ class TilemapEditMixin:
                 try:
                     if mirror(Cell(), op, preset.params) is not None:
                         fields[name] = 1
-                except Exception:  # noqa: BLE001 — same rule as above
-                    pass
+                except Exception as exc:  # noqa: BLE001 — same rule as above
+                    self._codec_fault(preset.id, "transform_cell", exc)
         if probe("has_visibility"):
             fields["visible"] = 1
         if probe("has_line_flag"):
@@ -839,7 +844,7 @@ class TilemapEditMixin:
         **Row groups are settled before the guard**, not after, so a paste whose
         only difference from what is there is a row the format cannot store is
         the no-op it will turn out to be
-        (:meth:`~celpix.core.document.Document.snapped_palette_rows`). Doing it
+        (:meth:`~celpix.core.document.Document.settle_cells`). Doing it
         here rather than in each gesture is what keeps the coarse formats from
         being a special case in the paste, the stamp, the clear and the fill
         alike — every one of them arrives through this method.
@@ -850,7 +855,7 @@ class TilemapEditMixin:
             return False
         if doc is None or doc.cells is None or entry is None:
             return False
-        cells = doc.snapped_palette_rows(cells)
+        cells = doc.settle_cells(cells)
         if cells == doc.cells and caret is None:
             return False
         self._push_command(

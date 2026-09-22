@@ -1,29 +1,23 @@
-# Example preset for the `codec.pixel.nibble-planar` engine. Copy, drop the
-# underscore, edit, press F5. See _planar.toml for what a preset is.
+# Example preset: `codec.pixel.nibble-planar` — two bitplanes per byte.
 #
-# WHAT THE ENGINE DOES
-# --------------------
-# codec.pixel.nibble-planar is neither planar nor packed but splits the difference:
-# **one byte carries four pixels**, its high nibble holding one bitplane of those
-# four and its low nibble the next, with bit 3 of a nibble the leftmost pixel.
+# To use: copy, remove the leading "_", edit, press F5. See _planar.toml for
+# what a preset is.
 #
-#     index[i] = ((byte >> (7 - i)) & 1) << hi | ((byte >> (3 - i)) & 1) << lo
+# ENGINE
+#   One byte holds four pixels: its high nibble is one bitplane of those four
+#   and its low nibble the next. Bit 3 of a nibble is the leftmost pixel:
 #
-# A byte is eight bits of picture either way; what differs from planar is that a
-# pixel's two bits sit four bits apart in *one* byte rather than in two bytes.
-# Depths past 2bpp add more bytes per group of four pixels, most significant
-# plane pair first. Because the unit is a four-pixel group rather than an
-# eight-pixel row, any width that is a multiple of four works.
+#       index[i] = ((byte >> (7 - i)) & 1) << hi | ((byte >> (3 - i)) & 1) << lo
 #
-# SHIPPED PRESETS BUILT ON IT
-# ---------------------------
-#   atari-sy2-chars-2bpp    8x8 2bpp, 16 bytes — both planes share each byte, so
-#                           it needs no region join.
-#   atari-sy2-tiles-4bpp    8x8 4bpp — expects a buffer that reshape.split-
-#                           planes-2 has already interleaved, the hardware
-#                           keeping the second plane pair in the region's far
-#                           half.
-#   atari-sy2-sprites-4bpp  16x16 4bpp, the same encoding at sprite size.
+#   Above 2bpp each four-pixel group takes bpp / 2 bytes, most significant
+#   plane pair first.
+#
+# SHIPPED PRESETS ON THIS ENGINE
+#   atari-sy2-chars-2bpp    8x8 2bpp, 16 bytes a tile.
+#   atari-sy2-tiles-4bpp    8x8 4bpp. Expects a buffer already interleaved by
+#                           reshape.split-planes-2: the hardware keeps the
+#                           second plane pair in the region's far half.
+#   atari-sy2-sprites-4bpp  16x16 4bpp.
 
 id = "preset.pixel.example-nibble-planar"
 name = "Example nibble-planar 2bpp"
@@ -31,15 +25,9 @@ engine_id = "codec.pixel.nibble-planar"
 
 [params]
 
-# Bits per pixel. Any **even** depth from 2 to 8 — even because the planes come
-# in pairs, one pair to a byte. Each further pair is one more byte per four-pixel
-# group, most significant pair first, so a 4bpp group is two bytes and an 8bpp
-# group four.
+# Bits per pixel: 2, 4, 6 or 8.
 bpp = 2
 
-# Pixel size of one tile; both default to 8. The width must be a whole number of
-# **four**-pixel groups (4, 8, 12, 16, ...) — not eight, as in the planar and
-# packed engines — because the group, not the row, is this format's unit. The
-# height is free.
+# Tile size in pixels. Default 8 each. tile_width must be a multiple of 4.
 tile_width = 8
 tile_height = 8

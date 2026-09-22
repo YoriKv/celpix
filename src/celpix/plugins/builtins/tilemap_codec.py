@@ -88,6 +88,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.core.tilemap import Cell, CellOp
+from celpix.plugins._params import byte_order
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._fields import (
     Field,
@@ -160,40 +161,28 @@ _CELL_ATTR = {
 }
 
 
-def _placements(params: dict[str, Any]) -> dict[str, _Field] | None:
-    """Everything the preset's ``fields`` layout places, or None where it has none."""
+def _layout_text(params: dict[str, Any]) -> str:
+    """The preset's ``fields`` layout, which the engine requires."""
     text = params.get("fields")
     if not isinstance(text, str):
-        return None
+        unread = sorted(name for name in _FIELDS if name in params)
+        note = f" ({', '.join(unread)}: not read)" if unread else ""
+        raise ValueError(
+            "the preset does not say where the cell's fields sit - give "
+            f"`fields`, one letter per bit, most significant first{note}"
+        )
+    return text
+
+
+def _placements(params: dict[str, Any]) -> dict[str, _Field]:
+    """Everything the preset's ``fields`` layout places."""
     legend = resolve_legend(_LEGEND, params.get("legend"), frozenset(_FIELDS))
-    return parse_layout(text, legend, _cell_bytes(params) * 8)
+    return parse_layout(_layout_text(params), legend, _cell_bytes(params) * 8)
 
 
 def _field(params: dict[str, Any], name: str) -> _Field | None:
     """Field ``name``'s chunks, or None when the format lacks it."""
-    placed = _placements(params)
-    if placed is not None:
-        return placed.get(name)
-    spec = params.get(name)
-    if not spec:
-        return None
-    chunks: list[int] = []
-    sw: list[tuple[int, int]] = []
-    seen = 0
-    for part in spec if isinstance(spec, (list, tuple)) else (spec,):
-        shift = int(part.get("shift", 0))
-        bits = int(part.get("bits", 0))
-        if bits <= 0:
-            continue
-        mask = ((1 << bits) - 1) << shift
-        if mask & seen:
-            raise ValueError(f"tilemap field {name!r}: chunks overlap")
-        seen |= mask
-        chunks.append(mask)
-        sw.append((shift, bits))
-    if not chunks:
-        return None
-    return tuple(chunks), tuple(sw)
+    return _placements(params).get(name)
 
 
 def _limit(field: _Field | None) -> int | None:
@@ -215,21 +204,17 @@ def _cell_bytes(params: dict[str, Any]) -> int:
     to fix rather than one to guess at.
     """
     stated = None if params.get("bytes") is None else int(params["bytes"])
-    text = params.get("fields")
-    if isinstance(text, str):
-        width = bit_width(text)
-        if width % 8:
-            raise ValueError(
-                f"a cell has to be a whole number of bytes, and the layout "
-                f"describes {width} bits"
-            )
-        size = width // 8
-        if stated is not None and stated != size:
-            raise ValueError(
-                f"the layout describes a {size}-byte cell and bytes says {stated}"
-            )
-    else:
-        size = stated if stated is not None else 2
+    width = bit_width(_layout_text(params))
+    if width % 8:
+        raise ValueError(
+            f"a cell has to be a whole number of bytes, and the layout "
+            f"describes {width} bits"
+        )
+    size = width // 8
+    if stated is not None and stated != size:
+        raise ValueError(
+            f"the layout describes a {size}-byte cell and bytes says {stated}"
+        )
     if size < 1:
         raise ValueError(f"cell size must be at least one byte, got {size}")
     return size
@@ -352,13 +337,6 @@ def _publish_records(cells: int, params: dict[str, Any], ctx: PipelineContext) -
     ctx.set(KEY_TILEMAP_RECORD_COLUMN_MAJOR, order == "column")
 
 
-def _endian(params: dict[str, Any]) -> str:
-    order = str(params.get("endian", "little"))
-    if order not in ("little", "big"):
-        raise ValueError(f"endian must be 'little' or 'big', got {order!r}")
-    return order
-
-
 def _get(word: int, field: _Field | None) -> int:
     return gather(word, *field) if field else 0
 
@@ -390,7 +368,7 @@ class TilemapCodec:
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> list[Cell]:
         size = _cell_bytes(params)
-        order = _endian(params)
+        order = byte_order(params, "endian", "little")
         fields = _layout(params)
         cells: list[Cell] = []
         # A trailing partial cell is dropped rather than zero-padded: unlike a
@@ -422,7 +400,7 @@ class TilemapCodec:
         self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
         size = _cell_bytes(params)
-        order = _endian(params)
+        order = byte_order(params, "endian", "little")
         fields = _layout(params)
         # The fields this format actually has, paired with what reads each off a
         # cell. Settled once rather than probed per cell: a text cell is one byte

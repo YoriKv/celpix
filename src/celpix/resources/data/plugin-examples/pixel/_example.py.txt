@@ -1,69 +1,56 @@
-"""Example pixel code format. Copy this file, drop the leading underscore, edit
-it, and press F5 in celPix (code plugins ask for confirmation the first time,
-since they run with the app's privileges).
+"""Example pixel code format: 8x8 tiles at 2bpp, packed.
 
-A code format implements a pixel interpretation directly, for layouts no built-in
-engine's parameters can express, and appears in the format picker like any preset.
-Try a preset first: see _planar.toml.
+To use: copy, remove the leading "_", edit, press F5. Code plugins run with the
+app's privileges, so celPix asks before loading one.
 
-decode and encode must be buffer-relative and stateless — they walk whatever bytes
-they are given one tile at a time, with no notion of where the buffer sits in the
-file. That is what lets celPix decode just the visible window of a large file.
+A code format implements one pixel interpretation directly and appears in the
+format picker like a preset. Use it for layouts no engine's parameters express;
+this layout is expressible (see _packed.toml) and is used here for brevity.
 
-**The one thing to get right is that a tile is not its bytes.** An ``IndexGrid``
-holds **one byte per pixel** — a palette index — so a ``w x h`` tile is always
-``w * h`` bytes of grid, whatever the format spends on disk. The 8x8 2bpp tile
-below is 16 bytes in the file and 64 indices in the grid, and the whole of
-``decode`` is the loop that turns one into the other. Hand the raw slice straight
-to ``IndexGrid`` and it raises ``data length 16 != 64`` at decode time, long after
-the plugin loaded clean — a mistake invisible at 8bpp, where the two numbers
-happen to agree.
+Contract
+- Required methods: ``decode``, ``encode``, ``bytes_per_tile``, ``tile_size``.
+- ``decode`` and ``encode`` are stateless and buffer-relative: they process
+  whatever bytes they are given, a whole number of tiles, with no knowledge of
+  the buffer's position in the file. celPix decodes only the visible window.
+- ``encode`` is the exact inverse of ``decode``. Test
+  ``encode(decode(x)) == x``; a mismatch corrupts saves.
+- An ``IndexGrid`` holds one byte per pixel (a palette index): ``width * height``
+  bytes, whatever the format stores on disk. Passing it the raw tile bytes
+  raises at decode time unless the format is 8bpp.
+- celPix derives the bit depth as
+  ``ceil(bytes_per_tile * 8 / (width * height))``. It sizes a palette row and
+  clamps painted indices, and it is not checked against ``decode``.
 """
 
 from celpix.core.index_grid import IndexGrid
 from celpix.plugins import FormatInfo
 
-# Where each of a byte's four pixels sits, leftmost first. Naming it once is what
-# keeps decode and encode from drifting into different pixel orders — the
-# classic way a format ends up mirrored four pixels at a time.
+# Bit position of each of a byte's four pixels, leftmost first. Shared by decode
+# and encode so the two cannot disagree on pixel order.
 _SHIFTS = (6, 4, 2, 0)
 
 
 class Packed2bpp:
-    """8x8 tiles at 2bpp: one byte holds four pixels, leftmost in the high bits.
+    """One byte holds four pixels, leftmost in the high bits. 16 bytes a tile."""
 
-    A row is eight pixels in two bytes and rows run top to bottom, so a tile is
-    sixteen bytes. A layout this plain is really a preset (see _packed.toml); it
-    is here because the *unpack* every code pixel format has to write reads
-    clearest on a format with nothing else going on.
-    """
-
-    # The id doubles as the picker entry's stable identity; the name is shown.
+    # `id` is stable and stored in project files; `name` is shown in the picker.
     info = FormatInfo(id="format.pixel.example-2bpp", name="Example packed 2bpp")
 
     def decode(self, data, ctx):
-        """bytes -> tiles (whole tiles only; a trailing partial tile is dropped)."""
+        """bytes -> list[IndexGrid]. A trailing partial tile is dropped."""
         width, height = self.tile_size()
         size = self.bytes_per_tile()
         tiles = []
         for at in range(0, len(data) - size + 1, size):
-            # One index per pixel, row-major — width * height of them, never
-            # `size` of them. This is the loop the docstring is about.
-            indices = bytearray()
+            indices = bytearray()  # one per pixel, row-major
             for byte in data[at : at + size]:
                 indices += bytes((byte >> shift) & 0x03 for shift in _SHIFTS)
             tiles.append(IndexGrid(width, height, indices))
         return tiles
 
     def encode(self, tiles, ctx):
-        """tiles -> bytes; the exact inverse of decode.
-
-        celPix trusts the pair blindly and a mismatch corrupts saves, so test the
-        round trip: ``encode(decode(x)) == x`` for a couple of tiles' worth of
-        bytes. Indices are masked to the depth rather than raising — a pixel can
-        arrive from a deeper format, and refusing the write would make the whole
-        document unsaveable over one pixel.
-        """
+        """list[IndexGrid] -> bytes. Indices are masked to the depth: raising
+        would make a document unsaveable over one out-of-range pixel."""
         out = bytearray()
         for tile in tiles:
             indices = tile.data
@@ -75,21 +62,10 @@ class Packed2bpp:
         return bytes(out)
 
     def bytes_per_tile(self):
-        """How many bytes one tile occupies on disk.
-
-        celPix slices the visible byte window with it — and **derives the bit
-        depth from it**, as ``ceil(bytes_per_tile * 8 / (width * height))``, since
-        a code format has no ``bpp`` param to read. Nothing checks that against
-        what decode produces, and the derived number sizes a palette row and
-        clamps painted indices: claim 32 bytes here for a 16-byte tile and the
-        format quietly draws through 16 colours it does not have.
-        """
         return 16  # 8x8 pixels at 2 bits each
 
     def tile_size(self):
-        # Pixel dimensions of one tile: (width, height). The other half of the
-        # bpp sum above, and what sizes every grid decode builds.
-        return (8, 8)
+        return (8, 8)  # (width, height) in pixels
 
 
 def register(registry):

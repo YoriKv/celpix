@@ -62,7 +62,7 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core.document import Document
-from celpix.core.errors import PipelineError, Stage
+from celpix.core.errors import PipelineError, Stage, fault_origin, fault_report
 from celpix.core.palette import Palette
 from celpix.plugins.compress_reshape import write_preset
 from celpix.plugins.discovery import PROJECT_PLUGIN_DIRNAME, PluginLoadIssue
@@ -75,6 +75,7 @@ from celpix.project.workspace import (
     SortKey,
     Workspace,
     data_missing,
+    entry_notices,
     sorted_entries,
 )
 from celpix.ui.animation_overlay import AnimationOverlay
@@ -220,6 +221,9 @@ class MainWindow(
         self._plugin_dir = plugin_dir
         self._plugin_issues = plugin_issues or []
         self._reload_plugins = reload_plugins
+        # The codec crashes already raised as a warning dialog, so one broken
+        # method is reported once rather than on every read (:meth:`_codec_fault`).
+        self._codec_faults_seen: set[tuple[str, str]] = set()
         # The open files/slices. self._doc is always the *current* entry's
         # document (or None with nothing open) - the single-active-view model:
         # switching entries swaps the document under the one canvas.
@@ -1569,7 +1573,14 @@ class MainWindow(
         self._alert_plugin_issues()
 
     # -- reaching the user ------------------------------------------------------
-    def _alert(self, message: str, *, title: str = "celPix", detail: str = "") -> None:
+    def _alert(
+        self,
+        message: str,
+        *,
+        title: str = "celPix",
+        detail: str = "",
+        error: bool = False,
+    ) -> None:
         """The one place errors and warnings reach the user, as a modal dialog.
 
         A status-bar line is easy to miss - it's silent and scrolls away - so
@@ -1578,9 +1589,13 @@ class MainWindow(
         acknowledge. Success and progress notes still belong in the status bar;
         this is only for failures. ``detail`` fills the dialog's expandable
         details pane for long specifics (e.g. a per-plugin error list).
+
+        ``error`` is the difference between the two icons: a **warning** is
+        something the app worked around, and what is on screen may not be what
+        was asked for; an **error** is something it could not do at all.
         """
         box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
+        box.setIcon(QMessageBox.Icon.Critical if error else QMessageBox.Icon.Warning)
         box.setWindowTitle(title)
         box.setText(message)
         if detail:
@@ -1624,9 +1639,81 @@ class MainWindow(
         return box.clickedButton() is go
 
     def _report(self, exc: PipelineError) -> None:
-        """Surface a pipeline failure. Thin wrapper over :meth:`_alert` kept for
-        the many call sites that already hold a :class:`PipelineError`."""
-        self._alert(str(exc), title="celPix - pipeline error")
+        """Surface a pipeline failure as an error dialog.
+
+        Says which plugin failed, in which stage and direction, what it raised
+        and on which line (:meth:`~celpix.core.errors.PipelineError.summary`);
+        the details pane holds the traceback, which is what a plugin's author
+        needs and nobody else has to open.
+        """
+        fault = exc.fault
+        self._alert(
+            exc.summary(),
+            title="celPix - pipeline error",
+            detail=fault_report(fault) if fault is not None else "",
+            error=True,
+        )
+
+    def _codec_fault(self, plugin: str, method: str, exc: BaseException) -> None:
+        """Warn that ``plugin``'s optional ``method`` crashed and was worked around.
+
+        The counterpart of :meth:`_report` for the calls whose failure has a
+        defined fallback - an optional codec method that raises is read as one
+        that was never written (``docs/design/plugin-system.md`` §1). The
+        fallback keeps the entry open, and without this it is also silent: a
+        control is missing from the bar and nothing says a crash is why.
+
+        **Once per plugin and method**, until the plugins are next refreshed.
+        These methods are asked on every toolbar sync, and the entry is marked
+        ``seen`` before the dialog opens so a repaint under it cannot ask again.
+        """
+        origin = fault_origin(exc)
+        self._warn_codec_faults(
+            [
+                (
+                    plugin,
+                    method,
+                    f"{plugin}: {method}() raised {type(exc).__name__}: {exc}"
+                    + (f"\nRaised at {origin}." if origin else ""),
+                    fault_report(exc),
+                )
+            ]
+        )
+
+    def _warn_entry_faults(self, entry: Entry) -> None:
+        """Raise the crash notices ``entry``'s load recorded as a warning dialog.
+
+        A notice carrying a ``report`` stands for a plugin that crashed during
+        the read and was worked around (:class:`~celpix.core.notices.Notice`).
+        The tooltip on the entry's row still lists it; this is what gets it read.
+        """
+        self._warn_codec_faults(
+            [
+                (
+                    note.source,
+                    note.summary,
+                    f"{note.summary}\n{note.detail}",
+                    note.report,
+                )
+                for note in entry_notices(entry)
+                if note.report
+            ]
+        )
+
+    def _warn_codec_faults(self, faults: list[tuple[str, str, str, str]]) -> None:
+        """One warning dialog for the ``(plugin, what, message, report)`` faults
+        not yet shown this session."""
+        fresh = [f for f in faults if (f[0], f[1]) not in self._codec_faults_seen]
+        if not fresh:
+            return
+        self._codec_faults_seen.update((f[0], f[1]) for f in fresh)
+        self._alert(
+            "A plugin crashed and celPix worked around it. The entry stays open, "
+            "but what the plugin would have answered is missing.\n\n"
+            + "\n\n".join(f[2] for f in fresh),
+            title="celPix - plugin warning",
+            detail="\n\n".join(f[3] for f in fresh),
+        )
 
     # What each stage's presets are called in a sentence aimed at the user.
     # "interpret-tilemap" is the pipeline's word for the stage, not a thing the
@@ -1682,21 +1769,38 @@ class MainWindow(
         Declined files still appear in a failure modal's details when there is
         one to show: the list is "what is not running", and leaving them out of
         it is how a user hunts a plugin that is sitting right there.
+
+        A **warning** is a plugin that loaded with something in it that will
+        never take effect - inputs declared on a stage that receives none. It is
+        a modal too, and its own sentence: nothing failed, so "failed to load"
+        would send its author looking for the wrong problem.
         """
-        failed = [i for i in self._plugin_issues if not i.declined]
+        failed = [i for i in self._plugin_issues if not (i.declined or i.warning)]
+        warned = [i for i in self._plugin_issues if i.warning]
         declined = [i for i in self._plugin_issues if i.declined]
-        if not failed:
+        if not failed and not warned:
             if declined:
                 self.statusBar().showMessage(
                     f"{counted(len(declined), 'code plugin')} not run - the trust "
                     "prompt was declined. File ▸ Refresh plugins asks again."
                 )
             return
-        detail = "\n".join(f"• {i.path}: {i.message}" for i in [*failed, *declined])
+        said = []
+        if failed:
+            said.append(
+                f"{counted(len(failed), 'plugin')} failed to load. The rest of "
+                "the app works normally."
+            )
+        if warned:
+            said.append(
+                f"{counted(len(warned), 'plugin')} loaded with a declaration "
+                "that has no effect."
+            )
+        detail = "\n".join(
+            f"• {i.path}: {i.message}" for i in [*failed, *warned, *declined]
+        )
         self._alert(
-            f"{counted(len(failed), 'plugin')} failed to load. The rest of "
-            "the app works normally; see the details, or File ▸ Open plugins "
-            "folder.",
+            " ".join(said) + " See the details, or File ▸ Open plugins folder.",
             title="celPix - plugin load issues",
             detail=detail,
         )

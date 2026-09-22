@@ -1,25 +1,19 @@
-# Example preset for the `codec.pixel.palette-swatch` engine. Copy, drop the
-# underscore, edit, press F5. See _planar.toml for what a preset is.
+# Example preset: `codec.pixel.palette-swatch` — bytes shown as palette colours.
 #
-# WHAT THE ENGINE DOES
-# --------------------
-# Reads the bytes as **palette colours** rather than tiles: every entry becomes
-# one solid 8x8 swatch, so a colour table inside a ROM shows as rows of swatches
-# with the tile grid between them. The colours are decoded by a *palette* format
-# — any preset in palette/, shipped or yours — and painting a swatch rewrites
-# that entry through the same format, quantised to what it can hold.
+# To use: copy, remove the leading "_", edit, press F5. See _planar.toml for
+# what a preset is.
 #
-# A swatch is one read unit of the palette format. A format packing several
-# entries into a byte (the Game Boy's BGP register: four shades) gives one tile
-# four swatches wide, since a tile has to be a whole number of bytes.
+# ENGINE
+#   Decodes the bytes with a palette format and draws one solid 8x8 swatch per
+#   entry. Painting a swatch writes the entry back through the same format,
+#   quantised to what it can store. One tile is one read unit of the palette
+#   format: a format with several entries per unit (the Game Boy BGP register,
+#   four shades a byte) gives a tile that many swatches wide. tile_width and
+#   tile_height are ignored.
 #
-# SHIPPED PRESETS BUILT ON IT
-# ---------------------------
-#   view-as-palette    the "View as Palette" entry at the top of the Pixels
-#                      dropdown. It names no palette format: the toolbar's
-#                      palette-format picker (in the compression preview's place
-#                      while this is selected) sets one per entry, and that pick
-#                      overrides the param below wherever the preset is used.
+# SHIPPED PRESETS ON THIS ENGINE
+#   view-as-palette   "View as Palette" in the Pixels dropdown. Sets no palette
+#                     format.
 
 id = "preset.pixel.example-palette-swatch"
 name = "Example palette swatches (RGB888)"
@@ -27,8 +21,8 @@ engine_id = "codec.pixel.palette-swatch"
 
 [params]
 
-# The palette format the entries are in — the id of a preset from palette/.
-# Optional: unset, the SNES/GBA BGR555 layout is assumed, and the toolbar picker
-# replaces whatever is here in any case. Stating one is for a preset that should
-# *open* on a particular format before the picker is touched.
+# Id of a palette preset (shipped, or one of yours in palette/). Default
+# "preset.palette.bgr555". In the app, the toolbar's palette-format picker
+# (shown while a preset on this engine is selected) sets the format per entry
+# and overrides this value; it applies only where no pick exists.
 palette_preset_id = "preset.palette.rgb888"

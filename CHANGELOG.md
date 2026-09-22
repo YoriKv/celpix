@@ -1,8 +1,9 @@
 # Changelog
 
-## v1.0.5 - unreleased
+## v1.1.0 - unreleased
 
 - Composite views can now be used as a palette
+- Opening a composite view opens the files its pieces are cut from
 - Export gif or png sequence from animation viewer
 - Export pngs with transparency if "Transparent 0" is checked
 - Added size header option to RLE compression
@@ -11,6 +12,9 @@
   if pasted in
 - Project version 4 due to project format changes
 - Some SNES and NES codec improvements
+- Plugin examples updated
+- Better pipeline errors
+- Fixes and improvements to plugins across the board
 
 ## v1.0.4 - 2026-09-20
 

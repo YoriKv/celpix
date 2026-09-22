@@ -8,7 +8,47 @@ partial output (see ``docs/design/overview.md`` §2, Failure handling). A
 
 from __future__ import annotations
 
+import sysconfig
+import traceback
 from enum import Enum
+from pathlib import Path
+
+# Where a traceback frame is *not* plugin code: the celpix package itself, and
+# the interpreter's own libraries.
+_HOST_ROOTS = tuple(
+    str(Path(root).resolve())
+    for root in (
+        Path(__file__).parents[1],
+        *(sysconfig.get_paths().get(key, "") for key in ("stdlib", "purelib")),
+    )
+    if str(root)
+)
+
+
+def fault_origin(exc: BaseException) -> str:
+    """Where ``exc`` was raised: ``file.py, line N, in function``.
+
+    The innermost frame of a **dropped-in plugin** where the traceback has one,
+    else the innermost frame. A plugin's mistake is often caught a call deeper,
+    inside the host - an ``IndexGrid`` refusing the wrong number of bytes - and
+    the line its author has to look at is their own, not the check that caught
+    it. Empty for an exception that was never raised.
+    """
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return ""
+    own = [
+        frame
+        for frame in frames
+        if not str(Path(frame.filename).resolve()).startswith(_HOST_ROOTS)
+    ]
+    frame = (own or frames)[-1]
+    return f"{Path(frame.filename).name}, line {frame.lineno}, in {frame.name}"
+
+
+def fault_report(exc: BaseException) -> str:
+    """``exc`` and its traceback as text, for a dialog's details pane."""
+    return "".join(traceback.format_exception(exc)).rstrip()
 
 
 class Stage(str, Enum):
@@ -92,3 +132,34 @@ class PipelineError(Exception):
         label = f"{stage.value}:{action}" if action else stage.value
         detail = f"{plugin}: {message}" if plugin else message
         super().__init__(f"[{pathway.value}/{label}] {detail}")
+
+    @property
+    def fault(self) -> BaseException | None:
+        """The exception a plugin raised, where this error wraps one."""
+        return self.__cause__
+
+    def summary(self) -> str:
+        """The failure for a dialog: who, doing what, what was raised and where.
+
+        The one-line ``str()`` form stays what logs and the status bar show;
+        this is the same facts set out to be read, with the two a one-liner has
+        no room for - the exception's type and the line that raised it
+        (:func:`fault_origin`).
+        """
+        doing = (
+            f"{self.stage.value} ({self.action})" if self.action else self.stage.value
+        )
+        lines = [
+            f"{self.plugin or 'The pipeline'} failed in the {doing} stage of the "
+            f"{self.pathway.value} pathway.",
+            "",
+        ]
+        fault = self.fault
+        if fault is None:
+            lines.append(self.message)
+        else:
+            lines.append(f"{type(fault).__name__}: {self.message}")
+            origin = fault_origin(fault)
+            if origin:
+                lines.append(f"Raised at {origin}.")
+        return "\n".join(lines)

@@ -57,6 +57,7 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.plugins._byteops import or_all, or_bytes
+from celpix.plugins._params import flag
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._bits import (
     field_expansion,
@@ -90,8 +91,9 @@ class PackedCodec:
         stride = int(params.get("nibble_stride", 0))
         width = int(params.get("tile_width", 8))
         height = int(params.get("tile_height", 8))
-        if bpp <= 0:
-            raise ValueError(f"packed bpp must be positive: got {bpp}")
+        # An index is one byte of the grid; a split one still reassembles to bpp.
+        if not 1 <= bpp <= 8:
+            raise ValueError(f"packed bpp must be 1 to 8: got {bpp}")
         if width <= 0 or height <= 0:
             raise ValueError(f"packed tile size must be positive: {width}x{height}")
         if stride < 0:
@@ -114,8 +116,8 @@ class PackedCodec:
                 f"packed tile_width must be a multiple of the {pixels_per_byte} "
                 f"pixels a byte holds at {bpp}bpp: got {width}"
             )
-        msb_first = bool(params.get("msb_first", False))
-        reverse = bool(params.get("reverse_bytes", False))
+        msb_first = flag(params, "msb_first")
+        reverse = flag(params, "reverse_bytes")
         tile_bytes = width * height * bpp // cls.BITS_PER_BYTE
         # Half the tile is the high-half stream; runs have to divide it evenly or
         # the last run would straddle the tile boundary.

@@ -135,9 +135,9 @@ def _described_fields(
     Reached by ``getattr`` for the reason every optional plugin method is: a
     container written before it existed, or one with nothing to report, is not
     missing anything. A plugin that raises here (or hands back something that
-    isn't a field) loses its rows rather than the popup: the read has already
-    succeeded by this point, and a display-only method must not be able to
-    retract that.
+    isn't a field) loses its rows rather than the popup: it runs whether or not
+    the read succeeded, and a display-only method must not be able to change
+    what the popup says about that.
     """
     describe = getattr(plugin, "describe", None)
     if not callable(describe):

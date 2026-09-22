@@ -1,25 +1,23 @@
-# Example preset for the `codec.pixel.direct-color` engine. Copy, drop the
-# underscore, edit, press F5. See _planar.toml for what a preset is.
+# Example preset: `codec.pixel.direct-color` — pixels that carry their own colour.
 #
-# WHAT THE ENGINE DOES
-# --------------------
-# **Palette-less** pixels: each carries its own colour, so there is no index and
-# no palette anywhere in the pipeline. A pixel is a fixed number of bytes,
-# assembled into one value by `byte_order`, and each channel is sliced out of that
-# value and scaled up to 8 bits. A channel narrower than 8 bits is therefore
-# lossy: the *decoded colour* round-trips, the raw bits cannot and never could.
+# To use: copy, remove the leading "_", edit, press F5. See _planar.toml for
+# what a preset is.
 #
-# Same arithmetic as codec.palette.mask (_color-mask.toml), applied to a pixel
-# rather than to a palette entry.
+# ENGINE
+#   No index and no palette. A pixel is `bytes_per_pixel` bytes, assembled into
+#   one value by `byte_order`; each channel is sliced out of that value and
+#   scaled to 8 bits. Same kernel as codec.palette.mask (palette/_color-mask.toml).
 #
-# SHIPPED PRESETS BUILT ON IT
-# ---------------------------
+#   Round trip: a channel of 8 bits or fewer is exact. Bits no field names are
+#   written as zero. A channel wider than 8 bits loses its low bits. A painted
+#   colour is quantised to the channel width.
+#
+# SHIPPED PRESETS ON THIS ENGINE
 #   dc-rgb565        2 bytes little-endian, `rrrr rggg gggb bbbb`.
 #   dc-argb8888-be   4 bytes big-endian, alpha in the top byte.
-#   dc-i8            one byte, all of it `v` — the value replicated to grey, how
-#                    the N64 intensity textures read.
-#   dc-ia8           `vvvv aaaa` — the same idea with alpha beside it.
-#   dc-snes-direct   the SNES direct-colour mode's byte, `bbgg grrr`.
+#   dc-i8            `vvvv vvvv`: one intensity byte (N64 I8 textures).
+#   dc-ia8           `vvvv aaaa`: intensity and alpha.
+#   dc-snes-direct   `bbgg grrr`: the SNES direct-colour byte.
 
 id = "preset.pixel.example-direct-color"
 name = "Example direct color RGB565"
@@ -27,48 +25,32 @@ engine_id = "codec.pixel.direct-color"
 
 [params]
 
-# WHERE THE COMPONENTS SIT: one letter per bit, most significant first — the
-# diagram your format's own documentation draws. Whitespace groups it for
-# counting and means nothing; group in nibbles and each group is one hex digit.
+# Bit layout of the assembled value: one letter per bit, most significant
+# first. Letters are case-insensitive; whitespace and `|` are separators.
 #
-#   r  red      g  green      b  blue      a  alpha
-#   v  one value — a brightness, driving r, g and b together
-#   .  a bit no component claims
+#   r g b a   red, green, blue, alpha
+#   v         one brightness value driving r, g and b; overrides them if present
+#   .         unused bit, written as zero (`-`, `0` and `x` also accepted)
 #
-# The layout below is RGB565 in a 16-bit pixel, `RRRRRGGG GGGBBBBB`:
+# Every bit must have a letter, and the bit count must equal the pixel width.
+# No `a` field: every pixel decodes opaque. A channel split across the value is
+# written where it sits; its runs join in reading order (`rrrr gggg bbbb rgb.`).
+# On write, `v` stores the OR of the three scaled channels, so a grey is exact.
 fields = "rrrr rggg gggb bbbb"
 
-# Every bit gets a letter: a bit nobody names is written back as ZERO, and `.` is
-# you saying so. The layout is checked against the pixel width, so a short diagram
-# is a load error rather than a colour that quietly loses its top bits. A
-# component the format has not got never appears — leave `a` out and every pixel
-# decodes opaque. A channel SPLIT across the value needs nothing said: write it
-# where it is and the runs are one channel (`"rrrr gggg bbbb rgb."`).
-#
-# `v` is for formats that store ONE value and mean grey: it drives r, g and b at
-# once, so any grey the format can hold round-trips exactly, and a colour that is
-# not grey collapses to the OR of the three on write.
-#
-# A format that spells a channel some other way can keep its own letters:
-#
+# Optional: rename letters. Key: one character. Value: r, g, b, a or v.
 #   [params.legend]
-#   i = "v"    # `i` in the diagram is the intensity
+#   i = "v"
 
-# How many bytes one pixel occupies. Optional — the layout already says — but
-# worth stating, and the two are checked against each other. The tile is
-# bytes_per_pixel * width * height bytes.
+# Bytes per pixel. Default: the layout's bit count / 8. If given, it must match
+# the layout. A tile is bytes_per_pixel * tile_width * tile_height bytes.
 bytes_per_pixel = 2
 
-# How those bytes are assembled into the value the layout describes. Only
-# meaningful above one byte, and it orders the pixel's bytes IN THE FILE; the
-# layout is always the assembled value, high bit first, so the two are
-# independent.
-#   "little"  first byte is least significant   (the default)
-#   "big"     first byte is most significant
+# Order of the pixel's bytes in the file: "little" (default) or "big". Any
+# other value is an error.
+# Independent of `fields`, which always describes the assembled value.
 byte_order = "little"
 
-# Pixel size of one tile; both default to 8. Free, since a pixel here occupies
-# whole bytes and can never straddle one — this reads bitmaps of any size as well
-# as console tiles.
+# Tile size in pixels. Default 8 each. Any size.
 tile_width = 8
 tile_height = 8

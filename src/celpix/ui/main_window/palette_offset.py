@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from celpix.core.address import format_hex, parse_hex
 from celpix.core.context import (
     KEY_SOURCE_OFFSET,
 )
@@ -113,7 +114,33 @@ class PaletteOffsetMixin:
         """
         if self._doc is None or not self._palette_mode_has_offset():
             return ""
-        return self._format_offset(self._doc.palette_config.source.offset, prefix=False)
+        return self._format_palette_offset(
+            self._doc.palette_config.source.offset, prefix=False
+        )
+
+    def _format_palette_offset(self, byte_off: int, *, prefix: bool = True) -> str:
+        """``byte_off`` as the palette offset field and the status line show it.
+
+        The **address format** in Offset mode: the number is a position in this
+        entry's own file, so it reads in whatever bank layout the navbar is set to,
+        exactly as the tile offset beside it does.
+
+        Plain hex in **Entry** mode, because there the number indexes another
+        entry's *resolved* buffer from 0 (``docs/design/palette-editing.md``) — a
+        composite's join has no CPU address at all, and rendering offset 0 of one
+        as ``80:8000`` names a bank nothing here is in.
+        """
+        if self._palette_mode is PaletteMode.ENTRY:
+            return format_hex(byte_off, prefix=prefix)
+        return self._format_offset(byte_off, prefix=prefix)
+
+    def _parse_palette_offset(self, text: str) -> int | None:
+        """The palette offset field's parser — :meth:`_format_palette_offset`'s
+        inverse, and mode-aware for the same reason: a bank layout would read
+        ``20`` typed in Entry mode as a banked address rather than as byte 0x20."""
+        if self._palette_mode is PaletteMode.ENTRY:
+            return parse_hex(text)
+        return self._parse_address(text)
 
     def _palette_mode_has_offset(self) -> bool:
         """Whether the dock's offset field means something in the live mode."""
@@ -185,10 +212,12 @@ class PaletteOffsetMixin:
         source = self._entry_palette_target(entry)
         if source is None:
             return None
-        preset = (
-            source.session.pixel_preset_id
-            if source.session is not None
-            else self._pixel_preset_id()
+        # The format the source's own buffer is assembled at, which is not this
+        # entry's: a never-opened composite is joined at its seed and a length
+        # measured at anything else would clamp the steps to the wrong end
+        # (:func:`~celpix.project.documents.source_view_preset`).
+        preset = documents.source_view_preset(
+            source, self._registry, self._pixel_preset_id()
         )
         self._settle_region(source)
         data, _base = entry_view_bytes(source, self._registry, preset, self._workspace)

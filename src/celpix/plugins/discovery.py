@@ -55,8 +55,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
     import tomli as tomllib
 
 from celpix import resources
-from celpix.core.errors import Stage
+from celpix.core.errors import Stage, fault_origin
 from celpix.plugins.base import (
+    INPUT_STAGES,
     Plugin,
     Preset,
     check_declared_stage,
@@ -122,11 +123,17 @@ class PluginLoadIssue:
     every launch for as long as they keep saying no. It is still an issue —
     something in the folder is not running, and that is worth being able to see —
     so it is collected here and told apart at the point it is shown, not dropped.
+
+    ``warning`` is the third case: the plugin **did** load, and something it
+    declares will never take effect. Registered and running, so not a failure,
+    but silent otherwise - its author would wait for a binding UI that never
+    appears.
     """
 
     path: str
     message: str
     declined: bool = False
+    warning: bool = False
 
 
 def preset_from_spec(spec: dict, stage: Stage) -> Preset:
@@ -222,6 +229,29 @@ class ScopedRegistry:
         self._path = path
         self._issues = issues
 
+    def _check_inputs(self, info, stage: Stage) -> None:  # noqa: ANN001 — either info
+        """Warn where ``info`` declares inputs its stage is never handed.
+
+        Inputs are resolved for :data:`~celpix.plugins.base.INPUT_STAGES` alone.
+        Declared anywhere else they are inert: nothing offers to bind them and
+        ``KEY_INPUTS`` is never set, so the plugin decodes without what it said
+        it needs. Still registered - the declaration is wrong, not the codec.
+        """
+        inputs = getattr(info, "inputs", ())
+        if not inputs or stage in INPUT_STAGES:
+            return
+        keys = ", ".join(spec.key for spec in inputs)
+        allowed = " and ".join(s.value for s in INPUT_STAGES)
+        self._issues.append(
+            PluginLoadIssue(
+                str(self._path),
+                f"{info.id!r} declares inputs ({keys}) that are never used: only "
+                f"{allowed} plugins receive inputs, and this is "
+                f"{stage.value}. The plugin loaded; the inputs are ignored",
+                warning=True,
+            )
+        )
+
     def _allows(self, stage: Stage | None) -> bool:
         """Whether ``stage`` may be registered here. ``None`` means "the folder's".
 
@@ -259,6 +289,7 @@ class ScopedRegistry:
                 )
             )
             return
+        self._check_inputs(plugin.info, stage)
         self._reg.register(plugin, stage)
 
     def register_preset(self, preset: Preset) -> None:
@@ -291,6 +322,7 @@ class ScopedRegistry:
                 )
             )
             return
+        self._check_inputs(fmt.info, stage)
         engine, preset = adapt_format(fmt, stage)
         self._reg.register(engine)
         self._reg.register_preset(preset)
@@ -735,4 +767,10 @@ def _load_module(
         # for code as well as data.
         register(ScopedRegistry(reg, folder, path, issues))
     except Exception as exc:  # noqa: BLE001 — a broken plugin must not crash the app
-        issues.append(PluginLoadIssue(str(path), f"module load failed: {exc}"))
+        origin = fault_origin(exc)
+        where = f" (raised at {origin})" if origin else ""
+        issues.append(
+            PluginLoadIssue(
+                str(path), f"module load failed: {type(exc).__name__}: {exc}{where}"
+            )
+        )

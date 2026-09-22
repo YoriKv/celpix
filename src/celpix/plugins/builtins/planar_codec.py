@@ -83,6 +83,9 @@ class PlanarCodec:
         planes = params["planes"]
         width = int(params.get("tile_width", cls.GROUP))
         height = int(params.get("tile_height", cls.GROUP))
+        # An index is one byte of the grid, so a ninth plane has nowhere to go.
+        if not 1 <= bpp <= 8:
+            raise ValueError(f"planar bpp must be 1 to 8: got {bpp}")
         if len(planes) != bpp:
             raise ValueError(
                 f"planar preset needs one plane per bit: bpp={bpp}, got {len(planes)}"

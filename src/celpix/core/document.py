@@ -18,6 +18,7 @@ writes the buffer as it stands.
 from __future__ import annotations
 
 from bisect import bisect_left
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
@@ -423,6 +424,14 @@ class Document:
     # (:meth:`palette_row_group`): a decoded cell already carries the row it is
     # drawn in, so nothing about rendering changes.
     palette_row_granularity: tuple[int, int] = (1, 1)
+    # The codec's own cell settle, bound with its params at decode
+    # (:meth:`~celpix.plugins.base.TilemapCodecPlugin.settle_cells`), or None for
+    # a format with nothing to derive — which is every format but the metatile-id
+    # one whose top bits are both a sub-table and a palette row. A plain callable
+    # rather than the engine and its params, because what applies it is this
+    # Qt-free model and it holds no registry
+    # (:func:`~celpix.pipeline._stage._cell_settler`).
+    cell_settler: Callable[[list[Cell]], list[Cell]] | None = None
 
     # Whether this map's cells run down each column rather than across each row
     # (:func:`~celpix.core.tilemap.column_order`). A fact about the format, which
@@ -1082,7 +1091,7 @@ class Document:
         there is no arithmetic to reach the other cells of a square
         (:attr:`row_plane_columns`). Both halves of the mechanism treat that as
         having no group at all — :meth:`palette_row_group` hands back the one
-        cell and :meth:`snapped_palette_rows` settles nothing — which is the safe
+        cell and :meth:`_settled_row_groups` settles nothing — which is the safe
         direction, since writing exactly what was selected is at worst too narrow.
 
         So every gesture that behaves differently under a shared row asks *this*,
@@ -1425,7 +1434,7 @@ class Document:
         the end to the cells that exist, since the last attribute row of a 30-row
         nametable covers two rows the page does not have.
 
-        :meth:`snapped_palette_rows` walks the same group geometry from the other
+        :meth:`_settled_row_groups` walks the same group geometry from the other
         end — every anchor rather than one member's — and those two clips are
         what the two have to keep saying alike. They are not the same walk and do
         not share one: this one finds a group *from a member*, rounding its
@@ -1454,32 +1463,51 @@ class Document:
                     group.append(at)
         return group
 
-    def snapped_palette_rows(self, cells: list[Cell]) -> list[Cell]:
-        """``cells`` with every row group agreeing, the way the file will store it.
+    def settle_cells(self, cells: list[Cell]) -> list[Cell]:
+        """``cells`` as the file will store them — two settlings, in one place.
 
-        The backstop under :meth:`palette_row_group`, and the reason a coarse
-        format does not need every gesture taught about it. An assignment grows
-        to whole groups because that is what the user asked for; a **paste**, a
-        stamp or a clear carries whatever rows its cells were cut with, and on a
-        format storing one row per 2x2 square those can disagree inside a group.
-        Left alone, the model would show four colours the file has room for one
-        of, and the picture would change on the next reload.
+        **The one entry point**, applied on the way *into* an edit so the model
+        never holds a picture the file has no room for, and again on the way *out*
+        (:attr:`settled_cells`) so that what is stored does not depend on having
+        come in that way. Both halves are idempotent, which is what lets it sit on
+        both ends, and both hand the **same list object** back where there is
+        nothing to do — a settled list is the common case, and the caller's
+        no-change guard keys off identity.
 
-        So a group's row is settled here, by the same rule the codec's ``encode``
-        follows: **the first cell of the group in file order wins**. Applied on
-        the way *into* an edit, so the model never holds a picture the file has
-        no room for, and again on the way *out* (:attr:`settled_cells`), so that
-        what is stored does not depend on having come in that way.
+        The first half is the **row group**, the backstop under
+        :meth:`palette_row_group` and the reason a coarse format does not need
+        every gesture taught about it. An assignment grows to whole groups because
+        that is what the user asked for; a **paste**, a stamp or a clear carries
+        whatever rows its cells were cut with, and on a format storing one row per
+        2x2 square those can disagree inside a group. Left alone, the model would
+        show four colours the file has room for one of, and the picture would
+        change on the next reload. So a group's row is settled by the same rule the
+        codec's ``encode`` follows: **the first cell of the group in file order
+        wins**. Nothing to do for every format whose row is a field of the cell
+        word, or any coarse one whose width the format has not stated
+        (:attr:`has_row_groups`).
 
-        **Idempotent, and that is what lets it sit on both.** A second pass over
-        a settled list finds every group already agreeing and hands the same list
-        straight back, so the two applications cost one walk and a comparison
-        rather than fighting each other.
+        The second is the **codec's own** (:attr:`cell_settler`), for a field one
+        format derives from another — a metatile id whose top bits pick both a
+        sub-table and the palette row, where an edit that moves a cell to a record
+        in another table has changed its colour and nothing else would have said so
+        (:meth:`~celpix.plugins.base.TilemapCodecPlugin.settle_cells`). None for
+        every other format, so the whole mechanism costs the edit path one
+        ``is None``.
 
-        Returns ``cells`` itself where there is nothing to do — every format
-        whose row is a field of the cell word, and any coarse one whose width
-        the format has not stated (:attr:`has_row_groups`).
+        **The codec goes last**, because what the file holds is what ``encode``
+        writes and the codec is the thing that writes it. No format in hand has
+        both halves, and one that did would need its two rules reconciled rather
+        than ordered: a row derived per cell need not agree across a coarse group,
+        so whichever ran second would keep undoing the other.
         """
+        settled = self._settled_row_groups(cells)
+        settler = self.cell_settler
+        return settled if settler is None else settler(settled)
+
+    def _settled_row_groups(self, cells: list[Cell]) -> list[Cell]:
+        """``cells`` with every stored row group agreeing — :meth:`settle_cells`'
+        first half, kept apart only so the walk reads as the one thing it is."""
         across, down = self.palette_row_granularity
         columns = self.row_plane_columns  # the same one question as above
         if not columns or not cells:
@@ -1513,7 +1541,7 @@ class Document:
 
     @property
     def settled_cells(self) -> list[Cell]:
-        """:attr:`cells` as the file will store them — every row group agreed.
+        """:attr:`cells` as the file will store them — settled, both halves.
 
         **What an encode is given**, and the reason the rule cannot drift. The
         codec restates the same pick — the group's first cell in file order — and
@@ -1524,15 +1552,18 @@ class Document:
 
         That also takes the invariant off the edit funnel. Rows are settled on the
         way into an edit so the model shows what the file can hold
-        (:meth:`snapped_palette_rows`), but "every write goes through that one
+        (:meth:`settle_cells`), but "every write goes through that one
         method" is a convention: a headless save of a document built in code, or a
         gesture writing :attr:`cells` directly, would otherwise reach ``encode``
-        with a picture the file has no room for and store a different one.
+        with a picture the file has no room for and store a different one. The
+        same holds for the codec's own half: a format deriving one field from
+        another is asked here too, so the cells an ``encode`` sees are the cells a
+        reload would give back.
 
-        Free on every document but the coarse ones, which return their own list
-        untouched, and free again on one already settled.
+        Free on every document but the coarse ones and the deriving ones, which
+        return their own list untouched, and free again on one already settled.
         """
-        return self.snapped_palette_rows(self.cells or [])
+        return self.settle_cells(self.cells or [])
 
     def cell_tile_indices(self, cell: Cell) -> list[int]:
         """The source tile indices ``cell`` draws, in the order they appear.

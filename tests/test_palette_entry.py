@@ -353,3 +353,97 @@ def test_a_swatch_composite_applies_on_a_double_click_and_opens_on_a_single(
     # the same gesture is the one that opens it.
     window._activate_entry(table)
     assert window._workspace.current is table
+
+
+def test_a_never_opened_composite_is_assembled_at_its_own_seed(qtbot, tmp_path) -> None:
+    """A composite with no session yet is joined at the format its own sources
+    state rather than at the consumer's: read as 4bpp tiles, its 30-byte swatch
+    rows round up to 32 and every colour after the first row shifts — and the
+    colours would change again the moment the composite was opened."""
+    window, parent, top, bottom, table = _assembled_table(qtbot, tmp_path)
+    table.session = None  # never activated, which is how a fresh paste arrives
+    window._activate_entry(parent)
+
+    assert window._load_palette_from_entry(table, 0, BGR555)
+
+    # Two bytes of pad and two 15-colour rows, joined at their own length.
+    assert len(window._doc.palette) == 31
+
+
+def test_a_palette_read_from_the_consumers_own_parent_keeps_it_on_screen(
+    qtbot, tmp_path
+) -> None:
+    """The source may be the very file the consumer is cut from, and a landing in
+    a file drops every slice document below it. The consumer's cannot go: it is
+    what the canvas is drawing, and the palette this edit was made on is in it."""
+    rom = tmp_path / "rom.bin"
+    data = bytearray(0x400)
+    data[0x40 : 0x40 + 0x20] = _colors(16, 0x0100)
+    rom.write_bytes(bytes(data))
+    window = _window(qtbot)
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+    cut = window._workspace.add_slice(parent.path, "gfx", 0x200, TILE * 2)
+    cut.session = _session()
+    window._activate_entry(cut)
+    assert window._load_palette_from_entry(parent, 0x40, BGR555)
+    shown = cut.doc
+
+    window._palette_panel.select_index(1)
+    window._on_color_changed(0xFF00FF00)
+
+    assert cut.doc is shown
+    assert window._doc is shown
+    assert parent.pixel_dirty
+    assert parent.doc.pixel_data[0x42:0x44] != bytes(data[0x42:0x44])
+
+
+def test_a_tied_entry_is_written_through_its_owner_in_entry_mode(
+    qtbot, tmp_path
+) -> None:
+    """The NES draws colour 0 of every background row out of its one backdrop
+    slot, so an edit to any of them is an edit to that byte. That is a question
+    about the **format**, not about this pathway being writable — an Entry palette
+    is never writable and still lands its colour in the source's bytes."""
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(range(0x10)) * 0x40)
+    window = _window(qtbot)
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+    table = window._workspace.add_slice(parent.path, "screen palette", 0x100, 0x10)
+    table.session = _session(SWATCH)
+    window._activate_entry(parent)
+    assert window._load_palette_from_entry(table, 0, "preset.palette.nes-screen")
+    before = rom.read_bytes()[0x100:0x110]
+
+    window._palette_panel.select_index(4)  # row 1's backdrop
+    window._on_color_changed(0xFF00FF00)
+
+    palette = window._doc.palette
+    assert palette.color(0) == palette.color(4) == palette.color(8)
+    # The backdrop byte carries it; the tied byte the codec never displays is
+    # left exactly as it was read.
+    assert table.doc.pixel_data[0] != before[0]
+    assert table.doc.pixel_data[4] == before[4]
+
+
+def test_an_entry_mode_offset_reads_as_a_plain_byte_offset(qtbot, tmp_path) -> None:
+    """Offset mode's number is a position in this entry's own file, so it wears
+    whatever bank format the navbar is set to. Entry mode's indexes another
+    entry's resolved buffer from 0, and a composite's join has no CPU address for
+    a bank layout to render it at — nor to read a typed one back as."""
+    from celpix.core.address import BankLayout
+
+    window, parent, top, bottom, table = _assembled_table(qtbot, tmp_path)
+    window._activate_entry(parent)
+    window._bank_layout = lambda: BankLayout(
+        bank_size=0x8000, addr_base=0x8000, bank_base=0x80
+    )
+
+    assert window._load_palette_from_entry(table, COLOR * 2, BGR555)
+    assert window._palette_offset_text() == "000004"
+    assert window._parse_palette_offset("20") == 0x20
+
+    assert window._load_palette_at_offset(0x40)
+    assert window._palette_offset_text() == "80:8040"
+    assert window._parse_palette_offset("80:8040") == 0x40

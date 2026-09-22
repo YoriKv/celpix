@@ -1,93 +1,70 @@
-# Example preset for the `codec.palette.mask` engine. Files starting with "_" are
-# ignored — copy this file, drop the underscore, edit it, press F5 in celPix.
+# Example preset: `codec.palette.mask` — palette entries as packed bit fields.
 #
-# A preset names one built-in engine and fills in its parameters, so a file is
-# only useful for the engine it names. This folder has one example per palette
-# engine. Sitting in palette/ is what makes it an interpret-palette format — no
-# stage field needed.
+# To use: copy, remove the leading "_", edit, press F5. "_" files are ignored and
+# rewritten at startup.
 #
-# WHAT THE ENGINE DOES
-# --------------------
-# Fixed-size palette entries storing colour as packed bit fields — essentially
-# every hardware palette that is not a lookup into fixed silicon colours (for
-# those, see _color-indexed.toml). An entry's bytes are assembled into one value
-# by `byte_order`, and each channel is sliced out and scaled up to 8 bits. A
-# channel narrower than 8 bits is lossy: the *decoded colour* round-trips, the raw
-# bits cannot.
+# A preset is data: it names one engine (`engine_id`) and sets its `[params]`.
+# The folder sets the stage; no `stage` key is needed. There is one example per
+# palette engine in this folder. Params are checked on first use, not at load: an
+# invalid preset loads and then fails on the palette that uses it.
 #
-# Same arithmetic as codec.pixel.direct-color (_direct-color.toml), applied to a
-# palette entry rather than to a pixel.
+# ENGINE
+#   Fixed-size entries storing colour as bit fields. An entry's bytes are
+#   assembled into one value by `byte_order`; each channel is sliced out and
+#   scaled to 8 bits. Same kernel as codec.pixel.direct-color
+#   (pixel/_direct-color.toml). For palettes that index a fixed hardware colour
+#   table, see _color-indexed.toml.
 #
-# SHIPPED PRESETS BUILT ON IT
-# ---------------------------
-#   bgr555          2 bytes little-endian, `.bbb bbgg gggr rrrr` — SNES, Game Boy
-#                   Color, GBA.
-#   genesis-9bpp    2 bytes big-endian, `.... bbb. ggg. rrr.` — three bits a
-#                   channel, three bits apart, the Mega Drive's CRAM.
-#   rgb888          3 bytes, a whole byte a channel, nothing lossy.
-#   rgb555-split-be `rrrr gggg bbbb rgb.` — each channel in two pieces.
-#   gb-bgp          `vv` with bits_per_entry 2 and invert — four shades in one
-#                   register byte, counting darkness.
-#   ws-gray         `.vvv` with bits_per_entry 4 — the same idea a nibble wide.
-#   ngp-gray        `.... .vvv` over a whole-byte entry.
+#   Round trip: a channel of 8 bits or fewer is exact. Bits no field names are
+#   written as zero. A channel wider than 8 bits loses its low bits. An edited
+#   colour is quantised to the channel width.
+#
+# SHIPPED PRESETS ON THIS ENGINE
+#   bgr555           2 bytes little-endian, `.bbb bbgg gggr rrrr`. SNES, GBC, GBA.
+#   genesis-9bpp     2 bytes big-endian, `.... bbb. ggg. rrr.`. Mega Drive CRAM.
+#   rgb888           3 bytes, one byte per channel.
+#   rgb555-split-be  `rrrr gggg bbbb rgb.`: each channel in two runs.
+#   gb-bgp           `vv`, bits_per_entry 2, invert: four shades per byte.
+#   ws-gray          `.vvv`, bits_per_entry 4, invert.
+#   ngp-gray         `.... .vvv`, one byte per entry, invert.
 
-id = "preset.palette.example-color-mask"
-name = "Example RGB555"
+id = "preset.palette.example-color-mask"  # unique and stable; never shown
+name = "Example RGB555"  # shown in the palette format picker
 engine_id = "codec.palette.mask"
 
 [params]
 
-# WHERE THE COMPONENTS SIT: one letter per bit, most significant first — the
-# diagram your format's own documentation draws. Whitespace groups it for
-# counting and means nothing; group in nibbles and each group is one hex digit.
+# Bit layout of the assembled entry: one letter per bit, most significant
+# first. Letters are case-insensitive; whitespace and `|` are separators.
 #
-#   r  red      g  green      b  blue      a  alpha
-#   v  one value — a brightness, driving r, g and b together; see below
-#   .  a bit no component claims
+#   r g b a   red, green, blue, alpha
+#   v         one shade driving r, g and b; overrides them if present
+#   .         unused bit, written as zero (`-`, `0` and `x` also accepted)
 #
-# The layout below is RGB555 in a 16-bit entry, `0RRRRRGG GGGBBBBB`:
+# Every bit must have a letter, and the bit count must equal the entry width.
+# No `a` field: every entry decodes opaque. A channel split across the entry is
+# written where it sits; its runs join in reading order (`rrrr gggg bbbb rgb.`).
+# On write, `v` stores the colour's luma.
 fields = ".rrr rrgg gggb bbbb"
 
-# Every bit gets a letter: a bit nobody names is written back as ZERO on save, and
-# `.` is you saying so. The layout is checked against the entry width, so a short
-# diagram is a load error rather than a colour that quietly loses its top bits. A
-# component the format has not got never appears — leave `a` out and every entry
-# decodes opaque. A channel SPLIT across the entry (how several 68000 boards keep
-# their nibbles byte-aligned) needs nothing said: write it where it is and the
-# runs are one channel, in the order they are read — `"rrrr gggg bbbb rgb."`.
-#
-# A format that spells a channel some other way can keep its own letters:
-#
+# Optional: rename letters. Key: one character. Value: r, g, b, a or v.
 #   [params.legend]
-#   c = "b"    # `c` in the diagram means blue
+#   c = "b"
 
-# How many bytes one palette entry occupies. Optional — the layout already says —
-# but worth stating, and the two are checked against each other. It also sizes a
-# "load N entries" window.
+# Bytes per entry. Default: derived from the layout's bit count. If given, it
+# must match the layout. Also the stride of a palette read window.
 bytes_per_entry = 2
 
-# How those bytes are assembled into the value the layout describes. Only
-# meaningful above one byte, and it orders the entry's bytes IN THE FILE; the
-# layout is always the assembled value, high bit first, so the two are
-# independent.
-#   "little"  first byte is least significant   (the default)
-#   "big"     first byte is most significant
-byte_order = "little"
-
-# For an entry SMALLER than a byte, replace `bytes_per_entry` with this (the two
-# are mutually exclusive). A handheld's shade register is four two-bit entries in
-# one byte, so nothing on disk is one entry wide to point at. Sub-byte entries
-# fill each unit from the LOW bits up, the order both handheld families use; a
-# value of 8 or more is `bytes_per_entry` spelt in bits, anything else divides 8.
+# Sub-byte entries: use this instead of bytes_per_entry (mutually exclusive).
+# 1, 2 or 4: a byte holds 8 / n entries, filled from the low bits up. 8 or more
+# must be a multiple of 8 and is bytes_per_entry stated in bits.
 # bits_per_entry = 2
 
-# Does a field count DARKNESS rather than brightness? The handhelds' greyscales
-# do — 0 is white on all three — so the scaled value is flipped end for end after
-# the field is read.
-#   false  0 is black, the usual way round   (the default)
-invert = false
+# Order of the entry's bytes in the file: "little" (default) or "big". Any
+# other value is an error.
+# Independent of `fields`, which always describes the assembled value.
+byte_order = "little"
 
-# ONE SHADE rather than three channels? Spell that field `v` (`.... .vvv`) and it
-# drives r, g and b together. Naming those bits `r`, `g` and `b` instead is
-# refused — one bit carries one letter — and an arbitrary colour written through
-# `v` is reduced by luma.
+# Complement every field, alpha included, before scaling. Default false. For
+# greyscales that count darkness (0 = white), as the handheld shade registers do.
+invert = false

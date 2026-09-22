@@ -42,7 +42,7 @@ NO_COMPRESSION = "compression.none"
 RAW_CONTAINER = "container.raw-file"
 
 # A reshaped region is a byte permutation, so view positions no longer name file
-# offsets: addresses go dark and slices can't be carved until this is selected.
+# offsets: addresses count from the start of the reordered buffer instead.
 NO_RESHAPE = "reshape.none"
 
 # The pixel engine that reads bytes as palette colors, one swatch tile per entry
@@ -408,6 +408,14 @@ class InputSpec:
     default: int | None = None
 
 
+# The stages whose declared inputs are resolved and delivered, in pipeline order.
+# Compression and the tilemap codec are the two real cases; a container is handed
+# its whole source and needs none, and no pixel or palette format has asked yet.
+# A declaration on any other stage is never bound, which discovery reports
+# (:class:`~celpix.plugins.discovery.ScopedRegistry`).
+INPUT_STAGES: tuple[Stage, ...] = (Stage.COMPRESSION, Stage.INTERPRET_TILEMAP)
+
+
 @dataclass(frozen=True)
 class PluginInfo:
     """A plugin's identity. ``id`` is stable and namespaced by stage.
@@ -511,8 +519,9 @@ class PluginInfo:
     (:class:`InputSpec`), in the order the UI lists them. Declared by a
     **code** plugin only — a preset is data and inherits its engine's — and
     empty for every format that carries its description in-line, which is nearly
-    every one celPix ships. A Compression or Interpret plugin may declare them; a
-    container is already handed its whole source and reads what it likes.
+    every one celPix ships. Only a Compression or Interpret-tilemap plugin's are
+    resolved (:data:`INPUT_STAGES`); a container is
+    already handed its whole source and reads what it likes.
     """
 
     id: str
@@ -980,6 +989,48 @@ class TilemapCodecPlugin(Plugin, Protocol):
         :meth:`encode` disagreeing inside a group — a paste carries the rows it
         was cut with — and the codec resolves that the way it resolves a too-wide
         index: by picking, not by raising.
+        """
+        ...
+
+    def settle_cells(self, cells: list[Cell], params: dict[str, Any]) -> list[Cell]:
+        """``cells`` as this format can **store** them: derived fields re-derived.
+
+        Optional, and for the one thing the probes above cannot express — a field
+        whose value is a *consequence* of another field rather than an answer of
+        its own. A metatile id whose top bits choose both a sub-table and the
+        palette row is the shipped case
+        (:mod:`celpix.plugins.builtins.indirect_record`): the row follows the
+        record, so an edit that moves a cell to a record in another table has
+        changed its colour without anything having said so, and the map would draw
+        in one row and reload in another. :meth:`palette_row_limit` cannot help —
+        there is no field for an assigned row to land in — which is exactly why
+        the derivation has to be done rather than declared.
+
+        The host applies it at the **one** place a cell list is settled, on the way
+        into an edit and again on the way out to :meth:`encode`
+        (:meth:`~celpix.core.document.Document.settle_cells`), so a format gets it
+        without any gesture learning about it. The row-group snap a coarse
+        :meth:`palette_row_granularity` needs runs there too, and this runs after
+        it: what the file holds is what ``encode`` writes, so the codec has the
+        last word.
+
+        Four promises, and the host relies on all of them:
+
+        - **Idempotent.** It sits on both ends of an edit, so a second pass over a
+          settled list has to find nothing to do.
+        - **The same list object back when nothing changes.** A settled list is
+          the common case — every save re-checks one — and the caller's no-change
+          guard and its allocation both key off identity.
+        - **Never changes the length**, and never reorders: the list is the file's
+          cells in the file's order, and position *is* the address.
+        - **Pure.** No context, no I/O, no state: it is asked per edit, on a list
+          that may be tens of thousands of cells long, so it is a scan and not a
+          read.
+
+        A format that does not implement it is one with nothing to derive, which
+        is every format whose fields each answer for themselves. One that raises
+        is read as one that never had it — the cells are left as they were and a
+        notice records the crash, the rule every optional method here follows.
         """
         ...
 

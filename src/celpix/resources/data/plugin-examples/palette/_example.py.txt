@@ -1,14 +1,26 @@
-"""Example palette code format. Copy this file, drop the leading underscore,
-edit it, and press F5 in celPix (code plugins ask for confirmation the first
-time, since they run with the app's privileges).
+"""Example palette code format: a 16-step grey ramp, one byte per entry.
 
-A code format implements a palette interpretation directly, for encodings no
-built-in engine's parameters can express, and appears in the palette format picker
-like any preset. Try a preset first: see _color-mask.toml. decode returns a
-Palette of 0xAARRGGBB ints and encode is its exact inverse.
+To use: copy, remove the leading "_", edit, press F5. Code plugins run with the
+app's privileges, so celPix asks before loading one.
 
-_nes-custom.py is a worked example: a real format that loads its colour table
-from a companion file.
+A code format implements one palette interpretation directly and appears in the
+palette format picker like a preset. Use it for encodings no engine's parameters
+express; try a preset first (_color-mask.toml, _color-indexed.toml).
+_nes-custom.py is a worked example that loads its colour table from a file.
+
+Contract
+- Required methods: ``decode``, ``encode``, ``bytes_per_entry``.
+- ``decode`` returns a ``Palette`` of 0xAARRGGBB integers. ``encode`` is its
+  inverse; a colour the format cannot store is quantised, not rejected.
+- A format with no alpha field must decode alpha as 0xFF. The colour editor
+  offers an alpha control when a format decodes alpha other than 0xFF, and
+  values set through it would be lost on save.
+- Optional: ``entries_per_unit()`` (default 1), the number of entries packed
+  into one ``bytes_per_entry`` unit. A handheld shade register holding four
+  2-bit shades in a byte returns 4.
+- Optional: ``shared_entries(index, count)``, the entries of a ``count``-entry
+  palette that show entry ``index``'s colour, owner first. An edit to any of
+  them is written to the owner. Default: ``(index,)``.
 """
 
 from celpix.core.palette import Palette
@@ -16,37 +28,24 @@ from celpix.plugins import FormatInfo
 
 
 class Gray4:
-    """One byte per entry, but only the top 4 bits matter: a 16-step gray ramp."""
+    """The top nibble of each byte is a grey level; the low nibble is unused."""
 
-    # The id doubles as the picker entry's stable identity; the name is shown.
+    # `id` is stable and stored in project files; `name` is shown in the picker.
     info = FormatInfo(id="format.palette.example-gray4", name="Example gray (4-bit)")
 
     def decode(self, data, ctx):
         colors = []
         for b in data:
             v = (b >> 4) * 17  # 0..15 -> 0..255
-            # Opaque alpha, and not as a formality: a format with no alpha
-            # field must decode one back as 0xFF. Leave the byte at 0 and the
-            # colour editor offers a slider this format cannot store, so every
-            # edit through it is lost on save. Only set alpha from real bits.
             colors.append(0xFF000000 | (v << 16) | (v << 8) | v)
         return Palette(colors)
 
     def encode(self, palette, ctx):
-        # Store the red channel's top nibble; decode's inverse for gray values.
+        # The red channel's top nibble: exact for the greys decode produces.
         return bytes(((c >> 16) & 0xF0) for c in palette.colors)
 
     def bytes_per_entry(self):
-        # How many bytes one **read unit** occupies — celPix uses this to size
-        # palette reads (e.g. "load 256 entries from here").
-        return 1
-
-    # entries_per_unit() is optional and assumed to be 1: define it for a format
-    # that packs several entries into one unit, the way a handheld's shade
-    # register holds four two-bit shades in a byte. Without it such a format is
-    # read one entry per unit, so a window sized for 16 entries covers four.
-    # def entries_per_unit(self):
-    #     return 4
+        return 1  # sizes a palette read: N entries = N * this many bytes
 
 
 def register(registry):

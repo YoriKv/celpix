@@ -1,56 +1,50 @@
-# Example tilemap preset — a sprite record laid out field by field.
+# Example preset: `codec.tilemap.sprite-record` — sprite parts as fixed records.
 #
-# Copy this file, drop the leading underscore, edit it, and press F5 in celPix.
+# To use: copy, remove the leading "_", edit, press F5. See _packed.toml for
+# what a preset is.
 #
-# A sprite engine: frames of parts at signed pixel offsets rather than cells in
-# rows.
+# ENGINE
+#   A sprite map: parts placed at signed pixel offsets and grouped into frames,
+#   not cells in rows. This engine reads any record whose fields sit at fixed
+#   byte positions, stored back to back or as parallel arrays. A frame reached
+#   through pointers needs a code format (_example.py). Sprite maps open
+#   read-only in the app.
 #
-# WHICH ENGINE IS WHICH
-# ---------------------
-# This is the table-driven engine, for any record whose fields sit at fixed
-# byte positions: you list the fields in order and say what each one is, and
-# a new console's sprite list — or a game's own — is this file and no code.
-# _md-sprite.toml is the Mega Drive VDP's record specifically, with its mirror
-# check; this reads that record too (below) and every other byte-aligned one.
-# It also reads fields stored as parallel arrays (`arrays`, below). What it
-# cannot read is a frame reached through pointers — pieces interleaved with
-# their art, an animation table naming frames and art apart — which is code.
+#   The record below is 10 bytes: x.w  x_mirror.w  y.w  pad.b  size.b  attr.w
 #
-# The record below is a compiled engine's 10-byte piece:
-#   x.w  x_mirrored.w  y.w  pad.b  size.b  attribute.w
-#
-# SHIPPED PRESETS BUILT ON IT
-# ---------------------------
-#   nes-oam         the NES sprite list in OAM order: Y, tile, attributes, X.
+# SHIPPED PRESETS ON THIS ENGINE
+#   nes-oam   the NES sprite list: Y, tile, attributes, X. palette_row_base 4.
 
 id = "preset.tilemap.example-sprite-record"
 name = "Example sprite record"
 engine_id = "codec.tilemap.sprite-record"
 
 [params]
-# Cells are freely-placed parts grouped into frames (tilemap-entry.md sec 6).
+
+# Required on this engine: cells are sprite parts, and each part states its own
+# size (the c/r bits), so the toolbar offers no size pair.
 layout = "sprite"
-# Each part states its own rectangle (the c/r bits below), so there is no size
-# pair for the bar to ask about.
 subsprite_size = "stated"
-# A part's tiles run down each column before the next, as a Mega Drive
-# sprite's do. Leave it out for tiles that run across each row.
+
+# A part's tiles run down each column before the next. Default false (across
+# each row).
 column_major = true
-# Byte order of every multi-byte field.
+
+# Byte order of every multi-byte field and of the frame count: "big" (default)
+# or "little". Any other value is an error.
 endian = "big"
 
-# The fields, in the order they sit in the record. `type` is u8, s8, u16, s16,
-# u32 or s32. A field named `x` or `y` is the part's offset from the object's
-# origin. A field with `bits` is split by a bit layout, most significant bit
-# first, in these letters:
+# Required. The fields in file order. `type`: u8, s8, u16, s16, u32 or s32.
+# Fields named `x` and `y` are the part's offset from the frame origin; absent
+# reads as 0. `bits` splits a field by a bit layout, most significant first:
 #
 #   i  tile index        p  palette row      o  priority
 #   h  horizontal flip   v  vertical flip
 #   c  width in tiles - 1                    r  height in tiles - 1
-#   .  a bit nothing reads (kept as the file has it)
+#   .  unused bit
 #
-# Any other field is carried: celPix keeps it byte for byte and writes it back
-# unchanged, which is how the mirrored X and the pad below survive a save.
+# No c/r bits: every part is 1x1. All other fields, and `.` bits, are preserved
+# byte for byte on write. Maximum record size: 64 bytes.
 record = [
   { name = "x",        type = "s16" },
   { name = "x_mirror", type = "s16" },
@@ -60,31 +54,33 @@ record = [
   { name = "attr",     type = "u16", bits = "oppv hiii iiii iiii" },
 ]
 
-# Without a frame header the whole run is one frame. A run of frames back to
-# back, each headed by `bytes` of header holding its piece count at `count_at`,
-# says so — this record's engine heads every frame with 6 bytes whose last word
-# is the count. The header's other bytes are carried; the count is rewritten on
-# a save. (Left off here so the example reads any bytes you point it at: a
-# header read from bytes that are not one names a count past the data, and the
-# decode refuses it.)
-#
+# Optional: rename bit letters. Key: one character. Value: index, palette,
+# priority, flip_h, flip_v, columns or rows.
+#   [params.legend]
+#   t = "index"
+
+# Frames back to back, each preceded by a `bytes`-byte header holding its part
+# count at offset `count_at` (default 0) as `count_type` (default "u16"). The
+# other header bytes are preserved; the count is rewritten on encode. A count
+# of 0, or one running past the data, is an error. Default: no header, and the
+# whole run is one frame.
 # frame_header = { bytes = 6, count_at = 4, count_type = "u16" }
 
-# Fields stored as parallel arrays rather than records back to back: each group
-# is `count` elements long, one after the other inside the frame. The groups
-# list the record's fields once each, in order, and need a frame_header (its
-# count says where one array ends). The Master System sprite table's shape —
-# every Y, then every (X, tile) pair — with
+# Fields stored as parallel arrays, each `count` elements long, instead of
+# records back to back. Requires frame_header. The groups must list every
+# record field once, in order. The Master System sprite table (every Y, then
+# every X/tile pair):
 #   record = [
 #     { name = "y",    type = "s8" },
 #     { name = "x",    type = "s8" },
 #     { name = "tile", type = "u8", bits = "iiiiiiii" },
 #   ]
-# is
-#
-# arrays = [["y"], ["x", "tile"]]
+#   arrays = [["y"], ["x", "tile"]]
 
-# The Mega Drive VDP record, for comparison — the same engine, one frame:
+# Palette row that a part's row 0 means. Default 0.
+# palette_row_base = 4
+
+# The Mega Drive VDP record on this engine (compare _md-sprite.toml):
 #   record = [
 #     { name = "y",        type = "s8" },
 #     { name = "size",     type = "u8",  bits = "....ccrr" },

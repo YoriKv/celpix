@@ -1,138 +1,110 @@
 # celPix plugins
 
-This is your plugin folder. Drop files into the subfolders below and celPix picks
-them up — no reinstall, no editing the app.
+This is your plugin folder. celPix loads the files in its subfolders at startup
+and on **File ▸ Refresh plugins** (<kbd>F5</kbd>).
 
-**The folder decides what a file is**, so nothing inside it declares its own type:
+| Folder | Stage | A plugin here defines |
+|---|---|---|
+| `containers/` | container | an on-disk wrapper: a header to skip, an interleave to undo |
+| `reshape/` | reshape | a byte reordering applied to a whole region |
+| `compression/` | compression | a packing scheme, unpacked before the data is interpreted |
+| `pixel/` | interpret | how bytes become tiles |
+| `palette/` | interpret | how bytes become colours |
+| `tilemap/` | interpret | how bytes become references to tiles: maps, screens, sprite frames |
 
-| Folder | What goes in it |
+The folder sets a file's stage. Files directly in this folder and unknown
+subfolders are not loaded.
+
+## Examples
+
+Files starting with `_` are ignored. Every `_` file here is a working example:
+**copy it, remove the underscore, edit it, press <kbd>F5</kbd>.** celPix rewrites
+the `_` files and this README at startup to match the running version, and
+deletes examples it no longer ships. It never touches a file without the `_`
+prefix.
+
+## `.toml` presets
+
+A preset is data: it names a built-in engine (`engine_id`) and sets its
+parameters. Nothing executes, and celPix loads presets without asking. Parameters
+are checked when the preset is first used, not at load. There is one example per
+engine; each lists every parameter and the shipped presets built on the engine.
+
+| Example | Engine |
 |---|---|
-| `pixel/` | how bytes become tiles (a tile/character format) |
-| `palette/` | how bytes become colours |
-| `tilemap/` | how bytes become *references* to tiles — a map, a screen, a sprite's frames |
-| `reshape/` | a byte reordering applied to a whole region |
-| `compression/` | a packing scheme, unpacked before the pixel format reads it |
-| `containers/` | an on-disk wrapper — a header to skip, an interleave to undo |
+| `pixel/_planar.toml` | bitplanes (most console formats) |
+| `pixel/_packed.toml` | one field per pixel at 1, 2, 4 or 8bpp (Mega Drive, GBA, …) |
+| `pixel/_packed-straddling.toml` | packed 3bpp and 6bpp |
+| `pixel/_nibble-planar.toml` | two bitplanes per byte, four pixels each |
+| `pixel/_direct-color.toml` | pixels that carry their own colour; no palette |
+| `pixel/_palette-swatch.toml` | bytes shown as palette colours, one swatch per entry |
+| `palette/_color-mask.toml` | colour channels as bit fields (BGR555, …) |
+| `palette/_color-indexed.toml` | bytes index a fixed hardware colour table |
+| `tilemap/_packed.toml` | a grid of packed cell words (nearly every hardware map) |
+| `tilemap/_sprite-record.toml` | sprite parts as fixed records, in any field order |
+| `tilemap/_md-sprite.toml` | the Mega Drive VDP sprite record |
+| `tilemap/_indirect-record.toml` | one byte per metatile, naming a definition record |
+| `reshape/_bitswap.toml` | an address-line permutation |
+| `reshape/_data-lut.toml` | a byte-value substitution |
+| `compression/_compress-reshape.toml` | a compression scheme followed by a reshape |
 
-Files starting with `_` are ignored. Every `_`-prefixed file here is a working
-reference: **copy one, drop the underscore, and edit it.** Press <kbd>F5</kbd> in
-celPix to reload the folder. celPix rewrites the `_` files at startup so they
-track the version you are running — and removes one it no longer ships, so an
-example never outlives what it taught. Yours never start with `_` and are never
-touched.
+**File ▸ New Compress & Reshape Plugin…** writes a compress-and-reshape preset
+into the open project.
 
-## Two kinds of plugin
+## `.py` plugins
 
-**`.toml` presets are data.** They name a built-in engine and fill in its
-parameters, so a new format is usually a handful of numbers and no code at all.
-Nothing executes, and celPix loads them without asking. Start here — most formats
-need nothing more.
+Code, for what no engine expresses. A code plugin runs with the app's
+privileges, so celPix asks before loading one and remembers the answer by the
+file's contents: a changed file is asked about again at the next launch.
 
-`pixel/`, `palette/` and `tilemap/` carry one example preset per engine. Pick the
-one whose layout matches your format; each names its engine's shipped presets and
-every parameter it takes.
+A file defines one class and a `register(registry)` function. There are two
+shapes:
 
-- `_planar.toml` — bit *k* of a pixel comes from plane *k* (most console formats)
-- `_packed.toml` — a pixel is a field stored whole: sub-byte (Genesis, GBA, …) or
-  one whole byte per pixel at 8bpp
-- `_nibble-planar.toml` — one byte holds four pixels, a bitplane to each nibble
-- `_packed-straddling.toml` — the 3bpp and 6bpp packings, whose fields straddle bytes
-- `_direct-color.toml` — the pixel carries its own colour, no palette
-- `_palette-swatch.toml` — the bytes are a colour table: one solid swatch per
-  palette entry, read through any palette format
-- `_color-mask.toml` — a palette entry's channels as a bit layout (RGB555, …)
-- `_color-indexed.toml` — palette bytes index a table baked into the hardware
-- `tilemap/_packed.toml` — a cell is one packed integer: tile number in the low
-  bits, attributes above it (nearly every hardware map)
-- `_sprite-record.toml` — parts carrying signed pixel offsets, drawn as frames
-  rather than laid out in rows, with the record written out field by field: any
-  sprite list whose pieces are records back to back, in any field order
-- `_md-sprite.toml` — the Mega Drive VDP's own sprite record, which checks its
-  mirrored X as it reads. The other sprite readers celPix ships are **formats**,
-  one bespoke codec apiece, so there is no TOML for them to be an example of
-  (see the `.py` section below)
-- `_indirect-record.toml` — one byte per 16x16 metatile, naming a *record* of a
-  definition table rather than a tile: how a side-scroller keeps a level
+- **Format** (`pixel/`, `palette/`, `tilemap/`): a `FormatInfo(id, name)`, the
+  stage's `decode`/`encode` pair, and `registry.register_format(...)`. It
+  appears in the format picker like a preset. Use a format to implement one
+  codec; presets parameterise an engine that serves many.
+- **Plugin** (`containers/`, `reshape/`, `compression/`): a
+  `PluginInfo(id, name)`, the stage's methods, and `registry.register(...)`.
 
-`reshape/` takes presets too: `_bitswap.toml` for boards that scramble the byte
-*address*, `_data-lut.toml` for boards that substitute byte *values*.
+| Example | Shows |
+|---|---|
+| `*/_example.py` | the minimal plugin for each folder, with its full contract |
+| `containers/_tiff.py` | a real format whose payload position is a lookup; notices; Save As |
+| `compression/_inputs.py` | a codec that reads a table stored elsewhere in the file |
+| `palette/_nes-custom.py` | a format that loads its colour table from a companion file |
 
-`compression/` takes one kind: `_compress-reshape.toml` pairs a compression scheme
-with a reshape run over what it unpacks, for a game that sums, reorders or
-substitutes its data *after* decompressing it. **File ▸ New Compress & Reshape
-Plugin…** writes one into the open project without your needing the ids.
+Rules common to every stage:
 
-**`.py` plugins are code**, for what the engines cannot express. They run with the
-app's privileges, so celPix asks before loading one the first time and remembers
-your answer; changing the file asks again.
+- A plugin implements both directions. `decode`/`encode` and the other pairs
+  must be exact inverses: celPix does not check them, and a mismatch corrupts
+  saves. Test the round trip.
+- For containers, reshapes and compression the save method (`write`, `unshape`,
+  `compress`) is optional. Without it the data opens read-only. Interpret
+  formats require `encode`.
+- Interpret code is stateless and buffer-relative: it decodes the bytes it is
+  given, with no knowledge of their position in the file. celPix decodes only the
+  visible part of a large file.
+- Data from outside a stage's own bytes is declared as an `InputSpec` and bound
+  per entry. Compression plugins and tilemap formats only; declared anywhere
+  else, the inputs are ignored and celPix warns at load.
+- Ids are stored in project files. Keep them stable.
 
-A code file defines one class and one registration call, in one of two shapes.
-The interpret stages — `pixel/`, `palette/`, `tilemap/` — write a **format**: a
-`FormatInfo` (an id and a name), that stage's decode/encode pair, and
-`registry.register_format(...)`. It lands in the picker beside the presets with no
-preset to author. A tilemap that has to *declare* something about its cells —
-`layout = "text"` for a fontmap, `sprite`, `indirect`, `stamp_dense` — puts those
-in its `FormatInfo(..., declares={...})`, which is for what the **app** has to be
-told and never for what your own code reads; anything you would read yourself is a
-constant in the class. See `tilemap/_example.py`. Every other stage writes a
-**plugin**: a `PluginInfo` that names the stage as well, the stage's own pair of
-methods, and `registry.register(...)`.
+A plugin that fails to load is skipped and listed in the **plugin load issues**
+dialog, shown at startup and after a refresh. A plugin that raises while running
+is reported in a dialog naming the plugin, the stage, the exception and the line
+that raised it, with the traceback under **Show Details**: an error where the
+operation failed, a warning where celPix worked around it (an optional method).
 
-Reach for a format whenever you are implementing **one** codec. A preset is for
-parameterising an engine that serves many, and an engine you would ship a single
-preset for is a format that has not noticed yet.
+## The format picker
 
-Every folder carries an `_example.py` of the right shape for it, and three
-folders carry a second, worked one: `containers/_tiff.py`, a real format whose
-framing is a lookup; `compression/_inputs.py`, a codec decoding against a table
-kept elsewhere in the file; and `palette/_nes-custom.py`, a format loading its
-colour table from a companion file.
+Everything from this folder appears under **Your plugins**, and everything from
+a project's folder under **Project plugins**, ahead of the shipped headings. A
+`category` value in your file is replaced.
 
-## Where yours appears in the picker
+## Project plugins
 
-The format pickers group their entries under headings — `Nintendo`, `Sega`,
-`Direct color` — with a search box on top. **Yours are not filed among them:**
-everything from this folder appears under **Your plugins** and everything from a
-project's own `plugins/` under **Project plugins**, both ahead of the shipped
-headings, so a handful of yours is never lost among a hundred of theirs. The
-`category` field in celPix's own presets is therefore not one to copy — it is set
-for you, and a value you write is replaced.
-
-## Plugins that travel with a project
-
-A project can carry its own: put a `plugins/` folder **next to the `.celpix`
-file**, with the same subfolders as this one, and celPix loads it while that
-project is open (and on <kbd>F5</kbd>). That is how you hand someone a hack — zip
-the project folder and the formats go with it, with nothing to install. Anything
-you want in *every* project belongs here instead. A project's `.py` plugins are
-code from whoever sent you the project, so celPix asks before running one and says
-where it came from.
-
-## Writing one
-
-Each `_example.py` documents its own stage in full. In short:
-
-- A plugin carries **both directions**, load and save, on one object.
-- The save half is **optional**: ship it and the data can be written back, leave
-  it out and celPix opens that data read-only. Nothing else declares this.
-- The two halves must be exact inverses. celPix trusts them, so a mismatch
-  corrupts saves — test the round trip.
-- Interpret code (pixel, palette, tilemap) must be **buffer-relative**: decode
-  whatever bytes you are handed, with no assumption about where they sit in the
-  file. That is what lets celPix decode only the visible part of a large ROM.
-- A stage needing something from **outside its own bytes** — a table shared by
-  forty streams, a count the file records nowhere — declares an `InputSpec` for
-  each, and the entry binds it to where its file keeps it. Compression and
-  tilemap only; see `compression/_inputs.py`.
-- A **container** says what kind of entry it frames (`content_kinds`), defaulting
-  to pixels and tilemaps; set it to `PALETTE` for one that frames a palette file,
-  so the two are never offered each other's formats.
-- A container's save is handed the **destination**, which on a Save As is empty.
-  Write the payload alone there and the file will not reopen as your format, so
-  rebuild the framing — or stash what you need on the context during the read, as
-  `containers/_tiff.py` does.
-- A container may also implement **`describe`**, which fills the container-info
-  popup with what it read and what it did about it. Optional and display-only.
-
-If a plugin fails to load, celPix reports it and carries on — check the plugin
-issues it lists rather than looking for a crash.
+A `plugins/` folder next to a `.celpix` file, with the same subfolders, is loaded
+while that project is open. The project's formats then travel with its folder.
+celPix asks before running a project's `.py` plugins and states that they came
+with the project.

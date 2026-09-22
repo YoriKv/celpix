@@ -99,10 +99,11 @@ class PixelFormat(Protocol):
 class PaletteFormat(Protocol):
     """A palette interpretation implemented directly: bytes ⇄ a palette.
 
-    May also define ``entries_per_unit()`` — the same optional method
-    :class:`~celpix.plugins.base.ColorCodecPlugin` carries, minus ``params``. A
-    format that packs several entries into one read unit (a handheld shade
-    register) has to declare it or be read one entry per unit.
+    May also define ``entries_per_unit()`` and ``shared_entries(index, count)`` —
+    the optional methods :class:`~celpix.plugins.base.ColorCodecPlugin` carries,
+    minus ``params``. A format that packs several entries into one read unit (a
+    handheld shade register) has to declare the first or be read one entry per
+    unit.
     """
 
     info: FormatInfo
@@ -127,7 +128,8 @@ class TilemapFormat(Protocol):
     :class:`~celpix.plugins.base.TilemapCodecPlugin` carries, each minus
     ``params``: ``transform_cell(cell, op)``, ``index_limit()``,
     ``palette_row_limit()``, ``has_palette_rows()``,
-    ``palette_row_granularity()``, ``has_line_flag()``, ``has_visibility()`` and
+    ``palette_row_granularity()``, ``settle_cells(cells)``, ``has_line_flag()``,
+    ``has_visibility()`` and
     ``cell_fields()`` — plus the two a ``layout = "sprite"`` format adds,
     ``size_pair()`` and ``frames(cells, ctx)``, which have no place on a grid.
     **A format that wants its cells edited has to define ``index_limit``** — the
@@ -159,10 +161,11 @@ def _params_last(impl: Any) -> Any:
 
 
 def _params_middle(impl: Any) -> Any:
-    """The same for ``frames``, whose ``params`` sits between cells and context."""
+    """The same for the surfaces whose ``params`` sits between two arguments:
+    ``frames(cells, params, ctx)`` and ``shared_entries(index, params, count)``."""
 
-    def call(cells: Any, params: dict[str, Any], ctx: PipelineContext) -> Any:
-        return impl(cells, ctx)
+    def call(first: Any, params: dict[str, Any], last: Any) -> Any:
+        return impl(first, last)
 
     return call
 
@@ -172,13 +175,17 @@ def _params_middle(impl: Any) -> Any:
 # adapting one is dropping that argument from wherever the surface carries it.
 _OPTIONAL: dict[Stage, dict[str, Any]] = {
     Stage.INTERPRET_PIXEL: {},
-    Stage.INTERPRET_PALETTE: {"entries_per_unit": _params_last},
+    Stage.INTERPRET_PALETTE: {
+        "entries_per_unit": _params_last,
+        "shared_entries": _params_middle,
+    },
     Stage.INTERPRET_TILEMAP: {
         "transform_cell": _params_last,
         "index_limit": _params_last,
         "palette_row_limit": _params_last,
         "has_palette_rows": _params_last,
         "palette_row_granularity": _params_last,
+        "settle_cells": _params_last,
         "has_line_flag": _params_last,
         "has_visibility": _params_last,
         "cell_fields": _params_last,

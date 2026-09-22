@@ -1,38 +1,28 @@
-"""Example container format. Copy this file, drop the leading underscore, edit
-it, and press F5 in celPix (code plugins ask for confirmation the first time,
-since they run with the app's privileges).
+"""Example container plugin: an 8-byte magic header in front of the payload.
 
-A container is **one plugin with both directions on it**: ``read`` strips the
-framing the pixel codec shouldn't see — a header, an interleave, a checksum block
-— and ``write`` re-wraps the edited bytes on save. **``write`` is optional**, and
-a container without one is view-only: its files open and cannot be saved.
-
-This toy container is a fixed 8-byte magic header (``CELPIXEX``) in front of the
-payload: ``read`` skips it, ``write`` puts it back. See _tiff.py for a worked
+To use: copy, remove the leading "_", edit, press F5. Code plugins run with the
+app's privileges, so celPix asks before loading one. ``_tiff.py`` is a worked
 example on a real format.
 
-**Neither direction touches the disk.** The host hands ``read`` the bytes
-(``ReadSource``), and ``write`` is shown the destination as it stands
-(``WriteTarget``) and *returns* what should replace it — so a container works
-whether its bytes came from a file, a parent's unsaved buffer, or several files
-joined together.
+A container removes on-disk framing (a header, an interleave, a checksum block)
+on load and restores it on save.
 
-Three cases separate a container that works from one that quietly eats data:
-
-- ``source.offset`` / ``source.length`` — the caller wants a bounded window, not
-  everything to EOF. ``source.window()`` applies both, for a container with no
-  opinion about where the payload starts.
-- ``dest.offset`` / ``dest.length`` — the save target is a slot *inside* a larger
-  file. Returning just the payload truncates the file to it; ``splice`` lays the
-  edit over ``dest.existing`` and keeps everything around it.
-- ``dest.existing`` is **empty** — a Save As, to a path with nothing at it yet.
-  There is no file to splice into, so the framing must be rebuilt (this one can:
-  the header is a constant) or carried over from the read on the context. Write
-  the payload alone and you produce a file that will not reopen as your format.
-  ``_tiff.py`` shows the stash; celPix's own iNES plugin does the same.
-
-``describe`` is a fourth, optional method: rows for the container-info popup,
-display-only and reached with ``getattr``.
+Contract
+- ``read(source, ctx)`` returns the payload. ``write(data, dest, ctx)`` returns
+  the destination file's complete new contents. Neither touches the disk: the
+  host supplies the bytes (``ReadSource``, ``WriteTarget``) and writes the result.
+- ``write`` is optional. Without it the container's files open read-only.
+- ``read`` must set ``KEY_SOURCE_OFFSET``: the file-absolute offset at which the
+  returned payload starts. ``source.base`` is the file offset of
+  ``source.data[0]``.
+- ``source.offset`` / ``source.length``: the caller wants a bounded window.
+  A container that strips nothing can return ``plain_read(source, ctx)``.
+- ``dest.offset`` / ``dest.length``: the target is a slot inside a larger file.
+  Returning only the payload would truncate the file; use ``splice``.
+- ``dest.existing`` is empty for Save As and for File > New File.... The
+  framing must then be rebuilt, or (Save As only) restored from data ``read``
+  stored on the context, as ``_tiff.py`` does.
+- ``describe(source, ctx)`` is optional: rows for the Container Info popup.
 """
 
 from celpix.core.capabilities import ContentKind
@@ -46,53 +36,37 @@ from celpix.plugins import (
     splice,
 )
 
-_MAGIC = b"CELPIXEX"  # 8-byte header this toy container wraps its payload in
+_MAGIC = b"CELPIXEX"
 
 
 class ExampleContainer:
     info = PluginInfo(
-        id="container.example",
+        id="container.example",  # stable; stored in project files
         name="Example container (magic header)",
+        # Optional in a plugin folder, which sets the stage itself.
         stage=Stage.CONTAINER,
-        # Detection is declarative: describe the file, never inspect it, and the
-        # container claims its own files instead of being picked by hand.
-        # `extensions` is the other half — see _tiff.py, which claims .tif/.tiff
-        # by name as well as by both byte orders. `exact_size`, `size_modulo`
-        # and `min_size` never make a match, only narrow one: a length alone
-        # would claim every binary that happened to be that long.
+        # Detection is declarative and runs without executing plugin code.
+        #   magic       (offset, bytes) probes; any one matching claims the file.
+        #   extensions  lowercase suffixes, e.g. (".bin",). Used for detection
+        #               only when no magic is declared; also the default suffix
+        #               in File > New File....
+        #   exact_size, size_modulo, min_size
+        #               narrow a magic or extension match; never match alone.
         magic=((0, _MAGIC),),
-        # The tag the Files list shows beside a filename: "art.bin (Example)".
+        # Shown beside the filename in the Files list: "art.bin (Example)".
         short_name="Example",
-        # What kind of entry this frames, so a palette is never offered a ROM
-        # wrapper or the reverse. The pair below is the default; the line to
-        # write for a palette wrapper is
-        # `content_kinds=(ContentKind.PALETTE,)`.
+        # The entry kinds this container frames. This pair is the default. A
+        # palette file format uses (ContentKind.PALETTE,).
         content_kinds=(ContentKind.PIXELS, ContentKind.TILEMAP),
-        # This container only *skips* a header, so every byte it hands on is
-        # still where the file has it and a slice of the entry can seek straight
-        # to its offset. Say so and celPix holds you to it: the read compares
-        # what you returned against the file and warns if they disagree.
-        # Leave it out — the default — and offsets are treated as this
-        # container's own address space, which is the right answer for anything
-        # that *moves* bytes: a deinterleaver, or a sector image whose framing
-        # sits between the chunks rather than in front of them (see _tiff.py).
+        # True: every payload byte keeps its file position (the container only
+        # skips bytes), so slices can address the file directly. celPix checks
+        # the claim on each read and warns on a mismatch. Default False: required
+        # for a container that reorders or joins bytes.
         preserves_offsets=True,
     )
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
-        """Return the payload after the magic header (or the whole file if absent).
-
-        Publish the byte offset the returned data starts at — the one thing only
-        the container knows — so ``write`` can splice edits back into the right
-        place and the UI can show real file addresses. It is **file-absolute**,
-        hence ``source.base``: the buffer can begin part way into the file, as
-        when a slice reads its parent's unsaved bytes.
-
-        Where the payload begins is the *container's* answer, so ``source.offset``
-        is not consulted here. A container stripping no framing at all wants
-        ``plain_read(source, ctx)`` instead (from ``celpix.plugins``), which
-        publishes the offset and windows the bytes in one line.
-        """
+        # The payload start is the format's own, so source.offset is not used.
         raw = source.data
         start = len(_MAGIC) if raw[: len(_MAGIC)] == _MAGIC else 0
         ctx.set(KEY_SOURCE_OFFSET, source.base + start)
@@ -100,41 +74,27 @@ class ExampleContainer:
         return raw[start:end]
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
-        """Re-wrap ``data`` in the magic header — the inverse of ``read``.
-
-        Only the whole-file case re-wraps, the framing *being* the file. A bounded
-        target is a slot inside a file that already has framing, so the payload is
-        spliced into what is there; always returning ``magic + data`` would
-        truncate the file to one slice.
-
-        The whole-file branch is also what makes **Save As** right: an empty
-        ``dest.existing`` is still a whole-file target, and this container can
-        rebuild its framing because the framing is a constant. Check that for your
-        own format — a header recording anything about the payload (a length, an
-        offset table, a checksum) has to be regenerated here or carried over from
-        the read.
-        """
+        # Whole file, including an empty destination: rebuild the framing. This
+        # header is constant; one that records a length, offsets or a checksum
+        # must be regenerated here.
         if dest.whole_file:
             return _MAGIC + data
+        # A slot inside an existing file: keep everything around it.
         return splice(dest.existing, dest.offset, data)
 
     def describe(
         self, source: ReadSource, ctx: PipelineContext
     ) -> tuple[ContainerField, ...]:
-        """Optional: what this container found, for the container-info popup.
-
-        Display-only and reached with ``getattr``, so a container without one
-        reports nothing rather than breaking. ``detail`` becomes a tooltip — hard-
-        wrap it near 60 characters, because Qt will not wrap it for you.
-        """
+        # Display only. An exception here discards the rows and nothing else.
+        # `detail` is a tooltip: Qt does not wrap it, so break lines at about 60
+        # characters.
         present = source.data[: len(_MAGIC)] == _MAGIC
         return (
             ContainerField(
                 "Magic header",
                 f"{_MAGIC.decode()} at 0x000000" if present else "absent",
                 "The eight bytes this container frames its payload with.\n"
-                "Absent, the whole file is treated as payload - which is\n"
-                "what lets a half-written file still open.",
+                "Absent, the whole file is treated as payload.",
             ),
         )
 

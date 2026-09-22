@@ -28,7 +28,7 @@ written. That is what
 say, and the host writes whole quadrants because this says ``(2, 2)``
 (``docs/design/tilemap-entry.md`` §4). Should cells reach :meth:`encode`
 disagreeing, the **quadrant's top-left cell wins** — the same rule
-:meth:`~celpix.core.document.Document.snapped_palette_rows` applies. It is
+:meth:`~celpix.core.document.Document.settle_cells` applies. It is
 restated here because a codec is handed a flat buffer and no document, and it has
 to answer for itself; but the host settles the list before handing it over
 (:attr:`~celpix.core.document.Document.settled_cells`), so in practice this pick

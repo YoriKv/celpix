@@ -9,6 +9,8 @@ a drop-in file in any folder can write ``from celpix.plugins import FormatInfo``
 the descriptors, the format classes,
 :class:`~celpix.plugins.base.InputSpec` and its kind enum for a stage that needs
 something from outside its own bytes (``docs/design/plugin-inputs.md``),
+:class:`~celpix.plugins.base.PartialDecompression` for a compression scheme whose
+decoder finds its own end,
 :class:`~celpix.plugins.base.ContainerField` and :func:`format_size` for a
 container's optional ``describe``, and the two helpers a read and a write would
 otherwise each reimplement.
@@ -32,6 +34,7 @@ from celpix.plugins.base import (
     ContainerField,
     InputKind,
     InputSpec,
+    PartialDecompression,
     PluginInfo,
     ReadSource,
     WriteTarget,
@@ -52,6 +55,7 @@ __all__ = [
     "InputKind",
     "InputSpec",
     "PaletteFormat",
+    "PartialDecompression",
     "PixelFormat",
     "PluginInfo",
     "ReadSource",

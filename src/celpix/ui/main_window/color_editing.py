@@ -222,11 +222,18 @@ class ColorEditingMixin:
         before = doc.palette.color(index)
         if before == argb:
             return
-        refusal = self._color_edit_refusal(index)
+        pixel_owner = self._palette_pixel_owner()
+        # The entry the colour is **written through**, which is not always the one
+        # clicked: a tied entry's byte is never displayed and never written, so
+        # whether the edit can land and whose bytes it dirties are the owner's
+        # answers (:meth:`_shared_color_entries`). The command still carries the
+        # clicked index, which is what the editor is sitting on and what a merge
+        # compares.
+        written = self._shared_color_entries(doc, index, pixel_owner)[0]
+        refusal = self._color_edit_refusal(written)
         if refusal is not None:
             self.statusBar().showMessage(refusal)
             return
-        pixel_owner = self._palette_pixel_owner()
         self._push_command(
             ColorEditCommand(
                 self,
@@ -238,7 +245,7 @@ class ColorEditingMixin:
                 # A palette living in somebody else's bytes persists through that
                 # entry's pixel pathway; None where the palette writes its own.
                 pixel_owner=pixel_owner,
-                pixel_owners=self._palette_pixel_owners(pixel_owner, index),
+                pixel_owners=self._palette_pixel_owners(pixel_owner, written),
                 gesture=self._color_edit_gesture,
             )
         )
@@ -272,6 +279,35 @@ class ColorEditingMixin:
         if self._palette_mode is PaletteMode.ENTRY:
             return self._palette_entry_owners(pixel_owner, index)
         return (pixel_owner,)
+
+    def _shared_color_entries(
+        self, doc: Document, index: int, pixel_owner: Entry | None
+    ) -> tuple[int, ...]:
+        """The entries that show ``index``'s stored colour, **owner first**.
+
+        Where the hardware draws one stored colour at several entries — the NES
+        backdrop in every background row's first slot — an edit to any of them is
+        an edit to all of them, and only the owner's byte is ever written
+        (:func:`~celpix.pipeline.pipeline.shared_palette_entries`). So this is
+        both what the edit paints and *which entry it is written through*: the
+        refusal, the owners that go dirty and the deposit all have to be asked of
+        the same one.
+
+        Asked wherever the colour is **encoded back into bytes**, which is not the
+        same question as this pathway being writable: an Entry palette and a
+        buffer-backed Offset one are write-off here and persist through their
+        owner's pixel pathway all the same. A palette nothing encodes — Default,
+        Custom — is a plain list of colours with no stored byte to tie two of them
+        together, so there every entry is its own.
+        """
+        if not (doc.palette_config.write_enabled or pixel_owner is not None):
+            return (index,)
+        return pipeline.shared_palette_entries(
+            doc.palette_config.interpret_preset_id,
+            index,
+            len(doc.palette),
+            self._registry,
+        )
 
     def _color_edit_refusal(self, index: int) -> str | None:
         """Why this color cannot be edited where it sits, or None if it can.
@@ -345,19 +381,7 @@ class ColorEditingMixin:
         palette by reference, so the edit swaps in a new one
         (:meth:`Palette.with_color`).
         """
-        # Where the hardware draws one stored colour at several entries (the NES
-        # backdrop in every row's first slot), the edit is to all of them, and
-        # only the owner - the first - is marked and so written back.
-        shared = (
-            pipeline.shared_palette_entries(
-                doc.palette_config.interpret_preset_id,
-                index,
-                len(doc.palette),
-                self._registry,
-            )
-            if doc.palette_config.write_enabled
-            else (index,)
-        )
+        shared = self._shared_color_entries(doc, index, pixel_owner)
         palette = doc.palette
         for member in shared:
             if member < len(palette):
@@ -390,7 +414,7 @@ class ColorEditingMixin:
             if entry_palette_entry(owner) is pixel_owner:
                 # ``index`` is the **marked** one, which is what was encoded into
                 # the splice base — the one whose read unit the deposit carries.
-                moved = self._sync_entry_palette_bytes(doc, pixel_owner, index)
+                moved = self._sync_entry_palette_bytes(doc, pixel_owner, index, owner)
                 # Every *other* graphic reading any of those bytes as its palette
                 # is now showing colours that have moved
                 # (``_redecode_entry_palettes`` is the one place that is
@@ -566,9 +590,14 @@ class ColorEditingMixin:
                                 pixel_owner=pixel_owner,
                                 # Per colour, not per paste: each one lands in
                                 # its own read unit, so each one's owners are
-                                # the entries *that* unit falls in.
+                                # the entries *that* unit falls in — the unit of
+                                # the entry it is written through
+                                # (:meth:`_shared_color_entries`).
                                 pixel_owners=self._palette_pixel_owners(
-                                    pixel_owner, index
+                                    pixel_owner,
+                                    self._shared_color_entries(doc, index, pixel_owner)[
+                                        0
+                                    ],
                                 ),
                             )
                         )

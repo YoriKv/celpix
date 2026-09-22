@@ -101,6 +101,9 @@ class CompressReshape:
             name=name,
             stage=Stage.COMPRESSION,
             self_delimiting=compression.info.self_delimiting,
+            # The scan steps by this, and the pair starts where its compression
+            # half does.
+            alignment=compression.info.alignment,
             category=category,
             inputs=compression.info.inputs,
         )

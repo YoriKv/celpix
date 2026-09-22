@@ -1,20 +1,27 @@
-"""Example compression scheme. Copy this file, drop the leading underscore,
-edit it, and press F5 in celPix (code plugins ask for confirmation the first
-time, since they run with the app's privileges).
+"""Example compression plugin: byte run-length encoding.
 
-A compression scheme is **one plugin with both directions on it**: ``decompress``
-runs *before* the pixel codec, turning a packed byte run into the raw bytes that
-format interprets, and ``compress`` is its inverse, run on save so edits write
-back packed.
+To use: copy, remove the leading "_", edit, press F5. Code plugins run with the
+app's privileges, so celPix asks before loading one.
 
-**``compress`` is optional.** A format reverse-engineered far enough to view but
-not to re-encode ships ``decompress`` alone, and celPix opens its data read-only
-rather than saving something it cannot guarantee. Shipping the method is the
-declaration.
+Contract
+- ``decompress`` runs on load, after the container and reshape stages and before
+  the interpret stage. ``compress`` is its exact inverse and runs on save.
+- ``compress`` is optional. Without it the data opens read-only.
+- ``decompress`` must raise when no complete structure starts at ``data[0]``.
+  Scan decodes at each candidate offset and counts a hit when the decode
+  succeeds, returns data, and reports ``KEY_DECOMPRESS_COMPLETE``; a lenient
+  decoder produces false hits.
+- ``KEY_DECOMPRESS_PARTIAL`` is set on the context only by the live preview,
+  whose window may cut a structure short. When set, return the valid prefix
+  instead of raising. Corrupt data still raises.
+- Every ``decompress`` must set two context keys:
+  ``KEY_COMPRESSED_SIZE``      bytes consumed; a save-back must fit this size.
+  ``KEY_DECOMPRESS_COMPLETE``  whether the end of the structure was reached.
 
-This toy scheme is byte run-length encoding: a series of ``(count, value)`` pairs,
-``count`` in 1..255, terminated by a ``count`` of 0. Real schemes are more
-involved, but the plumbing is identical.
+``celpix.plugins.PartialDecompression`` implements both methods for a decoder of
+the form ``_decode(data, *, partial) -> (output, consumed, complete)``.
+
+Format: ``(count, value)`` pairs, ``count`` 1-255, ended by a ``count`` of 0.
 """
 
 from celpix.core.context import (
@@ -29,34 +36,19 @@ from celpix.plugins import PluginInfo
 
 class ExampleRle:
     info = PluginInfo(
-        id="compression.example-rle",
+        id="compression.example-rle",  # stable; stored in project files
         name="Example byte RLE",
+        # Optional in a plugin folder, which sets the stage itself.
         stage=Stage.COMPRESSION,
-        # Whether the scheme's extent is knowable from the data alone: this one
-        # carries a terminator. Set False for a scheme that ends only where
-        # something outside it says — a slice length, a container's byte count.
-        # Only self-delimiting schemes can be found by Scan.
+        # True: the stream marks its own end. False: the extent comes from
+        # outside (a slice length, a container's byte count). Scan only searches
+        # for self-delimiting schemes.
         self_delimiting=True,
+        # Also available: `alignment=N`, when the hardware only loads a
+        # structure from an N-byte-aligned address. Scan then steps by N.
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        """Expand ``(count, value)`` pairs until the 0-count terminator.
-
-        **Strict by default: raise when the structure does not end inside the
-        buffer.** Scan tries a decode at every offset and treats success as a
-        hit, so a best-effort decompressor reports a structure everywhere.
-
-        ``KEY_DECOMPRESS_PARTIAL`` is set when, and only when, celPix knowingly
-        hands over a window that may cut a structure short (the live preview).
-        Honour it by returning the valid prefix; corrupt data still raises.
-
-        Two things go back through ``ctx``:
-
-        - ``KEY_COMPRESSED_SIZE`` — bytes consumed, the packed structure's true
-          length, which a save-back must fit.
-        - ``KEY_DECOMPRESS_COMPLETE`` — whether the terminator was reached inside
-          the buffer (False = the window cut the stream short).
-        """
         out = bytearray()
         i, n = 0, len(data)
         complete = False
@@ -66,22 +58,17 @@ class ExampleRle:
                 i += 1
                 complete = True
                 break
-            if i + 1 >= n:  # window ended before the value byte
+            if i + 1 >= n:  # the buffer ends before the value byte
                 break
             out += bytes([data[i + 1]]) * count
             i += 2
         if not complete and not ctx.get(KEY_DECOMPRESS_PARTIAL):
-            raise ValueError("no terminator — no Example RLE structure here")
+            raise ValueError("no terminator: not an Example RLE structure")
         ctx.set(KEY_COMPRESSED_SIZE, i)
         ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
         return bytes(out)
 
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        """Pack ``data`` into ``(count, value)`` pairs — the inverse of decode.
-
-        Runs longer than 255 split across successive pairs, and the stream ends
-        with a 0-count terminator so decode knows where it stops.
-        """
         out = bytearray()
         i, n = 0, len(data)
         while i < n:
@@ -89,8 +76,7 @@ class ExampleRle:
             run = 1
             while i + run < n and data[i + run] == value and run < 255:
                 run += 1
-            out.append(run)
-            out.append(value)
+            out += bytes((run, value))
             i += run
         out.append(0)  # terminator
         return bytes(out)

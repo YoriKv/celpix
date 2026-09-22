@@ -1,26 +1,25 @@
-# Example preset for the `codec.palette.indexed` engine. Copy, drop the
-# underscore, edit, press F5. See _color-mask.toml for what a preset is.
+# Example preset: `codec.palette.indexed` — palette bytes index a fixed table.
 #
-# WHAT THE ENGINE DOES
-# --------------------
-# codec.palette.indexed is for hardware whose palette bytes are **not** colour at
-# all, but indices into a fixed table baked into the machine — EGA, MSX, the NES.
-# One stored byte selects one entry, always, so the entry size is not a parameter
-# the way it is for codec.palette.mask.
+# To use: copy, remove the leading "_", edit, press F5. See _color-mask.toml for
+# what a preset is.
 #
-# Encoding picks the **nearest** table entry — by Manhattan distance in RGB,
-# there being no inverse when several slots share a colour — so a colour that is
-# not in the table resolves to the closest one that is. An exact colour therefore
-# round-trips, while an edited one is quantised to what the hardware can show.
+# ENGINE
+#   For hardware whose palette bytes are indices into a colour table fixed in
+#   the machine (EGA, MSX, NES). An entry is always one byte.
 #
-# SHIPPED PRESETS BUILT ON IT
-# ---------------------------
-#   ega-indexed   the 16 EGA colours.
-#   nes-indexed   the NES's fixed palette.
-#   msx-indexed   the MSX's 16 colours.
+#   Decode: table lookup. A byte past the end of the table decodes to the
+#   missing-colour sentinel. Every colour decodes opaque.
+#   Encode: the nearest table entry by Manhattan distance in RGB; ties go to the
+#   lowest index. A colour not in the table is quantised to it, and a byte
+#   naming a duplicate colour is rewritten as that colour's first index.
 #
-# For a table you would rather load from a file than write out here, see
-# _nes-custom.py — a code plugin doing exactly that.
+#   To load the table from a file instead, see _nes-custom.py.
+#
+# SHIPPED PRESETS ON THIS ENGINE
+#   ega-indexed   16 colours.
+#   msx-indexed   16 colours.
+#   nes-indexed   the 64-entry NES master palette.
+#   nes-screen    the same table with shared_every = 4.
 
 id = "preset.palette.example-color-indexed"
 name = "Example 8-color indexed"
@@ -28,13 +27,13 @@ engine_id = "codec.palette.indexed"
 
 [params]
 
-# The machine's fixed colour table, as 0xRRGGBB entries, in hardware order — a
-# stored byte is an index straight into this list. The engine's only parameter.
-#
-# The length is the table's own; it need not be a power of two, and a stored byte
-# outside it decodes to the missing-colour sentinel rather than wrapping. Alpha
-# is not part of an entry — every colour here decodes opaque.
+# Required. The colour table as 0xRRGGBB integers, in hardware order. 1 to 256
+# entries; the length need not be a power of two.
 colors = [
   0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
   0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
 ]
+
+# Every Nth entry shows entry 0's colour, and an edit to one edits entry 0.
+# Default 0 (off). The NES backdrop occupies the first slot of every 4-entry row.
+# shared_every = 4

@@ -1592,6 +1592,8 @@ class InterpretationMixin:
         # folder too - F5 is the way to pick up an edit there, exactly as it is
         # for the user's folder.
         self._registry, self._plugin_issues = self._reload_plugins(self._project_path)
+        # Reloaded code is new code: a crash it still has is news again.
+        self._codec_faults_seen.clear()
         # A refresh can *remove* a format as easily as add one — a deleted preset
         # file, a plugin that no longer passes the trust gate — so the open
         # entries are put back in step with the registry before anything decodes

@@ -1,33 +1,29 @@
-# Example Compress & Reshape preset. Files starting with "_" are ignored — copy
-# this file, drop the underscore, edit it, and press F5 in celPix to load it.
-# Presets are data: nothing here executes, so unlike a .py plugin there is no
-# confirmation step. File > New Compress & Reshape Plugin... writes one of these
-# into the open project for you.
+# Example preset: `compression.compress-reshape` — a compression scheme followed
+# by a reshape.
 #
-# WHAT THE ENGINE DOES
-# --------------------
-# It pairs a compression scheme with a reshape, for a game that runs a second pass
-# over what its unpacker produced:
+# To use: copy, remove the leading "_", edit, press F5. "_" files are ignored and
+# rewritten at startup. Presets are data: nothing executes and no confirmation
+# is asked. File > New Compress & Reshape Plugin... writes one into the open
+# project.
 #
-#   load:  decompress -> reshape
-#   save:  unshape    -> compress
+# ENGINE
+#   For data the game transforms after unpacking it:
 #
-# The Reshape picker on a slice cannot do this on its own, because that stage runs
-# BEFORE decompression, over the packed bytes. The pair sits in the Compression
-# picker and is an ordinary scheme to everything else: it finds its own end if its
-# compression half does, it saves if both halves can, and any inputs its
-# compression half declares are bound on the pair.
+#       load:  decompress -> reshape
+#       save:  unshape    -> compress
 #
-# The case it exists for is a map stored as DIFFERENCES. A picture of consecutive
-# tile numbers becomes a run of $01 once each byte is replaced by its step from
-# the one before, which packs to almost nothing. The loader unpacks the stream and
-# then sums it (on a Z80: XOR A / loop: ADD A,(HL) / LD (HL+),A). The symptom is a
-# decompressed "map" of mostly $00 and $01 that draws as noise.
+#   An entry's own Reshape stage runs before decompression, over the packed
+#   bytes, so it cannot do this. The pair appears in the Compression picker as
+#   one scheme. It is self-delimiting if its compression half is, writes back if
+#   both halves do, and takes the inputs its compression half declares.
 #
-# SHIPPED PRESETS BUILT ON IT
-# ---------------------------
-# None — which scheme a game pairs with which pass is the game's own business, so
-# this example carries a real, working pair to copy and adapt.
+#   Typical case: a tilemap stored as differences. The loader unpacks the stream
+#   and sums it (Z80: XOR A / loop: ADD A,(HL) / LD (HL+),A). Symptom: the
+#   unpacked map is mostly $00 and $01 and draws as noise.
+#
+# SHIPPED PRESETS ON THIS ENGINE
+# None: the pairing is specific to a game. This example carries a working one,
+# used by Mortal Kombat II (Game Boy) for its title-screen maps.
 
 id = "compression.rnc2-running-sum"
 name = "RNC method 2 + running sum"
@@ -35,12 +31,11 @@ engine_id = "compression.compress-reshape"
 
 [params]
 
-# The compression scheme, by plugin id. Anything in the Compression picker except
-# "None" and another Compress & Reshape pair. This one is what Mortal Kombat II on
-# the Game Boy packs its title-screen maps with.
+# Required. Plugin id of the compression scheme: any entry of the Compression
+# picker except "None" and another pair.
 compression = "compression.rnc2"
 
-# The reshape run over the decompressed bytes, by plugin id. Anything in the
-# Reshape picker except "None", including a bitswap or data-LUT preset of your
-# own. It is handed the whole decompressed stream as its region.
+# Required. Plugin id of the reshape applied to the whole decompressed stream:
+# any entry of the Reshape picker except "None", including your own bitswap and
+# data-LUT presets.
 reshape = "reshape.running-sum"

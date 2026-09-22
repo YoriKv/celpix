@@ -103,6 +103,9 @@ class CompositeDialog(QDialog):
         # maps, no palettes, and never this entry itself.
         self._candidates = [e for e in candidates if can_compose(entry, e)]
         self._tile_bytes = max(1, tile_bytes)
+        # Kept for the total under the list, which counts the same unit the second
+        # position column does.
+        self._unit_label = unit_label
         self._params: CompositeParams | None = None
 
         self._name = QLineEdit(name)
@@ -285,7 +288,8 @@ class CompositeDialog(QDialog):
                 item.setText(3, format_hex(piece.extent))
             at += piece.extent
         tiles = at // self._tile_bytes
-        self._total.setText(f"{format_hex(at, None)} bytes ({tiles} tiles)")
+        unit = f"{self._unit_label.lower()}s"
+        self._total.setText(f"{format_hex(at, None)} bytes ({tiles} {unit})")
         self._sync_buttons()
 
     def _sync_buttons(self) -> None:

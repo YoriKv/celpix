@@ -436,6 +436,7 @@ class TileBytesMixin:
         splices: list[tuple[int, bytes]],
         revision: int | None = None,
         owners: tuple[tuple[Entry, int], ...] = (),
+        keep: Entry | None = None,
     ) -> list[Entry]:
         """Put ``splices`` into ``entry``'s bytes and everything derived from them.
 
@@ -453,6 +454,11 @@ class TileBytesMixin:
         stamping cannot live inside). The re-decode of other palettes and the
         single ``_refresh_view`` are the callers' too, since only they know which
         consumer already holds the new colours.
+
+        ``keep`` is a slice whose document has to survive the landing although the
+        bytes above it moved, because the caller is holding it: the consumer of an
+        Entry-mode palette read out of its own parent
+        (:meth:`~...writing.WritingMixin._propagate_pixel_edit`).
 
         Returns ``entry``, the pieces it was cut up into and every composite
         rebuilt over them — every entry whose bytes moved, in the order they were
@@ -490,8 +496,8 @@ class TileBytesMixin:
         # below: a composite's pieces are where its edit actually lives, and a
         # piece that is a slice then owes its own parent a fold, which is what
         # `_propagate_pixel_edit` on that piece records.
-        deposited = self._deposit_composite_edit(entry, splices)
-        self._propagate_pixel_edit(entry)
+        deposited = self._deposit_composite_edit(entry, splices, keep)
+        self._propagate_pixel_edit(entry, keep)
         self._resync_tile_bindings(entry, splices)
         # Every composite assembled out of these bytes now holds a stale join of
         # them: the ones over `entry` itself, and — when `entry` *is* a composite,
@@ -595,7 +601,10 @@ class TileBytesMixin:
         return out
 
     def _deposit_composite_edit(
-        self, entry: Entry, splices: list[tuple[int, bytes]]
+        self,
+        entry: Entry,
+        splices: list[tuple[int, bytes]],
+        keep: Entry | None = None,
     ) -> list[Entry]:
         """Put a composite's edit into the entries whose bytes it really is.
 
@@ -618,7 +627,10 @@ class TileBytesMixin:
 
         The revisions are not stamped here: they came off the command
         (:meth:`_apply_pixel_bytes`), so an undo hands each side back the exact
-        unsaved state it had rather than a fresh token.
+        unsaved state it had rather than a fresh token. ``keep`` rides through to
+        each piece's :meth:`~...writing.WritingMixin._propagate_pixel_edit` for the
+        reason the caller passed it — a piece may be the parent of the very slice
+        the caller is holding.
 
         Returns the owners written into, in the order they were first reached.
         Every *other* composite over one of them is now stale, and so is every map
@@ -635,7 +647,7 @@ class TileBytesMixin:
                 # owner has folds pending that the drop below would discard.
                 self._settle_region(owner)
                 self._land_splices(owner.doc, [(at, cut)])
-                self._propagate_pixel_edit(owner)
+                self._propagate_pixel_edit(owner, keep)
                 self._resync_tile_bindings(owner, [(at, cut)])
                 self._mirror_shared_runs(entry, owner, at, cut, skip=first)
                 if not any(owner is seen for seen in deposited):
