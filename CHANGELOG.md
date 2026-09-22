@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.2 - unreleased
+## v1.1.2 - 2026-09-22
 
 - Edit Slice can resize a compressed slice
 - File ▸ Reload From Disk to re-read files changed externally
