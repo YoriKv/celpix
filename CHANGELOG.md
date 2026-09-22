@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.0 - unreleased
+## v1.1.0 - 2026-09-21
 
 - Composite views can now be used as a palette
 - Opening a composite view opens the files its pieces are cut from
