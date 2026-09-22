@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.2 - unreleased
+
+- Edit Slice can resize a compressed slice
+- File ▸ Reload From Disk to re-read files changed externally
+- Automatic file reload detection
+
 ## v1.1.1 - 2026-09-21
 
 - Improved pickers for composite view add source and palette entry source

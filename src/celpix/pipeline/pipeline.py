@@ -194,6 +194,7 @@ __all__ = [
     "read_region",
     "reinterpret_pixel_data",
     "resize_file",
+    "resized_slot_bytes",
     "save",
     "spliced_palette_bytes",
     "sprite_hit",
@@ -543,6 +544,13 @@ class TilemapData(NamedTuple):
     (:func:`~celpix.pipeline._stage._cell_settler`). A callable and not the engine,
     because what reads it is the Qt-free model
     (:attr:`~celpix.core.document.Document.cell_settler`).
+
+    ``disk`` is the region as the **file** holds it — ``data`` before ``live``
+    was spliced over it, and the same bytes when nothing was. It is the
+    baseline a reload measures unsaved cell edits against
+    (:attr:`~celpix.core.document.Document.tilemap_base_bytes`), and has to come
+    out of the read that saw the file, because ``data`` has already stopped
+    describing it.
     """
 
     cells: list[Cell]
@@ -558,6 +566,7 @@ class TilemapData(NamedTuple):
     row_granularity: tuple[int, int] = (1, 1)
     column_major: bool = False
     settler: Callable[[list[Cell]], list[Cell]] | None = None
+    disk: bytes = b""
 
 
 def load_tilemap_data(
@@ -594,6 +603,7 @@ def load_tilemap_data(
     """
     ctx = PipelineContext()
     data = _read_reshape_decompress(cfg, ctx, reg, Pathway.TILEMAP)
+    disk = data
     if live is not None:
         data = live + data[len(live) :]
     engine, preset = reg.engine_for(cfg.interpret_preset_id, TilemapCodecPlugin)
@@ -757,6 +767,7 @@ def load_tilemap_data(
         # this format say about its cells" question, but it is a transform rather
         # than an answer, so it travels as a callable the model can apply per edit.
         _cell_settler(engine, preset.params, ctx=ctx, plugin=preset.id),
+        disk,
     )
 
 
@@ -912,6 +923,7 @@ def load(pixel: PathwayConfig, palette: PathwayConfig, reg: Registry) -> Documen
         pixel_ctx=px.ctx,
         palette_ctx=pal.ctx,
         palette_base_bytes=pal.data,
+        pixel_base_bytes=px.data,
     )
 
 
@@ -1297,6 +1309,61 @@ def resize_file(
     return size
 
 
+def resized_slot_bytes(
+    cfg: PathwayConfig,
+    *,
+    kind: ContentKind,
+    codec_id: str,
+    units: int,
+    reg: Registry,
+) -> bytes:
+    """The bytes a compressed slice's slot holds once it unpacks to ``units``.
+
+    :func:`resize_file` for a region that has **no file position of its own to
+    write at**: a slice is part of its parent's region, and its bytes reach the
+    disk only through the parent's write (``docs/design/slices-and-parents.md``
+    §4), which is what runs the container's own repairs — a ROM's checksums
+    among them. So nothing is written here. The payload is read, grown with
+    zeroes or cut at the tail exactly as :func:`resize_file` does it, and packed
+    back into the slot; the host splices the result into the parent's buffer at
+    the slice's offset, as an ordinary edit.
+
+    **The slot does not grow.** The re-packed stream must fit the slice's length
+    and raises the slot-overflow refusal when it does not — widening the slice
+    over free space after it is how a bigger stream gets room. A shorter stream
+    is padded per the slice's ``slot_fill``, as any save of it would be.
+
+    Read back before it is returned, like :func:`resize_file`'s result: the bytes
+    have to unpack to exactly the size asked for, or the resize is refused rather
+    than reported done.
+    """
+    pathway = _new_file_pathway(kind)
+    ctx = PipelineContext()
+    current = _read_reshape_decompress(cfg, ctx, reg, pathway)
+    size = blank_size(kind, codec_id, units, reg)
+    resized = (
+        current[:size] if size < len(current) else current + bytes(size - len(current))
+    )
+    shaped = _compress_unshape(cfg, resized, ctx, reg, pathway)
+    # A slot of these bytes and no others, where the slice's own offset still
+    # names its first byte — so what is read back is this stream, not the one
+    # still standing in the file past a short result.
+    start = cfg.source.offset
+    preview = replace(
+        cfg,
+        source=replace(cfg.source, length=len(shaped), data=shaped, data_base=start),
+    )
+    held = len(_read_reshape_decompress(preview, PipelineContext(), reg, pathway))
+    if held != size:
+        noun = _UNIT_NOUNS[kind]
+        raise ValueError(
+            f"the re-packed slot unpacks to {held:,} bytes "
+            f"({blank_units(kind, codec_id, held, reg):,} {noun}) where {size:,} "
+            f"({blank_units(kind, codec_id, size, reg):,} {noun}) were asked for"
+        )
+    return shaped
+
+
 def _existing(path: str) -> bytes:
     """A *destination's* current bytes, or ``b""`` when it isn't there yet.
 
@@ -1487,6 +1554,9 @@ def _save_pixel(doc: Document, reg: Registry) -> None:
     _compress_unshape_write(
         doc.pixel_config, doc.pixel_data, doc.pixel_ctx, reg, Pathway.PIXEL
     )
+    # The file now holds these bytes, so they are the baseline the next reload
+    # measures unsaved edits against — the palette's rule (:func:`_save_palette`).
+    doc.pixel_base_bytes = doc.pixel_data
 
 
 def _save_tilemap(doc: Document, reg: Registry) -> None:
@@ -1515,6 +1585,10 @@ def _save_tilemap(doc: Document, reg: Registry) -> None:
         return
     data = _encode_tilemap(doc, reg)
     _compress_unshape_write(cfg, data, doc.tilemap_ctx, reg, Pathway.TILEMAP)
+    # As :func:`_save_pixel`: the cells just written are the file's, spliced
+    # over the tail the encode does not cover the way an edit is.
+    doc.tilemap_data = data + doc.tilemap_data[len(data) :]
+    doc.tilemap_base_bytes = doc.tilemap_data
 
 
 def _encode_tilemap(doc: Document, reg: Registry) -> bytes:

@@ -380,6 +380,7 @@ class WritingMixin:
             touched += entry.doc.palette_config.source.paths
         for path in touched:
             self._workspace.invalidate_path(path, keep=entry)
+        self._note_written(touched)
         self._refresh_stale_current()
         return True
 
@@ -709,6 +710,7 @@ class WritingMixin:
         # The parent's pixel pathway alone: its palette is a separate source in a
         # separate file, and this write says nothing about it.
         pipeline.save(parent.doc, self._registry, palette=False)
+        self._note_written(parent.paths)
         self._mark_region_saved(parent)
         self._report_refused_folds(parent)
         return True

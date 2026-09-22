@@ -1285,6 +1285,12 @@ class EntriesMixin:
         """
         if entry.kind is not EntryKind.SLICE:
             return
+        codec_id = self._slice_codec_id(entry)
+        units = (
+            self._slice_units(entry, codec_id)
+            if entry.compression_id != NO_COMPRESSION
+            else None
+        )
         if entry.pixel_dirty or entry.palette_dirty:
             answer = QMessageBox.question(
                 self,
@@ -1313,9 +1319,15 @@ class EntriesMixin:
             edit_inputs=lambda dialog, codec: self._edit_slice_inputs(
                 dialog, entry, codec
             ),
+            units=units,
+            codec_id=codec_id,
         )
         if params is None:
             return
+        # The size is not a coordinate: it is an edit to the parent's bytes, and
+        # goes on the stack as one after the re-point it may depend on (a Length
+        # widened to give the bigger stream room). One Ctrl+Z takes both back.
+        resize, params = params.units, replace(params, units=None)
         before = SliceParams(
             entry.name,
             entry.slice_offset,
@@ -1325,9 +1337,122 @@ class EntriesMixin:
             entry.content_kind,
             entry.slot_fill,
         )
-        if params == before:
+        moved = params != before
+        if not moved and resize is None:
             return  # OK'd unchanged - nothing happened, nothing to undo
-        self._push_command(SliceEditCommand(self, entry, before=before, after=params))
+        both = moved and resize is not None
+        if both:
+            self._undo_stack.beginMacro(f"edit and resize {entry.name}")
+        try:
+            if moved:
+                self._push_command(
+                    SliceEditCommand(self, entry, before=before, after=params)
+                )
+            if resize is not None:
+                self._resize_slice(entry, resize, codec_id)
+        finally:
+            if both:
+                self._undo_stack.endMacro()
+
+    # -- resizing a compressed slice -----------------------------------------
+    def _slice_codec_id(self, entry: Entry) -> str:
+        """The format a slice's payload is measured in — its live reading when
+        it has one, since the toolbar may have moved past the stored session."""
+        doc = entry.doc
+        if doc is not None and entry.content_kind is ContentKind.PIXELS:
+            return doc.pixel_config.interpret_preset_id
+        return self._entry_codec_id(entry)
+
+    def _slice_config(self, entry: Entry, codec_id: str) -> PathwayConfig:
+        """The pathway ``entry``'s own bytes are read through, off the parent's
+        live buffer rather than the file on disk."""
+        if entry.content_kind is ContentKind.TILEMAP:
+            return tilemap_config_for(entry, codec_id, self._registry, self._workspace)
+        return pixel_config_for(entry, codec_id, self._registry, self._workspace)
+
+    def _slice_units(self, entry: Entry, codec_id: str) -> int | None:
+        """How many tiles or cells a compressed slice unpacks to, or ``None``
+        where that cannot be read — which leaves the Size row out rather than
+        stating a count nobody measured."""
+        if not codec_id or entry.content_kind not in (
+            ContentKind.PIXELS,
+            ContentKind.TILEMAP,
+        ):
+            return None
+        parent = self._workspace.find_file(entry.path)
+        self._settle_region(parent)
+        try:
+            data, _ = pipeline.read_region(
+                self._slice_config(entry, codec_id), self._registry
+            )
+            return pipeline.blank_units(
+                entry.content_kind, codec_id, len(data), self._registry
+            )
+        except (PipelineError, OSError):
+            return None
+
+    def _resize_slice(self, entry: Entry, units: int, codec_id: str) -> bool:
+        """Re-pack ``entry`` to unpack to ``units``, as an edit to its parent.
+
+        A slice has no file position of its own to write at — its bytes reach
+        the disk through its parent's write, which is what runs the container's
+        repairs (a ROM's checksums) — so the resize is not a write at all. The
+        re-packed slot (:func:`~celpix.pipeline.pipeline.resized_slot_bytes`)
+        is spliced into the parent's buffer as one ordinary byte edit: undoable,
+        marking the file unsaved, and dropping the slice's cache so it re-reads
+        at its new size. ``through`` is the slice, so an undo comes back to the
+        view the resize was asked for in (``docs/design/slices-and-parents.md``
+        §5). False, already reported, when it did not happen.
+        """
+        parent = self._workspace.find_file(entry.path)
+        if parent is None:
+            self._alert(
+                f"{entry.name} is a region of {Path(entry.path).name}, which is "
+                "no longer open, so there is nowhere to put the resized bytes.",
+                title="celPix - resize",
+            )
+            return False
+        if parent.doc is None and not self._load_entry(parent):
+            return False
+        # Every other slice's unsaved edits into the buffer first, so the splice
+        # below lands on top of them rather than a later fold landing on it.
+        self._settle_region(parent)
+        try:
+            slot = pipeline.resized_slot_bytes(
+                self._slice_config(entry, codec_id),
+                kind=entry.content_kind,
+                codec_id=codec_id,
+                units=units,
+                reg=self._registry,
+            )
+        except PipelineError as exc:
+            self._report(exc)
+            return False
+        except (OSError, ValueError) as exc:
+            self._alert(f"Cannot resize {entry.name}: {exc}", title="celPix - resize")
+            return False
+        assert parent.doc is not None
+        base = int(parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0) or 0)
+        start = entry.slice_offset - base
+        if start < 0 or start + len(slot) > len(parent.doc.pixel_data):
+            self._alert(
+                f"{entry.name} lies outside {parent.name}'s region, so there is "
+                "nowhere in it to put the resized bytes.",
+                title="celPix - resize",
+            )
+            return False
+        noun = "cells" if entry.content_kind is ContentKind.TILEMAP else "tiles"
+        self._push_pixel_regions(
+            [(start, slot)],
+            parent.doc.pixel_data,
+            parent,
+            f"resize {entry.name} to {units:,} {noun}",
+            through=entry,
+        )
+        self.statusBar().showMessage(
+            f"Resized {entry.name} to {units:,} {noun}; write {parent.name} to keep it"
+        )
+        return True
 
     def _inputs_hint(self, entry: Entry, codec: str) -> str:
         """The Slice dialog's one line about a codec's inputs: what ``entry``
@@ -1682,6 +1807,7 @@ class EntriesMixin:
         except (OSError, ValueError) as exc:
             self._alert(f"Cannot resize {entry.path}: {exc}", title="celPix - resize")
             return False
+        self._note_written(entry.paths)
         self.statusBar().showMessage(
             f"Resized {entry.name} - {before:,} bytes to {after:,}"
         )

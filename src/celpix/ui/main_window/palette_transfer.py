@@ -138,6 +138,7 @@ class PaletteTransferMixin:
         except OSError as exc:
             self._alert(f"Cannot write {path}: {exc}", title="celPix - palette")
             return
+        self._note_written([path])  # it may be a palette already in the list
         added = self._add_palette_file(path, quiet=True, preset_id=preset_id)
         name = Path(path).name
         self.statusBar().showMessage(

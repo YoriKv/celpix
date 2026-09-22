@@ -32,6 +32,17 @@ and nothing else on this dialog can produce a result shorter than the slot it
 goes back into (:class:`~celpix.pipeline.pathway.SlotFill`). Hidden rather than
 disabled — a control that can never apply to what is being described is one
 question fewer, not a greyed-out one.
+
+**Size** is the edit-only row that sits beside it, under the same rule: it
+counts the tiles (or cells) a *compressed* slice unpacks to, and changing it
+grows the payload with blank ones or drops the last ones, then re-packs it into
+the slot. A raw slice has no such row — its Length already is its size. The
+count is measured under the compression the slice has *now*, so choosing a
+different scheme in the same dialog greys it out rather than resizing a region
+whose reading is about to change underneath it. The slot itself stays the
+Length above: a stream that no longer fits is refused at OK time by the
+caller, and widening Length over free space after the slice is how it gets
+room (``docs/design/slices-and-parents.md`` §5).
 """
 
 from __future__ import annotations
@@ -48,28 +59,41 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QSpinBox,
     QToolButton,
     QWidget,
 )
 
 from celpix.core.address import format_hex, parse_hex
 from celpix.core.capabilities import ContentKind
-from celpix.core.errors import Stage
+from celpix.core.errors import PipelineError, Stage
+from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, SlotFill
 from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
 from celpix.plugins.registry import Registry
 from celpix.project.workspace import SliceParams, default_slice_name
 from celpix.ui.glyphs import Glyph
 from celpix.ui.icon_font import glyph_icon
+from celpix.ui.new_file_dialog import MAX_COLUMNS, MAX_ROWS, SIZE_CAPTIONS
 from celpix.ui.searchable_combo import SearchableComboBox, fill_stage_combo
 from celpix.ui.theme import ERROR_INK, set_ink
 from celpix.ui.widgets import (
     PRESET_COMBO_WIDTH,
     SHORT_COMBO_WIDTH,
     CompactComboBox,
+    value_spin,
 )
 
 __all__ = ["SliceDialog", "SliceParams"]
+
+_SIZE_TIPS = {
+    ContentKind.PIXELS: "How many tiles the slice unpacks to\n"
+    "Growing it appends blank tiles; shrinking drops the last ones\n"
+    "The re-packed stream must still fit Length",
+    ContentKind.TILEMAP: "How many cells the slice unpacks to\n"
+    "Growing it appends empty cells; shrinking drops the last ones\n"
+    "The re-packed stream must still fit Length",
+}
 
 
 def _pinned(*widgets: QWidget) -> QWidget:
@@ -110,6 +134,8 @@ class SliceDialog(QDialog):
         choose_content: bool = False,
         inputs_hint: Callable[[str], str] | None = None,
         edit_inputs: Callable[[SliceDialog, str], None] | None = None,
+        units: int | None = None,
+        codec_id: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -126,6 +152,13 @@ class SliceDialog(QDialog):
         # first chip alone would put most of a several-chip region out of reach.
         self._paths = paths
         self._params: SliceParams | None = None
+        self._registry = registry
+        # The size row's baseline: what the slice unpacks to now, under the
+        # compression it has now. ``None`` (New Slice, or a count nobody could
+        # take) leaves the row out entirely.
+        self._units_before = units
+        self._codec_id = codec_id
+        self._compression_before = compression_id
 
         # Echoed back untouched when the row is not offered, so an edit round-trips
         # the entry's own kind rather than resetting it to the default.
@@ -186,6 +219,21 @@ class SliceDialog(QDialog):
         ):
             self._slot_fill.addItem(label, data)
         self._slot_fill.setCurrentIndex(max(0, self._slot_fill.findData(slot_fill)))
+
+        self._size_units: QSpinBox | None = None
+        self._size_note = QLabel()
+        if units is not None and content_kind in _SIZE_TIPS:
+            self._size_units = value_spin(
+                min(1, units),
+                max(MAX_COLUMNS * MAX_ROWS, units),
+                units,
+                self._refresh_size,
+            )
+            self._size_units.setToolTip(_SIZE_TIPS[content_kind])
+        self._size_row = _pinned(
+            *((self._size_units,) if self._size_units else ()), self._size_note
+        )
+        self._size_caption = SIZE_CAPTIONS.get(content_kind, "Size:")
 
         # The badge the codecs toolbar wears beside its own compression picker,
         # doing the same job here: a codec's inputs are as much a part of "how
@@ -248,14 +296,17 @@ class SliceDialog(QDialog):
         form.addRow("Compression:", codec_row)
         form.addRow("Inputs:", self._inputs)
         form.addRow("Spare room:", self._slot_fill_row)
+        form.addRow(self._size_caption, self._size_row)
         form.addRow(self._error)
         # Connected here rather than beside the other combo signals above,
         # because the row can only be shown or hidden once it is in a layout.
         self._form = form
         self._decompress.currentIndexChanged.connect(self._sync_slot_fill_row)
         self._decompress.currentIndexChanged.connect(self._sync_inputs_row)
+        self._decompress.currentIndexChanged.connect(self._refresh_size)
         self._sync_slot_fill_row()
         self._sync_inputs_row()
+        self._refresh_size()
         # QFormLayout builds the caption widgets itself, so copy each field's
         # tooltip onto its caption - hovering either half then answers the same.
         for field in (
@@ -266,6 +317,7 @@ class SliceDialog(QDialog):
             reshape_row,
             codec_row,
             self._slot_fill_row,
+            self._size_row,
         ):
             label = form.labelForField(field)
             if label is not None:
@@ -318,6 +370,62 @@ class SliceDialog(QDialog):
         self._form.setRowVisible(
             self._slot_fill_row, self._decompress.currentData() != NO_COMPRESSION
         )
+
+    def _byte_size(self, units: int) -> int | None:
+        """``units`` in unpacked bytes, or ``None`` where the codec would not say."""
+        if not self._codec_id:
+            return None
+        try:
+            return pipeline.blank_size(
+                self._content_kind, self._codec_id, units, self._registry
+            )
+        except PipelineError:
+            return None
+
+    def _refresh_size(self, *_args: object) -> None:
+        """Show the size row under a compression scheme, and say what it comes to.
+
+        Greyed rather than hidden when the scheme was changed here: the row is
+        still the right question, it just cannot be answered until the new
+        reading is applied.
+        """
+        spin = self._size_units
+        compressed = self._decompress.currentData() != NO_COMPRESSION
+        self._form.setRowVisible(self._size_row, spin is not None and compressed)
+        if spin is None or self._units_before is None:
+            return
+        if self._decompress.currentData() != self._compression_before:
+            spin.setEnabled(False)
+            self._size_note.setText("apply the new compression first")
+            return
+        size = self._byte_size(spin.value())
+        before = self._byte_size(self._units_before)
+        spin.setEnabled(size is not None)
+        if size is None or before is None:
+            self._size_note.setText("this format reports no size")
+        elif size == before:
+            self._size_note.setText(f"{size:,} bytes unpacked")
+        else:
+            self._size_note.setText(f"{size:,} bytes unpacked (now {before:,})")
+
+    def resize_units(self) -> int | None:
+        """The count to resize to, or ``None`` where no resize was asked for.
+
+        Compared in bytes, as the container dialog's row is, so a count that
+        works out to the length the slice already unpacks to asks for nothing.
+        """
+        spin = self._size_units
+        if (
+            spin is None
+            or not spin.isEnabled()
+            or self._decompress.currentData() == NO_COMPRESSION
+            or self._units_before is None
+        ):
+            return None
+        size = self._byte_size(spin.value())
+        if size is None or size == self._byte_size(self._units_before):
+            return None
+        return spin.value()
 
     def _refresh_placeholder(self) -> None:
         offset = parse_hex(self._offset.text())
@@ -401,6 +509,7 @@ class SliceDialog(QDialog):
             # so a QVariant round trip hands back a bare string that compares
             # equal to the member and fails every ``is`` test.
             SlotFill(self._slot_fill.currentData()),
+            self.resize_units(),
         )
         self.accept()
 
@@ -421,8 +530,15 @@ class SliceDialog(QDialog):
         choose_content: bool = False,
         inputs_hint: Callable[[str], str] | None = None,
         edit_inputs: Callable[[SliceDialog, str], None] | None = None,
+        units: int | None = None,
+        codec_id: str = "",
     ) -> SliceParams | None:
-        """Run the dialog modally; the validated parameters, or None on cancel."""
+        """Run the dialog modally; the validated parameters, or None on cancel.
+
+        ``units`` (with the ``codec_id`` that measures it) offers the Size row:
+        what a compressed slice unpacks to now. Its answer comes back as
+        :attr:`SliceParams.units`, ``None`` unless a different size was asked for.
+        """
         dialog = SliceDialog(
             registry,
             paths=paths,
@@ -437,6 +553,8 @@ class SliceDialog(QDialog):
             choose_content=choose_content,
             inputs_hint=inputs_hint,
             edit_inputs=edit_inputs,
+            units=units,
+            codec_id=codec_id,
             parent=parent,
         )
         dialog.exec()

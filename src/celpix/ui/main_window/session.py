@@ -1249,6 +1249,7 @@ class SessionMixin:
         self._sync_palette_export_action()  # no document, nothing to export
         self._sync_palette_mode_items()  # ...and only File left to load
         self._write_action.setEnabled(False)
+        self._reload_action.setEnabled(False)
         self._set_file_actions_enabled(False)
 
     def _set_document_ui_enabled(self, enabled: bool) -> None:

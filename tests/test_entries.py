@@ -1484,6 +1484,55 @@ def test_edit_slice_updates_coordinates_and_reloads(
     assert window._offset_text() == "000000"
 
 
+def test_edit_slice_resizes_a_compressed_slice_through_its_parent(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Growing a compressed slice re-packs it into its slot as an edit to the
+    parent: nothing reaches the disk until the parent is written, one undo
+    takes it back, and the write goes out through the parent like any other."""
+    from celpix.plugins.builtins.lz_command import compress, decompress
+    from celpix.ui.slice_dialog import SliceDialog, SliceParams
+
+    stream = compress(bytes(32 * 4), big_endian_offsets=True)
+    rom = tmp_path / "rom.bin"
+    image = bytearray(bytes([0x11]) * 0x800)
+    image[0x100 : 0x100 + len(stream)] = stream
+    rom.write_bytes(image)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+    # The slot runs past the stream, over room the bigger one can use.
+    cut = window._workspace.add_slice(
+        parent.path, "gfx", 0x100, 0x40, compression_id="compression.lz2"
+    )
+    window._activate_entry(cut)
+    assert window._doc.tile_count == 4
+
+    offered: dict = {}
+
+    def dialog(*_a, **kw):  # noqa: ANN202
+        offered.update(kw)
+        return SliceParams("gfx", 0x100, 0x40, "compression.lz2", units=9)
+
+    monkeypatch.setattr(SliceDialog, "get_slice", staticmethod(dialog))
+    window._edit_slice(cut)
+    assert offered["units"] == 4  # the row is seeded with what it unpacks to
+    assert window._doc is cut.doc and cut.doc.tile_count == 9
+    assert parent.pixel_dirty and rom.read_bytes() == bytes(image)
+
+    window._undo_stack.undo()
+    assert window._doc.tile_count == 4 and not parent.pixel_dirty
+    window._undo_stack.redo()
+    assert window._doc.tile_count == 9
+
+    assert window._write_entry(parent)
+    written = rom.read_bytes()
+    unpacked, _ = decompress(written[0x100:0x140], big_endian_offsets=True)
+    assert unpacked == bytes(32 * 9)
+    assert written[0x140:] == bytes(image[0x140:])  # nothing past the slot
+
+
 def test_edit_slice_keeps_the_view_across_the_re_read(
     qtbot, tmp_path, monkeypatch
 ) -> None:
@@ -3285,6 +3334,36 @@ def test_a_new_slice_can_be_carved_out_as_a_tilemap(qtbot, tmp_path) -> None:
         params.reshape_id,
         ContentKind.TILEMAP,
     )
+
+
+def test_the_slice_dialogs_size_row_asks_only_for_a_real_resize(
+    qtbot, tmp_path
+) -> None:
+    """The Size row asks for nothing unless the count changes to another byte
+    length, and cannot resize under a compression chosen in the same dialog —
+    the count was measured under the old one."""
+    from celpix.plugins.registry import default_registry
+    from celpix.ui.slice_dialog import SliceDialog
+
+    rom = _make_snes_file(tmp_path)
+    dialog = SliceDialog(
+        default_registry(),
+        paths=(str(rom),),
+        offset=0,
+        length=0x40,
+        compression_id="compression.lz2",
+        units=4,
+        codec_id="preset.pixel.snes-4bpp",
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.resize_units() is None  # opened on what it holds
+    dialog._size_units.setValue(9)
+    assert dialog.resize_units() == 9
+    dialog._decompress.setCurrentIndex(dialog._decompress.findData("compression.lz1"))
+    assert not dialog._size_units.isEnabled() and dialog.resize_units() is None
+    dialog._decompress.setCurrentIndex(dialog._decompress.findData("compression.lz2"))
+    dialog._validate_and_accept()
+    assert dialog._params.units == 9
 
 
 def test_a_project_plugins_cell_format_reaches_the_files_list(qtbot, tmp_path) -> None:

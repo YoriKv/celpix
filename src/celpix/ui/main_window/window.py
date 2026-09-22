@@ -93,6 +93,7 @@ from celpix.ui.main_window.cell_props_bar import CellPropsMixin
 from celpix.ui.main_window.clipboard_ops import ClipboardOpsMixin
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
+from celpix.ui.main_window.disk_watch import DiskWatchMixin
 from celpix.ui.main_window.entries import EntriesMixin
 from celpix.ui.main_window.entry_clipboard import EntryClipboardMixin
 from celpix.ui.main_window.font_alphabet import FontAlphabetMixin
@@ -195,6 +196,7 @@ class MainWindow(
     WritingMixin,
     TransferMixin,
     CompressionMixin,
+    DiskWatchMixin,
     QMainWindow,
 ):
     def __init__(
@@ -541,6 +543,9 @@ class MainWindow(
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
+        # Every file an entry reads is polled for a change made by another
+        # program, and offered as a reload (celpix.ui.main_window.disk_watch).
+        self._init_disk_watch()
         # A fresh window *is* the nothing-open state, so it is entered through
         # the same path a close lands on rather than being half-assembled here -
         # which is what puts the read-only default palette in the dock.
@@ -907,6 +912,8 @@ class MainWindow(
             # view-only graphic reading one still has something to save.
             or self._entry_palette_target() is not None
         )
+        # A composite has no file of its own; its pieces are reloaded from theirs.
+        self._reload_action.setEnabled(entry is not None and bool(entry.paths))
         self._sync_entry_scope()  # a veto that runs after every owner
 
     # The menu rows that act on **the entry** — the current one, or the file
@@ -921,6 +928,7 @@ class MainWindow(
         "_change_container_action",
         "_container_info_action",
         "_write_action",
+        "_reload_action",
         "_import_png_action",
         "_export_png_action",
         "_export_raw_action",
@@ -1382,6 +1390,20 @@ class MainWindow(
             tip="Write all unsaved files and slices",
             shortcut=QKeySequence("Ctrl+Shift+W"),
             enabled=False,  # armed by dirty entries
+        )
+        # Under Write, as its opposite direction. No mnemonic: every letter of
+        # "Reload From Disk" is taken in this menu ("R" by Open Recent, "d" by
+        # Open palette data, "l" by Write All, ...), and F5 is the plugin
+        # reload's. Armed with Write (:meth:`_sync_write_action`) — anything
+        # with a file behind it can be re-read from that file.
+        self._reload_action = make_action(
+            self,
+            "Reload From Disk",
+            self._reload_current_from_disk,
+            menu=file_menu,
+            tip="Re-read this entry's file as it is on disk now.\n"
+            "Unsaved changes made here are kept on top of it",
+            enabled=False,
         )
 
         file_menu.addSeparator()

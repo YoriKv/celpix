@@ -1357,6 +1357,11 @@ class InterpretationMixin:
     def _adopt_pixel_data(self, px: pipeline.PixelData, cfg: PathwayConfig) -> None:
         """Update the open document's pixel bytes + geometry from a fresh load."""
         assert self._doc is not None
+        # A load read the file, so its bytes are the new baseline; a
+        # reinterpretation kept the live buffer, edits and all, and the baseline
+        # those edits are measured against stays what it was.
+        if px.data is not self._doc.pixel_data:
+            self._doc.pixel_base_bytes = px.data
         self._doc.pixel_data = px.data
         self._doc.bytes_per_tile = px.bytes_per_tile
         self._doc.tile_width = px.tile_width

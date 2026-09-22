@@ -126,6 +126,37 @@ def confirmations(monkeypatch):
     return answer
 
 
+@pytest.fixture(autouse=True)
+def disk_reload_answer(monkeypatch):
+    """Answer the changed-on-disk prompt instead of showing it, for every test.
+
+    The same rule as ``confirmations``: an ``exec()`` modal, reached by the poll
+    or by an activation change, so a test that writes an open file from outside
+    and then spins the loop would otherwise wedge. Defaults to **Keep In
+    Memory**, the answer that changes nothing; a test wanting the reload assigns
+    to ``.reload``, and every offer is appended to ``.asked`` as
+    ``(paths, unsaved names)``.
+    """
+    module = sys.modules.get("celpix.ui.main_window")
+    if module is None:
+        return None
+
+    class Answer:
+        reload = False
+
+        def __init__(self):
+            self.asked: list[tuple[list[str], list[str]]] = []
+
+    answer = Answer()
+
+    def ask(_self, paths, unsaved):
+        answer.asked.append((list(paths), list(unsaved)))
+        return answer.reload
+
+    monkeypatch.setattr(module.MainWindow, "_ask_disk_reload", ask, raising=False)
+    return answer
+
+
 _settings_isolated = False
 
 

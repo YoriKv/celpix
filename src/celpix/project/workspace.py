@@ -452,6 +452,12 @@ class SliceParams:
     # same answer the dialog is already asking for: it means something only under
     # a compression scheme, so it belongs to the row that chooses one.
     slot_fill: SlotFill = DEFAULT_SLOT_FILL
+    # Not part of the re-point at all: the tiles (or cells) a compressed slice
+    # should unpack to, or ``None`` where no resize was asked for. Carried here
+    # because the dialog is where it is asked, and stripped before the pair
+    # reaches the undo command — a resize is an edit to the parent's bytes and
+    # goes on the stack as one (``docs/design/slices-and-parents.md`` §5).
+    units: int | None = None
 
 
 @dataclass

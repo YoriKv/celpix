@@ -593,6 +593,7 @@ def pixel_document(entry: Entry, px, cfg: PathwayConfig) -> Document:  # noqa: A
         pixel_config=cfg,
         palette_config=placeholder_palette_config(entry.session.palette_preset_id),
         pixel_ctx=px.ctx,
+        pixel_base_bytes=px.data,
         # A bank states where its own rows count from, and its per-tile table
         # counts from exactly there. Nothing in a preset can say it — it is a fact
         # about this file — so the declared answer is 0 and the header the only
@@ -639,6 +640,7 @@ def chained_document(
         tilemap_config=cfg,
         tilemap_ctx=loaded.ctx,
         tilemap_data=loaded.data,
+        tilemap_base_bytes=loaded.disk,
         cell_bytes=loaded.cell_bytes,
         cell_tiles=through.cell_tiles,
         cell_row_stride=through.cell_row_stride,
@@ -707,6 +709,7 @@ def tilemap_document(
         tilemap_config=(replace(cfg, write_enabled=False) if loaded.frames else cfg),
         tilemap_ctx=loaded.ctx,
         tilemap_data=loaded.data,
+        tilemap_base_bytes=loaded.disk,
         cell_bytes=loaded.cell_bytes,
         cell_tiles=cell_tiles,
         # The stride is the fixed-offset way of finding a cell's other tiles and a

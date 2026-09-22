@@ -428,6 +428,10 @@ class TileBytesMixin:
         # read from one of them has just as certainly moved
         # (``docs/design/palette-editing.md``).
         self._redecode_entry_palettes(touched)
+        # An edit to a file drops its slices' documents, and one of them can be
+        # the entry on screen: a compressed slice's resize lands in its parent
+        # while the slice is what is being looked at (``_resize_slice``).
+        self._refresh_stale_current()
         self._refresh_view()
 
     def _land_byte_edit(

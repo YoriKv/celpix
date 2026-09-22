@@ -322,6 +322,17 @@ class Document:
     # did not touch (docs/design/palette-editing.md §2).
     palette_base_bytes: bytes = b""
     palette_edits: set[int] = field(default_factory=set)
+    # ``pixel_data`` exactly as it was read, or as it was last written — what
+    # the file holds, as far as this document knows. The pixel pathway records
+    # no per-edit list the way the palette does, so "what did the user change"
+    # is answered by comparing the two, and that comparison is what carries
+    # unsaved edits across a reload of a file another program rewrote
+    # (:func:`~celpix.project.diskchanges.merge_bytes`). Costs nothing until the
+    # first edit: ``bytes`` is immutable, so this and ``pixel_data`` share one
+    # object until a splice replaces the latter. A tilemap's own bytes are
+    # ``tilemap_data``, so it keeps the same baseline for those instead.
+    pixel_base_bytes: bytes = b""
+    tilemap_base_bytes: bytes = b""
     # The palette row a **named** row 0 means, for every kind of document: a
     # cell's row, a subsprite's, and a pinned region's on a pixel bank
     # (:mod:`celpix.core.paletteregions`). Each of those is a small number
