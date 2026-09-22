@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.1 - unreleased
+## v1.1.1 - 2026-09-21
 
 - Improved pickers for composite view add source and palette entry source
 - "New Composite View" in the files panel right click menu, starting from the clicked row or selection
