@@ -76,6 +76,7 @@ class PalettePanel(ShortcutIsland, QWidget):
         self._colors: list[int] = []
         self._start = 0
         self._count = 16
+        self._range_shown = True
         self._selected: int | None = None
         self._marked_row: int | None = None
         # Eyedropper: while armed, a click samples a swatch's color instead of
@@ -136,11 +137,17 @@ class PalettePanel(ShortcutIsland, QWidget):
             self._selected = len(self._colors) - 1 if self._colors else None
         self._update_size()
 
-    def set_active_range(self, start: int, count: int) -> None:
-        """Outline entries [start, start+count) — the applied palette row."""
+    def set_active_range(self, start: int, count: int, *, shown: bool = True) -> None:
+        """Outline entries [start, start+count) — the applied palette row.
+
+        ``shown=False`` keeps the range (a click still reports its row) but draws
+        no outline: under a direct-colour format no pixel indexes a row, and a
+        ring would claim one is being drawn through.
+        """
         start, count = max(0, start), max(1, count)
-        if (start, count) != (self._start, self._count):  # skip repaint otherwise
-            self._start, self._count = start, count
+        state = (start, count, shown)
+        if state != (self._start, self._count, self._range_shown):  # skip repaint
+            self._start, self._count, self._range_shown = state
             self.update()
 
     def set_marked_row(self, row: int | None) -> None:
@@ -346,6 +353,8 @@ class PalettePanel(ShortcutIsland, QWidget):
         )
 
     def _paint_active_range(self, painter: QPainter) -> None:
+        if not self._range_shown:
+            return
         # Drawn even when the range lies past the loaded colors: a short palette
         # still shows where the active window sits.
         paint_selection_outline(painter, self._range_rect(self._start))

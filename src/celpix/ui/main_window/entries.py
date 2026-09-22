@@ -44,7 +44,6 @@ from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.pipeline import inspect_container
 from celpix.plugins.base import (
     NO_COMPRESSION,
-    PALETTE_PRESET_PARAM,
     STAGE_DEFAULT_PRESET,
     FileRef,
     InputKind,
@@ -62,13 +61,16 @@ from celpix.project.inputs import (
     with_bindings,
 )
 from celpix.project.workspace import (
+    CompositePiece,
     Entry,
     EntryKind,
     EntrySession,
     PaletteSource,
     SliceParams,
+    composite_format_for,
+    composite_layout,
     composite_preset_id,
-    interpret_params_for,
+    is_swatch_preset,
     missing_paths,
     new_composite,
     one_disk_scan,
@@ -1067,22 +1069,80 @@ class EntriesMixin:
         so it can be undone — and so the *same object* comes back on redo, which
         every piece of every other composite and every tilemap binding names.
         """
+        self._new_composite_from([])
+
+    def _new_composite_from(self, sources: list[Entry]) -> None:
+        """New Composite View with ``sources`` already listed, one whole run each.
+
+        The Files list's *New Composite View* on a row or a selection. A separate
+        method rather than a parameter on :meth:`_new_composite`, whose menu
+        action's ``triggered(bool)`` would otherwise land in it. The rows are
+        only a starting list — the dialog still offers every source and the user
+        can reorder or cut it before anything is created.
+        """
         entry = new_composite("")
+        entry.pieces = tuple(
+            self._measure_composite_piece(entry, CompositePiece(source))
+            for source in sources
+        )
+        # Starts on whatever its first source is read as, the same seed its
+        # format would take — a run of colour words shown as swatches is most
+        # likely the start of a colour table.
+        palette = self._composite_is_palette(entry)
+        tile_bytes, unit_label = self._composite_units(entry, palette)
         params = CompositeDialog.get_composite(
             self,
             entry=entry,
             candidates=list(self._workspace.entries),
-            tile_bytes=self._composite_tile_bytes(entry),
-            unit_label=self._composite_unit_label(entry),
+            tile_bytes=tile_bytes,
+            unit_label=unit_label,
             name=self._unused_composite_name(),
+            pieces=entry.pieces,
+            palette=palette,
+            units=lambda as_palette: self._composite_units(entry, as_palette),
+            measure=lambda piece: self._measure_composite_piece(entry, piece),
         )
         if params is None:
             return
         entry.name = params.name
         entry.pieces = params.pieces
+        # Settled before the add, so the row is filed in the right section on
+        # its first appearance rather than moved there on its first activation.
+        preset = composite_format_for(entry, self._registry, palette=params.palette)
+        if preset:
+            entry.session = replace(self._seed_session(entry), pixel_preset_id=preset)
         self._push_command(
             AddEntryCommand(self, entry, f'new composite "{entry.name}"')
         )
+
+    def _measure_composite_piece(
+        self, composite: Entry, piece: CompositePiece
+    ) -> CompositePiece:
+        """``piece`` carrying the size it will assemble to — for a run just added.
+
+        A new piece's ``measured`` is 0 until the composite is first assembled,
+        which is after the dialog closes; the dialog would list the run, and
+        every position after it, as if it held nothing. Assembling it alone as a
+        one-piece composite answers with the very rules the view applies —
+        resolved bytes, rounded up to a whole tile — rather than a second copy of
+        them. Settled first for the reason :meth:`_composite_layout` settles.
+
+        The tile it rounds to is ``composite``'s format where it has one, and
+        otherwise the seed the piece itself would give; a new composite has no
+        format until its first source decides it, and the real assembly
+        re-measures on load either way.
+        """
+        if piece.is_pad or piece.entry is None:
+            return piece
+        self._settle_region(piece.entry)
+        session = composite.session
+        preset = session.pixel_preset_id if session is not None else ""
+        probe = new_composite("", (piece,))
+        try:
+            layout = composite_layout(probe, self._registry, self._workspace, preset)
+        except PipelineError:
+            return piece
+        return layout.pieces[0]
 
     def _unused_composite_name(self) -> str:
         """``Composite``, ``Composite 2``, … — the first the list has not got.
@@ -1101,62 +1161,65 @@ class EntriesMixin:
             if f"Composite {n}" not in taken
         )
 
-    def _composite_tile_bytes(self, entry: Entry) -> int:
-        """One tile's size in the format ``entry`` is *read* at.
+    def _composite_preset(self, entry: Entry) -> str:
+        """The pixel format ``entry`` is read at — its session's, or the seed a
+        composite with no session yet is about to be given."""
+        session = entry.session
+        if session is not None:
+            return session.pixel_preset_id
+        return composite_preset_id(entry, self._registry)
 
-        The dialog states each run's position twice — as a byte and as a tile —
+    def _composite_is_palette(self, entry: Entry) -> bool:
+        """Whether ``entry`` reads as a colour table — the dialog's Palette."""
+        return is_swatch_preset(self._composite_preset(entry), self._registry)
+
+    def _composite_units(self, entry: Entry, palette: bool) -> tuple[int, str]:
+        """``(bytes per unit, unit name)`` for ``entry`` read as pixels or swatches.
+
+        The dialog states each run's position twice — as a byte and as a unit —
         and this is what converts between them. The entry's **own** format, not
         its first source's: those differ exactly where the feature is most used,
         since a tile window assembled from 4bpp banks is routinely read at 2bpp,
         and taking the source's would print a tile column off by a factor of two
-        against the view the user is checking it against.
+        against the view the user is checking it against. Asked of whichever
+        format the dialog's Pixel / Palette would switch it to, so flipping that
+        re-counts the column at once (:func:`composite_format_for`).
 
-        Falls back to the seed for an entry with no session yet, which is a
-        composite being created — it has no sources to disagree with either. A
-        format this build hasn't got costs the reader that one column rather than
-        the dialog.
+        The unit is a tile, except through the **palette-swatch** codec: there
+        one read unit is one colour word, the swatch it draws is what the user is
+        transcribing, and calling that a tile would name the wrong thing in the
+        one place the number is being checked against a colour table
+        (``docs/design/palette-editing.md``). A **packed** colour format is the
+        exception to the exception — a Game Boy palette byte is four shades in
+        one unit, which the swatch codec draws as one tile several swatches wide —
+        so the unit there really is a tile.
+
+        A format this build hasn't got costs the reader the byte count (0) rather
+        than the dialog.
         """
-        session = entry.session
-        preset = (
-            session.pixel_preset_id
-            if session is not None
-            else composite_preset_id(entry, self._registry)
-        )
+        preset = composite_format_for(
+            entry, self._registry, palette=palette
+        ) or self._composite_preset(entry)
         try:
-            return pipeline.pixel_tile_bytes(preset, self._registry)
-        except PipelineError:
-            return 0
-
-    def _composite_unit_label(self, entry: Entry) -> str:
-        """What the dialog's running-position column is counting.
-
-        Tiles, except where the entry is read through the **palette-swatch**
-        codec: there one read unit is one colour word, the swatch it draws is
-        what the user is transcribing, and calling that a tile would name the
-        wrong thing in the one place the number is being checked against a
-        colour table (``docs/design/palette-editing.md``).
-
-        A **packed** colour format is the exception to the exception — a Game Boy
-        palette byte is four shades in one unit, which the swatch codec draws as
-        one tile several swatches wide — so the unit there really is a tile and
-        the label stays.
-        """
+            tile_bytes = pipeline.pixel_tile_bytes(preset, self._registry)
+        except (PipelineError, KeyError):
+            tile_bytes = 0
+        if not palette:
+            return tile_bytes, "Tile"
+        # The colour format the swatches are read in: the entry's own, or the
+        # toolbar's for one with no session yet, which is what it will be seeded.
         session = entry.session
-        preset = (
-            session.pixel_preset_id
+        colour = (
+            session.palette_view_preset_id
             if session is not None
-            else composite_preset_id(entry, self._registry)
+            else self._palette_view_preset_id()
         )
-        params = interpret_params_for(entry, preset, self._registry)
-        colour = params.get(PALETTE_PRESET_PARAM)
-        if not isinstance(colour, str) or not colour:
-            return "Tile"
         try:
             if pipeline.palette_entries_per_unit(colour, self._registry) != 1:
-                return "Tile"
+                return tile_bytes, "Tile"
         except (PipelineError, KeyError):
-            return "Tile"
-        return "Color"
+            return tile_bytes, "Tile"
+        return tile_bytes, "Color"
 
     def _edit_composite(self, entry: Entry) -> None:
         """The files dock's Edit… on a composite — re-list its pieces in place.
@@ -1167,19 +1230,32 @@ class EntriesMixin:
         """
         if entry.kind is not EntryKind.COMPOSITE:
             return
-        before = CompositeParams(entry.name, entry.pieces)
+        palette = self._composite_is_palette(entry)
+        before = CompositeParams(
+            entry.name, entry.pieces, palette, self._composite_preset(entry)
+        )
+        tile_bytes, unit_label = self._composite_units(entry, palette)
         params = CompositeDialog.get_composite(
             self,
             entry=entry,
             candidates=list(self._workspace.entries),
-            tile_bytes=self._composite_tile_bytes(entry),
-            unit_label=self._composite_unit_label(entry),
+            tile_bytes=tile_bytes,
+            unit_label=unit_label,
             name=entry.name,
             pieces=entry.pieces,
+            palette=palette,
+            units=lambda as_palette: self._composite_units(entry, as_palette),
             title="Edit Composite View",
+            measure=lambda piece: self._measure_composite_piece(entry, piece),
         )
         if params is None or params == before:
             return  # cancelled, or OK'd unchanged - nothing to undo
+        # The exact format on both sides, so an undo of Pixel -> Palette puts
+        # back the depth the user had rather than re-guessing one.
+        params.pixel_preset_id = (
+            composite_format_for(entry, self._registry, palette=params.palette)
+            or before.pixel_preset_id
+        )
         self._push_command(
             CompositeEditCommand(self, entry, before=before, after=params)
         )
@@ -1196,7 +1272,7 @@ class EntriesMixin:
         """
         entry.name = params.name
         entry.pieces = params.pieces
-        self._rebuild_composite(entry)
+        self._rebuild_composite(entry, params.pixel_preset_id)
         self._reresolve_bound_art(self._maps_drawing_from([entry]))
         self._files_panel.refresh_entry(entry)
 

@@ -75,6 +75,7 @@ from celpix.project.workspace import (
     data_missing,
     entry_notices,
     entry_palette_path,
+    is_composable,
     palette_missing,
     section_kind,
 )
@@ -379,6 +380,7 @@ class FileListPanel(QWidget):
     copy_inputs_requested = Signal(object)  # Entry — its bindings to the clipboard
     paste_inputs_requested = Signal(object)  # list[Entry] — bindings onto these rows
     edit_composite_requested = Signal(object)  # Entry (a COMPOSITE) — re-list it
+    new_composite_requested = Signal(object)  # list[Entry] — assemble one from these
     jump_to_source_requested = Signal(object)  # Entry (a SLICE) — show it in its parent
     jump_to_bookmark_requested = Signal(object)  # Entry (a BOOKMARK) — apply + jump
     bookmark_as_palette_requested = Signal(object)  # Entry (BOOKMARK) — offset palette
@@ -902,6 +904,19 @@ class FileListPanel(QWidget):
             if moved is not None:
                 with signals_blocked(self._tree):  # a re-file is not a click
                     moved.setSelected(True)
+            # Out of Palettes, selecting a row opens it (_on_selection_changed).
+            # A row carried out still picked was only ever selected, and clicking
+            # it again changes no selection — so it would sit highlighted over a
+            # canvas showing something else, its menu offering it to that
+            # entry, until the user clicked away and back. Open it as the click
+            # would have.
+            selected = self.selected_entries()
+            if (
+                len(selected) == 1
+                and selected[0] is entry
+                and self.section_of(entry) is not ContentKind.PALETTE
+            ):
+                self.entry_activated.emit(entry)
         return True
 
     def set_registry(self, registry: Registry | None) -> None:
@@ -1673,6 +1688,54 @@ class FileListPanel(QWidget):
             ),
         )
 
+    def _add_use_as_palette_action(self, menu: QMenu, entry: Entry) -> None:
+        """Use as Palette, beside the row's own way of being used.
+
+        Every row whose bytes could be read as colours offers it, whatever kind
+        it is: a ROM's palette table is a file, a slice or a composite view
+        assembling several of them, and which of those it happens to be says
+        nothing about the answer (``docs/design/palette-editing.md``). Gated on
+        the same rule the palette dock's picker filters by, asked of the entry
+        on screen, since that is what the colours would be applied to.
+        """
+        if self._current is not None and can_supply_palette(self._current, entry):
+            self._entry_action(
+                menu, "Use &as Palette", self.use_entry_as_palette_requested.emit, entry
+            )
+
+    def _add_new_composite_action(
+        self, menu: QMenu, entry: Entry, acting: list[Entry]
+    ) -> QAction | None:
+        """New Composite View…, with the clicked row — or the selection — listed.
+
+        The File menu's row, started from here: the rows that could be a piece
+        open the dialog already listed, one whole run each in list order. On one
+        row it is offered only where that row could be a piece (a file or slice
+        of pixels), since anywhere else it would be the File menu's row with
+        nothing of the click in it. Over a selection it is always shown, and the
+        rows that could not be pieces are left out rather than making it go dead,
+        as Export does with the rows that hold no document.
+
+        **No mnemonic on a file's or a palette's row**, for the File menu's
+        reason: every letter of the label is spoken for there (``C`` by Container
+        Info). The other branches have ``C`` free.
+        """
+        sources = [e for e in acting if is_composable(e)]
+        if len(acting) == 1 and not sources:
+            return None
+        label = (
+            "New Composite View…"
+            if entry.kind in (EntryKind.FILE, EntryKind.PALETTE)
+            else "New &Composite View…"
+        )
+        return self._entry_action(
+            menu,
+            label,
+            self.new_composite_requested.emit,
+            sources,
+            enabled=bool(sources),
+        )
+
     def _add_order_actions(
         self, menu: QMenu, entry: Entry, moving: list[Entry]
     ) -> list[QAction]:
@@ -1838,8 +1901,18 @@ class FileListPanel(QWidget):
         # free (Write/Ctrl+W, Edit File Container/Ctrl+E). Each entry kind builds
         # its own menu below, so the letters only need to be unique per branch.
         menu = QMenu(self)
+        live: list[QAction] = []
         paste_inputs: QAction | None = None
+        new_composite: QAction | None = None
+        # Each branch runs in the same groups, top to bottom: the row's own use
+        # (open, jump, use as palette); what can be made from it (slices,
+        # bookmarks, a composite view); its settings, ending in the Write that
+        # commits them. Then the groups every kind shares: order, clipboard,
+        # import/export, the file on disk, and Remove. Separators are added
+        # freely — QMenu collapses a doubled or trailing one.
         if entry.kind is EntryKind.FILE:
+            self._add_use_as_palette_action(menu, entry)
+            menu.addSeparator()
             # Only files spawn slices and bookmarks (neither nests), so the
             # menu shows these on files alone. All but the plain dialog
             # additionally need the file on screen — the viewport, selection
@@ -1876,6 +1949,7 @@ class FileListPanel(QWidget):
                 entry,
                 enabled=sliceable,
             )
+            new_composite = self._add_new_composite_action(menu, entry, acting)
             menu.addSeparator()
             self._entry_action(menu, "Re&name…", self._begin_rename, entry)
             # Always offered, and needs no document: correcting the container is
@@ -1900,6 +1974,9 @@ class FileListPanel(QWidget):
             self._entry_action(
                 menu, "&Jump to Source", self.jump_to_source_requested.emit, entry
             )
+            self._add_use_as_palette_action(menu, entry)
+            menu.addSeparator()
+            new_composite = self._add_new_composite_action(menu, entry, acting)
             menu.addSeparator()
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
             self._entry_action(menu, "&Edit…", self.edit_slice_requested.emit, entry)
@@ -1921,7 +1998,11 @@ class FileListPanel(QWidget):
                 self._entry_action(
                     menu, "Open &Swatches", self.entry_activated.emit, entry
                 )
-                menu.addSeparator()
+            self._add_use_as_palette_action(menu, entry)
+            menu.addSeparator()
+            # Over a selection only: a composite is never a piece of another.
+            new_composite = self._add_new_composite_action(menu, entry, acting)
+            menu.addSeparator()
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
             self._entry_action(
                 menu, "&Edit…", self.edit_composite_requested.emit, entry
@@ -1933,6 +2014,8 @@ class FileListPanel(QWidget):
             self._entry_action(
                 menu, "&Use as Current Palette", self.use_palette_requested.emit, entry
             )
+            menu.addSeparator()
+            new_composite = self._add_new_composite_action(menu, entry, acting)
             menu.addSeparator()
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
             # Same override a file gets, over the containers that frame a palette:
@@ -1968,20 +2051,13 @@ class FileListPanel(QWidget):
                 menu, "&Use as Palette", self.bookmark_as_palette_requested.emit, entry
             )
             menu.addSeparator()
+            new_composite = self._add_new_composite_action(menu, entry, acting)
+            menu.addSeparator()
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
             menu.addSeparator()
-        # Every row whose bytes could be read as colours offers it, whatever kind
-        # it is: a ROM's palette table is a file, a slice or a composite view
-        # assembling several of them, and which of those it happens to be says
-        # nothing about the answer (``docs/design/palette-editing.md``). Gated on
-        # the same rule the palette dock's picker filters by, asked of the entry
-        # on screen, since that is what the colours would be applied to.
-        if self._current is not None and can_supply_palette(self._current, entry):
-            self._entry_action(
-                menu, "Use &as Palette", self.use_entry_as_palette_requested.emit, entry
-            )
-            menu.addSeparator()
-        live = self._add_order_actions(menu, entry, acting)
+        if new_composite is not None:
+            live.append(new_composite)
+        live += self._add_order_actions(menu, entry, acting)
         # Paste Inputs is the fourth row a multi-row selection leaves live: it
         # lands on every selected row, which is the whole reason it exists.
         if paste_inputs is not None:

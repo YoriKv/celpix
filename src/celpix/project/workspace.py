@@ -1490,11 +1490,23 @@ def section_kind(entry: Entry, registry: Registry | None = None) -> ContentKind:
         if session is not None
         else composite_preset_id(entry, registry)
     )
-    if not preset or not registry.has_preset(preset):
-        return entry.content_kind
-    if registry.preset(preset).engine_id != PALETTE_SWATCH_ENGINE:
+    if not is_swatch_preset(preset, registry):
         return entry.content_kind
     return ContentKind.PALETTE
+
+
+def is_swatch_preset(preset_id: str, registry: Registry) -> bool:
+    """Whether ``preset_id`` reads bytes through the **palette-swatch** engine.
+
+    Decided by the engine rather than the shipped preset's id, so a user's own
+    preset over the same engine counts too. A format this build hasn't got is
+    not one: nothing can be said about bytes read through it.
+    """
+    return (
+        bool(preset_id)
+        and registry.has_preset(preset_id)
+        and registry.preset(preset_id).engine_id == PALETTE_SWATCH_ENGINE
+    )
 
 
 #: What **by type** means, in the order the rows land: the picture first, then
@@ -2012,6 +2024,53 @@ def composite_preset_id(entry: Entry, registry: Registry) -> str:
     return STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
 
 
+#: The shipped palette-swatch preset — what a composite is switched to when it
+#: is made a colour table and nothing else names one.
+VIEW_AS_PALETTE_PRESET = "preset.pixel.view-as-palette"
+
+
+def composite_format_for(entry: Entry, registry: Registry, *, palette: bool) -> str:
+    """The pixel format ``entry`` would need to read as swatches — or as pixels.
+
+    A composite's **Pixel / Palette** choice is not a field of its own: it *is*
+    whether its format is over the palette-swatch engine, since that is what
+    every other question — its section in the Files list (:func:`section_kind`),
+    its unit, its bar — already asks. So the choice is carried out by picking a
+    format, and this is the one place that picks it.
+
+    Empty when the format ``entry`` reads at already answers ``palette``, so a
+    choice that changes nothing costs nothing — above all, not the depth a user
+    chose for a pixel composite. Otherwise a palette is the shipped swatch preset
+    (or any over the same engine, if a build has dropped it), and pixels are the
+    seed :func:`composite_preset_id` would give — unless that seed is itself a
+    source read as swatches, where the stage default stands in, because a
+    composite asked to be pixels must not come back as a colour table.
+    """
+    session = entry.session
+    current = (
+        session.pixel_preset_id
+        if session is not None
+        else composite_preset_id(entry, registry)
+    )
+    if is_swatch_preset(current, registry) == palette:
+        return ""
+    if palette:
+        if registry.has_preset(VIEW_AS_PALETTE_PRESET):
+            return VIEW_AS_PALETTE_PRESET
+        return next(
+            (
+                preset.id
+                for preset in registry.presets(Stage.INTERPRET_PIXEL)
+                if preset.engine_id == PALETTE_SWATCH_ENGINE
+            ),
+            "",
+        )
+    seed = composite_preset_id(entry, registry)
+    if is_swatch_preset(seed, registry):
+        return STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
+    return seed
+
+
 def can_compose(entry: Entry, candidate: Entry) -> bool:
     """Whether ``candidate`` is something ``entry`` could take a piece from.
 
@@ -2029,8 +2088,20 @@ def can_compose(entry: Entry, candidate: Entry) -> bool:
     and a tilemap's is a borrowed copy of somebody else's art rather than bytes
     of its own — assembling one would put a borrowed copy inside a composite.
     """
+    return candidate is not entry and is_composable(candidate)
+
+
+def is_composable(candidate: Entry) -> bool:
+    """The half of :func:`can_compose` that needs no composite to ask it.
+
+    For a question put before there is one — the Files list offering *New
+    Composite View* on a row or a selection has only the rows to go on — so the offer
+    and the dialog it opens answer by the same rule.
+    """
+    # ``has_document`` as well as the kind test: a bookmark inherits PIXELS by
+    # default, yet is a position with no buffer behind it.
     return (
-        candidate is not entry
+        candidate.kind.has_document
         and candidate.kind is not EntryKind.COMPOSITE
         and candidate.content_kind is ContentKind.PIXELS
     )

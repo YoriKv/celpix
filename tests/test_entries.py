@@ -613,7 +613,7 @@ def test_removing_a_multi_selection_asks_once_and_undoes_in_one_step(
 
 
 def test_a_multi_row_context_menu_leaves_only_the_set_actions_live(
-    qtbot, tmp_path, opened_menus
+    qtbot, tmp_path, opened_menus, monkeypatch
 ) -> None:
     # Every other row is about one entry, so it is greyed rather than dropped -
     # each is a thing the clicked row could do, just not while it is one of
@@ -633,11 +633,29 @@ def test_a_multi_row_context_menu_leaves_only_the_set_actions_live(
         if action.isEnabled() and not action.isSeparator()
     }
     assert live == {
+        "New Composite View…",
         "M&ove Up\tAlt+Up",
         "Move &Down\tAlt+Down",
         "E&xport",
         "&Remove 2 Entries",
     }
+    # New Composite View opens the dialog with the selection already listed,
+    # one whole run per row, in list order.
+    from celpix.ui.composite_dialog import CompositeDialog
+
+    asked: list[dict] = []
+    monkeypatch.setattr(
+        CompositeDialog,
+        "get_composite",
+        staticmethod(lambda *_a, **kw: asked.append(kw)),
+    )
+    next(
+        action
+        for action in opened_menus[-1].actions()
+        if action.text() == "New Composite View…"
+    ).trigger()
+    assert [p.entry for p in asked[0]["pieces"]] == [a, c]
+    assert [p.extent for p in asked[0]["pieces"]] == [32 * 8, 32 * 8]
     export = next(a.menu() for a in opened_menus[-1].actions() if a.text() == "E&xport")
     assert [a.text() for a in export.actions() if a.isEnabled()] == [
         "2 Entries as &PNGs…",
@@ -653,7 +671,7 @@ def test_a_multi_row_context_menu_leaves_only_the_set_actions_live(
         for action in opened_menus[-1].actions()
         if action.isEnabled() and not action.isSeparator()
     }
-    assert "Re&name…" in live and "&Remove" in live
+    assert {"Re&name…", "&Remove", "New Composite View…"} <= live
 
 
 def test_arrow_key_browsing_keeps_focus_on_file_list(qtbot, tmp_path) -> None:

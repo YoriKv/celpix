@@ -468,7 +468,10 @@ class PaletteRegionsMixin:
         unpin, a row base, or the pinned render toggled off under a still
         selection), and a sprite object's pick, which is a selection of its own.
         """
-        self._palette_panel.set_marked_row(self._selection_palette_row())
+        # No ring under a direct-colour format: its pixels name no row to mark.
+        self._palette_panel.set_marked_row(
+            None if self._is_direct_color() else self._selection_palette_row()
+        )
 
     def _selection_palette_row(self) -> int | None:
         """The palette row the selection draws through, when it names one itself.

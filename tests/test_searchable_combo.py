@@ -8,16 +8,22 @@ non-selectable heading current has to not.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QKeyEvent
+from PySide6.QtWidgets import QWidget
 
 from celpix.plugins.base import CATEGORIES, category_order
 from celpix.ui.searchable_combo import (
     SearchableComboBox,
     fill_grouped,
+    pick_from_list,
     plugin_rows,
     preset_rows,
 )
+
+# Captured at import, before conftest stubs it out for every test: the one test
+# below that means to run the real loop puts it back.
+_EXEC_POPUP = SearchableComboBox.exec_popup
 
 # Two categories and an ungrouped leader, which is the shape the compression
 # picker has: a pass-through that belongs to no machine, then the groups.
@@ -321,3 +327,31 @@ def test_preset_rows_sort_by_name_and_plugin_rows_keep_registration_order() -> N
         _Plugin("kos", "Kosinski", "Sega"),
     ]
     assert [row[2] for row in plugin_rows(plugins)] == ["lz1", "lz16", "lz2", "kos"]
+
+
+def test_pick_from_list_answers_the_row_picked_through_a_search(
+    qtbot, monkeypatch
+) -> None:
+    """The pick lands after the close has asked the wait to end — so what has to
+    hold is that the answer is still the searched-for row, not the dismissal."""
+    monkeypatch.setattr(SearchableComboBox, "exec_popup", _EXEC_POPUP)
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    names = ["alpha", "beta obj", "gamma obj"]
+
+    def pick() -> None:
+        host = next(c for c in parent.findChildren(SearchableComboBox) if c._popup)
+        host._search.setText("obj")
+        host._step_popup_row(1)  # past beta, the first match, onto gamma
+        host._activate_current()
+
+    QTimer.singleShot(0, pick)
+    assert pick_from_list(parent, names, QPoint(0, 0)) == 2
+
+    QTimer.singleShot(
+        0,
+        lambda: next(
+            c for c in parent.findChildren(SearchableComboBox) if c._popup
+        )._close_popup(),
+    )
+    assert pick_from_list(parent, names, QPoint(0, 0)) is None

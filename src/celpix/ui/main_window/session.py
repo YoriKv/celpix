@@ -769,7 +769,7 @@ class SessionMixin:
                 self._rebuild_composite(composite)
         return seen
 
-    def _rebuild_composite(self, composite: Entry) -> None:
+    def _rebuild_composite(self, composite: Entry, pixel_preset_id: str = "") -> None:
         """Drop ``composite``'s join and, when it is on screen, assemble it again.
 
         The one step both invalidations end in: a piece's bytes or presence
@@ -788,10 +788,24 @@ class SessionMixin:
         drop stashes (:meth:`~celpix.project.workspace.Workspace.drop_document`).
         A reload that fails keeps the document it had, so the entry and the
         window never disagree about what is on screen.
+
+        ``pixel_preset_id``, when given, is the format the entry is re-read at —
+        the composite dialog's Pixel / Palette choice. It is written over the
+        *captured* session, since capturing reads the pixel picker and would
+        otherwise put the old format straight back. A composite never opened
+        gets a session only where the format differs from the seed it would
+        start on anyway, so an unchanged one keeps following its first source.
         """
         current = composite is self._workspace.current
         if current:
             self._capture_session()
+        if pixel_preset_id:
+            if composite.session is not None:
+                composite.session.pixel_preset_id = pixel_preset_id
+            elif pixel_preset_id != composite_preset_id(composite, self._registry):
+                composite.session = replace(
+                    self._seed_session(composite), pixel_preset_id=pixel_preset_id
+                )
         previous = composite.doc
         self._workspace.drop_document(composite)
         if not current:

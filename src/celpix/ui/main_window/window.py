@@ -603,6 +603,7 @@ class MainWindow(
             lambda e: self._next_row(e, self._workspace.parent_of(e))
         )
         self._files_panel.edit_composite_requested.connect(self._edit_composite)
+        self._files_panel.new_composite_requested.connect(self._new_composite_from)
         self._files_panel.jump_to_source_requested.connect(self._jump_to_slice_source)
         self._files_panel.jump_to_bookmark_requested.connect(self._jump_to_bookmark)
         self._files_panel.bookmark_as_palette_requested.connect(

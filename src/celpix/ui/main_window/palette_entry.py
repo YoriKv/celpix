@@ -39,7 +39,6 @@ once it has an owner (:mod:`~celpix.ui.main_window.color_editing`).
 from __future__ import annotations
 
 from PySide6.QtGui import QCursor
-from PySide6.QtWidgets import QMenu
 
 from celpix.core.address import format_hex
 from celpix.core.document import Document
@@ -56,6 +55,7 @@ from celpix.project.workspace import (
     can_supply_palette,
     interpret_params_for,
 )
+from celpix.ui.searchable_combo import pick_from_list
 
 
 class PaletteEntryMixin:
@@ -112,25 +112,20 @@ class PaletteEntryMixin:
     def _pick_palette_entry(self) -> Entry | None:
         """Ask which open entry to read the palette from; ``None`` on cancel.
 
-        A popup of the eligible rows, which is the gesture the composite dialog's
-        *Add source* already is: the answer is one row out of the list that is on
-        screen anyway, so a dialog would be a second, worse copy of the Files
-        pane. An entry that cannot supply bytes is simply absent rather than
+        A searchable popup of the eligible rows at the cursor, the same picker
+        as the composite dialog's *Add source*: the answer is one row out of the
+        list that is on screen anyway, so a dialog would be a second, worse copy
+        of the Files pane — and a project can hold hundreds, which is why it
+        searches. An entry that cannot supply bytes is simply absent rather than
         greyed, because the reason it cannot (it is a map, a palette, this entry
         itself) is a property of that entry rather than anything fixable here.
         """
         candidates = self._palette_entry_candidates(self._workspace.current)
-        menu = QMenu(self)
         if not candidates:
-            action = menu.addAction("No other pixel entries are open")
-            action.setEnabled(False)
-            menu.exec(QCursor.pos())
+            self.statusBar().showMessage("No other pixel entries are open.")
             return None
-        picked: list[Entry] = []
-        for candidate in candidates:
-            menu.addAction(candidate.name, lambda e=candidate: picked.append(e))
-        menu.exec(QCursor.pos())
-        return picked[0] if picked else None
+        row = pick_from_list(self, [c.name for c in candidates], QCursor.pos())
+        return candidates[row] if row is not None else None
 
     def _seed_palette_format_from(self, source: Entry) -> str:
         """The colour format a freshly picked ``source`` suggests.

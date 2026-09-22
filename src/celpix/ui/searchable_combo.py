@@ -27,8 +27,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from typing import cast
 
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt
-from PySide6.QtGui import QKeyEvent, QStandardItem, QStandardItemModel
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QGuiApplication, QKeyEvent, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -99,6 +99,10 @@ class SearchableComboBox(CompactComboBox):
     away. Clicking outside dismisses it, as it would Qt's own.
     """
 
+    # The search popup went away, by a pick or not — what :meth:`exec_popup`
+    # waits on, since a dismissal fires no ``activated`` to wake it.
+    popup_closed = Signal()
+
     def __init__(self, width: int, parent: QWidget | None = None) -> None:
         super().__init__(width, parent)
         self._popup: QFrame | None = None
@@ -162,9 +166,43 @@ class SearchableComboBox(CompactComboBox):
         if not self._has_headings and self.count() < SEARCH_THRESHOLD:
             super().showPopup()
             return
+        self._open_search_popup(self._anchor_rect())
+
+    def exec_popup(self, at: QPoint) -> int:
+        """Open the search popup at the global point ``at`` and wait for it.
+
+        The chosen row, or -1 when it was dismissed. For a picker with no combo
+        on screen to hang it from — see :func:`pick_from_list` — so it is always
+        the search popup, whatever the item count: Qt's own needs the widget
+        shown to open at all.
+        """
+        chosen = -1
+
+        def on_activated(row: int) -> None:
+            nonlocal chosen
+            chosen = row
+
+        loop = QEventLoop()
+        self.activated.connect(on_activated)
+        self.popup_closed.connect(loop.quit)
+        self._open_search_popup(QRect(at, QSize(1, 1)))
+        # The pick emits ``activated`` after the close has asked the loop to
+        # quit, but before control gets back to it, so ``chosen`` is set by the
+        # time exec returns.
+        if self._popup is not None:
+            loop.exec()
+        self.popup_closed.disconnect(loop.quit)
+        self.activated.disconnect(on_activated)
+        return chosen
+
+    def _anchor_rect(self) -> QRect:
+        """The combo's own rectangle, in global coordinates."""
+        return QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
+
+    def _open_search_popup(self, anchor: QRect) -> None:
         self._build_popup()
         self._rebuild("")
-        self._place_popup()
+        self._place_popup(anchor)
         assert self._popup is not None and self._search is not None
         self._popup.show()
         self._search.setFocus(Qt.FocusReason.PopupFocusReason)
@@ -217,6 +255,7 @@ class SearchableComboBox(CompactComboBox):
             popup.removeEventFilter(self)
             popup.hide()
             popup.deleteLater()
+            self.popup_closed.emit()
 
     def _rebuild(self, text: str) -> None:
         """Refill the popup's list for the current search text.
@@ -332,8 +371,10 @@ class SearchableComboBox(CompactComboBox):
         y = bottom - height + 1 if self._flipped_above else popup.y()
         popup.setGeometry(popup.x(), y, popup.width(), height)
 
-    def _place_popup(self) -> None:
-        """Size the popup to its content and put it under (or over) the combo."""
+    def _place_popup(self, anchor: QRect) -> None:
+        """Size the popup to its content and put it under (or over) ``anchor``,
+        a global rectangle — the combo's own, or the point :meth:`exec_popup`
+        was opened at."""
         popup, view = self._popup, self._list
         if popup is None or view is None:
             return
@@ -341,17 +382,21 @@ class SearchableComboBox(CompactComboBox):
         # (CompactComboBox), so the popup is widened back to the content — the
         # same trade Qt's own popup gets there, for the same reason.
         width = max(
-            self.width(),
+            anchor.width(),
             view.sizeHintForColumn(0) + view.verticalScrollBar().sizeHint().width() + 8,
         )
         popup.resize(width, popup.sizeHint().height())
-        below = self.mapToGlobal(self.rect().bottomLeft())
-        screen = self.screen().availableGeometry()
+        below = anchor.bottomLeft()
+        # Asked of the point rather than of the combo, which exec_popup's never
+        # shows and so has no screen of its own worth trusting.
+        screen = (
+            QGuiApplication.screenAt(anchor.center()) or self.screen()
+        ).availableGeometry()
         x = max(screen.left(), min(below.x(), screen.right() - popup.width() + 1))
         y = below.y()
         self._flipped_above = False
         if y + popup.height() > screen.bottom():
-            above = self.mapToGlobal(self.rect().topLeft()).y() - popup.height()
+            above = anchor.top() - popup.height()
             if above >= screen.top():
                 y, self._flipped_above = above, True
             else:
@@ -422,6 +467,26 @@ class SearchableComboBox(CompactComboBox):
         # the user moving on — ``focus_lost`` means the latter, and the pixel
         # picker ends a format-cycling run on it.
         return self._popup is None and super()._is_real_focus_loss(event)
+
+
+def pick_from_list(parent: QWidget, labels: Sequence[str], at: QPoint) -> int | None:
+    """Offer ``labels`` in a search popup at the global point ``at``; the index
+    picked, or ``None`` on a dismissal.
+
+    The searchable replacement for a ``QMenu`` of choices: a menu of a mapped
+    ROM's entries runs the height of the screen with no way to type a name.
+    A combo is built to host the popup and never shown, so the search, the
+    keyboard handling and the sizing are the format pickers' own.
+    """
+    host = SearchableComboBox(0, parent)
+    host.hide()
+    host.addItems(list(labels))
+    host.setCurrentIndex(-1)
+    try:
+        row = host.exec_popup(at)
+    finally:
+        host.deleteLater()
+    return row if row >= 0 else None
 
 
 # "no selection asked for", distinct from a selection *of* ``None`` — which the

@@ -317,6 +317,24 @@ def _composite_dialog_never_blocks(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _search_popup_never_blocks(monkeypatch):
+    """Make a searchable picker's ``exec_popup()`` return a dismissal.
+
+    Reachable by choosing Entry as the palette mode, which asks for a source
+    through :func:`~celpix.ui.searchable_combo.pick_from_list`; its local event
+    loop never ends offscreen, where nobody clicks. -1 reads as a cancel, as a
+    recorded menu's no-pick did. Guarded like :func:`captured_alerts` so
+    headless suites stay Qt-free.
+    """
+    module = sys.modules.get("celpix.ui.searchable_combo")
+    if module is None:
+        return
+    monkeypatch.setattr(
+        module.SearchableComboBox, "exec_popup", lambda self, _at: -1, raising=False
+    )
+
+
+@pytest.fixture(autouse=True)
 def opened_menus(monkeypatch):
     """Record context menus instead of popping them up, for every test.
 

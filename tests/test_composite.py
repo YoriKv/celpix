@@ -569,6 +569,17 @@ def test_the_dialog_lays_out_the_index_space_and_refuses_a_composite(
     assert "11 tiles" in dialog._total.text()
     # The composite itself is not on offer, and neither would another composite be.
     assert [e.name for e in dialog._candidates] == ["a.chr", "b.chr"]
+    # The Add source picker is an action: a pick appends that entry and the
+    # picker drops back to its placeholder, so the same one can be added again.
+    picker = dialog._add_source
+    assert [picker.itemText(i) for i in range(picker.count())] == ["a.chr", "b.chr"]
+    assert picker.currentIndex() == -1
+    picker.activated.emit(1)
+    assert dialog._items()[-1].text(2) == "b.chr"
+    assert picker.currentIndex() == -1
+    dialog._list.setCurrentItem(dialog._items()[-1])
+    dialog._remove_selected()
+    rows = dialog._items()
 
     # Removing the pad closes the gap, which is the whole point of the column.
     dialog._list.setCurrentItem(rows[1])
@@ -806,6 +817,72 @@ def test_editing_the_list_rebuilds_the_composite_and_its_maps(qtbot, tmp_path) -
         )
     )
     assert composite.doc.pixel_data == b""
+
+
+def test_the_dialogs_palette_choice_refiles_and_undoes_to_the_exact_depth(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Pixel / Palette in Edit… is carried out as a format switch: Palette reads
+    the join through the swatch codec, which files the row with the palettes.
+    Undo has to put back the depth the user had chosen — 2bpp here, which is
+    not the seed a fresh guess would land on."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import VIEW_AS_PALETTE_PRESET
+    from celpix.ui.composite_dialog import CompositeDialog, CompositeParams
+
+    window, _first, _second, composite = _window_with_composite(qtbot, tmp_path)
+    window._rebuild_composite(composite, "preset.pixel.snes-2bpp")
+    panel = window._files_panel
+    panel.add_entry(composite)  # the helper lists it in the workspace only
+    assert window._pixel_preset_id() == "preset.pixel.snes-2bpp"
+
+    asked: list[dict] = []
+
+    def answer(*_args, **kw):
+        asked.append(kw)
+        return CompositeParams(kw["name"], kw["pieces"], palette=True)
+
+    monkeypatch.setattr(CompositeDialog, "get_composite", staticmethod(answer))
+    window._edit_composite(composite)
+
+    assert asked[0]["palette"] is False
+    assert asked[0]["units"](True)[1] == "Color"
+    assert window._pixel_preset_id() == VIEW_AS_PALETTE_PRESET
+    palettes = panel._sections[ContentKind.PALETTE]
+    assert panel._items[composite].parent() is palettes
+
+    window._undo_stack.undo()
+    assert window._pixel_preset_id() == "preset.pixel.snes-2bpp"
+    assert panel._items[composite].parent() is not palettes
+
+
+def test_a_composite_edited_out_of_palettes_while_picked_opens(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A row under Palettes is selected by a click, never opened. Edited to
+    Pixel it moves to a section where selecting *is* opening — and a click on a
+    row already selected selects nothing new, so it sat picked over a canvas
+    showing another entry, its menu offering it as that entry's palette, until
+    the user clicked away and back."""
+    from celpix.project.workspace import VIEW_AS_PALETTE_PRESET
+    from celpix.ui.composite_dialog import CompositeDialog, CompositeParams
+
+    window, first, _second, composite = _window_with_composite(qtbot, tmp_path)
+    panel = window._files_panel
+    panel.add_entry(composite)
+    window._rebuild_composite(composite, VIEW_AS_PALETTE_PRESET)
+    window._activate_entry(first)
+    panel._tree.setCurrentItem(panel._items[composite])  # the click: picked only
+    assert window._workspace.current is first
+
+    monkeypatch.setattr(
+        CompositeDialog,
+        "get_composite",
+        staticmethod(lambda *_a, **kw: CompositeParams(kw["name"], kw["pieces"])),
+    )
+    window._edit_composite(composite)
+
+    assert window._workspace.current is composite
 
 
 def test_rebuilding_a_composite_keeps_its_view(qtbot, tmp_path) -> None:

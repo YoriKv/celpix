@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.1.1 - unreleased
+
+- Improved pickers for composite view add source and palette entry source
+- "New Composite View" in the files panel right click menu, starting from the clicked row or selection
+- Files panel right click menu reorganized
+- Various other composite view fixes
+
 ## v1.1.0 - 2026-09-21
 
 - Composite views can now be used as a palette

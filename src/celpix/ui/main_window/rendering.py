@@ -47,6 +47,7 @@ from celpix.ui.main_window.interpretation import (
     COLS_STAMPS_TIP,
     COLS_TIP,
     PALETTE_ROW_CELLS_TIP,
+    PALETTE_ROW_DIRECT_TIP,
     PALETTE_ROW_TIP,
 )
 from celpix.ui.undo_commands import ViewAxisCommand, ViewAxisState
@@ -856,10 +857,18 @@ class RenderingMixin:
         the content kind — two tilemaps can answer differently.
         """
         assert self._doc is not None
+        # A direct-colour format stores colours rather than indices, so there
+        # is no row for anything to draw through or be assigned: greyed, not
+        # hidden, so the bar keeps its shape as the pixel format changes.
+        direct = self._is_direct_color()
         view_row = not (self._doc.is_tilemap and self._doc.cells_carry_palette_rows)
-        tip = PALETTE_ROW_TIP if view_row else PALETTE_ROW_CELLS_TIP
+        if direct:
+            tip = PALETTE_ROW_DIRECT_TIP
+        else:
+            tip = PALETTE_ROW_TIP if view_row else PALETTE_ROW_CELLS_TIP
         for widget in (self._palette_row, self._palette_row_label):
             widget.setToolTip(tip)
+            widget.setEnabled(not direct)
 
     def _render_rearranged(self, layout: BlockLayout, rows: int):
         """Render the window when a rearrangement is in force.
@@ -1157,7 +1166,9 @@ class RenderingMixin:
         # and it is shown or hidden by the same document that sizes them.
         self._sync_row_base()
         self._palette_panel.set_colors(palette.colors)
-        self._palette_panel.set_active_range(self._palette_row.value() * group, group)
+        self._palette_panel.set_active_range(
+            self._palette_row.value() * group, group, shown=not self._is_direct_color()
+        )
         # After the range, which sizes the mark: the panel counts a pinned row in
         # whole palette rows of the same index space. Here as well as on the
         # selection path because pinning, unpinning and hiding the pinned render

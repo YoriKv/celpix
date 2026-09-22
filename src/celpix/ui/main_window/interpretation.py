@@ -122,6 +122,11 @@ PALETTE_ROW_CELLS_TIP = (
     "This map draws through its cells' own rows; Palette >\n"
     "Set Selection's Palette Row writes this one into them"
 )
+# And under a direct-colour format, where pixels are colours and no row is read.
+PALETTE_ROW_DIRECT_TIP = (
+    "Which range of palette entries tiles index into\n"
+    "This pixel format stores colours, not palette indices"
+)
 
 # The Cols control's tooltip, and what it reads while a paged tilemap's assembly
 # owns the width (see MainWindow._settle_tilemap_width). Locked rather than

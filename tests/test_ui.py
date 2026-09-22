@@ -970,6 +970,9 @@ def test_view_as_palette_swaps_the_compression_group_for_a_color_format(
     assert not window._compression_action.isVisible()
     assert window._palette_view_action.isVisible()
     assert not window._scan_button.isEnabled()
+    # Swatches are colours, not indices: nothing reads a palette row.
+    assert not window._palette_row.isEnabled()
+    assert not window._row_base.isEnabled()
     # Bytes 0..1 = 0x0E01 in BGR555 -> r=1, g=16, b=3, replicated to 8 bits.
     assert window._window_grid().get(0, 0) == 0xFF088418
 
@@ -989,6 +992,7 @@ def test_view_as_palette_swaps_the_compression_group_for_a_color_format(
     # Back to tiles: the groups swap back and the format waits for next time.
     combo.setCurrentIndex(combo.findData("preset.pixel.snes-4bpp"))
     assert window._doc.bytes_per_tile == 32
+    assert window._palette_row.isEnabled() and window._row_base.isEnabled()
     assert window._compression_action.isVisible()
     assert not window._palette_view_action.isVisible()
     window._capture_session()

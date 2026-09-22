@@ -67,6 +67,19 @@ _SOURCE_SLOT_MIN_WIDTH = 58
 # margin. One number for all of it, so a row added or moved can't land on a
 # different rhythm than its neighbours.
 _ROW_GAP = 4
+_ROW_BASE_TIP = (
+    "Which palette row a named row 0 draws through\n"
+    "A map's cells, a sprite's parts and a bank's pinned\n"
+    "rows all count from here; the file says where it can\n"
+    "Palette > Wrap Palette Rows decides what happens\n"
+    "to a row this pushes off the end"
+)
+# The same control under a direct-colour format, where no row is ever named.
+_ROW_BASE_DIRECT_TIP = (
+    "Which palette row a named row 0 draws through\n"
+    "This pixel format stores colours, not palette indices"
+)
+
 # Horizontal inset for each row, matching the swatch grid's own left edge.
 _ROW_MARGIN = 4
 
@@ -246,11 +259,7 @@ class PaletteDockMixin:
             row_base_row,
             "Base Palette Row:",
             self._row_base,
-            "Which palette row a named row 0 draws through\n"
-            "A map's cells, a sprite's parts and a bank's pinned\n"
-            "rows all count from here; the file says where it can\n"
-            "Palette > Wrap Palette Rows decides what happens\n"
-            "to a row this pushes off the end",
+            _ROW_BASE_TIP,
         )
         row_base_row.addStretch(1)
 
@@ -470,7 +479,9 @@ class PaletteDockMixin:
         (:meth:`~...rendering.RenderingMixin._sync_palette_row`). Shown on every
         pixel entry, whose pinned rows count from it whether or not any are
         pinned yet; hidden with no document at all, a palette shown on its own
-        having nothing to be a base *for*.
+        having nothing to be a base *for*. Greyed under a direct-colour format,
+        whose pixels are colours and name no row — the same answer Palette Row
+        gives there (:meth:`~...rendering.RenderingMixin._sync_palette_row`).
         """
         doc = self._doc
         shown = doc is not None and (not doc.is_tilemap or doc.cells_carry_palette_rows)
@@ -478,6 +489,11 @@ class PaletteDockMixin:
         self._row_base.setVisible(shown)
         if doc is None:
             return
+        direct = self._is_direct_color()
+        tip = _ROW_BASE_DIRECT_TIP if direct else _ROW_BASE_TIP
+        for widget in (self._row_base, self._row_base_label):
+            widget.setToolTip(tip)
+            widget.setEnabled(not direct)
         with signals_blocked(self._row_base):
             self._row_base.setValue(doc.palette_row_base)
 
