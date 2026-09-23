@@ -332,8 +332,8 @@ def _target(ctx: Context, view: EntryView, at: object, pointer: str) -> None:
             "does not resolve",
             pointer=pointer,
             entry=view,
-            detail="Only a file, slice or composite view holding pixels can be read "
-            "from; a palette, a bookmark or a dropped entry cannot.",
+            detail="Only a file, slice, palette or composite view holding pixels "
+            "can be read from; a bookmark or a dropped entry cannot.",
         )
         return
     if target.content_kind != "pixels":

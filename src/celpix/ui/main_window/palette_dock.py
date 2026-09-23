@@ -588,10 +588,11 @@ class PaletteDockMixin:
     def _refresh_palette_file_label(self) -> None:
         """Point the dock's file label at the palette's external source.
 
-        Only the file/emulator modes have one. A degraded source (mode kept,
-        file gone - see ``Entry.missing_palette``) still names its intended
-        file, marked missing; otherwise the path is read off the live config -
-        or off the previewed entry, which has no document behind it.
+        The file/emulator modes name a file; Entry mode names the row of the
+        project it reads, since that may have no path. A degraded source (mode
+        kept, file gone - see ``Entry.missing_palette``) still names its
+        intended file, marked missing; otherwise the path is read off the live
+        config.
         """
         entry = self._workspace.current
         if self._palette_mode is PaletteMode.ENTRY and entry is not None:

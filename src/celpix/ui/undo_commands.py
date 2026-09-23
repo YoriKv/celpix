@@ -889,11 +889,14 @@ class PaletteCommand(_CurrentEntryCommand):
 class ColorEditCommand(QUndoCommand):
     """One palette entry's color changing, as a before/after ARGB pair.
 
-    ``owner`` is the entry whose palette dirt this edit belongs to, and ``doc`` the
-    document that holds the palette: for a *file* palette that is the PALETTE entry
-    and its own document (the graphic only mirrors it); for offset/custom it is the
-    graphic itself. Capturing both keeps the edit anchored to the palette it changed
-    even after the view moves to a different graphic sharing (or not sharing) it.
+    ``owner`` is the entry whose palette dirt this edit belongs to, and its
+    document holds the palette: for a *file* palette that is the PALETTE entry
+    (the graphic only mirrors it); for offset/custom it is the graphic itself.
+    Anchoring on the entry keeps the edit on the palette it changed after the view
+    moves to a different graphic sharing (or not sharing) it. The **document** is
+    read off the owner when the command applies, never captured: a disk reload
+    replaces an entry's document, and a captured one would take the undo onto a
+    palette nothing shows while the owner's bytes moved without it.
 
     Only the edited entry is captured, not the whole palette: consecutive edits to
     the *same* entry in the *same editor gesture* merge, so dragging a channel
@@ -910,7 +913,6 @@ class ColorEditCommand(QUndoCommand):
         self,
         window: MainWindow,
         owner: Entry,
-        doc: Document,
         index: int,
         *,
         before: int,
@@ -925,7 +927,6 @@ class ColorEditCommand(QUndoCommand):
         self._gesture = gesture
         self._window = window
         self._owner = owner
-        self._doc = doc
         self._index = index
         self._before = before
         self._after = after
@@ -959,7 +960,6 @@ class ColorEditCommand(QUndoCommand):
         if (
             not isinstance(other, ColorEditCommand)
             or other._owner is not self._owner
-            or other._doc is not self._doc
             or other._index != self._index
             or other._pixel_owner is not self._pixel_owner
             or self._gesture is None
@@ -995,12 +995,13 @@ class ColorEditCommand(QUndoCommand):
             # opened, so it applies without switching the view; a graphic-owned
             # edit first returns to the graphic it happened on, as every
             # document-scoped command does.
-            if self._owner.kind is EntryKind.PALETTE or self._window._ensure_current(
-                self._owner
-            ):
+            if (
+                self._owner.kind is EntryKind.PALETTE
+                or self._window._ensure_current(self._owner)
+            ) and (doc := self._owner.doc) is not None:
                 self._window._apply_color_edit(
                     self._owner,
-                    self._doc,
+                    doc,
                     self._index,
                     argb,
                     revision,

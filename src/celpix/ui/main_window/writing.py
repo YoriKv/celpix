@@ -28,6 +28,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from celpix.core.context import KEY_SOURCE_OFFSET
+from celpix.core.document import Document
 from celpix.core.errors import PipelineError
 from celpix.pipeline import pipeline
 from celpix.project.workspace import Entry, EntryKind
@@ -389,11 +390,50 @@ class WritingMixin:
         touched = list(entry.paths)
         if entry.doc.palette_config.write_enabled:
             touched += entry.doc.palette_config.source.paths
+        held = {
+            e: e.doc
+            for e in self._workspace.entries
+            if e.kind is EntryKind.PALETTE and e is not entry and e.doc is not None
+        }
         for path in touched:
             self._workspace.invalidate_path(path, keep=entry)
         self._note_written(touched)
         self._refresh_stale_current()
+        self._reload_mirrored_palettes(held)
         return True
+
+    def _reload_mirrored_palettes(self, held: dict[Entry, Document]) -> None:
+        """Re-read each palette file a write just dropped, if anything shows it.
+
+        ``held`` maps each palette entry to the document it had before the
+        write; one whose document is gone, or was replaced by the current
+        entry's re-read, is decoded afresh and mirrored.
+
+        A palette file's colours live only in its own document; every File-mode
+        graphic rendering it holds them by reference and the dock edits them
+        there. Dropped and left unloaded, the graphics would keep the stale
+        colours with nothing behind them, and a dock edit would land on the
+        graphic's write-disabled mirror — dirtying a palette that Write skips
+        for want of a document. Nothing else reloads it: only the current entry
+        is re-read after a write, and a graphic links its palette on first load.
+        One nobody renders stays dropped and loads when it is next needed.
+        """
+        reread = [
+            pal
+            for pal, doc in held.items()
+            if pal.doc is not None and pal.doc is not doc
+        ]
+        reread += [
+            pal
+            for pal in held
+            if pal.doc is None
+            and self._workspace.palette_render_targets(pal.path)
+            and self._load_palette_entry(pal, quiet=True)
+        ]
+        for pal in reread:
+            self._mirror_palette(pal)
+        if reread:
+            self._refresh_palette_dock()
 
     def _fold_slice_edits_into(
         self, parent: Entry, also: Entry | None = None

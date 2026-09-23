@@ -82,7 +82,7 @@ from celpix.project.workspace import (
     repair_presets,
     retarget_files,
     slice_of,
-    swatch_session_for,
+    swatch_session,
     tilemap_config_for,
 )
 from celpix.ui.composite_dialog import CompositeDialog, CompositeParams
@@ -888,18 +888,21 @@ class EntriesMixin:
         parent = self._workspace.parent_of(slice_entry)
         if parent is None:
             return
-        if parent.kind is EntryKind.PALETTE and parent.session is None:
-            # A registered palette nobody has opened has no session to copy,
-            # but the one it will open on is known: swatches, in its own colour
-            # format — which is what a run cut out of it has to read as too.
-            swatch_session_for(parent, self._registry, self._palette_preset_id())
-        if parent.session is None:
-            return
         # The current entry's session snapshot lags the live toolbar until a
         # switch captures it; freshen it so we copy what's actually on screen.
         if parent is self._workspace.current:
             self._capture_session()
         src = parent.session
+        if src is None and parent.kind is EntryKind.PALETTE:
+            # A registered palette nobody has opened has no session to copy,
+            # but the one it will open on is known: swatches, in its own colour
+            # format — which is what a run cut out of it has to read as too.
+            # Asked for without being installed, since a palette's session is
+            # saved with the project: carving a slice must not rewrite its
+            # parent.
+            src = swatch_session(parent, self._registry, self._palette_preset_id())
+        if src is None:
+            return
         slice_entry.session = EntrySession(
             pixel_preset_id=src.pixel_preset_id,
             palette_preset_id=src.palette_preset_id,
@@ -1643,6 +1646,11 @@ class EntriesMixin:
         if entry.kind not in (EntryKind.FILE, EntryKind.PALETTE):
             return
         codec_id = self._entry_codec_id(entry)
+        # No reshape for a palette: the palette half of a palette document (the
+        # colours the dock and every File-mode graphic read) takes the file
+        # without one, so a reshape here would reorder the swatches alone and
+        # leave the two halves describing different byte orders of one file.
+        palette = entry.kind is EntryKind.PALETTE
         edit = ContainerDialog.edit_container(
             self,
             self._registry,
@@ -1652,9 +1660,12 @@ class EntriesMixin:
             kind=file_kind(entry),
             codec_id=codec_id,
             units=self._entry_units(entry, codec_id),
+            offer_reshape=not palette,
         )
         if edit is None:
             return
+        if palette:
+            edit = replace(edit, reshape_id=entry.reshape_id)
         moved = edit.paths != entry.paths
         if (
             not moved
@@ -1906,8 +1917,10 @@ class EntriesMixin:
 
         The per-entry sibling of :meth:`_resolve_dirty_entries`: only these
         entries are about to be re-read, so offering Write All would touch files
-        the user never asked about. A palette entry's unsaved work is colors
-        rather than pixels, and the re-read discards those just the same.
+        the user never asked about. Unsaved work is either half: a palette
+        entry's colours edited through the dock, as much as bytes painted into
+        any entry (a swatch or a folded slice included), and the re-read
+        discards both.
         """
         dirty = [e for e in entries if e.pixel_dirty or e.palette_dirty]
         if not dirty:
@@ -1918,7 +1931,7 @@ class EntriesMixin:
             for entry in dirty:
                 self._write_entry_checked(entry)
             # A failed write must not proceed — its edits would go with the re-read.
-            return not any(e.pixel_dirty for e in dirty)
+            return not any(e.pixel_dirty or e.palette_dirty for e in dirty)
 
         return confirm_destructive(
             self,
@@ -2034,9 +2047,11 @@ class EntriesMixin:
         self._undo_stack.beginMacro(f'jump to "{child.name}"')
         try:
             self._push_command(AddEntryCommand(self, opened, f"open {opened.name}"))
-            # The open has already reported a file that will not read, and a jump
-            # re-reading it would only say so twice.
-            if opened.doc is not None:
+            # A file's open has already read it and reported one that will not
+            # read, so a jump re-reading it would only say so twice. A palette is
+            # registered unread (the add never activates one), so the jump's
+            # re-read is its first load and the one place a failure is reported.
+            if opened.doc is not None or opened.kind is EntryKind.PALETTE:
                 self._push_jump(opened, child, target)
         finally:
             self._undo_stack.endMacro()
@@ -2168,8 +2183,9 @@ class EntriesMixin:
             self._new_bookmark_for(entry)
 
     def _new_bookmark_for(self, entry: Entry) -> None:
-        """Bookmark ``entry``'s current position and settings (current FILE
-        only - the snapshot reads the live view, which nothing else has).
+        """Bookmark ``entry``'s current position and settings (the current FILE
+        or PALETTE only - the snapshot reads the live view, which nothing else
+        has).
 
         The snapshot is the same trio a project persists per entry - session,
         view options, palette source - copied off the live state, plus the
@@ -2262,7 +2278,14 @@ class EntriesMixin:
         typed palette offset uses, so it is undoable and persists as an offset
         palette exactly like one.
         """
-        if bookmark.kind is not EntryKind.BOOKMARK:
+        # A bookmark of a palette file marks a place among its swatches, not
+        # graphics bytes to colour something else with: the menu hides the item
+        # for one, and a shortcut reaching here must not open the file a second
+        # time as a graphic to read it through.
+        if (
+            bookmark.kind is not EntryKind.BOOKMARK
+            or bookmark.parent_kind is EntryKind.PALETTE
+        ):
             return
         current = self._workspace.current
         anchored = (
@@ -2270,7 +2293,7 @@ class EntriesMixin:
             and current.kind.has_document
             and current.path == bookmark.path
         )
-        if anchored or self._workspace.find_file(bookmark.path) is not None:
+        if anchored or self._workspace.parent_of(bookmark) is not None:
             self._bookmark_palette_on_file(bookmark, anchored=anchored)
             return
         # The bookmark's file isn't open, so the gesture opens it — which is a
@@ -2288,7 +2311,7 @@ class EntriesMixin:
         is open: show it unless the view is already ``anchored`` to it, then load
         the Offset palette at the bookmark."""
         if not anchored:
-            parent = self._workspace.find_file(bookmark.path)
+            parent = self._workspace.parent_of(bookmark)
             if parent is None:
                 return
             if self._workspace.current is not parent:

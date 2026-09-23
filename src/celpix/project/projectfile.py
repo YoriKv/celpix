@@ -88,7 +88,7 @@ from celpix.project.workspace import (
 # detail: an id names what an entry was opened *with*, so a rename with no
 # forwarding address resets that entry to pass-through, which reads as data
 # loss. That mapping lives in `plugins/aliases.py`.
-PROJECT_VERSION = 4
+PROJECT_VERSION = 5
 PROJECT_EXTENSION = ".celpix"
 
 # The two alphabet presets celPix used to ship, by the id an older project names
@@ -216,10 +216,28 @@ def _migrate_3_to_4(data: dict[str, object]) -> dict[str, object]:
     return data
 
 
+def _migrate_4_to_5(data: dict[str, object]) -> dict[str, object]:
+    """v4 → v5: a registered palette file is a document of its own — it opens as
+    a sheet of swatches and can be sliced (``docs/design/palette-editing.md``
+    §2). A PALETTE entry may carry a ``session`` and a ``view``, a slice or
+    bookmark cut from one says so with ``"parent": "palette"``, and ``current``
+    may name a PALETTE entry.
+
+    Purely additive, so there is nothing to rewrite: every v4 file means the
+    same at v5. The bump exists for the other direction, as 3 → 4's did. A v4
+    build reads a palette's slice as a slice of a graphics file over the same
+    path, and **drops its ``parent`` on its next save**, after which even this
+    build reopens it as a graphics file's slice. The number is what makes it warn
+    before it does (``docs/design/project-format.md`` §2).
+    """
+    return data
+
+
 _MIGRATIONS: dict[int, Callable[[dict[str, object]], dict[str, object]]] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
     3: _migrate_3_to_4,
+    4: _migrate_4_to_5,
 }
 
 
@@ -845,6 +863,7 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         raise ValueError("entry has no usable path")
     path = _resolve_path(path, base_dir)
     if kind is EntryKind.PALETTE:
+        session = raw.get("session")
         # A palette entry is a reference plus how to read it — the container
         # that says which of its bytes are colour, and the codec that decodes
         # them — and, since it opens as a sheet of swatches, the session and
@@ -858,7 +877,12 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
             palette_preset_id=_plugin_id(
                 raw.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET
             ),
-            session=_session_from(raw.get("session")),
+            # A palette never opened as a sheet stores no session, and must come
+            # back without one: :func:`_session_from` builds a default graphics
+            # session from nothing, and a session on a palette is what tells
+            # ``composite_preset_id`` it has been opened as swatches — and what a
+            # re-save would write back onto every registered palette.
+            session=(_session_from(session) if isinstance(session, dict) else None),
             pending_view=_view_from(raw.get("view")),
         )
     offset_key = "offset" if kind is EntryKind.BOOKMARK else "slice_offset"

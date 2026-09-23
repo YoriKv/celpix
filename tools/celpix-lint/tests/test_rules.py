@@ -38,22 +38,18 @@ def test_entries_must_be_an_array(tmp_path, ids):
     assert [d.code for d in lint(str(path), ids).diagnostics] == ["F004"]
 
 
-def test_current_naming_a_palette_cannot_be_shown(project, entry):
-    codes = project(
-        {
-            "version": 1,
-            "current": 0,
-            "entries": [
-                {
-                    "kind": "palette",
-                    "path": "p.pal",
-                    "palette_preset_id": "preset.palette.bgr555",
-                }
-            ],
-        },
-        files={"p.pal": 512},
-    )
-    assert "E112" in codes
+def test_current_naming_a_bookmark_cannot_be_shown(project, entry):
+    # A palette opens as swatches and may be current; a bookmark never can.
+    palette = {
+        "kind": "palette",
+        "path": "p.pal",
+        "palette_preset_id": "preset.palette.bgr555",
+    }
+    bookmark = {"kind": "bookmark", "path": "p.pal", "offset": 0}
+    doc = {"version": 1, "current": 0, "entries": [palette, bookmark]}
+    assert "E112" not in project(doc, files={"p.pal": 512})
+    doc["current"] = 1
+    assert "E112" in project(doc, files={"p.pal": 512})
 
 
 def test_current_out_of_range(project, entry):
@@ -306,26 +302,28 @@ def test_the_projects_own_plugin_folder_provides_ids(tmp_path, ids, entry):
 
 
 # -- cross-references ------------------------------------------------------
-def test_tilemap_bound_to_a_palette(project, entry):
-    codes = project(
-        {
-            "version": 1,
-            "entries": [
-                {
-                    "kind": "palette",
-                    "path": "p.pal",
-                    "palette_preset_id": "preset.palette.bgr555",
-                },
-                entry(
-                    content_kind="tilemap",
-                    tilemap_preset_id="preset.tilemap.snes-bg",
-                    tile_source={"mode": "entry", "entry_index": 0},
-                ),
-            ],
-        },
-        files={"rom.sfc": 0x1000, "p.pal": 512},
-    )
-    assert "E519" in codes
+def test_tilemap_bound_to_a_bookmark_not_a_palette(project, entry):
+    # A palette file's swatches are pixels, so a map may draw through them; a
+    # bookmark is a position and holds nothing to draw.
+    def bound_to(target: dict) -> list[str]:
+        return project(
+            {
+                "version": 1,
+                "entries": [
+                    target,
+                    entry(
+                        content_kind="tilemap",
+                        tilemap_preset_id="preset.tilemap.snes-bg",
+                        tile_source={"mode": "entry", "entry_index": 0},
+                    ),
+                ],
+            },
+            files={"rom.sfc": 0x1000, "p.pal": 512},
+        )
+
+    palette = {"kind": "palette", "path": "p.pal"}
+    assert "E519" not in bound_to(palette)
+    assert "E519" in bound_to({"kind": "bookmark", "path": "p.pal", "offset": 0})
 
 
 def test_tile_source_index_out_of_range(project, entry):
@@ -521,7 +519,7 @@ def test_palette_mode_and_block_must_agree(project, entry, mode, block, code):
     [
         # Out of range, so it names nothing at all.
         ({"entry": 9, "offset": 0}, "E542"),
-        # Names a palette file, which has no pixel bytes to decode as colours.
+        # Names a bookmark, which has no bytes of its own to decode as colours.
         ({"entry": 1, "offset": 0}, "E543"),
         # `entry` is read before `offset`, so an offset palette holding one is
         # read as somebody else's bytes.
@@ -539,12 +537,7 @@ def test_an_entry_sourced_palette_must_name_a_readable_entry(
             "version": 1,
             "entries": [
                 entry(session={"palette_mode": mode}, palette=block),
-                {
-                    "kind": "palette",
-                    "name": "p",
-                    "path": "p.pal",
-                    "palette_preset_id": "preset.palette.bgr555",
-                },
+                {"kind": "bookmark", "name": "p", "path": "p.pal", "offset": 0},
             ],
         },
         files={"rom.sfc": 0x1000, "p.pal": 512},

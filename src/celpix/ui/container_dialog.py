@@ -179,6 +179,7 @@ class ContainerDialog(QDialog):
         kind: ContentKind = ContentKind.PIXELS,
         codec_id: str = "",
         units: int = 0,
+        offer_reshape: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -255,7 +256,15 @@ class ContainerDialog(QDialog):
         form.addRow(self._scroll)
         form.addRow(append_row)
         form.addRow("Container:", self._container)
-        form.addRow("Reshape:", self._reshape)
+        # Left out where the caller cannot apply one (a palette file: see
+        # ``_change_container_for``). The combo stays, hidden but parented so it
+        # never stands alone as a window, holding the value it was given, so the
+        # results and the note read it as they would a shown one.
+        if offer_reshape:
+            form.addRow("Reshape:", self._reshape)
+        else:
+            self._reshape.setParent(self)
+            self._reshape.hide()
         # Last, because it is the one row that changes the file rather than how
         # the rows above it are read.
         form.addRow(self._size_caption, self._size_field)
@@ -583,6 +592,7 @@ class ContainerDialog(QDialog):
         kind: ContentKind = ContentKind.PIXELS,
         codec_id: str = "",
         units: int = 0,
+        offer_reshape: bool = True,
     ) -> ContainerEdit | None:
         """Run the dialog modally; the choices made, or None on cancel."""
         dialog = ContainerDialog(
@@ -593,6 +603,7 @@ class ContainerDialog(QDialog):
             kind=kind,
             codec_id=codec_id,
             units=units,
+            offer_reshape=offer_reshape,
             parent=parent,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:

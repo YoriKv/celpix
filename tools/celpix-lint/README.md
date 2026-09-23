@@ -77,9 +77,7 @@ Roughly, by family:
 
 The findings that have paid for themselves so far, on this repo's own sample
 projects: bookmarks into a four-chip joined region that carried no `extra_paths`
-of their own and so resolved 0x24000 bytes past the end of chip one; a `current`
-index naming a palette entry, which cannot be shown, so the project opened on
-nothing; a `palette_mode` of `"offset"` with no `palette` block, which reads
+of their own and so resolved 0x24000 bytes past the end of chip one; a `palette_mode` of `"offset"` with no `palette` block, which reads
 colors from byte 0 instead of the offset that was meant.
 
 **What no linter can catch is a reference that shifted.** `current`,

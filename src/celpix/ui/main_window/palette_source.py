@@ -176,9 +176,7 @@ class PaletteSourceMixin:
             entry.doc.palette_ctx = src.palette_ctx
             entry.doc.palette_config = mirror_cfg
 
-    def _link_file_palette(
-        self, graphics: Entry, path: str, offset: int, preset_id: str
-    ) -> None:
+    def _link_file_palette(self, graphics: Entry, path: str, preset_id: str) -> None:
         """Point ``graphics`` at the PALETTE entry for ``path``, loading it once.
 
         Registers the palette entry if the project never had one (a hand-authored
@@ -187,13 +185,12 @@ class PaletteSourceMixin:
         raises, which the caller (:meth:`_restore_palette_source`) catches and
         degrades to the default palette.
 
-        ``offset`` is accepted for the shape older projects wrote and ignored:
-        a registered palette is read whole, and a run of it is a **slice** of
-        the palette entry, applied through Entry mode like any other run of
-        colour words (``docs/design/palette-editing.md`` §2).
+        A source's offset plays no part: a registered palette is read whole,
+        and a run of it is a **slice** of the palette entry, applied through
+        Entry mode like any other run of colour words
+        (``docs/design/palette-editing.md`` §2).
         """
         assert graphics.doc is not None
-        del offset
         entry = self._workspace.find_palette(path)
         if entry is None:
             entry = self._workspace.add_palette(
@@ -369,19 +366,40 @@ class PaletteSourceMixin:
         (:meth:`_sync_palette_entry_format`). Applied in place, with no step of
         its own: the picker's command is the step, and this is what applying it
         means on a palette file. Every graphic mirroring the file follows.
+
+        A format the bytes will not decode under lands as the **error palette**
+        (:meth:`_error_palette`), exactly as it does on load: the swatches are
+        already cut in it, so keeping the old colours would leave the two halves
+        naming different formats — and the entry stamped with one its colours
+        were never read in — with nothing on screen saying so. The error palette
+        says so, is read-only, and hands writability back on the next pick that
+        reads.
         """
         doc = entry.doc
         if doc is None or doc.bytes_per_tile == 0:
             return
         if doc.palette_config.interpret_preset_id != preset_id:
-            doc.palette_config = replace(
-                doc.palette_config, interpret_preset_id=preset_id
+            cfg = replace(doc.palette_config, interpret_preset_id=preset_id)
+            probe = PathwayConfig(
+                source=FileRef(entry.paths, data=doc.pixel_data, data_base=0),
+                interpret_preset_id=preset_id,
             )
-            # A format switch changes the entry size, so the colours the user
-            # touched name entries of another format: the re-decode starts
-            # clean, as the dock's own re-decode does (:meth:`_reinterpret_palette`).
-            doc.palette_edits = set()
-            self._redecode_palette_entry(entry)
+            try:
+                loaded = pipeline.load_palette(probe, self._registry)
+            except PipelineError as exc:
+                self._land_palette_entry_error(entry, cfg, exc)
+            else:
+                if self._palette_error(doc) is not None:
+                    # Out of an error palette: the file is a real palette again.
+                    doc.palette_ctx = loaded.ctx
+                    cfg = replace(cfg, write_enabled=True)
+                doc.palette_config = cfg
+                # The marks stay for the re-decode to judge: an edit the bytes
+                # took is newer bytes there and gives way to them, while one
+                # they never took — a swatch half with no write side, where the
+                # edit lives on the palette half alone — is carried, or the
+                # entry would read unsaved with nothing left to write.
+                self._redecode_palette_entry(entry)
         if entry.palette_preset_id != preset_id:
             entry.palette_preset_id = preset_id
             self._files_panel.refresh_entry(entry)
@@ -389,7 +407,31 @@ class PaletteSourceMixin:
             select_combo_data(self._palette_preset, preset_id)
             self._refresh_palette_dock()
 
-    def _sync_palette_entry_swatches(self, entry: Entry) -> None:
+    def _land_palette_entry_error(
+        self, entry: Entry, cfg: PathwayConfig, exc: PipelineError
+    ) -> None:
+        """Put the error palette for ``cfg``'s format on ``entry``'s palette half.
+
+        Its sentinel colours are ours, not the file's, so no edit mark survives
+        onto them: a carry would write a sentinel back, and the palette is
+        read-only until a format reads anyway.
+        """
+        doc = entry.doc
+        assert doc is not None
+        loaded, doc.palette_config = self._error_palette(cfg, exc)
+        doc.palette = loaded.palette
+        doc.palette_ctx = loaded.ctx
+        doc.palette_base_bytes = loaded.data
+        doc.palette_edits = set()
+        self._mirror_palette(entry)
+        self._files_panel.refresh_entry(entry)
+        self.statusBar().showMessage(
+            f"{entry.name} is not readable as {cfg.interpret_preset_id}."
+        )
+
+    def _sync_palette_entry_swatches(
+        self, entry: Entry, *, render: bool = True
+    ) -> None:
         """Bring a PALETTE entry's swatch half up to date with its palette half.
 
         For the changes that move no bytes but change how they read — a Format
@@ -404,7 +446,10 @@ class PaletteSourceMixin:
         A document with no swatch half yet — an error palette, whose format
         the file disagreed with — gets one here once its format reads, from a
         fresh read of the file: there were no bytes to have edited. The view is
-        repainted only when this entry is the one on screen.
+        repainted only when this entry is the one on screen, and not at all under
+        ``render=False``: a caller that lands more state and renders once it is
+        whole (:meth:`_apply_palette_state`) would otherwise pay for a frame
+        drawn from half of it.
         """
         doc = entry.doc
         if doc is None:
@@ -437,7 +482,8 @@ class PaletteSourceMixin:
         doc.pixel_ctx = px.ctx
         if entry is self._workspace.current:
             select_combo_data(self._palette_view_preset, session.palette_view_preset_id)
-            self._refresh_view()
+            if render:
+                self._refresh_view()
 
     def _apply_palette_preset_hint(self, entry: Entry, loaded, cfg):  # noqa: ANN001
         """Adopt the color format the container read out of the file, if it says.
@@ -583,7 +629,7 @@ class PaletteSourceMixin:
             entry.session.palette_mode = PaletteMode.FILE
         if link.loaded and entry.doc is not None:
             try:
-                self._link_file_palette(entry, link.path, link.offset, link.preset_id)
+                self._link_file_palette(entry, link.path, link.preset_id)
             except (PipelineError, OSError):
                 # Runs inside an undo: a raise would leave the rest of the
                 # consumers unlinked. The ordinary restore degrades instead - and
@@ -633,9 +679,7 @@ class PaletteSourceMixin:
             if session.palette_mode is PaletteMode.FILE and source.path is not None:
                 # A file palette is owned by its PALETTE entry; register/load it
                 # and mirror onto this graphic rather than loading colours here.
-                self._link_file_palette(
-                    entry, source.path, source.offset, session.palette_preset_id
-                )
+                self._link_file_palette(entry, source.path, session.palette_preset_id)
                 return True
             if session.palette_mode is PaletteMode.ENTRY:
                 cfg = self._entry_palette_config(entry, source)
@@ -930,8 +974,9 @@ class PaletteSourceMixin:
         entry.doc.palette_base_bytes = state.base_bytes
         entry.doc.palette_edits = set(state.edits)
         # The swatch half reads the same bytes in the same format, so it follows
-        # the state — a Format pick, and the undo of one, re-cut the sheet.
-        self._sync_palette_entry_swatches(entry)
+        # the state — a Format pick, and the undo of one, re-cut the sheet. The
+        # render is _apply_palette_state's, once the rest of the state is on.
+        self._sync_palette_entry_swatches(entry, render=False)
         self._mirror_palette(entry)
         if self._doc is entry.doc:
             return  # the palette file itself is on screen: nothing mirrors it

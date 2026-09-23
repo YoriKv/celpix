@@ -22,13 +22,13 @@ from __future__ import annotations
 
 #: The reader's own :data:`celpix.project.projectfile.PROJECT_VERSION`. A file
 #: claiming more than this is one a newer celPix wrote.
-KNOWN_PROJECT_VERSION = 4
+KNOWN_PROJECT_VERSION = 5
 
 # -- enumerations (celpix.project.workspace, celpix.core) ------------------
 #: ``EntryKind`` — how an entry is *bounded*.
 KINDS = ("file", "slice", "bookmark", "palette", "composite")
 #: The kinds that can be shown, and so can be ``current`` (``EntryKind.has_document``).
-KINDS_WITH_DOCUMENT = ("file", "slice", "composite")
+KINDS_WITH_DOCUMENT = ("file", "slice", "palette", "composite")
 #: ``ContentKind`` — what an entry's bytes *are*.
 CONTENT_KINDS = ("pixels", "tilemap", "palette")
 #: ``PaletteMode``.
@@ -92,6 +92,7 @@ ENTRY_KEYS = frozenset(
         "session",
         "view",
         "palette",
+        "parent",
         # Read but never written — the older spelling of `tile_rearrangement`'s
         # owner. Tolerated at the entry level for the same reason the view
         # tolerates the key itself.
@@ -119,11 +120,13 @@ KIND_ONLY = {
     # file the compression preview's bindings; a composite reads no byte stage,
     # and a palette or bookmark decodes through nothing that could declare one.
     "inputs": ("file", "slice"),
-    # A palette entry is a reference plus how to read it, and carries no
-    # session, view or palette of its own.
-    "session": ("file", "slice", "bookmark", "composite"),
-    "view": ("file", "slice", "bookmark", "composite"),
+    # A palette entry opens as a sheet of swatches, so it has a session and a
+    # view like anything shown — but no palette source: its colours are its own
+    # bytes. Every kind carries a session and a view, so neither is listed.
     "palette": ("file", "slice", "bookmark", "composite"),
+    # What a slice or bookmark was cut from — "palette" for a registered palette
+    # file, absent for a graphics file — which only a child has.
+    "parent": ("slice", "bookmark"),
 }
 
 #: Keys the loader needs, by kind. Absent means the entry is skipped entirely

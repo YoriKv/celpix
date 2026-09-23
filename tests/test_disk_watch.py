@@ -243,3 +243,43 @@ def test_a_map_keeps_its_unsaved_cells_over_a_rewritten_screen(
     assert entry.doc.cells[0] == Cell(index=1, flip_h=True)  # ours
     assert entry.doc.cells[1] == Cell(index=9)  # theirs
     assert entry.pixel_dirty
+
+
+def test_a_palette_file_on_screen_keeps_its_painted_swatch_over_a_reload(
+    qtbot, tmp_path, monkeypatch, disk_reload_answer
+) -> None:
+    """The palette file itself on screen, with a swatch painted: the reload
+    merges the painted colour word over the file's new ones, the dock's colours
+    are decoded from the merged bytes, and the view comes back as it was left."""
+    from celpix.project.workspace import EntryKind
+
+    pal = tmp_path / "shared.pal"
+    pal.write_bytes(bytes(64))  # 32 black BGR555 colours
+    window, _px = _window(qtbot, tmp_path, monkeypatch)
+    window._add_palette_file(str(pal), preset_id="preset.palette.bgr555")
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    window._activate_entry(entry)
+    assert window._doc is entry.doc
+    window._columns.setValue(4)
+    assert entry.doc.view.columns == 4
+    tiles = window._decode_run(3, 1)
+    swatch = type(tiles[0])(tiles[0].width, tiles[0].height, bytes(tiles[0].data))
+    for y in range(swatch.height):
+        for x in range(swatch.width):
+            swatch.set(x, y, 0xFF0000FF)
+    window._apply_tile_edit(3, [swatch], "paint")
+    assert entry.pixel_dirty
+
+    theirs = bytearray(64)
+    theirs[2:4] = b"\xff\x7f"  # colour 1 became white, from outside
+    _rewrite(pal, bytes(theirs))
+    held = entry.doc
+    window._reload_action.trigger()
+
+    assert entry.doc is not held  # re-read, not left standing
+    assert window._doc is entry.doc and entry.pixel_dirty
+    colors = entry.doc.palette.colors
+    assert colors[1] == 0xFFFFFFFF  # theirs, arrived
+    assert colors[3] == 0xFF0000FF  # ours, kept
+    assert window._palette_panel._colors == colors
+    assert entry.doc.view.columns == 4

@@ -238,7 +238,6 @@ class ColorEditingMixin:
             ColorEditCommand(
                 self,
                 owner,
-                doc,
                 index,
                 before=before,
                 after=argb,
@@ -414,7 +413,9 @@ class ColorEditingMixin:
         # other entry's bytes exactly as they were read (a color codec doesn't
         # round-trip bytes - see Document.palette_base_bytes). The mark survives an
         # undo: re-encoding an unchanged color is harmless, and the entry is
-        # clean again anyway once its revision walks back to the saved one.
+        # clean again anyway once its revision walks back to the saved one. Each
+        # apply marks it afresh, undo included, because on a palette file bytes
+        # landing over the entry take the mark away (``_redecode_palette_entry``).
         doc.palette_edits.add(index)
         # A file/offset palette now differs from its bytes on disk - dirt on the
         # *palette* pathway of its owner (the PALETTE entry for a file palette, the
@@ -608,7 +609,6 @@ class ColorEditingMixin:
                             ColorEditCommand(
                                 self,
                                 owner,
-                                doc,
                                 index,
                                 before=before,
                                 after=argb,

@@ -58,7 +58,7 @@ from celpix.project.workspace import (
     tilemap_config_for,
 )
 from celpix.ui.tools import EditMode
-from celpix.ui.widgets import select_combo_data, signals_blocked
+from celpix.ui.widgets import counted, select_combo_data, signals_blocked
 
 
 class SessionMixin:
@@ -116,9 +116,26 @@ class SessionMixin:
         if not self._files_panel.is_key_navigating():
             self._canvas.setFocus()
         if fresh:
-            message = f"Loaded {entry.doc.tile_count} tiles from {entry.name}"
-            note = self._partial_tile_note()
-            self.statusBar().showMessage(f"{message} - {note}" if note else message)
+            self.statusBar().showMessage(self._loaded_message(entry))
+
+    def _loaded_message(self, entry: Entry) -> str:
+        """What the status bar says about an entry just read in.
+
+        A palette file counts colors: its tile count is its swatches, and an
+        undecodable one is zero swatches, which as "Loaded 0 tiles" would read
+        as a success on an empty file rather than a format to correct.
+        """
+        doc = entry.doc
+        if entry.kind is EntryKind.PALETTE:
+            if self._palette_error(doc) is not None:
+                return (
+                    f"Could not decode {entry.name} - pick its format in the "
+                    "palette dock's Import as… dropdown"
+                )
+            return f"Loaded {counted(len(doc.palette), 'color')} from {entry.name}"
+        message = f"Loaded {doc.tile_count} tiles from {entry.name}"
+        note = self._partial_tile_note()
+        return f"{message} - {note}" if note else message
 
     def _on_current_entry_changed(self, entry: Entry | None) -> None:
         self._files_panel.set_current(entry)
@@ -636,11 +653,16 @@ class SessionMixin:
                 continue
             if source.parent_kind is EntryKind.PALETTE:
                 # A slice of a palette file names a registered palette, and it
-                # comes back as one — on the format the dock imports with, as a
-                # fresh registration would.
+                # comes back as one — in the format the slice reads its colour
+                # words in, which is the file's own format as the palette had
+                # it. The dock's Import as… is only a guess for a file nobody
+                # has read yet; here the slice already says what the bytes are.
+                seen = source.session and source.session.palette_view_preset_id
                 self._workspace.add_palette(
                     source.path,
-                    self._palette_import_preset_id(),
+                    seen
+                    if seen and self._registry.has_preset(seen)
+                    else self._palette_import_preset_id(),
                     self._detect_palette_container(source.path),
                 )
             else:

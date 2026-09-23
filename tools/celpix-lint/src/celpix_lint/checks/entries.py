@@ -159,8 +159,7 @@ def _why_not(key: str, kind: str) -> str:
         "reshape_id": "",
         "slice_offset": "",
         "offset": "",
-        "session": "A palette entry is a reference plus how to read it, nothing more.",
-        "view": "A palette entry is never shown, so it has no view.",
+        "parent": "Only a slice or bookmark is cut from another entry.",
         "palette": "A palette entry *is* a palette source; it does not have one.",
         "pieces": "Only a composite is assembled from other entries.",
         "palette_preset_id": "On anything else the codec lives at "

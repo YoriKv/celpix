@@ -11,7 +11,10 @@ from celpix.core.font import HOLE, Glyph, GlyphRole, sequential
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
+from celpix.pipeline.pipeline import load_palette
 from celpix.plugins.base import RAW_CONTAINER, FileRef
+from celpix.plugins.registry import default_registry
+from celpix.project.documents import file_palette_config, load_document
 from celpix.project.projectfile import (
     PROJECT_VERSION,
     ProjectError,
@@ -198,6 +201,35 @@ def test_bookmark_round_trips_and_current_index_at_bookmark_degrades(tmp_path) -
     assert load_project(str(project)).current is None
 
 
+def test_headless_palette_entry_carries_its_decoded_colours(tmp_path) -> None:
+    # Both halves, as the app's loader builds them: swatches as the pixels and
+    # the file's own colours as a writable palette — not the fallback palette.
+    pal = tmp_path / "colors.pal"
+    words = [0x0000, 0x001F, 0x03E0, 0x7C00, 0x7FFF, 0x0421, 0x1234, 0x4321]
+    pal.write_bytes(b"".join(w.to_bytes(2, "little") for w in words))
+    registry = default_registry()
+    ws = Workspace()
+    entry = Entry(
+        name="colors.pal",
+        kind=EntryKind.PALETTE,
+        path=str(pal),
+        palette_preset_id="preset.palette.bgr555",
+    )
+    ws.insert(entry, 0)
+
+    loaded = load_document(entry, registry, ws)
+    doc = loaded.doc
+
+    expected = load_palette(
+        file_palette_config(str(pal), 0, "preset.palette.bgr555", RAW_CONTAINER),
+        registry,
+    ).palette.colors
+    assert not loaded.problems
+    assert list(doc.palette.colors) == list(expected) and len(expected) == len(words)
+    assert doc.palette_config.write_enabled
+    assert doc.palette_base_bytes == pal.read_bytes()
+
+
 def test_palette_entry_round_trips_with_its_import_codec(tmp_path) -> None:
     rom = tmp_path / "rom.sfc"
     rom.write_bytes(b"\x00" * 0x400)
@@ -241,6 +273,20 @@ def test_palette_entry_round_trips_with_its_import_codec(tmp_path) -> None:
     assert restored.palette_preset_id == "preset.palette.rgb888"
     assert restored.container_id == "container.scgcad-col"
     assert normcase(restored.path) == normcase(str(pal))
+    # Never opened, so it comes back without a session — and a re-save leaves the
+    # file as it was rather than writing a default graphics session onto it.
+    assert restored.session is None and restored.pending_view is None
+    save_project(loaded, str(project))
+    assert (
+        "session" not in json.loads(project.read_text(encoding="utf-8"))["entries"][1]
+    )
+
+    # Once opened, its swatch session is state like any other and round-trips.
+    swatches = _session(pixel_preset_id="preset.pixel.palette-swatch")
+    restored.session = swatches
+    save_project(loaded, str(project))
+    assert load_project(str(project)).entries[1].session == swatches
+    raw = json.loads(project.read_text(encoding="utf-8"))
 
     # A palette file opens as a sheet of swatches, so a current index naming
     # one is honoured like any other.

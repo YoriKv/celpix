@@ -397,6 +397,10 @@ def test_missing_paths_dedupes_shared_rom_and_includes_palette(tmp_path) -> None
     # A .pal registered as its own row is still a palette file, not pixel data.
     ws.add_palette(pal, "preset.palette.bgr555")
     assert path_is_palette_only(ws, pal)
+    # So is one with a slice cut from it: the slice reads the palette's bytes.
+    cut = ws.add_slice(pal, "row 1", 0x20, 0x20, parent_kind=EntryKind.PALETTE)
+    assert cut.parent_kind is EntryKind.PALETTE
+    assert path_is_palette_only(ws, pal)
 
 
 def test_relocate_path_repoints_shared_rom_and_palette_sources(tmp_path) -> None:

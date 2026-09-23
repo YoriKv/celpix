@@ -1630,14 +1630,17 @@ class Document:
         ctx: PipelineContext,
         palette_base_bytes: bytes,
     ) -> Document:
-        """A Document that carries only a palette — a PALETTE entry's live store.
+        """A Document that carries only a palette — a PALETTE entry's fallback.
 
-        A registered palette file owns its colors *here*, rather than on whichever
-        graphic happens to render it, so a color edit dirties the palette entry and
-        Write saves it back to the ``.pal`` — the graphic is never touched
-        (docs/design/palette-editing.md §2). The pixel half is inert: no bytes, zero
-        tile geometry, and a non-writable pixel config, so the tile machinery and
-        the pixel Write have nothing to act on (``tile_count`` is 0).
+        A registered palette file's document is ordinarily a full pixel document —
+        its bytes read as swatches — with the decoded colors laid on as the
+        palette half (docs/design/palette-editing.md §2). This is what stands in
+        where those bytes will not read as swatches, such as an error palette
+        whose format the file disagrees with: the colors still apply to graphics
+        and a color edit still dirties the palette entry, while the pixel half is
+        inert — no bytes, zero tile geometry, and a non-writable pixel config, so
+        the tile machinery and the pixel Write have nothing to act on
+        (``tile_count`` is 0).
         """
         return cls(
             pixel_data=b"",

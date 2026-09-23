@@ -1091,11 +1091,9 @@ def _pixel_config(registry, workspace: Workspace) -> PixelConfig:  # noqa: ANN00
 def _load(entry: Entry, registry, workspace: Workspace, problems: list[str]) -> None:  # noqa: ANN001
     if entry.doc is not None:
         return
+    colors = None
     if entry.kind is EntryKind.PALETTE:
-        # A palette file opens as swatches in its own colour format, on a
-        # session built for that where the project stored none — the app's
-        # loader does the same (``docs/design/palette-editing.md`` §2).
-        swatch_session_for(entry, registry, DEFAULT_PALETTE_PRESET)
+        colors = _palette_entry_colors(entry, registry, problems)
     assert entry.session is not None, f"{entry.name} has no session to load with"
     session = entry.session
     configure = _pixel_config(registry, workspace)
@@ -1138,8 +1136,50 @@ def _load(entry: Entry, registry, workspace: Workspace, problems: list[str]) -> 
         px, cfg = apply_pixel_preset_hint(entry, px, cfg, registry, configure)
         entry.doc = pixel_document(entry, px, cfg)
         _restore(entry, registry, workspace, problems)
+        if colors is not None:
+            # The palette half of a palette file's document: the same bytes
+            # decoded as colours, which is what a File-mode graphic mirrors and
+            # what an edit writes back through — so the config stays writable.
+            loaded, palette_cfg = colors
+            entry.doc.palette = loaded.palette
+            entry.doc.palette_ctx = loaded.ctx
+            entry.doc.palette_config = palette_cfg
+            entry.doc.palette_base_bytes = loaded.data
         if entry.doc.view.palette_regions.is_empty():
             seed_tile_palette_rows(entry.doc, px.ctx.get(KEY_TILE_PALETTE_ROWS, b""))
+
+
+def _palette_entry_colors(
+    entry: Entry, registry, problems: list[str]
+) -> tuple[pipeline.PaletteData, PathwayConfig] | None:  # noqa: ANN001
+    """A PALETTE entry's swatch session, and its bytes decoded as colours.
+
+    A palette file opens as swatches in its own colour format, on a session
+    built for that where the project stored none, and carries both halves of
+    its bytes: the swatches :func:`_load` reads as pixels, and the colours
+    returned here as the palette half — the app's loader does the same
+    (``docs/design/palette-editing.md`` §2). None, with a problem noted, where
+    the colours will not decode; the document then keeps the default palette,
+    where the app would open on its error palette for the user to correct.
+    """
+    session = swatch_session_for(entry, registry, DEFAULT_PALETTE_PRESET)
+    cfg = file_palette_config(
+        entry.path,
+        0,
+        entry.palette_preset_id or DEFAULT_PALETTE_PRESET,
+        entry.container_id,
+    )
+    try:
+        loaded = pipeline.load_palette(cfg, registry)
+    except PipelineError as exc:
+        problems.append(f"{entry.name}: colours not decoded ({exc})")
+        return None
+    # The dock's format on a palette file is the file's own, the one the colours
+    # just decoded with — and so is the swatch view's, which reads the same
+    # colour words as pixels.
+    session.palette_preset_id = cfg.interpret_preset_id
+    session.palette_view_preset_id = cfg.interpret_preset_id
+    return loaded, cfg
 
 
 def _load_tilemap(entry, registry, workspace, problems, configure) -> None:  # noqa: ANN001

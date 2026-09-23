@@ -574,3 +574,128 @@ def test_a_slice_of_a_palette_file_is_a_palette_and_a_composite_piece(
     assert window._workspace.current is table
     assert table.session.pixel_preset_id == SWATCH  # seeded from the run
     assert table.doc.pixel_data == palette.doc.pixel_data[16 * COLOR :]
+
+
+def _file_palette_window(qtbot, tmp_path, count: int = 32):
+    """A graphic reading a ``count``-colour BGR555 palette file in File mode."""
+    from celpix.project.workspace import EntryKind
+
+    pal = _palette_file(tmp_path, count=count)
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(range(256)) * 4)
+    window = _window(qtbot)
+    window._load_pixel(str(rom))
+    graphic = window._workspace.current
+    window._add_palette_file(str(pal), preset_id=BGR555)
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    window._use_palette_entry(entry)
+    return window, pal, graphic, entry
+
+
+def _paint_swatch(window, index: int, argb: int) -> None:
+    """Paint swatch ``index`` of the entry on screen solid ``argb``."""
+    tiles = window._decode_run(index, 1)
+    copy = type(tiles[0])(tiles[0].width, tiles[0].height, bytes(tiles[0].data))
+    for y in range(copy.height):
+        for x in range(copy.width):
+            copy.set(x, y, argb)
+    window._apply_tile_edit(index, [copy], "paint")
+
+
+def test_a_painted_swatch_outranks_an_earlier_colour_edit(qtbot, tmp_path) -> None:
+    """The palette file's bytes are the authority, so a stroke on a swatch whose
+    colour was edited — the edit undone or still standing, the stroke made on
+    the file or on a slice of it — is what the dock shows and what Write puts
+    on disk. Carried over the new decode, the edited
+    colour would come back and a save would splice it over the paint.
+    """
+    from celpix.pipeline import pipeline
+    from celpix.project.workspace import slice_of
+    from celpix.ui.undo_commands import AddEntryCommand
+
+    window, _pal, graphic, entry = _file_palette_window(qtbot, tmp_path)
+    window._activate_entry(entry)
+    red, green, blue = 0xFFFF0000, 0xFF00FF00, 0xFF0000FF
+
+    def holds(argb: int) -> None:
+        doc = entry.doc
+        assert doc.palette.color(3) == argb
+        assert window._palette_panel._colors[3] == argb
+        assert graphic.doc.palette.color(3) == argb
+        # What Write puts on disk: the pixel half and the palette splice agree.
+        written = pipeline.spliced_palette_bytes(doc, window._registry)
+        assert written[3 * COLOR : 4 * COLOR] == doc.pixel_data[3 * COLOR : 4 * COLOR]
+
+    window._palette_panel.select_index(3)
+    window._on_color_changed(green)
+    window._undo_stack.undo()
+    _paint_swatch(window, 3, blue)
+    holds(blue)
+
+    window._on_color_changed(green)  # an edit left standing
+    _paint_swatch(window, 3, red)
+    holds(red)
+
+    # The same through a slice: the stroke reaches the file by the fold, paid
+    # when the file is next shown.
+    window._on_color_changed(green)
+    run = slice_of(entry, "lower row", 0, 16 * COLOR)
+    window._seed_slice_from_parent(run)
+    window._push_command(AddEntryCommand(window, run, "new slice"))
+    window._activate_entry(run)
+    _paint_swatch(window, 3, blue)
+    window._activate_entry(entry)
+    holds(blue)
+
+
+def test_undoing_a_colour_edit_across_a_disk_reload_reaches_the_new_document(
+    qtbot, tmp_path
+) -> None:
+    """A reload replaces the palette file's document; the colour edit made before
+    it carries across, and its undo lands on the document that replaced it — the
+    colour, the bytes and every mirror together.
+    """
+    window, pal, graphic, entry = _file_palette_window(qtbot, tmp_path)
+    original = graphic.doc.palette.color(3)
+    original_bytes = pal.read_bytes()
+    window._palette_panel.select_index(3)
+    window._on_color_changed(0xFF00FF00)
+    assert entry.doc.palette.color(3) == 0xFF00FF00
+
+    changed = bytearray(original_bytes)
+    changed[10 * COLOR : 11 * COLOR] = (0x001F).to_bytes(2, "little")  # pure red
+    pal.write_bytes(bytes(changed))
+    stale = entry.doc
+    window._reload_from_disk([str(pal)])
+    assert entry.doc is not stale
+    assert entry.doc.palette.color(3) == 0xFF00FF00  # the unsaved edit carried
+    assert entry.doc.palette.color(10) == 0xFFFF0000  # the file's change arrived
+
+    window._undo_stack.undo()
+    assert entry.doc.palette.color(3) == original
+    assert graphic.doc.palette.color(3) == original
+    assert entry.doc.pixel_data[3 * COLOR : 4 * COLOR] == original_bytes[6:8]
+
+
+def test_the_swatch_format_pick_on_a_palette_file_is_its_colour_format(
+    qtbot, tmp_path
+) -> None:
+    """On an opened palette file the toolbar's swatch format *is* the palette's
+    format: the pick re-decodes the colours, stamps the entry and reaches every
+    mirroring graphic, and one undo puts all of it back."""
+    # 96 bytes: whole colours in both formats, so each one decodes.
+    window, _pal, graphic, entry = _file_palette_window(qtbot, tmp_path, count=48)
+    window._activate_entry(entry)
+    colours = list(entry.doc.palette.colors)
+
+    fmt = window._palette_view_preset
+    fmt.setCurrentIndex(fmt.findData(RGB888))
+    assert entry.palette_preset_id == RGB888
+    assert entry.doc.palette_config.interpret_preset_id == RGB888
+    assert len(entry.doc.palette) == 32  # three bytes a colour now
+    assert graphic.doc.palette.colors == entry.doc.palette.colors
+
+    window._undo_stack.undo()
+    assert entry.palette_preset_id == BGR555
+    assert entry.doc.palette.colors == colours
+    assert graphic.doc.palette.colors == colours

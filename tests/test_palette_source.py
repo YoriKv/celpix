@@ -2741,3 +2741,160 @@ def test_a_stated_palette_format_does_not_overrule_a_chosen_one(
     entry.palette_preset_id = "preset.palette.rgb444"
     window._load_palette_entry(entry)
     assert entry.palette_preset_id == "preset.palette.rgb444"
+
+
+def test_a_palette_format_pick_keeps_an_edit_the_bytes_never_took(
+    qtbot, tmp_path
+) -> None:
+    """A colour edit on a palette file whose swatch half can't be written lives
+    only on the palette half; a toolbar format pick re-decodes from the bytes,
+    which never held the edit, so the edit has to survive it — or the entry
+    would read unsaved with nothing left to write."""
+    from celpix.pipeline import pipeline
+    from celpix.project.workspace import EntryKind
+
+    pal = tmp_path / "locked.pal"
+    pal.write_bytes(bytes([0x1F, 0x00, 0xE0, 0x03, 0x00, 0x7C, 0xFF, 0x7F]))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._add_palette_file(str(pal))
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    # A reshape this build hasn't got degrades the swatch side to a view-only
+    # pass-through; the palette half reads the file without one, and stays
+    # writable.
+    entry.reshape_id = "reshape.not-installed"
+    window._activate_entry(entry)
+    assert not entry.doc.pixel_config.write_enabled
+    assert entry.doc.palette_config.write_enabled
+    before = bytes(entry.doc.pixel_data)
+
+    window._palette_panel._select(1)
+    window._on_color_changed(0xFFFFFFFF)
+    assert bytes(entry.doc.pixel_data) == before  # nothing deposited
+    assert entry.palette_dirty
+
+    window._apply_palette_view_format("preset.palette.rgb565")
+    assert entry.doc.palette_config.interpret_preset_id == "preset.palette.rgb565"
+    assert entry.doc.palette.color(1) == 0xFFFFFFFF
+    assert entry.palette_dirty
+    written = pipeline.spliced_palette_bytes(entry.doc, window._registry)
+    assert written[2:4] == b"\xff\xff"  # RGB565 white, still there to write
+
+
+def test_a_palette_command_on_the_open_palette_file_renders_once(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A File-mode palette command on the palette file itself re-cuts the swatch
+    half and lands the rest of the state before drawing: one frame, drawn from
+    the whole of it, not a second from the half applied first."""
+    from celpix.project.workspace import EntryKind
+
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(bytes((i * 7 + 2) & 0xFF for i in range(2 * 16)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._open_palette_data(str(pal))
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    assert window._doc is entry.doc
+
+    renders = []
+    real = window._refresh_view
+    monkeypatch.setattr(window, "_refresh_view", lambda: renders.append(real()))
+    window._palette_preset.setCurrentIndex(
+        window._palette_preset.findData("preset.palette.rgb565")
+    )
+    assert entry.palette_preset_id == "preset.palette.rgb565"
+    assert len(renders) == 1
+    renders.clear()
+    window._undo_stack.undo()
+    assert len(renders) == 1
+
+
+def test_removing_a_sliced_palette_with_consumers_undoes_whole(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A palette file with a slice cut from it and graphics reading both: the
+    removal takes the slice with it, re-homes the File-mode graphic as Custom
+    and falls the slice's Entry-mode reader back to the default; undo puts the
+    palette, its slice and both links back."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from celpix.project.workspace import EntryKind, slice_of
+    from celpix.ui.undo_commands import AddEntryCommand
+
+    pal = tmp_path / "shared.pal"
+    pal.write_bytes(bytes((i * 7 + 2) & 0xFF for i in range(2 * 32)))  # 32 BGR555
+    second = tmp_path / "second.4bpp.sfc"
+    second.write_bytes(bytes((i * 5 + 1) & 0xFF for i in range(32 * 8)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    by_file = window._workspace.current
+    window._add_palette_file(str(pal))
+    palette = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    window._use_palette_entry(palette)
+    run = slice_of(palette, "upper row", 32, 32)
+    window._seed_slice_from_parent(run)
+    window._push_command(AddEntryCommand(window, run, "new slice"))
+    window._load_pixel(str(second))
+    by_slice = window._workspace.current
+    window._use_entry_as_palette(run)
+    file_colors = list(by_file.doc.palette.colors)
+    slice_colors = list(by_slice.doc.palette.colors)
+    assert slice_colors == file_colors[16:32]
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    window._remove_entry(palette)
+    assert palette not in window._workspace.entries
+    assert run not in window._workspace.entries
+    assert by_file.session.palette_mode is PaletteMode.CUSTOM
+    assert list(by_file.doc.palette.colors) == file_colors
+    assert by_slice.session.palette_mode is PaletteMode.ENTRY
+    assert by_slice.missing_palette is not None  # read from a closed entry
+
+    window._undo_stack.undo()
+    assert window._workspace.find_palette(str(pal)) is palette
+    assert window._workspace.children_of(palette) == [run]
+    assert by_file.session.palette_mode is PaletteMode.FILE
+    assert by_file.doc.palette_config.source.path == str(pal)
+    assert list(by_file.doc.palette.colors) == file_colors
+    assert by_slice.palette_entry is run and by_slice.missing_palette is None
+    assert list(by_slice.doc.palette.colors) == slice_colors
+
+
+def test_a_toolbar_format_the_bytes_refuse_lands_the_error_palette(
+    qtbot, tmp_path
+) -> None:
+    """The toolbar's format picker on an open palette file moves both halves or
+    neither: 64 bytes picked as RGB888 cut into swatches but are not a whole
+    number of colours, so the palette half becomes the read-only error palette
+    under that format rather than keeping colours read in another; undoing the
+    pick reads the file again, writable."""
+    from celpix.core.palette import MISSING_COLOR
+    from celpix.project.workspace import EntryKind, entry_notices
+
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(bytes((i * 7 + 2) & 0xFF for i in range(64)))  # 32 BGR555
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._open_palette_data(str(pal))
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    colors = list(entry.doc.palette.colors)
+    rgb888 = "preset.palette.rgb888"
+
+    picker = window._palette_view_preset
+    picker.setCurrentIndex(picker.findData(rgb888))
+    assert entry.palette_preset_id == rgb888
+    assert entry.doc.palette_config.interpret_preset_id == rgb888
+    assert "not a multiple" in window._palette_error(entry.doc)
+    assert set(entry.doc.palette.colors) == {MISSING_COLOR}
+    assert not entry.doc.palette_config.write_enabled
+    assert entry_notices(entry)
+
+    window._undo_stack.undo()
+    assert entry.palette_preset_id == "preset.palette.bgr555"
+    assert window._palette_error(entry.doc) is None
+    assert list(entry.doc.palette.colors) == colors
+    assert entry.doc.palette_config.write_enabled

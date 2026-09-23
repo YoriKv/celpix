@@ -239,8 +239,9 @@ def _tile_source(ctx: Context, view: EntryView) -> None:
 def _cannot_supply(view: EntryView, target: EntryView) -> str:
     """Why ``target`` cannot supply ``view``'s tiles, or "" if it can.
 
-    Mirrors the editor's own rule: art always, a map only while it reaches art
-    itself, never a bookmark, never the entry itself.
+    Mirrors the editor's own rule: art always — a palette file's swatches
+    included, since they are pixels — a map only while it reaches art itself,
+    never a bookmark, never the entry itself.
     """
     if target.index == view.index:
         return "is the map itself"
@@ -248,7 +249,7 @@ def _cannot_supply(view: EntryView, target: EntryView) -> str:
         return "celPix drops for having no usable path"
     if target.kind == "bookmark":
         return "is a bookmark — a position, not content"
-    if target.content_kind == "palette" or target.kind == "palette":
+    if target.content_kind == "palette":
         return "is a palette, which holds no tiles"
     return ""
 

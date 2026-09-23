@@ -1112,7 +1112,10 @@ class FileListPanel(QWidget):
             tip = f"{len(entry.paths)} files joined end to end:\n" + "\n".join(
                 f"{n}. {path}" for n, path in enumerate(entry.paths, 1)
             )
-        if entry.kind is EntryKind.FILE and self._registry is not None:
+        if (
+            entry.kind in (EntryKind.FILE, EntryKind.PALETTE)
+            and self._registry is not None
+        ):
             # The full container name, since the list column only had room for a tag.
             full = container_label(self._registry, entry.container_id, short=False)
             if full:
@@ -2080,10 +2083,16 @@ class FileListPanel(QWidget):
                 menu, "&Jump to Bookmark", self.jump_to_bookmark_requested.emit, entry
             )
             # Reuse the bookmarked offset as a palette offset — the graphics
-            # position often marks where the palette sits.
-            self._entry_action(
-                menu, "&Use as Palette", self.bookmark_as_palette_requested.emit, entry
-            )
+            # position often marks where the palette sits. Not on a bookmark of a
+            # palette file: its offset marks a place among swatches, and a
+            # palette document takes no palette of its own to apply it to.
+            if entry.parent_kind is not EntryKind.PALETTE:
+                self._entry_action(
+                    menu,
+                    "&Use as Palette",
+                    self.bookmark_as_palette_requested.emit,
+                    entry,
+                )
             menu.addSeparator()
             new_composite = self._add_new_composite_action(menu, entry, acting)
             menu.addSeparator()
@@ -2112,8 +2121,9 @@ class FileListPanel(QWidget):
             export = menu.addMenu("E&xport")
             if multi:
                 # The set is exported whole, into one folder: the other rows it
-                # picked that hold no document (a bookmark, a palette) are left
-                # out rather than making the whole row go dead.
+                # picked that hold no document (a bookmark) are left out rather
+                # than making the whole row go dead. A palette file holds one,
+                # and leaves as its swatch sheet.
                 targets = [e for e in acting if e.kind.has_document]
                 live.append(export.menuAction())
                 for label, raw in (

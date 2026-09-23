@@ -3,6 +3,7 @@
 ## v1.1.3 - unreleased
 
 - Palette files can now be opened as swatches and sliced
+- Project version 5 due to project format changes
 - Fixed a few render issues
 
 ## v1.1.2 - 2026-09-22

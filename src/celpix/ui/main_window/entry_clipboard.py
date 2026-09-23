@@ -406,10 +406,16 @@ class EntryClipboardMixin:
         """
         if entry.kind not in _CHILD_KINDS:
             return len(pending)
-        siblings = _rows_at(pending, entry.path, _CHILD_KINDS)
+        # The group is the rows under the same *kind* of parent: a ``.pal`` open
+        # as a file and as a palette at once has two, one after each row.
+        siblings = [
+            e
+            for e in _rows_at(pending, entry.path, _CHILD_KINDS)
+            if e.parent_kind is entry.parent_kind
+        ]
         if siblings:
             return pending.index(siblings[-1]) + 1
-        parent = next(iter(_rows_at(pending, entry.path, (EntryKind.FILE,))), None)
+        parent = next(iter(_rows_at(pending, entry.path, (entry.parent_kind,))), None)
         return pending.index(parent) + 1 if parent is not None else len(pending)
 
     def _free_name(self, entry: Entry, pending: list[Entry]) -> str:

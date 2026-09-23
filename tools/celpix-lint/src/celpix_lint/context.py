@@ -57,10 +57,11 @@ def read_entry(index: int, raw: object) -> EntryView:
     kind = raw_kind if raw_kind in KINDS else "file"
     raw_content = raw.get("content_kind")
     content = raw_content if raw_content in CONTENT_KINDS else "pixels"
-    # `Entry.__post_init__`: a palette entry's content kind is derived from its
-    # kind, so whatever the file says about it is overwritten rather than read.
+    # The loader never reads `content_kind` on a palette entry: it stays at the
+    # default, pixels, which is what its swatches are — and what lets a palette
+    # file supply tiles, colours and input bytes like any other pixel entry.
     if kind == "palette":
-        content = "palette"
+        content = "pixels"
     name = raw.get("name")
     path = raw.get("path")
     # An entry with no usable path is skipped by the loader — except a

@@ -1012,12 +1012,16 @@ class Workspace:
         return self._find(EntryKind.PALETTE, path)
 
     def palette_render_targets(self, path: str) -> list[Entry]:
-        """Loaded FILE/SLICE entries whose document currently renders ``path``.
+        """Loaded entries whose document mirrors the palette file at ``path``.
 
         Matched on the live palette config, not the saved session mode, so it is
         reliable *mid-switch* — the graphics to re-mirror the instant a file
         palette's colors change. Only entries with a document are returned; an
         unloaded one re-mirrors on its next load.
+
+        Mirrors only: an **Entry**-mode reader of a slice of the file names the
+        same path in its config, but its colours are a decode of the slice's run
+        and follow it through :attr:`Entry.palette_entry`, not the whole file's.
         """
         key = self.path_key(path)
         out = []
@@ -1026,7 +1030,7 @@ class Workspace:
                 continue
             # A palette entry's own document names its own file as its palette
             # source: it is the thing being mirrored *from*, never onto.
-            if entry.kind is EntryKind.PALETTE:
+            if entry.kind is EntryKind.PALETTE or entry.palette_entry is not None:
                 continue
             src = entry.doc.palette_config.source.path
             if src and self.path_key(src) == key:
@@ -1197,6 +1201,8 @@ class Workspace:
         length: int | None,
         compression_id: str = NO_COMPRESSION,
         reshape_id: str = NO_RESHAPE,
+        *,
+        parent_kind: EntryKind = EntryKind.FILE,
     ) -> Entry:
         """Build a slice of ``parent_path`` and append it directly.
 
@@ -1211,13 +1217,23 @@ class Workspace:
         :func:`slice_of`); a parent that isn't open contributes only its path,
         which is right, since a closed one is a single file as far as anything
         here knows.
+
+        ``parent_kind`` says which entry over ``parent_path`` is the parent: a
+        ``.pal`` can be open as both a FILE and a registered PALETTE, and a
+        slice of each is a different thing (:attr:`Entry.parent_kind`).
         """
-        parent = self.find_file(parent_path)
+        parent = self._find(parent_kind, parent_path)
         entry = (
             slice_of(parent, name, offset, length, compression_id, reshape_id)
             if parent is not None
             else new_slice(
-                parent_path, name, offset, length, compression_id, reshape_id=reshape_id
+                parent_path,
+                name,
+                offset,
+                length,
+                compression_id,
+                reshape_id=reshape_id,
+                parent_kind=parent_kind,
             )
         )
         # Placed by the same rule the undoable path uses — offset order among the
@@ -1326,13 +1342,14 @@ class Workspace:
         return True
 
     def close(self, entry: Entry, *, with_children: bool = True) -> list[Entry]:
-        """Remove ``entry`` — and, for a file, the slices/bookmarks under it.
+        """Remove ``entry`` — and, for a file or palette, the children under it.
 
         A slice or bookmark nested under a closed parent would be an orphan in
         the list, so the parent takes its children with it (the UI confirms
         first). Returns everything removed. If the current entry was among
-        them, ``current`` moves to a list neighbour — skipping bookmarks,
-        which cannot be current — or None when no candidate remains.
+        them, ``current`` moves to a list neighbour — skipping bookmarks, which
+        cannot be current, and palettes, which are registered rather than
+        browsed (:func:`_browsable`) — or None when no candidate remains.
 
         ``with_children=False`` removes ``entry`` alone. That is the undo of an
         *add*: children are matched by path, so a file opened under a slice or
@@ -1883,6 +1900,8 @@ def tilemap_config_for(
     writable = not problems
     if problems:
         preset_id = STAGE_DEFAULT_PRESET[Stage.INTERPRET_TILEMAP]
+    # FILE alone, where the pixel side also takes a PALETTE: a palette's content
+    # kind is PIXELS (its swatches), so it never reaches a tilemap read.
     if entry.kind is EntryKind.FILE:
         return PathwayConfig(
             source=FileRef(entry.paths),
@@ -2179,15 +2198,42 @@ def swatch_session_for(
 
     ``palette_preset_id`` seeds the dock's format for a session built here; the
     dock in File mode shows the entry's own format, so it is only a fallback.
+
+    Installs the session on ``entry`` — an existing one is corrected in place,
+    so whatever already holds it sees the correction. :func:`swatch_session`
+    is the same answer without touching the entry.
     """
-    session = entry.session
+    entry.session = _as_swatches(entry, entry.session, registry, palette_preset_id)
+    return entry.session
+
+
+def swatch_session(
+    entry: Entry, registry: Registry, palette_preset_id: str
+) -> EntrySession:
+    """The session :func:`swatch_session_for` would install, left uninstalled.
+
+    For a caller that needs to know what a palette file *will* open on without
+    opening it — a slice cut from a palette nobody has opened yet seeds its
+    session from this — since a palette's session is saved with the project,
+    and asking the question must not rewrite the answer on disk.
+    """
+    current = replace(entry.session) if entry.session is not None else None
+    return _as_swatches(entry, current, registry, palette_preset_id)
+
+
+def _as_swatches(
+    entry: Entry,
+    session: EntrySession | None,
+    registry: Registry,
+    palette_preset_id: str,
+) -> EntrySession:
+    """``session`` put right for ``entry``'s swatch view — or built, if None."""
     if session is None:
         session = EntrySession(
             pixel_preset_id=swatch_preset_id(registry),
             palette_preset_id=entry.palette_preset_id or palette_preset_id,
             preview_compression_id=NO_COMPRESSION,
         )
-        entry.session = session
     elif not is_swatch_preset(session.pixel_preset_id, registry):
         session.pixel_preset_id = swatch_preset_id(registry)
     session.palette_mode = PaletteMode.FILE
@@ -2708,14 +2754,19 @@ def path_is_palette_only(ws: Workspace, path: str) -> bool:
     """Whether nothing in ``ws`` reads ``path`` as pixel data.
 
     True for a file referenced only as a palette — an entry's external palette
-    source, or a registered ``.pal`` row. What tells the two kinds of missing
-    file apart when the user is being asked to find one: a palette file follows
-    the graphic that uses it and may never have been picked by hand, so being
-    asked for it by bare name reads as "which of my ROMs is this?".
+    source, or a registered ``.pal`` row and the slices cut from it. What
+    tells the two kinds of missing file apart when the user is being asked to
+    find one: a palette file follows the graphic that uses it and may never have
+    been picked by hand, so being asked for it by bare name reads as "which of
+    my ROMs is this?".
     """
     key = Workspace.path_key(path)
+    # A slice or bookmark cut from a registered palette reads the palette's
+    # bytes, not a ROM's, so it leaves the file a palette. Stated here rather
+    # than through :func:`section_kind`, which also files by content kind.
     return not any(
         entry.kind is not EntryKind.PALETTE
+        and entry.parent_kind is not EntryKind.PALETTE
         and any(Workspace.path_key(p) == key for p in entry.paths)
         for entry in ws.entries
     )
@@ -2927,13 +2978,19 @@ def exportable_entries(ws: Workspace) -> list[Entry]:
     whole file alongside them would be redundant (and a whole ROM is rarely a
     useful image). A sliced file is exported only when the user names it
     explicitly (the single-entry Export), never in bulk — matching the rule that a
-    file with slices isn't exported unless it alone is selected. Bookmarks and
-    palettes hold no graphic of their own and never appear.
+    file with slices isn't exported unless it alone is selected. A bookmark
+    holds no graphic of its own and never appears.
+
+    A registered **palette** never appears either, sliced or not: its swatch
+    sheet is a view of a colour table, not art a bulk export is after. A slice
+    cut from one is a slice like any other and does appear — someone carved
+    that range out on purpose, which is the same claim any slice makes.
 
     A **composite** always appears, and is not redundant with the pieces it is
     assembled from even though its bytes are theirs: the picture it makes is one
     nobody else in the list draws, which is the whole reason it exists. It has no
-    slices of its own to defer to either — a slice's parent is always a file.
+    slices of its own to defer to either — a slice's parent is always a file or
+    a palette.
     """
     result: list[Entry] = []
     for entry in ws.entries:
@@ -2978,12 +3035,14 @@ def entry_export_name(entry: Entry) -> str:
 
     What an export of a hand-picked set of rows is named by: the user chose
     those rows by what the list calls them, so the files carry the same names
-    rather than :func:`export_basename`'s parent-prefixed ones. A file still
-    named after its path drops the extension, so ``foo.chr`` leaves as ``foo``
-    rather than ``foo.chr.png``. The caller still de-dupes.
+    rather than :func:`export_basename`'s parent-prefixed ones. A file or
+    palette still named after its path drops the extension, so ``foo.chr``
+    leaves as ``foo`` rather than ``foo.chr.png``. The caller still de-dupes.
     """
     name = entry.name
-    if entry.kind is EntryKind.FILE and name == basename(entry.path):
+    if entry.kind in (EntryKind.FILE, EntryKind.PALETTE) and name == basename(
+        entry.path
+    ):
         name = splitext(name)[0]
     return _sanitize(name)
 

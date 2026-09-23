@@ -291,9 +291,10 @@ def prune_bindings(entry: Entry, registry: Registry) -> dict[str, Bindings]:
 
     A **slice** or **tilemap** keeps bindings for the plugins it currently reads
     through and drops the rest — the picker has moved on, and what it left
-    behind was kept only so that moving it back cost nothing. A **file** keeps
-    every codec's, since each is the preview binding for that codec and the
-    preview may be set to any of them. Within a plugin this build has, keys it
+    behind was kept only so that moving it back cost nothing. A **file** — or a
+    registered **palette** file — keeps every codec's, since each is the
+    preview binding for that codec and the preview may be set to any of them.
+    Within a plugin this build has, keys it
     no longer declares go too; a plugin this build lacks keeps every key, because
     nothing here can say which of them it still wants.
     """
@@ -302,7 +303,7 @@ def prune_bindings(entry: Entry, registry: Registry) -> dict[str, Bindings]:
     kept: dict[str, Bindings] = {}
     live = (
         set(entry.inputs)
-        if entry.kind is EntryKind.FILE
+        if entry.kind in (EntryKind.FILE, EntryKind.PALETTE)
         else {plugin_id_at(entry, stage, registry) for stage in INPUT_STAGES} - {""}
     )
     for plugin_id, bindings in entry.inputs.items():

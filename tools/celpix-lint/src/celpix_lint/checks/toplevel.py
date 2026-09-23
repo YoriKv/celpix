@@ -84,8 +84,8 @@ def _current(ctx: Context) -> None:
             f"`current` names entry {current}, a {view.kind}, which cannot be shown",
             pointer="/current",
             entry=view,
-            detail="A bookmark is a position and a palette is applied rather than "
-            "opened; the project opens with no entry shown.",
+            detail="A bookmark is a position rather than something opened; the "
+            "project opens with no entry shown.",
         )
 
 

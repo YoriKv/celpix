@@ -285,11 +285,14 @@ class DiskWatchMixin:
     def _reload_from_disk(self, paths: list[str]) -> None:
         """Re-read every entry on ``paths`` from the files as they are now.
 
-        In the order the ownership rule dictates: each **file** entry first, its
-        buffer merged once with its slices' edits already folded in
-        (:meth:`_reload_region`), then its **palette** file, then the current
-        entry put back on screen. A float still hovering over the view is set
-        down first, since it is an edit and has to be in the buffer to be kept.
+        In the order the ownership rule dictates: each **file** and **palette
+        file** entry first, as a region whose buffer is merged once with its
+        slices' edits already folded in (:meth:`_reload_region`); then each
+        loaded slice whose file is not open, as a region of its own; then every
+        re-read palette file is mirrored onto the graphics rendering it and the
+        dock refreshed; and last the current entry is put back on screen. A
+        float still hovering over the view is set down first, since it is an
+        edit and has to be in the buffer to be kept.
         """
         ws = self._workspace
         if ws.current is not None:

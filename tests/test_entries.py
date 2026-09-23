@@ -3465,6 +3465,25 @@ def _two_roms(qtbot, tmp_path):
     return window, a, b, cut
 
 
+def test_a_pasted_palette_slice_lands_after_its_palette_not_its_file_twin():
+    """A ``.pal`` open as a file and as a palette at once: a slice of the palette
+    groups under the palette row, not after the file's children or at the end."""
+    from celpix.project.workspace import Entry, EntryKind
+    from celpix.ui.main_window.entry_clipboard import EntryClipboardMixin
+
+    rom = Entry(name="game.sfc", kind=EntryKind.FILE, path="/x/game.sfc")
+    as_file = Entry(name="c.pal", kind=EntryKind.FILE, path="/x/c.pal")
+    file_child = Entry(name="f", kind=EntryKind.SLICE, path="/x/c.pal")
+    pal = Entry(name="c.pal", kind=EntryKind.PALETTE, path="/x/c.pal")
+    rom2 = Entry(name="other.sfc", kind=EntryKind.FILE, path="/x/other.sfc")
+    run = Entry(
+        name="run", kind=EntryKind.SLICE, path="/x/c.pal", parent_kind=EntryKind.PALETTE
+    )
+    at = EntryClipboardMixin._paste_index
+    assert at(run, [rom, pal, rom2]) == 2
+    assert at(run, [as_file, file_child, pal, rom2]) == 3
+
+
 def test_a_slice_copied_onto_another_file_keeps_its_coordinates(qtbot, tmp_path):
     """The operation the paste target rule exists for: finding the same regions
     in a second dump of the same ROM.

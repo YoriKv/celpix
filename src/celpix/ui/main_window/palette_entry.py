@@ -473,12 +473,14 @@ class PaletteEntryMixin:
         # colour deposited by a graphic reading a run of it all leave the
         # palette half — and every File-mode graphic mirroring it — stale the
         # same way (``docs/design/palette-editing.md`` §2).
+        redecoded = False
         for source in sources:
             if source.kind is EntryKind.PALETTE and source is not skip:
                 self._redecode_palette_entry(source)
-        if (seen or any(s.kind is EntryKind.PALETTE for s in sources)) and (
-            self._doc is not None
-        ):
+                redecoded = True
+        # Only when something here moved: a colour edit made on the palette
+        # file itself skips it, and repaints once on its own way out.
+        if (seen or redecoded) and self._doc is not None:
             self._refresh_view()
 
     def _redecode_palette_entry(self, entry: Entry) -> None:
@@ -486,12 +488,21 @@ class PaletteEntryMixin:
 
         :meth:`_redecode_entry_palette` for the entry that owns the bytes: the
         swatch half is the authority, and the palette half is decoded from it
-        under the format the entry reads with. Colours the user has edited and
-        not yet written stay as edited
-        (:func:`~celpix.project.diskchanges.carry_color_edits`): they are in the
-        bytes already, encoded, and re-decoding would hand back the format's
-        rounding of a colour still being worked on. The splice base moves with
-        the bytes, so a later edit re-splices against what is there now.
+        under the format the entry reads with. The splice base moves with the
+        bytes, so a later edit re-splices against what is there now.
+
+        A colour the user has edited and not yet written keeps its exact value
+        (:func:`~celpix.project.diskchanges.carry_color_edits`) only while the
+        bytes still **hold** it — its read unit is what the edit encodes to
+        (:meth:`_edits_held_by`) — since re-decoding it would hand back the
+        format's rounding of a colour still being worked on. That is the disk
+        reload's case: a merge keeps every byte the user changed. Where the
+        unit moved under the edit — a stroke on the swatch, a slice folded in,
+        another consumer's deposit — the bytes are newer than the edit, so its
+        mark is dropped and the decode stands. Carried, the stale colour would
+        show in the dock and every mirror, and Write would splice it back over
+        the bytes that replaced it. Only a writable swatch half is asked: a
+        read-only one never took the edits in, and they carry whole.
 
         Then the graphics rendering the file take the new colours, since they
         show the entry's palette by reference (:meth:`~...palette_source.
@@ -510,12 +521,45 @@ class PaletteEntryMixin:
         except (PipelineError, OSError):
             return
         colors = loaded.palette.colors
+        if doc.palette_edits and doc.pixel_config.write_enabled:
+            # A writable swatch half is where every colour edit was deposited
+            # (:meth:`_sync_entry_palette_bytes`), so the bytes say which edits
+            # still stand. A read-only one never took them: its bytes have only
+            # the file's say, and the edits all carry. Asked of the old state
+            # before any of it is replaced below.
+            doc.palette_edits = self._edits_held_by(doc, loaded.data)
         if doc.palette_edits:
             colors = carry_color_edits(colors, doc.palette.colors, doc.palette_edits)
         doc.palette = Palette(colors)
         doc.palette_base_bytes = loaded.data
         self._mirror_palette(entry)
         self._files_panel.refresh_entry(entry)
+
+    def _edits_held_by(self, doc: Document, window: bytes) -> set[int]:
+        """The marked colours of ``doc`` whose read unit ``window`` still holds.
+
+        ``window`` is the palette's bytes as just read again. A mark is held when
+        its unit there equals what a save would write for it
+        (:func:`~celpix.pipeline.pipeline.spliced_palette_bytes`) — the unit and
+        not the entry, because that is what a save splices and what a deposit
+        writes. A format that cannot be asked holds nothing: the bytes win.
+        """
+        preset_id = doc.palette_config.interpret_preset_id
+        try:
+            wanted = pipeline.spliced_palette_bytes(doc, self._registry)
+            size = pipeline.palette_entry_size(preset_id, self._registry)
+            per_unit = pipeline.palette_entries_per_unit(preset_id, self._registry)
+        except (PipelineError, KeyError):
+            return set()
+        if size <= 0:
+            return set()
+        held: set[int] = set()
+        for index in doc.palette_edits:
+            at = (index // max(1, per_unit)) * size
+            unit = window[at : at + size]
+            if len(unit) == size and unit == wanted[at : at + size]:
+                held.add(index)
+        return held
 
     def _degrade_entry_palettes(self, sources: list[Entry]) -> None:
         """Fall every palette read out of one of ``sources`` back to the default.
