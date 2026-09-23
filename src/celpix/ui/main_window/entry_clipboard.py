@@ -51,6 +51,10 @@ from celpix.ui.widgets import counted
 #: has to find a parent for.
 _CHILD_KINDS = (EntryKind.SLICE, EntryKind.BOOKMARK)
 
+#: The two kinds a child can be a window into (:attr:`~celpix.project.workspace.
+#: Entry.parent_kind`): a copied parent of either keeps its children with it.
+_PARENT_KINDS = (EntryKind.FILE, EntryKind.PALETTE)
+
 #: The kinds that may exist more than once, because their identity is not a path.
 #: A superset of :data:`_CHILD_KINDS`, and the two were one list until a
 #: **composite** turned out to be the second without being the first: it is
@@ -263,9 +267,9 @@ class EntryClipboardMixin:
         # slices onto another project must not scatter the slices over whichever
         # file happened to be right-clicked.
         carried = {
-            Workspace.path_key(record.entry.path)
+            (record.entry.kind, Workspace.path_key(record.entry.path))
             for record in copied
-            if record.entry.kind is EntryKind.FILE
+            if record.entry.kind in _PARENT_KINDS
         }
         placed: list[Entry] = []
         skipped: list[str] = []
@@ -297,9 +301,12 @@ class EntryClipboardMixin:
             elif entry.kind in _CHILD_KINDS:
                 if key in left_behind:
                     continue
-                own = key in carried
+                # Matched by the kind of row it was cut from as well as by path:
+                # a ``.pal`` can be open as a file and as a palette at once, and
+                # a slice of the palette must not be adopted by the file.
+                own = (entry.parent_kind, key) in carried
                 parent = (None if own else host) or next(
-                    iter(_rows_at(pending, entry.path, (EntryKind.FILE,))), None
+                    iter(_rows_at(pending, entry.path, (entry.parent_kind,))), None
                 )
                 if parent is not None:
                     self._reparent(entry, parent)
@@ -320,8 +327,14 @@ class EntryClipboardMixin:
             )
             return
         self._rebind_copies(copied, placed, bindings)
+        # The first row that opens — not a palette, which is registered rather
+        # than shown, the way its add is (``window._apply_add_entry``).
         first = next(
-            (e for _, e in placements if e.kind.has_document),
+            (
+                e
+                for _, e in placements
+                if e.kind.has_document and e.kind is not EntryKind.PALETTE
+            ),
             None,
         )
         self._push_command(
@@ -338,14 +351,14 @@ class EntryClipboardMixin:
     def _paste_host(self, target: Entry | None) -> Entry | None:
         """The file a pasted slice or bookmark should be cut out of.
 
-        The targeted row's own file: a file row is itself, a slice or bookmark
-        row is the file it already belongs to. A palette row names no file to cut
-        into, so it aims at nothing and the copy falls back to the parent it
-        remembers.
+        The targeted row's own file: a file or palette row is itself, a slice
+        or bookmark row is the one it already belongs to. A composite names no
+        file to cut into, so it aims at nothing and the copy falls back to the
+        parent it remembers.
         """
         if target is None:
             return None
-        if target.kind is EntryKind.FILE:
+        if target.kind in _PARENT_KINDS:
             return target
         return self._workspace.parent_of(target)
 
@@ -362,10 +375,19 @@ class EntryClipboardMixin:
         """
         entry.path = parent.path
         entry.extra_paths = parent.extra_paths
+        entry.parent_kind = parent.kind
 
-    @staticmethod
-    def _file_entry_for(child: Entry) -> Entry:
-        """A FILE row for the file a pasted child cuts into."""
+    def _file_entry_for(self, child: Entry) -> Entry:
+        """A row for the file a pasted child cuts into — a FILE, or the
+        registered PALETTE a slice of a palette file was carved from."""
+        if child.parent_kind is EntryKind.PALETTE:
+            return Entry(
+                name=basename(child.path),
+                kind=EntryKind.PALETTE,
+                path=child.path,
+                container_id=self._detect_palette_container(child.path),
+                palette_preset_id=self._palette_import_preset_id(),
+            )
         return Entry(
             name=basename(child.path),
             kind=EntryKind.FILE,
@@ -415,7 +437,11 @@ class EntryClipboardMixin:
         """The rows a pasted one has to be told apart from — its siblings under
         the same file, or the top-level rows of the same kind."""
         if entry.kind in _CHILD_KINDS:
-            return _rows_at(pending, entry.path, _CHILD_KINDS)
+            return [
+                e
+                for e in _rows_at(pending, entry.path, _CHILD_KINDS)
+                if e.parent_kind is entry.parent_kind
+            ]
         return [e for e in pending if e.kind is entry.kind]
 
     @staticmethod

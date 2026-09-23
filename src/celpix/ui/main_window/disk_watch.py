@@ -34,9 +34,7 @@ from PySide6.QtCore import QEvent, QFileSystemWatcher, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from celpix.core.document import Document
-from celpix.core.errors import PipelineError
 from celpix.core.palette import Palette
-from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.project.diskchanges import DiskState, Merge, carry_color_edits, merge_bytes
 from celpix.project.workspace import Entry, EntryKind, palette_source_for
@@ -299,8 +297,11 @@ class DiskWatchMixin:
         self._capture_session()
         on = self._on_paths(paths)
         tally = _Reload()
+        # A palette file is a region like any other: its buffer is the authority
+        # for its slices, and its colours are a decode of it
+        # (``docs/design/palette-editing.md`` §2).
         for entry in list(ws.entries):
-            if entry.kind is EntryKind.FILE and on(entry):
+            if entry.kind in (EntryKind.FILE, EntryKind.PALETTE) and on(entry):
                 self._reload_region(entry, tally)
         # A slice whose file is not itself open reads the file for itself, so
         # it is its own region here (``slices-and-parents.md`` §2).
@@ -309,12 +310,16 @@ class DiskWatchMixin:
                 entry.kind is EntryKind.SLICE
                 and on(entry)
                 and entry.doc is not None
-                and ws.find_file(entry.path) is None
+                and ws.parent_of(entry) is None
             ):
                 tally.add(self._reload_document(entry, tally))
-        for entry in list(ws.entries):
-            if entry.kind is EntryKind.PALETTE and on(entry):
-                self._reload_palette_entry(entry, tally)
+        # The graphics rendering a re-read palette file show its colours by
+        # reference, and are holding the ones the old bytes decoded to.
+        for entry in tally.reloaded:
+            if entry.kind is EntryKind.PALETTE:
+                self._mirror_palette(entry)
+        if any(e.kind is EntryKind.PALETTE for e in tally.reloaded):
+            self._refresh_palette_dock()
         self._disk_state.refresh(paths)
         for entry in tally.reloaded:
             self._files_panel.refresh_entry(entry)
@@ -467,27 +472,6 @@ class DiskWatchMixin:
             fresh.palette_config = previous.palette_config
             fresh.palette_base_bytes = previous.palette_base_bytes
         fresh.palette_edits = set(previous.palette_edits)
-
-    def _reload_palette_entry(self, entry: Entry, tally: _Reload) -> None:
-        """Re-read a registered palette file and re-mirror it onto every graphic
-        showing it. Unsaved colour edits go back over the new colours."""
-        previous = entry.doc
-        if previous is None:
-            return  # never loaded: the next use reads the file as it is now
-        cfg = previous.palette_config
-        try:
-            loaded = pipeline.load_palette(cfg, self._registry)
-        except (PipelineError, OSError):
-            tally.failed.append(entry.name)
-            return
-        entry.doc = Document.palette_only(loaded.palette, cfg, loaded.ctx, loaded.data)
-        if entry.palette_dirty:
-            self._carry_palette(previous, entry.doc)
-            tally.kept += len(previous.palette_edits)
-        self._mirror_palette(entry)
-        tally.reloaded.append(entry)
-        if self._preview_palette is entry:
-            self._refresh_palette_dock()
 
     def _put_current_back(self, reloaded: list[Entry]) -> None:
         """Repaint the entry on screen from whatever the reload left it with."""

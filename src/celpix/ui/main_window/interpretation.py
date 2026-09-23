@@ -1108,6 +1108,12 @@ class InterpretationMixin:
         self._apply_pixel_config(
             self._pixel_preset_id(), self._recorded_byte_position()
         )
+        if entry is not None and entry.kind is EntryKind.PALETTE:
+            # On a palette file the swatch format *is* the palette's format —
+            # one fact, two pickers — so the colours the dock shows and every
+            # graphic mirrors follow it, and the entry records it as the codec
+            # its double-click decodes with.
+            self._adopt_palette_entry_format(entry, preset_id)
 
     def _palette_import_preset_id(self) -> str:
         """The format a palette *file* is read with (the dock's Import as…).

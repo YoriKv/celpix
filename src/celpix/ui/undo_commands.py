@@ -546,25 +546,6 @@ class PixelAspectCommand(_ProjectCommand):
         self._window._apply_pixel_aspect(state)
 
 
-class PreviewPaletteFormatCommand(_InPlaceCommand):
-    """One re-read of a previewed palette file under a different codec.
-
-    The document-less twin of :class:`PaletteCommand`: a registered ``.pal``
-    shown in the dock with nothing open has no document to re-decode, so the
-    format change goes back to the file. In place, because the entry it belongs
-    to is a PALETTE entry that can never be current.
-
-    A preview is read-only, and the push site refuses a file with unsaved color
-    edits, so there is nothing here a re-read could lose — but
-    the codec it lands on is written to the entry, and a file that decoded wrong
-    is corrected by trying formats until one reads. Stepping back through those
-    tries is the point.
-    """
-
-    def _apply(self, state: str) -> None:
-        self._window._apply_preview_palette_format(self._entry, state)
-
-
 class TileRearrangementCommand(_CurrentEntryCommand):
     """One rearrangement of tile *display* positions, as before/after maps.
 
@@ -1009,9 +990,11 @@ class ColorEditCommand(QUndoCommand):
         self, argb: int, revision: int, pixel_owners: tuple[tuple[Entry, int], ...]
     ) -> None:
         with self._window._undo_apply():
-            # A PALETTE entry can never be current, so a file-palette edit applies
-            # without switching the view; a graphic-owned edit first returns to the
-            # graphic it happened on, as every document-scoped command does.
+            # A file-palette edit lands on the PALETTE entry's own document, which
+            # is shown by every graphic mirroring it and by the entry itself when
+            # opened, so it applies without switching the view; a graphic-owned
+            # edit first returns to the graphic it happened on, as every
+            # document-scoped command does.
             if self._owner.kind is EntryKind.PALETTE or self._window._ensure_current(
                 self._owner
             ):
@@ -1667,6 +1650,11 @@ class RemovePaletteWithConsumersCommand(QUndoCommand):
     keeps the colors as its own Custom palette — project-stored, so this is a
     change to the *project*, never to the graphic's own bytes. Undo re-registers
     the palette at its old list position and relinks every graphic back to it.
+
+    ``victims`` are the palette and the slices cut from it with their list
+    positions, exactly as :class:`RemoveEntriesCommand` captures them: a palette
+    file is sliced like any file, and its slices go with it and come back with
+    it (``docs/design/palette-editing.md`` §2).
     """
 
     def __init__(
@@ -1674,13 +1662,15 @@ class RemovePaletteWithConsumersCommand(QUndoCommand):
         window: MainWindow,
         palette: Entry,
         *,
-        index: int,
+        victims: list[tuple[int, Entry]],
+        was_current: Entry | None,
         consumers: list[PaletteConsumerLink],
     ) -> None:
         super().__init__(f'remove "{palette.name}"')
         self._window = window
         self._palette = palette
-        self._index = index
+        self._victims = victims
+        self._was_current = was_current
         self._consumers = consumers
 
     def redo(self) -> None:
@@ -1690,5 +1680,5 @@ class RemovePaletteWithConsumersCommand(QUndoCommand):
     def undo(self) -> None:
         with self._window._undo_apply():
             self._window._apply_restore_palette_consumers(
-                self._palette, self._index, self._consumers
+                self._victims, self._was_current, self._consumers
             )

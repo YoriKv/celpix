@@ -349,6 +349,12 @@ def _entry_dict(
     if entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
         if entry.container_id != RAW_CONTAINER:
             data["container_id"] = entry.container_id
+    if entry.kind in (EntryKind.SLICE, EntryKind.BOOKMARK):
+        # Which kind of whole-file row the child was cut from. Only when it is
+        # not a file, so every slice and bookmark any older project holds is
+        # written exactly as before (:attr:`Entry.parent_kind`).
+        if entry.parent_kind is not EntryKind.FILE:
+            data["parent"] = _KIND_NAMES[entry.parent_kind]
     if entry.kind is EntryKind.SLICE:
         data["slice_offset"] = entry.slice_offset
         data["slice_length"] = entry.slice_length
@@ -371,10 +377,10 @@ def _entry_dict(
         # to tell it apart from anything that does.
         data["pieces"] = _pieces_list(entry, positions)
     # What the bytes are, as opposed to how the entry is bounded above. Omitted
-    # at the default so a pixel entry — every entry any older project holds — is
-    # written exactly as it was before tilemaps existed, and omitted for a
-    # palette entry, whose ``kind`` already implies it (Entry.__post_init__).
-    if entry.content_kind not in (ContentKind.PIXELS, ContentKind.PALETTE):
+    # at the default so a pixel entry — every entry any older project holds,
+    # palette files included — is written exactly as it was before tilemaps
+    # existed.
+    if entry.content_kind is not ContentKind.PIXELS:
         data["content_kind"] = entry.content_kind.value
     # Not gated on the content kind, unlike the binding below it: a tile bank's
     # pinned rows count from a base exactly as a map's cells do, so a pixel entry
@@ -839,9 +845,11 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         raise ValueError("entry has no usable path")
     path = _resolve_path(path, base_dir)
     if kind is EntryKind.PALETTE:
-        # A palette entry is just a reference plus how to read it — the container
+        # A palette entry is a reference plus how to read it — the container
         # that says which of its bytes are colour, and the codec that decodes
-        # them. No session/view/palette state of its own.
+        # them — and, since it opens as a sheet of swatches, the session and
+        # view of that sheet. No palette source of its own: its palette is its
+        # own bytes, decoded on load (``docs/design/palette-editing.md`` §2).
         return Entry(
             name=name if isinstance(name, str) and name else basename(path),
             kind=kind,
@@ -850,8 +858,15 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
             palette_preset_id=_plugin_id(
                 raw.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET
             ),
+            session=_session_from(raw.get("session")),
+            pending_view=_view_from(raw.get("view")),
         )
     offset_key = "offset" if kind is EntryKind.BOOKMARK else "slice_offset"
+    # A child cut from a registered palette says so; absent — every child in
+    # every project written before palettes could be sliced — means a file.
+    parent_kind = _KINDS_BY_NAME.get(raw.get("parent"), EntryKind.FILE)
+    if parent_kind not in (EntryKind.FILE, EntryKind.PALETTE):
+        parent_kind = EntryKind.FILE
     entry = Entry(
         name=name if isinstance(name, str) and name else basename(path),
         kind=kind,
@@ -865,6 +880,7 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         slice_length=_int(raw.get("slice_length"), None),
         compression_id=_plugin_id(raw.get("compression_id"), NO_COMPRESSION),
         reshape_id=_plugin_id(raw.get("reshape_id"), NO_RESHAPE),
+        parent_kind=parent_kind,
         # Absent on every slice that never overrode it, and on every project
         # written before the choice existed — SlotFill.parse gives those the
         # default, which is what they get in the dialog too.

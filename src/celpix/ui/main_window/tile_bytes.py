@@ -547,7 +547,7 @@ class TileBytesMixin:
                 out.append(candidate)
 
         if entry.kind is EntryKind.SLICE:
-            add(self._workspace.find_file(entry.path))
+            add(self._workspace.parent_of(entry))
         elif entry.kind is EntryKind.COMPOSITE:
             for start, data in splices:
                 for owner, _at, _first, _last in self._composite_runs(
@@ -555,7 +555,7 @@ class TileBytesMixin:
                 ):
                     add(owner)
                     if owner.kind is EntryKind.SLICE:
-                        add(self._workspace.find_file(owner.path))
+                        add(self._workspace.parent_of(owner))
         return tuple(out)
 
     def _composite_runs(

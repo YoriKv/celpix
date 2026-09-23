@@ -622,8 +622,8 @@ class FileListPanel(QWidget):
 
     @staticmethod
     def _has_slices(item: QTreeWidgetItem) -> bool:
-        """Whether a file item has at least one slice child — its bookmark
-        children don't count, holding no bytes to export."""
+        """Whether a file's or palette's item has at least one slice child —
+        its bookmark children don't count, holding no bytes to export."""
         return any(
             item.child(i).data(0, Qt.ItemDataRole.UserRole).kind is EntryKind.SLICE
             for i in range(item.childCount())
@@ -1137,7 +1137,10 @@ class FileListPanel(QWidget):
         elif entry.kind is EntryKind.PALETTE:
             if entry.palette_preset_id is not None:
                 tip += f"\nFormat {entry.palette_preset_id.rsplit('.', 1)[-1]}"
-            tip += "\nDouble-click to use as the current palette"
+            tip += (
+                "\nDouble-click to use as the current palette;"
+                "\nOpen Swatches shows its colours as a sheet"
+            )
         if unsaved:
             # Name which pathway is pending: a palette edit writes to a different
             # file than the entry's own data, so "unsaved changes" alone would
@@ -1688,6 +1691,49 @@ class FileListPanel(QWidget):
             ),
         )
 
+    def _add_open_swatches_action(self, menu: QMenu, entry: Entry) -> None:
+        """Open Swatches, on a row filed under Palettes.
+
+        Filed there, a click selects rather than opens, so there has to be a
+        way to say so — and it is offered only there, since everywhere else the
+        row's own click already is it. Named for what opening it shows, which
+        also leaves the letter free: every one in "Open" is taken in these menus
+        already. A palette file, a slice of one and a swatch composite all take
+        it (``docs/design/palette-editing.md`` §2).
+        """
+        if self.section_of(entry) is ContentKind.PALETTE:
+            self._entry_action(menu, "Open Swatc&hes", self.entry_activated.emit, entry)
+
+    def _add_slice_actions(self, menu: QMenu, entry: Entry) -> bool:
+        """New Slice…, from View and from Selection, on a file's or a palette's
+        row; True when the row is on screen, which is what the last two need.
+
+        Only whole files spawn slices (they never nest), so the menu shows these
+        on those rows alone. All but the plain dialog additionally need the file
+        on screen — the viewport, selection and settings snapshot live only
+        there.
+        """
+        sliceable = entry is self._current and entry.doc is not None
+        self._entry_action(menu, "New &Slice…", self.new_slice_requested.emit, entry)
+        # ...and a view to read: an entry shown entire has no window for this to
+        # cover, which is the entry's own answer to give (the File menu's row is
+        # gated on the same capability).
+        self._entry_action(
+            menu,
+            "New Slice from &View",
+            self.new_slice_from_view_requested.emit,
+            entry,
+            enabled=sliceable and entry.can(Capability.NAVIGATION),
+        )
+        self._entry_action(
+            menu,
+            "New Slice &from Selection",
+            self.new_slice_from_selection_requested.emit,
+            entry,
+            enabled=sliceable and self._has_selection,
+        )
+        return sliceable
+
     def _add_use_as_palette_action(self, menu: QMenu, entry: Entry) -> None:
         """Use as Palette, beside the row's own way of being used.
 
@@ -1913,31 +1959,7 @@ class FileListPanel(QWidget):
         if entry.kind is EntryKind.FILE:
             self._add_use_as_palette_action(menu, entry)
             menu.addSeparator()
-            # Only files spawn slices and bookmarks (neither nests), so the
-            # menu shows these on files alone. All but the plain dialog
-            # additionally need the file on screen — the viewport, selection
-            # and settings snapshot live only there.
-            sliceable = entry is self._current and entry.doc is not None
-            self._entry_action(
-                menu, "New &Slice…", self.new_slice_requested.emit, entry
-            )
-            # ...and a view to read: an entry shown entire has no window for
-            # this to cover, which is the entry's own answer to give
-            # (the File menu's row is gated on the same capability).
-            self._entry_action(
-                menu,
-                "New Slice from &View",
-                self.new_slice_from_view_requested.emit,
-                entry,
-                enabled=sliceable and entry.can(Capability.NAVIGATION),
-            )
-            self._entry_action(
-                menu,
-                "New Slice &from Selection",
-                self.new_slice_from_selection_requested.emit,
-                entry,
-                enabled=sliceable and self._has_selection,
-            )
+            sliceable = self._add_slice_actions(menu, entry)
             # "k" rather than the File menu's "B", which Sort by holds here: the
             # letters only have to be unique within one menu, and every other one
             # in "Sort by" is spoken for on a file's row (S by New Slice, o by
@@ -1969,6 +1991,10 @@ class FileListPanel(QWidget):
             self._add_write_action(menu, entry)
             menu.addSeparator()
         elif entry.kind is EntryKind.SLICE:
+            # A slice of a palette file sits under Palettes, where a click
+            # selects rather than opens — so, as on a swatch composite, Open
+            # is spelled out (``docs/design/palette-editing.md`` §2).
+            self._add_open_swatches_action(menu, entry)
             # A slice's primary navigation action: reopen its region in the
             # parent file, decoded the slice's way, at the slice's offset.
             self._entry_action(
@@ -1992,12 +2018,7 @@ class FileListPanel(QWidget):
             # Filed under Palettes, a click no longer opens it, so there has to
             # be a way to say so: **Open** is that way, and it is offered only
             # there, since everywhere else the row's own click already is it.
-            if self.section_of(entry) is ContentKind.PALETTE:
-                # Named for what opening it shows, which also leaves the letter
-                # free: every one in "Open" is taken in this menu already.
-                self._entry_action(
-                    menu, "Open &Swatches", self.entry_activated.emit, entry
-                )
+            self._add_open_swatches_action(menu, entry)
             self._add_use_as_palette_action(menu, entry)
             menu.addSeparator()
             # Over a selection only: a composite is never a piece of another.
@@ -2010,11 +2031,22 @@ class FileListPanel(QWidget):
             self._add_write_action(menu, entry)
             menu.addSeparator()
         elif entry.kind is EntryKind.PALETTE:
-            # The double-click action, discoverable.
+            # Opening shows the file as swatches; the double-click applies it.
+            self._add_open_swatches_action(menu, entry)
             self._entry_action(
                 menu, "&Use as Current Palette", self.use_palette_requested.emit, entry
             )
             menu.addSeparator()
+            # A palette file is sliced like any file: a run of its colours is a
+            # palette of its own, and a piece for a composite to assemble.
+            sliceable = self._add_slice_actions(menu, entry)
+            self._entry_action(
+                menu,
+                "New Boo&kmark",
+                self.new_bookmark_requested.emit,
+                entry,
+                enabled=sliceable,
+            )
             new_composite = self._add_new_composite_action(menu, entry, acting)
             menu.addSeparator()
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))
@@ -2028,15 +2060,17 @@ class FileListPanel(QWidget):
                 entry,
             )
             self._add_container_info_action(menu, entry)
-            # A file palette owns its colors and is edited in place, so it Writes
-            # back to its own .pal from here — offered only with unsaved edits (the
-            # graphic that renders it is never dirtied by a color change).
+            # A file palette owns its colours and writes them back to its own
+            # file, whichever way they were edited — through the dock, or by
+            # painting its swatches — so it is offered exactly when a write would
+            # put something down.
             self._entry_action(
                 menu,
                 "&Write",
                 self.write_requested.emit,
                 entry,
-                enabled=entry.doc is not None and entry.palette_dirty,
+                enabled=entry.doc is not None
+                and (entry.pixel_dirty or entry.palette_dirty),
             )
             menu.addSeparator()
         else:
@@ -2102,7 +2136,11 @@ class FileListPanel(QWidget):
                 self._entry_action(
                     export, "&Raw…", self.export_raw_requested.emit, entry
                 )
-            if not multi and entry.kind is EntryKind.FILE and self._has_slices(item):
+            if (
+                not multi
+                and entry.kind in (EntryKind.FILE, EntryKind.PALETTE)
+                and self._has_slices(item)
+            ):
                 export.addSeparator()
                 self._entry_action(
                     export, "&Slices as PNGs…", self.export_slices_requested.emit, entry

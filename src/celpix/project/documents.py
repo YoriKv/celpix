@@ -63,6 +63,7 @@ from celpix.project.workspace import (
     pixel_config_for,
     record_composite_layout,
     reorders_bytes,
+    swatch_session_for,
     tilemap_config_for,
 )
 
@@ -71,6 +72,7 @@ from celpix.project.workspace import (
 #: for a tilemap that was carved out by hand rather than detected.
 DEFAULT_TILEMAP_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_TILEMAP]
 DEFAULT_PIXEL_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
+DEFAULT_PALETTE_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PALETTE]
 
 #: ``(entry, preset id) -> config``: how the caller builds a pixel pathway.
 PixelConfig = Callable[[Entry, str], PathwayConfig]
@@ -760,12 +762,12 @@ def palette_offset_owner(workspace: Workspace, entry: Entry | None) -> Entry | N
     """
     if entry is None:
         return None
-    if entry.kind is EntryKind.FILE:
+    if entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
         return entry
     if entry.kind is EntryKind.COMPOSITE:
         first = next((p.entry for p in entry.pieces if p.entry is not None), None)
         return palette_offset_owner(workspace, first) if first is not entry else None
-    return workspace.find_file(entry.path)
+    return workspace.parent_of(entry)
 
 
 def offset_palette_files(workspace: Workspace, entry: Entry) -> tuple[str, ...]:
@@ -1089,6 +1091,11 @@ def _pixel_config(registry, workspace: Workspace) -> PixelConfig:  # noqa: ANN00
 def _load(entry: Entry, registry, workspace: Workspace, problems: list[str]) -> None:  # noqa: ANN001
     if entry.doc is not None:
         return
+    if entry.kind is EntryKind.PALETTE:
+        # A palette file opens as swatches in its own colour format, on a
+        # session built for that where the project stored none — the app's
+        # loader does the same (``docs/design/palette-editing.md`` §2).
+        swatch_session_for(entry, registry, DEFAULT_PALETTE_PRESET)
     assert entry.session is not None, f"{entry.name} has no session to load with"
     session = entry.session
     configure = _pixel_config(registry, workspace)

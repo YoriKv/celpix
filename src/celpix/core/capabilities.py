@@ -4,7 +4,10 @@ Two questions the editor has to answer about every open entry, kept apart from
 each other and from the entry's *bounding* (whole file, slice, bookmark — see
 :class:`~celpix.project.workspace.EntryKind`):
 
-- :class:`ContentKind` — pixels, a tilemap, or a palette. What the bytes *are*.
+- :class:`ContentKind` — pixels or a tilemap. What the bytes *are*. (PALETTE
+  names what a *file* holds for its container's sake — a registered palette
+  file's bytes are pixels to the editor, swatches read through the
+  palette-swatch codec, and it is filed with the palettes by its entry kind.)
 - :class:`Capability` — one thing the editor can do to a document. A content kind
   declares the set it supports, and a control declares the one it needs.
 
@@ -37,6 +40,12 @@ class ContentKind(str, Enum):
     ``PIXELS`` is the default and is **omitted** when a project is written, so
     every project that predates tilemaps loads unchanged and an ordinary pixel
     entry costs nothing.
+
+    ``PALETTE`` is never an entry's content: a palette file's bytes are colour
+    words, which the editor reads as swatches — pixels — like a composite of a
+    ROM's colour tables. It names what a **file** holds, for the containers that
+    frame a palette and the dialogs that count one in colours
+    (:func:`~celpix.project.workspace.file_kind`).
     """
 
     PIXELS = "pixels"
@@ -194,9 +203,6 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
         Capability.TILE_BINDING,
         Capability.STAMP,
     },
-    # A palette entry is applied to whichever entry is on screen rather than
-    # activated, so it has no view of its own to navigate, scan or edit in.
-    ContentKind.PALETTE: frozenset({Capability.PALETTE_CODEC}),
 }
 
 

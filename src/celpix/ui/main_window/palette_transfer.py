@@ -79,19 +79,22 @@ class PaletteTransferMixin:
             self._open_palette_data(path)
 
     def _open_palette_data(self, path: str) -> bool:
-        """Register ``path`` in Palettes, and preview it when nothing is open.
+        """Register ``path`` in Palettes, and open it when nothing else is.
 
         The one funnel behind every "open a palette file" gesture - File ▸ Open
         palette data, a dropped ``.pal``, and the dock's File mode when there is
-        no document to apply a palette *to*. Returns whether it ended up in the
-        dock: with a document open it is registered and nothing more, since the
-        Palettes list is then a source of palettes for that view.
+        no document to apply a palette *to*. Returns whether it ended up on
+        screen: with a document open it is registered and nothing more, since
+        the Palettes list is then a source of palettes for that view; with none
+        it is opened as the sheet of swatches it is, its colours in the dock
+        (``docs/design/palette-editing.md`` §2).
         """
         self._add_palette_file(path)
         entry = self._workspace.find_palette(path)
         if entry is None or self._doc is not None:
             return False
-        return self._preview_palette_file(entry)
+        self._activate_entry(entry)
+        return self._workspace.current is entry
 
     def _export_palette_file(self) -> None:
         """Palette dock ▸ Export to File…: write the live colors out as a ``.pal``.
@@ -217,11 +220,16 @@ class PaletteTransferMixin:
 
         Decodes with the codec the *entry* remembers, not wherever the format
         dropdown has moved since; the commit then snaps the dropdown onto that
-        codec, so the two agree afterwards. With nothing open there is nothing
-        to apply it *to*, so the same gesture previews its colors instead.
+        codec, so the two agree afterwards. With nothing to apply it *to* —
+        nothing open, or a palette file on screen, whose colours are its own —
+        the same gesture opens it instead, as a swatch composite's does
+        (``docs/design/composite-entry.md`` §5).
         """
-        if self._doc is None:
-            self._preview_palette_file(entry)
+        current = self._workspace.current
+        if self._doc is None or (
+            current is not None and current.kind is EntryKind.PALETTE
+        ):
+            self._activate_entry(entry)
             return
         if data_missing(entry):
             self._alert(

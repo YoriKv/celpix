@@ -498,9 +498,9 @@ def _source_bytes(
         if workspace is not None and not any(e is source for e in workspace.entries):
             raise _Unresolved(f"{source.name} is not open.")
         return _view_bytes(source, registry, workspace)[0], 0
-    owner = entry if entry.kind is ws.EntryKind.FILE else None
+    owner = entry if entry.kind in (ws.EntryKind.FILE, ws.EntryKind.PALETTE) else None
     if owner is None and workspace is not None:
-        owner = workspace.find_file(entry.path)
+        owner = workspace.parent_of(entry)
     if owner is None:
         # No parent in hand — the files as plain bytes, which is what a slice's
         # parent is as far as anything here can know.

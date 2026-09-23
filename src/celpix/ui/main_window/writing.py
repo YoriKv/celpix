@@ -127,7 +127,15 @@ class WritingMixin:
         palette_only = entry.palette_dirty and not entry.pixel_dirty
         has_palette_file = entry.doc.palette_config.write_enabled
         palette = self._linked_palette_entry()
-        if palette is None or palette.doc is None or not palette.palette_dirty:
+        # A palette file on screen is its own linked palette, and one write of
+        # it covers both halves; a colour edit made through the dock dirties
+        # its bytes as well as its colours, so either flag means unsaved.
+        if (
+            palette is None
+            or palette is entry
+            or palette.doc is None
+            or not (palette.palette_dirty or palette.pixel_dirty)
+        ):
             palette = None
         owners = self._unsaved_owners(entry)
         # A palette read out of another entry's bytes is that entry's to write,
@@ -299,11 +307,14 @@ class WritingMixin:
                 "them has unsaved changes."
             )
             return
-        # A PALETTE entry writes its own .pal (its pixel half is inert); every
-        # other entry writes its graphic, which is view-only when any stage it
-        # reads through has no save-side half to put the bytes back with.
+        # A PALETTE entry writes its own file through whichever half carries
+        # the edit — its colours, or its bytes when a swatch was painted or a
+        # slice folded in; every other entry writes its graphic, which is
+        # view-only when any stage it reads through has no save-side half to
+        # put the bytes back with.
         writable = (
             entry.doc.palette_config.write_enabled
+            or entry.doc.data_config.write_enabled
             if entry.kind is EntryKind.PALETTE
             else entry.doc.data_config.write_enabled
         )
@@ -365,7 +376,7 @@ class WritingMixin:
         self._workspace.mark_saved(entry, pixel=not palette_only)
         if entry.kind is EntryKind.SLICE and not palette_only:
             entry.fold_refused = None  # its own write just put the bytes down
-        if writes_region and entry.kind is EntryKind.FILE:
+        if writes_region and entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
             self._mark_region_saved(entry)
             self._report_refused_folds(entry)
         # Invalidated even for a palette-only write: in Offset mode the palette's
@@ -427,7 +438,7 @@ class WritingMixin:
         Not re-attempted at every read for the reason above; the next write of
         either side tries again.
         """
-        if parent.kind is not EntryKind.FILE or parent.doc is None:
+        if parent.kind not in (EntryKind.FILE, EntryKind.PALETTE) or parent.doc is None:
             return []
         owed = parent.pending_folds
         base = parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
@@ -470,6 +481,10 @@ class WritingMixin:
             child.fold_refused = None
             folded.append(child)
         parent.pending_folds.clear()
+        # A palette file's colours are a decode of the bytes just folded into,
+        # and every graphic mirroring them is showing the old ones.
+        if folded and parent.kind is EntryKind.PALETTE:
+            self._redecode_palette_entry(parent)
         return folded
 
     def _propagate_pixel_edit(self, entry: Entry, keep: Entry | None = None) -> None:
@@ -508,7 +523,7 @@ class WritingMixin:
         is safe for the same reason: those bytes are on screen already.
         """
         if entry.kind is EntryKind.SLICE:
-            parent = self._workspace.find_file(entry.path)
+            parent = self._workspace.parent_of(entry)
             if parent is None:
                 return
             # The debt is recorded, not paid. Re-encoding the slice is what a
@@ -526,7 +541,7 @@ class WritingMixin:
             parent.pending_folds.add(entry)
             self._drop_bound_copies(parent)
             self._files_panel.refresh_entry(parent)
-        elif entry.kind is EntryKind.FILE:
+        elif entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
             for child in self._workspace.children_of(entry):
                 if child.kind is not EntryKind.SLICE or child.doc is None:
                     continue
@@ -573,8 +588,8 @@ class WritingMixin:
             return
         parent = (
             entry
-            if entry.kind is EntryKind.FILE
-            else self._workspace.find_file(entry.path)
+            if entry.kind in (EntryKind.FILE, EntryKind.PALETTE)
+            else self._workspace.parent_of(entry)
         )
         if parent is None or not parent.pending_folds:
             return
@@ -687,7 +702,7 @@ class WritingMixin:
         pipeline failure raises for the caller to report.
         """
         assert entry.doc is not None
-        parent = self._workspace.find_file(entry.path)
+        parent = self._workspace.parent_of(entry)
         if parent is None:
             self._alert(
                 f"{entry.name} is a region of {Path(entry.path).name}, so it is "

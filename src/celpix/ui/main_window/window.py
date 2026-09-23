@@ -70,6 +70,7 @@ from celpix.plugins.registry import Registry, default_registry
 from celpix.project import projectfile
 from celpix.project.workspace import (
     Entry,
+    EntryKind,
     MissingPreset,
     PaletteMode,
     SortKey,
@@ -276,11 +277,6 @@ class MainWindow(
         # built on first use (see _idle_palette) and never edited, so one
         # instance serves the whole session.
         self._idle_palette_cache: Palette | None = None
-        # A registered .pal being *previewed* in the dock, or None. Only ever set
-        # with no document open: with nowhere to write an edit back to, the dock
-        # shows a palette file's colors rather than editing them, so this is
-        # display state and nothing more (see _preview_palette_file).
-        self._preview_palette: Entry | None = None
         # The shared color editor, while open (None otherwise). One non-modal
         # dialog is reused and retargeted as the palette selection moves, so the
         # eyedropper can reach the canvas and the swatch grid underneath it.
@@ -1076,7 +1072,10 @@ class MainWindow(
         (:meth:`~celpix.project.workspace.Workspace.add_index_for`)."""
         self._workspace.insert(entry, self._workspace.add_index_for(entry))
         self._sync_locate_action()
-        if entry.kind.has_document:
+        # A palette is *registered* rather than opened: the dock's File pick
+        # adds one while a graphic is on screen, and that graphic is what the
+        # palette is about to be applied to. Opening it is its own gesture.
+        if entry.kind.has_document and entry.kind is not EntryKind.PALETTE:
             self._activate_entry(entry)
 
     def _apply_close_entry(self, entry: Entry, *, with_children: bool = True) -> None:

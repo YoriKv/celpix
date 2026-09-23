@@ -256,11 +256,33 @@ class ColorEditingMixin:
         Two palettes live in somebody else's region and so have no writable
         pathway of their own: a buffer-backed **Offset** palette inside a
         reordered owner, and an **Entry** palette read out of another entry
-        altogether. ``None`` for every other mode, where either the palette's own
-        pathway writes it (a ``.pal``, a plain Offset window) or nothing is ever
-        encoded at all (Default, Custom).
+        altogether. A **File** palette is the third: its bytes are the PALETTE
+        entry's own document, whose swatches, slices and composites read them,
+        so the colour lands there and everything reading those bytes follows
+        (``docs/design/palette-editing.md`` §2). ``None`` for every other mode,
+        where either the palette's own pathway writes it (a plain Offset window)
+        or nothing is ever encoded at all (Default, Custom).
         """
-        return self._offset_palette_pixel_owner() or self._entry_palette_pixel_owner()
+        return (
+            self._offset_palette_pixel_owner()
+            or self._entry_palette_pixel_owner()
+            or self._file_palette_pixel_owner()
+        )
+
+    def _file_palette_pixel_owner(self) -> Entry | None:
+        """The PALETTE entry whose bytes hold the on-screen File palette.
+
+        :meth:`~...palette_entry.PaletteEntryMixin._entry_palette_pixel_owner`
+        one mode over: the linked palette entry, when its document reads as
+        swatches — an error palette has no bytes that decoded, so a colour edit
+        on it stays on the palette half and forks nothing.
+        """
+        if self._palette_mode is not PaletteMode.FILE or self._doc is None:
+            return None
+        owner = self._linked_palette_entry()
+        if owner is None or owner.doc is None or owner.doc.bytes_per_tile == 0:
+            return None
+        return owner if owner.doc.pixel_config.write_enabled else None
 
     def _palette_pixel_owners(
         self, pixel_owner: Entry | None, index: int
@@ -411,9 +433,12 @@ class ColorEditingMixin:
             # switch, so the graphic on screen would answer for the mode it was
             # opened with. An owner that *is* this entry's palette source is the
             # entry case by construction; an Offset owner is never one.
-            if entry_palette_entry(owner) is pixel_owner:
+            if entry_palette_entry(owner) is pixel_owner or owner is pixel_owner:
                 # ``index`` is the **marked** one, which is what was encoded into
                 # the splice base — the one whose read unit the deposit carries.
+                # A File palette is the second case: the owner *is* the palette
+                # entry, and the colour lands in its own swatch bytes by the
+                # same deposit an Entry palette makes into its source.
                 moved = self._sync_entry_palette_bytes(doc, pixel_owner, index, owner)
                 # Every *other* graphic reading any of those bytes as its palette
                 # is now showing colours that have moved

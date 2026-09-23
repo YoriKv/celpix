@@ -220,8 +220,9 @@ def test_palette_entry_round_trips_with_its_import_codec(tmp_path) -> None:
     project = tmp_path / "hack.celpix"
     save_project(ws, str(project))
 
-    # On disk a palette entry carries "kind": "palette" and its import codec,
-    # but none of the session/view/palette sub-dicts a file or slice has.
+    # On disk a palette entry carries "kind": "palette" and its import codec;
+    # a session and a view only once it has been opened as swatches, and never
+    # a palette sub-dict, since its palette is its own bytes.
     raw = json.loads(project.read_text(encoding="utf-8"))
     assert raw["version"] == PROJECT_VERSION
     stored = raw["entries"][1]
@@ -231,6 +232,7 @@ def test_palette_entry_round_trips_with_its_import_codec(tmp_path) -> None:
     # its bytes do, and reopening at plain bytes would silently add junk rows.
     assert stored["container_id"] == "container.scgcad-col"
     assert "session" not in stored and "view" not in stored
+    assert "palette" not in stored
     assert "slice_offset" not in stored
 
     loaded = load_project(str(project))
@@ -240,11 +242,38 @@ def test_palette_entry_round_trips_with_its_import_codec(tmp_path) -> None:
     assert restored.container_id == "container.scgcad-col"
     assert normcase(restored.path) == normcase(str(pal))
 
-    # A hand-edited current index naming a palette can't be shown, so it loads
-    # as no-current rather than trying to activate one.
+    # A palette file opens as a sheet of swatches, so a current index naming
+    # one is honoured like any other.
     raw["current"] = 1
     project.write_text(json.dumps(raw), encoding="utf-8")
-    assert load_project(str(project)).current is None
+    assert load_project(str(project)).current.kind is EntryKind.PALETTE
+
+
+def test_a_slice_of_a_palette_file_round_trips_its_parent_kind(tmp_path) -> None:
+    """A ``.pal`` can be open as a file and as a palette at once, so a slice
+    says which it was cut from — written only when it is the palette, so every
+    older project's slices are byte-identical."""
+    from celpix.project.workspace import slice_of
+
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(b"\x00" * 0x40)
+    ws = Workspace()
+    palette = Entry(name="colors.pal", kind=EntryKind.PALETTE, path=str(pal))
+    ws.insert(palette, 0)
+    run = slice_of(palette, "row", 0x20, 0x20)
+    ws.insert(run, 1)
+    cut = ws.add_slice(str(pal), "loose", 0, 0x10)  # no FILE open: a file's slice
+
+    project = tmp_path / "hack.celpix"
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert raw["entries"][1]["parent"] == "palette"
+    assert "parent" not in raw["entries"][2]
+
+    restored = load_project(str(project)).entries
+    assert restored[1].parent_kind is EntryKind.PALETTE
+    assert restored[2].parent_kind is EntryKind.FILE
+    assert cut.parent_kind is EntryKind.FILE
 
 
 def test_inline_colors_survive_without_activation(tmp_path) -> None:

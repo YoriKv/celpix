@@ -130,6 +130,20 @@ def test_pencil_paints_one_pixel_as_single_undo(qtbot, tmp_path) -> None:
     assert _pixel(window, 2, 3) != 5
 
 
+def test_a_stroke_preview_stops_where_the_data_does(qtbot, tmp_path) -> None:
+    """Rows taller than the data leaves the canvas ending at the last data row;
+    the grid a stroke paints into must end there too, or its preview grows blank
+    rows below the art that take paint no write can keep."""
+    window = _window(qtbot, tmp_path)  # 8 tiles
+    window._columns.setValue(4)
+    window._rows.setValue(8)  # the data fills only 2
+    rendered = window._canvas._image.size()
+    window._tool = Tool.PENCIL
+    window._on_pixel_pressed(2, 3, Qt.MouseButton.LeftButton)
+    assert window._canvas._image.size() == rendered
+    window._on_pixel_released(2, 3)
+
+
 def test_an_undo_mid_stroke_abandons_the_stroke(qtbot, tmp_path) -> None:
     """A stroke is composed at the press and written at the release, so history
     moving under the held button would have the release write stale pixels back
@@ -992,24 +1006,24 @@ def test_double_click_selects_the_whole_tile(qtbot, tmp_path) -> None:
     tile_w, tile_h = window._doc.tile_width, window._doc.tile_height
 
     # A press begins the gesture, exactly as the canvas drives it.
-    window._on_pixel_pressed(tile_w + 3, tile_h + 2, Qt.MouseButton.LeftButton)
+    window._on_pixel_pressed(tile_w + 3, 2, Qt.MouseButton.LeftButton)
     before = window._undo_stack.count()
-    window._on_pixel_double_clicked(tile_w + 3, tile_h + 2)
-    assert window._marquee == QRect(tile_w, tile_h, tile_w, tile_h)
+    window._on_pixel_double_clicked(tile_w + 3, 2)
+    assert window._marquee == QRect(tile_w, 0, tile_w, tile_h)
     assert window._undo_stack.count() == before + 1  # one interaction, one step
 
     # Double-clicking inside that selection: the press lifts a float, which the
     # double-click must discard rather than leave dangling — and re-select on
     # the tile without having written anything.
-    window._on_pixel_pressed(tile_w + 1, tile_h + 1, Qt.MouseButton.LeftButton)
+    window._on_pixel_pressed(tile_w + 1, 1, Qt.MouseButton.LeftButton)
     assert window._float_grid is not None  # the press lifted it
-    window._on_pixel_double_clicked(tile_w + 1, tile_h + 1)
+    window._on_pixel_double_clicked(tile_w + 1, 1)
     assert window._float_grid is None
-    assert window._marquee == QRect(tile_w, tile_h, tile_w, tile_h)
+    assert window._marquee == QRect(tile_w, 0, tile_w, tile_h)
 
     # Undo walks back to the selection as it stood before the first double-click.
     window._undo_stack.undo()
-    assert window._marquee != QRect(tile_w, tile_h, tile_w, tile_h)
+    assert window._marquee != QRect(tile_w, 0, tile_w, tile_h)
 
 
 def test_double_click_is_inert_for_the_drawing_tools(qtbot, tmp_path) -> None:

@@ -43,10 +43,12 @@ from PySide6.QtGui import QCursor
 from celpix.core.address import format_hex
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError
+from celpix.core.palette import Palette
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import PALETTE_PRESET_PARAM, FileRef
 from celpix.project import documents
+from celpix.project.diskchanges import carry_color_edits
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -466,8 +468,54 @@ class PaletteEntryMixin:
                     seen.append(consumer)
         for consumer in seen:
             self._redecode_entry_palette(consumer)
-        if seen and self._doc is not None:
+        # A **palette file** is its own consumer: its colours are a decode of
+        # its bytes, so a stroke on its swatches, a slice folded into it or a
+        # colour deposited by a graphic reading a run of it all leave the
+        # palette half — and every File-mode graphic mirroring it — stale the
+        # same way (``docs/design/palette-editing.md`` §2).
+        for source in sources:
+            if source.kind is EntryKind.PALETTE and source is not skip:
+                self._redecode_palette_entry(source)
+        if (seen or any(s.kind is EntryKind.PALETTE for s in sources)) and (
+            self._doc is not None
+        ):
             self._refresh_view()
+
+    def _redecode_palette_entry(self, entry: Entry) -> None:
+        """Read a PALETTE entry's colours again from its own bytes.
+
+        :meth:`_redecode_entry_palette` for the entry that owns the bytes: the
+        swatch half is the authority, and the palette half is decoded from it
+        under the format the entry reads with. Colours the user has edited and
+        not yet written stay as edited
+        (:func:`~celpix.project.diskchanges.carry_color_edits`): they are in the
+        bytes already, encoded, and re-decoding would hand back the format's
+        rounding of a colour still being worked on. The splice base moves with
+        the bytes, so a later edit re-splices against what is there now.
+
+        Then the graphics rendering the file take the new colours, since they
+        show the entry's palette by reference (:meth:`~...palette_source.
+        PaletteSourceMixin._mirror_palette`). A document with no swatch half
+        (an error palette) has nothing to decode from and is left alone.
+        """
+        doc = entry.doc
+        if doc is None or doc.bytes_per_tile == 0:
+            return
+        probe = PathwayConfig(
+            source=FileRef(entry.paths, data=doc.pixel_data, data_base=0),
+            interpret_preset_id=doc.palette_config.interpret_preset_id,
+        )
+        try:
+            loaded = pipeline.load_palette(probe, self._registry)
+        except (PipelineError, OSError):
+            return
+        colors = loaded.palette.colors
+        if doc.palette_edits:
+            colors = carry_color_edits(colors, doc.palette.colors, doc.palette_edits)
+        doc.palette = Palette(colors)
+        doc.palette_base_bytes = loaded.data
+        self._mirror_palette(entry)
+        self._files_panel.refresh_entry(entry)
 
     def _degrade_entry_palettes(self, sources: list[Entry]) -> None:
         """Fall every palette read out of one of ``sources`` back to the default.

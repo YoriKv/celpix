@@ -14,7 +14,7 @@ through ``self`` rather than re-deriving them.
 compositor's inverse, :func:`~celpix.core.arrangement.split_grid`)::
 
     decode_run(offset, cols*rows)          # storage-order tiles, 2D reflow absorbed
-      → compose_window(...)                # the exact image on screen
+      → compose_tiles(...)                 # the exact image on screen
         → a core.draw tool mutates the grid
           → split_grid(...)                # back to storage-order tiles
             → _apply_tile_edit(...)        # one undoable byte splice
@@ -46,7 +46,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
 from celpix.core import ceil_div, draw
-from celpix.core.arrangement import compose_window, split_grid
+from celpix.core.arrangement import split_grid
 from celpix.core.errors import PipelineError
 from celpix.core.tilemap import cell_orientation
 from celpix.core.tilerearrangement import unapply_orientation
@@ -309,7 +309,11 @@ class PixelEditMixin:
         tiles = self._decode_run(self._offset, cols * rows)
         if not tiles:
             return None
-        return compose_window(tiles, cols, 0, rows, self._view_layout())
+        # The renderer's compose, not a bare `compose_window` at Rows: the canvas
+        # stops at the last row the data fills, and a grid padded out to Rows
+        # would put blank rows under a stroke's preview that nothing can be
+        # written to (the write path stops at the data's end).
+        return pipeline.compose_tiles(tiles, self._view_layout(), rows)
 
     def _clear_rect(self, grid, rect: QRect) -> None:
         """Empty ``rect`` in ``grid`` — what Cut/Clear and a lifted move leave.

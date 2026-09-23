@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.3 - unreleased
+
+- Palette files can now be opened as swatches and sliced
+- Fixed a few render issues
+
 ## v1.1.2 - 2026-09-22
 
 - Edit Slice can resize a compressed slice

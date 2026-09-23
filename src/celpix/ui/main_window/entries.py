@@ -70,6 +70,7 @@ from celpix.project.workspace import (
     composite_format_for,
     composite_layout,
     composite_preset_id,
+    file_kind,
     is_swatch_preset,
     missing_paths,
     new_composite,
@@ -81,6 +82,7 @@ from celpix.project.workspace import (
     repair_presets,
     retarget_files,
     slice_of,
+    swatch_session_for,
     tilemap_config_for,
 )
 from celpix.ui.composite_dialog import CompositeDialog, CompositeParams
@@ -877,9 +879,21 @@ class EntriesMixin:
         graphics being viewed on row 3 in 2x2 blocks has to arrive that way, or
         it opens in the wrong colors or as scrambled tiles. Both live in the
         view options rather than the session, hence the second hand-off.
+
+        A slice of a **palette file** inherits the swatch view the same way —
+        the parent's session names the swatch codec and the colour format it
+        reads — and no palette source, since its parent has none to hand down
+        (:func:`~celpix.project.workspace.palette_source_for`).
         """
-        parent = self._workspace.find_file(slice_entry.path)
-        if parent is None or parent.session is None:
+        parent = self._workspace.parent_of(slice_entry)
+        if parent is None:
+            return
+        if parent.kind is EntryKind.PALETTE and parent.session is None:
+            # A registered palette nobody has opened has no session to copy,
+            # but the one it will open on is known: swatches, in its own colour
+            # format — which is what a run cut out of it has to read as too.
+            swatch_session_for(parent, self._registry, self._palette_preset_id())
+        if parent.session is None:
             return
         # The current entry's session snapshot lags the live toolbar until a
         # switch captures it; freshen it so we copy what's actually on screen.
@@ -1379,7 +1393,7 @@ class EntriesMixin:
             ContentKind.TILEMAP,
         ):
             return None
-        parent = self._workspace.find_file(entry.path)
+        parent = self._workspace.parent_of(entry)
         self._settle_region(parent)
         try:
             data, _ = pipeline.read_region(
@@ -1404,7 +1418,7 @@ class EntriesMixin:
         view the resize was asked for in (``docs/design/slices-and-parents.md``
         §5). False, already reported, when it did not happen.
         """
-        parent = self._workspace.find_file(entry.path)
+        parent = self._workspace.parent_of(entry)
         if parent is None:
             self._alert(
                 f"{entry.name} is a region of {Path(entry.path).name}, which is "
@@ -1535,10 +1549,16 @@ class EntriesMixin:
         if current in entries:
             self._on_current_entry_changed(current)  # re-read the new bytes now
         for entry in entries:
-            # A palette is never the current entry, so nothing above reloads it —
-            # but the graphics showing its colors are still holding the ones the
-            # old framing produced, and those are exactly what just changed.
-            if entry.kind is EntryKind.PALETTE:
+            if entry.kind is not EntryKind.PALETTE:
+                continue
+            # The graphics showing a palette's colours are still holding the
+            # ones the old framing produced, and those are exactly what just
+            # changed. The one on screen was re-read above and only needs
+            # mirroring; any other is re-read here.
+            if entry is current and entry.doc is not None:
+                self._mirror_palette(entry)
+                self._refresh_view()
+            else:
                 self._reload_palette_consumers(entry)
 
     def _reload_palette_consumers(self, entry: Entry) -> None:
@@ -1565,10 +1585,10 @@ class EntriesMixin:
 
     # -- containers ----------------------------------------------------------
     def _container_info_current(self) -> None:
-        # Follows the graphic on screen, like Edit File Container… beside it; a
-        # palette is never *current* and is inspected from the Files dock.
+        # Follows the entry on screen, like Edit File Container… beside it: a
+        # file, or a palette file opened as swatches.
         entry = self._workspace.current
-        if entry is not None and entry.kind is EntryKind.FILE:
+        if entry is not None and entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
             self._show_container_info(entry)
 
     def _show_container_info(self, entry: Entry) -> None:
@@ -1596,10 +1616,10 @@ class EntriesMixin:
         ContainerInfoDialog.show_report(self, inspect_container(cfg, self._registry))
 
     def _change_container_current(self) -> None:
-        # A palette is never *current* — the File menu's action follows the
-        # graphic on screen, and a palette entry is reached from the Files dock.
+        # The File menu's action follows the entry on screen — a file, or a
+        # palette file opened as swatches; a slice is reached from the Files dock.
         entry = self._workspace.current
-        if entry is not None and entry.kind is EntryKind.FILE:
+        if entry is not None and entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
             self._change_container_for(entry)
 
     def _change_container_for(self, entry: Entry) -> None:
@@ -1629,7 +1649,7 @@ class EntriesMixin:
             paths=entry.paths,
             container_id=entry.container_id,
             reshape_id=entry.reshape_id,
-            kind=entry.content_kind,
+            kind=file_kind(entry),
             codec_id=codec_id,
             units=self._entry_units(entry, codec_id),
         )
@@ -1690,7 +1710,7 @@ class EntriesMixin:
         activated has no session to keep it in at all — hence the stage's own
         default, which is what a fresh sheet opens on.
         """
-        kind = entry.content_kind
+        kind = file_kind(entry)
         if kind is ContentKind.PALETTE:
             return entry.palette_preset_id or self._palette_import_preset_id()
         if kind is ContentKind.TILEMAP:
@@ -1726,7 +1746,7 @@ class EntriesMixin:
             container_id=edit.container_id,
             reshape_id=edit.reshape_id,
         )
-        if entry.content_kind is ContentKind.PALETTE:
+        if file_kind(entry) is ContentKind.PALETTE:
             return self._file_palette_config(
                 edited.path, 0, codec_id, edited.container_id
             )
@@ -1751,7 +1771,7 @@ class EntriesMixin:
                 self._resize_config(entry, before, codec_id), self._registry
             )
             return pipeline.blank_units(
-                entry.content_kind, codec_id, len(data), self._registry
+                file_kind(entry), codec_id, len(data), self._registry
             )
         except (PipelineError, OSError):
             return 0
@@ -1777,7 +1797,7 @@ class EntriesMixin:
             current, ctx = pipeline.read_region(cfg, self._registry)
             before = len(current)
             after = pipeline.blank_size(
-                entry.content_kind, codec_id, edit.units, self._registry
+                file_kind(entry), codec_id, edit.units, self._registry
             )
         except PipelineError as exc:
             self._report(exc)
@@ -1796,7 +1816,7 @@ class EntriesMixin:
         try:
             pipeline.resize_file(
                 cfg,
-                kind=entry.content_kind,
+                kind=file_kind(entry),
                 codec_id=codec_id,
                 units=edit.units,
                 reg=self._registry,
@@ -1993,11 +2013,24 @@ class EntriesMixin:
         is not open is opened first, and that open is part of the same step — a
         macro — so one Ctrl+Z takes back the whole jump, row and all.
         """
-        parent = self._workspace.find_file(child.path)
+        parent = self._workspace.parent_of(child)
         if parent is not None:
             self._push_jump(parent, child, target)
             return
-        opened = Entry(name=Path(child.path).name, kind=EntryKind.FILE, path=child.path)
+        # Reopened as what the child was cut from: a slice of a palette file
+        # names a registered palette, and it comes back as one.
+        if child.parent_kind is EntryKind.PALETTE:
+            opened = Entry(
+                name=Path(child.path).name,
+                kind=EntryKind.PALETTE,
+                path=child.path,
+                container_id=self._detect_palette_container(child.path),
+                palette_preset_id=self._palette_import_preset_id(),
+            )
+        else:
+            opened = Entry(
+                name=Path(child.path).name, kind=EntryKind.FILE, path=child.path
+            )
         self._undo_stack.beginMacro(f'jump to "{child.name}"')
         try:
             self._push_command(AddEntryCommand(self, opened, f"open {opened.name}"))
@@ -2147,7 +2180,7 @@ class EntriesMixin:
         if (
             entry is not self._workspace.current
             or self._doc is None
-            or entry.kind is not EntryKind.FILE
+            or entry.kind not in (EntryKind.FILE, EntryKind.PALETTE)
         ):
             return
         self._capture_session()  # the snapshot must read the live toolbar state
@@ -2159,6 +2192,7 @@ class EntriesMixin:
             name=self._format_offset(offset),
             kind=EntryKind.BOOKMARK,
             path=entry.path,
+            parent_kind=entry.kind,
             slice_offset=offset,
             session=replace(entry.session),
             # The offset carries the position; the view snapshot keeps the
@@ -2280,10 +2314,8 @@ class EntriesMixin:
         # and so the slice inherits the list its offsets are relative to.
         #
         # The **Content** row is offered wherever the parent's own answer could be
-        # wrong, which is both graphic readings and neither of the other two: a
-        # palette file's kind comes from its ``EntryKind`` rather than a choice
-        # (:meth:`~celpix.project.workspace.Entry.__post_init__`), so there is
-        # nothing to pick.
+        # wrong, which is both graphic readings of a file. A palette file's
+        # slices are runs of its colours, so there is nothing to pick.
         params = SliceDialog.get_slice(
             self,
             self._registry,
@@ -2292,8 +2324,8 @@ class EntriesMixin:
             length=length,
             compression_id=compression_id,
             content_kind=parent.content_kind,
-            choose_content=parent.content_kind
-            in (ContentKind.PIXELS, ContentKind.TILEMAP),
+            choose_content=parent.kind is EntryKind.FILE
+            and parent.content_kind in (ContentKind.PIXELS, ContentKind.TILEMAP),
             inputs_hint=lambda codec: self._inputs_hint(parent, codec),
             # A new slice has nothing to bind *on* yet, so the badge edits the
             # parent file's bindings for the codec — which ``slice_of`` hands
@@ -2459,23 +2491,25 @@ class EntriesMixin:
         keeps its colors as a Custom copy so none is left showing a palette that
         is gone, and the whole thing is one undo step.
         """
+        victims = [entry, *self._workspace.children_of(entry)]
+        entries = self._workspace.entries
+        positions = [(entries.index(e), e) for e in victims]
         if rehomed:
             self._push_command(
                 RemovePaletteWithConsumersCommand(
                     self,
                     entry,
-                    index=self._workspace.entries.index(entry),
+                    victims=positions,
+                    was_current=self._workspace.current,
                     consumers=[self._consumer_link(entry, c) for c in rehomed],
                 )
             )
             return
-        victims = [entry, *self._workspace.children_of(entry)]
-        entries = self._workspace.entries
         self._push_command(
             RemoveEntriesCommand(
                 self,
                 entry,
-                victims=[(entries.index(e), e) for e in victims],
+                victims=positions,
                 was_current=self._workspace.current,
             )
         )
@@ -2505,16 +2539,21 @@ class EntriesMixin:
         preset = palette.palette_preset_id or self._palette_preset_id()
         for link in consumers:
             self._convert_graphic_to_custom(link.entry, colors, preset)
-        self._workspace.close(palette)
-        self._sync_locate_action()
+        # The ordinary close, slices and all: a palette's slices are pieces and
+        # palette sources in their own right, and what reads them degrades the
+        # way it does for any closed entry.
+        self._apply_close_entry(palette)
         self._reshow_current_entry()
 
     def _apply_restore_palette_consumers(
-        self, palette: Entry, index: int, consumers: list[PaletteConsumerLink]
+        self,
+        victims: list[tuple[int, Entry]],
+        was_current: Entry | None,
+        consumers: list[PaletteConsumerLink],
     ) -> None:
-        """Re-register the palette and relink every graphic - the command's undo."""
-        self._workspace.insert(palette, index)
-        self._sync_locate_action()
+        """Re-register the palette (and its slices) and relink every graphic -
+        the command's undo."""
+        self._apply_restore_entries(victims, was_current)
         for link in consumers:
             self._relink_graphic_to_file_palette(link)
         self._reshow_current_entry()

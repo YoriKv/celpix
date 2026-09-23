@@ -513,8 +513,9 @@ def test_the_kinds_differ_where_the_design_says_they_do() -> None:
     # ...but it carries its own palette, like every other entry.
     assert Capability.PALETTE_EDIT in tilemap and Capability.PALETTE_EDIT in pixels
     assert Capability.STAMP in tilemap and Capability.STAMP not in pixels
-    # A palette entry is applied rather than activated: no view to navigate.
-    assert Capability.NAVIGATION not in CAPABILITIES[ContentKind.PALETTE]
+    # A palette file's bytes are pixels — swatches — so it has no table row of
+    # its own: what it can do is what any sheet of pixels can.
+    assert ContentKind.PALETTE not in CAPABILITIES
 
 
 def test_cells_expand_into_tiles_a_block_layout_can_place() -> None:

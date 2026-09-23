@@ -1705,15 +1705,17 @@ def test_editing_a_file_palette_leaves_the_graphic_untouched(
     assert not palette_entry.palette_dirty
 
 
-def test_the_dock_previews_a_palette_file_read_only_with_nothing_open(
+def test_a_palette_file_opened_with_nothing_else_open_is_a_sheet_of_swatches(
     qtbot, tmp_path
 ) -> None:
-    """Opening a .pal with nothing else open shows its colors, and only shows them.
+    """Opening a .pal with nothing else open shows it as swatches, its colours in
+    the dock, and a colour edit lands in its bytes.
 
-    A palette is written back through the document that owns it, so with no
-    document there is nowhere for an edit to go: the dock displays the file and
-    every write path declines rather than pretending to land somewhere. Opening
-    a graphic hands the dock back to that graphic's palette.
+    A palette file is a document of its own: the canvas draws its colour words
+    through the swatch codec, the dock shows the same colours in File mode on
+    the entry itself, and editing one re-encodes it into the file's bytes — the
+    swatch and the dock cannot disagree, and either Write puts it on disk.
+    Opening a graphic hands the dock back to that graphic's palette.
     """
     from celpix.core.palette import FULL_PALETTE_COUNT, Palette
     from celpix.project.workspace import EntryKind, PaletteMode
@@ -1746,38 +1748,41 @@ def test_the_dock_previews_a_palette_file_read_only_with_nothing_open(
         PaletteMode.CUSTOM: False,
     }
 
-    # Open the .pal: its colors fill the grid, and the dock names the file.
+    # Open the .pal: it comes on screen as four swatches, its colors fill the
+    # grid in File mode on itself, and the dock names the file.
     assert window._open_palette_data(str(pal))
     entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
-    assert window._preview_palette is entry
+    assert window._workspace.current is entry
+    assert entry.doc.tile_count == 4
+    assert window._palette_mode is PaletteMode.FILE
     assert window._palette_panel._colors == list(entry.doc.palette.colors)
-    # The label is middle-elided to a fixed pixel width, so the visible text is
-    # font-dependent (a wider system font chops this name); the tooltip carries
-    # the whole path either way.
     assert window._palette_file_label.isVisibleTo(window)
     assert Path(window._palette_file_label.toolTip()).name == "standalone.pal"
-    # Previewing is display state: no undo step, and it never becomes current.
-    assert window._workspace.current is None
     assert window._undo_stack.undoText() == "add palette standalone.pal"
+    # Its colours are its own: no other source can stand in for them here.
+    assert (
+        not window._palette_mode_combo.model()
+        .item(window._palette_mode_combo.findData(PaletteMode.OFFSET))
+        .isEnabled()
+    )
 
-    # Reading it is fine - the readout names the selected color.
+    # A colour edit lands in the file's bytes, so the swatch and the dock agree,
+    # and both halves read unsaved; undo takes the bytes back with the colour.
+    before = bytes(entry.doc.pixel_data)
     window._palette_panel._select(1)
-    assert f"#{entry.doc.palette.color(1):08X}" in window._color_details.text()
-
-    # Editing it is not: no editor, no undo step, no color moved.
-    before = list(entry.doc.palette.colors)
     window._open_color_editor(1)
-    assert window._color_editor is None
-    steps = window._undo_stack.count()
+    assert window._color_editor is not None
     window._on_color_changed(0xFFFF0000)
-    window._paste_palette_color()
-    assert window._undo_stack.count() == steps
-    assert list(entry.doc.palette.colors) == before
-    assert not entry.palette_dirty
+    assert entry.doc.palette.color(1) == 0xFFFF0000
+    assert entry.doc.pixel_data[2:4] == b"\x1f\x00"  # BGR555 red, in place
+    assert entry.pixel_dirty and entry.palette_dirty
+    window._undo_stack.undo()
+    assert bytes(entry.doc.pixel_data) == before
+    assert not entry.pixel_dirty and not entry.palette_dirty
 
-    # Opening a graphic takes the dock back to that graphic's own palette.
+    # Opening a graphic takes the dock to that graphic's own palette.
     window._load_pixel(str(_make_snes_file(tmp_path)))
-    assert window._preview_palette is None
+    assert window._workspace.current is not entry
     assert window._palette_panel._colors == list(window._doc.palette.colors)
 
 
@@ -1788,8 +1793,8 @@ def test_a_palette_file_that_wont_decode_opens_and_import_as_re_reads_it(
     guess - and a wrong guess must not be a dead end. 512 bytes of two-byte
     colors read as three-byte ones cannot decode at all; it opens on the sentinel
     palette, read-only so the colors we invented can't be written over the file,
-    and the Format dropdown re-reads it - which with no graphic open means
-    re-reading the file, there being no document to re-decode through.
+    and the Format dropdown re-reads it - after which the sheet of swatches is
+    cut in the format that reads.
     """
     from celpix.core.palette import MISSING_COLOR
     from celpix.project.workspace import EntryKind, entry_notices
@@ -1808,7 +1813,7 @@ def test_a_palette_file_that_wont_decode_opens_and_import_as_re_reads_it(
     window._open_palette_data(str(pal))
 
     entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
-    assert window._preview_palette is entry
+    assert window._workspace.current is entry
     assert "not a multiple of entry size 3" in window._palette_error(entry.doc)
     assert list(entry.doc.palette.colors) == [MISSING_COLOR] * 16
     assert not entry.doc.palette_config.write_enabled
@@ -1823,6 +1828,7 @@ def test_a_palette_file_that_wont_decode_opens_and_import_as_re_reads_it(
     assert window._palette_error(entry.doc) is None
     assert len(entry.doc.palette) == 256
     assert window._palette_panel._colors == list(entry.doc.palette.colors)
+    assert entry.doc.tile_count == 256  # the swatches arrived with the format
     # Writability comes back with the read: the file is a real palette again.
     assert entry.doc.palette_config.write_enabled
     assert entry.palette_preset_id == "preset.palette.bgr555"

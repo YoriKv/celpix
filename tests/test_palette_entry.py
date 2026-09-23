@@ -447,3 +447,130 @@ def test_an_entry_mode_offset_reads_as_a_plain_byte_offset(qtbot, tmp_path) -> N
     assert window._load_palette_at_offset(0x40)
     assert window._palette_offset_text() == "80:8040"
     assert window._parse_palette_offset("80:8040") == 0x40
+
+
+# -- a palette file as an entry of its own ----------------------------------
+def _palette_file(tmp_path, name: str = "colors.pal", count: int = 32):
+    pal = tmp_path / name
+    pal.write_bytes(_colors(count))
+    return pal
+
+
+def test_a_palette_file_opens_as_swatches_and_a_painted_swatch_is_a_colour(
+    qtbot, tmp_path
+) -> None:
+    """A registered palette file is a document of its own: opened, its colour
+    words are swatches, and its bytes are the authority — painting one re-decodes
+    the palette half, and every graphic mirroring the file takes the new colour,
+    since a File palette is shown by reference.
+    """
+    from celpix.project.workspace import EntryKind
+
+    pal = _palette_file(tmp_path)
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(range(256)) * 4)
+    window = _window(qtbot)
+    window._load_pixel(str(rom))
+    graphic = window._workspace.current
+    window._add_palette_file(str(pal), preset_id=BGR555)
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    window._use_palette_entry(entry)
+    assert window._palette_mode is PaletteMode.FILE
+    mirrored = list(graphic.doc.palette.colors)
+
+    window._activate_entry(entry)
+    assert window._workspace.current is entry
+    assert entry.session.pixel_preset_id == SWATCH
+    assert entry.doc.tile_count == 32
+    # The dock shows the file's own colours, in File mode on the entry itself.
+    assert window._palette_mode is PaletteMode.FILE
+    assert window._palette_panel._colors == mirrored
+
+    # Paint swatch 3 solid: a pixel edit on the palette's bytes. The whole
+    # swatch, because the swatch codec encodes each tile's most common colour.
+    tiles = window._decode_run(3, 1)
+    copy = type(tiles[0])(tiles[0].width, tiles[0].height, bytes(tiles[0].data))
+    for y in range(copy.height):
+        for x in range(copy.width):
+            copy.set(x, y, 0xFF0000FF)
+    window._apply_tile_edit(3, [copy], "paint")
+
+    assert entry.pixel_dirty
+    assert entry.doc.palette.color(3) != mirrored[3]
+    assert entry.doc.palette.color(3) == 0xFF0000FF  # decoded back from BGR555
+    assert graphic.doc.palette.color(3) == entry.doc.palette.color(3)
+    assert graphic.doc.palette.color(4) == mirrored[4]
+    # One undo takes the bytes and the colour back, on both documents.
+    window._undo_stack.undo()
+    assert not entry.pixel_dirty
+    assert graphic.doc.palette.color(3) == mirrored[3]
+
+
+def test_a_slice_of_a_palette_file_is_a_palette_and_a_composite_piece(
+    qtbot, tmp_path
+) -> None:
+    """The point of slicing a palette: a run of its colours is a palette source
+    for a graphic (Entry mode) and a piece for a composite to assemble, and a
+    colour edited through the graphic lands in the palette file's bytes by the
+    fold every slice owes its parent.
+    """
+    from celpix.project.workspace import (
+        EntryKind,
+        can_supply_palette,
+        is_composable,
+        section_kind,
+        slice_of,
+    )
+    from celpix.ui.undo_commands import AddEntryCommand
+
+    pal = _palette_file(tmp_path)
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(range(256)) * 4)
+    window = _window(qtbot)
+    window._load_pixel(str(rom))
+    graphic = window._workspace.current
+    window._add_palette_file(str(pal), preset_id=BGR555)
+    palette = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+
+    # Rows 16..31 of the file, cut the way New Slice… would cut them.
+    run = slice_of(palette, "upper row", 16 * COLOR, 16 * COLOR)
+    window._seed_slice_from_parent(run)
+    window._push_command(AddEntryCommand(window, run, "new slice"))
+    assert window._workspace.parent_of(run) is palette
+    assert window._workspace.children_of(palette) == [run]
+    assert run.parent_kind is EntryKind.PALETTE
+    assert section_kind(run, window._registry).value == "palette"  # filed under
+    assert (
+        window._files_panel._items[run].parent() is window._files_panel._items[palette]
+    )
+    assert is_composable(run) and is_composable(palette)
+    assert can_supply_palette(graphic, run)
+    assert not can_supply_palette(palette, graphic)  # its colours are its own
+
+    # The graphic reads the run as its palette — the swatch codec seeds the
+    # format — and an edit lands in the palette file through the slice.
+    window._activate_entry(graphic)
+    window._use_entry_as_palette(run)
+    assert window._palette_mode is PaletteMode.ENTRY
+    assert graphic.palette_entry is run
+    assert len(window._doc.palette) == 16
+    before = bytes(_colors(32))
+    window._palette_panel.select_index(2)
+    window._on_color_changed(0xFF00FF00)
+    assert run.pixel_dirty and palette.pixel_dirty
+    # The fold is paid where the palette's buffer is next believed — showing
+    # it, here, since a registered palette nobody opened has no buffer yet.
+    edited = window._doc.palette.color(2)
+    window._activate_entry(palette)
+    assert palette.doc.pixel_data[18 * COLOR : 19 * COLOR] != before[36:38]
+    assert palette.doc.pixel_data[: 16 * COLOR] == before[:32]
+    # ...and the palette file's own colours followed its bytes.
+    assert palette.doc.palette.color(18) == edited
+
+    # A composite assembled from the run reads those same bytes.
+    table = new_composite("CGRAM", (CompositePiece(run),))
+    window._workspace.insert(table, len(window._workspace.entries))
+    window._activate_entry(table)
+    assert window._workspace.current is table
+    assert table.session.pixel_preset_id == SWATCH  # seeded from the run
+    assert table.doc.pixel_data == palette.doc.pixel_data[16 * COLOR :]

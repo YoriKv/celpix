@@ -75,7 +75,7 @@ class SessionMixin:
         """Switch the view to ``entry`` - every activation path funnels here."""
         if entry is None or entry is self._workspace.current:
             return
-        if entry.kind in (EntryKind.BOOKMARK, EntryKind.PALETTE):
+        if entry.kind is EntryKind.BOOKMARK:
             return  # no view of its own - selecting one in the list is inert
         # A drag under the pointer belongs to the entry being left: it is
         # abandoned rather than carried onto the next one.
@@ -181,6 +181,11 @@ class SessionMixin:
         about to replace them, and means nothing on the pixel path — a pixel
         entry is never re-read out from under its edits, and a bound map's tiles
         come from the entry that owns them (:meth:`_live_bound_tiles`)."""
+        if entry.kind is EntryKind.PALETTE:
+            # A palette file's document is its colours and its swatches at once,
+            # built by the one loader every route to it shares
+            # (``docs/design/palette-editing.md`` §2).
+            return self._load_palette_entry(entry, quiet=quiet)
         if entry.session is None:
             entry.session = self._seed_session(entry)
         session = entry.session
@@ -625,11 +630,21 @@ class SessionMixin:
             source = piece.entry
             if source is None or source.kind is not EntryKind.SLICE:
                 continue
-            if self._workspace.find_file(source.path) is not None:
+            if self._workspace.parent_of(source) is not None:
                 continue
             if not Path(source.path).is_file():
                 continue
-            self._workspace.open_file(source.path, source.extra_paths)
+            if source.parent_kind is EntryKind.PALETTE:
+                # A slice of a palette file names a registered palette, and it
+                # comes back as one — on the format the dock imports with, as a
+                # fresh registration would.
+                self._workspace.add_palette(
+                    source.path,
+                    self._palette_import_preset_id(),
+                    self._detect_palette_container(source.path),
+                )
+            else:
+                self._workspace.open_file(source.path, source.extra_paths)
 
     def _composite_layout(self, entry: Entry, preset_id: str = ""):
         """Assemble ``entry``'s pieces, settling each one's region first.
@@ -665,10 +680,10 @@ class SessionMixin:
         """
         out = [entry]
         if entry.kind is EntryKind.SLICE:
-            parent = self._workspace.find_file(entry.path)
+            parent = self._workspace.parent_of(entry)
             if parent is not None:
                 out.append(parent)
-        elif entry.kind is EntryKind.FILE:
+        elif entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
             out += [
                 child
                 for child in self._workspace.children_of(entry)
@@ -1089,9 +1104,6 @@ class SessionMixin:
         assert entry.doc is not None and entry.session is not None
         session, view = entry.session, entry.doc.view
         self._doc = entry.doc
-        # The dock follows what is on screen: a document's own palette takes over
-        # from any .pal that was filling an otherwise empty dock.
-        self._clear_palette_preview()
         # Undo any disabling from a previously shown missing entry.
         self._set_document_ui_enabled(True)
         # The pixel combo goes through the filter, which force-shows the restored
@@ -1130,7 +1142,9 @@ class SessionMixin:
         # Reselect the Pattern preset (or Custom) that matches the block/order/2D
         # values just restored, and lock the controls to match.
         self._sync_pattern_selection()
-        is_file = entry.kind is EntryKind.FILE
+        # A palette file is a whole file too: sliced, bookmarked and framed
+        # like any other (``docs/design/palette-editing.md`` §2).
+        is_file = entry.kind in (EntryKind.FILE, EntryKind.PALETTE)
         self._place_origin(view.tile_offset, view.byte_nudge)
         # The rearrangement belongs to the entry, like the offset: switching away
         # and back must find the tiles where they were left. Any drag in flight

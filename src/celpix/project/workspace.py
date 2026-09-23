@@ -101,10 +101,17 @@ class EntryKind(Enum):
         with a document, a view, a palette and an undo history, and every one of
         those sites meant "one of those" rather than "a file or a slice".
 
-        A bookmark is a position and a palette is applied rather than activated,
-        so neither is ever current and neither has a view of its own.
+        A **palette** is the fourth: its file opens as a sheet of swatches, the
+        way a composite read through the swatch codec does, and it can be sliced
+        like any file (``docs/design/palette-editing.md`` §2). A bookmark is a
+        position, so it is never current and has no view of its own.
         """
-        return self in (EntryKind.FILE, EntryKind.SLICE, EntryKind.COMPOSITE)
+        return self in (
+            EntryKind.FILE,
+            EntryKind.SLICE,
+            EntryKind.COMPOSITE,
+            EntryKind.PALETTE,
+        )
 
 
 class SortKey(str, Enum):
@@ -531,9 +538,12 @@ class Entry:
     codec it was last read with - the format it was registered under, kept in
     step with the format dropdown while this file is the palette on screen - so
     applying it later decodes the same way it last did, regardless of where the
-    dropdown has moved for some other palette since. Like a bookmark
-    it has no document or view and is never current — it is applied *onto*
-    the entry being shown.
+    dropdown has moved for some other palette since. It is applied *onto* the
+    entry being shown, and it is also a **pixel document of its own**: opened,
+    it shows its colours as swatches through the palette-swatch codec, and
+    slices are carved from it as from any file. Its bytes are the authority for
+    its colours — the palette the dock edits is a decode of them, and a colour
+    edit lands in them (``docs/design/palette-editing.md`` §2).
     """
 
     name: str
@@ -581,6 +591,13 @@ class Entry:
     # *permutes* them they are not, and the slice reads its buffer instead
     # (:func:`_parent_view_bytes`).
     container_id: str = RAW_CONTAINER
+    # SLICE and BOOKMARK entries only: which kind of whole-file row ``path``
+    # names — a FILE, or a PALETTE. A slice is anchored by path, and a ``.pal``
+    # can be open as both a graphics file and a registered palette at once, so
+    # the path alone cannot say which of the two a slice was cut from; this
+    # does. FILE for every entry any older project holds, which is what they
+    # all were (``docs/design/project-format.md``).
+    parent_kind: EntryKind = EntryKind.FILE
     doc: Document | None = None  # lazy: loaded on first activation
     # Children of this **file** whose current bytes are not in its buffer yet.
     #
@@ -638,7 +655,10 @@ class Entry:
     # (Locate missing files) and re-saved. None when the palette is healthy or
     # still unloaded (an unloaded source lives on pending_palette).
     missing_palette: PaletteSource | None = None
-    # PALETTE entries only: the palette codec the file was imported with.
+    # PALETTE entries only: the palette codec the file was imported with — and,
+    # the same fact seen from the other side, the colour format its swatch view
+    # reads the bytes through (``EntrySession.palette_view_preset_id`` follows
+    # it: :func:`interpret_params_for`).
     palette_preset_id: str | None = None
     # ENTRY palette mode only: the open entry whose resolved bytes this entry's
     # colours are decoded from, held by identity like :attr:`TileSource.entry`
@@ -661,7 +681,11 @@ class Entry:
     # it still is, so every project predating tilemaps loads unchanged.
     #
     # A slice or bookmark **inherits its parent's**: a window into a tilemap file
-    # is a tilemap (:func:`slice_of`).
+    # is a tilemap (:func:`slice_of`). A **palette file holds pixels** too — its
+    # colour words read as swatches through the palette-swatch codec, exactly
+    # as a composite of a ROM's colour tables does — so PALETTE entries stay on
+    # the default; :attr:`kind` is what files them with the palettes
+    # (:func:`section_kind`).
     content_kind: ContentKind = ContentKind.PIXELS
     # TILEMAP entries only: where the tiles this map indexes into come from, and
     # which codec reads its cells. Both None/empty until bound — a tilemap opens
@@ -774,13 +798,6 @@ class Entry:
     # landed (``docs/design/composite-entry.md``).
     piece_spans: tuple[PieceSpan, ...] = ()
 
-    def __post_init__(self) -> None:
-        # A palette entry's content kind is not a separate choice — its ``kind``
-        # already says what it holds. Derived here so no construction site can
-        # forget it and the project file need not carry it.
-        if self.kind is EntryKind.PALETTE:
-            self.content_kind = ContentKind.PALETTE
-
     @property
     def paths(self) -> tuple[str, ...]:
         """Every file this entry's bytes come from, in the order they join.
@@ -838,6 +855,7 @@ def new_slice(
     compression_id: str = NO_COMPRESSION,
     extra_paths: tuple[str, ...] = (),
     reshape_id: str = NO_RESHAPE,
+    parent_kind: EntryKind = EntryKind.FILE,
 ) -> Entry:
     """A SLICE entry over ``parent_path`` — not yet in any workspace.
 
@@ -848,8 +866,9 @@ def new_slice(
     :meth:`Workspace.add_slice`.
 
     ``parent_path`` is always a whole *file* — slices never nest, so a slice's
-    parent is a FILE, never another slice — and it becomes the entry's ``path``:
-    a slice is named by the file it cuts into, not by one of its own.
+    parent is a FILE or a PALETTE (``parent_kind``), never another slice — and
+    it becomes the entry's ``path``: a slice is named by the file it cuts into,
+    not by one of its own.
     ``offset`` is likewise absolute in that file, and ``length`` may be ``None``
     for a compressed slice whose extent is discovered on first load.
 
@@ -867,6 +886,7 @@ def new_slice(
         slice_length=length,
         compression_id=compression_id,
         reshape_id=reshape_id,
+        parent_kind=parent_kind,
     )
 
 
@@ -921,6 +941,7 @@ def slice_of(
         compression_id,
         parent.extra_paths,
         reshape_id,
+        parent_kind=parent.kind,
     )
     entry.content_kind = parent.content_kind
     inherited = parent.inputs.get(compression_id)
@@ -1003,6 +1024,10 @@ class Workspace:
         for entry in self.entries:
             if not entry.kind.has_document or entry.doc is None:
                 continue
+            # A palette entry's own document names its own file as its palette
+            # source: it is the thing being mirrored *from*, never onto.
+            if entry.kind is EntryKind.PALETTE:
+                continue
             src = entry.doc.palette_config.source.path
             if src and self.path_key(src) == key:
                 out.append(entry)
@@ -1050,8 +1075,8 @@ class Workspace:
         key = self.path_key(palette.path)
         users = []
         for entry in self.entries:
-            if not entry.kind.has_document:
-                continue
+            if not entry.kind.has_document or entry.kind is EntryKind.PALETTE:
+                continue  # a palette's own colours are its own, not a use of them
             session = entry.session
             if session is None or session.palette_mode is not PaletteMode.FILE:
                 continue
@@ -1084,44 +1109,50 @@ class Workspace:
     def slices_of(self, entry: Entry) -> list[Entry]:
         """The SLICE entries carved from ``entry``'s file, in list order.
 
-        Only a FILE has slices — slices never nest — so this is a single hop,
-        never recursive.
+        Only a FILE or a PALETTE has slices — slices never nest — so this is a
+        single hop, never recursive.
         """
         return [e for e in self.children_of(entry) if e.kind is EntryKind.SLICE]
 
     def children_of(self, entry: Entry) -> list[Entry]:
         """The SLICE and BOOKMARK entries anchored to ``entry``'s file, in
-        list order (empty unless ``entry`` is a FILE — children never nest).
-        A PALETTE entry sharing the path is not a child: its path names the
-        palette file itself, not a parent."""
+        list order (empty unless ``entry`` is a FILE or a PALETTE — children
+        never nest). A FILE and a PALETTE sharing a path are not each other's
+        children, and nor are their slices: a child says which kind of row it
+        was cut from (:attr:`Entry.parent_kind`)."""
         return self._children_in(entry, self.entries)
 
     def _children_in(self, entry: Entry, entries: list[Entry]) -> list[Entry]:
         """:meth:`children_of` against an arbitrary list — what :meth:`reorder`
         asks of the list it is *about* to commit, where the live one still holds
         the group it has lifted out."""
-        if entry.kind is not EntryKind.FILE:
+        if entry.kind not in (EntryKind.FILE, EntryKind.PALETTE):
             return []
         key = self.path_key(entry.path)
         return [
             e
             for e in entries
             if e.kind in (EntryKind.SLICE, EntryKind.BOOKMARK)
+            and e.parent_kind is entry.kind
             and self.path_key(e.path) == key
         ]
 
     def parent_of(self, entry: Entry) -> Entry | None:
-        """The open FILE entry a SLICE or BOOKMARK is anchored to.
+        """The open FILE or PALETTE entry a SLICE or BOOKMARK is anchored to.
 
         None for the three kinds that anchor to nothing: a FILE and a PALETTE,
         whose path is their own file, and a **COMPOSITE**, which has no path at
         all. That last one is not merely tidy — a composite's ``path`` is ``""``,
         which :meth:`path_key` resolves to the working *directory*, so asking
         would be looking a file up by a name no file has.
+
+        Which of the two whole-file kinds is the child's own word
+        (:attr:`Entry.parent_kind`), because a ``.pal`` can be open as both at
+        once and the path cannot tell them apart.
         """
         if entry.kind in (EntryKind.FILE, EntryKind.PALETTE, EntryKind.COMPOSITE):
             return None
-        return self.find_file(entry.path)
+        return self._find(entry.parent_kind, entry.path)
 
     def dirty_entries(self) -> list[Entry]:
         """Every entry with anything unsaved, on either pathway.
@@ -1314,13 +1345,15 @@ class Workspace:
             self.entries.remove(e)
             self._notify(self.on_removed, e)
         if self.current in removed:
-            # Bookmarks and palettes can never be current, so the neighbour
-            # search skips them.
+            # A bookmark can never be current, so the neighbour search skips
+            # it — and a palette, which can be shown but is *registered*
+            # rather than browsed: closing a graphic should land on the next
+            # graphic, not on the colour table beside it.
             after = self.entries[anchor:]
             before = reversed(self.entries[:anchor])
             neighbour = next(
-                (e for e in after if e.kind.has_document),
-                next((e for e in before if e.kind.has_document), None),
+                (e for e in after if _browsable(e)),
+                next((e for e in before if _browsable(e)), None),
             )
             self.set_current(neighbour)
         return removed
@@ -1351,8 +1384,7 @@ class Workspace:
         if entry is self.current:
             return
         assert entry is None or entry in self.entries
-        # Bookmarks and palettes have no document or view of their own — they
-        # can never be shown.
+        # A bookmark has no document or view of its own — it can never be shown.
         assert entry is None or entry.kind.has_document
         self.current = entry
         self._notify(self.on_current_changed, entry)
@@ -1457,6 +1489,11 @@ class Workspace:
             callback(entry)
 
 
+def _browsable(entry: Entry) -> bool:
+    """Whether ``entry`` is what a view moves onto when the one shown goes away."""
+    return entry.kind.has_document and entry.kind is not EntryKind.PALETTE
+
+
 def section_kind(entry: Entry, registry: Registry | None = None) -> ContentKind:
     """Which section of the open-entries list ``entry``'s row is filed under.
 
@@ -1475,16 +1512,28 @@ def section_kind(entry: Entry, registry: Registry | None = None) -> ContentKind:
     tree, the position a new row lands at and the by-type sort cannot disagree
     about it.
 
-    **Only a composite.** A file or a slice read as swatches is a graphics file
-    being *looked at* through a colour codec, which is a way of looking and not
-    what the row is; the picker puts it back a moment later. A composite is
-    assembled out of nothing but those runs, so the format is a statement about
-    the entry itself.
+    The other exception is stated rather than read off a format: a **palette
+    file** is filed with the palettes by being one (:attr:`Entry.kind`), and so
+    is every slice and bookmark cut from it (:attr:`Entry.parent_kind`) — the
+    row sits under its parent's, and its parent is in that section. Its
+    ``content_kind`` is PIXELS for the same reason a swatch composite's is: what
+    files a row and what its bytes are remain two questions.
+
+    **Otherwise only a composite.** A graphics file or a slice of one read as
+    swatches is a graphics file being *looked at* through a colour codec, which
+    is a way of looking and not what the row is; the picker puts it back a
+    moment later. A composite is assembled out of nothing but those runs, so the
+    format is a statement about the entry itself.
 
     ``registry`` is what resolves the format to its engine. Without one — a panel
     built before the window has wired one up — every row files by its content
     kind, which is the right answer for everything but a swatch composite.
     """
+    if entry.kind is EntryKind.PALETTE or (
+        entry.kind in (EntryKind.SLICE, EntryKind.BOOKMARK)
+        and entry.parent_kind is EntryKind.PALETTE
+    ):
+        return ContentKind.PALETTE
     if entry.kind is not EntryKind.COMPOSITE or registry is None:
         return entry.content_kind
     session = entry.session
@@ -1499,6 +1548,21 @@ def section_kind(entry: Entry, registry: Registry | None = None) -> ContentKind:
     if not is_swatch_preset(preset, registry):
         return entry.content_kind
     return ContentKind.PALETTE
+
+
+def file_kind(entry: Entry) -> ContentKind:
+    """What ``entry``'s **file** holds, as its container and a resize read it.
+
+    :attr:`Entry.content_kind` says what the entry's *bytes* are to the editor,
+    and a palette file's are pixels — swatches — like a swatch composite's. Its
+    container is a different reader: it cuts colours out of a file that frames
+    them, counts them in colours, and is picked from the containers that frame
+    a palette (``PluginInfo.content_kinds``). That is the one question this
+    answers, and it is asked by the container and resize dialogs alone.
+    """
+    if entry.kind is EntryKind.PALETTE:
+        return ContentKind.PALETTE
+    return entry.content_kind
 
 
 def is_swatch_preset(preset_id: str, registry: Registry) -> bool:
@@ -1693,8 +1757,12 @@ def pixel_config_for(
     """
     if entry.kind is EntryKind.COMPOSITE:
         return composite_config(entry, registry, workspace, preset_id=preset_id)
+    # A palette file is a whole file like any other on this pathway: its
+    # container cuts the colour words out of whatever frames them, and the
+    # swatch codec reads those (``docs/design/palette-editing.md`` §2).
+    whole = entry.kind in (EntryKind.FILE, EntryKind.PALETTE)
     stages = [(Stage.RESHAPE, entry.reshape_id)]
-    if entry.kind is EntryKind.FILE:
+    if whole:
         stages.append((Stage.CONTAINER, entry.container_id))
     else:
         stages.append((Stage.COMPRESSION, entry.compression_id))
@@ -1706,7 +1774,7 @@ def pixel_config_for(
     )
     writable = all(writes for _id, writes in resolved.values())
     reshape_id = resolved[Stage.RESHAPE][0]
-    if entry.kind is EntryKind.FILE:
+    if whole:
         return PathwayConfig(
             source=FileRef(entry.paths),
             interpret_preset_id=preset_id,
@@ -1716,7 +1784,7 @@ def pixel_config_for(
             write_enabled=writable,
             missing_plugins=missing,
         )
-    parent = workspace.find_file(entry.path) if workspace is not None else None
+    parent = workspace.parent_of(entry) if workspace is not None else None
     reordered = parent is not None and reorders_bytes(parent, registry)
     live, live_base = _parent_view_bytes(entry, parent, reordered, registry, preset_id)
     # What the scheme needs from outside the slice — a shared code table, an
@@ -1825,7 +1893,7 @@ def tilemap_config_for(
             inputs=inputs,
             input_problems=problems,
         )
-    parent = workspace.find_file(entry.path) if workspace is not None else None
+    parent = workspace.parent_of(entry) if workspace is not None else None
     reordered = parent is not None and reorders_bytes(parent, registry)
     live, live_base = _parent_view_bytes(entry, parent, reordered, registry, preset_id)
     # A compressed map's scheme may declare inputs of its own — how many parts a
@@ -2022,7 +2090,14 @@ def composite_preset_id(entry: Entry, registry: Registry) -> str:
     """
     for piece in entry.pieces:
         source = piece.entry
-        if source is None or source.session is None:
+        if source is None:
+            continue
+        if source.session is None:
+            # A registered palette nobody has opened has no session yet, and
+            # the one it will get reads its bytes as swatches — so a composite
+            # of colour tables starts as one (:func:`swatch_session_for`).
+            if source.kind is EntryKind.PALETTE:
+                return swatch_preset_id(registry)
             continue
         return registry.resolve_preset(
             Stage.INTERPRET_PIXEL, source.session.pixel_preset_id
@@ -2061,20 +2136,64 @@ def composite_format_for(entry: Entry, registry: Registry, *, palette: bool) -> 
     if is_swatch_preset(current, registry) == palette:
         return ""
     if palette:
-        if registry.has_preset(VIEW_AS_PALETTE_PRESET):
-            return VIEW_AS_PALETTE_PRESET
-        return next(
-            (
-                preset.id
-                for preset in registry.presets(Stage.INTERPRET_PIXEL)
-                if preset.engine_id == PALETTE_SWATCH_ENGINE
-            ),
-            "",
-        )
+        return swatch_preset_id(registry)
     seed = composite_preset_id(entry, registry)
     if is_swatch_preset(seed, registry):
         return STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
     return seed
+
+
+def swatch_preset_id(registry: Registry) -> str:
+    """The pixel format that reads bytes as palette swatches.
+
+    The shipped *View as Palette* preset, or any other over the same engine if
+    a build has dropped it; ``""`` where there is none at all. What a swatch
+    composite is switched to, and what a palette file opens on.
+    """
+    if registry.has_preset(VIEW_AS_PALETTE_PRESET):
+        return VIEW_AS_PALETTE_PRESET
+    return next(
+        (
+            preset.id
+            for preset in registry.presets(Stage.INTERPRET_PIXEL)
+            if preset.engine_id == PALETTE_SWATCH_ENGINE
+        ),
+        "",
+    )
+
+
+def swatch_session_for(
+    entry: Entry, registry: Registry, palette_preset_id: str
+) -> EntrySession:
+    """``entry``'s session as a palette file's swatch view needs it.
+
+    A palette file opens as swatches, in the colour format its palette is
+    decoded with — the one fact seen from both sides
+    (:attr:`Entry.palette_preset_id`), which is why the session's
+    ``palette_view_preset_id`` is written from the entry here rather than
+    remembered on its own. The session the entry already has is kept for
+    everything else (its selection, the format it was last on), and only put
+    right where it disagrees: a project written before palettes opened may
+    carry any pixel format, and the dock's mode is **File** on the entry's own
+    file, since its colours are its own (``docs/design/palette-editing.md`` §2).
+
+    ``palette_preset_id`` seeds the dock's format for a session built here; the
+    dock in File mode shows the entry's own format, so it is only a fallback.
+    """
+    session = entry.session
+    if session is None:
+        session = EntrySession(
+            pixel_preset_id=swatch_preset_id(registry),
+            palette_preset_id=entry.palette_preset_id or palette_preset_id,
+            preview_compression_id=NO_COMPRESSION,
+        )
+        entry.session = session
+    elif not is_swatch_preset(session.pixel_preset_id, registry):
+        session.pixel_preset_id = swatch_preset_id(registry)
+    session.palette_mode = PaletteMode.FILE
+    if entry.palette_preset_id:
+        session.palette_view_preset_id = entry.palette_preset_id
+    return session
 
 
 def can_compose(entry: Entry, candidate: Entry) -> bool:
@@ -2105,7 +2224,9 @@ def is_composable(candidate: Entry) -> bool:
     and the dialog it opens answer by the same rule.
     """
     # ``has_document`` as well as the kind test: a bookmark inherits PIXELS by
-    # default, yet is a position with no buffer behind it.
+    # default, yet is a position with no buffer behind it. A palette file and a
+    # slice of one pass both tests, which is what lets a colour-RAM image be
+    # assembled out of ``.pal`` runs as readily as out of ROM slices.
     return (
         candidate.kind.has_document
         and candidate.kind is not EntryKind.COMPOSITE
@@ -2127,6 +2248,12 @@ def can_supply_palette(entry: Entry, candidate: Entry) -> bool:
     no buffer of its own to read — a bookmark, a palette entry — and a tilemap,
     whose ``pixel_data`` is a borrowed copy of somebody else's art.
 
+    A **palette file** and its slices qualify as sources like any other pixel
+    entry — a ``.pal`` is a run of colour words, which is what makes it one —
+    but a palette entry never *takes* one: the colours its dock shows are a
+    decode of its own bytes, and reading somebody else's there would leave its
+    swatches and its dock describing two different files.
+
     **No cycle is possible**, so there is nothing here to guard against one: a
     palette is decoded from *pixel* bytes, and no entry's pixel bytes are ever
     decoded from a palette. A chain of two is the longest there is — a composite
@@ -2135,6 +2262,7 @@ def can_supply_palette(entry: Entry, candidate: Entry) -> bool:
     """
     return (
         candidate is not entry
+        and entry.kind is not EntryKind.PALETTE
         and candidate.kind.has_document
         and candidate.content_kind is ContentKind.PIXELS
     )
@@ -2414,6 +2542,12 @@ def palette_source_for(entry: Entry) -> PaletteSource | None:
     forward. An offset source is an absolute file offset, so it resolves against
     a slice's parent file exactly as it does for the parent itself.
     """
+    # A palette entry's palette is its own file, decoded from its own bytes and
+    # rebuilt from them on every load: nothing about it is restorable state, and
+    # carrying a File-mode source naming its own path forward would have the
+    # next load mirror the entry onto itself, write-disabled.
+    if entry.kind is EntryKind.PALETTE:
+        return None
     # A degraded palette (its file went missing) keeps its intended source here
     # rather than on the live config, so save and new-slice seeding carry the
     # reference forward even while the entry renders on the default palette.
@@ -2518,6 +2652,8 @@ def entry_palette_path(entry: Entry) -> str | None:
     session = entry.session
     if session is None or not session.palette_mode.has_external_file:
         return None
+    if entry.kind is EntryKind.PALETTE:
+        return None  # its palette file is its own file, already in ``paths``
     if entry.missing_palette is not None:
         return entry.missing_palette.path
     if entry.doc is not None:

@@ -517,8 +517,8 @@ def test_palette_entry_is_not_a_child_of_a_same_path_file(tmp_path) -> None:
 
 
 def test_close_repoints_current_past_a_palette_entry(tmp_path) -> None:
-    # A palette entry can never be current, so the neighbour search that repoints
-    # after a close must skip it exactly as it skips bookmarks.
+    # A palette entry is registered rather than browsed, so the neighbour search
+    # that repoints after a close must skip it exactly as it skips bookmarks.
     ws = Workspace()
     file_a = ws.open_file(str(tmp_path / "a.sfc"))
     pal = Entry(name="p.pal", kind=EntryKind.PALETTE, path=str(tmp_path / "p.pal"))
@@ -1020,3 +1020,55 @@ def test_swatch_view_config_carries_the_sessions_color_format(tmp_path) -> None:
     assert pipeline.load_pixel_data(cfg, reg).bytes_per_tile == 3
     entry.session.palette_view_preset_id = "preset.palette.no-such"
     assert interpret_params_for(entry, swatches, reg) == {}
+
+
+def test_a_palette_file_is_sliced_like_a_file_and_filed_with_the_palettes(
+    tmp_path,
+) -> None:
+    """A palette entry is a whole file: its slices hang off it (not off a FILE
+    that happens to share its path), read its live buffer, and are filed with
+    the palettes by what they were cut from."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import (
+        can_supply_palette,
+        is_composable,
+        section_kind,
+        slice_of,
+    )
+
+    reg = default_registry()
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(bytes(range(64)))
+    ws = Workspace()
+    palette = Entry(name="colors.pal", kind=EntryKind.PALETTE, path=str(pal))
+    ws.insert(palette, 0)
+    same_path = ws.open_file(str(pal))  # the same file, opened as graphics too
+    run = slice_of(palette, "row 1", 32, 32)
+    ws.insert(run, ws.add_index_for(run))
+
+    assert run.parent_kind is EntryKind.PALETTE
+    assert run.content_kind is ContentKind.PIXELS
+    assert ws.parent_of(run) is palette
+    assert ws.children_of(palette) == [run]
+    assert ws.children_of(same_path) == []  # not adopted by the graphics row
+    assert section_kind(run, reg) is ContentKind.PALETTE
+    assert section_kind(palette, reg) is ContentKind.PALETTE
+    assert is_composable(run) and is_composable(palette)
+    assert can_supply_palette(same_path, run)
+    assert not can_supply_palette(palette, same_path)  # never *takes* one
+
+    # The slice reads the palette's unsaved bytes, not the file on disk.
+    palette.doc = _fake_doc()
+    palette.doc.pixel_config = PathwayConfig(
+        source=FileRef(palette.path), interpret_preset_id="p"
+    )
+    palette.doc.pixel_data = bytes(range(64))
+    palette.doc.replace_bytes(32, b"\xaa" * 4)
+    ws.set_pixel_revision(palette, ws.next_revision())
+    cfg = pixel_config_for(run, "preset.pixel.view-as-palette", reg, ws)
+    assert cfg.writes_through_parent
+    assert pipeline.load_pixel_data(cfg, reg).data[:4] == b"\xaa" * 4
+
+    # Closing the palette takes its slice with it and leaves the graphics row.
+    assert ws.close(palette) == [palette, run]
+    assert ws.entries == [same_path]

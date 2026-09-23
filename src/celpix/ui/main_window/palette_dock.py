@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 from celpix.core.errors import Stage
 from celpix.project.workspace import (
     Entry,
+    EntryKind,
     PaletteMode,
 )
 from celpix.ui.glyphs import Glyph
@@ -560,15 +561,22 @@ class PaletteDockMixin:
         supply the bytes — the same rule the picker filters by, so the dropdown
         never opens a menu with one disabled row in it.
         """
+        current = self._workspace.current
         graphic = self._doc is not None
-        no_offsets = self._offset_palette_refusal(self._workspace.current) is not None
-        no_sources = not self._palette_entry_candidates(self._workspace.current)
+        # A palette file's dock shows its own colours and nothing else: they
+        # are what its swatches draw and what every graphic using it mirrors,
+        # so no other source can stand in for them here.
+        own_colours = current is not None and current.kind is EntryKind.PALETTE
+        no_offsets = self._offset_palette_refusal(current) is not None
+        no_sources = not self._palette_entry_candidates(current)
         for index in range(self._palette_mode_combo.count()):
             mode = PaletteMode.parse(self._palette_mode_combo.itemData(index))
             # Default stays selectable with nothing open: it is the resting
-            # state the dock shows read-only, and picking it is how you put a
-            # standalone palette away again.
+            # state the dock shows read-only. File with nothing open opens a
+            # palette file as a document of its own.
             enabled = graphic or mode in (PaletteMode.FILE, PaletteMode.DEFAULT)
+            if own_colours and mode is not PaletteMode.FILE:
+                enabled = False
             if mode is PaletteMode.OFFSET and no_offsets:
                 enabled = False
             if mode is PaletteMode.ENTRY and no_sources:
@@ -612,8 +620,6 @@ class PaletteDockMixin:
             entry = self._workspace.current
             if path is None and entry is not None and entry.missing_palette:
                 path, missing = entry.missing_palette.path, True
-        elif doc is None and self._preview_palette is not None:
-            path = self._preview_palette.path
         if path is None:
             self._palette_file_label.hide()
             return
