@@ -4,6 +4,7 @@
 
 - Sprite record presets can set a fixed piece size (`subsprite_tiles`), used
   for SNES OAM tables of 16x16 objects
+- Better error handling on entries (plugins, files missing, etc)
 
 ## v1.1.3 - 2026-09-22
 

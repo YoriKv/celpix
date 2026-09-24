@@ -42,8 +42,9 @@ from celpix.project.workspace import (
     Entry,
     EntryKind,
     PaletteMode,
-    data_missing,
     export_basename,
+    load_failed,
+    unavailable,
 )
 from celpix.ui.undo_commands import (
     AddEntryCommand,
@@ -231,9 +232,16 @@ class PaletteTransferMixin:
         ):
             self._activate_entry(entry)
             return
-        if data_missing(entry):
+        if unavailable(entry):
+            # Applying re-reads the file, so an entry that will not open is
+            # refused here rather than failing on every double-click; the row
+            # carries the failure, and the dialog was raised when it happened.
+            failure = load_failed(entry)
             self._alert(
-                f"{entry.name}: file not found - File ▸ Locate missing files "
+                f"{entry.name} did not open, so it cannot be applied:\n"
+                f"{failure.summary}"
+                if failure is not None
+                else f"{entry.name}: file not found - File ▸ Locate missing files "
                 "to re-point it.",
                 title="celPix - palette",
             )

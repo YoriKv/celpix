@@ -768,11 +768,13 @@ class EntriesMixin:
 
         A loaded entry whose palette became reachable reloads that palette in
         place; a never-loaded (or data-relocated) entry simply reloads on its
-        next activation. The list item is refreshed either way so its highlight
-        clears.
+        next activation - a failed one included, since the file it now reads is
+        not the one that failed. The list item is refreshed either way so its
+        highlight clears.
         """
         if entry.doc is not None and entry.missing_palette is not None:
             self._restore_palette_source(entry, entry.missing_palette)
+        entry.load_failure = None
         self._files_panel.refresh_entry(entry)
 
     def _show_entry_in_manager(self, entry: Entry) -> None:
@@ -2125,7 +2127,7 @@ class EntriesMixin:
             if not self._load_entry(parent, live=live) or not self._carry_unsaved(
                 previous, parent
             ):
-                parent.doc = previous
+                self._restore_document(parent, previous)
                 parent.session, parent.pending_view, parent.pending_palette = kept
                 parent.inputs = kept_inputs
                 return False

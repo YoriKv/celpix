@@ -56,7 +56,7 @@ from celpix.core.context import (
     PipelineContext,
 )
 from celpix.core.document import Document, ViewOptions
-from celpix.core.errors import PipelineError, Stage
+from celpix.core.errors import PipelineError, Stage, fault_report
 from celpix.core.font import Glyph
 from celpix.core.notices import Notice, notices
 from celpix.pipeline import pipeline
@@ -510,6 +510,28 @@ class EntrySession:
         self.palette_mode = PaletteMode.parse(self.palette_mode)
 
 
+@dataclass(frozen=True)
+class LoadFailure:
+    """Why an entry could not be opened, kept on it as :attr:`Entry.load_failure`.
+
+    One shape for every way a load can fail — a stage that raised, a file that
+    could not be read, a palette whose bytes are unreadable — so the list, the
+    status bar and the unavailable state have one thing to show rather than one
+    per cause. ``summary`` is the text to show, already in sentences; ``report``
+    is the traceback where a plugin raised (:func:`~celpix.core.errors.fault_report`),
+    which a plugin's author needs and nobody else has to read.
+    """
+
+    summary: str
+    report: str = ""
+
+    @classmethod
+    def from_error(cls, exc: PipelineError) -> LoadFailure:
+        """The failure a stage reported: its summary, with the traceback behind it."""
+        fault = exc.fault
+        return cls(exc.summary(), fault_report(fault) if fault is not None else "")
+
+
 @dataclass(eq=False)  # identity semantics: two slices may share coordinates
 class Entry:
     """One open item: a whole file, an offset+length slice of one, or a bookmark.
@@ -625,6 +647,25 @@ class Entry:
     # without a byte of it written, and its document dropped with the edit
     # inside. Session state, never persisted.
     fold_refused: str | None = None
+    # Why the last attempt to open this entry failed, or None while it opens (or
+    # has not been tried). Set by the one load funnel every activation goes
+    # through and read by every surface that shows the entry: the row wears an
+    # error mark whose tooltip carries this, and activating the entry makes it
+    # current-but-inert instead of trying again — a load that failed on a click
+    # fails identically on the next one, and a dialog per click told the user
+    # nothing new. Cleared wherever the entry's document is dropped
+    # (:meth:`Workspace.drop_document`), which is exactly where something about
+    # what it reads has changed and another attempt is worth making. Session
+    # state, never persisted.
+    load_failure: LoadFailure | None = None
+    # The summary of the failure last *raised as a dialog* for this entry. A
+    # failure is shown once: a retry that fails the same way is silent (the row
+    # still says why), one that fails differently is news and shown again, and
+    # an entry that opened forgets, so failing later - even identically - is news
+    # once more. Kept apart from ``load_failure`` because it has to survive the
+    # drops that clear that one; the two together are "what is wrong now" and
+    # "what the user has already been told". Session state, never persisted.
+    reported_failure: str | None = None
     session: EntrySession | None = None
     # Unsaved in-memory changes, tracked **per pathway** because the two write to
     # different files: the pixel pathway is the entry's own data (its pixel bytes
@@ -1474,6 +1515,9 @@ class Workspace:
         if entry.pending_view is None and entry.doc is not None:
             entry.pending_view = entry.doc.view
         entry.doc = None
+        # A drop means something about what the entry reads has changed, which
+        # is the one reason to try opening a failed entry again.
+        entry.load_failure = None
         # A composite's spans describe the buffer that just went; keeping them
         # would leave the one question they answer being answered about bytes
         # nothing holds any more (:attr:`Entry.piece_spans`).
@@ -2732,6 +2776,29 @@ def entry_palette_entry(entry: Entry) -> Entry | None:
     if entry.pending_palette is not None:
         return entry.pending_palette.entry
     return None
+
+
+def load_failed(entry: Entry) -> LoadFailure | None:
+    """The failure keeping ``entry`` without a document; None while it holds one.
+
+    The mark is only meaningful on an entry with no document: a re-read that
+    failed and put the previous document back leaves the entry working, and a
+    working entry is never inert or red whatever a stale mark says. Read through
+    this rather than the field, so the sites that restore a document cannot
+    strand a mark that anything acts on.
+    """
+    return entry.load_failure if entry.doc is None else None
+
+
+def unavailable(entry: Entry) -> bool:
+    """Whether activating ``entry`` shows the inert state rather than a document.
+
+    The two causes the window treats alike: its file (or its parent's) is gone
+    (:func:`data_missing`), or its last load failed and nothing about it has
+    changed since (:func:`load_failed`). Which one it is, the row and the status
+    line say; that it is one of them is all an activation needs to know.
+    """
+    return data_missing(entry) or load_failed(entry) is not None
 
 
 def palette_missing(entry: Entry) -> bool:

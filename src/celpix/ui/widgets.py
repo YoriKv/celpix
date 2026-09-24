@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import textwrap
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -123,6 +124,20 @@ class ShortcutIsland:
         if take_editing_shortcut(event):
             return True
         return super().event(event)
+
+
+def wrap_lines(text: str, width: int = 60) -> str:
+    """``text`` hard-wrapped for a tooltip, each of its lines at ``width``.
+
+    Qt never wraps a plain-text tooltip, so a long line runs off the screen
+    (``docs/py-qt-reference/pyside6-pitfalls.md``). Text we write is wrapped by
+    hand where it is written; this is for text we only *relay* — a stage's
+    message, an exception's — which nothing wrapped. Line by line, so the
+    paragraph breaks the author put in survive.
+    """
+    return "\n".join(
+        textwrap.fill(line, width) if line.strip() else "" for line in text.split("\n")
+    )
 
 
 def counted(count: int, noun: str) -> str:

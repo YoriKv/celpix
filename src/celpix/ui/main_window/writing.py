@@ -31,7 +31,7 @@ from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError
 from celpix.pipeline import pipeline
-from celpix.project.workspace import Entry, EntryKind
+from celpix.project.workspace import Entry, EntryKind, unavailable
 from celpix.ui.widgets import confirm_destructive, counted
 
 
@@ -774,9 +774,19 @@ class WritingMixin:
         """Re-read the active entry if a save into its file dropped its cache,
         preserving the on-screen view position and palette."""
         entry = self._workspace.current
-        if entry is None or entry.doc is not None:
+        if entry is None or entry.doc is not None or unavailable(entry):
+            # Inert on purpose - a missing file, a load that failed and has not
+            # been given a reason to try again - so not something to re-read
+            # here, where it would raise the very dialog the mark replaces.
             return
         stale = self._doc  # the document still on screen
+        if stale is None:
+            # Nothing on screen to preserve: the entry was inert and its mark
+            # has just been lifted (the file changed on disk), so this is its
+            # first showing rather than a refresh, and the full route rebuilds
+            # the document UI the inert state greyed.
+            self._on_current_entry_changed(entry)
+            return
         if not self._load_entry(entry):
             return  # reported; the stale view stays until the next activation
         if stale is not None:

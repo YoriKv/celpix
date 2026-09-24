@@ -1616,7 +1616,15 @@ class InterpretationMixin:
         # through it. Reported at the end, with the load issues.
         missing_presets = repair_presets(self._workspace.entries, self._registry)
         self._repopulate_presets()
-        if self._doc is not None and self._doc.is_tilemap and entry is not None:
+        # New code is a new chance: an entry that failed to open is unmarked, so
+        # its next activation tries the reloaded plugins - and the one on screen
+        # tries them now, since a refresh is usually aimed at exactly it.
+        for failed in [e for e in self._workspace.entries if e.load_failure]:
+            failed.load_failure = None
+            self._files_panel.refresh_entry(failed)
+        if self._doc is None and entry is not None and entry.doc is None:
+            self._on_current_entry_changed(entry)
+        elif self._doc is not None and self._doc.is_tilemap and entry is not None:
             # Cells, bound tiles and palette in one read, under the binding.
             self._reload_tilemap(entry)
         elif self._doc is not None:

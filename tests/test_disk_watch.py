@@ -283,3 +283,39 @@ def test_a_palette_file_on_screen_keeps_its_painted_swatch_over_a_reload(
     assert colors[3] == 0xFF0000FF  # ours, kept
     assert window._palette_panel._colors == colors
     assert entry.doc.view.columns == 4
+
+
+def test_a_disk_reload_lifts_a_failed_entrys_mark_and_tries_it_again(
+    qtbot, tmp_path, monkeypatch, captured_alerts
+) -> None:
+    """A failed entry has no document to re-read, but its file changing is the
+    one outside event that can have fixed the failure - so a reload of that
+    file lifts the mark, and the entry on screen is tried at once."""
+    from celpix.core.errors import Pathway, PipelineError, Stage
+    from celpix.pipeline import pipeline
+
+    window, px = _window(qtbot, tmp_path, monkeypatch)
+    entry = window._workspace.current
+    other = tmp_path / "other.4bpp.sfc"
+    other.write_bytes(bytes(32 * 8))
+    window._load_pixel(str(other))  # so the failed entry can be re-activated
+    window._workspace.drop_document(entry)
+
+    real = pipeline.load_pixel_data
+
+    def refusing(cfg, reg, *args, **kwargs):
+        if str(px) in cfg.source.paths:
+            raise PipelineError(Stage.CONTAINER, Pathway.PIXEL, "boom", "read")
+        return real(cfg, reg, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "load_pixel_data", refusing)
+    window._activate_entry(entry)
+    assert entry.load_failure is not None and window._doc is None
+
+    monkeypatch.setattr(pipeline, "load_pixel_data", real)  # the fault is gone
+    _rewrite(px, bytes(reversed(px.read_bytes())))
+    window._reload_from_disk([str(px)])
+
+    assert entry.load_failure is None and entry.doc is not None
+    assert window._doc is entry.doc and window._write_action.isEnabled()
+    assert len(captured_alerts) == 1  # the original failure, nothing since

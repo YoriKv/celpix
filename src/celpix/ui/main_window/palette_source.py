@@ -262,13 +262,25 @@ class PaletteSourceMixin:
     def _load_palette_entry(self, entry: Entry, *, quiet: bool = False) -> bool:
         """Read a PALETTE entry's file into its document — colours and swatches.
 
+        Bracketed by :meth:`~...session.SessionMixin._attempt_load` here rather
+        than only in ``_load_entry``, because this one is reached directly too
+        (Open Swatches, a palette applied by history, a mirror after a write).
+        """
+        return self._attempt_load(
+            entry, lambda: self._read_palette_entry(entry, quiet=quiet)
+        )
+
+    def _read_palette_entry(self, entry: Entry, *, quiet: bool) -> bool:
+        """The body of :meth:`_load_palette_entry`.
+
         The one load behind every route to a palette file's document: opening
         it, applying it to a graphic (:meth:`_link_file_palette`), a project
         restore, a re-read after its container changed. False only when the
         bytes can't be read at all, which no format choice would fix; a decode
         failure opens on the error palette (:meth:`_error_palette`) so the
-        format remains correctable. ``quiet`` leaves the report to a caller
-        that has its own way of degrading.
+        format remains correctable. An unreadable file is marked on the entry
+        like any other failed load (:meth:`~...session.SessionMixin._fail_load`);
+        ``quiet`` leaves the report to a caller that has its own way of degrading.
 
         The document carries both halves of the same bytes. The **palette**
         half is what the dock edits and every File-mode graphic mirrors; the
@@ -298,11 +310,7 @@ class PaletteSourceMixin:
             else:
                 loaded, cfg = retried
         except OSError as exc:
-            if not quiet:
-                self._alert(
-                    f"Cannot read {entry.path}: {exc}", title="celPix - palette"
-                )
-            return False
+            return self._fail_load(entry, exc, quiet=quiet)
         else:
             loaded, cfg = self._apply_palette_preset_hint(entry, loaded, cfg)
         entry.doc = self._palette_entry_document(entry, loaded, cfg)
@@ -964,8 +972,13 @@ class PaletteSourceMixin:
         if entry is None:
             return
         if entry.doc is None and not self._load_palette_entry(entry, quiet=True):
-            entry.doc = Document.palette_only(
-                state.palette, state.config, state.ctx, state.base_bytes
+            # History holds the colours the file would not yield, so the entry
+            # has a document after all - and is not a failed one.
+            self._restore_document(
+                entry,
+                Document.palette_only(
+                    state.palette, state.config, state.ctx, state.base_bytes
+                ),
             )
         assert entry.doc is not None
         entry.doc.palette = state.palette

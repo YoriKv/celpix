@@ -70,12 +70,14 @@ from celpix.plugins.registry import Registry
 from celpix.project.workspace import (
     Entry,
     EntryKind,
+    LoadFailure,
     SortKey,
     can_supply_palette,
     data_missing,
     entry_notices,
     entry_palette_path,
     is_composable,
+    load_failed,
     palette_missing,
     section_kind,
 )
@@ -83,11 +85,12 @@ from celpix.ui import clipboard
 from celpix.ui.glyphs import Glyph
 from celpix.ui.icon_font import glyph_pixmap
 from celpix.ui.searchable_combo import matches_search
-from celpix.ui.theme import WARNING_INK
+from celpix.ui.theme import ERROR_INK, WARNING_INK
 from celpix.ui.widgets import (
     ShortcutIsland,
     icon_cache_key,
     signals_blocked,
+    wrap_lines,
 )
 
 # Translucent amber behind an entry that needs the user's attention — a missing
@@ -95,6 +98,14 @@ from celpix.ui.widgets import (
 # warning over either light or dark row backgrounds without fighting the
 # selection highlight. Which of the two it is, is what the status icon says.
 _MISSING_HIGHLIGHT = QBrush(QColor(255, 193, 7, 70))
+
+# The same, in the error ink, behind an entry that would not open at all: the
+# amber says "opened, but look", and a row that did not open is a different
+# answer to "can I work on this" — so it wears a different colour, not only a
+# different icon. Alpha matched to the amber so the two sit at one weight.
+_FAILED_HIGHLIGHT = QBrush(
+    QColor(ERROR_INK.red(), ERROR_INK.green(), ERROR_INK.blue(), 70)
+)
 
 # Alpha for the tint behind the entry currently on the canvas (the theme's
 # Highlight, see _open_entry_wash). Deliberately fainter than the amber above:
@@ -1156,42 +1167,50 @@ class FileListPanel(QWidget):
                 else "changes (data + palette)"
             )
             tip += f"\nUnsaved {what}"
-        # Two conditions that leave an entry working but not on the bytes the user
-        # thinks: a file it references (its own, or its palette) has moved, or a
-        # container had to drop, assume or substitute something. Both wash the row
-        # amber, and each has its own icon, because the fixes differ — go and find
-        # the file, versus read what the container did. Missing wins when both
-        # apply: a file that isn't there cannot have been read, so any notice on
-        # the entry is from an older load.
+        # Three conditions a row has to own up to, in the order they win. A file
+        # it references (its own, or its palette) has moved; its last load
+        # failed; or it opened, but a stage had to drop, assume or substitute
+        # something. Each has its own icon, because the fixes differ — go and
+        # find the file, change what the entry reads (or fix the plugin), read
+        # what the container did — and the first two make the entry inert while
+        # the third leaves it working. Missing wins over the others: a file that
+        # isn't there cannot have been read, so a failure or a notice on the
+        # entry is from an older load. A failed entry has no document and so no
+        # notices, which is why the two never meet.
         #
         # The whole explanation goes in the tooltip. It is the one place a user
         # already looks to ask "what is wrong with this row", so a notice belongs
-        # there rather than somewhere else they have to be told to look.
+        # there rather than somewhere else they have to be told to look — and
+        # for a failure it is the *only* place: the dialog was shown once, when
+        # the load was tried, and every click after that lands here.
         notes = entry_notices(entry)
         warnings = [n for n in notes if n.is_warning]
         status: QIcon | None = None
+        wash = QBrush()
         gone = self._missing_lines(entry)
         if gone:
             tip += gone + "\nFile ▸ Locate missing files"
             status = self._missing_icon()
+            wash = _MISSING_HIGHLIGHT
+        elif (failure := load_failed(entry)) is not None:
+            tip += self._failure_lines(failure)
+            status = self._failed_icon()
+            wash = _FAILED_HIGHLIGHT
         else:
             # Every notice, not only the warnings that earn the icon: an info one
             # raises no marker of its own but is still worth reading once here.
             tip += "".join(self._notice_lines(n) for n in notes)
             if warnings:
                 status = self._notice_icon()
+                wash = _MISSING_HIGHLIGHT
         # Which row the canvas is showing, kept visible after the *selection*
         # has moved off it - clicking a palette to apply it, or a bookmark to
         # read its offset, leaves the list highlighting something that is not
         # what is on screen. A problem wash outranks it: it is rarer, it is
         # actionable, and the shown entry is still the one the tooltip and title
         # name.
-        if status is not None:
-            wash = _MISSING_HIGHLIGHT
-        elif entry is self._current:
+        if status is None and entry is self._current:
             wash = self._open_entry_wash()
-        else:
-            wash = QBrush()
         item.setBackground(0, wash)
         item.setBackground(_STATUS_COL, wash)
         item.setIcon(_STATUS_COL, status if status is not None else QIcon())
@@ -1244,6 +1263,21 @@ class FileListPanel(QWidget):
         if palette_missing(entry):
             lines.append(f"Palette file is missing:\n  {entry_palette_path(entry)}")
         return "".join(f"\n{line}" for line in lines)
+
+    @staticmethod
+    def _failure_lines(failure: LoadFailure) -> str:
+        """The tooltip lines for an entry that would not open: a heading, then
+        the failure indented under it like a notice's detail, then what to do.
+
+        Wrapped here rather than where it was recorded, because the summary is a
+        stage's own words - an exception's message can run to any length - and
+        the tooltip is the one place it is shown that cannot wrap for itself.
+        """
+        lines = "\nDid not open:"
+        lines += "".join(
+            f"\n  {line}" for line in wrap_lines(failure.summary).split("\n")
+        )
+        return lines + "\nChange what it reads to try again"
 
     @staticmethod
     def _notice_lines(notice: Notice) -> str:
@@ -1328,6 +1362,13 @@ class FileListPanel(QWidget):
         — at this size, next to rows the user can close, a cross reads as a close
         button rather than a state."""
         return self._icon(Glyph.QUESTION, tint=WARNING_INK)
+
+    def _failed_icon(self) -> QIcon:
+        """A ringed exclamation in the error ink: this entry would not open, and
+        its tooltip says which stage refused and why. The stronger relative of
+        the notice mark - same exclamation, ringed and red - because the row is
+        making the stronger claim: not "look", but "this one does not work"."""
+        return self._icon(Glyph.ERROR, tint=ERROR_INK)
 
     def _notice_icon(self) -> QIcon:
         """An exclamation mark: the entry opened, but a stage had to drop, assume

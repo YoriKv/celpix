@@ -300,6 +300,14 @@ class DiskWatchMixin:
         self._capture_session()
         on = self._on_paths(paths)
         tally = _Reload()
+        # An entry that failed to open is not re-read here - it has no document
+        # to re-read - but the file changing is the one outside event that can
+        # have fixed what failed, so its mark is lifted and the next activation
+        # tries again (the current one right away, in ``_put_current_back``).
+        for entry in list(ws.entries):
+            if on(entry) and entry.doc is None and entry.load_failure is not None:
+                entry.load_failure = None
+                self._files_panel.refresh_entry(entry)
         # A palette file is a region like any other: its buffer is the authority
         # for its slices, and its colours are a decode of it
         # (``docs/design/palette-editing.md`` §2).
@@ -440,7 +448,9 @@ class DiskWatchMixin:
             entry.pending_view = previous.view
         entry.doc = None
         if not self._load_entry(entry, quiet=True, live=live):
-            entry.doc = previous
+            # The old document is back, so the entry did not fail to open; the
+            # failed re-read is the tally's to report.
+            self._restore_document(entry, previous)
             entry.pending_palette = pending_palette
             entry.pending_view = pending_view
             tally.failed.append(entry.name)

@@ -4085,3 +4085,170 @@ def test_a_slice_outside_the_parents_window_is_refused_rather_than_skipped(
     assert "gfx" in captured_alerts[-1][1] and "still unsaved" in captured_alerts[-1][1]
     # ...and nothing of it reached the file either, at its own offset or any other.
     assert rom.read_bytes() == before
+
+
+def test_a_failed_load_marks_the_entry_and_is_reported_once(
+    qtbot, tmp_path, monkeypatch, captured_alerts
+) -> None:
+    """An entry whose load fails is marked, becomes current but inert, and is
+    not tried - or reported - again until something about it changes."""
+    from celpix.core.errors import Pathway, PipelineError, Stage
+    from celpix.pipeline import pipeline
+
+    a = _make_snes_file(tmp_path)
+    b = tmp_path / "b.4bpp.sfc"
+    b.write_bytes(bytes((i * 7 + 3) & 0xFF for i in range(32 * 8)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(a))
+    window._load_pixel(str(b))
+    first, second = window._workspace.entries
+    window._workspace.drop_document(first)  # so activating it reads again
+
+    real = pipeline.load_pixel_data
+
+    def refusing(cfg, reg, *args, **kwargs):
+        if str(a) in cfg.source.paths:
+            raise PipelineError(
+                Stage.COMPRESSION, Pathway.PIXEL, "boom", "decompress", plugin="lz2"
+            )
+        return real(cfg, reg, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "load_pixel_data", refusing)
+    window._activate_entry(first)
+
+    # Reported once, marked, and current with the document actions greyed - the
+    # same inert state a missing file lands in, rather than a bounce back to b.
+    assert [t for t, _m in captured_alerts] == ["celPix - pipeline error"]
+    assert first.load_failure is not None
+    assert (
+        "lz2 failed in the compression (decompress) stage" in first.load_failure.summary
+    )
+    assert window._workspace.current is first
+    assert window._doc is None
+    assert not window._write_action.isEnabled()
+    row = _entry_rows(window._files_panel)[0]
+    assert not row.icon(1).isNull()  # the error mark
+    assert "Did not open:" in row.toolTip(1)
+    assert "lz2 failed" in row.toolTip(1)
+
+    # Coming back to it neither tries the load nor raises the dialog again.
+    window._activate_entry(second)
+    window._activate_entry(first)
+    assert len(captured_alerts) == 1
+    assert window._workspace.current is first
+
+    # A change to what it reads clears the mark, and the next activation tries.
+    # Failing the same way again is not news: marked again, no dialog.
+    window._workspace.drop_document(first)
+    assert first.load_failure is None
+    window._activate_entry(second)
+    window._activate_entry(first)
+    assert first.load_failure is not None and len(captured_alerts) == 1
+
+    # Failing differently is.
+    def refusing_otherwise(cfg, reg, *args, **kwargs):
+        if str(a) in cfg.source.paths:
+            raise PipelineError(Stage.CONTAINER, Pathway.PIXEL, "no header", "read")
+        return real(cfg, reg, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "load_pixel_data", refusing_otherwise)
+    window._workspace.drop_document(first)
+    window._activate_entry(second)
+    window._activate_entry(first)
+    assert len(captured_alerts) == 2
+    assert "container (read)" in first.load_failure.summary
+
+    # Opening clears the mark; failing the *same* way after having worked is
+    # news once more, because the entry changed state in between.
+    monkeypatch.setattr(pipeline, "load_pixel_data", real)
+    window._workspace.drop_document(first)
+    window._activate_entry(second)
+    window._activate_entry(first)
+    assert first.doc is not None and window._doc is not None
+    assert _entry_rows(window._files_panel)[0].icon(1).isNull()
+    monkeypatch.setattr(pipeline, "load_pixel_data", refusing_otherwise)
+    window._workspace.drop_document(first)
+    window._activate_entry(second)
+    window._activate_entry(first)
+    assert len(captured_alerts) == 3
+
+
+def test_unreadable_bound_tiles_are_a_notice_on_the_map_not_a_dialog(
+    qtbot, tmp_path, monkeypatch, captured_alerts
+) -> None:
+    """A map whose tile bank cannot be read still opens, on no tiles, and says so
+    on its row rather than with a dialog on every load."""
+    from celpix.core.errors import Pathway, PipelineError, Stage
+    from celpix.core.tilemap import Cell
+    from celpix.pipeline import pipeline
+    from celpix.project.workspace import TileMode, TileSource, entry_notices
+
+    bank_path = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(bank_path))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    bank, screen = window._workspace.entries
+    screen.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+    window._activate_entry(bank)
+    window._workspace.drop_document(screen)
+    window._workspace.drop_document(bank)  # no live buffer: the bank is re-read
+
+    real = pipeline.load_pixel_data
+
+    def refusing(cfg, reg, *args, **kwargs):
+        if str(bank_path) in cfg.source.paths:
+            raise PipelineError(Stage.CONTAINER, Pathway.PIXEL, "boom", "read")
+        return real(cfg, reg, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "load_pixel_data", refusing)
+    window._activate_entry(screen)
+
+    assert captured_alerts == []
+    assert window._workspace.current is screen and window._doc is not None
+    assert screen.load_failure is None  # the map itself opened
+    assert not window._doc.pixel_data  # on the no-tiles stand-in
+    notes = entry_notices(screen)
+    assert [n.summary for n in notes if n.is_warning] == [
+        "Bound tiles could not be read"
+    ]
+    tip = _entry_rows(window._files_panel)[1].toolTip(1)
+    assert "Bound tiles could not be read" in tip and "boom" in tip
+
+
+def test_a_failed_reread_of_the_open_map_leaves_it_working_and_unmarked(
+    qtbot, tmp_path, monkeypatch, captured_alerts
+) -> None:
+    """A binding or cell-format change that fails puts the map's document back,
+    and a map holding a document is not a failed one: no mark, still opens."""
+    from celpix.core.errors import Pathway, PipelineError, Stage
+    from celpix.core.tilemap import Cell
+    from celpix.pipeline import pipeline
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    bank, screen = window._workspace.entries
+    screen.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+    screen.doc = None
+    window._activate_entry(bank)
+    window._activate_entry(screen)
+    kept = screen.doc
+    assert kept is not None
+
+    def refusing(*_args, **_kwargs):
+        raise PipelineError(Stage.INTERPRET_TILEMAP, Pathway.TILEMAP, "boom")
+
+    monkeypatch.setattr(pipeline, "load_tilemap_data", refusing)
+    assert not window._reload_tilemap(screen)
+    assert [t for t, _m in captured_alerts] == ["celPix - pipeline error"]
+    assert screen.doc is kept and screen.load_failure is None
+    assert _entry_rows(window._files_panel)[1].icon(1).isNull()
+
+    # Leaving and coming back shows the document it kept, with no second dialog.
+    window._activate_entry(bank)
+    window._activate_entry(screen)
+    assert window._doc is kept and len(captured_alerts) == 1

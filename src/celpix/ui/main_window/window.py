@@ -77,6 +77,7 @@ from celpix.project.workspace import (
     Workspace,
     data_missing,
     entry_notices,
+    load_failed,
     sorted_entries,
 )
 from celpix.ui.animation_overlay import AnimationOverlay
@@ -995,6 +996,8 @@ class MainWindow(
             self.setWindowTitle("celPix")
         elif data_missing(entry):
             self.setWindowTitle(f"celPix - {entry.name} (missing)")
+        elif load_failed(entry) is not None:
+            self.setWindowTitle(f"celPix - {entry.name} (did not open)")
         else:
             self.setWindowTitle(f"celPix - {entry.name}")
 

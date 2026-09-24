@@ -1213,7 +1213,8 @@ class TilemapBarMixin:
         if not self._load_entry(entry, quiet=quiet, live=live):
             # The seed goes back with it: it described the read that did not
             # happen, and the document being restored has its palette already.
-            entry.doc, entry.pending_palette = previous, pending
+            self._restore_document(entry, previous)
+            entry.pending_palette = pending
             entry.pending_view = pending_view
             return False
         return True

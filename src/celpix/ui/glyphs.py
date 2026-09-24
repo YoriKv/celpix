@@ -40,6 +40,7 @@ class Glyph(Enum):
     IMAGE = "\ue3f4"  # image - a pixel slice: its own little graphic
     QUESTION = "\ueb8b"  # question_mark - this entry's file is unaccounted for
     EXCLAMATION = "\ue645"  # priority_high - it opened, but something had to give
+    ERROR = "\ue000"  # error - it did not open: a ringed exclamation, the stronger mark
 
     # The three tilemap layouts, which are one family on purpose: the same
     # framed grid, its cells arranged three ways. What tells them apart at 13x16

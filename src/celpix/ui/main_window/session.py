@@ -22,6 +22,7 @@ dropped and re-read (see :meth:`~SessionMixin._load_entry`).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -35,7 +36,7 @@ from celpix.core.context import (
     KEY_TILE_PALETTE_ROWS,
 )
 from celpix.core.document import Document
-from celpix.core.errors import PipelineError
+from celpix.core.errors import PipelineError, fault_report
 from celpix.core.notices import warn
 from celpix.core.tilemap import Cell
 from celpix.pipeline import pipeline
@@ -47,18 +48,20 @@ from celpix.project.workspace import (
     Entry,
     EntryKind,
     EntrySession,
+    LoadFailure,
     PaletteMode,
     TileSource,
     backfill_slice_length,
     composite_config,
     composite_layout,
     composite_preset_id,
-    data_missing,
+    load_failed,
     record_composite_layout,
     tilemap_config_for,
+    unavailable,
 )
 from celpix.ui.tools import EditMode
-from celpix.ui.widgets import counted, select_combo_data, signals_blocked
+from celpix.ui.widgets import counted, select_combo_data, signals_blocked, wrap_lines
 
 
 class SessionMixin:
@@ -95,18 +98,17 @@ class SessionMixin:
         # settles for itself regardless — this only decides *when* the cost lands,
         # and a region owing nothing costs a set test.
         self._settle_region(self._workspace.current)
-        if data_missing(entry):
-            # The file moved: make it current anyway, but show the disabled
-            # unavailable state (no _load_entry, so no pipeline-error alert -
-            # relocation happens through Locate missing files, not every click).
+        fresh = entry.doc is None
+        if unavailable(entry) or (fresh and not self._load_entry(entry)):
+            # The file moved, or the entry would not open - now, or the last time
+            # it was tried. Either way it becomes current, inert: selectable, so
+            # it can be edited or closed, with the document UI greyed
+            # (:meth:`_show_unavailable`). An entry already marked is not tried
+            # again - the row's tooltip says why it failed, and a dialog per
+            # click said the same thing; relocation happens through Locate
+            # missing files and a retry through changing what the entry reads.
             self._capture_session()
             self._workspace.set_current(entry)  # -> _show_unavailable
-            return
-        fresh = entry.doc is None
-        if fresh and not self._load_entry(entry):
-            # Load failed (bad codec/invalid file): stay put, and snap the
-            # list highlight back onto the entry actually shown.
-            self._files_panel.set_current(self._workspace.current)
             return
         self._capture_session()
         self._workspace.set_current(entry)  # -> _on_current_entry_changed
@@ -145,12 +147,9 @@ class SessionMixin:
         if entry is None:
             self._show_empty()
             return
-        if data_missing(entry):
-            self._show_unavailable(entry)
-            return
         # Already loaded on the _activate_entry path; a close() repointing
         # current to a never-activated (or invalidated) neighbour lands here.
-        if entry.doc is None and not self._load_entry(entry):
+        if unavailable(entry) or (entry.doc is None and not self._load_entry(entry)):
             self._show_unavailable(entry)
             return
         # Here as well as after a load, because a quiet load (a bulk caller, a
@@ -188,9 +187,14 @@ class SessionMixin:
     ) -> bool:
         """Load ``entry``'s document through the pipeline; False on failure.
 
-        Runs on first activation and again whenever the cached document was
-        invalidated by a save into the same file. A failure is normally reported
-        with a modal; ``quiet`` suppresses it so a bulk caller (export over many
+        **Every** way a load can fail ends in :meth:`_fail_load`: the entry is
+        marked with why, and stays inert until something about what it reads
+        changes. This and :meth:`~...palette_source.PaletteSourceMixin.
+        _load_palette_entry` are the two funnels (a palette file's is reached
+        directly as well), both wrapped by :meth:`_attempt_load`, so nothing
+        that opens an entry has a failure path of its own.
+
+        ``quiet`` suppresses the dialog so a bulk caller (export over many
         entries) can collect and summarize failures itself instead of stacking
         one dialog per bad entry.
 
@@ -203,6 +207,32 @@ class SessionMixin:
             # built by the one loader every route to it shares
             # (``docs/design/palette-editing.md`` §2).
             return self._load_palette_entry(entry, quiet=quiet)
+        return self._attempt_load(
+            entry, lambda: self._read_entry(entry, quiet=quiet, live=live)
+        )
+
+    def _attempt_load(self, entry: Entry, read: Callable[[], bool]) -> bool:
+        """One attempt to open ``entry`` through ``read``, bracketed.
+
+        Going in, the last failure no longer describes the entry. Coming out
+        open, the failure the user was told about is forgotten too: an entry
+        that worked and then fails is news, however familiar the message
+        (:attr:`~celpix.project.workspace.Entry.reported_failure`).
+        """
+        entry.load_failure = None
+        if not read():
+            return False
+        entry.reported_failure = None
+        return True
+
+    def _read_entry(
+        self, entry: Entry, *, quiet: bool = False, live: bytes | None = None
+    ) -> bool:
+        """The body of :meth:`_load_entry` for a pixel or tilemap entry.
+
+        Runs on first activation and again whenever the cached document was
+        invalidated by a save into the same file.
+        """
         if entry.session is None:
             entry.session = self._seed_session(entry)
         session = entry.session
@@ -246,10 +276,8 @@ class SessionMixin:
         )
         try:
             px = pipeline.load_pixel_data(cfg, self._registry, width)
-        except PipelineError as exc:
-            if not quiet:
-                self._report(exc)
-            return False
+        except (PipelineError, OSError) as exc:
+            return self._fail_load(entry, exc, quiet=quiet)
         if layout is not None:
             # A composite that could not read a source still opens — the run goes
             # blank and everything after it stays put, which is the only outcome
@@ -305,10 +333,8 @@ class SessionMixin:
             loaded = pipeline.load_tilemap_data(
                 cfg, self._registry, live, size_pair=entry.sprite_size_pair
             )
-        except PipelineError as exc:
-            if not quiet:
-                self._report(exc)
-            return False
+        except (PipelineError, OSError) as exc:
+            return self._fail_load(entry, exc, quiet=quiet)
         if backfill_slice_length(entry, loaded.ctx):
             # The pixel path's rule, for the same reason: a map sliced without a
             # length is bounded by the extent its decompressor found, or a write
@@ -349,13 +375,63 @@ class SessionMixin:
                     "drawing one cell per entry."
                 )
             return True
-        tiles = self._load_bound_tiles(entry, quiet=quiet)
+        tiles = self._load_bound_tiles(entry)
         entry.doc = documents.tilemap_document(
             self._registry, self._workspace, entry, loaded, cfg, tiles
         )
         self._apply_restored_state(entry)
         self._apply_tilemap_columns(entry, restored=restored)
         return True
+
+    def _fail_load(self, entry: Entry, exc: Exception, *, quiet: bool) -> bool:
+        """Record that ``entry`` would not open, say so if it is news, answer False.
+
+        The one exit for a failed load, whatever failed: a stage that raised
+        (:class:`~celpix.core.errors.PipelineError`, with the traceback kept for
+        the dialog's details pane) or a file that could not be read (an
+        ``OSError`` — gone between the missing-file check and the read, or
+        unreadable where it stands). The mark is what the list's row shows and
+        what keeps the next activation from trying again.
+
+        The dialog is raised for a failure the user has not been told about:
+        the first, and any later one that reads differently. A retry that fails
+        the same way — the file re-read after a change that did not fix it — is
+        silent, because the tooltip already says exactly this and a dialog
+        repeating it is the thing this replaces. ``quiet`` leaves even news to a
+        caller with its own way of summarising, and does not count as telling:
+        the mark is set regardless, since the entry did fail.
+        """
+        if isinstance(exc, PipelineError):
+            failure = LoadFailure.from_error(exc)
+        else:
+            # OSError's own text already names the path; the errno's phrase is
+            # the part worth having.
+            why = (exc.strerror if isinstance(exc, OSError) else None) or str(exc)
+            failure = LoadFailure(f"Cannot read {entry.path}: {why}")
+        entry.load_failure = failure
+        self._files_panel.refresh_entry(entry)
+        if quiet or failure.summary == entry.reported_failure:
+            return False
+        entry.reported_failure = failure.summary
+        if isinstance(exc, PipelineError):
+            self._report(exc)
+        else:
+            self._alert(failure.summary, title="celPix - open")
+        return False
+
+    def _restore_document(self, entry: Entry, previous: Document | None) -> None:
+        """Put ``previous`` back on ``entry`` after a re-read of it failed.
+
+        The re-read went through :meth:`_load_entry`, which marked the entry and
+        painted its row red; an entry holding a document is not one that failed
+        to open, so both are undone here. The failure was still reported (or
+        tallied by the caller), and the entry is exactly as it was - which is the
+        contract every "drop, re-read, restore on failure" site offers.
+        """
+        entry.doc = previous
+        if previous is not None:
+            entry.load_failure = None
+            self._files_panel.refresh_entry(entry)
 
     def _apply_pixel_preset_hint(self, entry: Entry, px, cfg):  # noqa: ANN001
         """:func:`~celpix.project.documents.apply_pixel_preset_hint`, settling."""
@@ -851,7 +927,7 @@ class SessionMixin:
             self._doc = composite.doc
             self._restore_session(composite)
         else:
-            composite.doc = previous
+            self._restore_document(composite, previous)
         self._refresh_view()
 
     def _reresolve_bound_art(self, maps: list[Entry]) -> None:
@@ -952,12 +1028,16 @@ class SessionMixin:
             current = current or other is self._workspace.current
         return current
 
-    def _load_bound_tiles(self, entry: Entry, *, quiet: bool = False) -> BoundTiles:
+    def _load_bound_tiles(self, entry: Entry) -> BoundTiles:
         """The tiles a tilemap entry draws from, or an empty stand-in.
 
         A binding that cannot be read degrades to no tiles rather than failing
         the entry, on the same rule a missing palette follows: the map is still
-        worth showing, and the binding is the part the user can re-point.
+        worth showing, and the binding is the part the user can re-point. What
+        went wrong rides on the stand-in as a **notice**, so the row wears the
+        warning mark and its tooltip says which read failed — the same place a
+        stage that had to assume something reports, and read the same way. Not
+        a dialog: one per load of the map said the same thing every time.
         """
         source = entry.tile_source
         if source is None or not source.is_bound:
@@ -969,18 +1049,14 @@ class SessionMixin:
         try:
             cfg = self._tile_source_config(entry, source)
         except (PipelineError, KeyError) as exc:
-            if not quiet:
-                self._report_tile_binding(entry, exc)
-            return self._no_tiles()
+            return self._unreadable_tiles(exc)
         live = self._live_bound_tiles(source, cfg)
         if live is not None:
             return live
         try:
             px = pipeline.load_pixel_data(cfg, self._registry)
-        except (PipelineError, KeyError) as exc:
-            if not quiet:
-                self._report_tile_binding(entry, exc)
-            return self._no_tiles()
+        except (PipelineError, KeyError, OSError) as exc:
+            return self._unreadable_tiles(exc)
         return BoundTiles(
             px.data, px.bytes_per_tile, px.tile_width, px.tile_height, px.ctx, cfg
         )
@@ -1016,12 +1092,35 @@ class SessionMixin:
             self._workspace, entry, source, self._pixel_config, self._pixel_preset_id()
         )
 
-    def _report_tile_binding(self, entry: Entry, exc: Exception) -> None:
-        """Say the tiles could not be read, without implying the map failed."""
-        self._alert(
-            f"{entry.name}: could not read the tiles it is bound to.",
-            detail=str(exc),
+    def _unreadable_tiles(self, exc: Exception) -> BoundTiles:
+        """The no-tiles stand-in, carrying why the bound tiles could not be read.
+
+        Worded so as not to imply the map failed: its cells are what is on
+        screen, and the binding is what to look at. The reason is wrapped here
+        because it is a stage's own message, which nothing hard-wrapped for a
+        tooltip (``docs/py-qt-reference/pyside6-pitfalls.md``).
+        """
+        tiles = self._no_tiles()
+        fault = exc.fault if isinstance(exc, PipelineError) else None
+        if isinstance(exc, KeyError):
+            # A KeyError's str() is its key in quotes, which says nothing on a
+            # row; what was looked up and not found is a format id.
+            why = f"unknown format {exc.args[0]}" if exc.args else "unknown format"
+        else:
+            why = str(exc)
+        warn(
+            tiles.ctx,
+            "Bound tiles could not be read",
+            wrap_lines(
+                f"{why}\nRe-point the map's tile source, or fix the entry it names."
+            ),
+            # Attributed to the plugin that raised where one did, and carrying
+            # its traceback: a codec that *crashed* over the bank is a plugin
+            # fault, which the fault dialog raises once and its author needs.
+            source=(exc.plugin if isinstance(exc, PipelineError) else "") or "host",
+            report=fault_report(fault) if fault is not None else "",
         )
+        return tiles
 
     def _apply_restored_state(self, entry: Entry) -> None:
         """Apply project-restored view/palette state on the document's first load.
@@ -1345,12 +1444,15 @@ class SessionMixin:
         self._announce_ready()
 
     def _show_unavailable(self, entry: Entry) -> None:
-        """Show a missing-file entry as the current selection, but inert.
+        """Show an entry that cannot open as the current selection, but inert.
 
         Like :meth:`_show_empty` (blank canvas, no live document) except
         ``current`` stays on the entry with its name in the title and the
-        document UI greyed out: the file it references is gone, so there is
-        nothing to drive until it is relocated (File ▸ Locate missing files).
+        document UI greyed out. Two things land here, told apart by the status
+        line: the file it references is gone, so there is nothing to drive until
+        it is relocated (File ▸ Locate missing files); or its load failed
+        (:attr:`~celpix.project.workspace.Entry.load_failure`), and the row's
+        error mark carries the why until something about the entry changes.
         """
         self._clear_document_view()
         self._set_document_ui_enabled(False)
@@ -1366,6 +1468,12 @@ class SessionMixin:
         # that; the two View/Palette menu toggles this pass owns outright
         # (_GATE_OWNS) are on no toolbar and said the wrong thing outright.
         self._sync_capabilities()
-        self.statusBar().showMessage(
-            f"{entry.name}: file not found - use File ▸ Locate missing files."
-        )
+        failure = load_failed(entry)
+        if failure is None:
+            message = f"{entry.name}: file not found - use File ▸ Locate missing files."
+        else:
+            # The first line of the failure is the who-and-where; the rest is on
+            # the row, where it can be read at leisure.
+            why = failure.summary.split("\n", 1)[0]
+            message = f"{entry.name} did not open: {why} (see the mark on its row)"
+        self.statusBar().showMessage(message)
