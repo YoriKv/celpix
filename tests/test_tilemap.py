@@ -1418,6 +1418,52 @@ def test_a_sprite_record_reads_its_fields_as_parallel_arrays() -> None:
         engine.decode(raw, {**params, "arrays": [["x", "tile"], ["y"]]}, ctx)
 
 
+def test_a_sprite_record_draws_a_fixed_size_where_the_record_states_none() -> None:
+    """A SNES OAM table's records hold no size: the routine that draws them
+    fixes every object at 16x16. `subsprite_tiles` states that once for the
+    preset, and a record that does carry c/r bits is not overruled by it."""
+    from celpix.core.sprite import Subsprite
+    from celpix.plugins.builtins.sprite_record import SpriteRecordCodec
+
+    params = {
+        "layout": "sprite",
+        "endian": "little",
+        "subsprite_tiles": [2, 2],
+        "record": [
+            {"name": "x", "type": "s8"},
+            {"name": "y", "type": "s8"},
+            {"name": "attr", "type": "u16", "bits": "vhoo pppi iiii iiii"},
+        ],
+    }
+    # x, y, then tile and property bytes: tile $80 of the upper bank, palette 1,
+    # the second one flipped vertically.
+    raw = bytes([0x00, 0x10, 0x80, 0x33, 0x10, 0x00, 0x82, 0xB3])
+    ctx = PipelineContext()
+    engine = SpriteRecordCodec()
+    cells = engine.decode(raw, params, ctx)
+    assert engine.frames(cells, params, ctx) == [
+        (
+            Subsprite(
+                x=0, y=16, index=0x180, palette_row=1, priority=3, across=2, down=2
+            ),
+            Subsprite(
+                x=16,
+                y=0,
+                index=0x182,
+                palette_row=1,
+                priority=3,
+                flip_v=True,
+                across=2,
+                down=2,
+            ),
+        )
+    ]
+    assert engine.encode(cells, params, ctx) == raw
+
+    with pytest.raises(ValueError, match="subsprite_tiles"):
+        engine.decode(raw, {**params, "subsprite_tiles": [2]}, ctx)
+
+
 def test_a_mega_drive_run_says_when_its_mirror_offsets_disagree() -> None:
     """The one way this format is misread has no other symptom: a byte X plus a
     mirrored-frame X is the same six bytes as a signed word X, so the wrong

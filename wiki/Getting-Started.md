@@ -113,8 +113,8 @@ Make the other three slices:
 1. Open `GFX1B`.
 2. Set **Zoom** to 6.
 3. Click **Pixel Mode** (E).
-4. Select a tool: Select, Pencil, Eyedropper, Fill, Line, Rect or Ellipse (keys
-   1 to 9).
+4. Select a tool: Select, Pencil, Eyedropper, Fill, Line, Rectangle, Filled
+   Rectangle, Ellipse or Filled Ellipse (keys 1 to 9).
 5. Select a colour in the **Palette** dock and draw.
 
 ![Drawing on a tile](images/05-pixel-edit.png)
@@ -131,13 +131,11 @@ area of video memory (VRAM) that the four sheets are loaded into. A
 **composite** puts entries one after another to make that area.
 
 1. **File ▸ New Composite View…**.
-2. Click **Add source…** and add the sheets in this order: `GFX14`, `GFX17`,
+2. In **Add source…**, pick the sheets in this order: `GFX14`, `GFX17`,
    `GFX1B`, `GFX15`.
 3. Name the composite `Level tiles` and click OK.
 
 ![New Composite View](images/06-composite-dialog.png)
-
-> The sizes show 0 until the composite is opened for the first time.
 
 4. Set the palette to the save state again.
 5. Set **Rows** to 32.
@@ -163,7 +161,7 @@ these Map16 blocks. The table has 256 stamps.
 | **Name** | `Background stamps` |
 | **Offset** | `$69100` |
 | **Length** | `$800` |
-| **Compression** | None |
+| **Compression** | None (uncompressed) |
 
 ![The table's slice](images/07-stamps-slice-dialog.png)
 
@@ -247,13 +245,4 @@ refuses the write:
 To fix this, undo the change, or remove data somewhere else in the map. Test
 the ROM in an emulator.
 
-## Where this goes
-
-- [Compress & Reshape](Compress-and-Reshape): show the two screens of this map
-  side by side.
-- [VRAM Windows](VRAM-Windows): composites with gaps and partial sheets.
-- [Pinned Palette Rows](Pinned-Palette-Rows): one sheet in more than one
-  palette row.
-- [Plugin Inputs](Plugin-Inputs): the overworld map, which stores part of each
-  cell in a second stream.
-- [Text and Fonts](Text-and-Fonts): edit message boxes as text.
+The feature tutorials on [Home](Home) start from this project.

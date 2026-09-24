@@ -20,3 +20,4 @@
 - [Plugin Inputs](Plugin-Inputs)
 - [Compress & Reshape](Compress-and-Reshape)
 - [Text and Fonts](Text-and-Fonts)
+- [Sprites](Sprites)

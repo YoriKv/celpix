@@ -51,7 +51,7 @@ slot, so the sheets after it stay in the correct place.
 | `GFX0E` | `$4DDCB` |
 
 2. **File ▸ New Composite View…**. Name it `THE END sprites`.
-3. Click **Add source…** and add `GFX2C` and `GFX30`.
+3. In **Add source…**, pick `GFX2C`, then `GFX30`.
 4. Click **Add blank**.
 5. Set the **Bytes** of the blank to 1536. This is 64 tiles of 3bpp, 24 bytes a
    tile.
@@ -62,11 +62,6 @@ slot, so the sheets after it stay in the correct place.
 7. Click OK. Set **Rows** to 32.
 
 ![A window with a gap](images/vram-blank-window.png)
-
-> The sizes show 0 until the composite is opened for the first time. After
-> that, the dialog shows every piece:
-
-![Measured](images/vram-blank-by-hand-pieces.png)
 
 ## 3. A map through a window
 

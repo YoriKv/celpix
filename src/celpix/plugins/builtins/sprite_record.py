@@ -51,7 +51,13 @@ r     the piece's height in tiles, minus one
 A preset's ``legend`` may rename them, as for a tilemap cell. Every other field —
 and every bit of a ``bits`` field no letter claims — is **carried**: kept byte
 for byte and written back unchanged, so a field celPix has no meaning for costs
-nothing on a save. A record with no ``c``/``r`` bits draws 1x1 pieces.
+nothing on a save.
+
+**Size.** A record with no ``c``/``r`` bits draws pieces of ``subsprite_tiles``
+(``[across, down]``, default 1x1): a size the record does not hold because the
+routine that draws it fixes it — a SNES OAM table whose objects are all 16x16,
+an 8x16 NES list. Stated once for the whole record, it is a property of the
+preset rather than of a piece, which is why it is not a field.
 
 **Frames.** Without ``frame_header`` the whole run is one frame, as for
 ``md-sprite``. With one, the run is frames back to back, each ``bytes`` of header
@@ -149,6 +155,23 @@ class _Layout:
             self.header = (length, count_at, _TYPES[count_type])
         self.column_major = flag(params, "column_major")
         self.arrays = self._arrays(params.get("arrays"))
+        self.tiles = self._tiles(params.get("subsprite_tiles"))
+
+    @staticmethod
+    def _tiles(spec: Any) -> tuple[int, int]:
+        """``subsprite_tiles``: the ``(across, down)`` a record without size
+        bits draws — a size the drawing routine fixes rather than the record."""
+        if spec is None:
+            return (1, 1)
+        ok = isinstance(spec, list) and len(spec) == 2
+        if ok:
+            ok = all(type(n) is int and n >= 1 for n in spec)
+        if not ok:
+            raise ValueError(
+                "`subsprite_tiles` must be [across, down], each at least 1; "
+                f"got {spec!r}"
+            )
+        return (spec[0], spec[1])
 
     def _arrays(self, spec: Any) -> tuple[tuple[int, int], ...] | None:
         """``arrays``: the record's fields as parallel arrays, each group stored
@@ -363,8 +386,8 @@ class SpriteRecordCodec:
                         priority=cell.priority,
                         flip_h=cell.flip_h,
                         flip_v=cell.flip_v,
-                        across=layout.part(record, "columns") + 1,
-                        down=layout.part(record, "rows") + 1,
+                        across=layout.part(record, "columns", layout.tiles[0] - 1) + 1,
+                        down=layout.part(record, "rows", layout.tiles[1] - 1) + 1,
                         column_major=layout.column_major,
                     )
                 )

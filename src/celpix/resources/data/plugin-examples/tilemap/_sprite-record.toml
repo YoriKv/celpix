@@ -43,8 +43,8 @@ endian = "big"
 #   c  width in tiles - 1                    r  height in tiles - 1
 #   .  unused bit
 #
-# No c/r bits: every part is 1x1. All other fields, and `.` bits, are preserved
-# byte for byte on write. Maximum record size: 64 bytes.
+# No c/r bits: every part is `subsprite_tiles` (below). All other fields, and
+# `.` bits, are preserved byte for byte on write. Maximum record size: 64 bytes.
 record = [
   { name = "x",        type = "s16" },
   { name = "x_mirror", type = "s16" },
@@ -76,6 +76,11 @@ record = [
 #     { name = "tile", type = "u8", bits = "iiiiiiii" },
 #   ]
 #   arrays = [["y"], ["x", "tile"]]
+
+# The size of every part, in tiles, when the record has no c/r bits: what a
+# drawing routine fixes rather than stores. A SNES OAM table of 16x16 objects
+# is [2, 2]. Default [1, 1]. A record with c/r bits ignores this.
+# subsprite_tiles = [2, 2]
 
 # Palette row that a part's row 0 means. Default 0.
 # palette_row_base = 4

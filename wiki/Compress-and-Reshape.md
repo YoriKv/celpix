@@ -19,9 +19,6 @@ side. It is a project plugin: copy its code from [Plugin code](#plugin-code)
 below into `plugins/reshape/smw_screens.py`, next to your `.celpix` file, and
 reopen the project.
 
-In the **Reshape** setting, the reshape runs before decompression, so it would
-rearrange the packed bytes. A pair runs it after.
-
 ## 2. Make the pair
 
 1. **File ▸ New Compress & Reshape Plugin…**. The project must be saved first.
@@ -80,9 +77,6 @@ be reversed, the dialog shows a warning before you click OK, and entries that
 use the pair open view-only.
 
 ## Plugin code
-
-Copy this file into a `plugins/` folder next to your `.celpix` file. Keep the
-subfolder name. Then reopen the project.
 
 <details>
 <summary><code>plugins/reshape/smw_screens.py</code>: SMW level screens (16x27) laid across</summary>

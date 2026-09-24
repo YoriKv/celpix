@@ -19,3 +19,5 @@ Feature tutorials:
   after it unpacks them.
 - **[Text and Fonts](Text-and-Fonts)**: give a font an alphabet, and edit
   message boxes as text.
+- **[Sprites](Sprites)**: a sprite drawn from a table of records, the
+  Subsprites window and the animation player.
