@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.5 - unreleased
+## v1.1.5 - 2026-09-24
 
 - New Sega (Mega Drive) compression formats: Kosinski moduled, Kosinski+, Comper,
   ComperX, Saxman and Konami LZKN1, with moduled variants, tested against mdcomp
