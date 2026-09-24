@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.5 - unreleased
+
+- New Sega (Mega Drive) compression formats: Kosinski moduled, Kosinski+, Comper,
+  ComperX, Saxman and Konami LZKN1, with moduled variants, tested against mdcomp
+
 ## v1.1.4 - 2026-09-24
 
 - Sprite record presets can set a fixed piece size (`subsprite_tiles`), used

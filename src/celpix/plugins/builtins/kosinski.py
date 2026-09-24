@@ -47,6 +47,12 @@ last byte does. Some encoders pad the result to an even length with a trailing
 zero; that byte is nobody's to read, and a stream that carries one reports one
 fewer byte consumed than it occupies.
 
+**The moduled variant** (:class:`KosinskiModuledCompression`) cuts a payload
+into 4 KiB modules, each its own stream on a 16-byte boundary behind one size
+header — the framing :mod:`~celpix.plugins.builtins._moduled` describes. The
+loader that reads it treats a header of ``0xA000`` as ``0x8000``, so a decode
+honours that and an encode refuses a payload of exactly 40 KiB.
+
 Format detail and provenance are in
 ``docs/graphics-formats-reference/implementation-guide.md`` §7.
 """
@@ -56,6 +62,7 @@ from __future__ import annotations
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
+from . import _moduled
 from ._lz import MatchFinder, copy_back
 
 DESC_BYTES = 2
@@ -229,8 +236,14 @@ class _Writer:
         return bytes(self._out)
 
 
-def compress(data: bytes) -> bytes:
-    """Encode ``data`` as one Kosinski stream, as small as the forms allow.
+def parse(data: bytes, long_max: int = LONG_MAX) -> list[tuple[int, int, int]]:
+    """The cheapest spelling of ``data`` in the Kosinski forms, as ops.
+
+    Each op is ``(kind, length, distance)`` with ``kind`` one of the ``OP_*``
+    constants, in stream order and covering ``data`` exactly. ``long_max`` is the
+    longest the three-byte form reaches — the one thing the byte-descriptor
+    variant (:mod:`~celpix.plugins.builtins.kosinski_plus`) changes about the
+    forms, so it shares this parse and writes the ops its own way.
 
     The parse is a shortest path, not a greedy walk: ``cost[i]`` is the fewest
     *bits* — descriptor included — that can encode ``data[i:]``, solved
@@ -246,19 +259,14 @@ def compress(data: bytes) -> bytes:
     """
     n = len(data)
     if n == 0:
-        writer = _Writer()
-        writer.bit(0)
-        writer.bit(1)
-        for value in END_MARKER:
-            writer.byte(value)
-        return writer.finish()
+        return []
 
     near_len, near_off = MatchFinder(
         data, min_match=INLINE_MIN, window=INLINE_WINDOW
     ).all_longest(INLINE_MAX)
     far_len, far_off = MatchFinder(
         data, min_match=SHORT_MIN, window=FULL_WINDOW
-    ).all_longest(LONG_MAX)
+    ).all_longest(long_max)
 
     inf = float("inf")
     cost: list[float] = [inf] * (n + 1)
@@ -287,16 +295,25 @@ def compress(data: bytes) -> bytes:
             # for what it recovers — a shorter long match always leaves a tail a
             # cheaper form could have covered instead, and those are priced above.
             if far_len[i] >= LONG_MIN:
-                length = min(far_len[i], LONG_MAX)
+                length = min(far_len[i], long_max)
                 value = cost[i + length] + LONG_COST
                 if value < best:
                     best, pick = value, (OP_LONG, length, distance)
         cost[i], choice[i] = best, pick
 
-    writer = _Writer()
+    ops = []
     at = 0
     while at < n:
-        op, length, distance = choice[at]
+        ops.append(choice[at])
+        at += choice[at][1]
+    return ops
+
+
+def compress(data: bytes) -> bytes:
+    """Encode ``data`` as one Kosinski stream, as small as the forms allow."""
+    writer = _Writer()
+    at = 0
+    for op, length, distance in parse(data):
         if op == OP_LITERAL:
             writer.bit(1)
             writer.byte(data[at])
@@ -338,3 +355,51 @@ class KosinskiCompression(PartialDecompression):
 
     _decode = staticmethod(decompress)
     _encode = staticmethod(compress)
+
+
+MODULE_PADDING = 16
+# The original module queue special-cases this one header value — a prototype
+# leftover (placeholder tiles once sat at 0x8000 in some art, and the check kept
+# them out of VRAM) that no shipped art carries. What the loader does with a
+# header is still what a decode of one has to do.
+MODULED_SIZE_ALIAS = {0xA000: 0x8000}
+
+
+def decompress_moduled(
+    data: bytes, *, partial: bool = False
+) -> tuple[bytes, int, bool]:
+    """Unpack a moduled payload: a size header, then 4 KiB Kosinski modules."""
+    return _moduled.decompress(
+        data,
+        decompress,
+        padding=MODULE_PADDING,
+        name="Kosinski moduled",
+        partial=partial,
+        size_alias=MODULED_SIZE_ALIAS,
+    )
+
+
+def compress_moduled(data: bytes) -> bytes:
+    """Encode ``data`` as 4 KiB Kosinski modules behind a size header."""
+    return _moduled.compress(
+        data,
+        compress,
+        padding=MODULE_PADDING,
+        name="Kosinski moduled",
+        size_alias=MODULED_SIZE_ALIAS,
+    )
+
+
+class KosinskiModuledCompression(PartialDecompression):
+    info = PluginInfo(
+        id="compression.kosinski-moduled",
+        name="Kosinski, moduled (4 KiB streams behind a size header)",
+        stage=Stage.COMPRESSION,
+        # The header's size fixes how many modules follow, and each ends on its
+        # own marker, so the last one's end is the structure's.
+        self_delimiting=True,
+        category="Sega",
+    )
+
+    _decode = staticmethod(decompress_moduled)
+    _encode = staticmethod(compress_moduled)

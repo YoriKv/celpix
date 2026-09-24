@@ -100,6 +100,22 @@
         "pixels",
         "tilemap"
       ],
+      "compression.comper": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.comper-moduled": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.comperx": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.comperx-moduled": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.enigma": [
         "pixels",
         "tilemap"
@@ -132,6 +148,18 @@
         "pixels",
         "tilemap"
       ],
+      "compression.kosinski-moduled": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.kosinski-plus": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.kosinski-plus-moduled": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.lz1": [
         "pixels",
         "tilemap"
@@ -157,6 +185,14 @@
         "tilemap"
       ],
       "compression.lz4w": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.lzkn1": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.lzkn1-moduled": [
         "pixels",
         "tilemap"
       ],
@@ -209,6 +245,10 @@
         "tilemap"
       ],
       "compression.rnc2": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.saxman": [
         "pixels",
         "tilemap"
       ],

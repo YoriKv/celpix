@@ -28,15 +28,18 @@ from celpix.plugins.builtins import (
     aplib,
     bluesky_lz,
     capcom_mask8,
+    comper,
     enigma,
     gba_lz77,
     koei_lz,
     konami_lz,
     konami_rle,
     kosinski,
+    kosinski_plus,
     lz4w,
     lz16,
     lz_command,
+    lzkn1,
     lzss_ring,
     namco_lz,
     nemesis,
@@ -44,6 +47,7 @@ from celpix.plugins.builtins import (
     phantasy_star_rle,
     prs,
     rnc,
+    saxman,
     slz,
     snes_rle,
     sonic2_tiles,
@@ -1805,6 +1809,224 @@ def test_kosinski_plugin_round_trips_through_the_stage() -> None:
     stream = plugin.compress(plain, ctx)
     assert plugin.decompress(stream + b"\xff" * 32, ctx) == plain
     assert ctx.get(KEY_COMPRESSED_SIZE) == len(stream)
+
+
+# -- Kosinski's relatives: moduled, Kosinski+, Saxman, LZKN1, Comper ----------
+#
+# The hex streams in this section were written by the independent encoder the
+# format guide cites for each (implementation-guide.md §7, konami-lz-formats.md),
+# including its trailing even-length pad byte where it adds one. They guard the
+# grammar against a mistake our encoder and decoder would share.
+
+_MODULED_PLAIN = bytes(0x1000) + b"tail"
+
+
+def test_kosinski_moduled_pads_modules_to_16_bytes_after_the_header() -> None:
+    """Two modules, the second on the first 16-byte boundary counted from +2.
+
+    Counted from the start of the header instead, the second module is looked
+    for two bytes early, inside the padding.
+    """
+    stream = bytes.fromhex(
+        "1004555500fff8fefff8fffff8fffff8fffff8fffff8fffff8ff5555fff8fffff8ff"
+        "fff8fffff8fffff8fffff8fffff8fffff8ff0500fff8ff00f0000000000000002f00"
+        "7461696c00f00000"
+    )
+    out, consumed, complete = kosinski.decompress_moduled(stream)
+    assert out == _MODULED_PLAIN
+    assert complete and consumed == len(stream) - 1  # the pad byte is not read
+
+
+def test_kosinski_plus_moduled_packs_modules_end_to_end() -> None:
+    stream = bytes.fromhex(
+        "1004aa00f8ff7ef8fffff8ffffaaf8fffff8fffff8fffff8ffffaaf8fffff8fffff8"
+        "fffff8ffffaaf8fffff8fffff8fffff8ffffa0f8fffff00000f47461696cf0000000"
+    )
+    out, consumed, complete = kosinski_plus.decompress_moduled(stream)
+    assert out == _MODULED_PLAIN
+    assert complete and consumed == len(stream) - 1
+
+
+@pytest.mark.parametrize(
+    "decode", [kosinski.decompress_moduled, kosinski_plus.decompress_moduled]
+)
+def test_moduled_module_must_decode_to_its_share(decode) -> None:
+    """The loader DMAs a full 4 KiB per module, whatever the stream produced.
+
+    So a header claiming more than one module's worth over a module that yields
+    less is corruption — the check that makes a misplaced scan candidate fail.
+    """
+    inner = kosinski if decode is kosinski.decompress_moduled else kosinski_plus
+    stream = (0x1800).to_bytes(2, "big") + inner.compress(b"short")
+    with pytest.raises(ValueError, match="module 0 decodes to 5 bytes"):
+        decode(stream)
+
+
+def test_kosinski_moduled_reads_a_0xa000_header_as_0x8000() -> None:
+    """The original queue special-cases that one value, so a decode follows it.
+
+    Read literally, the header asks for two more modules than the stream holds.
+    """
+    plain = bytes(i & 0xFF for i in range(0x8000))
+    stream = kosinski.compress_moduled(plain)
+    aliased = (0xA000).to_bytes(2, "big") + stream[2:]
+    assert kosinski.decompress_moduled(aliased)[0] == plain
+    with pytest.raises(ValueError, match="0xA000 as 0x8000"):
+        kosinski.compress_moduled(bytes(0xA000))
+
+
+@pytest.mark.parametrize(
+    ("stream", "plain"),
+    [
+        # Literals, then an inline match whose distance byte sits in front of
+        # the next descriptor byte, which carries the match's two length bits.
+        (
+            "c36158fe62590cfe635afe3f303132333435fd363738394142f8f403a82df8ff14f00000",
+            b"aXaXbYbYcZcZ" + b"0123456789AB" * 2 + b"-" * 30,
+        ),
+        # The two-byte form, high byte first, counting its length down.
+        (
+            "fe414243444546475df978797af9fda851f8ff1ef0000000",
+            b"ABCDEFG" + b"ABCD" + b"xyzxyzxyzxyz" + b"Q" * 40,
+        ),
+    ],
+)
+def test_kosinski_plus_decodes_reference_streams(stream: str, plain: bytes) -> None:
+    data = bytes.fromhex(stream)
+    out, consumed, complete = kosinski_plus.decompress(data)
+    assert out == plain
+    assert complete and consumed in (len(data), len(data) - 1)
+
+
+def test_kosinski_plus_round_trips_across_every_descriptor_boundary() -> None:
+    """Lengths 0..24 of incompressible data put the end marker at every bit.
+
+    The lazy refill means no dummy descriptor at the end, and where a Kosinski
+    encoder would add one this stream must not.
+    """
+    rng = random.Random(8)
+    for length in range(25):
+        plain = bytes(rng.randrange(256) for _ in range(length))
+        stream = kosinski_plus.compress(plain)
+        out, consumed, complete = kosinski_plus.decompress(stream)
+        assert (out, consumed, complete) == (plain, len(stream), True), length
+
+
+def test_saxman_zero_fills_a_reference_before_the_output() -> None:
+    """Six zeros from a reference to before the start, then an ordinary match.
+
+    The header counts the eight body bytes, not the fifteen decoded ones.
+    """
+    stream = bytes.fromhex("08000eeff3736178f4f3")
+    out, consumed, complete = saxman.decompress(stream + b"\xff\xff")
+    assert out == bytes(6) + b"saxsaxsax"
+    assert complete and consumed == len(stream)
+
+
+def test_saxman_straddling_reference_is_zeros_for_its_whole_length() -> None:
+    """Starting before the output decides it: a ring read would give ``00 00 41``.
+
+    Literal ``A``, then a three-byte reference at ring position 0xFEC, two bytes
+    before the first output byte.
+    """
+    out, _, complete = saxman.decompress(bytes.fromhex("04000141ecf0"))
+    assert out == b"A\x00\x00\x00"
+    assert complete
+
+
+def test_saxman_truncation_is_an_error_unless_partial() -> None:
+    plain = bytes((i * 31) & 0xFF for i in range(900))
+    stream = saxman.compress(plain)
+    cut = stream[: len(stream) // 2]
+    with pytest.raises(ValueError, match="source ended"):
+        saxman.decompress(cut)
+    prefix, _, complete = saxman.decompress(cut, partial=True)
+    assert 0 < len(prefix) < len(plain) and plain.startswith(prefix)
+    assert not complete
+
+
+def test_lzkn1_decodes_a_reference_stream() -> None:
+    """A literal block, long and short matches, and the ``0x1F`` end op."""
+    stream = bytes.fromhex("004a003031323334353637dc3839a5070e1b0a7a10011f00")
+    plain = b"0123456789" + b"5678" + b"0123456789" * 4 + b"z" * 20
+    out, consumed, complete = lzkn1.decompress(stream)
+    assert out == plain
+    assert complete and consumed == len(stream) - 1
+
+
+def test_lzkn1_header_must_match_the_decoded_size() -> None:
+    stream = bytearray(lzkn1.compress(b"konami" * 20))
+    stream[1] += 1
+    with pytest.raises(ValueError, match="header says"):
+        lzkn1.decompress(bytes(stream))
+
+
+# 256 distinct words — sixteen full descriptor groups of literals — so what follows
+# can reach the far edge of the 256-word window.
+_COMPER_HEAD = b"".join(bytes((0x10, i)) for i in range(256))
+_COMPER_LITERALS = b"".join(
+    b"\x00\x00" + _COMPER_HEAD[g * 32 : (g + 1) * 32] for g in range(16)
+)
+
+
+@pytest.mark.parametrize(
+    ("comperx", "tail"),
+    [
+        # 00 02: 3 words from 256 back (d = 0); FF 03: 4 words from 1 back; 00 00.
+        (False, "b0000002abcdff030000"),
+        # 01 FF: 3 words from 256 back; 00 7E: 4 words from 1 back; FF 00 ends.
+        (True, "b00001ffabcd007eff00"),
+    ],
+)
+def test_comper_decodes_both_window_edges(comperx: bool, tail: str) -> None:
+    """The distance and length bytes at both ends of their ranges.
+
+    The two variants spell the same ops differently, so either decoder reads the
+    other's tail to the wrong length rather than failing.
+    """
+    stream = _COMPER_LITERALS + bytes.fromhex(tail)
+    out, consumed, complete = comper.decompress(stream, comperx=comperx)
+    assert out == _COMPER_HEAD + _COMPER_HEAD[:6] + b"\xab\xcd" * 5
+    assert complete and consumed == len(stream)
+
+
+@pytest.mark.parametrize(
+    "plain",
+    [
+        b"",
+        b"A",  # odd: a word codec has to refuse it
+        bytes(range(256)),  # a literal block's reach, several times over
+        b"\x5a" * 3000,
+        b"12345678" + b"x" * 1100 + b"12345678",  # beyond the long window
+        bytes((i * 97 + i // 7) & 0xFF for i in range(9000)),
+    ],
+)
+@pytest.mark.parametrize(
+    "plugin",
+    [
+        kosinski.KosinskiModuledCompression(),
+        kosinski_plus.KosinskiPlusCompression(),
+        kosinski_plus.KosinskiPlusModuledCompression(),
+        saxman.SaxmanCompression(),
+        lzkn1.Lzkn1Compression(),
+        lzkn1.Lzkn1ModuledCompression(),
+        comper.ComperCompression(),
+        comper.ComperXCompression(),
+        comper.ComperModuledCompression(),
+        comper.ComperXModuledCompression(),
+    ],
+    ids=lambda plugin: plugin.info.id,
+)
+def test_kosinski_relatives_round_trip_through_the_stage(plugin, plain: bytes) -> None:
+    ctx = PipelineContext()
+    if len(plain) % 2 and plugin.info.id.startswith("compression.comper"):
+        with pytest.raises(ValueError, match="odd length"):
+            plugin.compress(plain, ctx)
+        return
+    stream = plugin.compress(plain, ctx)
+    assert plugin.decompress(stream + b"\x00\xff" * 8, ctx) == plain
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(stream)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
 
 
 # -- RNC ---------------------------------------------------------------------

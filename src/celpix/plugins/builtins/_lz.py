@@ -75,6 +75,9 @@ class MatchFinder:
     have produced, and indexing ahead of the cursor would offer matches that
     cannot be written.
 
+    ``data`` may be a tuple of larger units instead of bytes — Comper's 16-bit
+    words — since the index only slices, hashes and compares it.
+
     ``window`` is how far back the scheme can reach — the ring size, the largest
     encodable distance — or ``None`` where any earlier position is addressable, as
     it is for a format whose back-reference is an absolute offset within a bank.
@@ -90,7 +93,7 @@ class MatchFinder:
 
     def __init__(
         self,
-        data: bytes,
+        data: bytes | tuple[int, ...],
         *,
         min_match: int,
         window: int | None = None,
@@ -103,7 +106,7 @@ class MatchFinder:
         self._window = window
         self._cap = max_candidates
         self._oldest = oldest_first
-        self._index: dict[bytes, list[int]] = {}
+        self._index: dict[bytes | tuple[int, ...], list[int]] = {}
 
     def add(self, pos: int) -> None:
         """Index ``pos`` as a candidate for later positions.
@@ -349,10 +352,12 @@ def parse_greedy(
 
 
 class FlagGroup:
-    """The eight-selector op group three of the schemes here frame their ops in.
+    """The selector group most of the schemes here frame their ops in.
 
     One flags byte per eight ops, written *in front of* the ops it describes — so
     the byte is reserved when a group opens and filled in once the group closes.
+    ``width`` widens it for a scheme whose flags come a big-endian word at a time
+    (Comper, sixteen), which changes nothing else about where the group sits.
     Schemes disagree about two things and nothing else, and both disagreements are
     silent: which end of the byte the first selector sits at (``msb_first``), and
     whether a set bit selects the match or the literal (``set_means_match``). Read
@@ -363,33 +368,52 @@ class FlagGroup:
     the flags byte in front of them — and :meth:`finish` once the last op is out.
     """
 
-    __slots__ = ("_at", "_bit", "_flags", "_match_bit", "_msb_first", "_out")
+    __slots__ = (
+        "_at",
+        "_bit",
+        "_flags",
+        "_match_bit",
+        "_msb_first",
+        "_out",
+        "_top",
+        "_width",
+    )
 
     def __init__(
-        self, out: bytearray, *, msb_first: bool, set_means_match: bool
+        self,
+        out: bytearray,
+        *,
+        msb_first: bool,
+        set_means_match: bool,
+        width: int = 8,
     ) -> None:
         self._out = out
         self._msb_first = msb_first
         self._match_bit = set_means_match
-        self._at = -1  # where this group's flags byte is reserved
-        self._bit = 8  # a full group, so the first op opens a new one
+        self._width = width
+        self._top = 1 << (width - 1)
+        self._at = -1  # where this group's flags are reserved
+        self._bit = width  # a full group, so the first op opens a new one
         self._flags = 0
 
     def select(self, is_match: bool) -> None:
         """Record the next op's selector, opening a group when one is due."""
-        if self._bit == 8:
+        if self._bit == self._width:
             self._close()
             self._at = len(self._out)
-            self._out.append(0)
+            self._out += bytes(self._width // 8)
             self._flags = 0
             self._bit = 0
         if is_match == self._match_bit:
-            self._flags |= (0x80 >> self._bit) if self._msb_first else 1 << self._bit
+            self._flags |= (
+                (self._top >> self._bit) if self._msb_first else 1 << self._bit
+            )
         self._bit += 1
 
     def _close(self) -> None:
         if self._at >= 0:
-            self._out[self._at] = self._flags
+            size = self._width // 8
+            self._out[self._at : self._at + size] = self._flags.to_bytes(size, "big")
 
     def finish(self) -> None:
         """Write the final group's flags byte back into the reserved slot.

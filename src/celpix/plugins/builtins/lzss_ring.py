@@ -172,7 +172,20 @@ def compress(
             f"input is {n:,} bytes; the {size_bytes * 8}-bit LZSS size prefix "
             f"holds {(1 << (size_bytes * 8)) - 1:,}"
         )
+    return n.to_bytes(size_bytes, byteorder) + compress_body(
+        data, ring_size=ring_size, window=window
+    )
 
+
+def compress_body(
+    data: bytes, *, ring_size: int = RING_SIZE, window: int | None = None
+) -> bytes:
+    """The flag groups and ops alone, for a framing that sizes them itself.
+
+    A body carries no terminator, so whatever frames it has to bound it: this
+    module's prefix counts the bytes it decodes to, Saxman's
+    (:mod:`~celpix.plugins.builtins.saxman`) the bytes it occupies.
+    """
     ring_start = _ring_start(ring_size)
     # The longest match wins outright here: a back-reference costs two bytes
     # whatever its distance, so there is nothing to trade off against length.
@@ -183,7 +196,7 @@ def compress(
         max_candidates=_MAX_CANDIDATES,
     )
 
-    out = bytearray(n.to_bytes(size_bytes, byteorder))
+    out = bytearray()
     # LSB first, and a set bit is the *literal* — both the opposite way round from
     # the BIOS LZ77 next door (:mod:`~celpix.plugins.builtins.gba_lz77`).
     group = FlagGroup(out, msb_first=False, set_means_match=False)

@@ -32,6 +32,12 @@ from .bluesky_lz import BlueSkyLzCompression
 from .byte_swap import ByteSwapReshape
 from .capcom_mask8 import CapcomMask8Compression
 from .color_codec import ColorCodec
+from .comper import (
+    ComperCompression,
+    ComperModuledCompression,
+    ComperXCompression,
+    ComperXModuledCompression,
+)
 from .containers import (
     CopierHeaderContainer,
     INesContainer,
@@ -48,11 +54,13 @@ from .indirect_record import IndirectRecordCodec
 from .koei_lz import KoeiLzCompression
 from .konami_lz import KonamiLz1kCompression, KonamiLz4kCompression
 from .konami_rle import KonamiFdsRle, KonamiNesRle
-from .kosinski import KosinskiCompression
+from .kosinski import KosinskiCompression, KosinskiModuledCompression
+from .kosinski_plus import KosinskiPlusCompression, KosinskiPlusModuledCompression
 from .linear_codec import PackedStraddlingCodec
 from .lz4w import Lz4wCompression
 from .lz16 import Lz16Compression, Lz16ImprovedCompression
 from .lz_command import Lz1, Lz1Improved, Lz2, Lz2Improved
+from .lzkn1 import Lzkn1Compression, Lzkn1ModuledCompression
 from .lzss_ring import LzssRingCompression
 from .m7_vram import M7VramReshape
 from .md_sprite import MdSpriteCodec
@@ -74,6 +82,7 @@ from .pvr import PvrCompression
 from .raw_file import RawFileContainer
 from .rnc import Rnc1Compression, Rnc2Compression
 from .running_sum import RunningSumReshape
+from .saxman import SaxmanCompression
 from .scgcad import (
     CgxContainer,
     ColContainer,
@@ -150,6 +159,16 @@ def register_builtins(reg: Registry) -> None:
         NemesisCompression(),
         EnigmaCompression(),
         KosinskiCompression(),
+        KosinskiModuledCompression(),
+        KosinskiPlusCompression(),
+        KosinskiPlusModuledCompression(),
+        SaxmanCompression(),
+        Lzkn1Compression(),
+        Lzkn1ModuledCompression(),
+        ComperCompression(),
+        ComperModuledCompression(),
+        ComperXCompression(),
+        ComperXModuledCompression(),
         Slz16Compression(),
         Slz24Compression(),
         NamcoLzCompression(),
