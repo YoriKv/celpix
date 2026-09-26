@@ -35,7 +35,8 @@ Four things about that are easy to get wrong, and three of them are silent:
 - **That eager fetch is why a stream can end with a descriptor word nobody
   reads.** When the terminator's own two bits happen to fill a word, an encoder
   has to emit a dummy word before the terminator's bytes, or the decoder eats
-  them as a descriptor. :meth:`_Writer.finish` does.
+  them as a descriptor. An eager :class:`~celpix.plugins.builtins._lz.BitGroup`
+  does.
 - **A match may reach past the byte being written**, into output that does not
   exist yet, because the decoder copies one byte at a time — so the source
   repeats with period ``distance``. That is not a corner case, it is how the
@@ -63,7 +64,7 @@ from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
 from . import _moduled
-from ._lz import MatchFinder, copy_back
+from ._lz import BitGroup, MatchFinder, copy_back
 
 DESC_BYTES = 2
 DESC_BITS = DESC_BYTES * 8
@@ -91,6 +92,14 @@ LONG_COST = 2 + 24
 END_COST = 2 + 24
 
 OP_LITERAL, OP_INLINE, OP_SHORT, OP_LONG = range(4)
+
+# How many earlier positions sharing a prefix the match search tests: as many as
+# the window holds, so none in reach is skipped. The shared default keeps only
+# the newest 96, and 4bpp art — runs of one nybble pair repeated for hundreds of
+# bytes — routinely has its longest match further down the chain than that. The
+# parse then prices a shorter match than exists and packs a stream bigger than
+# the one the game shipped, which no longer fits that stream's slot on a save.
+MAX_CANDIDATES = FULL_WINDOW
 
 
 def _fail(reason: str) -> ValueError:
@@ -196,46 +205,6 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 # -- compression ------------------------------------------------------------
 
 
-class _Writer:
-    """Descriptor words and the payload they describe, kept in step.
-
-    Payload bytes queue up while a descriptor word fills; the word is written the
-    instant its sixteenth bit arrives, and the queue follows it out. So the bytes
-    on either side of a word are the ones its bits describe, which is the layout
-    the decoder's eager refill expects.
-    """
-
-    def __init__(self) -> None:
-        self._out = bytearray()
-        self._word = 0
-        self._bits = 0
-        self._pending = bytearray()
-
-    def bit(self, value: int) -> None:
-        self._word |= (value & 1) << self._bits
-        self._bits += 1
-        if self._bits == DESC_BITS:
-            self._out += self._word.to_bytes(DESC_BYTES, "little")
-            self._out += self._pending
-            self._pending.clear()
-            self._word = 0
-            self._bits = 0
-
-    def byte(self, value: int) -> None:
-        self._pending.append(value)
-
-    def finish(self) -> bytes:
-        if self._bits:
-            self._out += self._word.to_bytes(DESC_BYTES, "little")
-        else:
-            # See the module docstring: the terminator's bits exactly filled a
-            # word, so the decoder has already fetched whatever comes next. Give
-            # it an empty word rather than the terminator's own bytes.
-            self._out += bytes(DESC_BYTES)
-        self._out += self._pending
-        return bytes(self._out)
-
-
 def parse(data: bytes, long_max: int = LONG_MAX) -> list[tuple[int, int, int]]:
     """The cheapest spelling of ``data`` in the Kosinski forms, as ops.
 
@@ -262,10 +231,10 @@ def parse(data: bytes, long_max: int = LONG_MAX) -> list[tuple[int, int, int]]:
         return []
 
     near_len, near_off = MatchFinder(
-        data, min_match=INLINE_MIN, window=INLINE_WINDOW
+        data, min_match=INLINE_MIN, window=INLINE_WINDOW, max_candidates=MAX_CANDIDATES
     ).all_longest(INLINE_MAX)
     far_len, far_off = MatchFinder(
-        data, min_match=SHORT_MIN, window=FULL_WINDOW
+        data, min_match=SHORT_MIN, window=FULL_WINDOW, max_candidates=MAX_CANDIDATES
     ).all_longest(long_max)
 
     inf = float("inf")
@@ -311,36 +280,42 @@ def parse(data: bytes, long_max: int = LONG_MAX) -> list[tuple[int, int, int]]:
 
 def compress(data: bytes) -> bytes:
     """Encode ``data`` as one Kosinski stream, as small as the forms allow."""
-    writer = _Writer()
+    out = bytearray()
+    # Eager: the decoder fetches the next descriptor the moment the last bit of
+    # the current one is spent (the module docstring's second and third traps).
+    desc = BitGroup(
+        out, msb_first=False, width=DESC_BITS, byteorder="little", eager=True
+    )
     at = 0
     for op, length, distance in parse(data):
         if op == OP_LITERAL:
-            writer.bit(1)
-            writer.byte(data[at])
+            desc.bit(1)
+            out.append(data[at])
         elif op == OP_INLINE:
             code = length - INLINE_MIN
-            writer.bit(0)
-            writer.bit(0)
-            writer.bit((code >> 1) & 1)
-            writer.bit(code & 1)
-            writer.byte((INLINE_WINDOW - distance) & 0xFF)
+            desc.bit(0)
+            desc.bit(0)
+            desc.bit((code >> 1) & 1)
+            desc.bit(code & 1)
+            out.append((INLINE_WINDOW - distance) & 0xFF)
         else:
             value = FULL_WINDOW - distance
-            writer.bit(0)
-            writer.bit(1)
-            writer.byte(value & 0xFF)
+            desc.bit(0)
+            desc.bit(1)
+            out.append(value & 0xFF)
             if op == OP_SHORT:
-                writer.byte(((value >> 5) & DISTANCE_HIGH) | (length - 2))
+                out.append(((value >> 5) & DISTANCE_HIGH) | (length - 2))
             else:
-                writer.byte((value >> 5) & DISTANCE_HIGH)
-                writer.byte(length - 1)
+                out.append((value >> 5) & DISTANCE_HIGH)
+                out.append(length - 1)
         at += length
 
-    writer.bit(0)
-    writer.bit(1)
+    desc.bit(0)
+    desc.bit(1)
     for value in END_MARKER:
-        writer.byte(value)
-    return writer.finish()
+        out.append(value)
+    desc.finish()
+    return bytes(out)
 
 
 class KosinskiCompression(PartialDecompression):

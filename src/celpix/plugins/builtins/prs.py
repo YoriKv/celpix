@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
-from celpix.plugins.builtins._lz import MatchFinder, copy_back
+from celpix.plugins.builtins._lz import BitGroup, MatchFinder, copy_back
 
 SHORT_MAX_DISTANCE = 256
 SHORT_MAX_LENGTH = 5
@@ -95,27 +95,6 @@ class _BitReader:
         value = 1 if self.control & self.mask else 0
         self.mask = (self.mask << 1) & 0xFF
         return value
-
-
-class _BitWriter:
-    """The writer half: control bytes allocated lazily, exactly as read back."""
-
-    def __init__(self) -> None:
-        self.out = bytearray()
-        self.control_at = -1
-        self.bit_index = 8  # forces the first bit to allocate a control byte
-
-    def bit(self, value: int) -> None:
-        if self.bit_index >= 8:
-            self.control_at = len(self.out)
-            self.out.append(0)
-            self.bit_index = 0
-        if value:
-            self.out[self.control_at] |= 1 << self.bit_index
-        self.bit_index += 1
-
-    def byte(self, value: int) -> None:
-        self.out.append(value & 0xFF)
 
 
 def _copy(out: bytearray, distance: int, length: int, what: str) -> None:
@@ -180,7 +159,8 @@ def _op_bits(length: int, distance: int) -> int:
 def compress(data: bytes) -> bytes:
     """Encode raw bytes into a PRS stream."""
     n = len(data)
-    writer = _BitWriter()
+    out = bytearray()
+    control = BitGroup(out, msb_first=False)
     # Scored rather than longest-wins, so this walks the chain itself: PRS has two
     # back-reference ops of different cost, and a nearer short match written as the
     # cheap one can beat a distant long one.
@@ -235,37 +215,38 @@ def compress(data: bytes) -> bytes:
                 benefit = 0
 
         if benefit <= 0:
-            writer.bit(1)
-            writer.byte(data[pos])
+            control.bit(1)
+            out.append(data[pos])
             pos += 1
             continue
 
         if distance <= SHORT_MAX_DISTANCE and length <= SHORT_MAX_LENGTH:
-            writer.bit(0)
-            writer.bit(0)
-            writer.bit((length - 2) >> 1)
-            writer.bit((length - 2) & 1)
-            writer.byte(SHORT_MAX_DISTANCE - distance)
+            control.bit(0)
+            control.bit(0)
+            control.bit((length - 2) >> 1)
+            control.bit((length - 2) & 1)
+            out.append(SHORT_MAX_DISTANCE - distance)
         else:
-            writer.bit(0)
-            writer.bit(1)
+            control.bit(0)
+            control.bit(1)
             word = ((8192 - distance) << 3) & 0xFFF8
             if length <= 9:
                 word |= length - 2
-                writer.byte(word & 0xFF)
-                writer.byte(word >> 8)
+                out.append(word & 0xFF)
+                out.append(word >> 8)
             else:
-                writer.byte(word & 0xFF)
-                writer.byte(word >> 8)
-                writer.byte(length - 1)
+                out.append(word & 0xFF)
+                out.append(word >> 8)
+                out.append(length - 1)
         finder.add_run(pos + 1, pos + length)
         pos += length
 
-    writer.bit(0)  # end of stream: a long copy whose word is zero
-    writer.bit(1)
-    writer.byte(0)
-    writer.byte(0)
-    return bytes(writer.out)
+    control.bit(0)  # end of stream: a long copy whose word is zero
+    control.bit(1)
+    out.append(0)
+    out.append(0)
+    control.finish()
+    return bytes(out)
 
 
 class PrsCompression(PartialDecompression):

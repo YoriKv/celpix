@@ -9,8 +9,9 @@ that chain newest-first, and an overlap-aware length count.
 The same overlap has to be *reproduced* on the way back out, so :func:`copy_from`
 and :func:`copy_back` live here too — the one piece of a decoder that is genuinely
 common to every scheme, since a back-reference is the only op they all share.
-Three of them also frame their ops in eight-selector groups over one greedy parse,
-which is :class:`FlagGroup` and :func:`parse_greedy`.
+Most of them also interleave groups of bits with their bytes, which is
+:class:`BitGroup` — and :class:`FlagGroup` over it, for the schemes that spend one
+bit per op — and several share one greedy parse, :func:`parse_greedy`.
 
 **Overlap is the part worth stating.** A match may legally reach past the position
 being encoded, into bytes the decoder has not produced yet, because every one of
@@ -31,6 +32,7 @@ price every position before it knows which it will use.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import Literal
 
 # How many recent positions sharing a prefix a scheme tests by default. Highly
 # repetitive data piles up thousands, and past the newest few dozen the extra
@@ -351,33 +353,170 @@ def parse_greedy(
             pos += 1
 
 
-class FlagGroup:
-    """The selector group most of the schemes here frame their ops in.
+class BitGroup:
+    """Bits packed into bytes or words that sit *between* the bytes they describe.
 
-    One flags byte per eight ops, written *in front of* the ops it describes — so
-    the byte is reserved when a group opens and filled in once the group closes.
-    ``width`` widens it for a scheme whose flags come a big-endian word at a time
-    (Comper, sixteen), which changes nothing else about where the group sits.
-    Schemes disagree about two things and nothing else, and both disagreements are
-    silent: which end of the byte the first selector sits at (``msb_first``), and
-    whether a set bit selects the match or the literal (``set_means_match``). Read
-    a stream either way round and it still decodes to something of about the right
-    length, which is why both are stated rather than assumed.
+    The shape nearly every bit-stream codec here shares. The decoder takes its bits
+    a group at a time from the same stream as its literal and operand bytes, so
+    each group owns a slot in front of the bytes written while it was filling: the
+    slot is reserved when the group opens and written once its last bit is in (or
+    at :meth:`finish`), and callers append their own bytes to ``out`` in between.
+    A pure bit stream with no bytes of its own (Nemesis, Enigma) is better served
+    by a plain accumulator, which does none of this bookkeeping.
 
-    Call :meth:`select` **before** writing an op's bytes — that is what reserves
-    the flags byte in front of them — and :meth:`finish` once the last op is out.
+    What differs from scheme to scheme is these parameters and nothing else, and
+    each is silent when wrong — a stream read the other way round still decodes to
+    something of about the right length:
+
+    - ``width`` and ``byteorder``: 8 or 16 bits a group, and a word's byte order.
+    - ``msb_first``: which end of the group the first bit takes. A multi-bit field
+      is written in the stream's own order — most significant bit first in an
+      MSB-first stream, least significant first in an LSB-first one — which is how
+      every one of these decoders shifts a field back out.
+    - ``eager``: when the next group opens. A lazy decoder fetches it when it first
+      wants a bit, so bytes written after a group fills land in front of the next
+      one. An eager decoder (Kosinski) fetches it the moment the last bit of the
+      current one is spent, so its slot comes first — and such a stream always
+      ends in a group, an empty one if need be.
     """
 
     __slots__ = (
         "_at",
         "_bit",
+        "_byteorder",
+        "_eager",
         "_flags",
-        "_match_bit",
         "_msb_first",
         "_out",
-        "_top",
+        "_size",
         "_width",
     )
+
+    def __init__(
+        self,
+        out: bytearray,
+        *,
+        msb_first: bool,
+        width: int = 8,
+        byteorder: Literal["big", "little"] = "big",
+        eager: bool = False,
+    ) -> None:
+        self._out = out
+        self._msb_first = msb_first
+        self._width = width
+        self._size = width // 8
+        self._byteorder: Literal["big", "little"] = byteorder
+        self._eager = eager
+        self._at = -1  # the open group's slot; -1 while none is open
+        self._bit = width  # a full group, so the first bit opens a new one
+        self._flags = 0
+        if eager:
+            self._open()
+
+    @property
+    def slot(self) -> int:
+        """Where the open group's slot starts in ``out``, or -1 if none is open."""
+        return self._at
+
+    @property
+    def pending(self) -> int:
+        """How many bits the open group holds so far."""
+        return self._bit if self._at >= 0 else 0
+
+    def _open(self) -> None:
+        self._at = len(self._out)
+        if self._size == 1:
+            self._out.append(0)
+        else:
+            self._out += bytes(self._size)
+        self._flags = 0
+        self._bit = 0
+
+    def _write(self) -> None:
+        if self._size == 1:
+            self._out[self._at] = self._flags
+        else:
+            self._out[self._at : self._at + self._size] = self._flags.to_bytes(
+                self._size, self._byteorder
+            )
+
+    def _full(self) -> None:
+        """The group's last bit is in: fill its slot, and open the next if eager.
+
+        The one moment a decoder's place in the bit stream and in the bytes is
+        known together, so a subclass measuring one against the other extends
+        this.
+        """
+        self._write()
+        self._at = -1
+        if self._eager:
+            self._open()
+
+    def bit(self, value: int) -> None:
+        if self._bit == self._width:
+            self._open()
+        if value:
+            self._flags |= (
+                1 << (self._width - 1 - self._bit)
+                if self._msb_first
+                else 1 << self._bit
+            )
+        self._bit += 1
+        if self._bit == self._width:
+            self._full()
+
+    def bits(self, value: int, count: int) -> None:
+        """The low ``count`` bits of ``value``, in the stream's own bit order."""
+        # Locals rather than attributes: RNC calls this once per Huffman code and
+        # extra-bits field, and attribute traffic is most of what it costs.
+        width = self._width
+        while count:
+            bit = self._bit
+            if bit == width:
+                self._open()
+                bit = 0
+            take = width - bit
+            if take > count:
+                take = count
+            count -= take
+            if self._msb_first:
+                chunk = (value >> count) & ((1 << take) - 1)
+                self._flags |= chunk << (width - bit - take)
+            else:
+                self._flags |= (value & ((1 << take) - 1)) << bit
+                value >>= take
+            bit += take
+            self._bit = bit
+            if bit == width:
+                self._full()
+
+    def finish(self) -> None:
+        """Write the open group, if any, into its slot.
+
+        Its unused bits stay clear, which is what the known encoders' shift to
+        alignment leaves behind too — and no decoder reads them either way, every
+        one of these schemes stopping on a terminator or a declared size first.
+        """
+        if self._at >= 0:
+            self._write()
+            self._at = -1
+
+
+class FlagGroup(BitGroup):
+    """The selector group most of the LZ schemes here frame their ops in.
+
+    One flag per op, in a group written *in front of* the ops it describes — a
+    :class:`BitGroup` that speaks in matches and literals. ``width`` widens it for
+    a scheme whose flags come a big-endian word at a time (Comper, sixteen). On
+    top of the bit order, schemes disagree about whether a set bit selects the
+    match or the literal (``set_means_match``), which is as silent as the rest and
+    is why both are stated rather than assumed.
+
+    Call :meth:`select` **before** writing an op's bytes — that is what reserves
+    the flags in front of them — and :meth:`finish` once the last op is out.
+    """
+
+    __slots__ = ("_match_bit",)
 
     def __init__(
         self,
@@ -387,40 +526,9 @@ class FlagGroup:
         set_means_match: bool,
         width: int = 8,
     ) -> None:
-        self._out = out
-        self._msb_first = msb_first
+        super().__init__(out, msb_first=msb_first, width=width)
         self._match_bit = set_means_match
-        self._width = width
-        self._top = 1 << (width - 1)
-        self._at = -1  # where this group's flags are reserved
-        self._bit = width  # a full group, so the first op opens a new one
-        self._flags = 0
 
     def select(self, is_match: bool) -> None:
         """Record the next op's selector, opening a group when one is due."""
-        if self._bit == self._width:
-            self._close()
-            self._at = len(self._out)
-            self._out += bytes(self._width // 8)
-            self._flags = 0
-            self._bit = 0
-        if is_match == self._match_bit:
-            self._flags |= (
-                (self._top >> self._bit) if self._msb_first else 1 << self._bit
-            )
-        self._bit += 1
-
-    def _close(self) -> None:
-        if self._at >= 0:
-            size = self._width // 8
-            self._out[self._at : self._at + size] = self._flags.to_bytes(size, "big")
-
-    def finish(self) -> None:
-        """Write the final group's flags byte back into the reserved slot.
-
-        Unused selectors in a short last group stay clear, which is what the known
-        encoders' shift to alignment leaves behind too — and no decoder reads them
-        either way, every one of these schemes stopping on a declared size first.
-        """
-        self._close()
-        self._at = -1
+        self.bit(is_match == self._match_bit)

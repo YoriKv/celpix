@@ -1781,6 +1781,20 @@ def test_kosinski_round_trips_across_every_descriptor_boundary() -> None:
         assert complete and consumed == len(stream), length
 
 
+def test_kosinski_parse_finds_a_match_behind_a_long_prefix_chain() -> None:
+    """The longest match, however many positions share its prefix.
+
+    150 decoys open with the same three bytes as the block that repeats at the
+    end, so the one earlier copy that matches it whole is 150 deep in its chain.
+    A capped search sees only decoys, spells the repeat in short pieces, and
+    packs a shipped stream bigger than its slot.
+    """
+    block = b"\x11\x11\x11" + bytes(range(0x20, 0x35))
+    decoys = b"".join(b"\x11\x11\x11" + bytes([0, i, 0xEE]) for i in range(150))
+    ops = kosinski.parse(block + decoys + block)
+    assert ops[-1] == (kosinski.OP_LONG, len(block), len(decoys) + len(block))
+
+
 def test_kosinski_truncation_is_an_error_unless_partial() -> None:
     plain = bytes((i * 97) & 0xFF for i in range(2000))
     stream = kosinski.compress(plain)
@@ -2096,6 +2110,22 @@ def test_rnc2_reads_raw_bytes_between_bit_bytes() -> None:
     body = bytes.fromhex("084142780100")
     stream = _rnc_stream(2, body, b"ABABAB")
     assert rnc.decompress(stream, method=2) == (b"ABABAB", len(stream), True)
+
+
+def test_rnc1_decodes_a_packer_stream_with_a_match_past_4096() -> None:
+    """A stream another packer wrote: one 4784-byte match, 16 back.
+
+    Our encoder stops matches at 4096 (length class 12), so a class-13 length
+    only ever comes from outside — this packer matches to the end of its 8 KiB
+    block. Written by the Dungeon Keeper utilities' ``rnc`` (implementation
+    guide §7).
+    """
+    plain = bytes(range(16)) * 300 + b"RNC" + bytes(range(5, 12)) + b"!"
+    stream = bytes.fromhex(
+        "524e4301000012cb00000030fbf9b27700011810010807001000000000e1002000"
+        "00000020060080000102030405060708090a0b0c0d0e0f7795ef15524e43050021"
+    )
+    assert rnc.decompress(stream, method=1) == (plain, len(stream), True)
 
 
 @pytest.mark.parametrize("method", [rnc.METHOD_1, rnc.METHOD_2])

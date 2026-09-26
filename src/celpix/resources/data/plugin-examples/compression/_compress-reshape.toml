@@ -26,7 +26,7 @@
 # used by Mortal Kombat II (Game Boy) for its title-screen maps.
 
 id = "compression.rnc2-running-sum"
-name = "RNC method 2 + running sum"
+name = "RNC ProPack method 2 + running sum"
 engine_id = "compression.compress-reshape"
 
 [params]

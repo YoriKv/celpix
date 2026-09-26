@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.6 - unreleased
+
+- Fixed Kosinski and Kosinski+ compress stage to be more efficient
+- Added a shared core for some LZ based compression algorithms
+
 ## v1.1.5 - 2026-09-24
 
 - New Sega (Mega Drive) compression formats: Kosinski moduled, Kosinski+, Comper,

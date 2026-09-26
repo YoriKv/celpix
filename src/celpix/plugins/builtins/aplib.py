@@ -66,7 +66,7 @@ from __future__ import annotations
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
-from celpix.plugins.builtins._lz import MatchFinder, copy_back
+from celpix.plugins.builtins._lz import BitGroup, MatchFinder, copy_back
 
 # Where the block form's length adjustments switch, and the tiny/short reaches.
 FAR_DISTANCE = 32000
@@ -225,46 +225,13 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 # -- compression ------------------------------------------------------------
 
 
-class _Writer:
-    """Tag bytes allocated lazily, exactly as the reader fetches them.
-
-    A tag byte is reserved the moment the first bit of a new group is written,
-    and operand bytes written while the group is open land *after* it — which
-    is the order the reader meets them, since it fetches a tag only when it
-    needs a bit from it.
-    """
-
-    def __init__(self) -> None:
-        self._out = bytearray()
-        self._tag_at = -1
-        self._left = 0
-
-    def bit(self, value: int) -> None:
-        if not self._left:
-            self._tag_at = len(self._out)
-            self._out.append(0)
-            self._left = 8
-        self._left -= 1
-        if value:
-            self._out[self._tag_at] |= 1 << self._left
-
-    def bits(self, value: int, count: int) -> None:
-        for shift in range(count - 1, -1, -1):
-            self.bit((value >> shift) & 1)
-
-    def byte(self, value: int) -> None:
-        self._out.append(value & 0xFF)
-
-    def gamma(self, value: int) -> None:
-        # The leading 1 is implied; each remaining bit is followed by whether
-        # another follows it.
-        top = value.bit_length() - 2
-        for shift in range(top, -1, -1):
-            self.bit((value >> shift) & 1)
-            self.bit(1 if shift else 0)
-
-    def finish(self) -> bytes:
-        return bytes(self._out)
+def _put_gamma(tags: BitGroup, value: int) -> None:
+    # The leading 1 is implied; each remaining bit is followed by whether
+    # another follows it.
+    top = value.bit_length() - 2
+    for shift in range(top, -1, -1):
+        tags.bit((value >> shift) & 1)
+        tags.bit(1 if shift else 0)
 
 
 def _block_lengths(longest: int, delta: int) -> list[int]:
@@ -363,42 +330,45 @@ def compress(data: bytes) -> bytes:
                         best, pick = value, (OP_BLOCK, length, distance)
             cost[after_block][i], choice[after_block][i] = best, pick
 
-    writer = _Writer()
-    writer.byte(data[0])
+    out = bytearray(data[:1])
+    # Tag bytes are reserved as the first bit of each is written, which is where
+    # the reader fetches them.
+    tags = BitGroup(out, msb_first=True)
     at = 1
     after_block = 0
     last_distance = 0
     while at < n:
         op, length, distance = choice[after_block][at]
         if op == OP_LITERAL:
-            writer.bit(0)
-            writer.byte(data[at])
+            tags.bit(0)
+            out.append(data[at])
             after_block = 0
         elif op == OP_TINY:
-            writer.bits(0b111, 3)
-            writer.bits(distance, 4)
+            tags.bits(0b111, 3)
+            tags.bits(distance, 4)
             after_block = 0
         elif op == OP_SHORT:
-            writer.bits(0b110, 3)
-            writer.byte((distance << 1) | (length - SHORT_MIN))
+            tags.bits(0b110, 3)
+            out.append((distance << 1) | (length - SHORT_MIN))
             last_distance = distance
             after_block = 1
         else:
-            writer.bits(0b10, 2)
+            tags.bits(0b10, 2)
             if not after_block and distance == last_distance:
-                writer.gamma(2)
-                writer.gamma(length)
+                _put_gamma(tags, 2)
+                _put_gamma(tags, length)
             else:
-                writer.gamma((distance >> 8) + (2 if after_block else 3))
-                writer.byte(distance & 0xFF)
-                writer.gamma(length - _length_delta(distance))
+                _put_gamma(tags, (distance >> 8) + (2 if after_block else 3))
+                out.append(distance & 0xFF)
+                _put_gamma(tags, length - _length_delta(distance))
             last_distance = distance
             after_block = 1
         at += length
 
-    writer.bits(0b110, 3)
-    writer.byte(0)
-    return writer.finish()
+    tags.bits(0b110, 3)
+    out.append(0)
+    tags.finish()
+    return bytes(out)
 
 
 class AplibCompression(PartialDecompression):

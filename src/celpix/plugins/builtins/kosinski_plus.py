@@ -48,7 +48,7 @@ from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
 from . import _moduled
-from ._lz import FlagGroup, copy_back
+from ._lz import BitGroup, copy_back
 from .kosinski import (
     DISTANCE_HIGH,
     FULL_WINDOW,
@@ -147,14 +147,10 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 def compress(data: bytes) -> bytes:
     """Encode ``data`` as one Kosinski+ stream, as small as the forms allow."""
     out = bytearray()
-    # Raw descriptor bits rather than op selectors: a set bit is written as set.
     # The group reserves its byte where its first bit is pushed, which is exactly
     # where the lazy refill goes looking for it.
-    flags = FlagGroup(out, msb_first=True, set_means_match=True)
-
-    def bit(value: int) -> None:
-        flags.select(bool(value))
-
+    desc = BitGroup(out, msb_first=True)
+    bit = desc.bit
     at = 0
     for op, length, distance in parse(data, LONG_MAX):
         if op == OP_LITERAL:
@@ -184,7 +180,7 @@ def compress(data: bytes) -> bytes:
     bit(0)
     bit(1)
     out += bytes(END_MARKER)
-    flags.finish()
+    desc.finish()
     return bytes(out)
 
 

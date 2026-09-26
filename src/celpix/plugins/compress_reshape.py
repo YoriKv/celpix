@@ -12,7 +12,7 @@ So the pair is one plugin, in the Compression slot, described by a TOML preset:
 
 ```toml
 id = "compression.rnc2-running-sum"
-name = "RNC method 2 + running sum"
+name = "RNC ProPack method 2 + running sum"
 engine_id = "compression.compress-reshape"
 
 [params]

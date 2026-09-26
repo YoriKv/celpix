@@ -1,7 +1,9 @@
-"""Rob Northen Compression — RNC methods 1 and 2, both directions.
+"""Rob Northen Compression — RNC ProPack methods 1 and 2, both directions.
 
-The packer Rob Northen Computing sold to developers on every early-90s platform,
-and the one Western studios reached for on the Mega Drive: Sonic 3D Blast,
+PRO-PACK, the packer Rob Northen Computing sold to developers on every early-90s
+platform, offered both methods from the one tool — 1 for ratio, 2 for unpacking
+speed — and the method byte after the magic says which. It is the one Western
+studios reached for on the Mega Drive: Sonic 3D Blast,
 Earthworm Jim, Mickey Mania, Toy Story, Aladdin and some eighty more carry RNC
 streams (the list is in ``docs/graphics-formats-reference/implementation-guide.md``
 §7). A stream announces itself, which almost nothing else in this folder does::
@@ -87,7 +89,7 @@ import heapq
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
-from ._lz import MatchFinder, copy_back, parse_greedy
+from ._lz import BitGroup, MatchFinder, copy_back, parse_greedy
 
 MAGIC = b"RNC"
 HEADER_SIZE = 18
@@ -490,70 +492,45 @@ def decompress(
 # -- compression ------------------------------------------------------------
 
 
-class _Writer:
-    """Bit words and the raw bytes they precede, kept in the order a decoder reads.
+class _Writer(BitGroup):
+    """The bit groups and the raw bytes between them, plus the header's leeway.
 
-    A raw byte written while a word is part-filled waits for that word: the
-    decoder fetched the word before reading the byte. ``low_first`` picks the
-    method: 16-bit words filled from the low bit (1) or bytes from the high (2).
+    Method 1 groups its bits in 16-bit little-endian words filled from the low
+    bit, method 2 in bytes filled from the high; both decoders fetch a group only
+    when they first want a bit from it.
     """
 
-    def __init__(self, *, word_bits: int, low_first: bool) -> None:
-        self.out = bytearray()
-        self._size = word_bits
-        self._low_first = low_first
-        self._word = 0
-        self._bits = 0
-        self._pending = bytearray()
+    __slots__ = ("_method", "consumed", "leeway")
+
+    def __init__(self, method: int) -> None:
+        if method == METHOD_1:
+            super().__init__(bytearray(), msb_first=False, width=16, byteorder="little")
+        else:
+            super().__init__(bytearray(), msb_first=True)
+        self._method = method
         self.consumed = 0  # input bytes covered so far, for the leeway figure
         self.leeway = 0
 
-    def put(self, value: int, count: int) -> None:
-        if self._low_first:
-            while count:
-                take = min(count, self._size - self._bits)
-                self._word |= (value & ((1 << take) - 1)) << self._bits
-                value >>= take
-                count -= take
-                self._bits += take
-                if self._bits == self._size:
-                    self._flush()
-        else:
-            for shift in range(count - 1, -1, -1):
-                self._word = (self._word << 1) | ((value >> shift) & 1)
-                self._bits += 1
-                if self._bits == self._size:
-                    self._flush()
+    def raw(self, chunk: bytes) -> None:
+        self._out += chunk
 
-    def _flush(self) -> None:
-        self.out += self._word.to_bytes(self._size // 8, "little")
-        self.out += self._pending
-        self._pending.clear()
-        self._word = 0
-        self._bits = 0
+    def _full(self) -> None:
+        super()._full()
         # How far the unpacked data has run ahead of the packed data at this
         # point — the overlap an unpack into its own buffer has to allow for.
-        self.leeway = max(self.leeway, self.consumed - len(self.out))
+        self.leeway = max(self.leeway, self.consumed - len(self._out))
 
-    def raw(self, chunk: bytes) -> None:
-        if self._bits:
-            self._pending += chunk
-        else:
-            self.out += chunk
-
-    def finish(self) -> bytes:
-        if self._bits:
-            if self._low_first:
-                self.out.append(self._word & 0xFF)
-                # A final word of eight bits or fewer is written as one byte —
-                # unless raw bytes follow, which the decoder's two-byte fetch
-                # would otherwise swallow.
-                if self._bits > 8 or self._pending:
-                    self.out.append(self._word >> 8)
-            else:
-                self.out.append((self._word << (8 - self._bits)) & 0xFF)
-        self.out += self._pending
-        return bytes(self.out)
+    def body(self) -> bytes:
+        # A final method 1 word of eight bits or fewer is written as one byte —
+        # unless raw bytes follow, which the decoder's two-byte fetch would
+        # otherwise swallow.
+        trim = (
+            self._method == METHOD_1
+            and self.slot == len(self._out) - 2
+            and self.pending <= 8
+        )
+        self.finish()
+        return bytes(self._out[:-1] if trim else self._out)
 
 
 def _symbol(value: int) -> int:
@@ -580,18 +557,18 @@ def _code_lengths(freq: list[int]) -> list[int]:
 
 def _write_table(writer: _Writer, depths: list[int]) -> list[tuple[int, int]]:
     count = max((s + 1 for s, d in enumerate(depths) if d), default=0)
-    writer.put(count, 5)
+    writer.bits(count, 5)
     for depth in depths[:count]:
-        writer.put(depth, 4)
+        writer.bits(depth, 4)
     return _canonical_codes(depths)
 
 
 def _write_value(writer: _Writer, codes: list[tuple[int, int]], value: int) -> None:
     symbol = _symbol(value)
     depth, code = codes[symbol]
-    writer.put(code, depth)
+    writer.bits(code, depth)
     if symbol >= 2:
-        writer.put(value - (1 << (symbol - 1)), symbol - 1)
+        writer.bits(value - (1 << (symbol - 1)), symbol - 1)
 
 
 # One subchunk: (literal start, literal count, match length, match distance).
@@ -649,7 +626,7 @@ def _pack_1(data: bytes, writer: _Writer) -> int:
         run_codes = _write_table(writer, _code_lengths(run_freq))
         distance_codes = _write_table(writer, _code_lengths(distance_freq))
         length_codes = _write_table(writer, _code_lengths(length_freq))
-        writer.put(len(chunk), 16)
+        writer.bits(len(chunk), 16)
         for index, (start, run, length, distance) in enumerate(chunk):
             _write_value(writer, run_codes, run)
             writer.consumed += run
@@ -730,23 +707,23 @@ def _pack_2(data: bytes, writer: _Writer) -> int:
     for length, distance in _ops_2(data):
         if not distance:
             if length == 1:
-                writer.put(0, 1)
+                writer.bit(0)
             else:
-                writer.put(*M2_RUN_CODE)
-                writer.put((length - M2_RUN_MIN) >> 2, 4)
+                writer.bits(*M2_RUN_CODE)
+                writer.bits((length - M2_RUN_MIN) >> 2, 4)
             writer.consumed += length
             writer.raw(data[at : at + length])
         else:
             low = bytes(((distance - 1) & 0xFF,))
             if length == 2:
-                writer.put(*M2_LENGTH2_CODE)
+                writer.bits(*M2_LENGTH2_CODE)
             else:
                 if length >= M2_LONG_MIN:
-                    writer.put(*M2_LONG_CODE)
+                    writer.bits(*M2_LONG_CODE)
                     writer.raw(bytes((length - 8,)))
                 else:
-                    writer.put(*M2_LENGTH_CODES[length])
-                writer.put(*M2_DISTANCE_CODES[(distance - 1) >> 8])
+                    writer.bits(*M2_LENGTH_CODES[length])
+                writer.bits(*M2_DISTANCE_CODES[(distance - 1) >> 8])
             writer.raw(low)
             writer.consumed += length
         at += length
@@ -760,9 +737,9 @@ def _pack_2(data: bytes, writer: _Writer) -> int:
 
 
 def _end_chunk(writer: _Writer, *, more: bool) -> None:
-    writer.put(*M2_LONG_CODE)
+    writer.bits(*M2_LONG_CODE)
     writer.raw(b"\x00")
-    writer.put(int(more), 1)
+    writer.bit(int(more))
 
 
 def compress(data: bytes, *, method: int) -> bytes:
@@ -770,16 +747,13 @@ def compress(data: bytes, *, method: int) -> bytes:
     n = len(data)
     if n > MAX_UNPACKED:
         raise ValueError(f"input is {n:,} bytes; RNC here holds {MAX_UNPACKED:,}")
-    if method == METHOD_1:
-        writer = _Writer(word_bits=16, low_first=True)
-    else:
-        writer = _Writer(word_bits=8, low_first=False)
-    writer.put(0, 1)  # not locked
-    writer.put(0, 1)  # not keyed
+    writer = _Writer(method)
+    writer.bit(0)  # not locked
+    writer.bit(0)  # not keyed
     chunks = (_pack_1 if method == METHOD_1 else _pack_2)(data, writer)
     if chunks > MAX_CHUNKS:
         raise ValueError(f"input needs {chunks} chunks; the header counts {MAX_CHUNKS}")
-    body = writer.finish()
+    body = writer.body()
 
     # The packer's own leeway figure: the overrun measured at each word, less the
     # room the packed stream's smaller size already leaves; method 2 adds two.
@@ -813,7 +787,7 @@ class Rnc1Compression(_RncBase):
     _method = METHOD_1
     info = PluginInfo(
         id="compression.rnc1",
-        name="RNC method 1 (Rob Northen, LZ + Huffman)",
+        name="RNC ProPack method 1 (Rob Northen, LZ + Huffman)",
         stage=Stage.COMPRESSION,
         # The header's packed size bounds the stream exactly.
         self_delimiting=True,
@@ -825,7 +799,7 @@ class Rnc2Compression(_RncBase):
     _method = METHOD_2
     info = PluginInfo(
         id="compression.rnc2",
-        name="RNC method 2 (Rob Northen, fast LZ)",
+        name="RNC ProPack method 2 (Rob Northen, fast LZ)",
         stage=Stage.COMPRESSION,
         self_delimiting=True,
         category="Generic",
