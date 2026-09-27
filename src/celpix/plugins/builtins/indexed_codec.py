@@ -26,6 +26,8 @@ from celpix.core.errors import Stage
 from celpix.core.palette import MISSING_COLOR, Palette
 from celpix.plugins.base import PluginInfo
 
+_MAX_COLORS = 256  # every index one entry byte can hold (bytes_per_entry)
+
 
 class IndexedColorCodec:
     """Fixed-palette color codec; the ARGB table comes from ``params``."""
@@ -41,6 +43,13 @@ class IndexedColorCodec:
         colors = params["colors"]
         if not colors:
             raise ValueError("indexed palette needs a non-empty 'colors' table")
+        if len(colors) > _MAX_COLORS:
+            # Refused here rather than at encode: decode would read the table
+            # happily, and only a save would find that no byte names the rest.
+            raise ValueError(
+                f"indexed palette 'colors' has {len(colors)} entries; an entry "
+                f"is one byte, so the table holds at most {_MAX_COLORS}"
+            )
         # Stored as 0xRRGGBB; render as opaque ARGB.
         return [0xFF000000 | (int(c) & 0xFFFFFF) for c in colors]
 

@@ -85,7 +85,7 @@ from __future__ import annotations
 
 from celpix.core.context import KEY_TILEMAP_COLUMNS, PipelineContext
 from celpix.core.errors import Stage
-from celpix.plugins._params import flag
+from celpix.plugins._params import flag, only_keys, preset_identity
 from celpix.plugins.base import PluginInfo, check_declared_stage
 
 SPLIT_PARTS_ENGINE = "reshape.split-parts"
@@ -252,9 +252,11 @@ def split_parts_from_spec(spec: dict) -> SplitPartsReshape:
             f"(expected {SPLIT_PARTS_ENGINE!r})"
         )
     check_declared_stage(spec, Stage.RESHAPE)
+    plugin_id, name, category = preset_identity(spec)
     params = spec.get("params", {})
     if not isinstance(params, dict):
         raise ValueError("params must be a table")
+    only_keys(params, ("parts", "unit", "groups", "clockwise", "lock_columns"))
     if "parts" not in params:
         raise ValueError("params.parts is required: how many parts to join")
     parts = _count(params, "parts", 0, 2, MAX_PARTS)
@@ -276,7 +278,7 @@ def split_parts_from_spec(spec: dict) -> SplitPartsReshape:
         groups,
         clockwise,
         lock_columns=lock,
-        plugin_id=spec["id"],
-        name=spec["name"],
-        category=spec.get("category", ""),
+        plugin_id=plugin_id,
+        name=name,
+        category=category,
     )

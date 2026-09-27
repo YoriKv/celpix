@@ -2282,7 +2282,13 @@ def test_a_single_stamp_resolves_exactly_as_the_map_does() -> None:
     source = [Cell(index=100 + at, palette_row=at % 8) for at in range(16)]
     entry = Cell(index=1, palette_row=5, flip_h=True)
     unit = expand_stamp(entry, source, (2, 2), 4, carry_rows=True)
-    assert [cell.index for cell in unit] == [101, 102, 105, 106]
+    # Mirrored as a stamp, not only cell by cell: right-hand cells on the left,
+    # and under a vertical flip the lower row on top.
+    assert [cell.index for cell in unit] == [102, 101, 106, 105]
+    upside = expand_stamp(
+        Cell(index=1, flip_v=True), source, (2, 2), 4, carry_rows=True
+    )
+    assert [cell.index for cell in upside] == [105, 106, 101, 102]
     assert [cell.palette_row for cell in unit] == [5, 5, 5, 5]
     assert all(cell.flip_h for cell in unit)
     # Byte-identical to the map's own resolution of the same entry.
@@ -2381,7 +2387,8 @@ def test_a_chain_two_hops_deep_resolves_every_hop_and_snaps_back_through_both() 
 
 
 def test_attributes_compose_across_every_hop() -> None:
-    """Flips toggle at each hop, so three mirrors face the way one does; a base
+    """Flips toggle at each hop, so three mirrors face the way one does, and each
+    hop mirrors its own stamp's arrangement by the flips in force there; a base
     applies at the hop that states it; and a row a referrer stated survives a
     middle table whose format has no rows, rather than giving way to the tile
     table's."""
@@ -2395,18 +2402,182 @@ def test_attributes_compose_across_every_hop() -> None:
     )
     entry = Cell(index=0, palette_row=5, flip_h=True)
     out = resolve_chain([entry], chain, 1)
-    assert len(out) == 16
+    # The entry's mirror swaps the outer stamp's columns (cells 4 0 / 12 8);
+    # each of those is mirrored too, so the two cancel at the inner hop and its
+    # stamps keep their own order.
+    assert [cell.index for cell in out] == [
+        104, 105, 100, 101,
+        106, 107, 102, 103,
+        112, 113, 108, 109,
+        114, 115, 110, 111,
+    ]  # fmt: skip
     assert all(cell.flip_h and cell.palette_row == 5 for cell in out)
     # The same entry through a referrer with no rows keeps the tiles' own.
     bare = resolve_chain([entry], replace(chain, carry_rows=False), 1)
     assert {cell.palette_row for cell in bare} == {1}
 
     # A base at each hop, signed: entry 0 reads outer stamp 1 (3 2 / 1 0)
-    # through a base of 4 cells, and each inner one it names a record earlier.
+    # through a base of 4 cells, and each inner one it names a record earlier —
+    # mirrored, since this time only the outer cells are.
     based = replace(chain, base=4, through=replace(inner, base=-4))
     assert [cell.index for cell in resolve_chain([Cell(index=0)], based, 1)][:4] == [
-        108, 109, 104, 105,
+        109, 108, 105, 104,
     ]  # fmt: skip
+
+
+def test_a_base_pushing_a_stamp_off_either_end_blanks_only_what_falls_off() -> None:
+    """A base moves a stamp's corner and the rest follows, so a stamp can hang
+    off either end of its source: the cells that fall outside draw blank, the
+    ones still inside draw as they would anyway."""
+    from celpix.core.document import CellChain, resolve_chain
+    from celpix.core.tilemap import UNRESOLVED
+
+    source = [Cell(index=100 + at) for at in range(8)]
+    chain = CellChain(source, False, stamp=(2, 2), source_columns=4, dense=True)
+    for base, want in ((-1, [None, 100, 103, 104]), (6, [106, 107, None, None])):
+        out = resolve_chain([Cell(index=0)], replace(chain, base=base), 1)
+        assert [None if c is UNRESOLVED else c.index for c in out] == want, base
+
+
+def test_a_sparse_column_major_map_reads_only_the_entries_it_draws() -> None:
+    """Which entries a sparse stamped map reads is asked in reading order, the
+    order the resolution stamps in: five entries stored down columns two wide
+    draw corners from file entries 0 and 2, and entry 4 — a corner in file
+    order — is filler once the columns are read across."""
+    from celpix.core.document import CellChain
+
+    source = [Cell(index=100 + at) for at in range(64)]
+    chain = CellChain(source, True, stamp=(2, 2), source_columns=8)
+    cells = [Cell(index=at, palette_row=at + 1) for at in range(5)]
+    doc = _chain_doc(cells, chain, columns=2)
+    doc.column_major = True
+    doc.resolve()
+    drawn = {cell.palette_row - 1 for cell in doc.drawn_cells if cell.palette_row}
+    assert drawn == {0, 2}
+    assert [at for at in range(5) if doc.cell_is_read(at)] == [0, 2]
+
+
+def _headless(tmp_path):  # noqa: ANN202
+    """A workspace, a registry and two builders, for chains loaded the way the
+    app loads them (:func:`~celpix.project.documents.load_document`)."""
+    from celpix.plugins.base import Preset
+    from celpix.project.workspace import (
+        Entry,
+        EntryKind,
+        EntrySession,
+        TileMode,
+        TileSource,
+        Workspace,
+    )
+
+    registry, workspace = default_registry(), Workspace()
+
+    def preset(preset_id: str, **params) -> None:  # noqa: ANN003
+        registry.register_preset(
+            Preset(
+                id=preset_id,
+                name=preset_id,
+                stage=Stage.INTERPRET_TILEMAP,
+                engine_id="codec.tilemap.packed",
+                params={"bytes": 1, **params},
+            )
+        )
+
+    def entry(name: str, data: bytes, preset_id: str | None = None, source=None):  # noqa: ANN001, ANN202
+        path = tmp_path / name
+        path.write_bytes(data)
+        made = Entry(name=name, kind=EntryKind.FILE, path=str(path))
+        if preset_id is not None:
+            made.content_kind = ContentKind.TILEMAP
+            made.tilemap_preset_id = preset_id
+        made.session = EntrySession("preset.pixel.snes-4bpp", "preset.palette.bgr555")
+        if source is not None:
+            made.tile_source = TileSource(mode=TileMode.ENTRY, entry=source)
+        workspace.entries.append(made)
+        return made
+
+    return registry, workspace, preset, entry
+
+
+def test_a_map_of_2x2_cells_over_a_tilemap_stamps_it_as_the_source_lays_out(
+    tmp_path,
+) -> None:
+    """A format whose cell covers 2x2 draws a stamp of a tilemap source's cells
+    (``cell_stamp``), cut out of the source as the source lays its cells out: a
+    cell filled down each column states strides through a tile bank, and they
+    are not applied to a map. A flipped entry mirrors the stamp's arrangement
+    as well as each cell, the rule a flipped metatile keeps."""
+    from celpix.project.documents import load_document
+
+    registry, workspace, preset, entry = _headless(tmp_path)
+    preset("t.table", fields="iiii iiii")
+    preset(
+        "t.cells",
+        fields="hvii iiii",
+        cell_tiles=[2, 2],
+        cell_row_stride=1,
+        cell_column_stride=2,
+    )
+    table = entry("table.bin", bytes(range(64)), "t.table", entry("a", bytes(2048)))
+    load_document(table, registry, workspace).doc.view.columns = 16
+    loaded = load_document(
+        entry("map.bin", bytes([0x02, 0x82, 0x42]), "t.cells", table),
+        registry,
+        workspace,
+    )
+    doc = loaded.doc
+    assert loaded.problems == []
+    assert doc.stamp_cells == (2, 2) and doc.chain.source_columns == 16
+    doc.view.columns = 6  # the three entries side by side
+    drawn = doc.drawn_cells
+
+    def stamp(k: int) -> list:
+        return [(c.index, c.flip_h, c.flip_v) for c in drawn[2 * k : 2 * k + 2]] + [
+            (c.index, c.flip_h, c.flip_v) for c in drawn[6 + 2 * k : 8 + 2 * k]
+        ]
+
+    plain, h, v = False, (True, False), (False, True)
+    assert stamp(0) == [(2, plain, plain), (3, plain, plain), (18, plain, plain),
+                        (19, plain, plain)]  # fmt: skip
+    assert stamp(1) == [(3, *h), (2, *h), (19, *h), (18, *h)]
+    assert stamp(2) == [(18, *v), (19, *v), (2, *v), (3, *v)]
+
+
+def test_a_chain_that_loops_or_draws_through_a_sparse_map_is_refused(
+    tmp_path,
+) -> None:
+    """Two refusals, both headless and both said. A loop is refused at the
+    binding, so the map loads unchained. A dense map drawing through a *sparse*
+    stamped one has no width for the sparse hop to snap at, so its stamp is not
+    resolved: every hop reads one coordinate as one cell, and a click agrees
+    with what is drawn."""
+    from celpix.project.documents import load_document
+    from celpix.project.workspace import TileMode, TileSource
+
+    registry, workspace, preset, entry = _headless(tmp_path)
+    preset("t.table", fields="iiii iiii")
+    preset("t.sparse", fields="iiii iiii", stamp_cells=[2, 2])
+    preset("t.dense", fields="iiii iiii", stamp_cells=[2, 2], stamp_dense=True)
+    table = entry("table.bin", bytes(range(64)), "t.table", entry("a", bytes(2048)))
+    sparse = entry("sparse.bin", bytes(range(0, 64, 2)), "t.sparse", table)
+    top = entry("top.bin", bytes([0, 2]), "t.dense", sparse)
+    loaded = load_document(top, registry, workspace)
+    assert loaded.doc.stamp_cells == (1, 1)
+    # The last word is the top map's; the sparse one, stating no width, has
+    # already said why it draws unstamped itself.
+    assert loaded.problems[-1] == (
+        "top.bin: 2x2 stamps not resolved - a table it draws through is a sparse "
+        "stamped map; drawing one cell per entry."
+    )
+    assert [c.index for c in loaded.doc.drawn_cells] == [0, 4]
+    assert [loaded.doc.cell_at(at) for at in range(2)] == [0, 1]
+
+    one = entry("one.bin", bytes([0, 1]), "t.table")
+    other = entry("other.bin", bytes([0, 1]), "t.table", one)
+    one.tile_source = TileSource(mode=TileMode.ENTRY, entry=other)
+    loaded = load_document(one, registry, workspace)
+    assert loaded.doc.chain is None
+    assert "loops back on itself" in loaded.problems[0]
 
 
 def test_a_single_entry_preview_is_the_maps_own_resolution_of_it() -> None:
@@ -2629,9 +2800,9 @@ def test_a_panel_word_is_one_tile_whatever_its_header_says() -> None:
         assert ctx.get(KEY_TILEMAP_COLUMNS) == 32
 
 
-def test_a_panel_publishes_the_block_size_its_callers_index_in() -> None:
-    """0x69/0x6A are exponents, and what they size is the *stamp* — how big a
-    block of panel cells one layout coordinate names. Not this file's cell size,
+def test_a_panel_publishes_the_stamp_size_its_callers_index_in() -> None:
+    """0x69/0x6A are exponents, and what they size is the *stamp* — how many
+    panel cells one layout coordinate names. Not this file's cell size,
     which is why it is published for a bound layout and never applied here."""
     from celpix.core.context import KEY_TILEMAP_STAMP_CELLS
 
@@ -2640,7 +2811,7 @@ def test_a_panel_publishes_the_block_size_its_callers_index_in() -> None:
         (0, 0): (1, 1),  # no subdivision: one coordinate names one cell
         (2, 3): (4, 8),
         # An exponent past the tool's own size menu is a corrupt byte, and a
-        # block wider than the panel is no division a layout could index.
+        # stamp wider than the panel is no division a layout could index.
         (9, 1): (1, 2),
     }
     for (width_exp, height_exp), want in cases.items():
@@ -4151,7 +4322,7 @@ def test_a_table_offers_its_preset_stamp_whatever_its_engine() -> None:
     from celpix.core.context import KEY_TILEMAP_STAMP_CELLS, KEY_TILEMAP_STAMP_STRIDE
 
     def offer(params: dict, ctx: PipelineContext | None = None) -> tuple:
-        ctx = ctx or PipelineContext()
+        ctx = PipelineContext() if ctx is None else ctx
         publish_table_layout(8, params, ctx)
         return ctx.get(KEY_TILEMAP_STAMP_CELLS), ctx.get(KEY_TILEMAP_STAMP_STRIDE)
 
@@ -4161,7 +4332,8 @@ def test_a_table_offers_its_preset_stamp_whatever_its_engine() -> None:
     middle = {"record_cells": 4, "indirect": True, "stamp_cells": [2, 2],
               "stamp_dense": True, "stamp_stride": 2}  # fmt: skip
     assert offer(middle) == ((2, 2), 2)
-    # a chunk of 8x8 blocks drawing 2x2 of the table below: the offer is its own
+    # a table of 8x8-cell chunks, each cell drawing 2x2 of the table below: the
+    # offer is its own
     assert offer({**middle, "offered_stamp_cells": [8, 8], "stamp_stride": 8}) == (
         (8, 8),
         8,
@@ -4173,8 +4345,16 @@ def test_a_table_offers_its_preset_stamp_whatever_its_engine() -> None:
     # and a preset saying neither offers nothing, so an ordinary map is still
     # stamped at the width it is viewed
     assert offer({"fields": "iiii iiii"}) == (None, None)
-    with pytest.raises(ValueError, match="offered_stamp_cells"):
-        offer({"offered_stamp_cells": 2})
+    # a malformed number is not offered, and the load says so rather than
+    # failing: the table still opens, as the plain table it also is
+    from celpix.core.notices import notices
+
+    bad = PipelineContext()
+    assert offer({"offered_stamp_cells": 2, "stamp_stride": "x"}, bad) == (None, None)
+    assert [n.summary for n in notices(bad)] == [
+        "Table layout ignored: offered_stamp_cells must be [across, down], got 2",
+        "Table layout ignored: stamp_stride must be a number, got 'x'",
+    ]
 
 
 def test_a_table_stored_down_each_column_stamps_its_records_upright() -> None:

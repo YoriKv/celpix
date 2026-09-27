@@ -28,10 +28,11 @@ opens it as an entry first — the move registering a palette file already makes
 
 The bound entry may be **another tilemap**, in which case each cell stamps one of
 that map's cells rather than naming a tile, and the tiles come from whatever it is
-itself bound to. One hop, gated on depth rather than on format
-(``docs/design/tilemap-entry.md`` §3.1) — so what the bar offers is filtered by
-:meth:`~...session.SessionMixin._can_supply_tiles` and nothing here decides it
-twice.
+itself bound to — another map in turn, to any depth. What stops a chain is a loop,
+and a map with no cells to lend: one that did not open, or a sprite object
+(``docs/design/tilemap-entry.md`` §3.1). What the bar offers is filtered by
+:meth:`~...session.SessionMixin._can_supply_tiles`, the gate every hop of the
+resolution asks, and nothing here decides it twice.
 
 Every control on the bar that sets **project state the file does not record** is
 one undoable step, and the binding, the base and the size pair share one snapshot
@@ -322,13 +323,9 @@ class TilemapBarMixin:
             self._tile_base.setValue(source.base_index)
         # Cells that are coordinates into another tilemap still have a base: it
         # shifts which source *cell* a coordinate names rather than which tile
-        # (`CellChain.base`), so the spin stays and says which it is. True once
-        # a tilemap is bound, and before that for a format that says its cells
-        # are coordinates - which is the whole of what `indirect` decides.
-        chained = self._draws_through_tilemap(entry) or (
-            not source.is_bound and self._tilemap_is_indirect(entry)
-        )
-        self._tile_base_label.setText("Base cell " if chained else "Base tile ")
+        # (`CellChain.base`), so the spin stays and says which it is.
+        chained = self._base_counts_cells(entry, source)
+        self._tile_base_label.setText(f"Base {self._base_noun(entry, source)} ")
         self._tile_base.setToolTip(
             f"{TILE_BASE_CHAINED_TIP if chained else TILE_BASE_TIP} (hex)"
         )
@@ -339,6 +336,60 @@ class TilemapBarMixin:
         self._sync_cell_index()
         self._sync_cell_props()
         self._tile_binding_note.setText(self._binding_note(entry, source))
+
+    def _base_counts_cells(
+        self, entry: Entry, source: TileSource | None = None
+    ) -> bool:
+        """Whether ``entry``'s base index counts source **cells** rather than tiles.
+
+        The one answer behind every place the base is named — this bar's label
+        and tooltip, the tile source panel's button, both undo texts — and behind
+        whether a rebind can carry the number across (:meth:`_carried_base`).
+        Read off the **binding**, not off whether the chain resolved: the number
+        belongs to the binding and is in the unit of whatever it names, so a map
+        bound to a tilemap that did not resolve still holds a cell offset, one
+        that takes effect the moment the chain does. Unbound, the format decides:
+        cells that are coordinates (``indirect``) name cells of the map they are
+        waiting for.
+
+        ``source`` is the binding to ask about, where it is not the entry's own
+        yet — the one a rebind is about to land.
+        """
+        source = entry.tile_source if source is None else source
+        bound = source.entry if source is not None else None
+        if bound is not None and source.mode is TileMode.ENTRY:
+            return bound.content_kind is ContentKind.TILEMAP
+        return self._tilemap_is_indirect(entry)
+
+    def _base_noun(self, entry: Entry, source: TileSource | None = None) -> str:
+        """``"cell"`` or ``"tile"``: what the base counts
+        (:meth:`_base_counts_cells`)."""
+        return "cell" if self._base_counts_cells(entry, source) else "tile"
+
+    def _carried_base(
+        self, entry: Entry, bound: Entry | None, before: TileSource | None = None
+    ) -> int:
+        """The base a rebind of ``entry`` to ``bound`` (None: unbind) starts from.
+
+        The spin's value where the unit stays the same, and 0 where it changes:
+        a tile offset is not a cell offset, and carrying 3 from a bank onto a
+        tilemap would silently start the map three stamps in — the other way, a
+        cell offset would start it three tiles into the art. Unbinding asks the
+        same question of the unbound state, so an indirect layout keeps its cell
+        offset for the next map it is pointed at.
+
+        ``before`` is the binding the rebind starts from, where the entry no
+        longer holds it (:meth:`_bind_tiles_from_file`).
+        """
+        after = (
+            TileSource(mode=TileMode.ENTRY, entry=bound)
+            if bound is not None
+            else TileSource()
+        )
+        was = self._base_counts_cells(entry, before)
+        if was != self._base_counts_cells(entry, after):
+            return 0
+        return self._tile_base.value()
 
     def _bake_binding_jump_icon(self) -> None:
         """Stamp the jump button's ring-and-dot in the theme's button-text color.
@@ -357,8 +408,9 @@ class TilemapBarMixin:
         """Arm the jump button iff the binding names an entry, and say which.
 
         Gated on there being an entry to show rather than on the binding
-        *resolving*: an unresolved source (a tilemap that draws through a tilemap
-        itself) is exactly the case where the user needs to go and look at it.
+        *resolving*: an unresolved source (a tilemap whose chain loops, or that
+        did not open) is exactly the case where the user needs to go and look
+        at it.
         """
         bound = self._binding_target(source)
         self._tile_binding_jump.setEnabled(bound is not None)
@@ -525,8 +577,8 @@ class TilemapBarMixin:
         """Show the selected cell's reference, ranged to what the format allows.
 
         Hidden where there is nothing to set — a sprite object, or a format with
-        no index field — on the same rule as Base tile above: a control that means
-        nothing here is not a feature switched off. Disabled rather than hidden
+        no index field: a control that means nothing here is not a feature
+        switched off. Disabled rather than hidden
         with no selection, because then it is the *selection* that is missing and
         the control is about to become useful again.
 
@@ -578,16 +630,13 @@ class TilemapBarMixin:
         if bound is None:
             return "The entry it drew from is no longer open."
         if bound.content_kind is ContentKind.TILEMAP:
-            if not self._can_supply_tiles(entry, bound):
-                # Gated on the same rule the binding itself uses, so the line
-                # cannot claim a resolution that did not happen. Names the broken
-                # link rather than repeating "no source": the binding here may be
-                # fine, and it is a binding further down that has to move.
-                return (
-                    f"{bound.name}'s chain loops back on itself - not resolved."
-                    if self._chain_loops(entry, bound)
-                    else f"{bound.name} cannot supply tiles - not resolved."
-                )
+            doc = entry.doc
+            if doc is None or doc.chain is None:
+                # Keyed on the document, which is what the resolution produced,
+                # so the line cannot claim a stamping that did not happen. Names
+                # the broken link rather than repeating "no source": the binding
+                # here may be fine, and it is one further down that has to move.
+                return f"{self._chain_refusal(entry, bound)} - not resolved."
             # A chained map takes its source's tiles *and* its attributes, so
             # there is no pixel format of its own to report - the source's is the
             # one that matters, and it is on that entry's own bar. What is worth
@@ -623,8 +672,9 @@ class TilemapBarMixin:
 
         The rows change only when the list does, and this says so without
         resolving anything: each entry itself, the name that is shown, the two
-        kinds the rule reads, and the raw binding that decides whether a tilemap
-        can pass tiles on. The entries ride in the tuple rather than their ids
+        kinds the rule reads, the cell format that says whether a tilemap is a
+        sprite object, and the raw binding that decides whether a tilemap can
+        pass tiles on. The entries ride in the tuple rather than their ids
         precisely so they stay alive to be compared — :class:`Entry` is
         ``eq=False``, so a comparison of two of these is a row-by-row identity
         check.
@@ -638,6 +688,7 @@ class TilemapBarMixin:
                     other.name,
                     other.kind,
                     other.content_kind,
+                    other.tilemap_preset_id,
                     other.tile_source.entry if other.tile_source is not None else None,
                 )
                 for other in self._workspace.entries
@@ -728,8 +779,10 @@ class TilemapBarMixin:
         if data is _FROM_FILE:
             self._bind_tiles_from_file(entry)
             return
+        # The base rides in the same TileSource as the binding, so a reset of it
+        # lands, and comes back off, in the one step (:meth:`_carried_base`).
         if data is _NONE or data is None:
-            source = TileSource(base_index=self._tile_base.value())
+            source = TileSource(base_index=self._carried_base(entry, None))
             text = "unbind tiles"
         else:
             if not self._settle_font_declaration(entry, data):
@@ -738,7 +791,7 @@ class TilemapBarMixin:
             source = TileSource(
                 mode=TileMode.ENTRY,
                 entry=data,
-                base_index=self._tile_base.value(),
+                base_index=self._carried_base(entry, data),
             )
             text = f"bind tiles to {self._tile_binding.currentText()}"
         self._rebind_tiles(entry, source, text)
@@ -842,7 +895,8 @@ class TilemapBarMixin:
         source = TileSource(
             mode=TileMode.ENTRY,
             entry=bound,
-            base_index=self._tile_base.value(),
+            # Asked of the binding as the user found it.
+            base_index=self._carried_base(entry, bound, before.tile_source),
         )
         entry.tile_source = source  # before the switch back, so the reload reads it
         self._activate_entry(entry)
@@ -888,7 +942,9 @@ class TilemapBarMixin:
             return
         source = entry.tile_source or TileSource()
         self._rebind_tiles(
-            entry, replace(source, base_index=value), f"set base tile to ${value:X}"
+            entry,
+            replace(source, base_index=value),
+            f"set base {self._base_noun(entry)} to ${value:X}",
         )
 
     def _on_tilemap_preset_change(self, _index: int) -> None:

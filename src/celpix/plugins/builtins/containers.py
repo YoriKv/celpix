@@ -91,7 +91,11 @@ def ines_layout(raw: bytes) -> INesLayout:
         chr_size = _nes2_size(raw[5], raw[9] >> 4, 8192)
     else:
         prg_size, chr_size = raw[4] * 16384, raw[5] * 8192
-    has_trailer = bool(raw[7] & 0x02) or (nes2 and bool(raw[14] & 0x03))
+    # PlayChoice-10 is byte 7 bit 1 under iNES, but under NES 2.0 bits 0-1 are one
+    # console-type field (0 NES, 1 Vs., 2 PlayChoice-10, 3 extended), and type 3
+    # sets bit 1 with no INST-ROM behind it.
+    playchoice = raw[7] & 0x03 == 0x02 if nes2 else bool(raw[7] & 0x02)
+    has_trailer = playchoice or (nes2 and bool(raw[14] & 0x03))
     return INesLayout(header_end, prg_size, chr_size, nes2, has_trailer)
 
 

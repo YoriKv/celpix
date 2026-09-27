@@ -331,6 +331,27 @@ def stamp_offset(dx: int, dy: int, stride: int, *, column_major: bool) -> int:
     return dx * stride + dy if column_major else dx + dy * stride
 
 
+def stamp_cell(
+    entry: Cell, dx: int, dy: int, stamp: tuple[int, int]
+) -> tuple[int, int]:
+    """Which cell of ``entry``'s stamp the drawn position ``(dx, dy)`` shows.
+
+    The drawn position mirrored under the entry's own flips, for the rule
+    :func:`tile_run` keeps for a metatile: **a flip reverses the order as well as
+    mirroring each cell**. A mirrored stamp shows its right-hand cell on the
+    left, mirrored; toggling the bits alone would turn each cell in place and
+    leave the arrangement facing the old way. ``entry`` is the cell as it reaches
+    this hop — its flips already composed with every hop above — so down a chain
+    each hop mirrors its own stamp by the flips in force there, and a stamp of
+    stamps comes out mirrored as one picture.
+    """
+    across, down = stamp
+    return (
+        across - 1 - dx if entry.flip_h else dx,
+        down - 1 - dy if entry.flip_v else dy,
+    )
+
+
 def expand_stamp(
     cell: Cell,
     source: list[Cell],
@@ -356,7 +377,8 @@ def expand_stamp(
     caller with no real entry behind the coordinate — a sheet enumerating what
     *could* be stamped — passes a bare ``Cell`` **with** ``carry_rows=False``:
     a synthetic referrer has no row of its own to carry, and a bare cell's 0
-    let through would repaint the source's rows.
+    let through would repaint the source's rows. Its flips mirror the stamp's
+    arrangement too (:func:`stamp_cell`), not only each cell.
     """
     across, down = max(1, stamp[0]), max(1, stamp[1])
     stride = max(1, source_columns)
@@ -365,7 +387,12 @@ def expand_stamp(
             cell,
             source,
             carry_rows=carry_rows,
-            at=cell.index + stamp_offset(dx, dy, stride, column_major=column_major),
+            at=cell.index
+            + stamp_offset(
+                *stamp_cell(cell, dx, dy, (across, down)),
+                stride,
+                column_major=column_major,
+            ),
             base=base,
         )
         for dy in range(down)
@@ -433,7 +460,8 @@ def expand_stamps(
     ``x % across + (y % down) * source_columns``. That last term is why
     ``source_columns`` is a parameter and not the referrer's width: a stamp is a
     rectangle cut out of the source, so stepping down a row inside it is a step
-    of the source's width.
+    of the source's width. A flipped entry mirrors that position within its stamp
+    first (:func:`stamp_cell`), so the stamp's arrangement turns with its cells.
 
     How many positions come back is the one thing ``dense`` changes, and it
     follows from what the file holds. A **sparse** map already has a slot per
@@ -485,8 +513,12 @@ def expand_stamps(
             continue
         entry = cells[at]
         offset = stamp_offset(
-            position % width % across,
-            position // width % down,
+            *stamp_cell(
+                entry,
+                position % width % across,
+                position // width % down,
+                (across, down),
+            ),
             stride,
             column_major=column_major,
         )

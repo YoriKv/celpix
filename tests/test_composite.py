@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+from PySide6.QtWidgets import QMenu
+
 from celpix.plugins.registry import default_registry
 from celpix.project import projectfile
 from celpix.project.workspace import (
@@ -1277,3 +1279,50 @@ def test_the_dock_menus_write_row_is_live_on_a_composite_and_writes_its_pieces(
     assert on_disk == second.doc.pixel_data
     assert not second.pixel_dirty
     assert second.name in window.statusBar().currentMessage()
+
+
+def test_jump_to_source_lists_each_piece_and_lands_on_the_bytes_it_takes(
+    qtbot, tmp_path, opened_menus
+) -> None:
+    """A composite's Jump to Source is a submenu, one row per piece: a pad names
+    nothing and is left out, the same entry twice is two rows, and picking a
+    ranged one opens its entry with the range's first byte in view — an offset
+    into what that entry shows, not into the composite."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_tiles(tmp_path, "a.chr", 4, 0x11)))
+    first = window._workspace.current
+    # Several screens long, so landing mid-file is a real scroll.
+    window._load_pixel(str(_tiles(tmp_path, "b.chr", 1024, 0x22)))
+    second = window._workspace.current
+    composite = new_composite(
+        "window",
+        (
+            CompositePiece(first),
+            CompositePiece(length=TILE),
+            CompositePiece(second, offset=TILE * 512, length=TILE * 4),
+        ),
+    )
+    window._workspace.entries.append(composite)
+    window._activate_entry(composite)
+    panel = window._files_panel
+    panel.add_entry(composite, None, window._next_row(composite, None))
+
+    panel._show_menu(panel._tree.visualItemRect(panel._items[composite]).center())
+    # By title among the children: ``QAction.menu()`` hands back a dead wrapper
+    # once the one ``addMenu`` made has been collected.
+    jump = next(
+        m
+        for m in opened_menus[-1].findChildren(QMenu)
+        if m.title() == "&Jump to Source"
+    )
+    rows = jump.actions()
+    assert [a.text() for a in rows] == ["a.chr", "b.chr  [0x004000\u20130x004080]"]
+
+    rows[1].trigger()
+
+    assert window._workspace.current is second
+    start = window._byte_position()
+    page = window._columns.value() * window._view_rows() * window._doc.bytes_per_tile
+    assert start <= TILE * 512 < start + page
+    assert start > 0  # it moved, rather than the whole file fitting on screen

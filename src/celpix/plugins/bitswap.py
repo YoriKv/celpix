@@ -45,7 +45,7 @@ from functools import lru_cache
 from celpix.core.address import format_hex
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
-from celpix.plugins._params import flag
+from celpix.plugins._params import flag, only_keys, preset_identity
 from celpix.plugins.base import PluginInfo, check_declared_stage
 
 BITSWAP_ENGINE = "reshape.bitswap"
@@ -197,13 +197,11 @@ def bitswap_from_spec(spec: dict) -> BitswapReshape:
             f"(expected {BITSWAP_ENGINE!r})"
         )
     check_declared_stage(spec, Stage.RESHAPE)
+    plugin_id, name, category = preset_identity(spec)
     params = spec.get("params", {})
     if not isinstance(params, dict):
         raise ValueError("params must be a table")
+    only_keys(params, ("bits", "gather"))
     return BitswapReshape(
-        spec["id"],
-        spec["name"],
-        params.get("bits"),
-        flag(params, "gather"),
-        spec.get("category", ""),
+        plugin_id, name, params.get("bits"), flag(params, "gather"), category
     )

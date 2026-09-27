@@ -11,8 +11,8 @@ share the canvas with the selection drag. While armed, a left press lays the
 held tiles into the cell under the cursor and a left drag keeps laying them — a
 pencil over cells — while the right button is the eyedropper: a click picks the
 tile a cell already names *and the palette row it is drawn in*, and a **drag**
-picks a whole rectangle of cells that the next left press lays down as one
-block, its top-left cell landing under the cursor. On a **stamped chain** the
+picks a whole rectangle of cells that the next left press lays down whole,
+its top-left cell landing under the cursor. On a **stamped chain** the
 gesture's unit is the whole stamp: the sweep grows out to the stamp lattice and
 the brush holds one entry per stamp (:meth:`StampToolMixin._on_stamp_area_picked`).
 It is offered only on a
@@ -66,7 +66,7 @@ from celpix.ui.tools import EditMode
 from celpix.ui.widgets import counted, signals_blocked
 
 STAMP_TIP = (
-    "Draw tiles/stamps with left click. "
+    "Draw tiles/stamps with left click\n"
     "Select a tile or drag select a stamp with right click (T)"
 )
 # Why the tool is off where it looks like it should apply. A format whose cells

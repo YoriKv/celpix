@@ -78,7 +78,27 @@ def test_a_table_draws_each_distinct_frame_once_and_keeps_unreachable_ones() -> 
     assert notice.source == SPRITE_TABLE_ENGINE and "1 of" in notice.summary
 
 
-def test_grid_frames_read_a_block_of_nametable_words_only_when_asked() -> None:
+def test_a_frame_reads_every_piece_its_count_names() -> None:
+    """A count of 2 is two records back to back after the header, the second
+    read at one record's size past the first rather than over it."""
+    table = b"\x00\x02"
+    second = b"\x10" + b"\x00" + b"\x00\x01" + b"\x08"  # y 16, 1x1, tile 1, x 8
+    frame = b"\x02" + _Y + _SIZE + _ATTR + b"\xe8" + second
+    (got,), _ = _frames("preset.tilemap.sega-mappings-5", table, table + frame)
+    assert got == (_PIECE, Subsprite(x=8, y=16, index=1, column_major=True))
+
+
+def test_a_region_ending_inside_a_frame_header_draws_that_frame_empty() -> None:
+    """A count word cut off by the region's end is not read as a short count:
+    the frame is kept, empty, and the notice says one frame ran past."""
+    table = b"\x00\x02"
+    frames, ctx = _frames("preset.tilemap.sonic2-mappings", table, table + b"\x00")
+    assert frames == [()]
+    (notice,) = notices(ctx)
+    assert "1 of" in notice.summary
+
+
+def test_grid_frames_read_a_grid_of_nametable_words_only_when_asked() -> None:
     """Phantasy Star II's second frame kind: first byte 0 or >= $80, then
     ``x.w y.w cols-1 rows-1`` and the words, 0 drawing nothing. Off by default,
     because to the Sonic 1 layout the same leading 0 is an empty frame."""

@@ -78,8 +78,9 @@ endian = "little"
 # Tile-row stride inside a metatile cell (cell_tiles above [1, 1]): the distance
 # in the tile bank from a cell's upper tiles to its lower ones. Default 16, a
 # console VRAM row. A table of consecutive tiles n, n+1, n+2, n+3 uses 2.
-# Bound to another map, it counts that map's cells and overrides the source's
-# own stamp_stride; left unset there, the source's stride or width applies.
+# Over a tile bank only: bound to another map, a cell draws a stamp of that
+# map's cells laid out as the source lays them out -- its stamp_stride, else
+# its width.
 # cell_row_stride = 2
 
 # Tile-column stride inside a metatile cell: the distance in the tile bank from
@@ -110,6 +111,22 @@ endian = "little"
 # the Font Alphabet window against the bound sheet. Default: a plain grid.
 # layout = "text"
 
+# ---- Bits kept outside the cell ----
+
+# Some formats keep part of a cell in a second array: a metatile table's
+# palette rows in a byte per metatile after its tile numbers, or a map's
+# attributes in an array beside its tile array. `side_fields` is the layout of
+# one word of that array, in the letters above; its bits sit above the cell's
+# own, so an index split between the two joins as one field (side high bits
+# first). Stating it adds a "Side array" input to the entry: bind it to the
+# array in the Inputs window. The array is read-only: side bits follow it
+# after every edit, and a field kept wholly in it is not offered for editing.
+# side_fields = "......pp"
+
+# Consecutive cells one side word covers. Default 1. 4 for one byte per 2x2
+# metatile record.
+# side_cells = 4
+
 # ---- Maps that reference another map (tilemap-entry.md sec 3.1) ----
 
 # Cells are coordinates into another map, not tile numbers. A hint: it changes
@@ -139,8 +156,8 @@ endian = "little"
 
 # Cells of this table one coordinate of a map bound to it names, [across,
 # down]. Default: stamp_cells (above). State it only when the table offers a
-# different stamp than it draws: a chunk of 8x8 blocks that draws 2x2 of the
-# table below it offers [8, 8].
+# different stamp than it draws: a chunk of 8x8 cells, each drawing a 2x2 stamp
+# of the table below it, offers [8, 8].
 # offered_stamp_cells = [2, 2]
 
 # Distance in this table's cells between a stamp's rows, for records stored end

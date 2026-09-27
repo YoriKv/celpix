@@ -394,6 +394,15 @@ class InputSpec:
     plugin tells "not bound" from any value with ``in``. A **flag** is the
     exception: it is always delivered, as ``bool(default)`` when unbound, since
     a switch has no third state worth a plugin's attention.
+
+    ``when_param`` is for an **engine**, whose inputs every preset on it would
+    otherwise show: named, the input is offered only to an entry whose preset
+    states that parameter — the packed tilemap engine's side array, which the
+    one preset in ten that stores bits outside the cell needs and the rest would
+    only clutter the Inputs window with. An input it hides is not resolved and
+    not delivered, and a save drops its binding
+    (:mod:`celpix.project.inputs`). Meaningless at the compression stage, where
+    a plugin is chosen by id and has no preset.
     """
 
     key: str
@@ -406,6 +415,7 @@ class InputSpec:
     minimum: int = 0
     maximum: int = 0xFFFF_FFFF
     default: int | None = None
+    when_param: str = ""
 
 
 # The stages whose declared inputs are resolved and delivered, in pipeline order.
@@ -1026,6 +1036,14 @@ class TilemapCodecPlugin(Plugin, Protocol):
         - **Pure.** No context, no I/O, no state: it is asked per edit, on a list
           that may be tens of thousands of cells long, so it is a scan and not a
           read.
+
+        A format that declares inputs may take a third parameter, ``inputs``:
+        the entry's resolved inputs for this stage, the values its decode found
+        on :data:`~celpix.core.context.KEY_INPUTS`. They are data read at load,
+        not I/O, which is what lets a field stored in a bound side array be
+        re-derived from it (the packed engine's ``side_fields``). The host passes
+        it only when the entry has inputs, so a two-parameter settle stays
+        valid for every format that reads none.
 
         A format that does not implement it is one with nothing to derive, which
         is every format whose fields each answer for themselves. One that raises

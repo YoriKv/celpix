@@ -48,11 +48,11 @@ tables ahead of banks), ``stamp_cells`` or the source's published stamp,
 the file), and ``column_major`` where the file runs down each column.
 
 **A map read here can also be a table another map draws through** — the middle
-of a chain, a block table whose bytes name metatile records and whose records
-are what a town map stamps. What it offers that map above is not this engine's
-business either: ``stamp_stride`` (and ``offered_stamp_cells`` where the offer
-is not ``stamp_cells``) ride on the preset and the host reads them for every
-engine alike (:mod:`celpix.pipeline.table_layout`).
+of a chain, a table of 32x32 records whose bytes name metatile records, and
+whose own records are what a town map stamps. What it offers that map above is
+not this engine's business either: ``stamp_stride`` (and ``offered_stamp_cells``
+where the offer is not ``stamp_cells``) ride on the preset and the host reads
+them for every engine alike (:mod:`celpix.pipeline.table_layout`).
 
 **An edit snaps.** ``encode`` divides a coordinate back to the record containing
 it, so a reference set to a cell that is not a record's corner writes the record
@@ -62,7 +62,7 @@ a quarter of a record.
 
 Among the sample projects reading through it: Alex Kidd in Shinobi World and
 The Story of Melroon over packed two-cell-wide tables, Super Mario World's Map16
-index maps over a table reshaped eight blocks across, and Super Mario Bros.'
+index maps over a table reshaped eight records across, and Super Mario Bros.'
 scenery columns over four grouped tables.
 """
 

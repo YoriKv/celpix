@@ -131,7 +131,8 @@ KEY_TILEMAP_PALETTE_ROW_BASE = "tilemap.palette-row-base"
 # follows from this pair, with the positions between two entries holding nothing
 # anyone should draw (``docs/graphics-formats-reference/scgcad-formats.md`` §4).
 # Published by the **source** map and read by the referrer where the referrer's
-# own format has not declared a ``stamp_cells`` of its own — the two sides of
+# own format has not stated a stamp — a ``stamp_cells`` of its own, or a cell
+# covering several units (``cell_stamp``) — the two sides of
 # one answer: a panel's header divides it for whoever calls, while a metatile
 # table's format fixes it for whatever it calls into
 # (``project/documents.py``, ``chain_stamp_cells``). The file's own statement

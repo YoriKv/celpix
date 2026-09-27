@@ -26,6 +26,7 @@ from celpix.plugins.discovery import (
     preset_from_toml,
 )
 from celpix.plugins.formats import adapt_format
+from celpix.plugins.split_parts import SplitPartsReshape
 
 from .aplib import AplibCompression
 from .bluesky_lz import BlueSkyLzCompression
@@ -275,7 +276,24 @@ def _shipped_reshape_plugins() -> list[ReshapePlugin]:
     rather than cached, since only the file read is expensive and
     :func:`_read_preset_dir` already caches that.
     """
-    return [
+    plugins = [
         RESHAPE_ENGINES[spec["engine_id"]](spec)
         for spec in (tomllib.loads(text) for text in _read_preset_dir("reshape"))
     ]
+    return sorted(plugins, key=_picker_order)
+
+
+def _picker_order(plugin: ReshapePlugin) -> tuple:
+    """Where a shipped reshape sits in its picker category.
+
+    The picker keeps registration order inside a category rather than sorting
+    by name (:func:`~celpix.ui.searchable_combo.info_rows`), and file-name order
+    is not a reading order for the joins: ``-`` sorts before ``.``, so
+    ``split-words-2x2-clockwise.toml`` comes ahead of ``split-words-2x2.toml``.
+    The joins are ordered by what they join instead - one table before several,
+    bytes before words, fewer parts first, the plain corner order before the
+    clockwise one - and every other table keeps its file order ahead of them.
+    """
+    if not isinstance(plugin, SplitPartsReshape):
+        return (0,)
+    return 1, plugin.groups, plugin.unit, plugin.parts, plugin.clockwise

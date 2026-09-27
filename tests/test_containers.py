@@ -600,6 +600,15 @@ def test_md_write_stops_at_the_header_rom_end() -> None:
 def test_md_write_leaves_a_headerless_file_alone() -> None:
     out = MdRomContainer().write(b"\xaa" * 0x400, WriteTarget(b""), PipelineContext())
     assert out == b"\xaa" * 0x400
+    # A Mega-CD disc carries the cartridge-style header, SEGA at $100 and all,
+    # behind its system identifier - at 0 in a 2048-byte-sector image, past the
+    # sync and sector header in a raw one. No game sums a disc.
+    for at in (0x00, 0x10):
+        disc = _md_rom(0x800 + at)
+        disc[at : at + 16] = b"SEGADISCSYSTEM  "
+        disc[0x100 + at : 0x110 + at] = b"SEGA MEGA DRIVE "
+        out = MdRomContainer().write(bytes(disc), WriteTarget(b""), PipelineContext())
+        assert out == disc
 
 
 def test_smd_write_repairs_the_checksum_before_interleaving() -> None:
@@ -776,6 +785,13 @@ def test_containers_report_what_they_had_to_assume() -> None:
     runs_on = read_notices(INesContainer(), chr_ram + bytes(8192))
     assert [n.level for n in runs_on] == [NoticeLevel.WARNING]
     assert "no CHR ROM" in runs_on[0].summary
+    # Under NES 2.0 byte 7's low bits are one console-type field: 2 is
+    # PlayChoice-10, whose INST-ROM accounts for the tail, but 3 (extended) sets
+    # the same bit 1 and accounts for nothing.
+    for console, warns in ((2, False), (3, True)):
+        nes2 = bytearray(chr_ram)
+        nes2[7] = 0x08 | console
+        assert bool(read_notices(INesContainer(), nes2 + bytes(8192))) == warns
 
     # A file the iNES reader cannot claim is read raw rather than failing.
     assert read_notices(INesContainer(), b"not-an-ines-file")[0].is_warning

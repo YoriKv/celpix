@@ -1831,6 +1831,34 @@ def test_kosinski_parse_finds_a_match_behind_a_long_prefix_chain() -> None:
     assert ops[-1] == (kosinski.OP_LONG, len(block), len(decoys) + len(block))
 
 
+def test_kosinski_search_over_runs_stays_linear() -> None:
+    """Runs of one nybble pair, as 4bpp art is made of, read a bounded amount.
+
+    The search sees the whole window, and every position of a run shares its
+    prefix, so a walk that tested each candidate would read thousands of bytes
+    per input byte here and go quadratic — still correct, only minutes late on a
+    full tile bank. The input counts its own reads, and stops a runaway search
+    early rather than let it finish slowly.
+    """
+    budget = 200  # reads per input byte; the search needs about 25 here
+
+    class Counted(bytes):
+        reads = 0
+
+        def __getitem__(self, key):
+            Counted.reads += 1
+            if Counted.reads > budget * len(self):
+                raise AssertionError(f"read more than {budget}x the input")
+            return super().__getitem__(key)
+
+    rng = random.Random(4)
+    plain = b"".join(
+        bytes([rng.choice(b"\x00\x11\x22")]) * rng.randrange(1, 300) for _ in range(60)
+    )[:2048]
+    stream = kosinski.compress(Counted(plain))
+    assert kosinski.decompress(stream)[0] == plain
+
+
 def test_kosinski_truncation_is_an_error_unless_partial() -> None:
     plain = bytes((i * 97) & 0xFF for i in range(2000))
     stream = kosinski.compress(plain)

@@ -626,11 +626,14 @@ def load_tilemap_data(
     )
     # What the table offers a map drawn through it — its stamp, its records — is
     # the preset's statement, not the engine's, so it is read here for every
-    # engine alike, after the decode so a code format's own answer stands.
+    # engine alike, after the decode so a code format's own answer stands. A
+    # malformed number in it is a notice rather than a failed load: the table
+    # is still a table, and what it cannot offer is only what a map above it
+    # would have stamped by.
     _run(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
-        lambda: publish_table_layout(len(cells), preset.params, ctx),
+        lambda: publish_table_layout(len(cells), preset.params, ctx, preset.id),
         plugin=preset.id,
     )
     cell_bytes = _run(

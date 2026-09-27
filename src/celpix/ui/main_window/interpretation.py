@@ -146,13 +146,13 @@ COLS_FRAMES_TIP = "Frames per row\nLays out the strip of frames, not the tiles i
 # rather than sending the user looking for a picker along some other row. Three
 # wordings because three different things do it, and the reason is the only part
 # the user can act on: one file assembles pages, one stores its colours for
-# blocks of cells and has to be laid out on the grid it stores them in, and one
+# groups of cells and has to be laid out on the grid it stores them in, and one
 # draws a stamp per entry
 # (:attr:`~celpix.core.document.Document.drawn_columns`).
 COLS_ASSEMBLED_TIP = "Cells per row\nFixed by how this file's pages assemble"
 COLS_ROW_PLANE_TIP = (
     "Cells per row\nFixed by the format: it stores one palette row\n"
-    "per block of cells, counted in the file's own rows"
+    "per group of cells, counted in the file's own rows"
 )
 COLS_STAMPED_TIP = "Cells per row\nFixed by the stamp each of this file's entries draws"
 # And the dense map whose format states no width, where Cols is live: the number

@@ -2854,18 +2854,43 @@ def test_a_chain_that_loops_after_binding_owns_no_art(qtbot, tmp_path) -> None:
     window._rebind_tiles(a, TileSource(mode=TileMode.ENTRY, entry=b))
     window._rebind_tiles(c_entry, TileSource(mode=TileMode.ENTRY, entry=bank))
     window._rebind_tiles(b, TileSource(mode=TileMode.ENTRY, entry=c_entry))
-    # Three deep and reaching art: the walk, the resolution and the brush agree.
+    # Three deep and reaching art. That the chain resolves, and that a loop is
+    # refused, is test_tilemap_edit's; this is about who owns the art.
     assert window._tile_bank_owner(a) is bank
-    assert window._bound_tilemap(a) is b.doc
-    assert a.doc.chain is not None and a.doc.chain.through is not None
 
     # ...and now c -> a, which closes the loop without a ever being consulted.
     window._rebind_tiles(c_entry, TileSource(mode=TileMode.ENTRY, entry=a))
     assert window._tile_bank_owner(a) is None
-    assert window._bound_tilemap(a) is None
     window._activate_entry(a)
     # So no pixel edit is offered, which is what keeps a stroke out of the bank.
     assert not window._pixel_edit_available()
+
+
+def test_a_sprite_object_is_not_offered_as_a_source_and_lends_no_art(
+    qtbot, tmp_path
+) -> None:
+    """A sprite object's records sit at pixel offsets, not in a grid, so a map
+    has no cell N of it to stamp and the resolution refuses it every time. The
+    combo does not offer it; a binding that names one anyway draws nothing —
+    the object's file is not read as art — and owns no bank a stroke could
+    land in."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window, bank, screen = _bound_screen(qtbot, tmp_path, [Cell(index=1)])
+    window._load_pixel(str(_obj_file(tmp_path, [(0, 0, 1)])))
+    obj = window._workspace.current
+    window._rebind_tiles(obj, TileSource(mode=TileMode.ENTRY, entry=bank))
+    window._activate_entry(screen)
+    assert window._tile_binding.findData(obj) < 0
+
+    window._rebind_tiles(screen, TileSource(mode=TileMode.ENTRY, entry=obj))
+    assert window._doc.chain is None and window._doc.pixel_data == b""
+    assert window._tile_bank_owner(screen) is None
+    assert not window._pixel_edit_available()
+    assert window._tile_binding_note.text() == (
+        "sprite.OBJ is a sprite object, with no cells to stamp - not resolved."
+    )
 
 
 def test_the_arrangement_bar_is_furniture_for_a_pixel_document(qtbot, tmp_path) -> None:

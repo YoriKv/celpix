@@ -157,9 +157,10 @@ class TileSourceDockMixin:
 
         # Under the readout, because it acts on what the readout describes: the
         # line above says which bank tile the pick resolves to, and this is the
-        # button that makes that tile the one a reference of 0 draws. Its tooltip
-        # is set per document, the reference being a cell on a map and a subsprite
-        # on an object (:meth:`_sync_set_base_tile`).
+        # button that makes that tile the one a reference of 0 draws. Its caption
+        # and tooltip are set per document, the reference being a cell on a map
+        # and a subsprite on an object, and the base counting tiles or a source
+        # map's cells (:meth:`_sync_set_base_tile`).
         self._set_base_tile_button = QPushButton("Set Base Tile")
         self._set_base_tile_button.clicked.connect(self._on_set_base_tile)
         button_row = QHBoxLayout()
@@ -262,7 +263,9 @@ class TileSourceDockMixin:
         if base == source.base_index:
             return
         self._rebind_tiles(
-            entry, replace(source, base_index=base), f"set base tile to ${base:X}"
+            entry,
+            replace(source, base_index=base),
+            f"set base {self._base_noun(entry)} to ${base:X}",
         )
         # Only where the bind actually landed: a re-read that failed put the
         # entry back as it was, and so is the sheet the pick addresses.
@@ -278,14 +281,26 @@ class TileSourceDockMixin:
         kind of wrong a user cannot check.
         """
         self._set_base_tile_button.setEnabled(self._can_set_base_tile())
-        doc = self._doc
+        doc, entry = self._doc, self._workspace.current
+        # The binding bar's own predicate for what the base counts, so the
+        # button and the spin beside the binding never name the number
+        # differently (:meth:`~...tilemap_bar.TilemapBarMixin._base_counts_cells`).
+        cells = (
+            doc is not None
+            and doc.is_tilemap
+            and entry is not None
+            and self._base_counts_cells(entry)
+        )
+        self._set_base_tile_button.setText(
+            "Set Base Cell" if cells else "Set Base Tile"
+        )
         if doc is not None and doc.is_sprite:
             self._set_base_tile_button.setToolTip(
                 "Make the picked tile the one a subsprite holding $0 draws\n"
                 "Shifts every subsprite's tile by the same amount"
             )
             return
-        if doc is not None and doc.chain is not None:
+        if cells:
             self._set_base_tile_button.setToolTip(
                 "Make the picked stamp the one cell 0 names\n"
                 "Shifts every cell by the same amount"

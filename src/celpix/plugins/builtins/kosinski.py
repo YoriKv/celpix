@@ -93,12 +93,14 @@ END_COST = 2 + 24
 
 OP_LITERAL, OP_INLINE, OP_SHORT, OP_LONG = range(4)
 
-# How many earlier positions sharing a prefix the match search tests: as many as
-# the window holds, so none in reach is skipped. The shared default keeps only
-# the newest 96, and 4bpp art — runs of one nybble pair repeated for hundreds of
-# bytes — routinely has its longest match further down the chain than that. The
-# parse then prices a shorter match than exists and packs a stream bigger than
-# the one the game shipped, which no longer fits that stream's slot on a save.
+# How many earlier positions sharing a prefix the match search may test: every
+# one the window holds. On 4bpp art — runs of one nybble pair, hundreds of bytes
+# long — the longest match routinely sits further down the chain than a capped
+# search reaches, and a parse priced on a shorter one packs a stream bigger than
+# the one the game shipped, which then no longer fits the slot it came from.
+# What makes the whole window affordable is that the search steps over the
+# candidates that cannot win rather than testing each
+# (:meth:`~celpix.plugins.builtins._lz.MatchFinder.all_longest`).
 MAX_CANDIDATES = FULL_WINDOW
 
 

@@ -1553,6 +1553,19 @@ class EntriesMixin:
         current = self._workspace.current
         if current in entries:
             self._on_current_entry_changed(current)  # re-read the new bytes now
+        # A map drawing from or through one of these holds a copy of what it
+        # used to read — its art, or its cells and the chain under them — and
+        # the maps above it hold a snapshot of that in turn. They are re-read
+        # against the new bytes as a close or a restore re-reads them, unsaved
+        # cell edits riding across. Asked after the drop, which the walk steps
+        # through by binding (:meth:`~...session.SessionMixin._chain_dependents`).
+        self._reresolve_bound_art(
+            [
+                other
+                for other in self._maps_drawing_from(entries)
+                if not any(other is entry for entry in entries)
+            ]
+        )
         for entry in entries:
             if entry.kind is not EntryKind.PALETTE:
                 continue
@@ -2013,6 +2026,25 @@ class EntriesMixin:
             )
 
         self._jump_into_parent(slice_entry, target)
+
+    def _jump_to_piece(self, piece: CompositePiece) -> None:
+        """Files dock ▸ a composite's Jump to Source ▸ one piece: open the
+        piece's entry with the first byte the piece takes in view.
+
+        Unlike a slice's jump this reconfigures nothing: a piece addresses its
+        entry's *resolved* bytes — what that entry already shows when opened,
+        under its own format — so the entry's own settings are the right ones
+        and there is no snapshot to hand over, and no undo step to take. The
+        offset is into that buffer from 0, which is the binding jump's
+        arithmetic (:meth:`_go_to_binding`).
+        """
+        source = piece.entry
+        if source is None or not any(e is source for e in self._workspace.entries):
+            return
+        self._activate_entry(source)
+        if self._workspace.current is source and self._doc is not None:
+            self._land_on_byte(self._anchor_base() + piece.offset)
+            self._refresh_view()
 
     def _jump_into_parent(
         self, child: Entry, target: Callable[[Entry], ParentState]

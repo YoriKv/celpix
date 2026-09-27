@@ -352,27 +352,17 @@ class SessionMixin:
             self._apply_restored_state(entry)
             self._apply_tilemap_columns(entry, restored=restored)
             doc = entry.doc
-            if (
-                not quiet
-                and doc.chain is not None
-                and doc.chain.drawn_stamp != (1, 1)
-                and doc.stamp_cells == (1, 1)
-            ):
+            why = doc.stamp_refusal
+            if not quiet and why is not None and doc.chain is not None:
                 # A stamp was stated and the resolution cannot lay it out, so
                 # the map degrades to one cell per entry everywhere at once
                 # (:attr:`~celpix.core.document.Document.stamp_cells`). Said
                 # here rather than nowhere: the picture that comes up is not
                 # the stamped one, and silence would leave that a puzzle. The
-                # size is what one entry would have drawn, every hop composed.
+                # size is what one entry would have drawn, every hop composed;
+                # the reason is the document's, which is the one place that
+                # knows which of the refusals applied.
                 across, down = doc.chain.drawn_stamp
-                # The cell size is the *last* source's, so down a longer chain
-                # the source this map is bound to is not the one to blame.
-                last = "source's" if doc.chain.through is None else "last table's"
-                why = (
-                    f"the {last} cells are metatiles"
-                    if doc.cell_tiles != (1, 1)
-                    else "this format states no width to resolve them at"
-                )
                 self.statusBar().showMessage(
                     f"{across}x{down} stamps not resolved - {why}; "
                     "drawing one cell per entry."
@@ -558,17 +548,15 @@ class SessionMixin:
         self,
         entry: Entry,
         through: Document,
-        block: documents.CellBlock | None = None,
+        stamp: documents.CellStamp | None = None,
     ) -> tuple[int, int]:
         """:func:`~celpix.project.documents.chain_stamp_cells`."""
-        return documents.chain_stamp_cells(self._registry, entry, through, block)
+        return documents.chain_stamp_cells(self._registry, entry, through, stamp)
 
     @staticmethod
-    def _chain_source_columns(
-        through: Document, block: documents.CellBlock | None = None
-    ) -> int:
+    def _chain_source_columns(through: Document) -> int:
         """:func:`~celpix.project.documents.chain_source_columns`."""
-        return documents.chain_source_columns(through, block)
+        return documents.chain_source_columns(through)
 
     @staticmethod
     def _chain_column_major(through: Document) -> bool:
@@ -597,9 +585,59 @@ class SessionMixin:
         return documents.draws_through_tilemap(self._workspace, entry)
 
     def _can_supply_tiles(self, entry: Entry, candidate: Entry) -> bool:
-        """:func:`~celpix.project.documents.can_supply_tiles` — behind both the
-        binding combo and the "From file..." check, so they cannot disagree."""
-        return documents.can_supply_tiles(self._workspace, entry, candidate)
+        """:func:`~celpix.project.documents.can_supply_tiles`, less a sprite object
+        — behind the binding combo, the "From file..." check and every hop of the
+        chain walk, so none of them can disagree.
+
+        A sprite object is refused by its **format**, before anything is loaded:
+        its records sit at signed pixel offsets rather than in a grid, so there is
+        no cell N for a coordinate to name and the resolution would refuse it
+        every time (:meth:`_bound_tilemap`). Offering it would be offering a
+        binding that can only ever draw nothing.
+        """
+        if not documents.can_supply_tiles(self._workspace, entry, candidate):
+            return False
+        return not (
+            candidate.content_kind is ContentKind.TILEMAP
+            and self._tilemap_is_sprite(candidate)
+        )
+
+    def _passes_cells_on(self, hop: Entry) -> bool:
+        """Whether the tilemap ``hop``, reached by a binding, lends its cells on.
+
+        The half of the chain gate that the binding cannot answer: a map that
+        will not open, or that opened as a sprite object, has no cells to stamp
+        and no art behind it, whatever the bindings say. An entry not loaded yet
+        passes unless it is already known not to open (:func:`unavailable`) — a
+        middle table dropped by an edit elsewhere is re-read the next time a map
+        above it is, and resolves as it did before.
+        """
+        doc = hop.doc
+        if doc is None:
+            return not unavailable(hop)
+        return doc.is_tilemap and not doc.is_sprite
+
+    def _chain_refusal(self, entry: Entry, bound: Entry) -> str:
+        """Why ``entry``, bound to the tilemap ``bound``, draws nothing through it.
+
+        The one wording for the bar's note and the notice on the entry's row,
+        naming the link that has to move — the binding here may be fine, and it
+        is a binding or a file further down that is broken. Asked in the order
+        the gate refuses (:meth:`_chain_entries`), so the reason given is the one
+        that applied.
+        """
+        if self._chain_loops(entry, bound):
+            return f"{bound.name}'s chain loops back on itself"
+        if self._tilemap_is_sprite(bound) or (
+            bound.doc is not None and bound.doc.is_sprite
+        ):
+            return f"{bound.name} is a sprite object, with no cells to stamp"
+        hops = self._chain_entries(entry)
+        last = hops[-1] if hops else None
+        if last is not None and last.content_kind is ContentKind.TILEMAP:
+            if not self._passes_cells_on(last):
+                return f"{last.name} did not open"
+        return f"{bound.name} cannot supply tiles"
 
     def _chain_loops(self, entry: Entry, candidate: Entry) -> bool:
         """:func:`~celpix.project.documents.chain_loops`."""
@@ -609,13 +647,16 @@ class SessionMixin:
         """Every entry ``entry``'s tiles pass through, in order, ending at the art.
 
         Empty for a map bound to nothing; ending at a tilemap for a chain that
-        draws blank at its far end. Every hop is **gated**
-        (:meth:`_can_supply_tiles`), not just the first: a source can gain a
-        binding of its own after this one was made — bind `a` to `b`, then `b`
-        back to `a` — and a walk that did not re-ask would follow a chain the
-        resolution refuses (:meth:`_bound_tilemap` stops at the same gate).
-        Re-asking per hop is what keeps this answer, the load and the bar's note
-        saying one thing.
+        draws blank at its far end. Every hop is **gated**, not just the first,
+        and by the gate the resolution uses (:meth:`_bound_tilemap`): the
+        binding has to qualify (:meth:`_can_supply_tiles`) — a source can gain a
+        binding of its own after this one was made, bind `a` to `b` and then `b`
+        back to `a` — and a tilemap reached has to lend its cells on
+        (:meth:`_passes_cells_on`). One that does not is the last hop: it is
+        what the chain is stuck on, and nothing past it is reached. Re-asking
+        per hop is what keeps this answer, the load and the bar's note saying
+        one thing — and so what keeps a map whose chain did not resolve from
+        owning the art a binding further down names.
         """
         hops: list[Entry] = []
         at = entry
@@ -629,6 +670,10 @@ class SessionMixin:
             if any(hop is target for hop in hops):
                 break
             hops.append(target)
+            if target.content_kind is ContentKind.TILEMAP and not (
+                self._passes_cells_on(target)
+            ):
+                break
             at = target
         return hops
 
@@ -647,7 +692,10 @@ class SessionMixin:
         Loading the source is the ordinary entry load, so it settles its *own*
         chain first and comes back holding it — which is what
         :func:`~celpix.project.documents.chained_document` carries on as the
-        next hop.
+        next hop. A source that will not load, or loads as a sprite object, is
+        refused after the load by :meth:`_passes_cells_on`, the walk's own
+        question; the map then draws nothing rather than reading the source's
+        file as art (:meth:`_load_bound_tiles`).
         """
         source = entry.tile_source
         candidate = self._binding_target(source) if source is not None else None
@@ -655,14 +703,14 @@ class SessionMixin:
             return None
         if candidate.content_kind is not ContentKind.TILEMAP:
             return None
+        # Tried again even where a previous attempt failed: this is a re-read of
+        # the map above it, which is when a source the user has since fixed
+        # should come back.
         if candidate.doc is None and not self._load_entry(candidate, quiet=True):
             return None
-        doc = candidate.doc
-        # A sprite object holds records at signed pixel offsets, not a grid to
-        # index into, so there is no cell at position N to stamp.
-        if doc is None or not doc.is_tilemap or doc.is_sprite:
+        if not self._passes_cells_on(candidate):
             return None
-        return doc
+        return candidate.doc
 
     def _tile_bank_owner(self, entry: Entry) -> Entry | None:
         """The pixel entry whose bytes ``entry`` draws its tiles from.
@@ -679,11 +727,26 @@ class SessionMixin:
         ordinary map, and one more per map a chained one draws through, whose
         tiles belong to the art at the end of the chain rather than to the
         stamps in between. None when the binding names nothing, names something
-        that is not art, or reaches it only through a chain that loops: an edit
-        with no owner is refused rather than deposited into a guess.
+        that is not art, or reaches it only through a chain that does not
+        resolve — one that loops, or passes through a map that will not open or
+        is a sprite object: an edit with no owner is refused rather than
+        deposited into a guess.
+
+        A loaded map bound to a tilemap that came up **without a chain** owns
+        nothing either, whatever the walk would say now: its ``pixel_data`` is
+        the empty stand-in, not a copy of any bank, so there is nothing a stroke
+        on it could be deposited from.
         """
         if entry.content_kind is ContentKind.PIXELS:
             return entry
+        doc = entry.doc
+        if (
+            doc is not None
+            and doc.is_tilemap
+            and doc.chain is None
+            and self._draws_through_tilemap(entry)
+        ):
+            return None
         hops = self._chain_entries(entry)
         last = hops[-1] if hops else None
         if last is None or last.content_kind is not ContentKind.PIXELS:
@@ -854,23 +917,29 @@ class SessionMixin:
 
         Shallowest first — the maps bound to ``entry``, then the maps bound to
         those — which is the order they have to be re-read in.
+
+        Walked on the **bindings**, through maps with no document as much as
+        through loaded ones. A middle table dropped by an edit elsewhere still
+        stands between ``entry`` and the maps above it, which hold a snapshot
+        of it taken when they were read; stopping at the gap would leave them
+        drawing the old picture however often they were re-activated. Only the
+        loaded ones are returned — a map with no document is read fresh when
+        something next asks for it. The visited set is what ends a walk round
+        a binding loop.
         """
         found: list[Entry] = []
+        visited = {id(entry)}
         frontier = [entry]
         while frontier:
             at = frontier.pop(0)
             for other in self._workspace.entries:
                 source = other.tile_source
-                if (
-                    other.doc is None
-                    or other is entry
-                    or source is None
-                    or source.entry is not at
-                    or any(seen is other for seen in found)
-                ):
+                if id(other) in visited or source is None or source.entry is not at:
                     continue
-                found.append(other)
+                visited.add(id(other))
                 frontier.append(other)
+                if other.doc is not None:
+                    found.append(other)
         return found
 
     def _maps_drawing_from(self, owners: list[Entry]) -> list[Entry]:
@@ -1084,9 +1153,25 @@ class SessionMixin:
         moved (a codec or preset switch re-reading its header) would otherwise
         leave every dependent stamping at the old one until reloaded.
         """
-        return self._rechain_through(entry, {id(entry)})
+        stale: list[Entry] = []
+        current = self._rechain_through(entry, {id(entry)}, stale)
+        if not stale:
+            return current
+        # Above a map with no document, the maps still loaded hold a snapshot
+        # of it that nothing here can re-point — so they are read again, which
+        # loads the gap fresh, shallowest first.
+        for other in self._by_chain_depth(stale):
+            if not self._reread_tilemap(other, quiet=True):
+                continue
+            if other is self._workspace.current:
+                self._doc = other.doc
+                self._drop_unavailable_edit_mode()
+                current = True
+        return current
 
-    def _rechain_through(self, entry: Entry, seen: set[int]) -> bool:
+    def _rechain_through(
+        self, entry: Entry, seen: set[int], stale: list[Entry]
+    ) -> bool:
         """:meth:`_rechain_dependents`, one hop at a time.
 
         A dependent's own chain is part of what a map drawing through *it*
@@ -1094,6 +1179,10 @@ class SessionMixin:
         re-pointed here re-points the maps above it in turn — an edit to a
         bottom table restamps the table over it and the map over that. The
         seen-set is belt and braces: the gate already refuses a chain that loops.
+
+        A dependent with **no document** cannot be re-pointed, but the maps
+        above it can still be stale: its loaded dependents go into ``stale`` for
+        the caller to re-read (:meth:`_chain_dependents` walks the gap).
         """
         through = entry.doc
         cells = through.cells if through is not None else None
@@ -1103,23 +1192,32 @@ class SessionMixin:
         for other in self._workspace.entries:
             doc = other.doc
             source = other.tile_source
-            if other is entry or doc is None or doc.chain is None:
+            if other is entry or source is None or source.entry is not entry:
                 continue
-            if source is None or source.entry is not entry or id(other) in seen:
+            if id(other) in seen:
+                continue
+            if doc is None:
+                seen.add(id(other))
+                for above in self._chain_dependents(other):
+                    if id(above) not in seen:
+                        seen.add(id(above))
+                        stale.append(above)
+                continue
+            if doc.chain is None:
                 continue
             seen.add(id(other))
-            block = documents.cell_block(self._registry, other, doc.tilemap_ctx)
+            stamp = documents.cell_stamp(self._registry, other, doc.tilemap_ctx)
             doc.chain = replace(
                 doc.chain,
                 source=cells,
-                stamp=self._chain_stamp_cells(other, through, block),
-                source_columns=self._chain_source_columns(through, block),
+                stamp=self._chain_stamp_cells(other, through, stamp),
+                source_columns=self._chain_source_columns(through),
                 stamp_column_major=self._chain_column_major(through),
                 through=through.chain,
             )
             doc.resolve()
             current = current or other is self._workspace.current
-            current = self._rechain_through(other, seen) or current
+            current = self._rechain_through(other, seen, stale) or current
         return current
 
     def _load_bound_tiles(self, entry: Entry) -> BoundTiles:
@@ -1136,6 +1234,24 @@ class SessionMixin:
         source = entry.tile_source
         if source is None or not source.is_bound:
             return self._no_tiles()
+        bound = self._binding_target(source)
+        if bound is not None and bound.content_kind is ContentKind.TILEMAP:
+            # Reached only when the resolution refused the map this one draws
+            # through (:meth:`_bound_tilemap`). Its file holds cells, and reading
+            # them through a pixel codec would draw coordinates as art — and
+            # hand a pen stroke a bank to land in. So nothing is read, and the
+            # row says which link is broken.
+            tiles = self._no_tiles()
+            warn(
+                tiles.ctx,
+                "Source map not resolved",
+                wrap_lines(
+                    f"{self._chain_refusal(entry, bound)}.\n"
+                    "Re-point the map's tile source, or fix the map it names."
+                ),
+                source="host",
+            )
+            return tiles
         # The bank's own region settles first: its bytes are what this read is
         # about to take, and a slice of it may owe them
         # (:meth:`~...writing.WritingMixin._settle_region`).

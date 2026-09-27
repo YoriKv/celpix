@@ -7,9 +7,13 @@
 - Container for header checksum repair of Mega Drive / Genesis ROMs
 - Fixed a tilemap drawn through another tilemap ignoring its own `cell_tiles`:
   a 2x2 cell now draws a 2x2 block of the source map's cells
+- Fixed a malformed piece in a hand-edited composite view drawing the project's
+  first entry instead of a blank run
 - Added base tile offset option to a tilemap using another tilemap as a source
 - A tilemap can draw through a chain of tilemaps of any depth instead of being limited
   to two
+- Added Jump to Source to a composite view's right click menu that jumps to each piece
+  of the composite
 - A tilemap format can declare `cell_column_stride` to support col major order
 - Fixed a CHR-RAM NES cart warning
 - NES 2.0 headers' extended PRG/CHR sizes are read, so large carts find their CHR
@@ -17,6 +21,9 @@
 - Split-part joins are now a reshape preset engine, so different split-parts join
   presets can be a single `.toml` file
 - Better support for stamp based tilemaps
+- Tilemap cells can take palette rows, flips or bank bits from a separate array
+  in the ROM via `side_fields`, bound as an input of the entry
+- A bunch of other various fixes for tilemaps
 
 ## v1.1.5 - 2026-09-24
 

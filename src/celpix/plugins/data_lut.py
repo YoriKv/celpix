@@ -49,6 +49,7 @@ from functools import lru_cache
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins._byteops import or_all
+from celpix.plugins._params import only_keys, preset_identity
 from celpix.plugins.base import PluginInfo, check_declared_stage
 
 DATA_LUT_ENGINE = "reshape.data-lut"
@@ -277,9 +278,11 @@ def data_lut_from_spec(spec: dict) -> DataLutReshape:
             f"(expected {DATA_LUT_ENGINE!r})"
         )
     check_declared_stage(spec, Stage.RESHAPE)
+    plugin_id, name, category = preset_identity(spec)
     params = spec.get("params", {})
     if not isinstance(params, dict):
         raise ValueError("params must be a table")
+    only_keys(params, ("unit", "selector_bits", "bitswaps", "luts", "selector_remap"))
     unit = params.get("unit", 1)
     if unit not in UNITS:
         raise ValueError(f"params.unit must be one of {UNITS}, got {unit!r}")
@@ -301,6 +304,4 @@ def data_lut_from_spec(spec: dict) -> DataLutReshape:
         if not all(0 <= i < len(luts) for i in remap):
             raise ValueError("params.selector_remap entries must index a table")
         luts = [luts[i] for i in remap]
-    return DataLutReshape(
-        spec["id"], spec["name"], luts, bits, unit, spec.get("category", "")
-    )
+    return DataLutReshape(plugin_id, name, luts, bits, unit, category)

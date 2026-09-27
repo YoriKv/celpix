@@ -62,7 +62,10 @@ groups = 3
 # clockwise = true
 
 # Lay each group out as one row of the table and lock Cols to that width.
-# Default: true when groups is above 1, false otherwise. Keep it on for a stamp
-# table grouped by stamp row: a map bound to the table strides by its width.
-# Turn it off when the groups are separate tables, whose rows mean nothing.
+# Default: true when groups is above 1, false otherwise. Setting it true with
+# groups at 1 is an error. The lock applies only when the region is a whole
+# number of groups x parts x unit bytes; a region with a tail keeps the width
+# the view gives it. Keep it on for a stamp table grouped by stamp row: a map
+# bound to the table strides by its width. Turn it off when the groups are
+# separate tables, whose rows mean nothing.
 lock_columns = false

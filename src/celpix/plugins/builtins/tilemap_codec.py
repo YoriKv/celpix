@@ -73,10 +73,12 @@ always round-tripped.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from celpix.core.context import (
+    KEY_INPUTS,
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_PAGE_ROWS,
     PipelineContext,
@@ -84,7 +86,7 @@ from celpix.core.context import (
 from celpix.core.errors import Stage
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins._params import byte_order
-from celpix.plugins.base import PluginInfo
+from celpix.plugins.base import InputKind, InputSpec, PluginInfo
 from celpix.plugins.builtins._fields import (
     Field,
     bit_width,
@@ -170,9 +172,121 @@ def _layout_text(params: dict[str, Any]) -> str:
 
 
 def _placements(params: dict[str, Any]) -> dict[str, _Field]:
-    """Everything the preset's ``fields`` layout places."""
+    """Everything the preset's ``fields`` layout places — and ``side_fields``.
+
+    A side word sits **above** the cell's own, so the two layouts read as one
+    diagram, side first: a field split across both joins most significant first,
+    exactly as a field split within one word does. That is what lets a side byte
+    carry the high bits of an index (a Game Boy Color attribute map's bank bit)
+    as naturally as a whole palette row.
+    """
     legend = resolve_legend(_LEGEND, params.get("legend"), frozenset(_FIELDS))
-    return parse_layout(_layout_text(params), legend, _cell_bytes(params) * 8)
+    bits = _cell_bytes(params) * 8
+    side = _side_text(params)
+    if side is None:
+        return parse_layout(_layout_text(params), legend, bits)
+    return parse_layout(
+        f"{side} {_layout_text(params)}", legend, bits + _side_bytes(params) * 8
+    )
+
+
+# -- the side array ----------------------------------------------------------
+#
+# Bits of a cell stored **outside** the cell: a metatile table whose four tile
+# numbers are one array and whose palette rows are a fifth (Final Fantasy II,
+# Famicom), or a map kept as a tile array plus a parallel attribute array. The
+# preset says where those bits sit in one side word (`side_fields`) and how many
+# consecutive cells one word covers (`side_cells`); the bytes are the entry's
+# `side_array` input, bound to wherever the game keeps them. An input is never
+# written back, so the side bits are the array's: `settle_cells` re-derives them
+# after every edit, and `encode` refuses a list that disagrees rather than
+# dropping the difference.
+
+#: The preset parameter that turns the side array on, and names its bit layout.
+SIDE_FIELDS = "side_fields"
+#: The input key the side array is bound under — stored in project files.
+SIDE_INPUT = "side_array"
+
+_BOOL_ATTRS = frozenset({"flip_h", "flip_v", "visible", "ends_line"})
+
+
+def _side_text(params: dict[str, Any]) -> str | None:
+    """The preset's ``side_fields`` layout, or None where it has no side array."""
+    text = params.get(SIDE_FIELDS)
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        raise ValueError(f"side_fields must be a bit layout like fields, got {text!r}")
+    return text
+
+
+def _side_bytes(params: dict[str, Any]) -> int:
+    """How wide one side word is, in bytes; 0 with no side array."""
+    text = _side_text(params)
+    if text is None:
+        return 0
+    width = bit_width(text)
+    if width == 0 or width % 8:
+        raise ValueError(
+            f"a side word has to be a whole number of bytes, and side_fields "
+            f"describes {width} bits"
+        )
+    return width // 8
+
+
+def _side_cells(params: dict[str, Any]) -> int:
+    """How many consecutive cells one side word covers."""
+    value = params.get("side_cells", 1)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"side_cells must be a positive integer, got {value!r}")
+    return value
+
+
+def _side_words(
+    params: dict[str, Any], inputs: Mapping[str, Any] | None
+) -> tuple[int, ...]:
+    """The bound side array as words, in order; empty where nothing is bound.
+
+    A cell past the array's end reads its side bits as zero — the same answer an
+    unbound array gives — and a trailing partial word is dropped like a partial
+    cell.
+    """
+    data = (inputs or {}).get(SIDE_INPUT)
+    size = _side_bytes(params)
+    if not isinstance(data, bytes | bytearray) or not size:
+        return ()
+    order = byte_order(params, "endian", "little")
+    return tuple(
+        int.from_bytes(data[at : at + size], order)
+        for at in range(0, len(data) - size + 1, size)
+    )
+
+
+def _side_masks(params: dict[str, Any]) -> dict[str, int]:
+    """Per field with bits in the side word: which bits of its value those are.
+
+    A palette row stored whole in a side byte masks all of its bits; an index
+    whose top bit is a bank flag in the side byte masks that one bit.
+    """
+    side = _side_bytes(params) * 8
+    if not side:
+        return {}
+    everything = ((1 << side) - 1) << (_cell_bytes(params) * 8)
+    return {
+        name: mask
+        for name, field in _placements(params).items()
+        if (mask := gather(everything, *field))
+    }
+
+
+def _side_only(params: dict[str, Any]) -> frozenset[str]:
+    """The fields stored **entirely** in the side array, so nothing to edit."""
+    placed = _placements(params)
+    return frozenset(
+        name
+        for name, mask in _side_masks(params).items()
+        if mask == _limit(placed[name])
+    )
 
 
 def _field(params: dict[str, Any], name: str) -> _Field | None:
@@ -275,6 +389,24 @@ class TilemapCodec:
         id=TILEMAP_ENGINE,
         name="Packed tilemap cell",
         stage=Stage.INTERPRET_TILEMAP,
+        inputs=(
+            InputSpec(
+                SIDE_INPUT,
+                "Side array",
+                InputKind.REGION,
+                required=False,
+                unit="byte",
+                # Only a preset that says where the side bits go has a use for
+                # the bytes; every other packed format keeps the Inputs window
+                # empty.
+                when_param=SIDE_FIELDS,
+                tooltip=(
+                    "The array holding the bits a cell keeps elsewhere:\n"
+                    "one word per side_cells cells, in cell order.\n"
+                    "Read-only - an edit never writes it back."
+                ),
+            ),
+        ),
     )
 
     def decode(
@@ -283,12 +415,19 @@ class TilemapCodec:
         size = _cell_bytes(params)
         order = byte_order(params, "endian", "little")
         fields = _layout(params)
+        side = _side_words(params, ctx.get(KEY_INPUTS))
+        per_word = _side_cells(params) if side else 1
+        above = size * 8
         cells: list[Cell] = []
         # A trailing partial cell is dropped rather than zero-padded: unlike a
         # partial *tile*, which still draws as something, half a cell has no
         # meaningful index at all and would render as a spurious tile 0.
         for at in range(0, len(data) - size + 1, size):
             word = int.from_bytes(data[at : at + size], order)
+            if side:
+                unit = (at // size) // per_word
+                if unit < len(side):
+                    word |= side[unit] << above
             cells.append(
                 Cell(
                     index=_get(word, fields["index"]),
@@ -326,15 +465,81 @@ class TilemapCodec:
             for name, read in _CELL_FIELDS
             if (field := fields[name]) is not None
         ]
+        above = size * 8
+        own = (1 << above) - 1
+        masks = _side_masks(params)
+        side = _side_words(params, ctx.get(KEY_INPUTS)) if masks else ()
+        per_word = _side_cells(params) if masks else 1
+        # The side bits any field places, so a side word's unplaced bits — the
+        # replicated quadrants of an attribute byte — are not read as a claim.
+        placed = 0
+        for name in masks:
+            placed |= sum(fields[name][0]) >> above  # type: ignore[index]
         out = bytearray()
-        for cell in cells:
+        for at, cell in enumerate(cells):
             word = 0
             for field, read in present:
                 # Masked, not checked: see the module docstring on why a too-wide
                 # value costs its high bits rather than the whole save.
                 word |= scatter(read(cell), *field)
-            out += word.to_bytes(size, order)
+            if masks:
+                unit = at // per_word
+                stored = side[unit] if unit < len(side) else 0
+                if (word >> above) != stored & placed:
+                    raise ValueError(
+                        f"cell {at}: its {', '.join(sorted(masks))} come from the "
+                        "side array, a read-only input - change those bytes instead"
+                    )
+            out += (word & own).to_bytes(size, order)
         return bytes(out)
+
+    def settle_cells(
+        self,
+        cells: list[Cell],
+        params: dict[str, Any],
+        inputs: Mapping[str, Any] | None = None,
+    ) -> list[Cell]:
+        """``cells`` with every side-array bit back in step with the array.
+
+        Only a preset with ``side_fields`` has anything to settle: those bits are
+        the bound array's, an input that is never written, so a cell pasted or
+        painted in with another palette row would draw in one row and save as
+        the other. Re-derived here, after every edit, the way the indirect-record
+        engine re-derives a grouped row — so what is on screen is what a reload
+        gives back. Bits of a field that live in the cell's own word (an index's
+        low bits beside a side-byte bank bit) are left as the user set them.
+
+        Cheap on the common case: one lookup per distinct side word, a compare per
+        side field, and the same list back when nothing differs.
+        """
+        masks = _side_masks(params)
+        if not masks:
+            return cells
+        fields = _placements(params)
+        side = _side_words(params, inputs)
+        per_word = _side_cells(params)
+        above = _cell_bytes(params) * 8
+        wanted: dict[int, dict[str, int]] = {}
+        out: list[Cell] | None = None
+        for at, cell in enumerate(cells):
+            unit = at // per_word
+            stored = side[unit] if unit < len(side) else 0
+            want = wanted.get(stored)
+            if want is None:
+                want = {name: gather(stored << above, *fields[name]) for name in masks}
+                wanted[stored] = want
+            changes: dict[str, int | bool] = {}
+            for name, mask in masks.items():
+                attr = _CELL_ATTR[name]
+                have = int(getattr(cell, attr))
+                settled = (have & ~mask) | want[name]
+                if settled != have:
+                    changes[attr] = bool(settled) if attr in _BOOL_ATTRS else settled
+            if changes:
+                if out is None:
+                    out = list(cells)
+                out[at] = replace(cell, **changes)
+        return cells if out is None else out
 
     def bytes_per_cell(self, params: dict[str, Any]) -> int:
         return _cell_bytes(params)
@@ -360,8 +565,11 @@ class TilemapCodec:
 
         :meth:`index_limit` for the colour field, off the same table: three bits
         on a console BG entry, so rows 0-7, and nothing at all on a format that
-        places no ``palette``.
+        places no ``palette`` — or keeps it whole in the side array, where the
+        row is the array's and there is no field an assigned row could land in.
         """
+        if "palette" in _side_only(params):
+            return None
         return _limit(_field(params, "palette"))
 
     def has_line_flag(self, params: dict[str, Any]) -> bool:
@@ -404,10 +612,11 @@ class TilemapCodec:
         Keys are :class:`Cell` attribute names via :data:`_CELL_ATTR`; values
         are each field's :func:`_limit`.
         """
+        side_only = _side_only(params)
         return {
             _CELL_ATTR[name]: limit
             for name, field in _layout(params).items()
-            if (limit := _limit(field)) is not None
+            if (limit := _limit(field)) is not None and name not in side_only
         }
 
     def transform_cell(
@@ -427,4 +636,6 @@ class TilemapCodec:
         toggle = _MIRRORS.get(op)
         if toggle is None or _field(params, op.value) is None:
             return None
+        if op.value in _side_only(params):
+            return None  # the array's bit, which a save cannot write
         return toggle(cell)

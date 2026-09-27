@@ -860,6 +860,25 @@ def test_a_broken_tile_binding_leaves_the_tilemap_unbound(tmp_path) -> None:
     assert entry.tile_source is None
 
 
+def test_a_non_object_composite_piece_loads_as_a_pad(tmp_path) -> None:
+    """A malformed piece names no entry. Read as position 0 it would silently
+    splice whatever sits first in the list into the composite — a composable
+    pixels file here, which the valid second piece proves binds."""
+    (tmp_path / "a.chr").write_bytes(b"\x00" * 0x80)
+    document = {
+        "version": PROJECT_VERSION,
+        "entries": [
+            {"path": "a.chr"},
+            {"kind": "composite", "pieces": [42, {"entry_index": 0}]},
+        ],
+    }
+    project = tmp_path / "p.celpix"
+    project.write_text(json.dumps(document), encoding="utf-8")
+
+    first, composite = load_project(str(project)).entries
+    assert [piece.entry for piece in composite.pieces] == [None, first]
+
+
 def test_a_slice_of_a_tilemap_is_a_tilemap() -> None:
     """A window into a tilemap file is a tilemap — only the entry knows what its
     file holds, so the content kind travels down with the slice."""

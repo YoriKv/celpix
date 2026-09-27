@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from celpix.core.arrangement import bitmap_tile_size
-from celpix.core.context import PipelineContext
+from celpix.core.context import KEY_INPUTS, PipelineContext
 from celpix.core.document import Document
 from celpix.core.errors import (
     Pathway,
@@ -166,12 +166,17 @@ def _cell_settler(
     if ask is None:
         return None
     live = [True]
+    # The entry's resolved inputs, as the decode was handed them: data read at
+    # load, not I/O, so a field derived from a side array can be re-derived per
+    # edit. Passed only where there are any, so a settle written with two
+    # parameters — every format that reads no inputs — is called as it was.
+    inputs = dict(ctx.get(KEY_INPUTS) or {})
 
     def settle(cells: list) -> list:
         if not live[0]:
             return cells
         try:
-            out = ask(cells, params)
+            out = ask(cells, params, inputs) if inputs else ask(cells, params)
             if not isinstance(out, list) or len(out) != len(cells):
                 raise TypeError(  # noqa: TRY301 — one report for both refusals
                     f"settle_cells returned {type(out).__name__} of "

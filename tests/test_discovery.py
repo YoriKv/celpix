@@ -15,8 +15,10 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.core.tilemap import Cell, CellOp
+from celpix.pipeline.pathway import PathwayConfig
+from celpix.pipeline.pipeline import encode_cells, load_tilemap_data
 from celpix.plugins import discovery
-from celpix.plugins.base import InputKind, ReadSource, WriteTarget
+from celpix.plugins.base import FileRef, InputKind, ReadSource, WriteTarget
 from celpix.plugins.bitswap import BitswapReshape
 from celpix.plugins.data_lut import DataLutReshape
 from celpix.plugins.registry import default_registry
@@ -659,6 +661,27 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert {p.engine_id for p in tilemap_examples} == preset_engines(
         Stage.INTERPRET_TILEMAP
     )
+
+    def host_loads(preset_id: str, data: bytes) -> None:
+        """Load ``data`` through the host's tilemap read, and encode it back.
+
+        The engine alone is not the whole of a tilemap preset: the host reads
+        the declarations off it — ``layout``, the stamp and record keys — for
+        every engine, a code format's ``declares`` included, and those only
+        run here. A frame table's region input is bound to its own bytes.
+        """
+        inputs = {Stage.INTERPRET_TILEMAP: {"frames": data}}
+        cfg = PathwayConfig(
+            source=FileRef("", data=data),
+            interpret_preset_id=preset_id,
+            write_enabled=False,
+            inputs=inputs,
+        )
+        loaded = load_tilemap_data(cfg, reg)
+        assert loaded.cells, f"{preset_id} decoded nothing through the host"
+        again = encode_cells(loaded.cells, preset_id, reg, loaded.ctx)
+        assert again == loaded.data
+
     for preset in tilemap_examples:
         engine = reg.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
         cells, data, cell_ctx = decoded_at_probe_length(
@@ -666,6 +689,9 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         )
         assert cells, f"{preset.id} decoded nothing at any probe length"
         assert engine.encode(cells, preset.params, cell_ctx) == data
+        # Zeros rather than the probe: the host bounds a sprite frame's extent,
+        # and probe bytes read as parts are thousands of pixels apart.
+        host_loads(preset.id, bytes(len(data)))
     # The code format too: a cell whose fields straddle bytes is exactly what the
     # engines cannot express, so its round trip is the one most worth checking.
     split = reg.plugin(Stage.INTERPRET_TILEMAP, "format.tilemap.example-split")
@@ -677,6 +703,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert (cells[0].index, cells[0].palette_row, cells[0].priority) == (0x234, 7, 1)
     assert (cells[0].flip_h, cells[0].flip_v, cells[0].flags) == (True, False, 3)
     assert split.encode(cells, {}, ctx) == raw
+    host_loads("format.tilemap.example-split", raw)
     # Its optional methods have to reach the *engine* surface, params and all —
     # that forwarding is what makes an example's cells editable at all. A format
     # whose index_limit never arrives leaves the cell reference unsettable and
@@ -753,6 +780,12 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     with pytest.raises(ValueError):
         bp.compress(b"\xff\xff", bound)
 
+    # Compress-reshape example: a real pair, so the save order (unshape, then
+    # compress) has to undo the load order (decompress, then reshape).
+    pair = reg.plugin(Stage.COMPRESSION, "compression.rnc2-running-sum")
+    raw = bytes((i // 7) & 0xFF for i in range(512))
+    assert pair.decompress(pair.compress(raw, ctx), ctx) == raw
+
     # Reshape example: reshape → unshape restores the bytes at every parity,
     # including the odd tail byte the example deliberately passes through.
     swap = reg.plugin(Stage.RESHAPE, "reshape.example-swap-halves")
@@ -768,9 +801,14 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert len(discovery.RESHAPE_ENGINES) == 3
     assert isinstance(reg.plugin(Stage.RESHAPE, "reshape.gaelco-16x16"), BitswapReshape)
     assert isinstance(reg.plugin(Stage.RESHAPE, "reshape.nmk-bg"), DataLutReshape)
-    assert isinstance(
-        reg.plugin(Stage.RESHAPE, "reshape.ff2-field-tables"), SplitPartsReshape
-    )
+    ff2 = reg.plugin(Stage.RESHAPE, "reshape.ff2-field-tables")
+    assert isinstance(ff2, SplitPartsReshape)
+    # Its three 64-record tables of four byte arrays: joined, record k of each
+    # table is its four corners side by side.
+    tables = _probe_bytes(3 * 4 * 64)
+    joined = ff2.reshape(tables, ctx)
+    assert joined[256 + 4 : 256 + 8] == tables[256 + 1 : 512 : 64]
+    assert ff2.unshape(joined, ctx) == tables
 
     # Bitswap preset example: the TOML registers as an ordinary reshape plugin.
     # It carries a real table — Gaelco's Modular System 16x16 tile scramble,

@@ -240,26 +240,31 @@ def flag_break(registry, entry: Entry) -> bool:  # noqa: ANN001
     return bool(ask is not None and ask(preset.params))
 
 
-class CellBlock(NamedTuple):
+class CellStamp(NamedTuple):
     """A referring map's own cell size, read as a stamp over a tilemap source.
 
-    ``cell_tiles`` says one cell draws a block of what it draws through. Over art
-    that is a block of *tiles*; over another tilemap it can only be a block of
+    ``cell_tiles`` says one cell draws several of what it draws through. Over
+    art those are *tiles*, a metatile; over another tilemap they can only be
     that map's *cells*, which is a stamp — so a preset stating ``cell_tiles =
     [2, 2]`` draws 2x2 whichever kind of source it is bound to, rather than
     shrinking to one cell the moment the source is a map
-    (``docs/design/tilemap-entry.md`` §3.1). ``row_stride`` is the format's
-    ``cell_row_stride`` where it declares one, now counted in source cells, and
-    0 where it does not: the VRAM row its absence means over a bank has no
-    counterpart in a map, whose own width is the step down instead.
+    (``docs/design/tilemap-entry.md`` §3.1).
+
+    Only the size carries over. The metatile's strides, ``cell_row_stride``
+    and ``cell_column_stride``, are steps through a tile bank, and a stamp is a
+    rectangle cut out of the source as the *source* lays its cells out — its
+    width, or the stride and order it publishes for its records
+    (:func:`chain_source_columns`, :func:`chain_stamp_column_major`). Half of a
+    bank's walk applied to a map is what draws overlapping cells: a cell filled
+    down each column is a row stride of 1, which over a map would step each of
+    the stamp's rows one cell along the row above.
     """
 
     cells: tuple[int, int]
-    row_stride: int = 0
 
 
-def cell_block(registry, entry: Entry, ctx) -> CellBlock | None:  # noqa: ANN001
-    """``entry``'s own multi-cell block over a tilemap source, or None.
+def cell_stamp(registry, entry: Entry, ctx) -> CellStamp | None:  # noqa: ANN001
+    """The stamp ``entry``'s own cell size states over a tilemap source, or None.
 
     None where its format declares ``stamp_cells``, which is the stamp spelled
     outright and wins, and where its cells cover one unit. The size is the
@@ -279,31 +284,29 @@ def cell_block(registry, entry: Entry, ctx) -> CellBlock | None:  # noqa: ANN001
         return None
     if (across, down) == (1, 1):
         return None
-    try:
-        stride = int(tilemap_declares(registry, entry, "cell_row_stride") or 0)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        stride = 0
-    return CellBlock((across, down), max(0, stride))
+    return CellStamp((across, down))
 
 
 def chain_stamp_cells(
     registry,  # noqa: ANN001
     entry: Entry,
     through: Document,
-    block: CellBlock | None = None,
+    stamp: CellStamp | None = None,
 ) -> tuple[int, int]:
     """How many of ``through``'s **cells** one of ``entry``'s coordinates names.
 
     Whichever side states it, the referrer first: a format whose coordinates
-    always name a fixed block declares ``stamp_cells``, or states its cells
-    cover several units (``block``, :func:`cell_block`); otherwise the source's
+    always name a fixed stamp declares ``stamp_cells``, or states its cells
+    cover several units (``stamp``, :func:`cell_stamp`); otherwise the source's
     published answer (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_CELLS`).
     ``(1, 1)`` for a pair that states nothing, and for a malformed declaration,
-    since a wrong guess would expand the map to a multiple of its size.
+    since a wrong guess would expand the map to a multiple of its size — the
+    rule :func:`~celpix.pipeline.table_layout.publish_table_layout` keeps for
+    the same declaration on the source's side.
     """
     stated = (
         tilemap_declares(registry, entry, "stamp_cells")
-        or (block.cells if block is not None else None)
+        or (stamp.cells if stamp is not None else None)
         or through.tilemap_ctx.get(KEY_TILEMAP_STAMP_CELLS)
     )
     try:
@@ -313,19 +316,19 @@ def chain_stamp_cells(
         return (1, 1)
 
 
-def chain_source_columns(through: Document, block: CellBlock | None = None) -> int:
+def chain_source_columns(through: Document) -> int:
     """The stride between a stamp's rows, in cells of the **source**.
 
-    The referrer's first, where its own cell block declares a row stride
-    (:class:`CellBlock`). Then the source's own answer (:data:`~celpix.core.
-    context.KEY_TILEMAP_STAMP_STRIDE`): a table of packed records stamps at the
-    record's width whatever it is displayed at. Else the width its format
-    states; otherwise the width its cells are laid at is the view's, and file
-    order is drawn order there. A stride of 1 in that case would walk a stamp's
-    second row along the same source row instead of down one.
+    The source's answer, whoever stated the stamp's size: a stamp is a
+    rectangle cut out of the source as it lays its cells out (:class:`CellStamp`).
+    First what it publishes for its records
+    (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_STRIDE`): a table of packed
+    records stamps at the record's width whatever it is displayed at. Else the
+    width its format states; otherwise the width its cells are laid at is the
+    view's, and file order is drawn order there. A stride of 1 in that case
+    would walk a stamp's second row along the same source row instead of down
+    one.
     """
-    if block is not None and block.row_stride:
-        return block.row_stride
     stride = through.tilemap_ctx.get(KEY_TILEMAP_STAMP_STRIDE)
     try:
         if stride and int(stride) >= 1:
@@ -602,19 +605,24 @@ def tile_source_config(
     """The pathway that reads the tiles ``source`` points at.
 
     Resolved through the bound entry's own config, so the tiles are read exactly
-    as that entry reads them — its container, reshape and codec. Refused where
-    the bound entry cannot supply tiles — a tilemap whose chain loops: a source
-    can gain a binding of its own after this one was made, and reading
-    *coordinates* through a pixel codec would draw them as art. Read, but
-    **never written**: the tiles belong to the bound entry
-    (``docs/design/tilemap-entry.md`` §3).
+    as that entry reads them — its container, reshape and codec. Only **art** is
+    read this way. A bound tilemap is drawn through by the chain resolution
+    (:func:`bound_tilemap`), and reaching here means that resolution refused it
+    — a chain that loops, a source that did not open, a sprite object: its file
+    holds *coordinates*, and a pixel codec would draw them as art and give a
+    pen stroke on the map a bank to land in. Read, but **never written**: the
+    tiles belong to the bound entry (``docs/design/tilemap-entry.md`` §3).
     """
     bound = binding_target(workspace, source)
     if bound is None:
         name = source.entry.name if source.entry is not None else "nothing"
         raise KeyError(f"the tiles are bound to {name}, which is not open")
+    if bound.content_kind is ContentKind.TILEMAP:
+        if chain_loops(workspace, entry, bound):
+            raise KeyError(f"{bound.name}'s chain loops back on itself")
+        raise KeyError(f"{bound.name} is a tilemap that could not be drawn through")
     if not can_supply_tiles(workspace, entry, bound):
-        raise KeyError(f"{bound.name}'s chain loops back on itself")
+        raise KeyError(f"{bound.name} cannot supply tiles")
     preset = (
         bound.session.pixel_preset_id if bound.session is not None else fallback_preset
     )
@@ -717,12 +725,12 @@ def chained_document(
     a restamp must never reach it.
 
     This entry's **own** cell size is not a geometry for the art — its cells are
-    coordinates, and what they draw is the source's cells — so a block it states
-    becomes the stamp (:func:`cell_block`), and the source's cell size is the one
-    the tiles are drawn in.
+    coordinates, and what they draw is the source's cells — so a size over one
+    unit it states becomes the stamp (:func:`cell_stamp`), and the source's cell
+    size is the one the tiles are drawn in.
     """
     assert entry.session is not None
-    block = cell_block(registry, entry, loaded.ctx)
+    stamp = cell_stamp(registry, entry, loaded.ctx)
     return Document(
         pixel_data=through.pixel_data,
         bytes_per_tile=through.bytes_per_tile,
@@ -739,11 +747,11 @@ def chained_document(
         chain=CellChain(
             through.cells or [],
             loaded.palette_rows,
-            stamp=chain_stamp_cells(registry, entry, through, block),
-            source_columns=chain_source_columns(through, block),
-            # A cell block is one entry drawing the whole block, which is what
-            # dense means.
-            dense=is_dense(registry, entry) or block is not None,
+            stamp=chain_stamp_cells(registry, entry, through, stamp),
+            source_columns=chain_source_columns(through),
+            # A stamp stated by the cell size is one entry drawing the whole
+            # stamp, which is what dense means.
+            dense=is_dense(registry, entry) or stamp is not None,
             stamp_column_major=chain_stamp_column_major(through),
             base=entry.tile_source.base_index if entry.tile_source else 0,
             through=through.chain,
@@ -1307,6 +1315,15 @@ def _load_tilemap(entry, registry, workspace, problems, configure) -> None:  # n
     through = bound_tilemap(registry, workspace, entry, problems)
     if through is not None:
         entry.doc = chained_document(registry, entry, loaded, cfg, through)
+        why = entry.doc.stamp_refusal
+        if why is not None:
+            # The app's status line, collected: the picture is not the stamped
+            # one the chain states, and a script should hear why as a user does.
+            across, down = entry.doc.chain.drawn_stamp
+            problems.append(
+                f"{entry.name}: {across}x{down} stamps not resolved - {why}; "
+                "drawing one cell per entry."
+            )
         return
     tiles = _bound_tiles(registry, workspace, entry, problems, configure)
     entry.doc = tilemap_document(registry, workspace, entry, loaded, cfg, tiles)

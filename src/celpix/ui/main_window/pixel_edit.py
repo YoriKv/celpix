@@ -663,6 +663,14 @@ class PixelEditMixin:
             return
         if button != Qt.MouseButton.LeftButton:
             return
+        if not self._pixel_edit_available():
+            # What a map paints into can go while the mode stays armed — a table
+            # it draws through failing to open under it, with nothing re-reading
+            # the map — and a stroke with nowhere to land would still cost an
+            # undo step (``_commit_grid``'s ``no_op_step``). The mode is put
+            # down instead, as a re-read would have put it down.
+            self._drop_unavailable_edit_mode()
+            return
         # A new press is a new gesture: whatever the last one left flagged is
         # over, and must not be reverted by the pushes this press makes.
         self._marquee_gesture = False

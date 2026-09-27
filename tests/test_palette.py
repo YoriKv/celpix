@@ -1,11 +1,14 @@
 """The default fallback palette's contract: black, white, then distinct colors,
-plus the copy-on-edit helpers color editing is built on."""
+plus the copy-on-edit helpers color editing is built on, and the one limit a
+fixed-table palette codec puts on its preset."""
 
 from __future__ import annotations
 
 import pytest
 
+from celpix.core.context import PipelineContext
 from celpix.core.palette import FULL_PALETTE_COUNT, Palette
+from celpix.plugins.builtins.indexed_codec import IndexedColorCodec
 
 
 @pytest.mark.parametrize("count", [2, 4, 16, 256])
@@ -80,3 +83,11 @@ def test_resized_preserves_edits_and_truncates() -> None:
     assert len(grown) == 64
     # Shrinking keeps the leading entries and drops the tail.
     assert grown.resized(4).colors == grown.colors[:4]
+
+
+def test_indexed_table_longer_than_a_byte_is_refused_on_decode() -> None:
+    # A 257th colour decodes but no entry byte can name it, so a save of the
+    # palette would fail; the table is refused where it is first read instead.
+    params = {"colors": list(range(257))}
+    with pytest.raises(ValueError, match="at most 256"):
+        IndexedColorCodec().decode(b"\x00", params, PipelineContext())

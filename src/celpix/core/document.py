@@ -21,6 +21,7 @@ from bisect import bisect_left
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from itertools import islice
 
 from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout
@@ -270,21 +271,26 @@ class CellChain:
     true if either side of the chain states rows, because it gates the view's
     palette row. This one says whose row wins per cell.
 
-    ``stamp`` and ``source_columns`` are the **source's** shape, not the
-    referrer's: how many source cells one coordinate names, and how wide the
-    source is, which is the step between that stamp's rows
-    (:func:`~celpix.core.tilemap.expand_stamps`). Both live here because both are
-    the source map's answers — a panel states its stamp size in its own header and
-    the layout's file does not know it, so the same layout draws differently
-    against a differently divided panel. ``(1, 1)`` is the ordinary chain, where
-    one coordinate names one cell and there is no stamp to expand.
-    ``stamp_column_major`` is the source's too: its stamps are stored down each column,
-    so ``source_columns`` steps between a stamp's columns instead
+    ``stamp`` is how many source cells one coordinate names, and it is
+    **whichever side states it, the referrer first**: a format whose coordinates
+    always name a fixed stamp declares one, and so does a format whose own cell
+    covers several units, which over a map can only be several of its cells
+    (``project/documents.py``, ``chain_stamp_cells``). Otherwise it is the
+    source's answer — a panel states its stamp size in its own header and the
+    layout's file does not know it, so the same layout draws differently against
+    a differently divided panel. ``(1, 1)`` is the ordinary chain, where one
+    coordinate names one cell and there is no stamp to expand.
+
+    ``source_columns`` and ``stamp_column_major`` are the **source's** alone,
+    whoever sized the stamp: a stamp is a rectangle cut out of the source as the
+    source lays its cells out. ``source_columns`` is the step between a stamp's
+    rows (:func:`~celpix.core.tilemap.expand_stamps`) — the stride the source
+    publishes for its records, else its width — and where its stamps are stored
+    down each column, the step between a stamp's columns instead
     (:func:`~celpix.core.tilemap.stamp_offset`).
 
-    ``dense`` is the **referrer's**, and it is the one field here that is not the
-    source's answer — which is why it is a field set from the referring format
-    rather than another value read off the source's context. It says whether this
+    ``dense`` is the **referrer's** alone, set from the referring format rather
+    than read off the source's context. It says whether this
     file holds one entry per *stamp* or one per drawn position, and no source
     could know: the same panel is stamped by a layout with a slot per position,
     and would be stamped by a metatile map with a slot per stamp, and the panel's
@@ -341,6 +347,22 @@ class CellChain:
         return across, down
 
     @property
+    def sparse_below(self) -> bool:
+        """Whether a hop **after** this one is a sparse stamped map.
+
+        A sparse map holds an entry per drawn position with only its stamps'
+        corners meaningful, and which positions those are depends on the width
+        the map itself is resolved at. Handed a referrer's cells instead, a
+        sparse hop snaps them to corners the source never wrote, so the entry a
+        position draws and the entry a click on it edits part company. A sparse
+        map is an end product; a chain that draws through one is refused
+        (:attr:`Document.stamp_refusal`).
+        """
+        return any(
+            not hop.dense and hop.stamp != (1, 1) for hop in islice(self.hops, 1, None)
+        )
+
+    @property
     def drawn_stamp(self) -> tuple[int, int]:
         """How many drawn positions one entry covers once every hop is resolved.
 
@@ -375,10 +397,9 @@ def resolve_chain(
     (:func:`~celpix.core.tilemap.resolve_cell`), and a source's cells are the
     next hop's entries — coordinates again until the last hop, whose cells are
     tile numbers. A dense hop grows the grid by its stamp, so the width the next
-    hop reads its entries at grows with it. A sparse hop after the first is
-    resolved over the list it is handed, which is right when the referrer's
-    stamps sit on the source's own stamp corners — as any real format's do; a
-    sparse map is an end product, never anyone's source.
+    hop reads its entries at grows with it. A sparse stamped hop after the first
+    has no width of its own to snap at here, so a chain holding one is never
+    resolved stamped (:attr:`CellChain.sparse_below`, :attr:`Document.stamp_cells`).
 
     ``stamped`` False is the degraded chain (:attr:`Document.stamp_cells`): every
     hop resolves one coordinate to one cell. ``carry_rows`` and ``dense``
@@ -963,24 +984,24 @@ class Document:
     def _chain_stamp(self) -> tuple[int, int]:
         """The stamp this chain *can* resolve — ``(1, 1)`` where it cannot.
 
-        The one place the metatile-stamp refusal lives. The cells at the end of
-        the chain — :attr:`cell_tiles` is theirs, at any depth — must be single
-        tiles: a stamp is placed as one layout block — a
-        rectangle of consecutive tiles — and a stamp of *metatile* cells
-        interleaves two rectangles no single block can express. No format in
-        hand does: the only one that stamps is a PNL panel, whose word is one
-        8x8 tile in every file of the corpus
-        (``docs/graphics-formats-reference/scgcad-formats.md`` §3.1). A chain
-        that states such a stamp degrades to the plain one-coordinate-one-cell
-        reading — through *this* property, so the resolution
-        (:meth:`resolve`, :meth:`cell_at`, :attr:`stamp_columns`) and every
-        unit built on :attr:`stamp_cells` degrade together rather than the
-        picture expanding under units that report 1x1. The host says why on
-        the status line when it builds such a chain
-        (``ui/main_window/session.py``).
+        The one place the stamp refusals live. The cells at the end of the
+        chain — :attr:`cell_tiles` is theirs, at any depth — must be single
+        tiles: a stamp is placed by one :class:`BlockLayout` as a rectangle of
+        consecutive tiles, and a stamp of *metatile* cells interleaves two
+        rectangles no single placement can express. No format in hand does: the
+        only one that stamps is a PNL panel, whose word is one 8x8 tile in every
+        file of the corpus (``docs/graphics-formats-reference/scgcad-formats.md``
+        §3.1). And no hop after the first may be a sparse stamped map
+        (:attr:`CellChain.sparse_below`).
+
+        A chain that states either degrades to the plain one-coordinate-one-cell
+        reading — through *this* property, so the resolution (:meth:`resolve`,
+        :meth:`cell_at`, :attr:`stamp_columns`) and every unit built on
+        :attr:`stamp_cells` degrade together rather than the picture expanding
+        under units that report 1x1. Why is :attr:`stamp_refusal`.
         """
         chain = self.chain
-        if chain is None or self.cell_tiles != (1, 1):
+        if chain is None or self.cell_tiles != (1, 1) or chain.sparse_below:
             return (1, 1)
         # **Composed** across the hops: the 4x4 a map of stamps of stamps draws
         # per entry is the unit a click, a pick and a paste have to move in,
@@ -1034,6 +1055,28 @@ class Document:
         lays out.
         """
         return self._chain_stamp if self.stamp_columns else (1, 1)
+
+    @property
+    def stamp_refusal(self) -> str | None:
+        """Why a stamp the chain states is drawn one cell per entry, or None.
+
+        None where the chain states no stamp or the stamp resolves
+        (:attr:`stamp_cells`). Otherwise the reason, worded for the status line:
+        the picture that comes up is not the stamped one, and silence would
+        leave that a puzzle. Checked in the order the refusals are decided, so
+        the reason is the one that actually applied.
+        """
+        chain = self.chain
+        if chain is None or chain.drawn_stamp == (1, 1) or self.stamp_cells != (1, 1):
+            return None
+        if self.cell_tiles != (1, 1):
+            # The cell size is the *last* source's, so down a longer chain the
+            # source this map is bound to is not the one to blame.
+            last = "source's" if chain.through is None else "last table's"
+            return f"the {last} cells are metatiles"
+        if chain.sparse_below:
+            return "a table it draws through is a sparse stamped map"
+        return "this format states no width to resolve them at"
 
     @property
     def stamp_tiles(self) -> tuple[int, int]:
@@ -1575,14 +1618,26 @@ class Document:
         (:func:`~celpix.core.tilemap.stamp_origin`). Anything counting over the
         file — "which cells use tile X" — would otherwise count data the format
         says is meaningless. Every entry of a dense or unstamped map is read.
+
+        A **column-major** map is asked in reading order, as :meth:`resolve`
+        reads it: the entry's position there is what lands on a corner or not
+        (:attr:`cell_permutation`), and an entry a ragged last column leaves
+        out of that order is never read at all.
         """
+        position = index
+        order = self.cell_permutation
+        if order is not None:
+            try:
+                position = order.index(index)
+            except ValueError:
+                return False
         chain = self.chain
         # The referrer's own entry grid, so the first hop's stamp: whatever the
         # later hops do happens to cells this file does not hold.
         stamp = self._first_hop_stamp
         if chain is None or self._first_hop_dense or stamp == (1, 1):
             return True
-        return stamp_origin(index, self.stamp_columns, stamp) == index
+        return stamp_origin(position, self.stamp_columns, stamp) == position
 
     def palette_row_group(self, index: int) -> list[int]:
         """Every cell index whose stored palette row is the same field as ``index``'s.

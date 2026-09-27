@@ -31,6 +31,7 @@ price every position before it knows which it will use.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Iterator
 from typing import Literal
 
@@ -39,6 +40,17 @@ from typing import Literal
 # candidates almost never yield a longer match — so the cap bounds a pathological
 # input rather than costing anything on real data.
 DEFAULT_CANDIDATES = 96
+
+# The longer prefixes :meth:`MatchFinder.all_longest` indexes besides ``min_match``,
+# up to its limit. Once a match is in hand the walk only wants candidates sharing
+# more of the prefix, and a longer key's chain is a small slice of the short one's
+# — so these are spaced to keep each step down short, and stop where the extra
+# index costs more to keep than the walks it saves.
+_PREFIX_LEVELS = (4, 8, 16, 32, 64, 128)
+# How long a prefix's chain grows before the longer prefixes under it are indexed.
+# A short chain costs less to walk than the extra index costs to keep, and most
+# prefixes of most data never get this far.
+_LEVELS_FROM = 32
 
 
 def copy_from(out: bytearray, start: int, length: int) -> None:
@@ -217,23 +229,90 @@ class MatchFinder:
         chain needs no walk at all — which is exactly the input that makes a chain
         long and every candidate on it a tie (a long fill, a repeating block).
 
+        The answer is exactly the one a plain walk of the chain :meth:`candidates`
+        gives would find — the longest match, on a tie the newest, among the
+        newest ``max_candidates`` in the window. What it costs is not that walk's,
+        which a scheme lifting the cap to see its whole window cannot afford: the
+        chain is mostly candidates that cannot win, and three things step over
+        them without looking.
+
+        - **Once a match is in hand, only a longer one matters**, and a longer one
+          shares more than ``min_match`` of its prefix with ``pos``. So wherever
+          a prefix's chain grows long, the positions under it are also indexed by
+          a few longer prefixes (:data:`_PREFIX_LEVELS`), and the walk moves to
+          the longest one the best match so far covers — a far shorter chain
+          holding every candidate that could still win. The positions from before
+          the chain grew long are walked on it as ever.
+        - **A run is one candidate, not one per byte.** Where ``pos`` starts ``r``
+          repeats of one unit (fewer than the limit), a candidate inside an
+          earlier run of it with ``k`` repeats left matches exactly ``min(k, r)``
+          — unless ``k == r``, the one place the two runs end together and the
+          match can carry on past them. Every position of a run shares the prefix,
+          so a fill puts thousands of tying candidates on the chain; the walk
+          measures the one per run that can win and steps over the rest.
+        - **Past ``r``, only runs ending on the right byte can win**, so once the
+          best match reaches ``r`` the walk goes through an index of run ends by
+          their last unit and the one after, rather than through every run.
+
+        A candidate that is reached is measured only if it can win: the unit at
+        ``best_len`` is tested first and the prefix compared in one slice, so only
+        the units past ``best_len`` are ever counted one by one.
+
         Lengths below ``min_match`` come back as ``0``, offset ``0``: too short to
         be worth writing, and no caller should be able to mistake one for usable.
         """
+        if self._oldest:
+            raise ValueError("all_longest walks newest first, never oldest_first")
         data = self._data
         n = self._n
         min_match = self._min_match
+        window = self._window
+        chain_cap = self._cap
+        index = self._index
         lengths = [0] * n
         offsets = [0] * n
+
+        # The run of equal units each position sits in, as [run_start, run_end).
+        run_start = [0] * n
+        run_end = [n] * n
+        for i in range(1, n):
+            run_start[i] = run_start[i - 1] if data[i] == data[i - 1] else i
+        for i in range(n - 2, -1, -1):
+            run_end[i] = run_end[i + 1] if data[i] == data[i + 1] else i + 1
+        # The end of every run at least `min_match` long, by the run's unit and
+        # the one after it. The end of a run is where the next one begins, so it
+        # is indexed as the pass reaches it.
+        run_ends: dict[bytes | tuple[int, ...], list[int]] = {}
+        # Where each prefix's chain grew long enough for the longer prefixes to
+        # be indexed under it: positions before that are on its chain alone.
+        since: dict[bytes | tuple[int, ...], int] = {}
+        indexed = 0  # the longer prefixes hold the positions below this
+
+        levels = [min_match] + [k for k in _PREFIX_LEVELS if min_match < k <= limit]
+        tables: list[dict[bytes | tuple[int, ...], list[int]]] = [
+            index,
+            *({} for _ in levels[1:]),
+        ]
+        # level_for[k]: the longest indexed prefix no longer than k, up to `top`
+        # (a limit can run to 64 KiB, and past the longest prefix it is constant).
+        top = levels[-1]
+        deepest = len(levels) - 1
+        level_for = [0] * (top + 1)
+        for j in range(1, len(levels)):
+            level_for[levels[j] :] = [j] * (top + 1 - levels[j])
+
         seed_len = 0
         seed_at = 0
         for pos in range(n):
             room = n - pos
             cap = limit if limit < room else room
             best_len, best_at = 0, 0
+            if room >= min_match:
+                key = data[pos : pos + min_match]
+                bucket = index.get(key)
             if cap >= min_match:
                 if seed_len > min_match and (
-                    self._window is None or pos - (seed_at + 1) <= self._window
+                    window is None or pos - (seed_at + 1) <= window
                 ):
                     candidate = seed_at + 1
                     length = seed_len - 1
@@ -242,28 +321,131 @@ class MatchFinder:
                     ):
                         length += 1
                     best_len, best_at = length, candidate
-                if best_len < cap:
-                    for candidate in self.candidates(pos):
-                        if (
-                            best_len
-                            and data[candidate + best_len] != data[pos + best_len]
-                        ):
-                            continue  # cannot reach best_len + 1, so cannot win
-                        length = 0
-                        while (
-                            length < cap
-                            and data[pos + length] == data[candidate + length]
-                        ):
-                            length += 1
-                        if length > best_len:
-                            best_len, best_at = length, candidate
-                            if best_len == cap:
-                                break
+                if best_len < cap and bucket:
+                    # The oldest candidate the plain walk would reach.
+                    low = len(bucket) - chain_cap
+                    lo = bucket[low if low > 0 else 0]
+                    if window is not None and lo < pos - window:
+                        lo = pos - window
+                    # The longer prefixes only hold positions from here on.
+                    start = since.get(key, pos)
+                    run = run_end[pos] - pos
+                    in_run = min_match <= run < cap
+                    bound = pos  # every candidate from here up has been ruled on
+                    while best_len < cap:
+                        j = level_for[best_len + 1] if best_len < top else deepest
+                        if bound <= start:
+                            j = 0
+                        width = levels[j]
+                        by_end = in_run and run <= best_len and width <= run
+                        if by_end:
+                            chain = run_ends.get(data[pos + run - 1 : pos + run + 1])
+                            shift = run
+                            floor = lo
+                        else:
+                            if j and indexed < pos:
+                                # Kept only once a walk wants them, which a fill
+                                # the seed covers whole never does.
+                                _index_longer(data, levels, tables, since, indexed, pos)
+                                indexed = pos
+                            chain = tables[j].get(data[pos : pos + width])
+                            shift = 0
+                            floor = start if j and start > lo else lo
+                        # A run is stepped over whole only on a chain whose prefix
+                        # is that one unit repeated: then every candidate is inside
+                        # a run of it, and every position of such a run is on the
+                        # chain, in order and contiguous.
+                        by_run = in_run and not by_end and width <= run
+                        i = bisect_left(chain, bound + shift) - 1 if chain else -1
+                        hop = False
+                        while i >= 0:
+                            candidate = chain[i] - shift
+                            if candidate < floor:
+                                break  # the rest are older still - out of reach
+                            if by_run:
+                                # The oldest position of this run the walk would
+                                # reach, and the one position in it that can win.
+                                bottom = run_start[candidate]
+                                if bottom < floor:
+                                    bottom = floor
+                                i -= candidate - bottom + 1
+                                ruled = bottom
+                                left = run_end[candidate] - candidate
+                                if left < run:
+                                    candidate = run_end[candidate] - run
+                                    if candidate < bottom:
+                                        candidate = bottom
+                            else:
+                                i -= 1
+                                ruled = candidate
+                                if (
+                                    by_end
+                                    and run_start[candidate + run - 1] > candidate
+                                ):
+                                    continue  # that run is shorter than this one
+                            if best_len:
+                                if data[candidate + best_len] != data[pos + best_len]:
+                                    continue  # cannot reach best_len + 1
+                                if (
+                                    data[candidate : candidate + best_len]
+                                    != data[pos : pos + best_len]
+                                ):
+                                    continue
+                                length = best_len + 1
+                            else:
+                                length = 0
+                            while (
+                                length < cap
+                                and data[pos + length] == data[candidate + length]
+                            ):
+                                length += 1
+                            if length > best_len:
+                                best_len, best_at = length, candidate
+                                if best_len == cap:
+                                    break
+                                # Move to a shorter chain once the match
+                                # covers a longer prefix, or reaches the run end.
+                                j_next = (
+                                    level_for[best_len + 1]
+                                    if best_len < top
+                                    else deepest
+                                )
+                                if (
+                                    in_run and run <= best_len and levels[j_next] <= run
+                                ) != by_end or (not by_end and j_next != j):
+                                    bound = ruled
+                                    hop = True
+                                    break
+                        if hop:
+                            continue
+                        if floor == lo:
+                            break
+                        # The rest are older than the longer prefix's index: they
+                        # are on the full chain alone.
+                        bound = min(bound, start)
             if best_len >= min_match:
                 lengths[pos] = best_len
                 offsets[pos] = best_at
             seed_len, seed_at = best_len, best_at
-            self.add(pos)
+            if room < min_match:
+                continue  # too near the end to index; so is every run end from here
+            # Index `pos` as `add` does, and note when this prefix's chain grows
+            # long enough for the longer prefixes to be kept under it.
+            if bucket is None:
+                index[key] = [pos]
+            else:
+                bucket.append(pos)
+                if len(bucket) > chain_cap * 2:
+                    del bucket[:-chain_cap]
+                if len(bucket) >= _LEVELS_FROM and key not in since:
+                    since[key] = pos + 1
+            if pos and run_start[pos] == pos and pos - run_start[pos - 1] >= min_match:
+                pair = data[pos - 1 : pos + 1]
+                entries = run_ends.get(pair)
+                if entries is None:
+                    run_ends[pair] = [pos]
+                else:
+                    entries.append(pos)
         return lengths, offsets
 
     def longest(self, pos: int, limit: int, min_distance: int = 1) -> tuple[int, int]:
@@ -306,6 +488,38 @@ class MatchFinder:
                 if best_len == limit:
                     break
         return best_len, best_at
+
+
+def _index_longer(
+    data: bytes | tuple[int, ...],
+    levels: list[int],
+    tables: list[dict[bytes | tuple[int, ...], list[int]]],
+    since: dict[bytes | tuple[int, ...], int],
+    start: int,
+    stop: int,
+) -> None:
+    """Index ``[start, stop)`` under the longer prefixes of ``levels[1:]``.
+
+    Only a position its prefix's chain had grown long enough to want them by —
+    ``since`` — goes in, so that which positions a longer chain holds depends on
+    the data alone, not on when the walk first asked for it.
+    """
+    n = len(data)
+    min_match = levels[0]
+    for pos in range(start, stop):
+        first = since.get(data[pos : pos + min_match])
+        if first is None or pos < first:
+            continue
+        for j in range(1, len(levels)):
+            width = levels[j]
+            if pos + width > n:
+                break
+            key = data[pos : pos + width]
+            entries = tables[j].get(key)
+            if entries is None:
+                tables[j][key] = [pos]
+            else:
+                entries.append(pos)
 
 
 def parse_greedy(

@@ -205,7 +205,7 @@ def test_rectangle_drag_selects_a_block_and_shape_switch_collapses(
     window._columns.setValue(8)
     window._rows.setValue(8)
 
-    # A linear drag first: switching shape must not reinterpret it as a block.
+    # A linear drag first: switching shape must not reinterpret it as a rectangle.
     window._on_slots_selected(0, 9)
     assert window._selection_tiles() == list(range(10))
     assert not window._canvas._selection_as_rect
@@ -216,8 +216,8 @@ def test_rectangle_drag_selects_a_block_and_shape_switch_collapses(
     _rect_shape(window, tmp_path)
     assert (window._selected_tile, window._selected_last) == (0, 0)
 
-    # Slots 0..9 now read as the corners of a 2x2 cell block, so the selection
-    # is two runs of two tiles a row apart — not the ten tiles between them.
+    # Slots 0..9 now read as the corners of a 2x2 rectangle of slots, so the
+    # selection is two runs of two tiles a row apart — not the ten between them.
     window._on_slots_selected(0, 9)
     assert window._rect_size == (2, 2)
     assert window._selection_tiles() == [0, 1, 8, 9]

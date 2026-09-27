@@ -33,13 +33,13 @@ is still the table's *k*-th distinct frame, and a notice says how many.
 
 **Grid frames** (``grid_frames = true``) are Phantasy Star II's second frame
 kind, the one its large battle enemies are drawn from: where the count byte is 0
-or has bit 7 set, the frame is instead a block of nametable words the game copies
+or has bit 7 set, the frame is instead a grid of nametable words the game copies
 into a plane::
 
     grid   = x.w  y.w  columns-1.b  rows-1.b  columns x rows cells
     cell   = a Mega Drive nametable word; 0 draws nothing
 
-drawn as 8x8 pieces on the block's grid at ``x, y``. It needs the count to be the
+drawn as 8x8 pieces on that grid, its corner at ``x, y``. It needs the count to be the
 frame's first byte, a ``u8``, and is off by default for a reason: in the Sonic 1
 layout a count of 0 is an ordinary empty frame, and reading it as a grid would
 invent pieces out of the next frame's bytes.

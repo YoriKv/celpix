@@ -667,7 +667,14 @@ def _load_reshape_preset(
                 f"engine_id {spec.get('engine_id')!r} is not a reshape engine "
                 f"(expected one of {', '.join(sorted(RESHAPE_ENGINES))})"
             )
-        reg.register(adapt(spec))
+        plugin = adapt(spec)
+        # An engine id names the adapter, not a plugin: a preset registered under
+        # one would read, in a project file, as the engine itself.
+        if plugin.info.id in RESHAPE_ENGINES:
+            raise ValueError(
+                f"id {plugin.info.id!r} is a reshape engine's; give the preset its own"
+            )
+        reg.register(plugin)
     except Exception as exc:  # noqa: BLE001 — report, don't abort startup
         issues.append(PluginLoadIssue(str(path), f"reshape preset load failed: {exc}"))
 

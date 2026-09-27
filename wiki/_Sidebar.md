@@ -21,3 +21,7 @@
 - [Compress & Reshape](Compress-and-Reshape)
 - [Text and Fonts](Text-and-Fonts)
 - [Sprites](Sprites)
+
+**Reference**
+
+- [Project File Format](Project-File-Format)

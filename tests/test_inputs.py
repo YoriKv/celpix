@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
+import pytest
+
 from celpix.core.context import (
     KEY_DECOMPRESS_COMPLETE,
     KEY_INPUTS,
@@ -441,3 +443,70 @@ def test_the_scan_probes_with_the_bindings_it_is_given() -> None:
     assert pipeline.find_next_structure(data, plugin, 8, 0).found is None
     hit = pipeline.find_next_structure(data, plugin, 8, 3, inputs={"table": table})
     assert hit.found == 3
+
+
+def test_a_side_array_is_offered_only_where_the_preset_places_its_bits(
+    tmp_path,
+) -> None:
+    """The packed engine declares its side array once, for every preset on it,
+    and only a preset stating ``side_fields`` offers it: the Inputs window, the
+    resolver and a save all ask the same gate. Bound, the side bits join the cell
+    above its own — a palette row, a flip, and an index's bank bit beside the
+    cell's low byte — and follow the array through an edit, since an input is
+    never written back: an edit keeps the bits the cell owns, loses the rest to
+    the array, and an encode handed the unsettled cell refuses it."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.plugins.base import Preset
+    from celpix.plugins.builtins.tilemap_codec import TILEMAP_ENGINE, TilemapCodec
+    from celpix.project.workspace import tilemap_config_for
+
+    reg = default_registry()
+    side = Preset(
+        "preset.tilemap.test-side",
+        "Side array test",
+        Stage.INTERPRET_TILEMAP,
+        TILEMAP_ENGINE,
+        {"fields": "iiii iiii", "side_fields": "ovh. ippp", "side_cells": 2},
+    )
+    reg.register_preset(side)
+    rom = tmp_path / "rom.bin"
+    body = bytearray(0x300)
+    body[0x100:0x102] = bytes((0b0010_1001, 0b0000_0011))  # h, bank 1, row 1 | row 3
+    body[0x200:0x204] = bytes((5, 6, 7, 8))
+    rom.write_bytes(bytes(body))
+    ws = Workspace()
+    parent = ws.open_file(str(rom))
+    sl = ws.add_slice(parent.path, "map", 0x200, 4)
+    sl.content_kind = ContentKind.TILEMAP
+    sl.tilemap_preset_id = "preset.tilemap.index-8bit"
+    assert declared_inputs(sl, reg) == []
+
+    sl.tilemap_preset_id = side.id
+    [offered] = declared_inputs(sl, reg)
+    assert offered.plugin_id == TILEMAP_ENGINE
+    assert [spec.key for spec in offered.specs] == ["side_array"]
+    sl.inputs = {TILEMAP_ENGINE: {"side_array": RegionBinding(offset=0x100, length=2)}}
+    loaded = pipeline.load_tilemap_data(tilemap_config_for(sl, side.id, reg, ws), reg)
+    cells = loaded.cells
+    assert [(c.index, c.palette_row, c.flip_h) for c in cells] == [
+        (0x105, 1, True),
+        (0x106, 1, True),
+        (7, 3, False),
+        (8, 3, False),
+    ]
+
+    # Tile 3 with row 2 painted over the first cell: the low byte is the cell's,
+    # the bank bit and the row are the array's.
+    moved = [replace(cells[0], index=3, palette_row=2), *cells[1:]]
+    settled = loaded.settler(moved)
+    assert (settled[0].index, settled[0].palette_row) == (0x103, 1)
+    assert loaded.settler(settled) is settled
+    codec = TilemapCodec()
+    assert codec.encode(settled, side.params, loaded.ctx) == bytes((3, 6, 7, 8))
+    with pytest.raises(ValueError, match="side array"):
+        codec.encode(moved, side.params, loaded.ctx)
+
+    # The preset moved on: the input is no longer offered, and a save drops it.
+    sl.tilemap_preset_id = "preset.tilemap.index-8bit"
+    assert resolve_inputs(sl, Stage.INTERPRET_TILEMAP, TILEMAP_ENGINE, reg).values == {}
+    assert prune_bindings(sl, reg) == {}

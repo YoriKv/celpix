@@ -47,14 +47,17 @@ record = [
 # Required. Each frame's header and where its part count sits in it.
 frame_header = { bytes = 1, count_at = 0, count_type = "u8" }
 
-# A second frame kind: where the count byte is 0 or has bit 7 set, the frame is
-# a block of Mega Drive nametable words instead of parts:
+# A second frame kind: where the frame's first byte is 0 or has bit 7 set, the
+# frame is a grid of Mega Drive nametable words instead of parts. The grid has
+# no count: its header starts at that same first byte, so the byte tested is
+# the high byte of x (big-endian, the default):
 #
 #   x.w  y.w  columns-1.b  rows-1.b  then columns x rows words (0 = empty)
 #
-# drawn as 8x8 tiles on a grid at x, y. Needs frame_header's count to be a u8
-# at count_at = 0. Default false: with it on, an ordinary empty frame (count 0)
-# is read as a grid.
+# drawn as 8x8 tiles at x, y. Needs frame_header's count to be a u8 at offset
+# 0 (count_at = 0), so that an ordinary frame's first byte is its count.
+# Default false: with it on, an ordinary empty frame (count 0) is read as a
+# grid.
 # grid_frames = true
 
 # Palette row that a part's row 0 means. Default 0.

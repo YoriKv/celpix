@@ -50,11 +50,13 @@ Declarations. Facts celPix needs before decoding go in
   ``subsprite_size``    "stated": sprite parts carry their own size
   ``palette_row_base``  palette row that a cell's row 0 means
   ``indirect``, ``source_hint``, ``stamp_cells``, ``stamp_dense``,
-  ``column_major``, ``cell_row_stride``: as described in _packed.toml
+  ``column_major``, ``cell_row_stride``, ``cell_column_stride``,
+  ``offered_stamp_cells``, ``stamp_stride``, ``stamp_order``,
+  ``record_shape``, ``record_order``: as described in _packed.toml
 Example: ``FormatInfo(id=..., name=..., declares={"layout": "text"})``.
 A format takes no parameters: values its own methods use are class constants.
-The packed engine's other params (``stamp_stride``, ``record_shape``, page
-geometry) have no effect as declarations.
+The packed engine's own params (``fields``, ``legend``, ``bytes``, ``endian``,
+page geometry) have no effect as declarations.
 
 Inputs. A format that needs data from outside its bytes declares
 ``FormatInfo(..., inputs=(InputSpec(...),))``; see ``compression/_inputs.py``.

@@ -13,6 +13,7 @@ from celpix.core.context import (
 from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
+from celpix.plugins import discovery
 from celpix.plugins.base import NO_RESHAPE, FileRef, PluginInfo
 from celpix.plugins.bitswap import (
     MAX_BITS,
@@ -659,8 +660,32 @@ def test_split_preset_joins_tables_stored_end_to_end() -> None:
         {"parts": 4, "groups": 3, "clockwise": True},  # "around" needs two rows
         {"parts": 4, "lock_columns": True},  # one group has no rows to lock
         {"parts": 4, "clockwise": "yes"},
+        {"parts": 2, "units": 2},  # misspelt: would join byte-wise, silently
     ],
 )
 def test_split_preset_rejects_numbers_it_cannot_mean(params: dict) -> None:
     with pytest.raises(ValueError):
         split_parts_from_spec(_split_spec(**params))
+
+
+def test_reshape_preset_needs_an_id_and_name_of_its_own(tmp_path) -> None:
+    """The id is what a project stores to name the plugin: missing, it must be
+    reported as such rather than as a bare key error; a number would register
+    under a key no project can spell back; and an engine's id would read as the
+    engine itself."""
+    spec = _split_spec(parts=2)
+    for bad in ({"id": 5}, {"name": ""}, {"category": 3}):
+        with pytest.raises(ValueError, match=next(iter(bad))):
+            split_parts_from_spec(spec | bad)
+    with pytest.raises(ValueError, match="id is required"):
+        split_parts_from_spec({k: v for k, v in spec.items() if k != "id"})
+
+    (tmp_path / "reshape").mkdir()
+    (tmp_path / "reshape" / "mine.toml").write_text(
+        f'id = "{SPLIT_PARTS_ENGINE}"\nname = "Mine"\n'
+        f'engine_id = "{SPLIT_PARTS_ENGINE}"\n[params]\nparts = 2\n'
+    )
+    reg = default_registry()
+    issues = discovery.load_directory(reg, str(tmp_path))
+    assert [i.message for i in issues if "reshape engine's" in i.message]
+    assert SPLIT_PARTS_ENGINE not in {p.info.id for p in reg.plugins(Stage.RESHAPE)}

@@ -84,6 +84,16 @@
     "interpret-palette": {},
     "interpret-pixel": {},
     "interpret-tilemap": {
+      "codec.tilemap.packed": [
+        {
+          "key": "side_array",
+          "kind": "region",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "required": false,
+          "stride": 1
+        }
+      ],
       "codec.tilemap.sprite-table": [
         {
           "key": "frames",

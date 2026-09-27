@@ -1315,7 +1315,7 @@ def _pieces_from(raw: dict) -> list[tuple[CompositePiece, int]]:
     out: list[tuple[CompositePiece, int]] = []
     for item in items:
         if not isinstance(item, dict):
-            out.append((CompositePiece(), 0))
+            out.append((CompositePiece(), -1))
             continue
         # ``length`` on a source *is* a range — the writer omits it for a whole
         # entry — so a file that carries one pins that run to those bytes.

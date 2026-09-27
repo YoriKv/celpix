@@ -67,6 +67,7 @@ __all__ = [
     "input_specs",
     "iter_bindings",
     "names_entry",
+    "offered_specs",
     "plugin_id_at",
     "prune_bindings",
     "resolve_inputs",
@@ -193,6 +194,28 @@ def input_specs(
     return tuple(plugin.info.inputs)
 
 
+def offered_specs(
+    specs: tuple[InputSpec, ...], entry: Entry, registry: Registry
+) -> tuple[InputSpec, ...]:
+    """``specs`` narrowed to what ``entry``'s cell format offers.
+
+    An engine's input naming a ``when_param`` is offered only where the entry's
+    tilemap preset states that parameter (:class:`~celpix.plugins.base.InputSpec`),
+    so the one question — does this entry have this input at all — is answered
+    here for the Inputs window, the resolver and the save alike. A preset this
+    build has not got states nothing.
+    """
+    if not any(spec.when_param for spec in specs):
+        return specs
+    try:
+        params = registry.preset(entry.tilemap_preset_id or "").params
+    except KeyError:
+        params = {}
+    return tuple(
+        spec for spec in specs if not spec.when_param or spec.when_param in params
+    )
+
+
 def engine_id_of(registry: Registry, preset_id: str | None) -> str:
     """The code plugin behind an interpret preset, or ``""`` for none.
 
@@ -235,6 +258,7 @@ def declared_inputs(entry: Entry, registry: Registry) -> list[StageInputs]:
     for stage in INPUT_STAGES:
         plugin_id = plugin_id_at(entry, stage, registry)
         specs = input_specs(registry, stage, plugin_id) if plugin_id else ()
+        specs = offered_specs(specs, entry, registry)
         if specs:
             out.append(StageInputs(stage, plugin_id, specs))
     return out
@@ -311,6 +335,10 @@ def prune_bindings(entry: Entry, registry: Registry) -> dict[str, Bindings]:
             continue
         specs = _specs_any_stage(registry, plugin_id)
         if specs is not None:
+            # A file keeps every codec's preview bindings, and has no one preset
+            # to narrow them by; anything else keeps what its format offers.
+            if entry.kind not in (EntryKind.FILE, EntryKind.PALETTE):
+                specs = offered_specs(specs, entry, registry)
             keys = {spec.key for spec in specs}
             bindings = {k: v for k, v in bindings.items() if k in keys}
         if bindings:
@@ -352,7 +380,7 @@ def resolve_inputs(
     and a named entry is checked for being open; without one the file is the
     source and every named entry is taken on trust.
     """
-    specs = input_specs(registry, stage, plugin_id)
+    specs = offered_specs(input_specs(registry, stage, plugin_id), entry, registry)
     bindings = entry.inputs.get(plugin_id, {})
     values: dict[str, bytes | int] = {}
     problems: list[InputProblem] = []

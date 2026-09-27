@@ -17,6 +17,13 @@ The sum is recomputed after the edited bytes are spliced in, so what is summed
 is the file as it will exist. A file with no ``SEGA`` at ``$100``/``$101`` is
 written through untouched: there is no header to keep current, and inventing one
 would corrupt whatever the file actually is.
+
+So is a **Mega-CD disc image**. Its first sector carries the same header layout
+at ``$100``, ``SEGA`` included, so detection, which matches on that magic,
+claims a 2048-byte-sector image too; but no loop sums a disc, and ``$18E``
+there is the disc's own data. The disc opens with a system identifier a
+cartridge's vector table never spells (:func:`is_disc_image`), and a save
+checks for it before touching anything.
 """
 
 from __future__ import annotations
@@ -41,9 +48,25 @@ CHECKSUM_AT = 0x18E  # big-endian word
 ROM_END_AT = 0x1A4  # big-endian long: the last ROM address, inclusive
 SUM_START = 0x200  # the vector table and the header itself are not summed
 
+# The system identifiers a Mega-CD disc's first sector opens with. A cartridge
+# starts with its initial stack pointer, which is never this text. ``SEGADISC``
+# also covers ``SEGADISCSYSTEM``, the one every retail disc carries.
+DISC_IDS = (b"SEGADISC", b"SEGABOOTDISC", b"SEGADATADISC")
+# At the start of a 2048-byte-sector image, or past the 16-byte sync and sector
+# header of a raw 2352-byte-sector one.
+DISC_ID_AT = (0x00, 0x10)
+
+
+def is_disc_image(rom: bytes) -> bool:
+    """Whether ``rom`` is a Mega-CD disc image rather than a cartridge."""
+    return any(rom.startswith(DISC_IDS, at) for at in DISC_ID_AT)
+
 
 def has_header(rom: bytes) -> bool:
-    """Whether ``rom`` carries the ``SEGA`` marker the checksum lives beside."""
+    """Whether ``rom`` is a cartridge carrying the ``SEGA`` marker the checksum
+    lives beside."""
+    if is_disc_image(rom):
+        return False
     return any(rom[at : at + len(MAGIC)] == MAGIC for at in MAGIC_AT)
 
 
@@ -106,6 +129,15 @@ class MdRomContainer:
         self, source: ReadSource, ctx: PipelineContext
     ) -> tuple[ContainerField, ...]:
         raw = source.data
+        if is_disc_image(raw):
+            return (
+                ContainerField(
+                    "Header",
+                    "Mega-CD disc image",
+                    "A disc, not a cartridge: its header has no checksum a\n"
+                    "game sums, and a save writes the bytes through untouched.",
+                ),
+            )
         if len(raw) < SUM_START or not has_header(raw):
             return (
                 ContainerField(

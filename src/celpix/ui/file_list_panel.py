@@ -393,6 +393,8 @@ class FileListPanel(QWidget):
     edit_composite_requested = Signal(object)  # Entry (a COMPOSITE) — re-list it
     new_composite_requested = Signal(object)  # list[Entry] — assemble one from these
     jump_to_source_requested = Signal(object)  # Entry (a SLICE) — show it in its parent
+    # CompositePiece — open the piece's entry at the first byte the piece takes
+    jump_to_piece_requested = Signal(object)
     jump_to_bookmark_requested = Signal(object)  # Entry (a BOOKMARK) — apply + jump
     bookmark_as_palette_requested = Signal(object)  # Entry (BOOKMARK) — offset palette
     show_in_manager_requested = Signal(object)  # Entry — reveal its file on disk
@@ -1778,6 +1780,37 @@ class FileListPanel(QWidget):
         )
         return sliceable
 
+    def _add_piece_jump_menu(self, menu: QMenu, entry: Entry) -> None:
+        """Jump to Source on a composite: one row per piece, in list order.
+
+        A composite has as many sources as it has pieces, so the slice's single
+        row becomes a submenu naming each. The same entry may appear twice with
+        different ranges — each run is its own row, since where it lands is the
+        difference. Pads name nothing and are left out; a piece whose entry has
+        been closed stays listed but dead, because the composite still counts
+        its bytes and an undo can bring the entry back. With no piece to go to
+        the submenu is dead as a whole rather than missing, so the gesture stays
+        where the user learned it.
+        """
+        sub = menu.addMenu("&Jump to Source")
+        for piece in entry.pieces:
+            source = piece.entry
+            if source is None:
+                continue
+            # Doubled so a name holding "&" shows it rather than a mnemonic.
+            label = source.name.replace("&", "&&")
+            if piece.is_ranged:
+                last = piece.offset + piece.extent
+                label += f"  [{format_hex(piece.offset)}\u2013{format_hex(last)}]"
+            self._entry_action(
+                sub,
+                label,
+                self.jump_to_piece_requested.emit,
+                piece,
+                enabled=source in self._items,
+            )
+        sub.setEnabled(any(a.isEnabled() for a in sub.actions()))
+
     def _add_use_as_palette_action(self, menu: QMenu, entry: Entry) -> None:
         """Use as Palette, beside the row's own way of being used.
 
@@ -2054,15 +2087,17 @@ class FileListPanel(QWidget):
             self._add_write_action(menu, entry)
             menu.addSeparator()
         elif entry.kind is EntryKind.COMPOSITE:
-            # No New Slice and no Jump to Source: a composite has no file behind
-            # it, so there is neither a coordinate space to anchor a slice in nor
-            # a source to jump to (``docs/design/composite-entry.md``). Edit…
-            # re-lists its pieces, and Write goes out through them.
+            # No New Slice: a composite has no file behind it, so there is no
+            # coordinate space to anchor a slice in, and Jump to Source is a
+            # submenu of its pieces rather than one parent
+            # (``docs/design/composite-entry.md``). Edit… re-lists its pieces,
+            # and Write goes out through them.
             #
             # Filed under Palettes, a click no longer opens it, so there has to
             # be a way to say so: **Open** is that way, and it is offered only
             # there, since everywhere else the row's own click already is it.
             self._add_open_swatches_action(menu, entry)
+            self._add_piece_jump_menu(menu, entry)
             self._add_use_as_palette_action(menu, entry)
             menu.addSeparator()
             # Over a selection only: a composite is never a piece of another.
