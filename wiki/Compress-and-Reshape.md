@@ -82,29 +82,16 @@ use the pair open view-only.
 <summary><code>plugins/reshape/smw_screens.py</code>: SMW level screens (16x27) laid across</summary>
 
 ```python
-"""A level's Map16 buffer, walked into the picture it describes.
+"""A level's Map16 buffer, laid out as the picture it describes.
 
-**The buffer is addressed in screens.** A level's Map16 tilemap is a run of 16x27
-**screens** laid side by side — a ``$1B0`` screen stride
-(``docs/smw/level-format.md``, "Screen base addresses"). Read straight through, a
-two-screen background stacks its right half under its left. This lays every
-screen the buffer holds across one row, so the cell grid is the picture.
+The buffer is a run of 16x27-cell screens, ``$1B0`` bytes each. Read straight
+through, a two-screen background stacks its right half under its left; this
+lays every screen side by side in one row. A partial trailing screen stays in
+place.
 
-It is a reshape because that is all it is: a length-preserving permutation of the
-whole region, exactly reversible. It is *code* rather than a ``reshape.bitswap``
-table because a screen is 27 rows — not a power of two — and an address-line
-permutation can only express walks that are
-(``docs/design/reshape-stage.md``). The overworld's Layer 1 has the same job over
-16x16 pages, and that one *is* a table: ``smw-ow-map16-pages.toml`` beside this.
-
-**It does not run in the Reshape slot.** That stage sits before decompression, so
-there it would permute the packed stream. The Layer 2 backgrounds are RLE1
-streams, so this is the second half of a **Compress & Reshape** pair —
-``plugins/compression/smw-bg-tilemap.toml`` names the shipped RLE1 and this, and
-the pair runs decompress -> reshape on load and unshape -> compress on save
-(``docs/design/plugin-system.md``). A paged tilemap format could not take the job
-instead: these maps are dense-stamped, one byte per 16x16 block, and a page
-assembly states its width in cells, which would draw them at half size.
+The Reshape stage runs before decompression, and these backgrounds are RLE1
+streams, so this is used as the second half of a Compress & Reshape pair:
+decompress then reshape on load, unshape then compress on save.
 """
 
 from celpix.core.context import PipelineContext

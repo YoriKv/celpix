@@ -105,7 +105,7 @@ def test_a_sprite_object_opens_and_draws_its_frames_one_after_another(
     """An OBJ is a tilemap entry like a screen — same binding, same palette, same
     save path — but its cells are parts at pixel offsets, so the view lays the
     frames out in a strip instead of composing a grid
-    (``docs/design/tilemap-entry.md`` §6)."""
+    (``docs/design/sprite-map.md`` §1)."""
     from celpix.core.capabilities import ContentKind
     from celpix.project.workspace import TileMode, TileSource
 

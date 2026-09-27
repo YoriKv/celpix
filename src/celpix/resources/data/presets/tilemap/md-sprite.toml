@@ -4,7 +4,7 @@
 # `layout = "sprite"` is the whole of what makes this a sprite map rather than a
 # grid — its cells are pieces at pixel offsets, so there is no width to lay them
 # out at and the codec hands over finished frames instead
-# (`docs/design/tilemap-entry.md` §6). `subsprite_size = "stated"` is the second
+# (`docs/design/sprite-map.md` §2). `subsprite_size = "stated"` is the second
 # half of that: this record names each piece's rectangle outright, so there is no
 # size pair to resolve a size *bit* against and the bar's Subsprite spins go.
 #

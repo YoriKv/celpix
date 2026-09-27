@@ -8,7 +8,7 @@ paid dozens of times and never gets easier, so it is stored — app-wide in
 QSettings, beside the theme and the grid (``docs/design/architecture.md``), and
 never in the project file: a project restores the editing *session*, not the
 window chrome, and the same project opened on a laptop should not drag a
-desktop's window across (``docs/design/project-format.md`` §11).
+desktop's window across (``docs/design/project-format.md`` §7).
 
 **Written on a short delay, not at quit.** Two reasons, and the first is that a
 dock separator dragged to a new width emits no signal at all — there is nothing

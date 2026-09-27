@@ -169,6 +169,11 @@ Unknown or missing `kind` reads as `file`.
 | `view` | ○ | ○ | ○ | ○ | ○ |
 | `palette` | ○ | ○ | ○ | – | ○ |
 
+The matrix is what the editor produces. `file`, `slice` and `bookmark` records are
+read through one path, so a key the editor never sets on a bookmark
+(`reshape_id`, `content_kind`, `palette_row_base`, `font`, the tilemap keys) is
+still read there and written back when present.
+
 Required keys: an entry without them is skipped (`path`) or opens on defaults.
 
 | `kind` | Required |
@@ -311,7 +316,7 @@ Binding shapes (determined by type and keys present):
 | Flag | `true` \| `false` | — |
 | Literal integer | int | — |
 | Region | `{"offset": int, "length": int}` | `offset` ≥ 0, `length` ≥ 0 |
-| Integer from bytes | `{"offset": int, "width": int, "endian": "big" \| "little"}` | `offset` ≥ 0, `width` 1–8. `endian` other than `"little"` reads as big. Presence of `width` selects this shape |
+| Integer from bytes | `{"offset": int, "width": int, "endian": "big" \| "little"}` | `offset` ≥ 0, `width` ≥ 1. A `width` over 8 loads, but the input fails to resolve and the entry opens degraded. `endian` other than `"little"` reads as big. Presence of `width` selects this shape |
 
 - Region and integer-from-bytes: `offset` is absolute from byte 0 of the entry's own file.
 - Optional `entry_index` (entry ref) on either: offset is into that entry's resolved data instead.
@@ -374,12 +379,12 @@ Shape selected by `session.palette_mode`:
 - Color codec: `session.palette_preset_id`, except `emulator`, where the detected console decides.
 - Read precedence when keys are mixed: `colors` → `path` → `entry` → `offset`.
 - Any unparseable color in `colors`: the whole object is ignored (default palette).
-- `entry` mode, valid source: an entry that can be shown, has `content_kind` `"pixels"`, is not a `palette` entry, and is not this entry. Otherwise the default palette is used.
+- `entry` mode: never on a `palette` entry. Valid source: any other entry that can be shown (not a `bookmark`), has `content_kind` `"pixels"`, and is not this entry — a `palette` entry and its slices qualify. Otherwise the default palette is used.
 - Missing `file`/`emulator` file: default palette is used; the reference is kept and re-written on save.
 
 ### 5.14 Tilemap keys
 
-Read only when `content_kind` is `"tilemap"`.
+Written only when `content_kind` is `"tilemap"`. Read on any `file`/`slice` record; a non-tilemap entry drops them on the next save.
 
 | Key | Type | Default | Written | Meaning |
 |---|---|---|---|---|
@@ -417,6 +422,7 @@ Copying entries places the same Entry records on the clipboard.
 | Property | Value |
 |---|---|
 | MIME type (entries) | `application/x-celpix-entries` |
+| MIME type (Copy Inputs) | `application/x-celpix-inputs` |
 | Envelope | `{"version": 1, "session": string, "entries": [Entry, ...]}` |
 | Envelope for Copy Inputs | `{"version": 1, "session": string, "inputs": {…}}` (§5.10 shape) |
 | `version` | Clipboard version, independent of the project version. Any other value: nothing to paste |

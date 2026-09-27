@@ -204,7 +204,9 @@ class PaletteRegionsMixin:
         # through row 5 does not tell you it *is* row 5 — several rows often
         # share their first colors, and a bank seeded from a file's own table
         # (`session._seed_tile_palette_rows`) can carry dozens of them. So the
-        # number can be shown without the recolor, and either without the other.
+        # recolor can be shown without the numbers. Not the reverse on a pixel
+        # view: a pin's number with its colors off would name a row the tile is
+        # not drawn through, so the labels follow the recolor there.
         #
         # Not "pinned" rows: what it numbers is every *named* row, which on a
         # tilemap is the cells' own (`rendering._palette_row_labels`). The

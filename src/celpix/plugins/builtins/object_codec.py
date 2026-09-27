@@ -63,7 +63,7 @@ SPR_FORMAT = "format.tilemap.ys-spr"
 # `layout` says the cells are freely-placed subsprites grouped into frames rather
 # than positions in a grid, which decides how the entry is read before a byte is
 # decoded — so the bar can describe an object with nothing yet bound to it
-# (`docs/design/tilemap-entry.md` §6).
+# (`docs/design/sprite-map.md` §1).
 #
 # `palette_row_base` says a sprite's 3-bit palette field counts from CGRAM row 8,
 # the console keeping OBJ palettes in the upper half (`snes-hardware-notes.md`

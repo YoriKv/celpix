@@ -4,7 +4,7 @@ A sprite map's canvas shows its frames: the object assembled, which is a picture
 of what the file *draws*. A frame is a heap of subsprites at signed pixel offsets
 and the front ones cover the back ones, so it is not a picture of what the file
 *holds*. This is that — one square per record, in frame order, repeats included
-(``docs/design/tilemap-entry.md`` §6).
+(``docs/design/sprite-map.md`` §5).
 
 It is a `Qt.Tool` window on the animation player's pattern
 (:mod:`celpix.ui.animation_overlay`): floats above the main window, takes no

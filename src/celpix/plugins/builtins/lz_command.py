@@ -20,8 +20,9 @@ Commands (``length`` output bytes each):
 
 The two family members differ only in the backreference offset's byte order:
 **LZ1 is little-endian, LZ2 big-endian**. Everything else is shared, so both
-plugins parameterise one engine. Encoding details and provenance:
-``docs/graphics-formats-reference/implementation-guide.md`` §7.
+plugins parameterise one engine. Format and provenance:
+``docs/graphics-formats-reference/implementation-guide.md`` §7; encoding details:
+``docs/graphics-formats-reference/snes-lz-compressor-parses.md``.
 
 Any stream that round-trips is valid, so the parse — which command to emit where
 — is a free choice the format does not constrain, and there are two worth making.

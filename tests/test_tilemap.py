@@ -1243,7 +1243,7 @@ def test_the_subsprite_sheet_can_collapse_the_repeats_to_the_art_behind_them() -
 def test_a_sprite_object_is_view_only() -> None:
     """A canvas position resolves to a *subsprite* through an overlap order rather
     than to a cell through a grid, so what an edit would change is not settled
-    (``docs/design/tilemap-entry.md`` §9)."""
+    (``docs/design/sprite-map.md`` §8)."""
     from celpix.core.sprite import Subsprite
 
     doc = _sprite_doc([Cell(index=1)], [(Subsprite(index=1),)])

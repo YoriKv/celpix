@@ -65,8 +65,8 @@ attribute row's upper half addresses tile rows 30 and 31, which do not exist.
 Those bits are real bytes in the file, and they belong to the **page** rather
 than to any cell — which is why they are not in
 :attr:`~celpix.core.tilemap.Cell.flags`, whose contract is bits of *that cell's
-own record* (``docs/design/tilemap-entry.md`` §6, "Attribute bit 0 is carried,
-never recomputed"). A cell travels: eyedrop the carrier and stamp it somewhere
+own record* (``docs/design/tilemap-entry.md`` §6, "NES nametable",
+"The bits no cell reaches"). A cell travels: eyedrop the carrier and stamp it somewhere
 else and its bits would land on a block that has no room for them, over live
 colour fields, while the position they came from would save as zero. Both
 failures are silent, because the model agrees with itself either way.

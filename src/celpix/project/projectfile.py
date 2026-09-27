@@ -600,7 +600,7 @@ def _palette_dict(
     return {"offset": palette.offset}
 
 
-# -- the clipboard form (docs/design/project-format.md §6) -----------------
+# -- the clipboard form (docs/design/project-format.md §6a) ----------------
 #: Bumped only on an incompatible change to the payload below. A copy taken by
 #: another build reads as "nothing to paste" rather than as garbage entries.
 CLIPBOARD_VERSION = 1
@@ -813,7 +813,7 @@ def load_project(path: str) -> LoadedProject:
     index = _int(data.get("current"), -1)
     current = parsed[index] if 0 <= index < len(parsed) else None
     if current is not None and not current.kind.has_document:
-        # A bookmark or palette can't be shown; a hand-edited index degrades.
+        # A bookmark can't be shown; a hand-edited index degrades.
         current = None
     # Tolerate a missing/garbage filter: unknown ids are harmless (they just name
     # presets this build may not have) and a non-list degrades to no filter.
@@ -1371,9 +1371,10 @@ def _bind_palette_entries(raw_entries: list, parsed: list[Entry | None]) -> None
     composite assembling its colours — which is why this runs as a second pass
     rather than inside :func:`_entry_from_dict`. A position naming nothing, or
     naming something that cannot supply a palette
-    (:func:`~celpix.project.workspace.can_supply_palette` — a map, a bookmark, a
-    palette file, or the entry itself), leaves the source naming nothing and the
-    entry opens on the default palette with the load's usual notice.
+    (:func:`~celpix.project.workspace.can_supply_palette` — a map, a bookmark,
+    the entry itself, or any source when the entry is a palette file), leaves the
+    source naming nothing and the entry opens on the default palette with the
+    load's usual notice.
 
     ``palette_entry`` is set alongside the pending source, so the reverse lookup
     answers for an entry nobody has activated yet.

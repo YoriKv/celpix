@@ -3,7 +3,7 @@
 # Four ROMs, one bitplane each, for 4bpp-planar; also MAME's ROM_LOAD32_BYTE,
 # four chips feeding one byte lane each of a 32-bit bus.
 # The split is a fraction of the region, so apply it to exactly the graphics
-# region (docs/design/reshape-stage.md §7).
+# region (docs/design/reshape-stage.md §1).
 id = "reshape.split-planes-4"
 name = "Split bitplanes (4 ROMs, join)"
 engine_id = "reshape.split-parts"

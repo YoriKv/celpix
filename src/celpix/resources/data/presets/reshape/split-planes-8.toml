@@ -4,7 +4,7 @@
 # lane each of a 64-bit bus, the same interleave with a larger N. There is no
 # seven-part preset because no driver splits a region into sevenths.
 # The split is a fraction of the region, so apply it to exactly the graphics
-# region (docs/design/reshape-stage.md §7).
+# region (docs/design/reshape-stage.md §1).
 id = "reshape.split-planes-8"
 name = "Split bitplanes (8 ROMs, join)"
 engine_id = "reshape.split-parts"

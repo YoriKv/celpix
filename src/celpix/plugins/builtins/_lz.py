@@ -1,9 +1,10 @@
 """The match search every LZ compressor here runs, once — and its decode-side twin.
 
-Three built-in schemes encode back-references — a 4 KiB ring LZSS, PRS, and the
-command-byte LZ — and they differ entirely in how a match is *written* and not at
-all in how one is *found*. The finding half is what lives here: an index from a
-fixed-width byte prefix to the recent positions that share it, a bounded walk of
+Every built-in LZ-family scheme encodes back-references — ring LZSS, PRS, the
+command-byte LZ, Kosinski, RNC and the rest — and they differ entirely in how a
+match is *written* and not at all in how one is *found*. The finding half is what
+lives here: an index from a fixed-width byte prefix to the recent positions that
+share it, a bounded walk of
 that chain newest-first, and an overlap-aware length count.
 
 The same overlap has to be *reproduced* on the way back out, so :func:`copy_from`

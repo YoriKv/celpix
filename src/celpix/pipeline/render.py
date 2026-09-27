@@ -1412,8 +1412,8 @@ def sprite_hit(
     tile-aligned, and they overlap. A slot cannot answer it — one 8x8 square of
     the sheet routinely holds pieces of three subsprites — which is why the
     canvas reports the pixel for this, and why the pixel is also the unit a
-    stroke through a sprite writes back in (``docs/design/tilemap-entry.md``
-    §8.5).
+    stroke through a sprite writes back in (``docs/design/sprite-map.md``
+    §7).
 
     **Front to back, and what is drawn wins.** The file lists a frame's
     subsprites topmost-first, so the walk is in file order; but index 0 is

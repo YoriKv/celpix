@@ -36,9 +36,9 @@ Four things a reader has to get right and would not guess:
 The trailing regions are preserved verbatim rather than regenerated, and they are
 not padding. A screen's 0x200 trailer and a PNL panel's 0x8000 second table are
 both **visibility tables** — a per-cell "draw this / don't", which cannot be
-derived from the tile data and would be destroyed by regenerating it. celPix has
-no per-cell visibility to map them onto yet, so they ride through untouched
-(``scgcad-formats.md`` §2.1, §3.2).
+derived from the tile data and would be destroyed by regenerating it. They sit
+outside the payload the cell codec is handed, so they are not read into
+``Cell.visible``; they ride through untouched (``scgcad-formats.md`` §2.1, §3.2).
 """
 
 from __future__ import annotations
@@ -427,9 +427,9 @@ class ScrContainer:
                 "Clear codes",
                 f"{format_size(max(0, len(data) - SCR_HEADER_AT - HEADER))}"
                 f" at {format_hex(SCR_HEADER_AT + HEADER, 4)}, preserved",
-                "A per-cell draw/don't-draw the artist set. celPix has no\n"
-                "per-cell visibility to map it onto, so it rides through a\n"
-                "save untouched rather than being regenerated.",
+                "A per-cell draw/don't-draw the artist set. It sits outside\n"
+                "the cells celPix reads, so every cell is drawn and the\n"
+                "table rides through a save untouched.",
             ),
         )
 
@@ -469,8 +469,9 @@ class PnlContainer:
     That it marks only 8% of populated cells is the point rather than a puzzle,
     the rest of the 16,384-cell grid being unregistered scratch.
 
-    It still rides through untouched, because celPix has no per-cell visibility to
-    map it onto and regenerating it would mean re-running the allocator. So a
+    It still rides through untouched, not read into ``Cell.visible``: it sits
+    outside the payload the cell codec is handed, and keeping it true across an
+    edit would mean re-running the allocator. So a
     panel here draws cells the tool would have left blank; what a save writes is
     what it read.
 

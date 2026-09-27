@@ -2291,7 +2291,9 @@ def test_a_project_with_its_own_regions_is_not_overwritten_by_the_file(
 
 def test_the_pinned_palette_toggles_are_two_separate_switches(qtbot, tmp_path) -> None:
     """Seeing a tile drawn through row 5 does not tell you it *is* row 5, so the
-    number can be shown without the recolour and either without the other."""
+    numbers are a switch of their own — but on a pixel view they follow the
+    recolour, since a pin's number with its colours off would name a row the
+    tile is not drawn through."""
     window = MainWindow()
     qtbot.addWidget(window)
     assert window._show_palette_regions_action.text() == "S&how Pinned Palette Colors"
@@ -2308,9 +2310,10 @@ def test_the_pinned_palette_toggles_are_two_separate_switches(qtbot, tmp_path) -
     assert window._canvas._palette_rows
     assert set(window._canvas._palette_rows) == {3}
 
-    # Turning the colours off leaves the labels: they are separate questions.
+    # Turning the colours off takes the labels with them: nothing pinned is
+    # applied, so there is no row to name.
     window._show_palette_regions_action.setChecked(False)
-    assert window._canvas._palette_rows is None  # nothing pinned is *applied*...
+    assert window._canvas._palette_rows is None
     window._show_palette_regions_action.setChecked(True)
     assert window._canvas._palette_rows
 

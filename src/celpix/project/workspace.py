@@ -2338,8 +2338,8 @@ def can_supply_palette(entry: Entry, candidate: Entry) -> bool:
     read out of a ROM is a run of colour words wherever it sits, so a file, a
     slice of one and a composite view assembling several all qualify, and the
     source need not be showing itself as swatches. What is excluded is what has
-    no buffer of its own to read — a bookmark, a palette entry — and a tilemap,
-    whose ``pixel_data`` is a borrowed copy of somebody else's art.
+    no buffer of its own to read — a bookmark — and a tilemap, whose
+    ``pixel_data`` is a borrowed copy of somebody else's art.
 
     A **palette file** and its slices qualify as sources like any other pixel
     entry — a ``.pal`` is a run of colour words, which is what makes it one —

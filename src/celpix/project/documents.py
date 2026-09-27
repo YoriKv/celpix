@@ -157,7 +157,7 @@ def is_fontmap(registry, entry: Entry) -> bool:  # noqa: ANN001
 
 def is_sprite(registry, entry: Entry) -> bool:  # noqa: ANN001
     """Whether ``entry``'s format says its cells are subsprites grouped into
-    frames rather than positions in a grid (``docs/design/tilemap-entry.md`` §6)."""
+    frames rather than positions in a grid (``docs/design/sprite-map.md`` §1)."""
     return tilemap_declares(registry, entry, "layout") == "sprite"
 
 

@@ -1076,7 +1076,7 @@ class TilemapCodecPlugin(Plugin, Protocol):
 
         Optional, and about the format: a stamp layout's entry says whether its
         position is drawn at all, and one with the bit cleared paints the
-        background rather than its cell (``docs/design/tilemap-entry.md`` §4).
+        background rather than its cell (``docs/design/tilemap-entry.md`` §6, MAP).
         What it decides is what **Clear cells** means — where the format can
         store "nothing here", clearing writes it, making the gesture the stamp
         tool's inverse; where it cannot, the flag is left alone.

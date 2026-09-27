@@ -48,7 +48,7 @@ class FormatInfo:
     record's ``layout = "sprite"`` says the cells are subsprites and not grid
     positions, which decides how the whole entry is *read*, and
     ``palette_row_base = 8`` says where its rows count from
-    (``docs/design/tilemap-entry.md`` §6). Neither is a parameter of the decode,
+    (``docs/design/sprite-map.md`` §3). Neither is a parameter of the decode,
     and neither can live in the class: the host asks the **preset**, before
     anything has been decoded at all.
 

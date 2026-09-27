@@ -6,7 +6,7 @@ so one record covers anything from one tile to a 4x4 block — and its tiles run
 **down each column** before starting the next, which is the opposite of the
 row-major walk every grid format takes. Those two facts are what put this in code
 rather than in a parameter table for the packed engine
-(``docs/design/tilemap-entry.md`` §6).
+(``docs/design/sprite-map.md`` §2).
 
 Everything else about the record is the console's:
 

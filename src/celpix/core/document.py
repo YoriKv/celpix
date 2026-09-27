@@ -918,7 +918,7 @@ class Document:
 
         Deliberately **not** consulted by anything that draws: the frames are
         drawn from the records in file order, and a sequence only says what a
-        player would step through (``docs/design/tilemap-entry.md`` §6).
+        player would step through (``docs/design/sprite-map.md`` §4).
         """
         return tuple(self.tilemap_ctx.get(KEY_TILEMAP_ANIMATIONS, ()) or ())
 
@@ -949,7 +949,7 @@ class Document:
         False only for a **sprite object**, where a canvas position resolves to a
         *subsprite* through an overlap order rather than to a cell through a grid,
         so there is no cell under the cursor to change
-        (``docs/design/tilemap-entry.md`` §6, OBJ). It is not read-only on disk,
+        (``docs/design/sprite-map.md`` §6). It is not read-only on disk,
         so the distinction is about the gesture, not the file.
         """
         return self.is_tilemap and not self.is_sprite

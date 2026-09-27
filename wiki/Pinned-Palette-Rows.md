@@ -57,6 +57,8 @@ With **Show Pinned Palette Colors** (Shift+P) off, all tiles use one row:
 
 ![Rows, numbered](images/pins-gfx14-rows.png)
 
+The numbers show only while **Show Pinned Palette Colors** is on.
+
 These two settings apply to the app. They are not saved in the project.
 
 ## 3. The base row

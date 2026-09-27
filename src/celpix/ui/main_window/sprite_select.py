@@ -5,7 +5,7 @@ position by the grid and the whole editor reads the answer — the Cell spin, th
 hex highlight, the tile source panel's ring. A sprite object has no grid to
 divide by. Its records sit at signed pixel offsets that are mostly not
 tile-aligned, they overlap, and one 8x8 square of the sheet routinely holds
-pieces of three of them (``docs/design/tilemap-entry.md`` §6, OBJ), so the slot
+pieces of three of them (``docs/design/sprite-map.md`` §2), so the slot
 the canvas reports cannot name one — which would otherwise leave a sprite the one
 kind of document where clicking the picture says nothing about what was clicked.
 

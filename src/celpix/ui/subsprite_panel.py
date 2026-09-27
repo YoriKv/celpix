@@ -5,7 +5,7 @@ lives in another entry and the picture says nothing about which, so that panel
 shows the tiles themselves; a sprite map's frame is a heap of overlapping pieces
 at signed pixel offsets, and the front ones hide the back ones, so the picture
 says nothing about what the frame is **made of**. This shows the pieces
-themselves, one per record (``docs/design/tilemap-entry.md`` §6).
+themselves, one per record (``docs/design/sprite-map.md`` §5).
 
 A dumb view, like :class:`~celpix.ui.tile_source_panel.TileSourcePanel`: it is
 handed a composed sheet and the record list it covers, and resolves nothing. The

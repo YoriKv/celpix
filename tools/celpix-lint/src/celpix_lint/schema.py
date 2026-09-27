@@ -1,6 +1,6 @@
 """The `.celpix` schema, restated.
 
-This is a deliberate second copy of what ``docs/design/project-format.md`` §4
+This is a deliberate second copy of what ``wiki/Project-File-Format.md``
 specifies and ``celpix/project/projectfile.py`` reads. The linter does not
 import that reader, for two reasons:
 

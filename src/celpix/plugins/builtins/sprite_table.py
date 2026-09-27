@@ -15,7 +15,7 @@ names. That is structure rather than tidiness. Tables do not own their frames �
 several objects' tables may point into one shared pool laid down after them —
 and no table stores its length, so no slice could hold "the table and its
 frames" without claiming bytes another entry owns
-(``docs/design/tilemap-entry.md`` §6).
+(``docs/design/sprite-map.md`` §3).
 
 **The frame and its pieces are sprite-record's parameters, unchanged**:
 ``record``, ``frame_header`` (required here — a frame's count is what ends it),

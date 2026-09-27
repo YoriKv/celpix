@@ -361,7 +361,7 @@ class SelectionMixin:
         #
         # Pixel mode blanks *pixels*, and that same object has them — its pieces
         # draw a bank's tiles exactly as a grid map's cells do
-        # (``docs/design/tilemap-entry.md`` §8.5), which is the question
+        # (``docs/design/sprite-map.md`` §7), which is the question
         # :meth:`_pixel_edit_available` already answers for the brush. Asking the
         # cells here offered the brush and refused to take back what it laid down.
         editable = (
@@ -409,7 +409,7 @@ class SelectionMixin:
         the same way by all of them. A sprite object is deliberately not one: its
         subsprites sit at signed pixel offsets rather than in a grid, so no layout
         describes what is drawn there and none of the cell arithmetic applies
-        (``docs/design/tilemap-entry.md`` §6, OBJ).
+        (``docs/design/sprite-map.md`` §6).
         """
         doc = self._doc
         if doc is None or not doc.is_tilemap or doc.is_sprite:

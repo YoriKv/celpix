@@ -698,7 +698,7 @@ def load_tilemap_data(
         # Bounded here as well as at the allocation itself, because *this* is the
         # call the UI can take back: a read that fails leaves the binding on what
         # it was and says why, where a render that fails has already replaced the
-        # document it was drawing (``docs/design/tilemap-entry.md`` §6). The box
+        # document it was drawing (``docs/design/sprite-map.md`` §2). The box
         # is measured over nominal 8px tiles — the real ones come from whatever
         # entry the map is bound to, and are not known until the document exists —
         # which is close enough for a limit the offsets, not the tiles, blow past.

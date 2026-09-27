@@ -145,27 +145,13 @@ file. Keep the subfolder names. Then reopen the project.
 ```python
 """The overworld's Layer 2: two RLE2 streams woven into one tilemap.
 
-The overworld's background is an ordinary 16-bit SNES tilemap that the cartridge
-stores as **two streams** — every word's low byte in one, every word's high byte
-in the other, each RLE2-compressed on its own (``docs/smw/overworld.md``). The
-loader runs the same decoder twice over the same buffer, the first pass writing
-the even bytes and the second the odd ones.
+Each 16-bit tilemap word is split across two streams, each RLE2-compressed on
+its own: the low bytes (tile numbers) and the high bytes (flips, priority,
+palette). The entry is the tile-number stream; the attribute stream is bound as
+the ``attributes`` input. Decoding unpacks both and interleaves them.
 
-A slice is one byte range, and no range covers both streams *as one structure*:
-they are adjacent but separately framed, and RLE2 has no terminator, so the first
-stream's end is a label rather than something a decoder finds. So the entry is
-the **tile-number stream**, and the attribute stream is a **plugin input**
-(``docs/design/plugin-inputs.md``): a region of the same file, bound on the entry,
-resolved by the host and handed over read-only on the context.
-
-**An input is never written back**, and that decides what an edit can do. The
-tile numbers are this entry's bytes and re-pack into its slot; an attribute —
-a flip, a palette, the priority bit — belongs to the other stream, which this
-plugin was only lent. So an edit that changes one is **refused, with a message**,
-rather than dropped on the floor: a save that silently discarded half of what was
-painted would be the worse answer.
-
-The byte RLE is celPix's own (``celpix/plugins/builtins/snes_rle.py``).
+Inputs are read-only, so an edit that changes an attribute byte is refused and
+only tile numbers are written back.
 """
 
 from celpix.core.context import (
@@ -191,8 +177,7 @@ class SmwOverworldLayer2:
         id="compression.smw-ow-layer2",
         name="SMW overworld Layer 2 (RLE2 tiles + RLE2 attributes)",
         stage=Stage.COMPRESSION,
-        # RLE2 has no end marker: the extent is the slice's, as it is for the
-        # shipped scheme this is built on.
+        # RLE2 has no end marker: the slice's length bounds the stream.
         self_delimiting=False,
         category="Project",
         inputs=(
@@ -244,23 +229,11 @@ def register(registry):
 <summary><code>plugins/tilemap/smw-ow-layer2.toml</code>: SMW overworld Layer 2 (16-bit, 32x32 pages, 4 per map)</summary>
 
 ```toml
-# The overworld's Layer 2 — a raw 8x8 tilemap, four 32x32 pages per map.
-#
-# Not Map16 at all: the cells are ordinary SNES background words, and the cell
-# below is `preset.tilemap.snes-bg`'s. What the cartridge does with them is keep
-# the two bytes of every word in **separate streams** — the tile numbers and the
-# attribute bytes, each RLE2-compressed on its own (docs/smw/overworld.md) — and
-# `compression.smw-ow-layer2` (plugins/compression/) weaves them back into the
-# words this reads.
-#
-# WHY THIS AND NOT `preset.tilemap.snes-bg` itself: the geometry. 512x512 pixels
-# is 32x32 tiles held as four pages in the quartering the SNES applies to a 64x64
-# tilemap, and two maps' worth sit back to back — the main map, then the submaps.
-# The shipped preset states page counts of 1, 2 and 4, so eight pages would be
-# refused as not this shape and read straight through, stacked in a 32x256 column
-# no console ever drew. Stating the counts here is what lets celPix's own
-# assembly lay them out (docs/design/tilemap-entry.md 6); how many go side by side
-# is then the entry's, in `view.pages_across`.
+# The overworld's Layer 2: 16-bit SNES background words in 32x32 pages, four
+# pages per map, two maps back to back (the main map, then the submaps). The
+# words come from `compression.smw-ow-layer2`, which rebuilds them from two RLE2
+# streams. `page_counts` lets celPix lay the pages out as the SNES does; how many
+# sit side by side is the entry's `view.pages_across`.
 id = "preset.tilemap.smw-ow-layer2"
 name = "SMW overworld Layer 2 (16-bit, 32x32 pages, 4 per map)"
 engine_id = "codec.tilemap.packed"
@@ -282,54 +255,27 @@ page_counts = [4, 8]
 <summary><code>plugins/compression/smw_gfx.py</code>: SMW graphics file (LZ2, expanded to 4bpp)</summary>
 
 ```python
-"""A tile sheet as VRAM holds it: the LZ, then the 3bpp-to-4bpp expansion.
+"""A tile sheet as VRAM holds it: LZ2, then the 3bpp-to-4bpp expansion.
 
-Every background and sprite sheet in the cartridge is stored **3bpp** and drawn
-**4bpp**. ``UploadGFXFile`` (``SMW/Banks/Bank00.asm``) does not decompress into
-VRAM and convert later — it writes the decompressed file straight to the data
-port, converting as it goes, 24 source bytes to 32 VRAM bytes per tile:
+Sheets are stored 3bpp and uploaded 4bpp, 24 bytes to 32 per tile:
 
-* bytes 0-15 are bitplanes 0 and 1, row-interleaved, and go through unchanged;
-* bytes 16-23 are bitplane 2, one byte a row, and become the bp2/bp3 pair, with
-  **bp3 = (bp0 | bp1 | bp2) & mask** and ``mask`` normally ``$0000``.
+* bytes 0-15 (bitplanes 0 and 1, row-interleaved) are copied unchanged;
+* bytes 16-23 (bitplane 2, one byte a row) become the bp2/bp3 pair, with bp3
+  clear, or ``bp0 | bp1 | bp2`` in a masked tile.
 
-So the file is 3bpp and the tile the hardware draws is 4bpp with plane 3 clear —
-which is not a nicety. **It is what decides the colours.** A palette row is
-sixteen entries of CGRAM and a Map16 cell's three palette bits name one of them,
-so a tile of this sheet reaches colours ``row * 16 + 1`` to ``+7``. Read as 3bpp
-the same tile reaches ``row * 8``, and every picture in the project lands in the
-wrong half of the wrong CGRAM row — a bank on the wrong row, from
-``docs/rom-mapping/palettes.md`` §2, arrived at by arithmetic rather than by a
-bad guess. Handing the pixel codec what the *uploader* produces is what makes one
-plain CGRAM palette correct for the sheets, the assembled VRAM windows, the Map16
-tables and every map that draws through them.
+Decoded to 4bpp, a tile reaches colours ``row * 16 + 1`` to ``+7`` of its
+palette row, so one CGRAM palette is right for every sheet and every map drawn
+through them. The expansion changes the length, so this is a Compression plugin
+rather than a Reshape.
 
-That is why this is a Compression plugin and not a Reshape: the conversion adds a
-third of the bytes again, and a reshape is length-preserving by definition.
+**The mask.** Some uploads set plane 3 on every drawn pixel, moving those tiles
+into colours 9-15. The game code decides which, not the file, so two flag inputs
+say it per entry: ``plane3_all`` for the whole file (GFX1E always, GFX08 under
+tileset $11 and above) and ``plane3_head`` for tiles $00, $01, $10 and $11 (the
+first 16x16 object of GFX01 and GFX17). Unbound, a flag is off.
 
-**The mask.** ``UploadGFXFile`` sets ``mask = $FF00`` in two cases, which sets
-bit 3 on every non-transparent pixel and moves those tiles into colours 9-15 of
-their row:
-
-* the **whole file** — ``GFX1E`` always, and ``GFX08`` when the tileset being
-  loaded is ``$11`` or above (``CPX #$11`` / ``CPY #$08``, then ``FilterSomeRAM``);
-* **four tiles** — ``$00``, ``$01``, ``$10`` and ``$11`` of ``GFX01`` and
-  ``GFX17``: the loop counts ``Y`` down from ``$7F`` and masks while ``Y >= $7E``
-  or ``$6E <= Y < $70``, which in a sheet sixteen tiles wide is the one 16x16
-  object at its head.
-
-Neither is in the file. It is a property of *which file number is being loaded
-under which tileset* — ``GFX08`` expands both ways in the same playthrough — so a
-decoder that sees only bytes cannot know it, and it is the entry's to say. That is
-what the two **flag inputs** below are (``docs/design/plugin-inputs.md``): facts
-the cartridge records nowhere because its code knows them, bound per entry and
-delivered on the context. Unbound, a flag is off, which is every other sheet.
-
-Both directions are implemented. Plane 3 is *derived*, so dropping it is exact —
-an unedited sheet re-encodes to the LZ's own parse and back to the cartridge's
-bytes — and that is also the limit of an edit: a pixel painted in a colour its
-tile's rule cannot produce has nowhere to be stored, so the save is **refused,
-with a message**, rather than written back as a different colour.
+Plane 3 is derived, so compressing drops it and re-encodes exactly. A pixel in a
+colour its tile cannot store is refused with a message.
 """
 
 from celpix.core.context import (
@@ -344,9 +290,7 @@ from celpix.plugins import InputKind, InputSpec, PluginInfo
 from celpix.plugins.builtins.lz_command import compress as lz_compress
 from celpix.plugins.builtins.lz_command import decompress as lz_decompress
 
-# This is a USA cartridge, so the LZ's backreference offsets are big-endian; the
-# one instruction that decides it is the `XBA` at `CODE_00B966`, assembled only
-# for the J and E1 releases.
+# The USA release stores the LZ's back-reference offsets big-endian.
 BIG_ENDIAN_OFFSETS = True
 
 STORED_TILE = 24  # three bitplanes: two row-interleaved, one a byte a row
@@ -354,8 +298,7 @@ VRAM_TILE = 32  # four bitplanes as two interleaved pairs, 16 bytes apart
 ROWS = 8
 
 
-# The four tiles the partial rule names: `Y` >= $7E, and $6E <= `Y` < $70, with
-# `Y` counting down from $7F as the tiles go up.
+# The first 16x16 object of a sheet sixteen tiles wide.
 HEAD_OBJECT = frozenset({0x00, 0x01, 0x10, 0x11})
 
 
@@ -368,7 +311,7 @@ def masked_tiles(ctx: PipelineContext, tiles: int) -> frozenset[int]:
 
 
 def expand(stored: bytes, masked: frozenset[int] = frozenset()) -> bytes:
-    """3bpp planar to 4bpp planar — ``UploadGFXFile``'s conversion.
+    """3bpp planar to 4bpp planar, as the game uploads it.
 
     Plane 3 is clear, except in the ``masked`` tiles, where it is the OR of the
     other three: set on every pixel that is not transparent.
@@ -471,65 +414,28 @@ def register(registry):
 <summary><code>plugins/compression/smw_stripe.py</code>: SMW stripe image (VRAM patch list)</summary>
 
 ```python
-"""Stripe images — the cartridge's general "write this data to that VRAM address".
+"""Stripe images: a list of VRAM writes, replayed into tilemap pages.
 
-A stripe image is not compression and is read as compression, because what it
-produces is what every other Compression plugin produces: the bytes the next
-stage interprets. The stream is a list of VRAM patches; the bytes it patches are
-tilemap cells; so decoding one and handing the result to the tilemap codec is how
-a title screen or a Layer 3 background becomes a picture rather than a list of
-records. ``docs/rom-mapping/authoring.md`` §5's last row — no engine expresses
-this, so it is code.
-
-A record is four header bytes and then its payload
-(``UploadToVRAM`` in ``ROUTINE_RT01_SMW_LoadStripeImage``, bank $00):
+Decoding replays the records into the VRAM they patch; the tilemap codec reads
+the result. A record is four header bytes and its payload:
 
     byte 0:  0AAAAAAA   VRAM word address, high byte -- bit 7 SET ends the list
     byte 1:  AAAAAAAA   VRAM word address, low byte
     byte 2:  VRLLLLLL   V = step 32 words, R = RLE, then the length's high 6 bits
     byte 3:  LLLLLLLL   length - 1, low byte (the 14-bit length is big-endian)
 
-The length counts **bytes written to the VRAM port**, and the port is a 16-bit
-word: a write lands in the low byte of a word, the next in the high byte, and
-only then does the address advance. An RLE record's payload is the two bytes
-written to the two halves, repeated; every other record's payload is its length
-in bytes. ``V`` steps 32 *words* rather than 1 between address advances, which is
-one column of a 32-wide tilemap page — that is how the game draws a vertical run.
+The length counts bytes written to the 16-bit VRAM port: the low byte, the high
+byte, then the address advances (by 32 words when V is set, one column of a
+32-wide page). An RLE payload is the two bytes of one word, repeated; otherwise
+the payload is ``length`` bytes.
 
-**The window.** VRAM is 64 KiB and a stripe image patches a few hundred bytes of
-it, so the output is not all of VRAM: it is the range of 4096-word (8 KiB) VRAM
-pages the records actually touch. 8 KiB is one 64x64 SNES background tilemap,
-which is what nearly every one of these patches, and it is why an entry using
-this reads cleanly as a 64x64 map. The entry's name states the VRAM word the
-window starts at, because the data cannot: a stripe image says where it writes,
-not where its picture begins.
+**The window** is the 4096-word pages (one 64x64 tilemap each) the records
+touch. The optional ``vram_page`` input narrows it to one page, for an image
+that writes two layers at once. Untouched cells are ``$FF`` (tile ``$3FF``),
+which draws blank.
 
-**One layer of a screen that patches several.** A few images write two tilemaps
-in one list — a credits cast screen masks Layer 1 at word ``$2000`` and spells
-its enemy names on Layer 3 at ``$5000``. The layers draw from different character
-bases, so no single binding is right for a window spanning both, and which layer
-an *entry* is looking at is not in the stream. It is an optional **integer
-input**, ``vram_page`` (``docs/design/plugin-inputs.md``): bound, only the records
-inside that 64x64 page are replayed and the window is exactly that page, so the
-same bytes are carved twice and each entry binds to the tiles its layer draws
-from. Unbound, the window is every page the records touch, as above.
-
-**What fills the gaps.** Not zero. In the machine those cells hold whatever the
-last screen left there, which this cannot know, and a zero cell is not "nothing"
-— it is tile 0 of whatever bank the map is bound to, drawn a few thousand times
-over a picture that never contained it. So the fill is ``$FF``, making every
-untouched cell tile ``$3FF``: past the end of any window a background is drawn
-from, so it renders blank and says so. It is also the cartridge's own idiom —
-the unused tail of each page of the Map16 background table is ``$FF`` bytes
-(``docs/smw/map16.md``).
-
-**Read-only, and deliberately.** ``compress`` is not implemented, so celPix opens
-these view-only. The inverse is not a function of the decoded bytes — which
-records a run was cut into, which were RLE, which stepped vertically, and what
-was in the untouched gaps are all lost by flattening — and inventing an answer
-would rewrite a region the game reads with a routine that does not care what we
-think it meant. Editing a Layer 3 background is done on the tile sheet it draws
-through, which is an ordinary entry with an ordinary Write.
+Read-only: flattening loses the record structure, so ``compress`` is not
+implemented and entries open view-only.
 """
 
 from celpix.core.context import (

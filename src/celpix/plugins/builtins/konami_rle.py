@@ -12,7 +12,7 @@ bytes, and ``0xFF`` ends the stream. But two game lineages read the reserved
 ``0x7F`` / ``0x80`` bytes incompatibly and no structural signal tells them apart,
 so each is its own selectable scheme:
 
-- **Contra family** (``decompress.konami-nes-rle``): ``0x7F`` is a **PPU address
+- **Contra family** (``compression.konami-nes-rle``): ``0x7F`` is a **PPU address
   change** — the next 2 little-endian bytes reload the VRAM write cursor to place
   the following run elsewhere; ``0x80`` is an (unused) zero-length literal. Source:
   ``Contra - Hacking Guide`` §Graphics. We flatten VRAM layout, so the address is
@@ -20,7 +20,7 @@ so each is its own selectable scheme:
   sync (a missed skip mis-reads the low address byte as a control and desyncs the
   tail). Fills/literals cap at ``0x7E`` because ``0x7F`` and ``0xFF`` are reserved.
 
-- **Simon's Quest / FDS family** (``decompress.konami-fds-rle``): no address
+- **Simon's Quest / FDS family** (``compression.konami-fds-rle``): no address
   command — ``0x7F`` is a plain **127-byte fill** and ``0x80`` a **256-byte
   literal** (an incompressible block). Covers *Dracula II* / Simon's Quest, Ai
   Senshi Nicol and Rampart.

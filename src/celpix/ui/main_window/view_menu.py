@@ -230,7 +230,7 @@ class ViewMenuMixin:
         sprite map has: the player shows the object's motion, this shows its
         parts. A frame is a heap of overlapping pieces and the front ones cover
         the back ones, so what the file *holds* is not recoverable from the
-        canvas by looking (``docs/design/tilemap-entry.md`` §6).
+        canvas by looking (``docs/design/sprite-map.md`` §5).
 
         Enabled far more widely than its neighbour, and that is the point: the
         player wants a sequence with a step in it, where every sprite map is made

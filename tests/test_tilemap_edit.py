@@ -2791,7 +2791,7 @@ def test_painting_a_sprite_object_deposits_into_the_bank_it_borrows_from(
 
     What differs is only the way *in*: a piece sits at a signed pixel offset, so
     which one owns a pixel is the overlap order rather than a slot
-    (``docs/design/tilemap-entry.md`` §8.5).
+    (``docs/design/sprite-map.md`` §7).
     """
     window, bank, obj = _bound_object(qtbot, tmp_path, [(0, 0, 2)])
     _painting_on(window)

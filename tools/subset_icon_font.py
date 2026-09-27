@@ -2,8 +2,8 @@
 """Rebuild the bundled icon font from the upstream face, keeping only our glyphs.
 
 celPix ships Material Symbols Outlined cut down to the codepoints in
-:class:`celpix.ui.glyphs.Glyph` — 19 KB where the upstream variable font is
-10.6 MB. That subset is a build artifact checked into the tree, so **a new
+:class:`celpix.ui.glyphs.Glyph` — tens of KB where the upstream variable font
+is 10.6 MB. That subset is a build artifact checked into the tree, so **a new
 ``Glyph`` member is not in the shipped font until this is re-run**; it will draw
 as nothing until then (``tests/test_icon_font.py`` fails loudly when it does).
 

@@ -12,7 +12,7 @@ That single fact is why this model exists rather than the cell grid being reused
 a grid cannot express a tile at pixel offset 3, and quantising to the nearest
 cell would move most of a sprite's subsprites. Everything else about the entry —
 binding to the tile bank it draws from, the palette, the save path — is the
-tilemap entry's, unchanged (``docs/design/tilemap-entry.md`` §6).
+tilemap entry's, unchanged (``docs/design/sprite-map.md`` §1).
 
 A **frame** is one drawing of the object: a run of subsprites, drawn back to
 front. A
